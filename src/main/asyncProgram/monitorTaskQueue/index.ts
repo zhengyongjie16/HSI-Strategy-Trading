@@ -1,0 +1,92 @@
+/**
+ * 监控任务队列模块
+ *
+ * 功能：
+ * - 提供监控任务的队列管理
+ * - 支持任务去重（相同 dedupeKey 的任务会被替换为最新的）
+ * - 支持任务添加回调（用于触发处理器）
+ *
+ * 去重策略：
+ * - 使用 scheduleLatest 入队时，会移除队列中 dedupeKey 相同的旧任务
+ * - 确保同类型任务只保留最新的一个，避免重复处理
+ *
+ * 使用场景：
+ * - 自动换标任务（按 monitorSymbol + direction 去重）
+ * - 浮亏检查任务（按 monitorSymbol 去重）
+ * - 牛熊证距离检查任务（按 monitorSymbol 去重）
+ */
+import { randomUUID } from 'node:crypto';
+
+import type { TaskAddedCallback } from '../tradeTaskQueue/types.js';
+import { notifyTaskAddedCallbacks, registerTaskAddedCallback } from '../utils.js';
+import type { MonitorTask, MonitorTaskInput, MonitorTaskQueue } from './types.js';
+import { removeTasksFromQueue } from './utils.js';
+
+/**
+ * 创建监控任务队列
+ * 支持任务去重（scheduleLatest）和任务添加回调通知
+ *
+ * @returns 监控任务队列实例，含 scheduleLatest、pop、isEmpty、removeTasks、clearAll、onTaskAdded
+ */
+export function createMonitorTaskQueue<
+  TDataMap extends Readonly<Record<string, unknown>>,
+>(): MonitorTaskQueue<TDataMap> {
+  const queue: Array<MonitorTask<TDataMap>> = [];
+  const callbacks: TaskAddedCallback[] = [];
+
+  function scheduleLatest<TType extends keyof TDataMap>(
+    task: MonitorTaskInput<TDataMap, TType>,
+  ): void {
+    removeTasksFromQueue(queue, (queued) => queued.dedupeKey === task.dedupeKey);
+
+    const fullTask = {
+      id: randomUUID(),
+      type: task.type,
+      dedupeKey: task.dedupeKey,
+      monitorSymbol: task.monitorSymbol,
+      data: task.data,
+      createdAt: Date.now(),
+    } as MonitorTask<TDataMap, TType>;
+
+    queue.push(fullTask);
+    notifyTaskAddedCallbacks(callbacks);
+  }
+
+  function pop(): MonitorTask<TDataMap> | null {
+    return queue.shift() ?? null;
+  }
+
+  function isEmpty(): boolean {
+    return queue.length === 0;
+  }
+
+  function removeTasks(
+    predicate: (task: MonitorTask<TDataMap>) => boolean,
+    onRemove?: (task: MonitorTask<TDataMap>) => void,
+  ): number {
+    return removeTasksFromQueue(queue, predicate, onRemove);
+  }
+
+  function clearAll(onRemove?: (task: MonitorTask<TDataMap>) => void): number {
+    const count = queue.length;
+    for (const task of queue) {
+      onRemove?.(task);
+    }
+
+    queue.length = 0;
+    return count;
+  }
+
+  function onTaskAdded(callback: TaskAddedCallback): () => void {
+    return registerTaskAddedCallback(callbacks, callback);
+  }
+
+  return {
+    scheduleLatest,
+    pop,
+    isEmpty,
+    removeTasks,
+    clearAll,
+    onTaskAdded,
+  };
+}

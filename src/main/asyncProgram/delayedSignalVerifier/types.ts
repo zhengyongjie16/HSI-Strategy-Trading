@@ -1,0 +1,67 @@
+import type { Signal } from '../../../types/signal.js';
+import type { VerificationIndicator } from '../../../types/indicatorProfile.js';
+import type { IndicatorCache } from '../indicatorCache/types.js';
+
+/**
+ * 待验证信号条目（内部队列元素）。
+ * 类型用途：DelayedSignalVerifier 内部待验证队列的一项，携带信号、验证时间与定时器 ID。
+ * 数据来源：由 addSignal 创建并加入内部队列，验证完成或取消时移除。
+ * 使用范围：仅 delayedSignalVerifier 模块内部使用。
+ */
+export type PendingSignalEntry = {
+  /** 待验证的信号对象 */
+  readonly signal: Signal;
+
+  /** 监控标的代码 */
+  readonly monitorSymbol: string;
+
+  /** 信号触发时间戳（毫秒） */
+  readonly triggerTime: number;
+
+  /** 计划验证时间戳（毫秒） */
+  readonly verifyTime: number;
+
+  /** 初始指标值（验证时与后续时间点比较） */
+  readonly initialIndicators: Readonly<Record<string, number>>;
+
+  /** 需要验证的指标顺序（用于验证比较与日志输出） */
+  readonly indicatorNames: ReadonlyArray<VerificationIndicator>;
+
+  /** setTimeout 定时器 ID */
+  readonly timerId: ReturnType<typeof setTimeout>;
+};
+
+/**
+ * 验证结果。
+ * 类型用途：描述延迟信号验证的通过/拒绝状态及原因，供 performVerification 返回、executeVerification 分支使用。
+ * 数据来源：由 DelayedSignalVerifier 内部 performVerification 返回。
+ * 使用范围：仅 delayedSignalVerifier 模块内部使用。
+ */
+export type VerificationResult = {
+  /** 验证是否通过 */
+  readonly passed: boolean;
+
+  /** 验证结果原因描述 */
+  readonly reason: string;
+
+  /** 未通过验证的指标名称列表 */
+  readonly failedIndicators?: ReadonlyArray<string>;
+};
+
+/**
+ * 验证通过回调函数类型。
+ * 类型用途：延迟验证通过时由 DelayedSignalVerifier 调用，供调用方将信号推入买卖任务队列。
+ * 数据来源：由主程序/processMonitor 通过 onVerified() 注册。
+ * 使用范围：delayedSignalVerifier 与调用方之间契约，仅内部使用。
+ */
+export type VerifiedCallback = (signal: Signal, monitorSymbol: string) => void;
+
+/**
+ * DelayedSignalVerifier 依赖配置（创建验证器时的参数）。
+ * 类型用途：创建 DelayedSignalVerifier 时的依赖注入对象。
+ * 数据来源：由主程序/启动流程组装（indicatorCache）并传入工厂。
+ * 使用范围：仅创建 DelayedSignalVerifier 的调用方使用，内部使用。
+ */
+export type DelayedSignalVerifierDeps = {
+  readonly indicatorCache: IndicatorCache;
+};

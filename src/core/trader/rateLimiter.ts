@@ -1,0 +1,109 @@
+/**
+ * Trade API 频率限制器
+ *
+ * 职责：
+ * - 控制 Trade API 调用频率，防止触发 Longbridge API 限流
+ * - 支持并发调用（内部锁机制串行化请求）
+ *
+ * 限流规则：
+ * - 30秒内最多 30 次调用
+ * - 两次调用间隔不少于 30ms
+ */
+import { logger } from '../../utils/logger/index.js';
+import { API } from '../../constants/index.js';
+import type { RateLimiter } from '../../types/services.js';
+import type { RateLimiterDeps, RateLimiterConfig } from './types.js';
+
+const DEFAULT_CONFIG: RateLimiterConfig = {
+  maxCalls: 30,
+  windowMs: 30000,
+};
+
+/**
+ * 创建频率限制器。
+ * 在时间窗口内限制 Trade API 调用次数，throttle() 超限时自动等待。
+ * Longbridge API 有频率限制，由单一实例保证全链路调用不超限。
+ *
+ * @param deps 依赖配置（config 可选，缺省为 30 次/30 秒）
+ * @returns RateLimiter 接口实例（throttle）
+ */
+export const createRateLimiter = (deps: RateLimiterDeps = {}): RateLimiter => {
+  const config = deps.config ?? DEFAULT_CONFIG;
+  const maxCalls = config.maxCalls;
+  const windowMs = config.windowMs;
+
+  // 闭包捕获的私有状态
+  let callTimestamps: number[] = [];
+  let throttlePromise: Promise<void> | null = null;
+
+  /**
+   * 节流：在调用 API 前检查频率限制
+   * 超限时自动等待，支持并发调用（内部锁串行化）
+   */
+  const throttle = async (): Promise<void> => {
+    const noop = (): void => undefined;
+
+    // 如果有正在执行的 throttle，等待它完成
+    while (throttlePromise) {
+      await throttlePromise;
+    }
+
+    // 设置并发锁
+    let releaseLock: () => void = noop;
+    throttlePromise = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+
+    try {
+      let now = Date.now();
+
+      // 1. 检查最小调用间隔（两次调用间隔不少于 API.MIN_CALL_INTERVAL_MS 毫秒）
+      const lastCallTime = callTimestamps.at(-1);
+      if (lastCallTime) {
+        const timeSinceLastCall = now - lastCallTime;
+        if (timeSinceLastCall < API.MIN_CALL_INTERVAL_MS) {
+          const waitTime = API.MIN_CALL_INTERVAL_MS - timeSinceLastCall;
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, waitTime);
+          });
+          now = Date.now(); // 更新当前时间
+        }
+      }
+
+      // 2. 清理超出时间窗口的调用记录
+      callTimestamps = callTimestamps.filter((timestamp) => now - timestamp < windowMs);
+
+      // 3. 如果已达到最大调用次数，等待最早的调用过期
+      if (callTimestamps.length >= maxCalls) {
+        const oldestCall = callTimestamps[0];
+        if (!oldestCall) {
+          // 这种情况不应该发生，但为了类型安全还是检查一下
+          throw new Error('[频率限制] 调用时间戳数组异常');
+        }
+
+        const waitTime = windowMs - (now - oldestCall) + API.RATE_LIMIT_BUFFER_MS;
+        logger.warn(
+          `[频率限制] Trade API 调用频率达到上限 (${maxCalls}次/${windowMs}ms)，等待 ${waitTime}ms`,
+        );
+
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, waitTime);
+        });
+
+        const nowAfterWait = Date.now();
+        callTimestamps = callTimestamps.filter((timestamp) => nowAfterWait - timestamp < windowMs);
+      }
+
+      // 4. 记录本次调用时间
+      callTimestamps.push(Date.now());
+    } finally {
+      // 释放并发锁
+      throttlePromise = null;
+      releaseLock();
+    }
+  };
+
+  return {
+    throttle,
+  };
+};

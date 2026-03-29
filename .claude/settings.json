@@ -1,0 +1,89 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(*)",
+      "Skill(*)",
+      "WebSearch(*)",
+      "WebFetch(*)",
+      "Search(*)",
+      "Bash(node *)",
+      "Bash(bun *)",
+      "Bash(ls *)",
+      "Bash(cd *)",
+      "Bash(mkdir *)"
+    ],
+    "deny": [],
+    "ask": [
+      "Bash(git push *)",
+      "Bash(git push --force)",
+      "Bash(git push -f)",
+      "Bash(git reset --hard)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(git branch -d *)"
+    ]
+  },
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun .claude/hooks/permission-bash-project-scope.js"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun .claude/hooks/permission-bash-project-scope.js"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun .claude/hooks/permission-bash-project-scope.js"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "code-review@claude-plugins-official": true,
+    "plugin-dev@claude-plugins-official": true,
+    "pr-review-toolkit@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true,
+    "example-skills@anthropic-agent-skills": true,
+    "claude-hud@claude-hud": true
+  },
+  "extraKnownMarketplaces": {
+    "claude-plugins-official": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "anthropic-agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "anthropics/skills"
+      }
+    },
+    "claude-hud": {
+      "source": {
+        "source": "github",
+        "repo": "jarrodwatts/claude-hud"
+      }
+    }
+  },
+  "language": "chinese",
+  "autoUpdatesChannel": "latest"
+}

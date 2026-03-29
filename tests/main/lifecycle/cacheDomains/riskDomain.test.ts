@@ -1,0 +1,168 @@
+/**
+ * 风控缓存域单元测试
+ *
+ * 覆盖：midnightClear 调用 resetRiskCheckCooldown、dailyLossTracker.resetAll、
+ * clearMidnightEligible（仅非 minutes 模式）、clearRiskCaches；openRebuild 为空操作
+ */
+import { describe, it, expect } from 'bun:test';
+import { createRiskDomain } from '../../../../src/main/lifecycle/cacheDomains/riskDomain.js';
+import type { MonitorContext } from '../../../../src/types/state.js';
+import type { DailyLossTracker } from '../../../../src/types/risk.js';
+import type { SignalProcessor } from '../../../../src/core/signalProcessor/types.js';
+import type { LiquidationCooldownTracker } from '../../../../src/services/liquidationCooldown/types.js';
+import { createProtectiveLiquidationEpisodeTrackerDouble } from '../../../helpers/testDoubles.js';
+
+describe('createRiskDomain', () => {
+  it('midnightClear 调用 signalProcessor.resetRiskCheckCooldown、dailyLossTracker.resetAll、clearMidnightEligible、各 riskChecker 清理', async () => {
+    let resetRiskCheckCooldownCalled = false;
+    let resetAllCalled = false;
+    let resetAllNow: Date | null = null as Date | null;
+    let resetAllTriggerCountsCalled = false;
+    let clearMidnightEligibleKeys: Set<string> | null = null as Set<string> | null;
+    let clearUnrealizedCount = 0;
+    let clearLongCount = 0;
+    let clearShortCount = 0;
+
+    const monitorContexts = new Map<string, MonitorContext>([
+      [
+        'HSI.HK',
+        {
+          config: {
+            monitorSymbol: 'HSI.HK',
+            liquidationCooldown: { mode: 'half-day' },
+          },
+          riskChecker: {
+            clearUnrealizedLossData: () => {
+              clearUnrealizedCount += 1;
+            },
+            clearLongWarrantInfo: () => {
+              clearLongCount += 1;
+            },
+            clearShortWarrantInfo: () => {
+              clearShortCount += 1;
+            },
+          },
+        } as unknown as MonitorContext,
+      ],
+    ]);
+    const signalProcessor: SignalProcessor = {
+      resetRiskCheckCooldown: () => {
+        resetRiskCheckCooldownCalled = true;
+      },
+    } as unknown as SignalProcessor;
+    const dailyLossTracker: DailyLossTracker = {
+      resetAll: (now: Date) => {
+        resetAllCalled = true;
+        resetAllNow = now;
+      },
+      startNewProtectionEpisode: () => {},
+    } as unknown as DailyLossTracker;
+    const liquidationCooldownTracker: LiquidationCooldownTracker = {
+      recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+      recordCooldown: () => {},
+      restoreTriggerCount: () => {},
+      getRemainingMs: () => 0,
+      clearMidnightEligible: (params) => {
+        clearMidnightEligibleKeys = new Set(params.keysToClear);
+      },
+      resetAllTriggerCounts: () => {
+        resetAllTriggerCountsCalled = true;
+      },
+    };
+
+    const domain = createRiskDomain({
+      signalProcessor,
+      dailyLossTracker,
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      monitorContexts,
+      liquidationCooldownTracker,
+    });
+    const now = new Date('2025-02-15T00:00:00Z');
+    await domain.midnightClear({
+      now,
+      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
+    });
+
+    expect(resetRiskCheckCooldownCalled).toBe(true);
+    expect(resetAllCalled).toBe(true);
+    expect(resetAllNow?.getTime()).toBe(now.getTime());
+    expect(resetAllTriggerCountsCalled).toBe(true);
+    expect(clearMidnightEligibleKeys).not.toBe(null);
+    expect(clearMidnightEligibleKeys?.has('HSI.HK:LONG')).toBe(true);
+    expect(clearMidnightEligibleKeys?.has('HSI.HK:SHORT')).toBe(true);
+    expect(clearUnrealizedCount).toBe(1);
+    expect(clearLongCount).toBe(1);
+    expect(clearShortCount).toBe(1);
+  });
+
+  it('liquidationCooldown 为 minutes 模式时不向 keysToClear 添加该监控标的 key', async () => {
+    let clearMidnightEligibleKeys: Set<string> | null = null as Set<string> | null;
+    const monitorContexts = new Map<string, MonitorContext>([
+      [
+        'HSI.HK',
+        {
+          config: {
+            monitorSymbol: 'HSI.HK',
+            liquidationCooldown: { mode: 'minutes' },
+          },
+          riskChecker: {
+            clearUnrealizedLossData: () => {},
+            clearLongWarrantInfo: () => {},
+            clearShortWarrantInfo: () => {},
+          },
+        } as unknown as MonitorContext,
+      ],
+    ]);
+    const liquidationCooldownTracker: LiquidationCooldownTracker = {
+      recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+      recordCooldown: () => {},
+      restoreTriggerCount: () => {},
+      getRemainingMs: () => 0,
+      clearMidnightEligible: (params) => {
+        clearMidnightEligibleKeys = new Set(params.keysToClear);
+      },
+      resetAllTriggerCounts: () => {},
+    };
+
+    const domain = createRiskDomain({
+      signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
+      dailyLossTracker: {
+        resetAll: () => {},
+        startNewProtectionEpisode: () => {},
+      } as unknown as DailyLossTracker,
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      monitorContexts,
+      liquidationCooldownTracker,
+    });
+    await domain.midnightClear({
+      now: new Date(),
+      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
+    });
+
+    expect(clearMidnightEligibleKeys === null ? 0 : clearMidnightEligibleKeys.size).toBe(0);
+  });
+
+  it('openRebuild 为空操作，不抛错', async () => {
+    const domain = createRiskDomain({
+      signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
+      dailyLossTracker: {
+        resetAll: () => {},
+        startNewProtectionEpisode: () => {},
+      } as unknown as DailyLossTracker,
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      monitorContexts: new Map(),
+      liquidationCooldownTracker: {
+        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordCooldown: () => {},
+        restoreTriggerCount: () => {},
+        getRemainingMs: () => 0,
+        clearMidnightEligible: () => {},
+        resetAllTriggerCounts: () => {},
+      },
+    });
+    await domain.openRebuild({
+      now: new Date(),
+      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
+    });
+  });
+});

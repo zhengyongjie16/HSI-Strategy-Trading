@@ -1,0 +1,244 @@
+import path from 'node:path';
+import { Decimal, type OrderType } from 'longbridge';
+import { isValidPositiveNumber } from '../../utils/helpers/index.js';
+import {
+  NON_REPLACEABLE_ORDER_STATUSES,
+  NON_REPLACEABLE_ORDER_TYPES,
+  ORDER_TYPE_CODE_MAP,
+  ORDER_TYPE_LABEL_MAP,
+  TRADING,
+} from '../../constants/index.js';
+import type { OrderTypeConfig, Signal } from '../../types/signal.js';
+import type {
+  OrderSubmitResponse,
+  OrderTypeResolutionConfig,
+  PendingSellOrderSnapshot,
+  SellMergeDecision,
+  SellMergeDecisionInput,
+} from './types.js';
+
+/**
+ * 获取订单类型显示文本。
+ * 默认行为：未匹配时返回「限价单」。
+ *
+ * @param orderType 订单类型枚举值
+ * @returns 对应的中文标签字符串
+ */
+export function formatOrderTypeLabel(orderType: OrderType): string {
+  return ORDER_TYPE_LABEL_MAP.get(orderType) ?? '限价单';
+}
+
+/**
+ * 获取订单类型代码（用于日志）。
+ * 默认行为：未匹配时返回 "SLO"。
+ *
+ * @param orderType 订单类型枚举值
+ * @returns 对应的订单类型代码字符串（如 "LO"、"ELO"）
+ */
+export function getOrderTypeCode(orderType: OrderType): string {
+  return ORDER_TYPE_CODE_MAP.get(orderType) ?? 'SLO';
+}
+
+/**
+ * 构造订单备注。
+ * 默认行为：普通订单使用默认备注；保护性清仓订单在默认备注后追加保护性标记。
+ *
+ * @param isProtectiveLiquidation 是否为保护性清仓订单
+ * @returns 最终写入下单载荷的备注字符串
+ */
+export function buildOrderRemark(isProtectiveLiquidation: boolean): string {
+  if (isProtectiveLiquidation) {
+    return `${TRADING.DEFAULT_ORDER_REMARK}${TRADING.PROTECTIVE_LIQUIDATION_REMARK_SUFFIX}`;
+  }
+
+  return TRADING.DEFAULT_ORDER_REMARK;
+}
+
+/**
+ * 判断订单备注是否包含保护性清仓标记。
+ * 默认行为：备注为空或非字符串时返回 false。
+ *
+ * @param remark 订单备注
+ * @returns true 表示备注可判定为保护性清仓订单
+ */
+export function hasProtectiveLiquidationRemark(remark: string | null | undefined): boolean {
+  if (typeof remark !== 'string') {
+    return false;
+  }
+
+  return remark.endsWith(TRADING.PROTECTIVE_LIQUIDATION_REMARK_SUFFIX);
+}
+
+/**
+ * 构造交易日志文件路径：<logRootDir>/trades/YYYY-MM-DD.json
+ * @param logRootDir 日志根目录（由运行时环境解析）
+ * @param date 日志对应的日期
+ * @returns 完整的日志文件绝对路径
+ */
+export function buildTradeLogPath(logRootDir: string, date: Date): string {
+  const dayKey = date.toISOString().split('T')[0];
+  return path.join(logRootDir, 'trades', `${dayKey}.json`);
+}
+
+/**
+ * 类型保护：检查值是否为 OrderSubmitResponse 类型
+ * @param value 待检查的任意值
+ * @returns true 表示值符合 OrderSubmitResponse 形状，同时收窄类型
+ */
+function isOrderSubmitResponse(value: unknown): value is OrderSubmitResponse {
+  return typeof value === 'object' && value !== null && 'orderId' in value;
+}
+
+/**
+ * 从订单提交 API 响应中提取真实订单 ID。
+ *
+ * 订单提交成功后，orderId 是进入本地追踪、记录与恢复链路的硬边界；
+ * 若响应缺失有效 orderId，必须立即 fail-fast，不能降级为伪成功继续写入本地状态。
+ *
+ * @param resp API 返回的任意值
+ * @returns 真实订单 ID 字符串
+ * @throws Error 当响应缺失有效 orderId 时抛错
+ */
+export function extractOrderId(resp: unknown): string {
+  if (isOrderSubmitResponse(resp) && typeof resp.orderId === 'string' && resp.orderId.length > 0) {
+    return resp.orderId;
+  }
+
+  if (typeof resp === 'string' && resp.length > 0) {
+    return resp;
+  }
+
+  throw new Error('submitOrder response missing valid orderId');
+}
+
+/**
+ * 将值转换为 Longbridge Decimal 类型。默认行为：非 number/string/Decimal 时返回 Decimal.ZERO()。
+ *
+ * @param value 要转换的值（number、string 或已存在的 Decimal）
+ * @returns Decimal 对象，无效输入时返回 Decimal.ZERO()
+ */
+export function toDecimal(value: unknown): Decimal {
+  if (value instanceof Decimal) {
+    return value;
+  }
+
+  if (typeof value === 'number' || typeof value === 'string') {
+    return new Decimal(value);
+  }
+
+  return Decimal.ZERO();
+}
+
+/**
+ * 按优先级解析订单类型：信号级覆盖 → 保护性清仓类型 → 全局交易类型。
+ * 默认行为：无覆盖且非保护性清仓时使用 globalConfig.tradingOrderType。
+ *
+ * @param signal 信号对象（取 orderTypeOverride 和 isProtectiveLiquidation 字段）
+ * @param globalConfig 全局订单类型配置（含 tradingOrderType 和 liquidationOrderType）
+ * @returns 解析后的订单类型配置
+ */
+export function resolveOrderTypeConfig(
+  signal: Pick<Signal, 'orderTypeOverride' | 'isProtectiveLiquidation'>,
+  globalConfig: OrderTypeResolutionConfig,
+): OrderTypeConfig {
+  if (signal.orderTypeOverride !== null && signal.orderTypeOverride !== undefined) {
+    return signal.orderTypeOverride;
+  }
+
+  if (signal.isProtectiveLiquidation === true) {
+    return globalConfig.liquidationOrderType;
+  }
+
+  return globalConfig.tradingOrderType;
+}
+
+/**
+ * 计算未成交卖单的剩余数量（内部辅助）。
+ * 默认行为：submittedQuantity 或 executedQuantity 无效时返回 0。
+ *
+ * @param order 未成交卖单快照
+ * @returns 剩余数量（submittedQuantity - executedQuantity），无效时返回 0
+ */
+function resolveRemainingQuantity(order: PendingSellOrderSnapshot): number {
+  const remaining = order.submittedQuantity - order.executedQuantity;
+  return isValidPositiveNumber(remaining) ? remaining : 0;
+}
+
+/**
+ * 根据未成交卖单与新股数量计算卖单合并决策（SUBMIT/REPLACE/CANCEL_AND_SUBMIT/SKIP）。
+ * @param input 合并决策输入，包含标的、未成交卖单列表、新订单数量/价格/类型及是否保护性清仓
+ * @returns 合并决策结果，包含动作类型、合并数量、目标订单 ID 及决策原因
+ */
+export function resolveSellMergeDecision(input: SellMergeDecisionInput): SellMergeDecision {
+  const normalized = input.pendingOrders
+    .map((order) => ({
+      order,
+      remaining: resolveRemainingQuantity(order),
+    }))
+    .filter((item) => item.remaining > 0);
+
+  const pendingOrderIds = normalized.map((item) => item.order.orderId);
+  const pendingRemainingQuantity = normalized.reduce((sum, item) => sum + item.remaining, 0);
+
+  if (!Number.isFinite(input.newOrderQuantity) || input.newOrderQuantity <= 0) {
+    return {
+      action: 'SKIP',
+      mergedQuantity: pendingRemainingQuantity,
+      targetOrderId: null,
+      price: null,
+      pendingOrderIds,
+      pendingRemainingQuantity,
+      reason: 'no-additional-quantity',
+    };
+  }
+
+  if (pendingRemainingQuantity <= 0) {
+    return {
+      action: 'SUBMIT',
+      mergedQuantity: input.newOrderQuantity,
+      targetOrderId: null,
+      price: input.newOrderPrice,
+      pendingOrderIds,
+      pendingRemainingQuantity,
+      reason: 'no-pending-sell',
+    };
+  }
+
+  const mergedQuantity = pendingRemainingQuantity + input.newOrderQuantity;
+  const hasMultiple = normalized.length > 1;
+  const hasTypeMismatch = normalized.some((item) => item.order.orderType !== input.newOrderType);
+  const hasNonReplaceableStatus = normalized.some((item) =>
+    NON_REPLACEABLE_ORDER_STATUSES.has(item.order.status),
+  );
+  const hasNonReplaceableType = normalized.some((item) =>
+    NON_REPLACEABLE_ORDER_TYPES.has(item.order.orderType),
+  );
+
+  if (
+    input.isProtectiveLiquidation ||
+    hasMultiple ||
+    hasTypeMismatch ||
+    hasNonReplaceableStatus ||
+    hasNonReplaceableType
+  ) {
+    return {
+      action: 'CANCEL_AND_SUBMIT',
+      mergedQuantity,
+      targetOrderId: null,
+      price: input.newOrderPrice,
+      pendingOrderIds,
+      pendingRemainingQuantity,
+      reason: 'cancel-and-merge',
+    };
+  }
+
+  return {
+    action: 'REPLACE',
+    mergedQuantity,
+    targetOrderId: normalized[0]?.order.orderId ?? null,
+    price: input.newOrderPrice ?? normalized[0]?.order.submittedPrice ?? null,
+    pendingOrderIds,
+    pendingRemainingQuantity,
+    reason: 'replace-and-merge',
+  };
+}

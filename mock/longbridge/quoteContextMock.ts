@@ -1,0 +1,485 @@
+/**
+ * 行情上下文 Mock
+ *
+ * 功能：
+ * - 模拟 QuoteContext 的订阅、查询、失败注入与事件回放行为
+ */
+import {
+  type Market,
+  type Period,
+  type PushCandlestickEvent,
+  type PushQuoteEvent,
+  type SortOrderType,
+  type SubType,
+  type TradeSessions,
+  type WarrantInfo,
+  type WarrantQuote,
+  type WarrantSortBy,
+  WarrantType,
+} from 'longbridge';
+import {
+  createLongportEventBus,
+  type EventPublishOptions,
+  type LongportEventBus,
+} from './eventBus.js';
+import type {
+  MockWarrantListItem,
+  MockCallRecord,
+  MockFailureRule,
+  MockMethodName,
+  QuoteContextContract,
+} from './types.js';
+import {
+  applyMockFailureRule,
+  createFailureState,
+  readMockCalls,
+  resetMockCallRecords,
+  resetMockFailureRules,
+  withMockCall,
+} from './utils.js';
+
+const QUOTE_METHODS: ReadonlySet<MockMethodName> = new Set([
+  'quote',
+  'staticInfo',
+  'subscribe',
+  'unsubscribe',
+  'realtimeQuote',
+  'subscribeCandlesticks',
+  'unsubscribeCandlesticks',
+  'realtimeCandlesticks',
+  'tradingDays',
+  'warrantQuote',
+  'warrantList',
+]);
+
+type QuoteContextMockOptions = {
+  readonly eventBus?: LongportEventBus;
+  readonly now?: () => number;
+};
+
+/**
+ * 生成 K 线订阅缓存键。
+ *
+ * 使用 `symbol + period` 组合，确保不同周期数据不会相互覆盖。
+ */
+function createCandleKey(symbol: string, period: Period): string {
+  return `${symbol}:${String(period)}`;
+}
+
+/**
+ * 将 SDK 轮证类型统一为内部 BULL/BEAR 表示。
+ *
+ * 兼容枚举值与字符串输入，降低不同测试数据来源的格式耦合。
+ */
+function normalizeWarrantType(value: unknown): 'BULL' | 'BEAR' | null {
+  if (value === WarrantType.Bull || value === 3 || value === 'Bull' || value === 'BULL') {
+    return 'BULL';
+  }
+
+  if (value === WarrantType.Bear || value === 4 || value === 'Bear' || value === 'BEAR') {
+    return 'BEAR';
+  }
+
+  return null;
+}
+
+interface QuoteContextMock extends QuoteContextContract {
+  seedQuotes: (quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>) => void;
+  seedRealtimeQuotes: (
+    quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>,
+  ) => void;
+  seedStaticInfo: (
+    staticInfos: ReadonlyArray<{ readonly symbol: string; readonly info: unknown }>,
+  ) => void;
+  seedCandlesticks: (symbol: string, period: Period, candles: ReadonlyArray<unknown>) => void;
+  seedTradingDays: (
+    key: string,
+    value: {
+      readonly tradingDays: ReadonlyArray<unknown>;
+      readonly halfTradingDays: ReadonlyArray<unknown>;
+    },
+  ) => void;
+  seedWarrantQuotes: (quotes: ReadonlyArray<WarrantQuote>) => void;
+  seedWarrantList: (symbol: string, list: ReadonlyArray<MockWarrantListItem>) => void;
+  emitQuote: (event: PushQuoteEvent, options?: EventPublishOptions) => void;
+  emitCandlestick: (event: PushCandlestickEvent, options?: EventPublishOptions) => void;
+  flushEvents: (nowMs?: number) => number;
+  flushAllEvents: () => number;
+  getSubscribedSymbols: () => ReadonlySet<string>;
+  getSubscribedCandlestickKeys: () => ReadonlySet<string>;
+}
+
+/**
+ * 生成交易日查询缓存键。
+ *
+ * 将 market/begin/end 归一化拼接，保证同参查询可命中同一条测试数据。
+ */
+function getTradingDaysKey(market: Market, begin: unknown, end: unknown): string {
+  return `${String(market)}:${String(begin)}:${String(end)}`;
+}
+
+/**
+ * 创建 QuoteContext 的测试替身。
+ *
+ * 通过内存存储、失败注入和事件总线回放，模拟真实行情上下文在查询、订阅和推送上的行为，
+ * 以支撑流程测试与异常恢复测试。
+ */
+export function createQuoteContextMock(options: QuoteContextMockOptions = {}): QuoteContextMock {
+  const now = options.now ?? (() => Date.now());
+  const bus = options.eventBus ?? createLongportEventBus(now);
+
+  const failureState = createFailureState();
+  const callRecords: MockCallRecord[] = [];
+
+  const quoteBySymbol = new Map<string, unknown>();
+  const realtimeQuoteBySymbol = new Map<string, unknown>();
+  const staticInfoBySymbol = new Map<string, unknown>();
+  const candlesticksByKey = new Map<string, ReadonlyArray<unknown>>();
+  const warrantQuoteBySymbol = new Map<string, WarrantQuote>();
+  const warrantListBySymbol = new Map<string, ReadonlyArray<MockWarrantListItem>>();
+  const tradingDaysByKey = new Map<
+    string,
+    {
+      readonly tradingDays: ReadonlyArray<unknown>;
+      readonly halfTradingDays: ReadonlyArray<unknown>;
+    }
+  >();
+
+  const subscribedSymbols = new Set<string>();
+  const subscribedByType = new Map<string, Set<SubType>>();
+  const subscribedCandlestickKeys = new Set<string>();
+
+  let quoteSubscriptionDisposer: (() => void) | null = null;
+  let candlestickSubscriptionDisposer: (() => void) | null = null;
+
+  /**
+   * 统一封装调用计数、失败注入与调用记录。
+   *
+   * 所有对外能力均经此路径，确保失败注入与调用日志语义一致，避免各方法行为漂移。
+   */
+  async function withCall<T>(
+    method: MockMethodName,
+    args: ReadonlyArray<unknown>,
+    action: () => Promise<T> | T,
+  ): Promise<T> {
+    return withMockCall({
+      state: failureState,
+      callRecords,
+      method,
+      args,
+      now,
+      action,
+    });
+  }
+
+  function quote(symbols: ReadonlyArray<string>): Promise<ReadonlyArray<unknown>> {
+    return withCall('quote', [symbols], () =>
+      symbols.map((symbol) => quoteBySymbol.get(symbol) ?? null).filter((item) => item !== null),
+    );
+  }
+
+  function staticInfo(symbols: ReadonlyArray<string>): Promise<ReadonlyArray<unknown>> {
+    return withCall('staticInfo', [symbols], () =>
+      symbols
+        .map((symbol) => staticInfoBySymbol.get(symbol) ?? null)
+        .filter((item) => item !== null),
+    );
+  }
+
+  function subscribe(
+    symbols: ReadonlyArray<string>,
+    subTypes: ReadonlyArray<SubType>,
+  ): Promise<void> {
+    return withCall('subscribe', [symbols, subTypes], () => {
+      for (const symbol of symbols) {
+        subscribedSymbols.add(symbol);
+        const current = subscribedByType.get(symbol) ?? new Set<SubType>();
+        for (const subType of subTypes) {
+          current.add(subType);
+        }
+
+        subscribedByType.set(symbol, current);
+      }
+    });
+  }
+
+  function unsubscribe(
+    symbols: ReadonlyArray<string>,
+    subTypes: ReadonlyArray<SubType>,
+  ): Promise<void> {
+    return withCall('unsubscribe', [symbols, subTypes], () => {
+      for (const symbol of symbols) {
+        const current = subscribedByType.get(symbol);
+        if (!current) {
+          continue;
+        }
+
+        for (const subType of subTypes) {
+          current.delete(subType);
+        }
+
+        if (current.size === 0) {
+          subscribedByType.delete(symbol);
+          subscribedSymbols.delete(symbol);
+          quoteBySymbol.delete(symbol);
+          staticInfoBySymbol.delete(symbol);
+        }
+      }
+    });
+  }
+
+  function realtimeQuote(symbols: ReadonlyArray<string>): Promise<ReadonlyArray<unknown>> {
+    return withCall('realtimeQuote', [symbols], () =>
+      symbols
+        .map((symbol) => realtimeQuoteBySymbol.get(symbol) ?? null)
+        .filter((item) => item !== null),
+    );
+  }
+
+  function subscribeCandlesticks(
+    symbol: string,
+    period: Period,
+    _tradeSessions?: TradeSessions,
+  ): Promise<ReadonlyArray<unknown>> {
+    return withCall('subscribeCandlesticks', [symbol, period], () => {
+      const key = createCandleKey(symbol, period);
+      subscribedCandlestickKeys.add(key);
+      return candlesticksByKey.get(key) ?? [];
+    });
+  }
+
+  function unsubscribeCandlesticks(symbol: string, period: Period): Promise<void> {
+    return withCall('unsubscribeCandlesticks', [symbol, period], () => {
+      const key = createCandleKey(symbol, period);
+      subscribedCandlestickKeys.delete(key);
+      candlesticksByKey.delete(key);
+    });
+  }
+
+  function realtimeCandlesticks(
+    symbol: string,
+    period: Period,
+    count: number,
+  ): Promise<ReadonlyArray<unknown>> {
+    return withCall('realtimeCandlesticks', [symbol, period, count], () => {
+      const key = createCandleKey(symbol, period);
+      const data = candlesticksByKey.get(key) ?? [];
+      if (count <= 0 || data.length <= count) {
+        return data;
+      }
+
+      return data.slice(data.length - count);
+    });
+  }
+
+  function tradingDays(
+    market: Market,
+    begin: unknown,
+    end: unknown,
+  ): Promise<{
+    readonly tradingDays: ReadonlyArray<unknown>;
+    readonly halfTradingDays: ReadonlyArray<unknown>;
+  }> {
+    return withCall('tradingDays', [market, begin, end], () => {
+      const key = getTradingDaysKey(market, begin, end);
+      const found = tradingDaysByKey.get(key);
+      if (found) {
+        return found;
+      }
+
+      return {
+        tradingDays: [],
+        halfTradingDays: [],
+      };
+    });
+  }
+
+  function warrantQuote(symbols: ReadonlyArray<string>): Promise<ReadonlyArray<WarrantQuote>> {
+    return withCall('warrantQuote', [symbols], () =>
+      symbols
+        .map((symbol) => warrantQuoteBySymbol.get(symbol) ?? null)
+        .filter((item): item is WarrantQuote => item !== null),
+    );
+  }
+
+  function warrantList(
+    symbol: string,
+    _sortBy: WarrantSortBy,
+    _sortOrder: SortOrderType,
+    types: ReadonlyArray<WarrantType>,
+  ): Promise<ReadonlyArray<WarrantInfo>> {
+    return withCall('warrantList', [symbol, types], () => {
+      const list = warrantListBySymbol.get(symbol) ?? [];
+      if (types.length === 0) {
+        // mock 存储的是自动寻标实际消费的最小字段子集，返回到 QuoteContext 合同时在此处集中收口断言。
+        return list as unknown as ReadonlyArray<WarrantInfo>;
+      }
+
+      const typeSet = new Set(
+        types
+          .map((type) => normalizeWarrantType(type))
+          .filter((item): item is 'BULL' | 'BEAR' => item !== null),
+      );
+      const filteredList = list.filter((item) => {
+        const normalizedType = normalizeWarrantType(item.warrantType);
+        if (normalizedType === null) {
+          return false;
+        }
+
+        return typeSet.has(normalizedType);
+      });
+
+      // 经过 mock 边界过滤后，返回值只会流向当前测试所覆盖的消费字段。
+      return filteredList as unknown as ReadonlyArray<WarrantInfo>;
+    });
+  }
+
+  function setOnQuote(callback: (err: Error | null, event: PushQuoteEvent) => void): void {
+    quoteSubscriptionDisposer?.();
+    quoteSubscriptionDisposer = bus.subscribe('quote', (payload) => {
+      callback(null, payload);
+    });
+  }
+
+  function setOnCandlestick(
+    callback: (err: Error | null, event: PushCandlestickEvent) => void,
+  ): void {
+    candlestickSubscriptionDisposer?.();
+    candlestickSubscriptionDisposer = bus.subscribe('candlestick', (payload) => {
+      callback(null, payload);
+    });
+  }
+
+  function setFailureRule(method: MockMethodName, rule: MockFailureRule | null): void {
+    applyMockFailureRule({
+      state: failureState,
+      supportedMethods: QUOTE_METHODS,
+      method,
+      rule,
+    });
+  }
+
+  function clearFailureRules(): void {
+    resetMockFailureRules(failureState);
+  }
+
+  function getCalls(method?: MockMethodName): ReadonlyArray<MockCallRecord> {
+    return readMockCalls(callRecords, method);
+  }
+
+  function clearCalls(): void {
+    resetMockCallRecords(callRecords);
+  }
+
+  function seedQuotes(
+    quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>,
+  ): void {
+    quoteBySymbol.clear();
+    realtimeQuoteBySymbol.clear();
+    for (const item of quotes) {
+      quoteBySymbol.set(item.symbol, item.quote);
+      realtimeQuoteBySymbol.set(item.symbol, item.quote);
+    }
+  }
+
+  function seedRealtimeQuotes(
+    quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>,
+  ): void {
+    realtimeQuoteBySymbol.clear();
+    for (const item of quotes) {
+      realtimeQuoteBySymbol.set(item.symbol, item.quote);
+    }
+  }
+
+  function seedStaticInfo(
+    staticInfos: ReadonlyArray<{ readonly symbol: string; readonly info: unknown }>,
+  ): void {
+    for (const item of staticInfos) {
+      staticInfoBySymbol.set(item.symbol, item.info);
+    }
+  }
+
+  function seedCandlesticks(symbol: string, period: Period, candles: ReadonlyArray<unknown>): void {
+    candlesticksByKey.set(createCandleKey(symbol, period), [...candles]);
+  }
+
+  function seedTradingDays(
+    key: string,
+    value: {
+      readonly tradingDays: ReadonlyArray<unknown>;
+      readonly halfTradingDays: ReadonlyArray<unknown>;
+    },
+  ): void {
+    tradingDaysByKey.set(key, value);
+  }
+
+  function seedWarrantQuotes(quotes: ReadonlyArray<WarrantQuote>): void {
+    for (const quoteItem of quotes) {
+      warrantQuoteBySymbol.set(quoteItem.symbol, quoteItem);
+    }
+  }
+
+  function seedWarrantList(symbol: string, list: ReadonlyArray<MockWarrantListItem>): void {
+    warrantListBySymbol.set(symbol, [...list]);
+  }
+
+  function emitQuote(event: PushQuoteEvent, publishOptions: EventPublishOptions = {}): void {
+    bus.publish('quote', event, publishOptions);
+  }
+
+  function emitCandlestick(
+    event: PushCandlestickEvent,
+    publishOptions: EventPublishOptions = {},
+  ): void {
+    bus.publish('candlestick', event, publishOptions);
+  }
+
+  function flushEvents(nowMs?: number): number {
+    return bus.flushDue(nowMs);
+  }
+
+  function flushAllEvents(): number {
+    return bus.flushAll();
+  }
+
+  function getSubscribedSymbols(): ReadonlySet<string> {
+    return new Set(subscribedSymbols);
+  }
+
+  function getSubscribedCandlestickKeys(): ReadonlySet<string> {
+    return new Set(subscribedCandlestickKeys);
+  }
+
+  return {
+    quote,
+    staticInfo,
+    subscribe,
+    unsubscribe,
+    realtimeQuote,
+    subscribeCandlesticks,
+    unsubscribeCandlesticks,
+    realtimeCandlesticks,
+    tradingDays,
+    warrantQuote,
+    warrantList,
+    setOnQuote,
+    setOnCandlestick,
+    setFailureRule,
+    clearFailureRules,
+    getCalls,
+    clearCalls,
+    seedQuotes,
+    seedRealtimeQuotes,
+    seedStaticInfo,
+    seedCandlesticks,
+    seedTradingDays,
+    seedWarrantQuotes,
+    seedWarrantList,
+    emitQuote,
+    emitCandlestick,
+    flushEvents,
+    flushAllEvents,
+    getSubscribedSymbols,
+    getSubscribedCandlestickKeys,
+  };
+}
