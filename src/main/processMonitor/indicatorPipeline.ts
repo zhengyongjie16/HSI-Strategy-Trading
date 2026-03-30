@@ -8,7 +8,6 @@
  */
 import { buildTrendFactorSnapshot } from '../../services/factors/runtime/index.js';
 import { logger } from '../../utils/logger/index.js';
-import { releaseSnapshotObjects } from '../../utils/helpers/index.js';
 import { Period } from 'longbridge';
 import type { CandleData } from '../../types/data.js';
 import type { StrategyThresholdConfig } from '../../types/factor.js';
@@ -161,10 +160,6 @@ export function runIndicatorPipeline(params: IndicatorPipelineParams): Indicator
     klineTimestamp: cacheSnapshot.lastBarTimestamp,
     monitorState: state,
   });
-
-  if (state.lastMonitorSnapshot !== monitorSnapshot) {
-    releaseSnapshotObjects(state.lastMonitorSnapshot, state.monitorValues);
-  }
 
   state.lastMonitorSnapshot = monitorSnapshot;
   state.lastCandlestickCacheVersion = cacheSnapshot.version;

@@ -50,13 +50,6 @@ function createContext(params: {
     monitorSnapshot: {
       price: 20_000,
       changePercent: 0,
-      ema: null,
-      rsi: null,
-      psy: null,
-      mfi: null,
-      kdj: { k: 50, d: 50, j: 50 },
-      macd: { macd: 0, dif: 0, dea: 0 },
-      adx: null,
     },
     longSymbol: 'BULL.HK',
     shortSymbol: 'BEAR.HK',

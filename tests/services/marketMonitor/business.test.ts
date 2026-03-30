@@ -27,7 +27,6 @@ function createStrategyState(baseInstrumentSymbol: string): StrategyState {
     shortPrice: null,
     signal: null,
     pendingSignals: [],
-    monitorValues: null,
     lastMonitorSnapshot: null,
     lastCandlestickCacheVersion: null,
     lastDisplaySignature: null,

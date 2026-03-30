@@ -137,7 +137,6 @@ describe('full-business-simulation integration', () => {
         shortPrice: null,
         signal: null,
         pendingSignals: [],
-        monitorValues: null,
         lastMonitorSnapshot: null,
         lastCandlestickCacheVersion: null,
         lastDisplaySignature: null,

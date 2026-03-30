@@ -1,5 +1,4 @@
 import type { SignalType, Signal } from './signal.js';
-import type { MonitorValues } from './data.js';
 import type { IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { StrategyRuntimeConfig } from './config.js';
@@ -22,7 +21,7 @@ export type StrategyState = {
 
   /**
    * 运行中持续更新的状态字段（性能考虑保持可变）
-   * - monitorPrice/longPrice/shortPrice/signal/pendingSignals/monitorValues
+   * - monitorPrice/longPrice/shortPrice/signal/pendingSignals
    * - lastMonitorSnapshot/lastCandlestickCacheVersion/displayPlan
    */
   /** 监控标的当前价格 */
@@ -39,9 +38,6 @@ export type StrategyState = {
 
   /** 待处理的信号缓冲（单实例路径当前仅用于状态收敛与生命周期清理） */
   pendingSignals: ReadonlyArray<Signal>;
-
-  /** 监控指标值 */
-  monitorValues: MonitorValues | null;
 
   /** 最新指标快照 */
   lastMonitorSnapshot: IndicatorSnapshot | null;

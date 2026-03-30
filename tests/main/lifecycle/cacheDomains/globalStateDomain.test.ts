@@ -17,7 +17,6 @@ function createMockStrategyState(baseInstrumentSymbol: string): StrategyState {
     shortPrice: null,
     signal: null,
     pendingSignals: [],
-    monitorValues: null,
     lastMonitorSnapshot: null,
     lastCandlestickCacheVersion: null,
   };
@@ -80,7 +79,6 @@ describe('createGlobalStateDomain', () => {
     expect(monitorState.longPrice).toBe(null);
     expect(monitorState.signal).toBe(null);
     expect(monitorState.pendingSignals).toHaveLength(0);
-    expect(monitorState.monitorValues).toBe(null);
     expect(monitorState.lastMonitorSnapshot).toBe(null);
 
     expect(runOpenRebuildCalled).toBe(false);
@@ -107,7 +105,6 @@ describe('createGlobalStateDomain', () => {
         shortPrice: null,
         signal: null,
         pendingSignals: [],
-        monitorValues: null,
         lastMonitorSnapshot: null,
         lastCandlestickCacheVersion: null,
       },

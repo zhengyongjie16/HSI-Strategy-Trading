@@ -283,25 +283,10 @@ export const API = {
   MIN_CALL_INTERVAL_MS: 30,
 } as const;
 
-/** 指标缓存相关常量 */
-export const INDICATOR_CACHE = {
-  /** 指标计算缓存 TTL（毫秒） */
-  CALCULATION_TTL_MS: 5_000,
-
-  /** 指标计算最大缓存条目数（防止内存泄漏） */
-  CALCULATION_MAX_SIZE: 50,
-
-  /** 指标时序缓存默认最大条目数（环形缓冲区） */
-  TIMESERIES_DEFAULT_MAX_ENTRIES: 100,
-} as const;
-
 /** 行情监控相关常量，用于 MarketMonitor 检测价格/指标变化 */
 export const MONITOR = {
   /** 价格变化检测阈值，低于此值不触发更新 */
   PRICE_CHANGE_THRESHOLD: 0.001,
-
-  /** 技术指标变化检测阈值（EMA/RSI/MFI/KDJ/MACD） */
-  INDICATOR_CHANGE_THRESHOLD: 0.001,
 
   /** 涨跌幅变化检测阈值（百分比） */
   CHANGE_PERCENT_THRESHOLD: 0.01,
@@ -452,7 +437,7 @@ export const ACCOUNT_CHANNEL_MAP: Record<string, string> = {
 };
 
 /** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
-export const STRATEGY_ACTIONS: ReadonlyArray<Exclude<SignalType, 'HOLD'>> = [
+const STRATEGY_ACTIONS: ReadonlyArray<Exclude<SignalType, 'HOLD'>> = [
   'BUYCALL',
   'SELLCALL',
   'BUYPUT',
@@ -461,15 +446,6 @@ export const STRATEGY_ACTIONS: ReadonlyArray<Exclude<SignalType, 'HOLD'>> = [
 
 /** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
 export const VALID_SIGNAL_ACTIONS = new Set<SignalType>(STRATEGY_ACTIONS);
-
-/** 信号操作描述映射，用于日志输出 */
-export const ACTION_DESCRIPTIONS: Record<SignalType, string> = {
-  BUYCALL: '买入做多',
-  BUYPUT: '买入做空',
-  SELLCALL: '卖出做多',
-  SELLPUT: '卖出做空',
-  HOLD: '持有',
-};
 
 /** 信号操作详细描述映射，用于执行链路日志 */
 export const SIGNAL_ACTION_DESCRIPTIONS: Record<SignalType, string> = {

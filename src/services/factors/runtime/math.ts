@@ -8,16 +8,6 @@
 import type { NormalizedBar } from './types.js';
 
 /**
- * 将未知值规整为有限数值。
- *
- * @param value 待检查值
- * @returns 有限数值，否则返回 null
- */
-export function toSimpleNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-/**
  * 从数组尾部截取指定数量的数据。
  *
  * @param bars 输入数组
@@ -151,7 +141,7 @@ export function computeEr(bars: ReadonlyArray<NormalizedBar>, lookback: number):
  * @param bars 归一化后的 K 线集合
  * @returns 真实波幅序列
  */
-export function computeTrueRanges(bars: ReadonlyArray<NormalizedBar>): ReadonlyArray<number> {
+function computeTrueRanges(bars: ReadonlyArray<NormalizedBar>): ReadonlyArray<number> {
   const trueRanges: number[] = [];
   for (let index = 0; index < bars.length; index += 1) {
     const bar = bars[index];
@@ -187,7 +177,7 @@ export function computeTrueRanges(bars: ReadonlyArray<NormalizedBar>): ReadonlyA
  * @param values 输入序列
  * @returns 均值；空序列返回 null
  */
-export function average(values: ReadonlyArray<number>): number | null {
+function average(values: ReadonlyArray<number>): number | null {
   if (values.length === 0) {
     return null;
   }
@@ -304,69 +294,6 @@ export function computeMacd(values: ReadonlyArray<number>): {
     dea,
     macd: dea === null ? null : (dif - dea) * 2,
   };
-}
-
-/**
- * 对周期键值记录按周期从小到大排序。
- *
- * @param record 周期记录
- * @returns 排序后的键值对
- */
-export function getSortedPeriodEntries(
-  record: Readonly<Record<number, number>> | null,
-): ReadonlyArray<readonly [number, number]> {
-  if (!record) {
-    return [];
-  }
-
-  return Object.entries(record)
-    .map(([period, value]) => [Number(period), value] as const)
-    .filter(([period, value]) => Number.isFinite(period) && Number.isFinite(value))
-    .sort((left, right) => left[0] - right[0]);
-}
-
-/**
- * 读取周期记录的最小值与最大值。
- *
- * @param record 周期记录
- * @returns fast / slow 组合
- */
-export function getRecordFastSlow(record: Readonly<Record<number, number>> | null): {
-  readonly fast: number | null;
-  readonly slow: number | null;
-} {
-  const entries = getSortedPeriodEntries(record);
-  if (entries.length === 0) {
-    return {
-      fast: null,
-      slow: null,
-    };
-  }
-
-  return {
-    fast: entries[0]?.[1] ?? null,
-    slow: entries.at(-1)?.[1] ?? null,
-  };
-}
-
-/**
- * 读取周期记录的均值。
- *
- * @param record 周期记录
- * @returns 均值；空记录返回 null
- */
-export function getRecordAverage(record: Readonly<Record<number, number>> | null): number | null {
-  const entries = getSortedPeriodEntries(record);
-  if (entries.length === 0) {
-    return null;
-  }
-
-  let total = 0;
-  for (const [, value] of entries) {
-    total += value;
-  }
-
-  return total / entries.length;
 }
 
 /**

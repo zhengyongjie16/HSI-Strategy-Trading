@@ -54,32 +54,6 @@ export function getStringConfig(env: NodeJS.ProcessEnv, envKey: string): string 
 }
 
 /**
- * 读取数字配置，未设置、非有限数或小于最小值时返回 null。
- *
- * @param env 进程环境变量对象
- * @param envKey 环境变量键名
- * @param minValue 允许的最小值，默认为 0
- * @returns 解析后的数字，或 null
- */
-export function getNumberConfig(
-  env: NodeJS.ProcessEnv,
-  envKey: string,
-  minValue: number = 0,
-): number | null {
-  const value = env[envKey];
-  if (!value || value.trim() === '') {
-    return null;
-  }
-
-  const num = Number(value);
-  if (!Number.isFinite(num) || num < minValue) {
-    return null;
-  }
-
-  return num;
-}
-
-/**
  * 读取布尔配置，仅识别 'true'/'false'，其他值返回默认值。
  *
  * @param env 进程环境变量对象

@@ -18,7 +18,6 @@ import { OPEN_API_ORDER_TYPE_TO_CONFIG, STRATEGY, TRADING } from '../../constant
 import {
   createConfigValidationError,
   getBooleanConfig,
-  getNumberConfig,
   getStringConfig,
   parseLiquidationCooldownConfig,
   parseNumberRangeConfig,
@@ -167,7 +166,7 @@ function parseTimeOfDayConfig({
  * @param env 进程环境变量对象
  * @returns 单实例席位模式
  */
-export function parseSeatModeConfig(env: NodeJS.ProcessEnv): SeatMode {
+function parseSeatModeConfig(env: NodeJS.ProcessEnv): SeatMode {
   const value = getStringConfig(env, 'SEAT_MODE');
   if (!value) {
     return STRATEGY.DEFAULT_SEAT_MODE;
@@ -188,7 +187,7 @@ export function parseSeatModeConfig(env: NodeJS.ProcessEnv): SeatMode {
  * @param options 包含 env、envKey、defaultValue、min、max 的配置对象
  * @returns 合法范围内的数值
  */
-export function parseFailFastBoundedNumberConfig({
+function parseFailFastBoundedNumberConfig({
   env,
   envKey,
   defaultValue,
@@ -210,7 +209,7 @@ export function parseFailFastBoundedNumberConfig({
  * @param options 包含 env、envKey、defaultValue、min、max 的配置对象
  * @returns 合法范围内的整数
  */
-export function parseFailFastIntegerBoundedNumberConfig({
+function parseFailFastIntegerBoundedNumberConfig({
   env,
   envKey,
   defaultValue,
@@ -233,7 +232,7 @@ export function parseFailFastIntegerBoundedNumberConfig({
  * @param options 包含 env、envKey、defaultValue、min 的配置对象
  * @returns 大于等于 min 的合法数值
  */
-export function parseFailFastMinimumNumberConfig({
+function parseFailFastMinimumNumberConfig({
   env,
   envKey,
   defaultValue,
@@ -246,44 +245,6 @@ export function parseFailFastMinimumNumberConfig({
     min,
     max: Number.POSITIVE_INFINITY,
   });
-}
-
-/**
- * 解析关键整数配置：未配置时使用默认值，显式配置非法、非整数或小于下限时立即失败。
- *
- * @param options 包含 env、envKey、defaultValue、min 的配置对象
- * @returns 大于等于 min 的合法整数
- */
-export function parseFailFastIntegerMinimumNumberConfig({
-  env,
-  envKey,
-  defaultValue,
-  min,
-}: MinimumNumberConfig): number {
-  return parseRequiredNumericConfig({
-    env,
-    envKey,
-    defaultValue,
-    min,
-    max: Number.POSITIVE_INFINITY,
-    integer: true,
-  });
-}
-
-/**
- * 读取百分比值配置并保持运行时口径不变。
- *
- * @param env 进程环境变量对象
- * @param envKey 环境变量键名
- * @param minValue 允许的最小原始数值
- * @returns 百分比值或 null
- */
-export function getPercentValueConfig(
-  env: NodeJS.ProcessEnv,
-  envKey: string,
-  minValue: number = 0,
-): number | null {
-  return getNumberConfig(env, envKey, minValue);
 }
 
 /**
@@ -292,7 +253,7 @@ export function getPercentValueConfig(
  * @param orderType OpenAPI 订单类型
  * @returns 内部订单类型配置
  */
-export function mapOrderTypeConfig(orderType: OrderType): OrderTypeConfig {
+function mapOrderTypeConfig(orderType: OrderType): OrderTypeConfig {
   return OPEN_API_ORDER_TYPE_TO_CONFIG[orderType] ?? 'ELO';
 }
 
@@ -304,7 +265,7 @@ export function mapOrderTypeConfig(orderType: OrderType): OrderTypeConfig {
  * @param defaultType 默认订单类型
  * @returns 内部订单类型配置
  */
-export function parseTradingOrderType(
+function parseTradingOrderType(
   env: NodeJS.ProcessEnv,
   envKey: string,
   defaultType: OrderTypeConfig,
@@ -319,10 +280,7 @@ export function parseTradingOrderType(
  * @param seatMode 席位模式
  * @returns 自动寻标配置
  */
-export function parseAutoSearchConfig(
-  env: NodeJS.ProcessEnv,
-  seatMode: SeatMode,
-): AutoSearchConfig {
+function parseAutoSearchConfig(env: NodeJS.ProcessEnv, seatMode: SeatMode): AutoSearchConfig {
   const autoSearchEnabled = seatMode === 'auto';
   if (!autoSearchEnabled) {
     return {
@@ -418,7 +376,7 @@ export function parseAutoSearchConfig(
  * @param env 进程环境变量对象
  * @returns 波动率状态阈值
  */
-export function parseRegimeThresholdConfig(env: NodeJS.ProcessEnv): RegimeThresholdConfig {
+function parseRegimeThresholdConfig(env: NodeJS.ProcessEnv): RegimeThresholdConfig {
   return {
     atrShortPeriod: parseFailFastIntegerBoundedNumberConfig({
       env,
@@ -492,7 +450,7 @@ export function parseRegimeThresholdConfig(env: NodeJS.ProcessEnv): RegimeThresh
  * @param env 进程环境变量对象
  * @returns 趋势评分阈值
  */
-export function parseTrendScoreThresholdConfig(env: NodeJS.ProcessEnv): TrendScoreThresholdConfig {
+function parseTrendScoreThresholdConfig(env: NodeJS.ProcessEnv): TrendScoreThresholdConfig {
   return {
     w15: parseFailFastBoundedNumberConfig({
       env,
@@ -552,7 +510,7 @@ export function parseTrendScoreThresholdConfig(env: NodeJS.ProcessEnv): TrendSco
  * @param env 进程环境变量对象
  * @returns ER 阈值
  */
-export function parseErThresholdConfig(env: NodeJS.ProcessEnv): ErThresholdConfig {
+function parseErThresholdConfig(env: NodeJS.ProcessEnv): ErThresholdConfig {
   return {
     er15EntryMin: parseFailFastBoundedNumberConfig({
       env,
@@ -598,7 +556,7 @@ export function parseErThresholdConfig(env: NodeJS.ProcessEnv): ErThresholdConfi
  * @param env 进程环境变量对象
  * @returns VWAP 确认规则
  */
-export function parseVwapConfirmRulesConfig(env: NodeJS.ProcessEnv): VwapConfirmRulesConfig {
+function parseVwapConfirmRulesConfig(env: NodeJS.ProcessEnv): VwapConfirmRulesConfig {
   return {
     distanceBandAtr: parseFailFastBoundedNumberConfig({
       env,
@@ -630,9 +588,7 @@ export function parseVwapConfirmRulesConfig(env: NodeJS.ProcessEnv): VwapConfirm
  * @param env 进程环境变量对象
  * @returns 开盘结构规则
  */
-export function parseOpeningStructureRulesConfig(
-  env: NodeJS.ProcessEnv,
-): OpeningStructureRulesConfig {
+function parseOpeningStructureRulesConfig(env: NodeJS.ProcessEnv): OpeningStructureRulesConfig {
   return {
     openingRangeMinutes: parseFailFastIntegerBoundedNumberConfig({
       env,
@@ -699,7 +655,7 @@ export function parseOpeningStructureRulesConfig(
  * @param env 进程环境变量对象
  * @returns 午后延续规则
  */
-export function parsePmContinuationRulesConfig(env: NodeJS.ProcessEnv): PmContinuationRulesConfig {
+function parsePmContinuationRulesConfig(env: NodeJS.ProcessEnv): PmContinuationRulesConfig {
   return {
     amMoveZMin: parseFailFastBoundedNumberConfig({
       env,
@@ -743,7 +699,7 @@ export function parsePmContinuationRulesConfig(env: NodeJS.ProcessEnv): PmContin
  * @param env 进程环境变量对象
  * @returns 交易标的适配规则
  */
-export function parseInstrumentAdaptationRulesConfig(
+function parseInstrumentAdaptationRulesConfig(
   env: NodeJS.ProcessEnv,
 ): InstrumentAdaptationRulesConfig {
   return {

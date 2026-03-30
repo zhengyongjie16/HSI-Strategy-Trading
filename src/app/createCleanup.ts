@@ -8,7 +8,6 @@
  */
 import { logger } from '../utils/logger/index.js';
 import { formatError } from '../utils/error/index.js';
-import { releaseSnapshotObjects } from '../utils/helpers/index.js';
 import type { StrategyState } from '../types/state.js';
 import type { CleanupContext, CleanupController, CleanupFailure } from './types.js';
 
@@ -19,7 +18,6 @@ import type { CleanupContext, CleanupController, CleanupFailure } from './types.
  * @returns void
  */
 function releaseAllMonitorSnapshots(monitorState: StrategyState): void {
-  releaseSnapshotObjects(monitorState.lastMonitorSnapshot, monitorState.monitorValues);
   monitorState.lastMonitorSnapshot = null;
 }
 

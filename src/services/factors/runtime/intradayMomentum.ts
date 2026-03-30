@@ -33,7 +33,6 @@ import {
   computeMomentumSnapshot,
   applyMultiTimeframeTrendConsistency,
   computeTrendClassification,
-  resolveEffectiveTrendScore,
 } from './trendClassifier.js';
 import { computeVwapSnapshot } from './sessionVwap.js';
 import { computeOpeningStructure, computePmContinuation } from './openingStructure.js';
@@ -319,9 +318,7 @@ export function buildTrendFactorSnapshot(params: {
     vwap,
     rules: params.strategyConfig.pmContinuationRules,
   });
-  const effectiveTrendScore = resolveEffectiveTrendScore({
-    trendScore: momentumResult.trendScore,
-  });
+  const effectiveTrendScore = momentumResult.trendScore;
   const readiness = computeReadiness({
     regimeReady,
     trendBars: intradayTradingBars,

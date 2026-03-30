@@ -31,48 +31,6 @@ export type PoolableSignal = {
 };
 
 /**
- * 对象池 - KDJ 指标（可池化）。
- * 类型用途：KDJ 技术指标的可池化版本，供对象池复用。
- * 数据来源：由策略模块计算后写入。
- * 使用范围：仅对象池内部使用，外部通过 acquire/release 访问。
- */
-export type PoolableKDJ = {
-  k: number | null;
-  d: number | null;
-  j: number | null;
-};
-
-/**
- * 对象池 - MACD 指标（可池化）。
- * 类型用途：MACD 技术指标的可池化版本，供对象池复用。
- * 数据来源：由策略模块计算后写入。
- * 使用范围：仅对象池内部使用，外部通过 acquire/release 访问。
- */
-export type PoolableMACD = {
-  macd: number | null;
-  dif: number | null;
-  dea: number | null;
-};
-
-/**
- * 对象池 - 监控数值（可池化）。
- * 类型用途：聚合单次主循环所需的全部技术指标数值，供对象池复用。
- * 数据来源：由行情服务和指标计算模块填充。
- * 使用范围：仅对象池内部使用，外部通过 acquire/release 访问。
- */
-export type PoolableMonitorValues = {
-  price: number | null;
-  changePercent: number | null;
-  ema: Record<number, number> | null;
-  rsi: Record<number, number> | null;
-  psy: Record<number, number> | null;
-  mfi: number | null;
-  kdj: PoolableKDJ | null;
-  macd: PoolableMACD | null;
-  adx: number | null;
-};
-
-/**
  * 对象池 - Position（可池化持仓）。
  * 类型用途：持仓数据的可池化版本，供对象池复用；属性可变以支持重置复用。
  * 数据来源：由 Longbridge SDK 账户持仓接口返回后转换填充。

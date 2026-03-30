@@ -52,30 +52,6 @@ export type Quote = {
 };
 
 /**
- * KDJ 指标。
- * 类型用途：表示 K/D/J 三个分量，供展示层、工具脚本与测试消费。
- * 数据来源：由指标计算逻辑生成。
- * 使用范围：IndicatorSnapshot、tools 与相关测试；全项目可引用。
- */
-export type KDJIndicator = {
-  readonly k: number;
-  readonly d: number;
-  readonly j: number;
-};
-
-/**
- * MACD 指标。
- * 类型用途：表示 macd/dif/dea 三个分量，供展示层、工具脚本与测试消费。
- * 数据来源：由指标计算逻辑生成。
- * 使用范围：IndicatorSnapshot、tools 与相关测试；全项目可引用。
- */
-export type MACDIndicator = {
-  readonly macd: number;
-  readonly dif: number;
-  readonly dea: number;
-};
-
-/**
  * 运行时快照。
  * 类型用途：承载趋势因子主链路向展示层和策略层交付的最小运行时视图。
  * 数据来源：由 factor runtime 与 processMonitor 组装得到。
@@ -93,16 +69,4 @@ export type IndicatorSnapshot = {
 
   /** 趋势策略的上层因子快照 */
   readonly factorSnapshot?: FactorSnapshot | null;
-
-  /**
-   * 旧指标字段保留为可选兼容字段，便于过渡期测试替身继续构造快照。
-   * 主运行时链路不再消费这些字段。
-   */
-  readonly ema?: Readonly<Record<number, number>> | null;
-  readonly rsi?: Readonly<Record<number, number>> | null;
-  readonly psy?: Readonly<Record<number, number>> | null;
-  readonly mfi?: number | null;
-  readonly kdj?: KDJIndicator | null;
-  readonly macd?: MACDIndicator | null;
-  readonly adx?: number | null;
 };

@@ -14,7 +14,6 @@
  *   （加载运行时快照 → 重建交易日状态）
  */
 import { logger } from '../../../utils/logger/index.js';
-import { releaseSnapshotObjects } from '../../../utils/helpers/index.js';
 import type { LastState, StrategyState } from '../../../types/state.js';
 import type { CacheDomain } from '../types.js';
 import type { GlobalStateDomainDeps } from './types.js';
@@ -25,13 +24,11 @@ import type { GlobalStateDomainDeps } from './types.js';
  * @param monitorState 单实例监控状态（lastMonitorSnapshot、monitorPrice 等）
  */
 function resetStrategyStateForNewDay(monitorState: StrategyState): void {
-  releaseSnapshotObjects(monitorState.lastMonitorSnapshot, monitorState.monitorValues);
   monitorState.monitorPrice = null;
   monitorState.longPrice = null;
   monitorState.shortPrice = null;
   monitorState.signal = null;
   monitorState.pendingSignals = [];
-  monitorState.monitorValues = null;
   monitorState.lastMonitorSnapshot = null;
   monitorState.lastCandlestickCacheVersion = null;
 }

@@ -30,7 +30,7 @@ import type {
   CandlestickCacheSnapshot,
 } from '../../src/types/services.js';
 import type { SymbolRegistry, SeatState } from '../../src/types/seat.js';
-import type { Candlestick, Config, Period, QuoteContext, TradeContext } from 'longbridge';
+import type { Candlestick, Config, Period, QuoteContext } from 'longbridge';
 import type { TradingSignalStrategy } from '../../src/core/strategy/types.js';
 import type {
   DoomsdayProtection,
@@ -58,7 +58,6 @@ import type {
 } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import { toMockDecimal } from '../../mock/longbridge/decimal.js';
 import { createQuoteContextMock } from '../../mock/longbridge/quoteContextMock.js';
-import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 
 /**
  * 构建测试用 K 线缓存快照。
@@ -354,21 +353,6 @@ export function createQuoteContextDouble(
   quoteContextMock: ReturnType<typeof createQuoteContextMock> = createQuoteContextMock(),
 ): QuoteContext {
   return quoteContextMock as unknown as QuoteContext;
-}
-
-/**
- * 将 TradeContext mock 收口为测试可用的 TradeContext。
- *
- * Longbridge SDK 的 TradeContext 类型同样比测试 mock 暴露的能力更宽；
- * 这里集中收口断言，避免在测试中散落无说明的断言。
- *
- * @param tradeContextMock 交易上下文 mock；未传时自动创建
- * @returns 可供依赖注入边界消费的 TradeContext
- */
-export function createTradeContextDouble(
-  tradeContextMock: ReturnType<typeof createTradeContextMock> = createTradeContextMock(),
-): TradeContext {
-  return tradeContextMock as unknown as TradeContext;
 }
 
 /**
@@ -840,7 +824,6 @@ function createStrategyStateDouble(baseInstrumentSymbol: string = 'HSI.HK'): Str
     shortPrice: null,
     signal: null,
     pendingSignals: [],
-    monitorValues: null,
     lastMonitorSnapshot: null,
     lastCandlestickCacheVersion: null,
     lastDisplaySignature: null,

@@ -37,7 +37,6 @@ function createMinimalLastState(): LastState {
       shortPrice: null,
       signal: null,
       pendingSignals: [],
-      monitorValues: null,
       lastMonitorSnapshot: null,
       lastCandlestickCacheVersion: null,
     },

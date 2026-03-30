@@ -126,17 +126,6 @@ export type ConfirmationSnapshot = {
 };
 
 /**
- * 交易标的适配结果。
- * 类型用途：表达 seat 当前绑定牛熊证是否适合承接新的趋势开仓。
- * 数据来源：由 signal pipeline 在策略输出后根据 seat quote/static info 与配置计算。
- * 使用范围：开仓闸门与日志输出。
- */
-export type InstrumentAdaptationResult = {
-  readonly passed: boolean;
-  readonly reason: string;
-};
-
-/**
  * 趋势策略单次因子快照。
  * 类型用途：承载趋势延续策略需要的全部上层因子输出。
  * 数据来源：factor runtime。
@@ -167,7 +156,7 @@ export type FactorSnapshot = {
  * 数据来源：单实例策略配置。
  * 使用范围：factor runtime。
  */
-export type RegimeThresholds = {
+type RegimeThresholds = {
   readonly atrShortPeriod: number;
   readonly atrLongPeriod: number;
   readonly rvQuantileWindowDays: number;
@@ -185,7 +174,7 @@ export type RegimeThresholds = {
  * 数据来源：单实例策略配置。
  * 使用范围：factor runtime 与策略。
  */
-export type TrendScoreThresholds = {
+type TrendScoreThresholds = {
   readonly w15: number;
   readonly w30: number;
   readonly w60: number;
@@ -201,7 +190,7 @@ export type TrendScoreThresholds = {
  * 数据来源：单实例策略配置。
  * 使用范围：factor runtime 与策略。
  */
-export type ErThresholds = {
+type ErThresholds = {
   readonly er15EntryMin: number;
   readonly er30EntryMin: number;
   readonly er15ExitMax: number;
@@ -215,7 +204,7 @@ export type ErThresholds = {
  * 数据来源：单实例策略配置。
  * 使用范围：factor runtime 与信号确认。
  */
-export type VwapConfirmRules = {
+type VwapConfirmRules = {
   readonly distanceBandAtr: number;
   readonly slopeWindowBars: number;
   readonly maxCrossCountLast10m: number;
@@ -258,7 +247,7 @@ export type PmContinuationRules = {
  * 数据来源：单实例策略配置。
  * 使用范围：signal pipeline 的 instrument adaptation gate。
  */
-export type InstrumentAdaptationRules = {
+type InstrumentAdaptationRules = {
   readonly bullBuyMinDistancePct: number;
   readonly bearBuyMaxDistancePct: number;
   readonly bullLiquidationDistancePct: number;
@@ -287,59 +276,6 @@ export type StrategyThresholdConfig = {
   readonly openingStructureRules: OpeningStructureRules;
   readonly pmContinuationRules: PmContinuationRules;
   readonly instrumentAdaptationRules: InstrumentAdaptationRules;
-};
-
-/**
- * 波动率阶段状态。
- * 类型用途：承载 regime 层的分类结果与解释信息。
- * 数据来源：factor runtime。
- * 使用范围：因子快照构建、策略决策与日志输出。
- */
-export type FactorRegimeState = {
-  readonly ready: boolean;
-  readonly regime: VolatilityRegime;
-  readonly score: number;
-  readonly reasons: ReadonlyArray<string>;
-};
-
-/**
- * 趋势阶段状态。
- * 类型用途：承载 long / short 两侧趋势评分与方向判定。
- * 数据来源：factor runtime。
- * 使用范围：因子快照构建、策略决策与日志输出。
- */
-export type FactorTrendState = {
-  readonly ready: boolean;
-  readonly direction: TrendClassification;
-  readonly longScore: number;
-  readonly shortScore: number;
-  readonly reasons: ReadonlyArray<string>;
-};
-
-/**
- * 结构阶段状态。
- * 类型用途：承载开盘结构、回踩与延续形态的判定结果。
- * 数据来源：factor runtime。
- * 使用范围：因子快照构建、策略决策与日志输出。
- */
-export type FactorStructureState = {
-  readonly ready: boolean;
-  readonly passed: boolean;
-  readonly score: number;
-  readonly reasons: ReadonlyArray<string>;
-};
-
-/**
- * 确认阶段状态。
- * 类型用途：承载 VWAP、EMA、MACD 等确认结果。
- * 数据来源：factor runtime。
- * 使用范围：因子快照构建、策略决策与日志输出。
- */
-export type FactorConfirmationState = {
-  readonly ready: boolean;
-  readonly passed: boolean;
-  readonly score: number;
-  readonly reasons: ReadonlyArray<string>;
 };
 
 /**

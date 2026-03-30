@@ -8,7 +8,6 @@
 import type {
   MomentumSnapshot,
   StrategyThresholdConfig,
-  TradingSessionPhase,
   TrendClassification,
 } from '../../../types/factor.js';
 import type { NormalizedBar } from './types.js';
@@ -159,26 +158,4 @@ export function applyMultiTimeframeTrendConsistency(params: {
   }
 
   return params.baseClassification;
-}
-
-/**
- * 识别趋势评分的直接有效值。
- *
- * @param params 趋势评分输入
- * @returns 原始趋势评分
- */
-export function resolveEffectiveTrendScore(params: {
-  readonly trendScore: number | null;
-}): number | null {
-  return params.trendScore;
-}
-
-/**
- * 趋势准备最小 bar 数。
- *
- * @param session 交易 session
- * @returns 最小样本数
- */
-export function resolveTrendReadyMinBars(session: TradingSessionPhase): number {
-  return session === 'closed' ? 0 : 60;
 }

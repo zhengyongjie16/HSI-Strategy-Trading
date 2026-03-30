@@ -3,14 +3,10 @@ import type {
   Reset,
   ObjectPool,
   PoolableSignal,
-  PoolableKDJ,
-  PoolableMACD,
-  PoolableMonitorValues,
   PoolablePosition,
   PoolableVerificationEntry,
 } from './types.js';
 import type { Signal } from '../../types/signal.js';
-import type { MonitorValues } from '../../types/data.js';
 
 function resetRecordObject<T extends Record<string | number, unknown>>(obj: T): T {
   for (const key of Object.keys(obj)) {
@@ -110,7 +106,7 @@ const verificationEntryPool = createObjectPool<PoolableVerificationEntry>(
  *
  * 注意：此对象池需要在 signalObjectPool 之前定义，因为 signalObjectPool 的重置函数需要使用它
  */
-export const indicatorRecordPool = createObjectPool<Record<string, number>>(
+const indicatorRecordPool = createObjectPool<Record<string, number>>(
   () => ({}),
   resetRecordObject,
   100, // 最大保存100个对象
@@ -193,86 +189,6 @@ export function acquireSignal(): Signal {
 }
 
 /**
- * KDJ指标对象池
- * 用于KDJ指标数据对象的复用
- */
-export const kdjObjectPool = createObjectPool<PoolableKDJ>(
-  () => ({
-    k: null,
-    d: null,
-    j: null,
-  }),
-  (obj) => {
-    obj.k = null;
-    obj.d = null;
-    obj.j = null;
-    return obj;
-  },
-  50, // 最大保存50个KDJ对象
-);
-
-/**
- * MACD指标对象池
- * 用于MACD指标数据对象的复用
- */
-export const macdObjectPool = createObjectPool<PoolableMACD>(
-  () => ({
-    macd: null,
-    dif: null,
-    dea: null,
-  }),
-  (obj) => {
-    obj.macd = null;
-    obj.dif = null;
-    obj.dea = null;
-    return obj;
-  },
-  50, // 最大保存50个MACD对象
-);
-
-/**
- * 监控值对象池
- * 用于监控标的指标缓存对象的复用
- *
- * 注意：acquire() 返回 PoolableMonitorValues，使用时需要断言为 MonitorValues 类型
- * 这是对象池模式的标准实现，类型断言在此场景下是安全的
- */
-export const monitorValuesObjectPool = createObjectPool<PoolableMonitorValues>(
-  () => ({
-    price: null,
-    changePercent: null,
-    ema: null,
-    rsi: null,
-    psy: null,
-    mfi: null,
-    kdj: null,
-    macd: null,
-    adx: null,
-  }),
-  (obj) => {
-    obj.price = null;
-    obj.changePercent = null;
-    obj.ema = null;
-    obj.rsi = null;
-    obj.psy = null;
-    obj.mfi = null;
-    obj.kdj = null;
-    obj.macd = null;
-    obj.adx = null;
-    return obj;
-  },
-  20, // 最大保存20个监控值对象
-);
-
-/**
- * 从对象池获取一个可写的 MonitorValues 结构。
- * @returns 可复用的 MonitorValues 对象（字段默认为 null）
- */
-export function acquireMonitorValues(): MonitorValues {
-  return monitorValuesObjectPool.acquire() as unknown as MonitorValues;
-}
-
-/**
  * 持仓对象池
  * 用于持仓数据对象的复用
  *
@@ -302,17 +218,4 @@ export const positionObjectPool = createObjectPool<PoolablePosition>(
     return obj;
   },
   10, // 通常不会有超过10个持仓
-);
-
-/**
- * 周期指标记录对象池（数字键）
- * 用于 rsi、ema 等 Record<number, number> 对象的复用
- * 主要用于：
- * - indicators/index.ts 中的 rsi、ema
- * - marketMonitor/index.ts 中的 EMA/RSI 浅拷贝
- */
-export const periodRecordPool = createObjectPool<Record<number, number>>(
-  () => ({}),
-  resetRecordObject,
-  100, // 最大保存100个对象
 );

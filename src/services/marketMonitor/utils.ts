@@ -1,9 +1,12 @@
-import { isValidNumber } from '../../utils/indicatorHelpers/index.js';
 import { DEFAULT_PERCENT_DECIMALS } from '../../constants/index.js';
 import type { FactorSnapshot } from '../../types/factor.js';
 import type { UnrealizedLossMetrics, WarrantDistanceInfo } from '../../types/services.js';
 import type { Quote } from '../../types/quote.js';
 import { decimalGte, formatDecimal } from '../../utils/numeric/index.js';
+
+function isValidNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
 
 /**
  * 格式化行情数据显示为可读字段。默认行为：quote 为 null 时返回 null。

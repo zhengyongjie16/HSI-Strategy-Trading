@@ -80,7 +80,7 @@ export type GatePolicies = Readonly<{
   runtimeGate: GateMode;
 }>;
 
-export type GatePolicySource = 'default' | 'explicit';
+type GatePolicySource = 'default' | 'explicit';
 
 export type GatePolicySources = Readonly<{
   startupGateSource: GatePolicySource;

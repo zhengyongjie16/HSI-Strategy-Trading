@@ -13,7 +13,7 @@ import type { SymbolValidationContext, ValidationResult } from './types.js';
  * @param symbol 当前配置的标的代码
  * @returns 格式化错误提示
  */
-export function formatSymbolFormatError(prefix: string, envKey: string, symbol: string): string {
+function formatSymbolFormatError(prefix: string, envKey: string, symbol: string): string {
   return `${prefix}: ${envKey} 必须使用 ticker.region 格式（如 68711.HK），当前值: ${symbol}`;
 }
 
@@ -189,34 +189,6 @@ export function validateCriticalBoundedNumberConfig({
   const value = Number(raw);
   if (!Number.isFinite(value) || value < min || value > max) {
     return `${envKey} 无效（必须为数字，范围 ${min}-${max}）`;
-  }
-
-  return null;
-}
-
-/**
- * 校验显式配置的关键数值是否是大于等于下限的有限数字。
- *
- * @param options 校验参数
- * @returns 缺失时返回 null；显式配置但非法时返回错误信息
- */
-export function validateCriticalMinimumNumberConfig({
-  env,
-  envKey,
-  min,
-}: {
-  readonly env: NodeJS.ProcessEnv;
-  readonly envKey: string;
-  readonly min: number;
-}): string | null {
-  const raw = env[envKey];
-  if (raw === undefined || raw.trim() === '') {
-    return null;
-  }
-
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < min) {
-    return `${envKey} 无效（必须为数字且 >= ${min}）`;
   }
 
   return null;

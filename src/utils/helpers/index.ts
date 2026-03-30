@@ -1,9 +1,7 @@
 import type { StrategyState } from '../../types/state.js';
 import type { StrategyRuntimeConfig } from '../../types/config.js';
-import type { IndicatorSnapshot } from '../../types/quote.js';
 import type { SignalType } from '../../types/signal.js';
 import type { DecimalLike } from './types.js';
-import { kdjObjectPool, macdObjectPool, periodRecordPool } from '../objectPool/index.js';
 
 /**
  * 类型保护：判断 unknown 是否为可索引对象。
@@ -14,46 +12,6 @@ import { kdjObjectPool, macdObjectPool, periodRecordPool } from '../objectPool/i
  */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-/**
- * 类型保护：判断 unknown 是否为数值周期字典（Record<number, number>）。
- *
- * @param value 待判断值
- * @returns true 表示可作为 periodRecordPool 的对象
- */
-function isPeriodRecord(value: unknown): value is Record<number, number> {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  for (const propertyValue of Object.values(value)) {
-    if (typeof propertyValue !== 'number') {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-/**
- * 释放未被 monitorValues 复用的 period record 对象池实例。
- *
- * @param snapshotRecord 当前 snapshot 上携带的 period record
- * @param monitorRecord monitorValues 中仍在引用的 period record
- * @returns 无返回值
- */
-function releaseDetachedPeriodRecord(
-  snapshotRecord: Readonly<Record<number, number>> | null,
-  monitorRecord: Readonly<Record<number, number>> | null | undefined,
-): void {
-  if (!snapshotRecord || monitorRecord === snapshotRecord) {
-    return;
-  }
-
-  if (isPeriodRecord(snapshotRecord)) {
-    periodRecordPool.release(snapshotRecord);
-  }
 }
 
 /**
@@ -110,40 +68,7 @@ export function createStrategyState(config: StrategyRuntimeConfig): StrategyStat
     shortPrice: null,
     signal: null,
     pendingSignals: [],
-    monitorValues: null,
     lastMonitorSnapshot: null,
     lastCandlestickCacheVersion: null,
   };
-}
-
-/**
- * 释放快照中的池化对象（如果它们没有被 monitorValues 引用），避免重复归还同一引用导致池状态异常。
- * 默认行为：snapshot 为 null 直接返回；否则仅释放未被 monitorValues 引用的池化对象，已引用的不释放。
- *
- * @param snapshot 要释放的快照
- * @param monitorValues 监控值对象，用于检查引用
- * @returns 无返回值
- */
-export function releaseSnapshotObjects(
-  snapshot: IndicatorSnapshot | null,
-  monitorValues: StrategyState['monitorValues'],
-): void {
-  if (!snapshot) {
-    return;
-  }
-
-  // 释放周期指标对象（如果它们没有被 monitorValues 引用）
-  releaseDetachedPeriodRecord(snapshot.ema ?? null, monitorValues?.ema);
-  releaseDetachedPeriodRecord(snapshot.rsi ?? null, monitorValues?.rsi);
-  releaseDetachedPeriodRecord(snapshot.psy ?? null, monitorValues?.psy);
-
-  // 释放 KDJ 对象（如果它没有被 monitorValues 引用）
-  if (snapshot.kdj && monitorValues?.kdj !== snapshot.kdj) {
-    kdjObjectPool.release(snapshot.kdj);
-  }
-
-  // 释放 MACD 对象（如果它没有被 monitorValues 引用）
-  if (snapshot.macd && monitorValues?.macd !== snapshot.macd) {
-    macdObjectPool.release(snapshot.macd);
-  }
 }
