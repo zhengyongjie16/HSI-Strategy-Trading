@@ -8,8 +8,8 @@ import type {
   OrderStateCheckResult,
 } from '../../../types/trader.js';
 import type {
-  OrderRecorder,
   PendingRefreshSymbol,
+  RecentFilledOrderSummary,
   RateLimiter,
   RawOrderFromAPI,
   MarketDataClient,
@@ -150,6 +150,7 @@ export type OrderMonitorRuntimeStore = {
   readonly trackedOrders: Map<string, OrderMonitorTrackedOrder>;
   readonly trackedOrderLifecycles: Map<string, TrackedOrderLifecycleState>;
   readonly pendingRefreshSymbols: PendingRefreshSymbol[];
+  readonly recentFilledOrders: Map<string, RecentFilledOrderSummary>;
   readonly bootstrappingOrderEvents: Map<string, PushOrderChanged>;
   readonly closedOrderIds: Set<string>;
   readonly queriedTerminalStateByOrderId: Map<string, TerminalStateSnapshot>;
@@ -166,7 +167,6 @@ export type OrderMonitorRuntimeStore = {
 export type RecoveryFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderHoldRegistry: OrderHoldRegistry;
-  readonly orderRecorder: OrderRecorder;
   readonly monitorConfig: StrategyRuntimeConfig;
   readonly symbolRegistry: SymbolRegistry;
   readonly trackOrder: (params: TrackOrderParams) => void;
@@ -197,7 +197,6 @@ export interface RecoveryFlow {
  */
 export type EventFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
-  readonly orderRecorder: OrderRecorder;
   readonly settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
   readonly cacheBootstrappingEvent: (event: PushOrderChanged) => void;
 };
@@ -271,7 +270,6 @@ export type QuoteFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
   readonly config: OrderMonitorConfig;
   readonly thresholdDecimal: Decimal;
-  readonly orderRecorder: OrderRecorder;
   readonly marketDataClient: MarketDataClient;
   readonly ctxPromise: Promise<TradeContext>;
   readonly rateLimiter: RateLimiter;
@@ -327,7 +325,6 @@ export type FinalizeOrderSettlementParams = {
  */
 export type FinalizeOrderSettlementResult = {
   readonly handled: boolean;
-  readonly relatedBuyOrderIds: ReadonlyArray<string> | null;
 };
 
 /**
@@ -339,7 +336,6 @@ export type FinalizeOrderSettlementResult = {
 export type SettlementFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderHoldRegistry: OrderHoldRegistry;
-  readonly orderRecorder: OrderRecorder;
   readonly dailyLossTracker: DailyLossTracker;
   readonly protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
   readonly refreshGate?: RefreshGate;

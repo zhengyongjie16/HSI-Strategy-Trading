@@ -22,7 +22,7 @@ export function createTrendContinuationStrategy(
   strategyConfig: StrategyThresholdConfig,
 ): TradingSignalStrategy {
   return {
-    generateSignals(state, longSymbol, shortSymbol, orderRecorder) {
+    generateSignals(state, longSymbol, shortSymbol, positionCache) {
       if (state === null) {
         return [];
       }
@@ -32,7 +32,7 @@ export function createTrendContinuationStrategy(
         strategyConfig,
         longSymbol,
         shortSymbol,
-        orderRecorder,
+        positionCache,
       });
       return decisionSnapshot.actions.map(createSignalFromFactorDecision);
     },

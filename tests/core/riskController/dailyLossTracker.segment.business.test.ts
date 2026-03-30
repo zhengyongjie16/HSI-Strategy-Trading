@@ -7,11 +7,11 @@
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
-import { createOrderFilteringEngine } from '../../../src/core/orderRecorder/orderFilteringEngine.js';
-import { classifyAndConvertOrders } from '../../../src/core/orderRecorder/utils.js';
+import { createOrderFilteringEngine } from '../../../src/core/riskController/orderFilteringEngine.js';
+import { classifyAndConvertOrders } from '../../../src/core/riskController/orderRecords.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import type { StrategyRuntimeConfig } from '../../../src/types/config.js';
-import type { OrderOwnership } from '../../../src/types/orderRecorder.js';
+import type { OrderOwnership } from '../../../src/types/risk.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 
 function createExecutedOrder(params: {

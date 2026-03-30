@@ -21,7 +21,6 @@ import type { SeatSyncResult } from '../../../src/main/processMonitor/types.js';
 import {
   createFactorSnapshotDouble,
   createIndicatorDisplayProfileDouble,
-  createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
   createQuoteDouble,
@@ -108,7 +107,6 @@ function createPipelineHarness(params: {
     strategy: {
       generateSignals: () => params.signals,
     },
-    orderRecorder: createOrderRecorderDouble(),
     indicatorProfile: createIndicatorDisplayProfileDouble(),
   } as unknown as StrategyRuntime;
 

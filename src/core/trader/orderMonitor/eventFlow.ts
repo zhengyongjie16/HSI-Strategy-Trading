@@ -4,7 +4,7 @@
  * 职责：
  * - 处理 BOOTSTRAPPING / ACTIVE 两阶段订单推送
  * - 将已确认终态订单统一交给 settlementFlow 结算
- * - 在部分成交时维护 pendingSell 部分成交状态
+ * - 在部分成交时同步 tracked order 的成交状态
  */
 import { OrderSide, OrderStatus, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
@@ -32,7 +32,7 @@ function resolveNullableDecimalNumber(value: Parameters<typeof decimalToNumber>[
  * @returns 事件流接口
  */
 export function createEventFlow(deps: EventFlowDeps): EventFlow {
-  const { runtime, orderRecorder, settleOrder, cacheBootstrappingEvent } = deps;
+  const { runtime, settleOrder, cacheBootstrappingEvent } = deps;
 
   /**
    * 处理 ACTIVE 状态下的订单推送。
@@ -71,7 +71,6 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     }
 
     if (event.status === OrderStatus.PartialFilled && trackedOrder.side === OrderSide.Sell) {
-      orderRecorder.markSellPartialFilled(orderId, trackedOrder.executedQuantity);
       logger.info(
         `[订单监控] 订单 ${orderId} 部分成交，` +
           `已成交=${trackedOrder.executedQuantity}/${trackedOrder.submittedQuantity}，` +

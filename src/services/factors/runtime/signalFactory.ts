@@ -30,6 +30,5 @@ export function createSignalFromFactorDecision(decision: FactorDecisionAction): 
   signal.seatVersion = null;
   signal.indicators1 = null;
   signal.verificationHistory = null;
-  signal.relatedBuyOrderIds = null;
   return signal;
 }

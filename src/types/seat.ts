@@ -42,7 +42,7 @@ export type SeatState = {
  * 标的注册表接口。
  * 类型用途：依赖注入用接口，统一维护单实例做多/做空席位状态与版本号，供 resolveSeatBySymbol、换标流程等调用。
  * 数据来源：内部实现（如 recovery/seatPreparation）维护；状态数据来自运行时更新。
- * 使用范围：主程序、StrategyRuntime、autoSymbolManager、orderRecorder 等；全项目可引用。
+ * 使用范围：主程序、StrategyRuntime、autoSymbolManager、订单恢复等；全项目可引用。
  */
 export interface SymbolRegistry {
   /** 获取席位状态 */

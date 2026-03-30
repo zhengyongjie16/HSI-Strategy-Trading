@@ -89,7 +89,6 @@ export const createRiskCheckPipeline = ({
     const {
       trader,
       riskChecker,
-      orderRecorder,
       longQuote,
       shortQuote,
       monitorQuote,
@@ -165,11 +164,10 @@ export const createRiskCheckPipeline = ({
          * 1. 风险检查冷却（已在循环前完成）
          * 2. 交易频率限制
          * 3. 清仓冷却
-         * 4. 买入价格限制
-         * 5. 末日保护程序
-         * 6. 牛熊证风险
-         * 7. Promise.all([trader.getAccountSnapshot(), trader.getStockPositions()])
-         * 8. 基础风险检查（使用第 7 步实时数据）
+         * 4. 末日保护程序
+         * 5. 牛熊证风险
+         * 6. Promise.all([trader.getAccountSnapshot(), trader.getStockPositions()])
+         * 7. 基础风险检查（使用第 6 步实时数据）
          */
         const tradeCheck = trader.canTradeNow(sig.action, context.config);
         if (!tradeCheck.canTrade) {
@@ -191,24 +189,6 @@ export const createRiskCheckPipeline = ({
           sig.reason = reason;
           logger.warn(`[清仓冷却] ${signalLabel} ${reason}`);
           continue;
-        }
-
-        const latestBuyPrice = orderRecorder.getLatestBuyOrderPrice(sigSymbol, isLongBuyAction);
-        if (latestBuyPrice !== null && currentPrice !== null) {
-          const currentPriceStr = currentPrice.toFixed(3);
-          const latestBuyPriceStr = latestBuyPrice.toFixed(3);
-          if (currentPrice >= latestBuyPrice) {
-            const reason = `买入价格限制：当前价格 ${currentPriceStr} 高于或等于最新买入订单价格 ${latestBuyPriceStr}`;
-            sig.reason = reason;
-            logger.warn(
-              `[买入价格限制] ${directionDesc} 当前价格 ${currentPriceStr} 高于或等于最新买入订单价格 ${latestBuyPriceStr}，拒绝买入：${signalLabel}`,
-            );
-            continue;
-          }
-
-          logger.debug(
-            `[买入价格限制] ${directionDesc} 当前价格 ${currentPriceStr} 低于最新买入订单价格 ${latestBuyPriceStr}，允许买入：${signalLabel}`,
-          );
         }
 
         if (

@@ -2,26 +2,26 @@
  * riskCheckPipeline 业务测试
  *
  * 功能：
- * - 验证风险检查管道相关场景意图、边界条件与业务期望。
+ * - 验证买入轻检查顺序
+ * - 验证买入不再依赖 latest buy price / orderRecorder
+ * - 验证卖出路径继续使用缓存账户与持仓
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
 import type { RiskCheckContext } from '../../../src/types/services.js';
 import { createRiskCheckPipeline } from '../../../src/core/signalProcessor/riskCheckPipeline.js';
+import { createGlobalConfig } from '../../../mock/factories/configFactory.js';
 import {
   createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
-  createStrategyRuntimeConfigDouble,
-  createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
   createSignalDouble,
+  createStrategyRuntimeConfigDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
-import { createGlobalConfig } from '../../../mock/factories/configFactory.js';
-import { createBuyThrottle } from '../../../src/core/trader/orderExecutor/buyThrottle.js';
 
 function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
   const originalNow = Date.now;
@@ -34,24 +34,21 @@ function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
 function createContext(params: {
   readonly trader: ReturnType<typeof createTraderDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
-  readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
-  readonly doomsdayProtection?: ReturnType<typeof createDoomsdayProtectionDouble>;
   readonly account?: ReturnType<typeof createAccountSnapshotDouble>;
   readonly positions?: ReadonlyArray<RiskCheckContext['positions'][number]>;
 }): RiskCheckContext {
   const monitorConfig = createStrategyRuntimeConfigDouble();
-  const account = params.account ?? createAccountSnapshotDouble(100000);
+  const account = params.account ?? createAccountSnapshotDouble(100_000);
   const positions = params.positions ?? [];
 
   return {
     trader: params.trader,
     riskChecker: params.riskChecker,
-    orderRecorder: params.orderRecorder,
     longQuote: createQuoteDouble('BULL.HK', 10),
     shortQuote: createQuoteDouble('BEAR.HK', 10),
-    monitorQuote: createQuoteDouble('HSI.HK', 20000),
+    monitorQuote: createQuoteDouble('HSI.HK', 20_000),
     monitorSnapshot: {
-      price: 20000,
+      price: 20_000,
       changePercent: 0,
       ema: null,
       rsi: null,
@@ -74,7 +71,7 @@ function createContext(params: {
     },
     currentTime: new Date('2026-02-16T10:00:00+08:00'),
     isHalfDay: false,
-    doomsdayProtection: params.doomsdayProtection ?? createDoomsdayProtectionDouble(),
+    doomsdayProtection: createDoomsdayProtectionDouble(),
     config: monitorConfig,
   };
 }
@@ -86,38 +83,31 @@ describe('riskCheckPipeline business flow', () => {
     lastRiskCheckTime = new Map();
   });
 
-  it('blocks risk-check cooldown before the entire buy light-check chain', async () => {
+  it('blocks risk-check cooldown before entering buy light checks', async () => {
     let canTradeNowCount = 0;
-    let getRemainingMsCount = 0;
-    let latestBuyOrderPriceCount = 0;
-    let shouldRejectBuyCount = 0;
     let warrantRiskCheckCount = 0;
     let baseRiskCheckCount = 0;
-    let accountCallCount = 0;
-    let positionCallCount = 0;
+    let accountFetchCount = 0;
+    let positionFetchCount = 0;
+
     const trader = createTraderDouble({
       canTradeNow: () => {
         canTradeNowCount += 1;
         return { canTrade: true };
       },
       getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        accountFetchCount += 1;
+        return createAccountSnapshotDouble(100_000);
       },
       getStockPositions: async () => {
-        positionCallCount += 1;
+        positionFetchCount += 1;
         return [];
       },
     });
 
     const pipeline = createRiskCheckPipeline({
       globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
-        getRemainingMs: () => {
-          getRemainingMsCount += 1;
-          return 0;
-        },
-      }),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
 
@@ -139,18 +129,6 @@ describe('riskCheckPipeline business flow', () => {
               return { allowed: true };
             },
           }),
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
-              latestBuyOrderPriceCount += 1;
-              return null;
-            },
-          }),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => {
-              shouldRejectBuyCount += 1;
-              return false;
-            },
-          }),
         }),
       ),
     );
@@ -158,179 +136,76 @@ describe('riskCheckPipeline business flow', () => {
     expect(result).toHaveLength(0);
     expect(signal.reason).toContain('风险检查冷却期内');
     expect(canTradeNowCount).toBe(0);
-    expect(getRemainingMsCount).toBe(0);
-    expect(latestBuyOrderPriceCount).toBe(0);
-    expect(shouldRejectBuyCount).toBe(0);
     expect(warrantRiskCheckCount).toBe(0);
     expect(baseRiskCheckCount).toBe(0);
-    expect(accountCallCount).toBe(0);
-    expect(positionCallCount).toBe(0);
+    expect(accountFetchCount).toBe(0);
+    expect(positionFetchCount).toBe(0);
   });
 
-  it('runs buy light checks before both realtime fetch calls and before base risk check', async () => {
-    const steps: string[] = [];
+  it('allows buy path to pass without any latest-buy-price dependency', async () => {
+    let accountFetchCount = 0;
+    let positionFetchCount = 0;
 
     const trader = createTraderDouble({
-      canTradeNow: () => {
-        steps.push('canTradeNow');
-        return { canTrade: true };
-      },
+      canTradeNow: () => ({ canTrade: true }),
       getAccountSnapshot: async () => {
-        steps.push('getAccountSnapshot');
-        return createAccountSnapshotDouble(100000);
+        accountFetchCount += 1;
+        return createAccountSnapshotDouble(100_000);
       },
       getStockPositions: async () => {
-        steps.push('getStockPositions');
+        positionFetchCount += 1;
         return [];
-      },
-    });
-
-    const orderRecorder = createOrderRecorderDouble({
-      getLatestBuyOrderPrice: () => {
-        steps.push('getLatestBuyOrderPrice');
-        return null;
-      },
-    });
-
-    const riskChecker = createRiskCheckerDouble({
-      checkWarrantRisk: () => {
-        steps.push('checkWarrantRisk');
-        return { allowed: true };
-      },
-      checkBeforeOrder: () => {
-        steps.push('checkBeforeOrder');
-        return { allowed: true };
-      },
-    });
-
-    const doomsdayProtection = createDoomsdayProtectionDouble({
-      shouldRejectBuy: () => {
-        steps.push('shouldRejectBuy');
-        return false;
       },
     });
 
     const pipeline = createRiskCheckPipeline({
       globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
-        getRemainingMs: () => {
-          steps.push('getRemainingMs');
-          return 0;
-        },
+        getRemainingMs: () => 0,
       }),
       lastRiskCheckTime,
     });
 
-    const result = await withMockedNow(30_000, async () =>
+    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
+    const result = await withMockedNow(20_000, async () =>
       pipeline(
-        [createSignalDouble('BUYCALL', 'BULL.HK')],
+        [signal],
         createContext({
           trader,
-          riskChecker,
-          orderRecorder,
-          doomsdayProtection,
+          riskChecker: createRiskCheckerDouble({
+            checkWarrantRisk: () => ({ allowed: true }),
+            checkBeforeOrder: () => ({ allowed: true }),
+          }),
         }),
       ),
     );
 
     expect(result).toHaveLength(1);
-
-    const tradeFrequencyIndex = steps.indexOf('canTradeNow');
-    const liquidationCooldownIndex = steps.indexOf('getRemainingMs');
-    const priceLimitIndex = steps.indexOf('getLatestBuyOrderPrice');
-    const doomsdayIndex = steps.indexOf('shouldRejectBuy');
-    const warrantRiskIndex = steps.indexOf('checkWarrantRisk');
-    const accountFetchIndex = steps.indexOf('getAccountSnapshot');
-    const positionsFetchIndex = steps.indexOf('getStockPositions');
-    const baseRiskIndex = steps.indexOf('checkBeforeOrder');
-
-    expect(tradeFrequencyIndex).toBeGreaterThan(-1);
-    expect(liquidationCooldownIndex).toBeGreaterThan(tradeFrequencyIndex);
-    expect(priceLimitIndex).toBeGreaterThan(liquidationCooldownIndex);
-    expect(doomsdayIndex).toBeGreaterThan(priceLimitIndex);
-    expect(warrantRiskIndex).toBeGreaterThan(doomsdayIndex);
-    expect(accountFetchIndex).toBeGreaterThan(warrantRiskIndex);
-    expect(positionsFetchIndex).toBeGreaterThan(warrantRiskIndex);
-    expect(baseRiskIndex).toBeGreaterThan(accountFetchIndex);
-    expect(baseRiskIndex).toBeGreaterThan(positionsFetchIndex);
+    expect(result[0]).toBe(signal);
+    expect(accountFetchCount).toBe(1);
+    expect(positionFetchCount).toBe(1);
   });
 
-  it('does not refresh buy throttle in risk check stage when buy later fails on realtime fetch', async () => {
-    const buyThrottle = createBuyThrottle();
-    const monitorConfig = createStrategyRuntimeConfigDouble();
-    const trader = createTraderDouble({
-      canTradeNow: buyThrottle.canTradeNow,
-      getAccountSnapshot: async () => {
-        throw new Error('api down');
-      },
-      getStockPositions: async () => [],
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      lastRiskCheckTime,
-    });
-
-    const failedBuySignal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const secondBuySignal = createSignalDouble('BUYCALL', 'BULL.HK');
-
-    await withMockedNow(40_000, async () => {
-      const failedResult = await pipeline(
-        [failedBuySignal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble(),
-          orderRecorder: createOrderRecorderDouble(),
-        }),
-      );
-
-      expect(failedResult).toHaveLength(0);
-      expect(failedBuySignal.reason).toContain('获取实时账户和持仓信息失败');
-    });
-
-    const secondResult = await withMockedNow(40_000, async () =>
-      pipeline(
-        [secondBuySignal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble(),
-          orderRecorder: createOrderRecorderDouble(),
-        }),
-      ),
-    );
-
-    expect(secondResult).toHaveLength(0);
-    expect(secondBuySignal.reason).toContain('风险检查冷却期内');
-
-    const buyTradeCheck = await withMockedNow(40_000, async () =>
-      buyThrottle.canTradeNow('BUYCALL', monitorConfig),
-    );
-    expect(buyTradeCheck.canTrade).toBe(true);
-  });
-
-  it('uses realtime account and positions for buy base risk check instead of cached context', async () => {
-    const cachedAccount = createAccountSnapshotDouble(30_000);
+  it('keeps sell path on cached account and positions', async () => {
+    const cachedAccount = createAccountSnapshotDouble(88_888);
     const cachedPositions = [
       createPositionDouble({
         symbol: 'BULL.HK',
-        quantity: 100,
+        quantity: 200,
         availableQuantity: 100,
       }),
     ];
-    const realtimeAccount = createAccountSnapshotDouble(90_000);
-    const realtimePositions = [
-      createPositionDouble({
-        symbol: 'BULL.HK',
-        quantity: 300,
-        availableQuantity: 200,
-      }),
-    ];
-    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
+    let realtimeFetchCount = 0;
+
     const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => realtimeAccount,
-      getStockPositions: async () => realtimePositions,
+      getAccountSnapshot: async () => {
+        realtimeFetchCount += 1;
+        return createAccountSnapshotDouble(100_000);
+      },
+      getStockPositions: async () => {
+        realtimeFetchCount += 1;
+        return [];
+      },
     });
 
     const pipeline = createRiskCheckPipeline({
@@ -339,504 +214,19 @@ describe('riskCheckPipeline business flow', () => {
       lastRiskCheckTime,
     });
 
-    const result = await withMockedNow(45_000, async () =>
+    const sellSignal = createSignalDouble('SELLCALL', 'BULL.HK');
+    const result = await withMockedNow(30_000, async () =>
       pipeline(
-        [signal],
+        [sellSignal],
         createContext({
           trader,
           riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => ({ allowed: true }),
-            checkBeforeOrder: ({ account, positions }) => ({
+            checkBeforeOrder: ({ account, positions, signal }) => ({
               allowed:
-                account === realtimeAccount &&
-                positions === realtimePositions &&
-                account !== cachedAccount &&
-                positions !== cachedPositions,
-              reason: 'buy base risk check should use realtime context',
+                signal?.action === 'SELLCALL' &&
+                account === cachedAccount &&
+                positions === cachedPositions,
             }),
-          }),
-          orderRecorder: createOrderRecorderDouble(),
-          account: cachedAccount,
-          positions: cachedPositions,
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(1);
-  });
-
-  it('rejects buy when realtime account is null and does not enter base risk check', async () => {
-    let baseRiskCheckCount = 0;
-    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => null,
-      getStockPositions: async () => [],
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      lastRiskCheckTime,
-    });
-
-    const result = await withMockedNow(47_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => ({ allowed: true }),
-            checkBeforeOrder: () => {
-              baseRiskCheckCount += 1;
-              return { allowed: true };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble(),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('买入操作无法获取账户信息');
-    expect(baseRiskCheckCount).toBe(0);
-  });
-
-  it('does not refresh buy throttle when base risk check rejects after realtime fetch', async () => {
-    const buyThrottle = createBuyThrottle();
-    const monitorConfig = createStrategyRuntimeConfigDouble();
-    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const trader = createTraderDouble({
-      canTradeNow: buyThrottle.canTradeNow,
-      getAccountSnapshot: async () => createAccountSnapshotDouble(100000),
-      getStockPositions: async () => [],
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      lastRiskCheckTime,
-    });
-
-    const result = await withMockedNow(48_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => ({ allowed: true }),
-            checkBeforeOrder: () => ({
-              allowed: false,
-              reason: 'base risk blocked',
-            }),
-          }),
-          orderRecorder: createOrderRecorderDouble(),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('base risk blocked');
-
-    const buyTradeCheck = await withMockedNow(48_000, async () =>
-      buyThrottle.canTradeNow('BUYCALL', monitorConfig),
-    );
-    expect(buyTradeCheck.canTrade).toBe(true);
-  });
-
-  it('short-circuits the remaining buy checks when trade frequency check fails', async () => {
-    let getRemainingMsCount = 0;
-    let latestBuyOrderPriceCount = 0;
-    let shouldRejectBuyCount = 0;
-    let warrantRiskCheckCount = 0;
-    let baseRiskCheckCount = 0;
-    let accountCallCount = 0;
-    let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: false, waitSeconds: 30 }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
-        getRemainingMs: () => {
-          getRemainingMsCount += 1;
-          return 0;
-        },
-      }),
-      lastRiskCheckTime,
-    });
-
-    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const result = await withMockedNow(50_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => {
-              warrantRiskCheckCount += 1;
-              return { allowed: true };
-            },
-            checkBeforeOrder: () => {
-              baseRiskCheckCount += 1;
-              return { allowed: true };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
-              latestBuyOrderPriceCount += 1;
-              return null;
-            },
-          }),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => {
-              shouldRejectBuyCount += 1;
-              return false;
-            },
-          }),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('交易频率限制');
-    expect(getRemainingMsCount).toBe(0);
-    expect(latestBuyOrderPriceCount).toBe(0);
-    expect(shouldRejectBuyCount).toBe(0);
-    expect(warrantRiskCheckCount).toBe(0);
-    expect(baseRiskCheckCount).toBe(0);
-    expect(accountCallCount).toBe(0);
-    expect(positionCallCount).toBe(0);
-  });
-
-  it('short-circuits later buy checks when liquidation cooldown check fails', async () => {
-    let latestBuyOrderPriceCount = 0;
-    let shouldRejectBuyCount = 0;
-    let warrantRiskCheckCount = 0;
-    let baseRiskCheckCount = 0;
-    let accountCallCount = 0;
-    let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
-        getRemainingMs: (params) => {
-          if (params.direction === 'LONG') {
-            return 5_000;
-          }
-
-          return 0;
-        },
-      }),
-      lastRiskCheckTime,
-    });
-
-    const signal = createSignalDouble('BUYPUT', 'BEAR.HK');
-    const result = await withMockedNow(60_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => {
-              warrantRiskCheckCount += 1;
-              return { allowed: true };
-            },
-            checkBeforeOrder: () => {
-              baseRiskCheckCount += 1;
-              return { allowed: true };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
-              latestBuyOrderPriceCount += 1;
-              return null;
-            },
-          }),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => {
-              shouldRejectBuyCount += 1;
-              return false;
-            },
-          }),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('清仓冷却期内');
-    expect(latestBuyOrderPriceCount).toBe(0);
-    expect(shouldRejectBuyCount).toBe(0);
-    expect(warrantRiskCheckCount).toBe(0);
-    expect(baseRiskCheckCount).toBe(0);
-    expect(accountCallCount).toBe(0);
-    expect(positionCallCount).toBe(0);
-  });
-
-  it('short-circuits later buy checks when buy price limit check fails', async () => {
-    let shouldRejectBuyCount = 0;
-    let warrantRiskCheckCount = 0;
-    let baseRiskCheckCount = 0;
-    let accountCallCount = 0;
-    let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      lastRiskCheckTime,
-    });
-
-    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const result = await withMockedNow(70_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => {
-              warrantRiskCheckCount += 1;
-              return { allowed: true };
-            },
-            checkBeforeOrder: () => {
-              baseRiskCheckCount += 1;
-              return { allowed: true };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => 10,
-          }),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => {
-              shouldRejectBuyCount += 1;
-              return false;
-            },
-          }),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('买入价格限制');
-    expect(shouldRejectBuyCount).toBe(0);
-    expect(warrantRiskCheckCount).toBe(0);
-    expect(baseRiskCheckCount).toBe(0);
-    expect(accountCallCount).toBe(0);
-    expect(positionCallCount).toBe(0);
-  });
-
-  it('short-circuits later buy checks when doomsday protection rejects buy', async () => {
-    let warrantRiskCheckCount = 0;
-    let baseRiskCheckCount = 0;
-    let accountCallCount = 0;
-    let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      lastRiskCheckTime,
-    });
-
-    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const result = await withMockedNow(80_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => {
-              warrantRiskCheckCount += 1;
-              return { allowed: true };
-            },
-            checkBeforeOrder: () => {
-              baseRiskCheckCount += 1;
-              return { allowed: true };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble(),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => true,
-          }),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('末日保护程序');
-    expect(warrantRiskCheckCount).toBe(0);
-    expect(baseRiskCheckCount).toBe(0);
-    expect(accountCallCount).toBe(0);
-    expect(positionCallCount).toBe(0);
-  });
-
-  it('short-circuits base risk check when warrant risk check fails', async () => {
-    let baseRiskCheckCount = 0;
-    let accountCallCount = 0;
-    let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      lastRiskCheckTime,
-    });
-
-    const signal = createSignalDouble('BUYPUT', 'BEAR.HK');
-    const result = await withMockedNow(90_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => ({
-              allowed: false,
-              reason: 'warrant blocked',
-            }),
-            checkBeforeOrder: () => {
-              baseRiskCheckCount += 1;
-              return { allowed: true };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble(),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('warrant blocked');
-    expect(baseRiskCheckCount).toBe(0);
-    expect(accountCallCount).toBe(0);
-    expect(positionCallCount).toBe(0);
-  });
-
-  it('rejects buy on account fetch failure after light checks without refreshing buy frequency and keeps sell on cached context', async () => {
-    const steps: string[] = [];
-    const cachedAccount = createAccountSnapshotDouble(54321);
-    const cachedPositions = [
-      createPositionDouble({
-        symbol: 'BULL.HK',
-        quantity: 300,
-        availableQuantity: 200,
-      }),
-    ];
-    const buySignal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const sellSignal = createSignalDouble('SELLCALL', 'BULL.HK');
-
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        steps.push('canTradeNow');
-        return { canTrade: true };
-      },
-      getAccountSnapshot: async () => {
-        steps.push('getAccountSnapshot');
-        throw new Error('api down');
-      },
-      getStockPositions: async () => {
-        steps.push('getStockPositions');
-        return [];
-      },
-    });
-
-    const riskChecker = createRiskCheckerDouble({
-      checkWarrantRisk: () => {
-        steps.push('checkWarrantRisk');
-        return { allowed: true };
-      },
-      checkBeforeOrder: ({ account, positions, signal }) => {
-        steps.push(`checkBeforeOrder:${signal?.action ?? 'UNKNOWN'}`);
-        if (signal?.action === 'SELLCALL') {
-          return {
-            allowed: account === cachedAccount && positions === cachedPositions,
-            reason: 'sell should use cached context',
-          };
-        }
-
-        return {
-          allowed: false,
-          reason: 'buy should be rejected on realtime fetch failure',
-        };
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
-        getRemainingMs: () => {
-          steps.push('getRemainingMs');
-          return 0;
-        },
-      }),
-      lastRiskCheckTime,
-    });
-
-    const result = await withMockedNow(100_000, async () =>
-      pipeline(
-        [buySignal, sellSignal],
-        createContext({
-          trader,
-          riskChecker,
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
-              steps.push('getLatestBuyOrderPrice');
-              return null;
-            },
-          }),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => {
-              steps.push('shouldRejectBuy');
-              return false;
-            },
           }),
           account: cachedAccount,
           positions: cachedPositions,
@@ -846,189 +236,6 @@ describe('riskCheckPipeline business flow', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]).toBe(sellSignal);
-    expect(buySignal.reason).toContain('获取实时账户和持仓信息失败');
-
-    const tradeFrequencyIndex = steps.indexOf('canTradeNow');
-    const liquidationCooldownIndex = steps.indexOf('getRemainingMs');
-    const priceLimitIndex = steps.indexOf('getLatestBuyOrderPrice');
-    const doomsdayIndex = steps.indexOf('shouldRejectBuy');
-    const warrantRiskIndex = steps.indexOf('checkWarrantRisk');
-    const accountFetchIndex = steps.indexOf('getAccountSnapshot');
-    const positionsFetchIndex = steps.indexOf('getStockPositions');
-
-    expect(tradeFrequencyIndex).toBeGreaterThan(-1);
-    expect(liquidationCooldownIndex).toBeGreaterThan(tradeFrequencyIndex);
-    expect(priceLimitIndex).toBeGreaterThan(liquidationCooldownIndex);
-    expect(doomsdayIndex).toBeGreaterThan(priceLimitIndex);
-    expect(warrantRiskIndex).toBeGreaterThan(doomsdayIndex);
-    expect(accountFetchIndex).toBeGreaterThan(warrantRiskIndex);
-    expect(positionsFetchIndex).toBeGreaterThan(warrantRiskIndex);
-    expect(steps).toContain('checkBeforeOrder:SELLCALL');
-    expect(steps).not.toContain('checkBeforeOrder:BUYCALL');
-  });
-
-  it('rejects buy on positions fetch failure with the same post-light-check semantics', async () => {
-    const steps: string[] = [];
-    let baseRiskCheckCount = 0;
-    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        steps.push('canTradeNow');
-        return { canTrade: true };
-      },
-      getAccountSnapshot: async () => {
-        steps.push('getAccountSnapshot');
-        return createAccountSnapshotDouble(100000);
-      },
-      getStockPositions: async () => {
-        steps.push('getStockPositions');
-        throw new Error('positions api down');
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
-        getRemainingMs: () => {
-          steps.push('getRemainingMs');
-          return 0;
-        },
-      }),
-      lastRiskCheckTime,
-    });
-
-    const result = await withMockedNow(110_000, async () =>
-      pipeline(
-        [signal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => {
-              steps.push('checkWarrantRisk');
-              return { allowed: true };
-            },
-            checkBeforeOrder: () => {
-              baseRiskCheckCount += 1;
-              return { allowed: true };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
-              steps.push('getLatestBuyOrderPrice');
-              return null;
-            },
-          }),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => {
-              steps.push('shouldRejectBuy');
-              return false;
-            },
-          }),
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(0);
-    expect(signal.reason).toContain('获取实时账户和持仓信息失败');
-    expect(baseRiskCheckCount).toBe(0);
-    expect(steps).not.toContain('checkBeforeOrder');
-
-    const warrantRiskIndex = steps.indexOf('checkWarrantRisk');
-    const accountFetchIndex = steps.indexOf('getAccountSnapshot');
-    const positionsFetchIndex = steps.indexOf('getStockPositions');
-
-    expect(warrantRiskIndex).toBeGreaterThan(-1);
-    expect(accountFetchIndex).toBeGreaterThan(warrantRiskIndex);
-    expect(positionsFetchIndex).toBeGreaterThan(warrantRiskIndex);
-  });
-
-  it('rejects buy on mixed-batch positions fetch failure while sell still uses cached context', async () => {
-    const steps: string[] = [];
-    const cachedAccount = createAccountSnapshotDouble(67890);
-    const cachedPositions = [
-      createPositionDouble({
-        symbol: 'BULL.HK',
-        quantity: 600,
-        availableQuantity: 450,
-      }),
-    ];
-    const buySignal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const sellSignal = createSignalDouble('SELLCALL', 'BULL.HK');
-
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        steps.push('canTradeNow');
-        return { canTrade: true };
-      },
-      getAccountSnapshot: async () => {
-        steps.push('getAccountSnapshot');
-        return createAccountSnapshotDouble(100000);
-      },
-      getStockPositions: async () => {
-        steps.push('getStockPositions');
-        throw new Error('positions api down');
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
-        getRemainingMs: () => {
-          steps.push('getRemainingMs');
-          return 0;
-        },
-      }),
-      lastRiskCheckTime,
-    });
-
-    const result = await withMockedNow(120_000, async () =>
-      pipeline(
-        [buySignal, sellSignal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkWarrantRisk: () => {
-              steps.push('checkWarrantRisk');
-              return { allowed: true };
-            },
-            checkBeforeOrder: ({ account, positions, signal }) => {
-              steps.push(`checkBeforeOrder:${signal?.action ?? 'UNKNOWN'}`);
-              if (signal?.action === 'SELLCALL') {
-                return {
-                  allowed: account === cachedAccount && positions === cachedPositions,
-                  reason: 'sell should use cached context',
-                };
-              }
-
-              return {
-                allowed: false,
-                reason: 'buy should not enter base risk check',
-              };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
-              steps.push('getLatestBuyOrderPrice');
-              return null;
-            },
-          }),
-          doomsdayProtection: createDoomsdayProtectionDouble({
-            shouldRejectBuy: () => {
-              steps.push('shouldRejectBuy');
-              return false;
-            },
-          }),
-          account: cachedAccount,
-          positions: cachedPositions,
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(sellSignal);
-    expect(buySignal.reason).toContain('获取实时账户和持仓信息失败');
-    expect(steps).toContain('checkBeforeOrder:SELLCALL');
-    expect(steps).not.toContain('checkBeforeOrder:BUYCALL');
+    expect(realtimeFetchCount).toBe(0);
   });
 });

@@ -9,7 +9,7 @@
 import type { LastState } from '../../../../types/state.js';
 import type { Position } from '../../../../types/account.js';
 import type { RawOrderFromAPI, Trader } from '../../../../types/services.js';
-import type { MonitorTaskContext, RefreshHelpers } from '../types.js';
+import type { RefreshHelpers } from '../types.js';
 
 /**
  * 创建刷新助手，用于监控任务批处理内缓存订单与账户数据，避免重复请求。
@@ -31,17 +31,14 @@ export function createRefreshHelpers({
   /**
    * 获取全量订单，批次内命中缓存则直接返回，避免重复请求 API
    *
-   * @param orderRecorder 订单记录器，用于拉取全量订单
    * @returns 全量订单列表
    */
-  async function ensureAllOrders(
-    orderRecorder: MonitorTaskContext['orderRecorder'],
-  ): Promise<ReadonlyArray<RawOrderFromAPI>> {
+  async function ensureAllOrders(): Promise<ReadonlyArray<RawOrderFromAPI>> {
     if (cachedAllOrders !== null) {
       return cachedAllOrders;
     }
 
-    const allOrders = await orderRecorder.fetchAllOrdersFromAPI(true);
+    const allOrders = await trader.fetchAllOrdersFromAPI(true);
     cachedAllOrders = allOrders;
     return allOrders;
   }

@@ -42,26 +42,6 @@ function isFilledCancelOutcome(outcome: CancelOrderOutcome): boolean {
   return outcome.kind === 'ALREADY_CLOSED' && outcome.closedReason === 'FILLED';
 }
 
-function mergeRelatedBuyOrderIds(
-  left: ReadonlyArray<string> | null | undefined,
-  right: ReadonlyArray<string> | null | undefined,
-): ReadonlyArray<string> | null {
-  const merged = [...(left ?? []), ...(right ?? [])];
-  if (merged.length === 0) {
-    return null;
-  }
-
-  return [...new Set(merged)];
-}
-
-function getOutcomeRelatedBuyOrderIds(outcome: CancelOrderOutcome): ReadonlyArray<string> {
-  if (outcome.kind === 'CANCEL_CONFIRMED' || outcome.kind === 'ALREADY_CLOSED') {
-    return outcome.relatedBuyOrderIds ?? [];
-  }
-
-  return [];
-}
-
 /**
  * 创建 submitTargetOrder 实现。
  *
@@ -73,12 +53,11 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     rateLimiter,
     cacheManager,
     orderMonitor,
-    orderRecorder,
     globalConfig,
     canExecuteSignal,
     recordBuyAttempt,
   } = deps;
-  const quantityResolver = createQuantityResolver({ rateLimiter });
+  const quantityResolver = createQuantityResolver();
 
   /**
    * 根据全局配置与信号属性解析最终订单类型。
@@ -110,7 +89,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       overridePrice,
       isShortSymbol,
       monitorConfig = null,
-      relatedBuyOrderIds = null,
     } = params;
 
     if (!canExecuteSignal(signal, 'submitOrder')) {
@@ -181,18 +159,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           liquidationTriggerLimit: monitorConfig?.liquidationTriggerLimit ?? 1,
           liquidationCooldownConfig: monitorConfig?.liquidationCooldown ?? null,
         });
-
-        const sellRelatedBuyOrderIds = relatedBuyOrderIds ?? signal.relatedBuyOrderIds ?? null;
-        if (side === OrderSide.Sell && sellRelatedBuyOrderIds) {
-          const direction: 'LONG' | 'SHORT' = isLongSymbol ? 'LONG' : 'SHORT';
-          orderRecorder.submitSellOrder(
-            orderId,
-            symbol,
-            direction,
-            submittedQuantityNum,
-            sellRelatedBuyOrderIds,
-          );
-        }
       } catch (error) {
         throw new Error(`order submitted but local sync failed: ${orderId}`, {
           cause: error,
@@ -254,11 +220,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     const remark = buildOrderRemark(isProtectiveLiquidation);
 
     if (side === OrderSide.Sell) {
-      const submittedQtyDecimal = await quantityResolver.calculateSellQuantity(
-        ctx,
-        targetSymbol,
-        signal,
-      );
+      const submittedQtyDecimal = quantityResolver.calculateSellQuantity(signal);
       if (submittedQtyDecimal.isZero()) {
         return null;
       }
@@ -298,30 +260,15 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           price,
           decision.mergedQuantity,
         );
-        const existingPendingSell = orderRecorder
-          .getPendingSellSnapshot()
-          .find((pendingSell) => pendingSell.orderId === decision.targetOrderId);
-        const mergedRelatedBuyOrderIds = mergeRelatedBuyOrderIds(
-          existingPendingSell?.relatedBuyOrderIds,
-          signal.relatedBuyOrderIds,
-        );
-        if (existingPendingSell) {
-          orderRecorder.updatePendingSell(decision.targetOrderId, {
-            submittedQuantity: decision.mergedQuantity,
-            relatedBuyOrderIds: mergedRelatedBuyOrderIds ?? [],
-          });
-        }
-
         return null;
       }
 
-      let cancelOutcomes: ReadonlyArray<CancelOrderOutcome> = [];
       if (decision.action === 'CANCEL_AND_SUBMIT') {
         if (!canExecuteSignal(signal, 'cancelAndSubmit')) {
           return null;
         }
 
-        cancelOutcomes = await Promise.all(
+        const cancelOutcomes: ReadonlyArray<CancelOrderOutcome> = await Promise.all(
           decision.pendingOrderIds.map((orderId) => orderMonitor.cancelOrder(orderId)),
         );
 
@@ -348,13 +295,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
       if (decision.action === 'SUBMIT' || decision.action === 'CANCEL_AND_SUBMIT') {
         const mergedQtyDecimal = toDecimal(decision.mergedQuantity);
-        const mergedRelatedBuyOrderIds =
-          decision.action === 'CANCEL_AND_SUBMIT'
-            ? mergeRelatedBuyOrderIds(
-                signal.relatedBuyOrderIds,
-                cancelOutcomes.flatMap(getOutcomeRelatedBuyOrderIds),
-              )
-            : (signal.relatedBuyOrderIds ?? null);
         return submitOrder({
           ctx,
           signal,
@@ -367,7 +307,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           overridePrice: decision.price ?? undefined,
           isShortSymbol,
           monitorConfig,
-          relatedBuyOrderIds: mergedRelatedBuyOrderIds,
         });
       }
 

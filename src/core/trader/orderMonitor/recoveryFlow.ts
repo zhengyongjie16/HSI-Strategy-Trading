@@ -4,7 +4,7 @@
  * 职责：
  * - 管理 BOOTSTRAPPING 阶段订单事件缓存与回放
  * - 执行快照恢复、席位一致性校验与失败回滚
- * - 消费权威终态快照并保持 trackedOrders 与 pendingSell 一致
+ * - 消费权威终态快照并恢复未完成订单追踪
  */
 import { OrderSide, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
@@ -12,7 +12,7 @@ import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/i
 import { PENDING_ORDER_STATUSES } from '../../../constants/index.js';
 import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { RawOrderFromAPI } from '../../../types/services.js';
-import { resolveOrderOwnershipForMonitor } from '../../orderRecorder/orderOwnershipParser.js';
+import { resolveOrderOwnershipForMonitor } from '../../riskController/orderOwnership.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
 import type {
   OrderSeatOwnership,
@@ -34,7 +34,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
   const {
     runtime,
     orderHoldRegistry,
-    orderRecorder,
     monitorConfig,
     symbolRegistry,
     trackOrder,
@@ -43,12 +42,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     handleOrderChangedWhenActive,
   } = deps;
 
-  /**
-   * 基于订单名称映射解析监控标的与方向。
-   *
-   * @param order 原始订单
-   * @returns 归属信息，无法解析返回 null
-   */
   function resolveOrderSeatOwnership(order: RawOrderFromAPI): OrderSeatOwnership | null {
     const resolved = resolveOrderOwnershipForMonitor(order, monitorConfig);
     if (!resolved) {
@@ -62,12 +55,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     };
   }
 
-  /**
-   * 获取监控标的的保护性清仓触发上限。
-   *
-   * @param baseInstrumentSymbol 监控标的
-   * @returns 触发上限，缺失时回退 1
-   */
   function resolveLiquidationTriggerLimit(baseInstrumentSymbol: string | null): number {
     if (!baseInstrumentSymbol) {
       return 1;
@@ -78,12 +65,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       : 1;
   }
 
-  /**
-   * 获取监控标的的保护性清仓冷却配置。
-   *
-   * @param baseInstrumentSymbol 监控标的
-   * @returns 冷却配置，缺失时回退 null
-   */
   function resolveLiquidationCooldownConfig(
     baseInstrumentSymbol: string | null,
   ): StrategyRuntimeConfig['liquidationCooldown'] {
@@ -96,13 +77,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       : null;
   }
 
-  /**
-   * 校验订单是否与当前席位一致。
-   *
-   * @param order 原始订单
-   * @param ownership 订单归属
-   * @returns true 表示席位匹配
-   */
   function isSeatMatchedForOrder(order: RawOrderFromAPI, ownership: OrderSeatOwnership): boolean {
     const seatState = symbolRegistry.getSeatState(ownership.direction);
     if (!isSeatActive(seatState)) {
@@ -112,23 +86,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     return seatState.symbol === order.symbol;
   }
 
-  /**
-   * 清空所有 pendingSell 运行态占用。
-   *
-   * @returns 无返回值
-   */
-  function clearAllPendingSellTracking(): void {
-    const pendingSellSnapshot = orderRecorder.getPendingSellSnapshot();
-    for (const pendingSell of pendingSellSnapshot) {
-      orderRecorder.markSellCancelled(pendingSell.orderId);
-    }
-  }
-
-  /**
-   * 重置恢复运行态（trackedOrders/pendingSell/refreshQueue）。
-   *
-   * @returns 无返回值
-   */
   function resetRecoveryTrackingState(): void {
     for (const trackedOrder of runtime.trackedOrders.values()) {
       orderHoldRegistry.markOrderClosed(trackedOrder.orderId);
@@ -141,24 +98,12 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     runtime.latestReplaceOutcomeByOrderId.clear();
     runtime.queriedTerminalStateByOrderId.clear();
     runtime.pendingRefreshSymbols.length = 0;
-    clearAllPendingSellTracking();
   }
 
-  /**
-   * 清空 BOOTSTRAPPING 阶段事件缓存。
-   *
-   * @returns 无返回值
-   */
   function clearBootstrappingEventBuffer(): void {
     runtime.bootstrappingOrderEvents.clear();
   }
 
-  /**
-   * 在 BOOTSTRAPPING 期间缓存每个 orderId 的最新事件。
-   *
-   * @param event 订单推送事件
-   * @returns 无返回值
-   */
   function cacheBootstrappingEvent(event: PushOrderChanged): void {
     const current = runtime.bootstrappingOrderEvents.get(event.orderId);
     if (!current) {
@@ -183,11 +128,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     }
   }
 
-  /**
-   * 按更新时间回放 BOOTSTRAPPING 阶段缓存的最新订单事件。
-   *
-   * @returns 本轮回放的订单 ID 集合
-   */
   function replayBootstrappingEvents(): ReadonlySet<string> {
     if (runtime.bootstrappingOrderEvents.size === 0) {
       return new Set<string>();
@@ -209,54 +149,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     return replayedOrderIds;
   }
 
-  /**
-   * 校验 tracked 卖单与 pendingSell 占用集合一致性。
-   *
-   * @returns 无返回值，发现不一致直接抛错
-   */
-  function assertPendingSellConsistency(): void {
-    const pendingSellSnapshot = orderRecorder.getPendingSellSnapshot();
-    const pendingSellOrderIds = new Set<string>();
-    for (const pendingSell of pendingSellSnapshot) {
-      pendingSellOrderIds.add(pendingSell.orderId);
-    }
-
-    const trackedSellOrderIds = new Set<string>();
-    for (const trackedOrder of runtime.trackedOrders.values()) {
-      if (trackedOrder.side !== OrderSide.Sell) {
-        continue;
-      }
-
-      if (!PENDING_ORDER_STATUSES.has(trackedOrder.status)) {
-        continue;
-      }
-
-      trackedSellOrderIds.add(trackedOrder.orderId);
-    }
-
-    const orphanTrackedOrders = [...trackedSellOrderIds].filter(
-      (orderId) => !pendingSellOrderIds.has(orderId),
-    );
-    const orphanPendingSells = [...pendingSellOrderIds].filter(
-      (orderId) => !trackedSellOrderIds.has(orderId),
-    );
-    if (orphanTrackedOrders.length === 0 && orphanPendingSells.length === 0) {
-      return;
-    }
-
-    const orphanTrackedText = orphanTrackedOrders.join(', ') || 'none';
-    const orphanPendingText = orphanPendingSells.join(', ') || 'none';
-    throw new Error(
-      `[订单监控] 恢复一致性校验失败: orphanTracked=[${orphanTrackedText}] orphanPending=[${orphanPendingText}]`,
-    );
-  }
-
-  /**
-   * 快照恢复后执行对账校验。
-   *
-   * @param params 对账参数
-   * @returns 无返回值，发现不一致直接抛错
-   */
   function assertRecoverySnapshotReconciliation(
     params: RecoverySnapshotReconciliationParams,
   ): void {
@@ -313,13 +205,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     );
   }
 
-  /**
-   * 恢复单笔 pending 订单追踪，并在卖单场景恢复 pendingSell 占用关系。
-   *
-   * @param order 原始订单
-   * @param ownership 订单归属
-   * @returns 无返回值
-   */
   function restorePendingOrderTracking(
     order: RawOrderFromAPI,
     ownership: OrderSeatOwnership,
@@ -362,34 +247,8 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       trackedOrder.lastExecutedTimeMs = resolveUpdatedAtMs(order.updatedAt);
       logger.debug(`[订单监控] 恢复部分成交订单 ${order.orderId}，已成交数量=${executedQuantity}`);
     }
-
-    if (order.side === OrderSide.Sell) {
-      const relatedBuyOrderIds = orderRecorder.allocateRelatedBuyOrderIdsForRecovery(
-        order.symbol,
-        ownership.direction,
-        submittedQuantity,
-      );
-      orderRecorder.submitSellOrder(
-        order.orderId,
-        order.symbol,
-        ownership.direction,
-        submittedQuantity,
-        relatedBuyOrderIds,
-        submittedAtMs ?? undefined,
-      );
-
-      if (executedQuantity > 0) {
-        orderRecorder.markSellPartialFilled(order.orderId, executedQuantity);
-      }
-    }
   }
 
-  /**
-   * 基于快照恢复未完成订单追踪（严格模式）。
-   *
-   * @param allOrders 全量订单快照
-   * @returns 无返回值
-   */
   async function recoverOrderTrackingFromSnapshot(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
   ): Promise<void> {
@@ -476,7 +335,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       }
 
       const replayedOrderIds = replayBootstrappingEvents();
-      assertPendingSellConsistency();
       assertRecoverySnapshotReconciliation({
         allOrders,
         closedMismatchedBuyOrderIds,

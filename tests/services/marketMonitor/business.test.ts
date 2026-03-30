@@ -83,10 +83,10 @@ describe('marketMonitor business flow', () => {
       },
       2,
     );
-    expect(display).toBe('持仓市值=110.00 持仓盈亏=+10.00 订单数量=2');
+    expect(display).toBe('持仓市值=110.00 持仓盈亏=+10.00 持仓数量=2');
 
     const emptyDisplay = formatPositionDisplay(null, null);
-    expect(emptyDisplay).toBe('持仓市值=- 持仓盈亏=- 订单数量=-');
+    expect(emptyDisplay).toBe('持仓市值=- 持仓盈亏=- 持仓数量=-');
   });
 
   it('detects price change with configured threshold and updates state', () => {

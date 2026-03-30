@@ -32,7 +32,7 @@ import { collectRuntimeQuoteSymbols, refreshAccountAndPositions } from '../utils
 import type { RawOrderFromAPI } from '../../types/services.js';
 import { formatError } from '../../utils/error/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
-import { resolveOrderOwnershipForMonitor } from '../../core/orderRecorder/orderOwnershipParser.js';
+import { resolveOrderOwnershipForMonitor } from '../../core/riskController/orderOwnership.js';
 import { hasProtectiveLiquidationRemark } from '../../core/trader/utils.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
 import type {

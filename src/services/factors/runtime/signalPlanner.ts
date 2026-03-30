@@ -5,7 +5,7 @@
  * - 基于因子快照与当前持仓状态规划最终交易动作
  * - 将开仓、退出与 hold 逻辑从因子构建流程中分离
  */
-import type { OrderRecorder } from '../../../types/services.js';
+import type { PositionCache } from '../../../types/services.js';
 import type {
   DecisionSnapshot,
   FactorDecisionAction,
@@ -48,21 +48,20 @@ export function planFactorSignals(params: {
   readonly strategyConfig: StrategyThresholdConfig;
   readonly longSymbol: string;
   readonly shortSymbol: string;
-  readonly orderRecorder: OrderRecorder;
+  readonly positionCache: PositionCache;
 }): DecisionSnapshot {
-  const { factorSnapshot, strategyConfig, longSymbol, shortSymbol, orderRecorder } = params;
+  const { factorSnapshot, strategyConfig, longSymbol, shortSymbol, positionCache } = params;
   const holdReasons: string[] = [];
   const actions: FactorDecisionAction[] = [];
 
   /**
-   * 判断是否存在已提交的买入委托。
+   * 判断是否仍持有当前席位持仓。
    *
    * @param symbol 席位标的
-   * @param isLongSymbol 是否为做多标的
-   * @returns 是否存在未完成买单
+   * @returns 是否仍有持仓
    */
-  function hasOpenBuyOrders(symbol: string, isLongSymbol: boolean): boolean {
-    return orderRecorder.getBuyOrdersForSymbol(symbol, isLongSymbol).length > 0;
+  function hasOpenPosition(symbol: string): boolean {
+    return (positionCache.get(symbol)?.quantity ?? 0) > 0;
   }
 
   if (!factorSnapshot.readiness.overallReady) {
@@ -70,7 +69,7 @@ export function planFactorSignals(params: {
   }
 
   if (longSymbol) {
-    if (hasOpenBuyOrders(longSymbol, true)) {
+    if (hasOpenPosition(longSymbol)) {
       const longExitDecision = evaluateLongExit({
         factorSnapshot,
         strategyConfig,
@@ -110,7 +109,7 @@ export function planFactorSignals(params: {
   }
 
   if (shortSymbol) {
-    if (hasOpenBuyOrders(shortSymbol, false)) {
+    if (hasOpenPosition(shortSymbol)) {
       const shortExitDecision = evaluateShortExit({
         factorSnapshot,
         strategyConfig,

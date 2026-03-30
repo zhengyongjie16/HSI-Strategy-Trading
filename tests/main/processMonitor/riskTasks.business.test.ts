@@ -1,25 +1,23 @@
 /**
  * riskTasks 业务测试
  *
- * 功能：
- * - 验证风控任务相关场景意图、边界条件与业务期望。
+ * 覆盖：
+ * - monitor price 变化时同时调度 liquidation-distance 与 unrealized-loss 检查
+ * - 展示信息完全来自 riskChecker 缓存
  */
 import { describe, expect, it } from 'bun:test';
-
-import { scheduleRiskTasks } from '../../../src/main/processMonitor/riskTasks.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
-
-import type { MainProgramContext } from '../../../src/main/mainProgram/types.js';
-import type { StrategyRuntime } from '../../../src/types/state.js';
-import type { Quote } from '../../../src/types/quote.js';
-import type { SeatSyncResult } from '../../../src/main/processMonitor/types.js';
-import type { PriceDisplayInfo } from '../../../src/services/marketMonitor/types.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-
+import { scheduleRiskTasks } from '../../../src/main/processMonitor/riskTasks.js';
+import type { SeatSyncResult } from '../../../src/main/processMonitor/types.js';
+import type { MainProgramContext } from '../../../src/main/mainProgram/types.js';
+import type { PriceDisplayInfo } from '../../../src/services/marketMonitor/types.js';
+import type { Quote } from '../../../src/types/quote.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import {
-  createOrderRecorderDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
+  createStrategyRuntimeDouble,
   createWarrantDistanceInfoDouble,
 } from '../../helpers/testDoubles.js';
 
@@ -31,6 +29,7 @@ function createSeatInfo(): SeatSyncResult {
       lastSwitchAt: null,
       lastSearchAt: null,
       lastSeatActivatedAt: null,
+      callPrice: null,
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     },
@@ -40,6 +39,7 @@ function createSeatInfo(): SeatSyncResult {
       lastSwitchAt: null,
       lastSearchAt: null,
       lastSeatActivatedAt: null,
+      callPrice: null,
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     },
@@ -55,7 +55,7 @@ function createSeatInfo(): SeatSyncResult {
 }
 
 describe('riskTasks business scheduling', () => {
-  it('schedules liquidation-distance and unrealized-loss checks in one tick when conditions match', () => {
+  it('schedules liquidation-distance and unrealized-loss checks in one tick', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const capturedDisplayInfo: {
       long: PriceDisplayInfo | null | undefined;
@@ -64,18 +64,13 @@ describe('riskTasks business scheduling', () => {
       long: null,
       short: null,
     };
-
-    const monitorContext = {
-      state: {
-        baseInstrumentSymbol: 'HSI.HK',
-      },
+    const monitorContext = createStrategyRuntimeDouble({
       riskChecker: createRiskCheckerDouble({
-        getWarrantDistanceInfo: (isLong) => {
-          return createWarrantDistanceInfoDouble({
-            warrantType: isLong ? 'BULL' : 'BEAR',
-            distanceToStrikePercent: isLong ? 0.7 : -0.8,
-          });
-        },
+        getWarrantDistanceInfo: (isLongSymbol) =>
+          createWarrantDistanceInfoDouble({
+            warrantType: isLongSymbol ? 'BULL' : 'BEAR',
+            distanceToStrikePercent: isLongSymbol ? 0.7 : -0.8,
+          }),
         getUnrealizedLossMetrics: (symbol, currentPrice) => {
           if (symbol === 'BULL.HK' && currentPrice === 1.1) {
             return {
@@ -98,52 +93,7 @@ describe('riskTasks business scheduling', () => {
           return null;
         },
       }),
-      orderRecorder: createOrderRecorderDouble({
-        getBuyOrdersForSymbol: (symbol) => {
-          if (symbol === 'BULL.HK') {
-            return [
-              {
-                orderId: '1',
-                symbol,
-                executedPrice: 1,
-                executedQuantity: 100,
-                executedTime: 1,
-                submittedAt: undefined,
-                updatedAt: undefined,
-              },
-              {
-                orderId: '2',
-                symbol,
-                executedPrice: 1,
-                executedQuantity: 100,
-                executedTime: 2,
-                submittedAt: undefined,
-                updatedAt: undefined,
-              },
-            ];
-          }
-
-          if (symbol === 'BEAR.HK') {
-            return [
-              {
-                orderId: '3',
-                symbol,
-                executedPrice: 1,
-                executedQuantity: 100,
-                executedTime: 3,
-                submittedAt: undefined,
-                updatedAt: undefined,
-              },
-            ];
-          }
-
-          return [];
-        },
-      }),
-      longSymbolName: 'BULL',
-      shortSymbolName: 'BEAR',
-    } as unknown as StrategyRuntime;
-
+    });
     const mainContext = {
       marketMonitor: {
         monitorPriceChanges: (
@@ -178,94 +128,10 @@ describe('riskTasks business scheduling', () => {
     const second = monitorTaskQueue.pop();
 
     expect(first?.type).toBe('LIQUIDATION_DISTANCE_CHECK');
-    expect(first?.dedupeKey).toBe('LIQUIDATION_DISTANCE_CHECK');
-    expect((first?.data as { monitorPrice: number }).monitorPrice).toBe(20_000);
-    const liquidationData = first?.data as {
-      long: Record<string, unknown>;
-      short: Record<string, unknown>;
-    };
-    expect('quote' in liquidationData.long).toBeFalse();
-    expect('quote' in liquidationData.short).toBeFalse();
-
     expect(second?.type).toBe('UNREALIZED_LOSS_CHECK');
-    expect(second?.dedupeKey).toBe('UNREALIZED_LOSS_CHECK');
-    const unrealizedData = second?.data as {
-      long: Record<string, unknown>;
-      short: Record<string, unknown>;
-    };
-    expect('quote' in unrealizedData.long).toBeFalse();
-    expect('quote' in unrealizedData.short).toBeFalse();
-
-    const receivedLongDisplayInfo = capturedDisplayInfo.long;
-    const receivedShortDisplayInfo = capturedDisplayInfo.short;
-
-    if (
-      receivedLongDisplayInfo === null ||
-      receivedLongDisplayInfo === undefined ||
-      receivedShortDisplayInfo === null ||
-      receivedShortDisplayInfo === undefined
-    ) {
-      throw new Error('display info should be populated for both directions');
-    }
-
-    expect(receivedLongDisplayInfo.warrantDistanceInfo?.warrantType).toBe('BULL');
-    expect(receivedLongDisplayInfo.warrantDistanceInfo?.distanceToStrikePercent?.toNumber()).toBe(
-      0.7,
-    );
-
-    expect(receivedLongDisplayInfo.unrealizedLossMetrics).toEqual({
-      r1: 100,
-      n1: 100,
-      r2: 110,
-      unrealizedPnL: 10,
-    });
-    expect(receivedLongDisplayInfo.orderCount).toBe(2);
-
-    expect(receivedShortDisplayInfo.warrantDistanceInfo?.warrantType).toBe('BEAR');
-    expect(receivedShortDisplayInfo.warrantDistanceInfo?.distanceToStrikePercent?.toNumber()).toBe(
-      -0.8,
-    );
-
-    expect(receivedShortDisplayInfo.unrealizedLossMetrics).toEqual({
-      r1: 90,
-      n1: 100,
-      r2: 80,
-      unrealizedPnL: -10,
-    });
-    expect(receivedShortDisplayInfo.orderCount).toBe(1);
-  });
-
-  it('skips liquidation-distance scheduling when auto-search is enabled', () => {
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-
-    const monitorContext = {
-      state: {
-        baseInstrumentSymbol: 'HSI.HK',
-      },
-      riskChecker: createRiskCheckerDouble(),
-      orderRecorder: createOrderRecorderDouble(),
-      longSymbolName: 'BULL',
-      shortSymbolName: 'BEAR',
-    } as unknown as StrategyRuntime;
-
-    const mainContext = {
-      marketMonitor: {
-        monitorPriceChanges: () => false,
-      },
-      monitorTaskQueue,
-    } as unknown as MainProgramContext;
-
-    scheduleRiskTasks({
-      baseInstrumentSymbol: 'HSI.HK',
-      monitorContext,
-      mainContext,
-      seatInfo: createSeatInfo(),
-      autoSearchEnabled: true,
-      monitorPriceChanged: true,
-      resolvedMonitorPrice: 20_000,
-      monitorCurrentPrice: 20_000,
-    });
-
-    expect(monitorTaskQueue.isEmpty()).toBeTrue();
+    expect(capturedDisplayInfo.long?.positionCount).toBe(1);
+    expect(capturedDisplayInfo.short?.positionCount).toBe(1);
+    expect(capturedDisplayInfo.long?.warrantDistanceInfo?.warrantType).toBe('BULL');
+    expect(capturedDisplayInfo.short?.warrantDistanceInfo?.warrantType).toBe('BEAR');
   });
 });

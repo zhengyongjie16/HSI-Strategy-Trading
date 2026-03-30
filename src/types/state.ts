@@ -4,7 +4,7 @@ import type { IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { StrategyRuntimeConfig } from './config.js';
 import type { SeatState, SymbolRegistry, LifecycleState } from './seat.js';
-import type { OrderRecorder, PositionCache, RiskChecker, TradingDayInfo } from './services.js';
+import type { PositionCache, RiskChecker, TradingDayInfo } from './services.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from './risk.js';
 import type { DisplayIndicatorItem, IndicatorDisplayProfile } from './indicatorProfile.js';
 import type { AutoSymbolManagerPort } from './strategyRuntimePorts.js';
@@ -149,9 +149,6 @@ export type StrategyRuntime = {
 
   /** 策略实例 */
   readonly strategy: TradingSignalStrategy;
-
-  /** 订单记录器 */
-  readonly orderRecorder: OrderRecorder;
 
   /** 当日亏损跟踪器 */
   readonly dailyLossTracker: DailyLossTracker;

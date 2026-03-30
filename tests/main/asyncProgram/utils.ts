@@ -8,7 +8,6 @@ import type { LastState, StrategyRuntime } from '../../../src/types/state.js';
 import {
   createStrategyRuntimeConfigDouble,
   createIndicatorDisplayProfileDouble,
-  createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
   createRiskCheckerDouble,
@@ -142,7 +141,6 @@ function buildStrategyRuntimeBase(
     strategy: {
       generateSignals: () => [],
     },
-    orderRecorder: createOrderRecorderDouble(),
     dailyLossTracker: {
       resetAll: () => {},
       recalculateFromAllOrders: () => {},

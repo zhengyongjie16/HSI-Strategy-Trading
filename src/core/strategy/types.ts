@@ -6,7 +6,7 @@
  * - 定义按趋势策略阈值创建策略实例的工厂契约
  */
 import type { FactorSnapshot, StrategyThresholdConfig } from '../../types/factor.js';
-import type { OrderRecorder } from '../../types/services.js';
+import type { PositionCache } from '../../types/services.js';
 import type { Signal } from '../../types/signal.js';
 
 /**
@@ -20,7 +20,7 @@ export interface TradingSignalStrategy {
     state: FactorSnapshot | null,
     longSymbol: string,
     shortSymbol: string,
-    orderRecorder: OrderRecorder,
+    positionCache: PositionCache,
   ) => ReadonlyArray<Signal>;
 }
 

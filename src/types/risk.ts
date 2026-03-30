@@ -1,14 +1,32 @@
 import type { OrderSide } from 'longbridge';
 import type { StrategyRuntimeConfig } from './config.js';
+import type { Position } from './account.js';
 import type { Quote } from './quote.js';
-import type {
-  OrderRecord,
-  OrderRecorder,
-  RawOrderFromAPI,
-  RiskChecker,
-  Trader,
-} from './services.js';
-import type { OrderFilteringEngine, OrderOwnership } from './orderRecorder.js';
+import type { OrderRecord, RawOrderFromAPI, RiskChecker, Trader } from './services.js';
+
+/**
+ * 订单归属解析结果。
+ * 类型用途：表示单笔 API 订单归属的监控标的与方向，供订单归属分析、恢复与当日亏损追踪共享。
+ * 数据来源：订单归属解析逻辑根据订单名称与归属映射推导得到。
+ * 使用范围：riskController、订单恢复、生命周期重建等跨模块场景；全项目可引用。
+ */
+export type OrderOwnership = {
+  readonly baseInstrumentSymbol: string;
+  readonly direction: 'LONG' | 'SHORT';
+};
+
+/**
+ * 订单过滤引擎接口。
+ * 类型用途：抽象当日亏损计算共用的未平仓买单过滤算法。
+ * 数据来源：由 riskController 侧的订单过滤实现创建并注入。
+ * 使用范围：DailyLossTracker 等需要根据买卖成交推导未平仓买单的场景；全项目可引用。
+ */
+export interface OrderFilteringEngine {
+  applyFilteringAlgorithm: (
+    allBuyOrders: ReadonlyArray<OrderRecord>,
+    filledSellOrders: ReadonlyArray<OrderRecord>,
+  ) => ReadonlyArray<OrderRecord>;
+}
 
 /**
  * 成交回报输入。
@@ -78,10 +96,11 @@ export type UnrealizedLossMonitorContext = {
   readonly shortQuote: Quote | null;
   readonly longSymbol: string;
   readonly shortSymbol: string;
+  readonly longPosition: Position | null;
+  readonly shortPosition: Position | null;
   readonly baseInstrumentSymbol: string;
   readonly riskChecker: RiskChecker;
   readonly trader: Trader;
-  readonly orderRecorder: OrderRecorder;
   readonly dailyLossTracker: DailyLossTracker;
 };
 

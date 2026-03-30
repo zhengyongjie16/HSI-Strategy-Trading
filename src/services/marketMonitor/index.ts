@@ -111,7 +111,7 @@ function buildMonitorIndicatorLogText(params: {
  * @param quote 行情数据，可为 null
  * @param symbol 标的代码
  * @param label 显示标签（如「做多标的」）
- * @param displayInfo 展示附加信息（距回收价、持仓市值/持仓盈亏、订单数量）
+ * @param displayInfo 展示附加信息（距回收价、持仓市值/持仓盈亏、持仓数量）
  * @returns void
  */
 function displayQuoteInfo(
@@ -127,7 +127,7 @@ function displayQuoteInfo(
     const distanceSuffix = distanceText ? ` ${distanceText}` : '';
     const positionRealtimeText = formatPositionDisplay(
       displayInfo?.unrealizedLossMetrics ?? null,
-      displayInfo?.orderCount ?? null,
+      displayInfo?.positionCount ?? null,
     );
     logger.info(
       `${timePrefix}[${label}] ${display.nameText}(${display.codeText}) 最新价格=${display.priceText} 涨跌额=${display.changeAmountText} 涨跌幅度=${display.changePercentText}${distanceSuffix} ${positionRealtimeText}`,

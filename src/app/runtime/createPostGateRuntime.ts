@@ -8,9 +8,9 @@
  */
 import fs from 'node:fs';
 import { createTrader } from '../../core/trader/index.js';
-import { createOrderFilteringEngine } from '../../core/orderRecorder/orderFilteringEngine.js';
-import { classifyAndConvertOrders } from '../../core/orderRecorder/utils.js';
-import { resolveOrderOwnership } from '../../core/orderRecorder/orderOwnershipParser.js';
+import { createOrderFilteringEngine } from '../../core/riskController/orderFilteringEngine.js';
+import { classifyAndConvertOrders } from '../../core/riskController/orderRecords.js';
+import { resolveOrderOwnership } from '../../core/riskController/orderOwnership.js';
 import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
 import { createDoomsdayProtection } from '../../core/doomsdayProtection/index.js';
 import { createSignalProcessor } from '../../core/signalProcessor/index.js';

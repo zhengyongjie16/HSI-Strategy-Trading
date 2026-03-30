@@ -208,7 +208,7 @@ describe('buildStrategyRuntime strategy factory behavior', () => {
       null,
       'BULL.HK',
       'BEAR.HK',
-      postGateRuntime.trader.orderRecorder,
+      postGateRuntime.lastState.positionCache,
     );
 
     expect(context.config.baseInstrumentSymbol).toBe('HSI.HK');
@@ -255,7 +255,7 @@ describe('buildStrategyRuntime strategy factory behavior', () => {
       null,
       'BULL.HK',
       'BEAR.HK',
-      postGateRuntime.trader.orderRecorder,
+      postGateRuntime.lastState.positionCache,
     );
 
     expect(output[0]?.symbol).toBe('INJECTED.HK');

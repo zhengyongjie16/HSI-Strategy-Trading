@@ -77,7 +77,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       }
 
       const ctx = monitorContext;
-      const { config, state, orderRecorder, riskChecker } = ctx;
+      const { config, state, riskChecker } = ctx;
       const isLongSignal = signal.action === 'BUYCALL';
       const seatValidation = validateSignalSeat({
         signal,
@@ -129,7 +129,6 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       const riskCheckContext: RiskCheckContext = {
         trader,
         riskChecker,
-        orderRecorder,
         longQuote,
         shortQuote,
         monitorQuote,

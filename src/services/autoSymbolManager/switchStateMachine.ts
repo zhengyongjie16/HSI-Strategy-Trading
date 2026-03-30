@@ -107,14 +107,13 @@ function isFilledCloseOutcome(outcome: CancelOrderOutcome): boolean {
 }
 
 function hasOpenBuyExposure(params: {
-  readonly orderRecorder: SwitchStateMachineDeps['orderRecorder'];
+  readonly positionCache: SwitchStateMachineDeps['positionCache'];
   readonly symbol: string;
-  readonly direction: 'LONG' | 'SHORT';
   readonly positions: ReadonlyArray<Position>;
 }): boolean {
-  const { orderRecorder, symbol, direction, positions } = params;
-  const buyOrders = orderRecorder.getBuyOrdersForSymbol(symbol, direction === 'LONG');
-  if (buyOrders.length > 0) {
+  const { positionCache, symbol, positions } = params;
+  const cachedPosition = positionCache.get(symbol);
+  if ((cachedPosition?.quantity ?? 0) > 0) {
     return true;
   }
 
@@ -124,18 +123,16 @@ function hasOpenBuyExposure(params: {
 
 /**
  * 统一判定周期换标是否仍被本地席位占用阻塞。
- * 周期换标只关心当前席位标的是否仍有未平仓买单记录，或仍有任意本地 pending order 链路。
+ * 周期换标只关心当前席位标的是否仍有持仓，或仍有任意本地 pending order 链路。
  */
 function resolvePeriodicSeatBlockSource(params: {
-  readonly orderRecorder: SwitchStateMachineDeps['orderRecorder'];
+  readonly positionCache: SwitchStateMachineDeps['positionCache'];
   readonly trader: SwitchStateMachineDeps['trader'];
   readonly symbol: string;
-  readonly direction: 'LONG' | 'SHORT';
 }): PeriodicSeatBlockSource {
-  const { orderRecorder, trader, symbol, direction } = params;
-  const buyOrders = orderRecorder.getBuyOrdersForSymbol(symbol, direction === 'LONG');
-  if (buyOrders.length > 0) {
-    return 'ORDER_RECORDER';
+  const { positionCache, trader, symbol } = params;
+  if ((positionCache.get(symbol)?.quantity ?? 0) > 0) {
+    return 'POSITION';
   }
 
   if (trader.getOrderHoldSymbols().has(symbol)) {
@@ -176,7 +173,7 @@ function resolveDistanceTriggerSide(params: {
 
 /**
  * 创建换标状态机，管理从撤单到回补买入的完整换标流程，并提供周期换标触发能力。
- * @param deps - 依赖（trader、orderRecorder、riskChecker、switchStates、buildOrderSignal、signalObjectPool 等）
+ * @param deps - 依赖（trader、positionCache、riskChecker、switchStates、buildOrderSignal、signalObjectPool 等）
  * @returns SwitchStateMachine 实例（maybeSwitchOnInterval、maybeSwitchOnDistance、hasPendingSwitch）
  */
 export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchStateMachine {
@@ -185,7 +182,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     baseInstrumentSymbol,
     symbolRegistry,
     trader,
-    orderRecorder,
+    positionCache,
     riskChecker,
     marketDataClient,
     now,
@@ -433,10 +430,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     if (switchMode === 'PERIODIC') {
       const periodicBlockSource = resolvePeriodicSeatBlockSource({
-        orderRecorder,
+        positionCache,
         trader,
         symbol: latestSeatState.symbol,
-        direction,
       });
       if (periodicBlockSource !== 'EMPTY') {
         markPeriodicPending(direction, now().getTime(), periodicBlockSource);
@@ -604,9 +600,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
 
       const openBuyExposure = hasOpenBuyExposure({
-        orderRecorder,
+        positionCache,
         symbol: state.oldSymbol,
-        direction,
         positions,
       });
       if (state.switchMode === 'PERIODIC' && openBuyExposure) {
@@ -677,9 +672,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
       if (state.shouldRebuy && !state.sellSubmitted && !isValidPositiveNumber(totalQuantity)) {
         const openBuyExposure = hasOpenBuyExposure({
-          orderRecorder,
+          positionCache,
           symbol: state.oldSymbol,
-          direction,
           positions,
         });
         if (openBuyExposure) {
@@ -690,7 +684,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
 
       if (state.sellOrderId !== null) {
-        const sellRecord = orderRecorder.getSellRecordByOrderId(state.sellOrderId);
+        const sellRecord = trader.getRecentFilledOrder(state.sellOrderId);
         const actualNotional = sellRecord
           ? sellRecord.executedPrice * sellRecord.executedQuantity
           : Number.NaN;
@@ -883,10 +877,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
 
       const blockSource = resolvePeriodicSeatBlockSource({
-        orderRecorder,
+        positionCache,
         trader,
         symbol: seatState.symbol,
-        direction,
       });
       if (blockSource !== 'EMPTY') {
         if (pendingStateAfterReset.blockedBy !== blockSource) {
@@ -935,10 +928,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     }
 
     const blockSource = resolvePeriodicSeatBlockSource({
-      orderRecorder,
+      positionCache,
       trader,
       symbol: seatState.symbol,
-      direction,
     });
     if (blockSource !== 'EMPTY') {
       const pendingState = resolvePeriodicPending(direction);

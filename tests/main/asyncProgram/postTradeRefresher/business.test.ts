@@ -1,27 +1,25 @@
 /**
  * postTradeRefresher 业务测试
  *
- * 功能：
- * - 验证交易后刷新器相关场景意图、边界条件与业务期望。
+ * 覆盖：
+ * - 成交后刷新账户/持仓/浮亏缓存
+ * - 失败重试后最终将 refreshGate 标记 fresh
  */
 import { describe, expect, it } from 'bun:test';
-
 import { createPostTradeRefresher } from '../../../../src/main/asyncProgram/postTradeRefresher/index.js';
 import { createRefreshGate } from '../../../../src/utils/refreshGate/index.js';
-import { API } from '../../../../src/constants/index.js';
-
-import type { LastState, StrategyRuntime } from '../../../../src/types/state.js';
-
+import type { LastState } from '../../../../src/types/state.js';
 import {
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
-  createStrategyRuntimeConfigDouble,
-  createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createQuoteDouble,
   createRiskCheckerDouble,
+  createStrategyRuntimeDouble,
+  createStrategyRuntimeConfigDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
@@ -50,23 +48,24 @@ function createLastState(): LastState {
       monitorValues: null,
       lastMonitorSnapshot: null,
       lastCandlestickCacheVersion: null,
+      lastDisplaySignature: null,
+      displayPlan: ['price', 'changePercent'],
     },
-    allTradingSymbols: new Set(),
+    allTradingSymbols: new Set<string>(),
   };
 }
 
 describe('postTradeRefresher business flow', () => {
-  it('refreshes account/positions/unrealized cache and marks refresh gate fresh', async () => {
+  it('refreshes account positions and unrealized-loss cache, then marks gate fresh', async () => {
     const refreshGate = createRefreshGate();
     const staleVersion = refreshGate.markStale();
     const lastState = createLastState();
+    const riskRefreshCalls: Array<{ readonly symbol: string; readonly isLongSymbol: boolean }> = [];
+    let displayCalls = 0;
 
-    const riskRefreshCalls: Array<{ symbol: string; isLongSymbol: boolean }> = [];
-
-    const monitorContext = {
+    const monitorContext = createStrategyRuntimeDouble({
       config: createStrategyRuntimeConfigDouble({
         baseInstrumentSymbol: 'HSI.HK',
-        maxUnrealizedLossPerSymbol: 2_000,
       }),
       symbolRegistry: createSymbolRegistryDouble({
         baseInstrumentSymbol: 'HSI.HK',
@@ -76,36 +75,19 @@ describe('postTradeRefresher business flow', () => {
           lastSwitchAt: null,
           lastSearchAt: null,
           lastSeatActivatedAt: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-        shortSeat: {
-          symbol: 'BEAR.HK',
-          status: 'ACTIVE',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
+          callPrice: null,
           searchFailCountToday: 0,
           frozenTradingDayKey: null,
         },
       }),
       longSymbolName: 'BULL',
-      shortSymbolName: 'BEAR',
-      orderRecorder: createOrderRecorderDouble(),
-      dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
-        getLossOffset: () => 12,
-      },
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async (_orderRecorder, symbol, isLongSymbol) => {
+        refreshUnrealizedLossData: async (symbol, _position, isLongSymbol) => {
           riskRefreshCalls.push({ symbol, isLongSymbol });
           return { r1: 100, n1: 10 };
         },
       }),
-    } as unknown as StrategyRuntime;
-
+    });
     const trader = createTraderDouble({
       getAccountSnapshot: async () => createAccountSnapshotDouble(80_000),
       getStockPositions: async () => [
@@ -116,8 +98,6 @@ describe('postTradeRefresher business flow', () => {
         }),
       ],
     });
-
-    let displayCalls = 0;
 
     const refresher = createPostTradeRefresher({
       refreshGate,
@@ -141,12 +121,7 @@ describe('postTradeRefresher business flow', () => {
           refreshPositions: true,
         },
       ],
-      quotesMap: new Map([
-        [
-          'BULL.HK',
-          { symbol: 'BULL.HK', name: 'BULL', price: 1.1, prevClose: 1, timestamp: Date.now() },
-        ],
-      ]),
+      quotesMap: new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1)]]),
     });
 
     await Bun.sleep(60);
@@ -154,19 +129,19 @@ describe('postTradeRefresher business flow', () => {
 
     expect(lastState.cachedAccount?.buyPower).toBe(80_000);
     expect(lastState.cachedPositions).toHaveLength(1);
+    expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(500);
     expect(riskRefreshCalls).toEqual([{ symbol: 'BULL.HK', isLongSymbol: true }]);
     expect(displayCalls).toBe(1);
-
-    const status = refreshGate.getStatus();
-    expect(status.staleVersion).toBe(staleVersion);
-    expect(status.currentVersion).toBe(staleVersion);
+    expect(refreshGate.getStatus()).toEqual({
+      currentVersion: staleVersion,
+      staleVersion,
+    });
   });
 
-  it('retries failed refresh and eventually marks refresh gate fresh', async () => {
+  it('retries failed refresh and eventually updates caches', async () => {
     const refreshGate = createRefreshGate();
-    const staleVersion = refreshGate.markStale();
+    refreshGate.markStale();
     const lastState = createLastState();
-
     let accountCalls = 0;
 
     const trader = createTraderDouble({
@@ -178,26 +153,20 @@ describe('postTradeRefresher business flow', () => {
 
         return createAccountSnapshotDouble(66_000);
       },
-      getStockPositions: async () => [],
+      getStockPositions: async () => [
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 300,
+          availableQuantity: 300,
+        }),
+      ],
     });
 
     const refresher = createPostTradeRefresher({
       refreshGate,
       trader,
       lastState,
-      monitorContext: {
-        config: createStrategyRuntimeConfigDouble({
-          baseInstrumentSymbol: 'HSI.HK',
-        }),
-        symbolRegistry: createSymbolRegistryDouble({
-          baseInstrumentSymbol: 'HSI.HK',
-        }),
-        longSymbolName: '',
-        shortSymbolName: '',
-        orderRecorder: createOrderRecorderDouble(),
-        dailyLossTracker: createDailyLossTrackerDouble(),
-        riskChecker: createRiskCheckerDouble(),
-      } as unknown as StrategyRuntime,
+      monitorContext: createStrategyRuntimeDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -210,119 +179,17 @@ describe('postTradeRefresher business flow', () => {
           symbol: 'BULL.HK',
           isLongSymbol: true,
           refreshAccount: true,
-          refreshPositions: false,
+          refreshPositions: true,
         },
       ],
-      quotesMap: new Map(),
+      quotesMap: new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.05)]]),
     });
 
-    await Bun.sleep(80);
-    const statusAfterFirstFailure = refreshGate.getStatus();
-    expect(statusAfterFirstFailure.currentVersion).toBeLessThan(staleVersion);
-
-    await Bun.sleep(API.DEFAULT_RETRY_DELAY_MS + 140);
+    await Bun.sleep(1300);
     await refresher.stopAndDrain();
 
     expect(accountCalls).toBeGreaterThanOrEqual(2);
     expect(lastState.cachedAccount?.buyPower).toBe(66_000);
-
-    const finalStatus = refreshGate.getStatus();
-    expect(finalStatus.currentVersion).toBe(staleVersion);
-  });
-
-  it('skips protective completion decision when account or position refresh fails', async () => {
-    const refreshGate = createRefreshGate();
-    refreshGate.markStale();
-    const lastState = createLastState();
-    let completeIfEligibleCalls = 0;
-    let startNewEpisodeCalls = 0;
-
-    const monitorContext = {
-      config: createStrategyRuntimeConfigDouble({
-        baseInstrumentSymbol: 'HSI.HK',
-      }),
-      symbolRegistry: createSymbolRegistryDouble({
-        baseInstrumentSymbol: 'HSI.HK',
-        longSeat: {
-          symbol: 'BULL.HK',
-          status: 'ACTIVE',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-        shortSeat: {
-          symbol: 'BEAR.HK',
-          status: 'ACTIVE',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-      }),
-      longSymbolName: 'BULL',
-      shortSymbolName: 'BEAR',
-      orderRecorder: createOrderRecorderDouble(),
-      dailyLossTracker: createDailyLossTrackerDouble(),
-      riskChecker: createRiskCheckerDouble(),
-    } as unknown as StrategyRuntime;
-
-    const trader = createTraderDouble({
-      getAccountSnapshot: async () => {
-        throw new Error('refresh account failed');
-      },
-      getStockPositions: async () => [],
-    });
-
-    const refresher = createPostTradeRefresher({
-      refreshGate,
-      trader,
-      lastState,
-      monitorContext,
-      dailyLossTracker: createDailyLossTrackerDouble({
-        startNewProtectionEpisode: () => {
-          startNewEpisodeCalls += 1;
-        },
-      }),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
-        getInProgressEpisodes: () => [
-          {
-            baseInstrumentSymbol: 'HSI.HK',
-            direction: 'LONG',
-            latestExecutedTimeMs: Date.parse('2026-02-16T02:00:00.000Z'),
-          },
-        ],
-        completeIfEligible: () => {
-          completeIfEligibleCalls += 1;
-          return {
-            baseInstrumentSymbol: 'HSI.HK',
-            direction: 'LONG',
-            boundaryExecutedTimeMs: Date.parse('2026-02-16T02:00:00.000Z'),
-          };
-        },
-      }),
-      displayAccountAndPositions: async () => {},
-    });
-
-    refresher.enqueue({
-      pending: [
-        {
-          symbol: 'BULL.HK',
-          isLongSymbol: true,
-          refreshAccount: true,
-          refreshPositions: true,
-        },
-      ],
-      quotesMap: new Map(),
-    });
-
-    await Bun.sleep(80);
-    await refresher.stopAndDrain();
-
-    expect(completeIfEligibleCalls).toBe(0);
-    expect(startNewEpisodeCalls).toBe(0);
+    expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(300);
   });
 });

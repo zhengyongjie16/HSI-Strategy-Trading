@@ -42,7 +42,6 @@ export type OrderStateCheckResult =
  * 类型用途：替代 boolean 语义，区分确认撤销、已关闭、可重试失败与未知失败。
  * 注意：
  * - 对外的 trader/orderMonitor.cancelOrder() 会在确认 tracked order 已终态时先完成本地结算，再返回结果。
- * - relatedBuyOrderIds 表示卖单终态结算后仍需由后续卖单继续关联的买单 ID；无法确定时为 null。
  * 数据来源：OrderMonitor.cancelOrder 返回值。
  * 使用范围：Trader、OrderMonitor、订单执行与恢复链路；全项目可引用。
  */
@@ -51,13 +50,11 @@ export type CancelOrderOutcome =
       readonly kind: 'CANCEL_CONFIRMED';
       readonly closedReason: 'CANCELED' | 'REJECTED';
       readonly source: 'API' | 'WS';
-      readonly relatedBuyOrderIds: ReadonlyArray<string> | null;
     }
   | {
       readonly kind: 'ALREADY_CLOSED';
       readonly closedReason: OrderClosedReason;
       readonly source: 'API_ERROR';
-      readonly relatedBuyOrderIds: ReadonlyArray<string> | null;
     }
   | {
       readonly kind: 'RETRYABLE_FAILURE';

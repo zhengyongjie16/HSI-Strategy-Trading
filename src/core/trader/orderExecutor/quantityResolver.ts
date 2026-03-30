@@ -4,12 +4,12 @@
  * 职责：
  * - 解析买入数量来源（显式数量/按目标金额换算）
  * - 校验显式数量整手约束
- * - 计算卖出可提交数量（按可用持仓裁剪）
+ * - 解析卖出可提交数量（仅消费上游信号已计算的数量）
  */
-import { Decimal, type TradeContext } from 'longbridge';
+import { Decimal } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { TRADING } from '../../../constants/index.js';
-import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
+import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { isDefined } from '../../utils.js';
 import type { Signal } from '../../../types/signal.js';
 import type { QuantityResolver } from './types.js';
@@ -19,7 +19,6 @@ import {
   isLotMultiple,
 } from '../../../utils/numeric/index.js';
 import { toDecimal } from '../utils.js';
-import type { RateLimiter } from '../../../types/services.js';
 
 /**
  * 解析买入数量来源并执行显式数量校验。
@@ -162,69 +161,30 @@ function resolveBuyQuantity(
 /**
  * 创建数量解析器。
  *
- * @param deps 数量解析依赖
  * @returns 数量解析器实例
  */
-export function createQuantityResolver(deps: {
-  readonly rateLimiter: RateLimiter;
-}): QuantityResolver {
-  const { rateLimiter } = deps;
-
+export function createQuantityResolver(): QuantityResolver {
   /**
-   * 计算卖出数量（基于可用持仓并支持信号显式 quantity 限制）。
+   * 解析卖出数量（仅消费上游信号已计算的 quantity）。
    *
-   * @param ctx TradeContext
-   * @param symbol 交易标的
    * @param signal 交易信号
    * @returns 卖出数量（Decimal）
    */
-  async function calculateSellQuantity(
-    ctx: TradeContext,
-    symbol: string,
-    signal: Signal,
-  ): Promise<Decimal> {
-    let targetQuantity: number | null = null;
-    if (isDefined(signal.quantity)) {
-      const signalQty = signal.quantity;
-      if (isValidPositiveNumber(signalQty)) {
-        targetQuantity = signalQty;
-      }
+  function calculateSellQuantity(signal: Signal): Decimal {
+    if (!isDefined(signal.quantity)) {
+      logger.warn(`[跳过订单] 卖出信号缺少数量，无法提交。symbol=${signal.symbol}`);
+      return Decimal.ZERO();
     }
 
-    await rateLimiter.throttle();
-    const resp = await ctx.stockPositions([symbol]);
-    const channels = resp.channels;
-    let totalAvailable = 0;
-    for (const ch of channels) {
-      const positions = Array.isArray(ch.positions) ? ch.positions : [];
-      for (const pos of positions) {
-        if (pos.symbol !== symbol) {
-          continue;
-        }
-
-        const qty = decimalToNumber(pos.availableQuantity);
-        if (isValidPositiveNumber(qty)) {
-          totalAvailable += qty;
-        }
-      }
-    }
-
-    if (!Number.isFinite(totalAvailable) || totalAvailable <= 0) {
+    const sellQuantity = signal.quantity;
+    if (!isValidPositiveNumber(sellQuantity)) {
       logger.warn(
-        `[跳过订单] 当前无可用持仓，无需平仓。symbol=${symbol}, available=${totalAvailable}`,
+        `[跳过订单] 卖出信号数量无效，无法提交。symbol=${signal.symbol}, quantity=${String(sellQuantity)}`,
       );
       return Decimal.ZERO();
     }
 
-    if (targetQuantity === null) {
-      return toDecimal(totalAvailable);
-    }
-
-    const actualQty = Math.min(targetQuantity, totalAvailable);
-    logger.debug(
-      `[部分卖出] 信号指定卖出数量=${targetQuantity}，可用数量=${totalAvailable}，实际卖出=${actualQty}`,
-    );
-    return toDecimal(actualQty);
+    return toDecimal(sellQuantity);
   }
 
   return {

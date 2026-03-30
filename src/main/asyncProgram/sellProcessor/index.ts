@@ -75,7 +75,6 @@ function cloneSellSignal(signal: Signal): Signal {
   clonedSignal.seatVersion = signal.seatVersion ?? null;
   clonedSignal.indicators1 = signal.indicators1 ?? null;
   clonedSignal.verificationHistory = signal.verificationHistory ?? null;
-  clonedSignal.relatedBuyOrderIds = signal.relatedBuyOrderIds ?? null;
   return clonedSignal;
 }
 
@@ -87,7 +86,6 @@ function cloneSellSignal(signal: Signal): Signal {
  */
 function buildSellRetryKey(params: { readonly signal: Signal }): string {
   const { signal } = params;
-  const relatedOrderIds = signal.relatedBuyOrderIds?.join(',') ?? '';
   const triggerTimeMs = signal.triggerTime instanceof Date ? signal.triggerTime.getTime() : -1;
   return [
     signal.action,
@@ -97,7 +95,6 @@ function buildSellRetryKey(params: { readonly signal: Signal }): string {
     signal.orderTypeOverride ?? '',
     String(signal.isProtectiveLiquidation ?? ''),
     signal.reason ?? '',
-    relatedOrderIds,
     String(triggerTimeMs),
   ].join('|');
 }
@@ -168,7 +165,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       await refreshGate.waitForFresh();
 
       const ctx = monitorContext;
-      const { orderRecorder, symbolRegistry } = ctx;
+      const { symbolRegistry } = ctx;
       const lastState = getLastState();
       const seatValidation = validateSignalSeat({
         signal,
@@ -268,7 +265,6 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         shortPosition,
         longQuote,
         shortQuote,
-        orderRecorder,
       });
 
       // 如果信号被转为 HOLD，跳过执行

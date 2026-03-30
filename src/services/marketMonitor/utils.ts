@@ -94,15 +94,15 @@ export function formatWarrantDistanceDisplay(
 }
 
 /**
- * 格式化浮亏指标展示文本（持仓市值、持仓盈亏、订单数量）。
+ * 格式化浮亏指标展示文本（持仓市值、持仓盈亏、持仓数量）。
  * @param metrics 浮亏实时指标，null 时以 "-" 展示市值与持仓盈亏
- * @param orderCount 未平仓买入订单数量（笔数），null 时展示 "-"
+ * @param positionCount 当前席位持仓数量，null 时展示 "-"
  * @param decimals 金额小数位数，默认 2
  * @returns 统一格式文本
  */
 export function formatPositionDisplay(
   metrics: UnrealizedLossMetrics | null,
-  orderCount: number | null,
+  positionCount: number | null,
   decimals: number = 2,
 ): string {
   const marketValueText =
@@ -115,10 +115,10 @@ export function formatPositionDisplay(
     pnlText = '-';
   }
 
-  const orderCountText =
-    orderCount !== null && Number.isFinite(orderCount) ? String(orderCount) : '-';
+  const positionCountText =
+    positionCount !== null && Number.isFinite(positionCount) ? String(positionCount) : '-';
 
-  return `持仓市值=${marketValueText} 持仓盈亏=${pnlText} 订单数量=${orderCountText}`;
+  return `持仓市值=${marketValueText} 持仓盈亏=${pnlText} 持仓数量=${positionCountText}`;
 }
 
 /**

@@ -16,22 +16,18 @@ import type {
 
 /**
  * 因子 planner 的输入。
- * 类型用途：在已构建 FactorSnapshot 后，叠加交易标的与订单记录信息生成最终动作。
- * 数据来源：factor snapshot + 当前席位标的 + OrderRecorder。
+ * 类型用途：在已构建 FactorSnapshot 后，叠加交易标的与当前持仓信息生成最终动作。
+ * 数据来源：factor snapshot + 当前席位标的 + PositionCache。
  * 使用范围：signal planner 与 strategy 主线。
  */
 export type FactorSignalPlannerInput = {
   readonly factorSnapshot: FactorSnapshot;
   readonly longSymbol: string;
   readonly shortSymbol: string;
-  readonly orderRecorder: {
-    readonly getBuyOrdersForSymbol: (
-      symbol: string,
-      isLongSymbol: boolean,
-    ) => ReadonlyArray<{
-      readonly orderId: string;
-      readonly symbol: string;
-    }>;
+  readonly positionCache: {
+    readonly get: (symbol: string) => {
+      readonly quantity: number;
+    } | null;
   };
 };
 

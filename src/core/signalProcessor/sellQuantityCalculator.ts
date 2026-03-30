@@ -12,15 +12,9 @@
  */
 import { logger } from '../../utils/logger/index.js';
 import { getLongDirectionName, getShortDirectionName } from '../utils.js';
-import {
-  buildSellReason,
-  resolveRelatedBuyOrderIdsForFullClose,
-  resolveSellQuantityByFullClose,
-  validateSellContext,
-} from './utils.js';
+import { buildSellReason, resolveSellQuantityByFullClose, validateSellContext } from './utils.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
-import type { OrderRecorder } from '../../types/services.js';
 import type { ProcessSellSignalsParams } from './types.js';
 import { isSellAction } from '../../utils/display/index.js';
 
@@ -34,17 +28,14 @@ import { isSellAction } from '../../utils/display/index.js';
 function calculateSellQuantity(params: {
   readonly position: Position | null;
   readonly quote: Quote | null;
-  readonly orderRecorder: OrderRecorder | null;
   readonly direction: 'LONG' | 'SHORT';
   readonly originalReason: string;
-  readonly symbol: string;
 }): {
   quantity: number | null;
   shouldHold: boolean;
   reason: string;
-  relatedBuyOrderIds: readonly string[];
 } {
-  const { position, quote, orderRecorder, direction, originalReason, symbol } = params;
+  const { position, quote, direction, originalReason } = params;
   const reason = originalReason || '';
   const directionName = direction === 'LONG' ? getLongDirectionName() : getShortDirectionName();
 
@@ -55,21 +46,13 @@ function calculateSellQuantity(params: {
       quantity: null,
       shouldHold: true,
       reason: buildSellReason(reason, validationResult.reason),
-      relatedBuyOrderIds: [],
     };
   }
 
   const { availableQuantity } = validationResult;
-  const relatedBuyOrderIds = resolveRelatedBuyOrderIdsForFullClose({
-    orderRecorder,
-    symbol,
-    direction,
-  });
-
   const fullCloseResult = resolveSellQuantityByFullClose({
     availableQuantity,
     directionName,
-    relatedBuyOrderIds,
   });
   return {
     ...fullCloseResult,
@@ -90,7 +73,7 @@ function calculateSellQuantity(params: {
 export const processSellSignals = (
   params: ProcessSellSignalsParams,
 ): ProcessSellSignalsParams['signals'] => {
-  const { signals, longPosition, shortPosition, longQuote, shortQuote, orderRecorder } = params;
+  const { signals, longPosition, shortPosition, longQuote, shortQuote } = params;
   for (const sig of signals) {
     // 只处理卖出信号（SELLCALL 和 SELLPUT），跳过买入信号
     if (!isSellAction(sig.action)) {
@@ -159,25 +142,19 @@ export const processSellSignals = (
       const result = calculateSellQuantity({
         position,
         quote,
-        orderRecorder,
         direction,
         originalReason: sig.reason ?? '',
-        symbol: sig.symbol,
       });
       if (result.shouldHold) {
         logger.info(`[卖出信号处理] ${signalName}被跳过: ${result.reason}`);
         sig.action = 'HOLD';
         sig.reason = result.reason;
-        sig.relatedBuyOrderIds = null;
       } else {
         logger.debug(
           `[卖出信号处理] ${signalName}通过: 卖出数量=${result.quantity}, 原因=${result.reason}`,
         );
         sig.quantity = result.quantity;
         sig.reason = result.reason;
-
-        // 设置关联的买入订单ID列表（用于防重追踪）
-        sig.relatedBuyOrderIds = result.relatedBuyOrderIds;
 
         // 委托价必须以执行时行情为准，覆盖流水线可能写入的旧价
         if (quote?.price !== undefined) {

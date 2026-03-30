@@ -55,7 +55,7 @@ export function buildStrategyRuntime(params: BuildStrategyRuntimeParams): void {
     symbolRegistry: preGateRuntime.symbolRegistry,
     marketDataClient: preGateRuntime.marketDataClient,
     trader: postGateRuntime.trader,
-    orderRecorder: postGateRuntime.trader.orderRecorder,
+    positionCache: postGateRuntime.lastState.positionCache,
     riskChecker,
     warrantListCacheConfig: preGateRuntime.warrantListCacheConfig,
     getTradingCalendarSnapshot: () =>
@@ -68,7 +68,6 @@ export function buildStrategyRuntime(params: BuildStrategyRuntimeParams): void {
     symbolRegistry: preGateRuntime.symbolRegistry,
     quotesMap,
     strategy,
-    orderRecorder: postGateRuntime.trader.orderRecorder,
     dailyLossTracker: postGateRuntime.dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor: createUnrealizedLossMonitor({

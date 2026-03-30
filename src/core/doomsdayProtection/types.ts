@@ -16,6 +16,7 @@ export type ClearanceSignalParams = {
   readonly action: SignalType;
   readonly price: number | null;
   readonly lotSize: number | null;
+  readonly quantity: number;
   readonly positionType: 'long' | 'short';
 };
 

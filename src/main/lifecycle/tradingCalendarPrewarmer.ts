@@ -2,18 +2,12 @@
  * 交易日历预热器模块
  *
  * 核心职责：
- * - 在重建阶段基于"当前仍持仓买单"计算交易日历需求窗口
+ * - 在重建阶段基于 fallback lookback 窗口预热交易日历快照
  * - 仅补齐快照缺失日期，避免重复查询
  * - 按自然月分块调用交易日接口，严格遵守单次查询区间约束
- *
- * 约束与失败策略：
- * - 交易日历接口仅支持最近一年窗口，超出范围直接抛错阻断重建
- * - 任一查询失败即抛错，由生命周期管理器统一重试
  */
 import { LIFECYCLE, TIME } from '../../constants/index.js';
-import { hasSeatSymbol } from '../../utils/seat/guards.js';
-import type { StrategyRuntime } from '../../types/state.js';
-import type { MarketDataClient, OrderRecord, TradingDayInfo } from '../../types/services.js';
+import type { MarketDataClient, TradingDayInfo } from '../../types/services.js';
 import { listHKDateKeysBetween } from './utils.js';
 import { getHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
 import type {
@@ -23,9 +17,6 @@ import type {
   TradingCalendarPrewarmErrorParams,
 } from './types.js';
 
-/**
- * 创建交易日历预热结构化错误，附带稳定错误码与上下文，便于生命周期日志与告警定位。
- */
 function createTradingCalendarPrewarmError(
   params: TradingCalendarPrewarmErrorParams,
 ): TradingCalendarPrewarmError {
@@ -37,18 +28,14 @@ function createTradingCalendarPrewarmError(
   });
 }
 
-/**
- * 在重建阶段预热交易日历快照：按已绑定席位仍持仓订单决定窗口，补齐缺失日期后写回 lastState。
- */
 export async function prewarmTradingCalendarSnapshotForRebuild(
   params: PrewarmTradingCalendarSnapshotParams,
 ): Promise<void> {
-  const { marketDataClient, lastState, monitorContext, now } = params;
+  const { marketDataClient, lastState, now } = params;
   const nowMs = now.getTime();
-  const earliestOpenOrderMs = resolveEarliestOpenOrderExecutedMs(monitorContext);
   const fallbackStartMs =
     nowMs - LIFECYCLE.CALENDAR_PREWARM_FALLBACK_LOOKBACK_DAYS * TIME.MILLISECONDS_PER_DAY;
-  const demandStartMs = earliestOpenOrderMs ?? fallbackStartMs;
+  const demandStartMs = fallbackStartMs;
   const demandEndMs = nowMs + LIFECYCLE.CALENDAR_PREWARM_LOOKAHEAD_DAYS * TIME.MILLISECONDS_PER_DAY;
   assertCalendarLookbackRange(demandStartMs, nowMs);
   const demandDateKeys = listHKDateKeysBetween(demandStartMs, demandEndMs);
@@ -80,57 +67,6 @@ export async function prewarmTradingCalendarSnapshotForRebuild(
   lastState.tradingCalendarSnapshot = nextSnapshot;
 }
 
-/**
- * 从已绑定席位提取当前仍持仓买单，返回最早成交时间。
- */
-function resolveEarliestOpenOrderExecutedMs(monitorContext: StrategyRuntime): number | null {
-  let earliestMs: number | null = null;
-  const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
-  const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
-  if (hasSeatSymbol(longSeatState)) {
-    const longOrders = monitorContext.orderRecorder.getBuyOrdersForSymbol(
-      longSeatState.symbol,
-      true,
-    );
-    earliestMs = resolveMinTimestamp(earliestMs, longOrders);
-  }
-
-  if (hasSeatSymbol(shortSeatState)) {
-    const shortOrders = monitorContext.orderRecorder.getBuyOrdersForSymbol(
-      shortSeatState.symbol,
-      false,
-    );
-    earliestMs = resolveMinTimestamp(earliestMs, shortOrders);
-  }
-
-  return earliestMs;
-}
-
-/**
- * 在当前最小值基础上，用订单列表中的有效成交时间更新最小时间戳。
- */
-function resolveMinTimestamp(
-  currentEarliestMs: number | null,
-  orders: ReadonlyArray<OrderRecord>,
-): number | null {
-  let earliestMs = currentEarliestMs;
-  for (const order of orders) {
-    const executedTimeMs = order.executedTime;
-    if (!Number.isFinite(executedTimeMs)) {
-      continue;
-    }
-
-    if (earliestMs === null || executedTimeMs < earliestMs) {
-      earliestMs = executedTimeMs;
-    }
-  }
-
-  return earliestMs;
-}
-
-/**
- * 校验需求窗口是否落在交易日接口"最近一年"能力范围内。
- */
 function assertCalendarLookbackRange(demandStartMs: number, nowMs: number): void {
   const earliestAllowedMs =
     nowMs - LIFECYCLE.CALENDAR_API_MAX_LOOKBACK_DAYS * TIME.MILLISECONDS_PER_DAY;
@@ -150,9 +86,6 @@ function assertCalendarLookbackRange(demandStartMs: number, nowMs: number): void
   });
 }
 
-/**
- * 使用交易日批量接口按自然月分块补齐快照缺失日期。
- */
 async function hydrateSnapshotByMonthlyTradingDays({
   marketDataClient,
   dateKeys,
@@ -182,9 +115,6 @@ async function hydrateSnapshotByMonthlyTradingDays({
   }
 }
 
-/**
- * 批量接口不可用时逐日查询，仍保持按缺失日期补齐语义。
- */
 async function hydrateSnapshotByDailyTradingDay({
   marketDataClient,
   dateKeys,
@@ -201,9 +131,6 @@ async function hydrateSnapshotByDailyTradingDay({
   }
 }
 
-/**
- * 将缺失日期键切分为"同月且连续"的查询分块，确保每次请求不跨自然月且不覆盖已存在日期。
- */
 function splitMissingDateKeysByMonth(
   dateKeys: ReadonlyArray<string>,
 ): ReadonlyArray<DateRangeChunk> {
@@ -252,9 +179,6 @@ function splitMissingDateKeysByMonth(
   return chunks;
 }
 
-/**
- * 判断两个日期键是否为相邻自然日。
- */
 function isConsecutiveDateKey(previousKey: string, currentKey: string): boolean {
   const previousDayStartMs = resolveHKDayStartUtcMs(previousKey);
   const currentDayStartMs = resolveHKDayStartUtcMs(currentKey);
@@ -265,16 +189,10 @@ function isConsecutiveDateKey(previousKey: string, currentKey: string): boolean 
   return currentDayStartMs - previousDayStartMs === TIME.MILLISECONDS_PER_DAY;
 }
 
-/**
- * 获取日期键的 YYYY-MM 月键。
- */
 function resolveMonthKey(dayKey: string): string {
   return dayKey.slice(0, 7);
 }
 
-/**
- * 将港股日期键转换为对应港股日 00:00 的 Date（UTC）。
- */
 function resolveDateFromHKDateKey(dayKey: string): Date {
   const dayStartUtcMs = resolveHKDayStartUtcMs(dayKey);
   if (dayStartUtcMs === null) {

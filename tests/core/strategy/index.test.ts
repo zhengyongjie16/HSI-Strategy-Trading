@@ -11,10 +11,9 @@ import { createStrategyRuntimeConfig } from '../../../mock/factories/configFacto
 import type { FactorSnapshot } from '../../../src/types/factor.js';
 import {
   createFactorSnapshotDouble,
-  createOrderRecorderDouble,
+  createPositionCacheDouble,
+  createPositionDouble,
 } from '../../helpers/testDoubles.js';
-
-const TEST_TIMESTAMP_MS = Date.UTC(2026, 2, 29, 2, 15, 0);
 
 function createFactorSnapshot(overrides: Partial<FactorSnapshot> = {}): FactorSnapshot {
   return createFactorSnapshotDouble({
@@ -29,7 +28,7 @@ describe('createTrendContinuationStrategy', () => {
       createFactorSnapshot(),
       'BULL.HK',
       'BEAR.HK',
-      createOrderRecorderDouble(),
+      createPositionCacheDouble(),
     );
 
     expect(result.map((signal) => signal.action)).toEqual(['BUYCALL']);
@@ -69,22 +68,13 @@ describe('createTrendContinuationStrategy', () => {
       }),
       'BULL.HK',
       '',
-      createOrderRecorderDouble({
-        getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
-          isLongSymbol && symbol === 'BULL.HK'
-            ? [
-                {
-                  orderId: 'BUY-1',
-                  symbol: 'BULL.HK',
-                  executedPrice: 100,
-                  executedQuantity: 100,
-                  executedTime: TEST_TIMESTAMP_MS,
-                  submittedAt: undefined,
-                  updatedAt: undefined,
-                },
-              ]
-            : [],
-      }),
+      createPositionCacheDouble([
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 100,
+          availableQuantity: 100,
+        }),
+      ]),
     );
 
     expect(result.map((signal) => signal.action)).toEqual(['SELLCALL']);
@@ -156,22 +146,13 @@ describe('createTrendContinuationStrategy', () => {
       }),
       'BULL.HK',
       '',
-      createOrderRecorderDouble({
-        getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
-          isLongSymbol && symbol === 'BULL.HK'
-            ? [
-                {
-                  orderId: 'BUY-1',
-                  symbol: 'BULL.HK',
-                  executedPrice: 100,
-                  executedQuantity: 100,
-                  executedTime: TEST_TIMESTAMP_MS,
-                  submittedAt: undefined,
-                  updatedAt: undefined,
-                },
-              ]
-            : [],
-      }),
+      createPositionCacheDouble([
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 100,
+          availableQuantity: 100,
+        }),
+      ]),
     );
 
     expect(result).toHaveLength(0);
@@ -187,7 +168,7 @@ describe('createTrendContinuationStrategy', () => {
       }),
       'BULL.HK',
       'BEAR.HK',
-      createOrderRecorderDouble(),
+      createPositionCacheDouble(),
     );
 
     expect(result).toHaveLength(0);
@@ -232,7 +213,7 @@ describe('createTrendContinuationStrategy', () => {
       }),
       'BULL.HK',
       'BEAR.HK',
-      createOrderRecorderDouble(),
+      createPositionCacheDouble(),
     );
 
     expect(result).toHaveLength(0);

@@ -5,7 +5,7 @@
  * - 根据价格变化和监控标的配置调度风险检查任务
  * - 调度距回收价检查（LIQUIDATION_DISTANCE_CHECK）：用于触发距回收价清仓检查
  * - 调度浮亏检查（UNREALIZED_LOSS_CHECK）：用于触发保护性清仓
- * - 监控价格变化并更新价格展示信息（距回收价、持仓市值、持仓盈亏、订单数量）
+ * - 监控价格变化并更新价格展示信息（距回收价、持仓市值、持仓盈亏、持仓数量）
  *
  * 调度条件：
  * - 距回收价检查：自动寻标未启用、且价格发生变化时调度
@@ -13,13 +13,13 @@
  */
 import type { RiskTasksParams } from './types.js';
 import type { PriceDisplayInfo } from '../../services/marketMonitor/types.js';
-import type { RiskChecker, OrderRecorder } from '../../types/services.js';
+import type { RiskChecker } from '../../types/services.js';
 
 /**
- * 构建单方向价格展示信息（距回收价、持仓市值/持仓盈亏、订单数量）。
+ * 构建单方向价格展示信息（距回收价、持仓市值/持仓盈亏、持仓数量）。
  * 统一复用 riskChecker 的浮亏缓存计算结果，避免展示层重复实现 R1/N1/R2 公式。
  *
- * @param params 含 seatActive、symbol、monitorCurrentPrice、quotePrice、isLongSymbol、riskChecker、orderRecorder
+ * @param params 含 seatActive、symbol、monitorCurrentPrice、quotePrice、isLongSymbol、riskChecker
  * @returns 价格展示信息，席位未就绪时返回 null
  */
 function buildPriceDisplayInfo(params: {
@@ -29,17 +29,8 @@ function buildPriceDisplayInfo(params: {
   readonly quotePrice: number | null;
   readonly isLongSymbol: boolean;
   readonly riskChecker: RiskChecker;
-  readonly orderRecorder: OrderRecorder;
 }): PriceDisplayInfo | null {
-  const {
-    seatActive,
-    symbol,
-    monitorCurrentPrice,
-    quotePrice,
-    isLongSymbol,
-    riskChecker,
-    orderRecorder,
-  } = params;
+  const { seatActive, symbol, monitorCurrentPrice, quotePrice, isLongSymbol, riskChecker } = params;
 
   if (!seatActive) {
     return null;
@@ -51,12 +42,12 @@ function buildPriceDisplayInfo(params: {
     monitorCurrentPrice,
   );
   const unrealizedLossMetrics = riskChecker.getUnrealizedLossMetrics(symbol, quotePrice);
-  const orderCount = orderRecorder.getBuyOrdersForSymbol(symbol, isLongSymbol).length;
+  const positionCount = unrealizedLossMetrics && unrealizedLossMetrics.n1 > 0 ? 1 : 0;
 
   return {
     warrantDistanceInfo,
     unrealizedLossMetrics,
-    orderCount,
+    positionCount,
   };
 }
 
@@ -77,7 +68,7 @@ export function scheduleRiskTasks(params: RiskTasksParams): void {
     resolvedMonitorPrice,
     monitorCurrentPrice,
   } = params;
-  const { riskChecker, orderRecorder, state } = monitorContext;
+  const { riskChecker, state } = monitorContext;
   const { marketMonitor, monitorTaskQueue } = mainContext;
   const {
     longSeatState,
@@ -119,7 +110,6 @@ export function scheduleRiskTasks(params: RiskTasksParams): void {
     quotePrice: longQuote?.price ?? null,
     isLongSymbol: true,
     riskChecker,
-    orderRecorder,
   });
   const shortDisplayInfo = buildPriceDisplayInfo({
     seatActive: shortSeatActive,
@@ -128,7 +118,6 @@ export function scheduleRiskTasks(params: RiskTasksParams): void {
     quotePrice: shortQuote?.price ?? null,
     isLongSymbol: false,
     riskChecker,
-    orderRecorder,
   });
 
   const priceChanged = marketMonitor.monitorPriceChanges(

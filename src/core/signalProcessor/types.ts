@@ -2,7 +2,7 @@ import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { Signal } from '../../types/signal.js';
 import type { GlobalConfig } from '../../types/config.js';
-import type { OrderRecorder, RiskCheckContext } from '../../types/services.js';
+import type { RiskCheckContext } from '../../types/services.js';
 import type { LiquidationCooldownTracker } from '../../services/liquidationCooldown/types.js';
 
 // ==================== 结果类型定义 ====================
@@ -26,7 +26,7 @@ export type SellContextValidationResult =
 
 /**
  * 卖出信号处理入参。
- * 类型用途：统一承载 processSellSignals 卖出数量计算所需的行情、持仓与订单记录。
+ * 类型用途：统一承载 processSellSignals 卖出数量计算所需的行情与持仓。
  * 数据来源：由卖出处理链路在调用前组装。
  * 使用范围：signalProcessor 模块与调用方之间的参数契约。
  */
@@ -36,7 +36,6 @@ export type ProcessSellSignalsParams = {
   readonly shortPosition: Position | null;
   readonly longQuote: Quote | null;
   readonly shortQuote: Quote | null;
-  readonly orderRecorder: OrderRecorder | null;
 };
 
 // ==================== 服务接口定义 ====================

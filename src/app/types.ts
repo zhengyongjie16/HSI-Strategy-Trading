@@ -10,7 +10,6 @@ import type { StrategyRuntimeConfig, TradingConfig } from '../types/config.js';
 import type { Quote } from '../types/quote.js';
 import type {
   MarketDataClient,
-  OrderRecorder,
   RawOrderFromAPI,
   RiskChecker,
   Trader,
@@ -226,7 +225,6 @@ export type StrategyRuntimeFactoryDeps = Readonly<{
   symbolRegistry: SymbolRegistry;
   quotesMap: ReadonlyMap<string, Quote | null>;
   strategy: TradingSignalStrategy;
-  orderRecorder: OrderRecorder;
   dailyLossTracker: DailyLossTracker;
   riskChecker: RiskChecker;
   unrealizedLossMonitor: UnrealizedLossMonitor;

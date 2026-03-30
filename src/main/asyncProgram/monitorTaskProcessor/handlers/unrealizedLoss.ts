@@ -7,6 +7,7 @@
  * - 无有效席位时跳过处理
  */
 import { ORDER_QUOTE_RETRY } from '../../../../constants/index.js';
+import type { Position } from '../../../../types/account.js';
 import type { Trader, MarketDataClient } from '../../../../types/services.js';
 import type { RefreshGate } from '../../../../utils/types.js';
 import {
@@ -24,13 +25,6 @@ import type {
 } from '../types.js';
 import { evaluateStrategyRuntimeAndSeatReadiness } from '../utils.js';
 
-/**
- * 创建浮亏清仓检查任务处理器。
- * 校验席位快照后执行浮亏检查，超过阈值则触发保护性清仓；保证风控检查在 RefreshGate 刷新后、席位就绪时执行。
- *
- * @param deps 依赖注入，包含 getContextOrSkip、refreshGate、trader、getCanProcessTask
- * @returns 处理 UNREALIZED_LOSS_CHECK 任务的异步函数
- */
 export function createUnrealizedLossHandler({
   baseInstrumentSymbol,
   getContextOrSkip,
@@ -90,6 +84,15 @@ export function createUnrealizedLossHandler({
       isLongReady && isQuoteReadyForRequirement({ quote: longQuote, requirement: 'PRICE' });
     const shortQuoteReady =
       isShortReady && isQuoteReadyForRequirement({ quote: shortQuote, requirement: 'PRICE' });
+    const readyPositionSymbols = [
+      longQuoteReady ? longSymbol : '',
+      shortQuoteReady ? shortSymbol : '',
+    ].filter((symbol) => symbol.length > 0);
+    const executionPositions =
+      readyPositionSymbols.length > 0 ? await trader.getStockPositions(readyPositionSymbols) : [];
+    const resolvePosition = (symbol: string): Position | null => {
+      return executionPositions.find((position) => position.symbol === symbol) ?? null;
+    };
     const unresolvedSymbols = new Set<string>();
     if (isLongReady && !longQuoteReady && longSymbol.length > 0) {
       unresolvedSymbols.add(longSymbol);
@@ -115,10 +118,11 @@ export function createUnrealizedLossHandler({
         shortQuote: shortQuoteReady ? shortQuote : null,
         longSymbol: readyLongSymbol,
         shortSymbol: readyShortSymbol,
+        longPosition: readyLongSymbol.length > 0 ? resolvePosition(readyLongSymbol) : null,
+        shortPosition: readyShortSymbol.length > 0 ? resolvePosition(readyShortSymbol) : null,
         baseInstrumentSymbol,
         riskChecker: context.riskChecker,
         trader,
-        orderRecorder: context.orderRecorder,
         dailyLossTracker: context.dailyLossTracker,
       });
     }

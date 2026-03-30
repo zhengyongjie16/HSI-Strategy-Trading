@@ -29,7 +29,7 @@ import type { CancelOrderOutcome } from '../../../types/trader.js';
 /**
  * 创建订单监控器。
  *
- * @param deps 依赖（ctxPromise、rateLimiter、cacheManager、orderRecorder、dailyLossTracker、orderHoldRegistry、globalConfig、monitorConfig 等）
+ * @param deps 依赖（ctxPromise、rateLimiter、cacheManager、dailyLossTracker、orderHoldRegistry、globalConfig、monitorConfig 等）
  * @returns 实现 OrderMonitor 接口的实例
  */
 export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
@@ -38,7 +38,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     rateLimiter,
     cacheManager,
     marketDataClient,
-    orderRecorder,
     dailyLossTracker,
     orderHoldRegistry,
     protectiveLiquidationEpisodeTracker,
@@ -55,6 +54,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     trackedOrders: new Map<string, OrderMonitorTrackedOrder>(),
     trackedOrderLifecycles: new Map(),
     pendingRefreshSymbols: [],
+    recentFilledOrders: new Map(),
     bootstrappingOrderEvents: new Map<string, PushOrderChanged>(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
@@ -66,7 +66,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   const settlementFlow = createSettlementFlow({
     runtime,
     orderHoldRegistry,
-    orderRecorder,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
     ...(refreshGate ? { refreshGate } : {}),
@@ -90,7 +89,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   const recoveryFlow = createRecoveryFlow({
     runtime,
     orderHoldRegistry,
-    orderRecorder,
     monitorConfig,
     symbolRegistry,
     trackOrder: orderOps.trackOrder,
@@ -107,7 +105,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   const eventFlow = createEventFlow({
     runtime,
-    orderRecorder,
     settleOrder: settlementFlow.settleOrder,
     cacheBootstrappingEvent: recoveryFlow.cacheBootstrappingEvent,
   });
@@ -117,7 +114,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     runtime,
     config,
     thresholdDecimal,
-    orderRecorder,
     marketDataClient,
     ctxPromise,
     rateLimiter,
@@ -173,10 +169,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       };
     }
 
-    return {
-      ...outcome,
-      relatedBuyOrderIds: settlementResult.relatedBuyOrderIds,
-    };
+    return outcome;
   }
 
   testHooks?.setHandleOrderChanged?.(eventFlow.handleOrderChanged);
@@ -229,6 +222,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     recoveryFlow.clearBootstrappingEventBuffer();
     runtime.trackedOrderLifecycles.clear();
     runtime.closedOrderIds.clear();
+    runtime.recentFilledOrders.clear();
     runtime.runtimeState = 'BOOTSTRAPPING';
   }
 
@@ -270,6 +264,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     processWithLatestQuotes: quoteFlow.processWithLatestQuotes,
     recoverOrderTrackingFromSnapshot: recoveryFlow.recoverOrderTrackingFromSnapshot,
     getPendingSellOrders: quoteFlow.getPendingSellOrders,
+    hasPendingSellOrders: (symbol) => quoteFlow.getPendingSellOrders(symbol).length > 0,
+    getRecentFilledOrder: (orderId) => runtime.recentFilledOrders.get(orderId) ?? null,
     getAndClearPendingRefreshSymbols,
     hasPendingProtectiveLiquidationOrders,
     clearTrackedOrders,

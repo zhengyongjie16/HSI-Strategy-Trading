@@ -2,12 +2,12 @@
  * 交易日状态重建单元测试
  *
  * 覆盖：
- * - 重建主链路（订单重建 → 日历预热 → 风险缓存 → 恢复追踪 → 展示）
- * - 交易日历预热按“仍持仓买单”确定起点，并按自然月分块查询
+ * - 重建主链路（日历预热 → 风险缓存 → 恢复追踪 → 展示）
+ * - 交易日历预热使用固定 fallback 窗口，并按自然月分块查询
  * - 预热失败时重建 fail-fast
  */
 import { describe, it, expect } from 'bun:test';
-import { TIME } from '../../../src/constants/index.js';
+import { LIFECYCLE, TIME } from '../../../src/constants/index.js';
 import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
 import { listHKDateKeysBetween } from '../../../src/main/lifecycle/utils.js';
 import type { RebuildTradingDayStateDeps } from '../../../src/main/lifecycle/types.js';
@@ -17,11 +17,17 @@ import type { Quote } from '../../../src/types/quote.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
 import type {
   MarketDataClient,
-  OrderRecord,
   RawOrderFromAPI,
   Trader,
   TradingDaysResult,
 } from '../../../src/types/services.js';
+import {
+  createPositionCacheDouble,
+  createPositionDouble,
+  createRiskCheckerDouble,
+  createStrategyRuntimeConfigDouble,
+  createStrategyRuntimeDouble,
+} from '../../helpers/testDoubles.js';
 
 const emptyQuotesMap = new Map<string, Quote | null>();
 const emptyOrders: ReadonlyArray<RawOrderFromAPI> = [];
@@ -38,6 +44,8 @@ function createMinimalLastState(): RebuildTradingDayStateDeps['lastState'] {
   return {
     tradingCalendarSnapshot: new Map(),
     cachedTradingDayInfo: null,
+    cachedPositions: [],
+    positionCache: createPositionCacheDouble(),
   } as unknown as RebuildTradingDayStateDeps['lastState'];
 }
 
@@ -54,59 +62,33 @@ function createSymbolRegistry(
         }
       : emptySeatState;
   return {
-    getSeatState: () => readySeatState,
+    getSeatState: (direction: 'LONG' | 'SHORT') => {
+      if (direction === 'LONG') {
+        return readySeatState;
+      }
+
+      return emptySeatState;
+    },
     getSeatVersion: () => 1,
     resolveSeatBySymbol: () => null,
-    updateSeatState: () => readySeatState,
+    updateSeatState: (_direction: 'LONG' | 'SHORT') => readySeatState,
     bumpSeatVersion: () => 1,
-  };
-}
-
-function createBuyOrder(executedTime: number, symbol: string): OrderRecord {
-  return {
-    orderId: `BUY-${executedTime}`,
-    symbol,
-    executedPrice: 1,
-    executedQuantity: 100,
-    executedTime,
-    submittedAt: new Date(executedTime),
-    updatedAt: new Date(executedTime),
   };
 }
 
 function createStrategyRuntime(params: {
   symbolRegistry: SymbolRegistry;
   baseInstrumentSymbol?: string;
-  buyOrders?: ReadonlyArray<OrderRecord>;
-  onRefreshLong?: (
-    symbol: string,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    quote?: Quote | null,
-  ) => Promise<ReadonlyArray<OrderRecord>>;
+  riskChecker?: StrategyRuntime['riskChecker'];
 }): StrategyRuntime {
-  const {
+  const { symbolRegistry, baseInstrumentSymbol = 'HSI.HK', riskChecker } = params;
+  return createStrategyRuntimeDouble({
+    config: createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol,
+    }),
     symbolRegistry,
-    baseInstrumentSymbol = 'HSI.HK',
-    buyOrders = [],
-    onRefreshLong = async () => [],
-  } = params;
-  return {
-    config: { baseInstrumentSymbol },
-    symbolRegistry,
-    orderRecorder: {
-      refreshOrdersFromAllOrdersForLong: onRefreshLong,
-      refreshOrdersFromAllOrdersForShort: async () => [],
-      getBuyOrdersForSymbol: () => buyOrders,
-    },
-    riskChecker: {
-      setWarrantInfoFromCallPrice: () => ({ status: 'ok' as const }),
-      refreshWarrantInfoForSymbol: async () => ({ status: 'ok' as const }),
-      refreshUnrealizedLossData: async () => {},
-    },
-    longQuote: null,
-    shortQuote: null,
-    monitorQuote: null,
-  } as unknown as StrategyRuntime;
+    riskChecker: riskChecker ?? createRiskCheckerDouble(),
+  });
 }
 
 function createDefaultMarketDataClient(
@@ -172,14 +154,13 @@ describe('createRebuildTradingDayState', () => {
     expect(displayCalled).toBe(true);
   });
 
-  it('仅存在已平仓历史订单时，预热起点不会回溯到历史订单时间', async () => {
+  it('交易日历预热使用固定 fallback 窗口，不再回溯历史订单时间', async () => {
     const oldExecutedTime = new Date('2024-01-05T03:00:00.000Z').getTime();
     const now = new Date('2026-02-20T03:00:00.000Z');
     const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createStrategyRuntime({
       symbolRegistry: registry,
-      buyOrders: [],
     });
     const deps = createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
@@ -211,50 +192,68 @@ describe('createRebuildTradingDayState', () => {
     const earliestRequestedMs = Math.min(
       ...tradingDayCalls.map((call) => call.startDate.getTime()),
     );
+    const expectedStartKey = getHKDateKey(
+      new Date(
+        now.getTime() -
+          LIFECYCLE.CALENDAR_PREWARM_FALLBACK_LOOKBACK_DAYS * TIME.MILLISECONDS_PER_DAY,
+      ),
+    );
     expect(earliestRequestedMs).toBeGreaterThan(oldExecutedTime);
+    expect(getHKDateKey(new Date(earliestRequestedMs))).toBe(expectedStartKey);
   });
 
-  it('存在仍持仓老单时，预热起点回溯到该老单成交时间', async () => {
-    const oldOpenOrderTime = new Date('2025-12-15T03:00:00.000Z').getTime();
-    const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
+  it('重建浮亏缓存时直接从 positionCache 读取席位持仓', async () => {
     const registry = createSymbolRegistry('ACTIVE');
+    const refreshedPositions: Array<{
+      symbol: string;
+      quantity: number;
+      isLongSymbol: boolean;
+    }> = [];
     const monitorContext = createStrategyRuntime({
       symbolRegistry: registry,
-      buyOrders: [createBuyOrder(oldOpenOrderTime, 'BULL.HK')],
+      riskChecker: createRiskCheckerDouble({
+        refreshUnrealizedLossData: async (symbol, position, isLongSymbol) => {
+          refreshedPositions.push({
+            symbol,
+            quantity: position?.quantity ?? 0,
+            isLongSymbol,
+          });
+          return null;
+        },
+      }),
     });
-    const lastState = createMinimalLastState();
+    const heldPosition = createPositionDouble({
+      symbol: 'BULL.HK',
+      quantity: 300,
+      availableQuantity: 300,
+    });
+    const lastState = {
+      ...createMinimalLastState(),
+      cachedPositions: [heldPosition],
+      positionCache: createPositionCacheDouble([heldPosition]),
+    } as RebuildTradingDayStateDeps['lastState'];
     const deps = createRebuildDeps({
-      marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
       monitorContext,
       lastState,
     });
     const rebuild = createRebuildTradingDayState(deps);
-    await rebuild({
-      allOrders: emptyOrders,
-      quotesMap: emptyQuotesMap,
-      now: new Date('2026-02-20T03:00:00.000Z'),
-    });
-    expect(tradingDayCalls.length).toBeGreaterThan(0);
-    const earliestRequestedMs = Math.min(
-      ...tradingDayCalls.map((call) => call.startDate.getTime()),
-    );
-    expect(earliestRequestedMs).toBeLessThanOrEqual(oldOpenOrderTime);
-    const oldOrderDateKey = getHKDateKey(new Date(oldOpenOrderTime));
-    expect(oldOrderDateKey).not.toBeNull();
-    if (oldOrderDateKey) {
-      expect(lastState.tradingCalendarSnapshot?.has(oldOrderDateKey)).toBe(true);
-    }
+    await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap });
+    expect(refreshedPositions).toEqual([
+      {
+        symbol: 'BULL.HK',
+        quantity: 300,
+        isLongSymbol: true,
+      },
+    ]);
   });
 
   it('交易日历查询会按自然月分块，不跨月请求', async () => {
-    const openOrderTime = new Date('2025-11-15T03:00:00.000Z').getTime();
-    const now = new Date('2026-02-20T03:00:00.000Z');
+    const now = new Date('2026-03-10T03:00:00.000Z');
     const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createStrategyRuntime({
       symbolRegistry: registry,
-      buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
     });
     const deps = createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
@@ -271,41 +270,43 @@ describe('createRebuildTradingDayState', () => {
     }
   });
 
-  it('最近一年边界按毫秒判断，同日更早时刻也应判定为超限', async () => {
+  it('交易日历预热只请求快照中缺失的日期', async () => {
     const now = new Date('2026-02-20T12:00:00.000Z');
-    const earliestAllowedMs = now.getTime() - 365 * TIME.MILLISECONDS_PER_DAY;
-    const openOrderTime = earliestAllowedMs - 60 * 60 * 1000;
     const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createStrategyRuntime({
       symbolRegistry: registry,
-      buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
     });
+    const prewarmedDateKeys = listHKDateKeysBetween(
+      now.getTime() - LIFECYCLE.CALENDAR_PREWARM_FALLBACK_LOOKBACK_DAYS * TIME.MILLISECONDS_PER_DAY,
+      now.getTime() + LIFECYCLE.CALENDAR_PREWARM_LOOKAHEAD_DAYS * TIME.MILLISECONDS_PER_DAY,
+    );
+    const tradingCalendarSnapshot = new Map(
+      prewarmedDateKeys.map((dateKey) => [dateKey, { isTradingDay: true, isHalfDay: false }]),
+    );
     const deps = createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
       monitorContext,
+      lastState: {
+        ...createMinimalLastState(),
+        tradingCalendarSnapshot,
+      } as RebuildTradingDayStateDeps['lastState'],
     });
     const rebuild = createRebuildTradingDayState(deps);
-    let caughtError: unknown = null;
-    try {
-      await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
-    } catch (error) {
-      caughtError = error;
-    }
-
-    expect(caughtError).toBeInstanceOf(Error);
-    expect((caughtError as Error).message).toMatch(/\[Lifecycle\] 重建交易日状态失败/);
+    await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
     expect(tradingDayCalls.length).toBe(0);
   });
 
-  it('rebuildOrderRecords 中抛错时抛出带 [Lifecycle] 重建交易日状态失败 前缀的错误', async () => {
+  it('浮亏缓存刷新抛错时同样抛出带 [Lifecycle] 重建交易日状态失败 前缀的错误', async () => {
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createStrategyRuntime({
       symbolRegistry: registry,
-      onRefreshLong: async () => {
-        throw new Error('order refresh fail');
-      },
+      riskChecker: createRiskCheckerDouble({
+        refreshUnrealizedLossData: async () => {
+          throw new Error('unrealized refresh fail');
+        },
+      }),
     });
     const deps = createRebuildDeps({
       symbolRegistry: registry,
@@ -321,7 +322,6 @@ describe('createRebuildTradingDayState', () => {
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createStrategyRuntime({
       symbolRegistry: registry,
-      buyOrders: [createBuyOrder(Date.now() - 2 * TIME.MILLISECONDS_PER_DAY, 'BULL.HK')],
     });
     const deps = createRebuildDeps({
       marketDataClient: {

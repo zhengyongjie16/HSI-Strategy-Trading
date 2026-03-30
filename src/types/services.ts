@@ -14,7 +14,6 @@ import type { Quote, IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { DecimalLikeValue } from './common.js';
 import type { StrategyRuntimeConfig } from './config.js';
-import type { TradingCalendarSnapshot } from './tradingCalendar.js';
 import type { CancelOrderOutcome } from './trader.js';
 import type { CandleData } from './data.js';
 
@@ -158,9 +157,9 @@ export type PendingOrder = {
 
 /**
  * API 返回的原始订单类型。
- * 类型用途：从 Longbridge 订单 API 接收订单数据时的类型安全结构，作为 fetchAllOrdersFromAPI、refreshOrdersFromAllOrdersForLong/Short 等入参或元素类型。
+ * 类型用途：从 Longbridge 订单 API 接收订单数据时的类型安全结构，作为 fetchAllOrdersFromAPI、启动恢复与当日亏损回算等入参或元素类型。
  * 数据来源：Longbridge 订单 API 返回。
- * 使用范围：OrderRecorder、Trader、orderApiManager 等；全项目可引用。
+ * 使用范围：Trader、dailyLossTracker、启动恢复等需要订单 API 结果的模块；全项目可引用。
  */
 export type RawOrderFromAPI = {
   readonly orderId: string;
@@ -180,9 +179,9 @@ export type RawOrderFromAPI = {
 
 /**
  * 已成交订单记录。
- * 类型用途：表示单笔已成交订单，用于订单记录器内部存储、成本均价计算、可卖订单列表等。
- * 数据来源：本地记录或由 RawOrderFromAPI 转换/同步得到。
- * 使用范围：OrderRecorder、RiskChecker、卖出计算等；全项目可引用。
+ * 类型用途：表示单笔已成交订单，用于当日亏损回算等需要统一成交结构的场景。
+ * 数据来源：由 RawOrderFromAPI 转换得到。
+ * 使用范围：DailyLossTracker 等跨模块成交计算场景；全项目可引用。
  */
 export type OrderRecord = {
   /** 订单 ID */
@@ -208,75 +207,29 @@ export type OrderRecord = {
 };
 
 /**
- * 待成交卖出订单信息。
- * 类型用途：卖出防重追踪，记录已提交但未成交的卖出订单及关联买单。
- * 数据来源：提交卖单时添加，成交/撤单时更新状态。
- * 使用范围：OrderRecorder、OrderStorage、订单监控等；全项目可引用。
+ * 最近成交订单摘要。
+ * 类型用途：在不保留订单记录模块的前提下，为自动换标等链路提供最近成交金额读取能力。
+ * 数据来源：订单监控终态结算后写入运行态缓存。
+ * 使用范围：Trader、自动换标等需要按 orderId 读取成交摘要的场景。
  */
-export type PendingSellInfo = {
-  /** 卖出订单ID */
+export type RecentFilledOrderSummary = {
+  /** 订单 ID */
   readonly orderId: string;
 
   /** 标的代码 */
   readonly symbol: string;
 
-  /** 方向 */
-  readonly direction: 'LONG' | 'SHORT';
+  /** 买卖方向 */
+  readonly side: OrderSide;
 
-  /** 提交数量 */
-  readonly submittedQuantity: number;
+  /** 成交价格 */
+  readonly executedPrice: number;
 
-  /** 已成交数量 */
-  readonly filledQuantity: number;
+  /** 成交数量 */
+  readonly executedQuantity: number;
 
-  /** 关联的买入订单ID列表（精确标记哪些订单被占用） */
-  readonly relatedBuyOrderIds: readonly string[];
-
-  /** 状态 */
-  readonly status: 'pending' | 'partial' | 'filled' | 'cancelled';
-
-  /** 提交时间 */
-  readonly submittedAt: number;
-};
-
-/**
- * 可卖订单筛选策略。
- * 类型用途：统一描述卖出订单筛选行为（全量/仅盈利/仅超时）。
- * 数据来源：由卖出决策层传入。
- * 使用范围：orderRecorder 与 signalProcessor 模块。
- */
-type SellableOrderStrategy = 'ALL' | 'PROFIT_ONLY' | 'TIMEOUT_ONLY';
-
-/**
- * 可卖订单筛选参数。
- * 类型用途：selectSellableOrders 的对象入参，统一承载策略、价格、超时、截断和额外排除规则。
- * 数据来源：卖出决策层构建。
- * 使用范围：orderRecorder 与 signalProcessor 模块。
- */
-export type SellableOrderSelectParams = {
-  readonly symbol: string;
-  readonly direction: 'LONG' | 'SHORT';
-  readonly strategy: SellableOrderStrategy;
-  readonly currentPrice: number;
-  readonly maxSellQuantity?: number;
-  readonly excludeOrderIds?: ReadonlySet<string>;
-  readonly timeoutMinutes?: number | null;
-  readonly nowMs?: number;
-  readonly calendarSnapshot?: TradingCalendarSnapshot;
-};
-
-/**
- * 可卖订单查询结果。
- * 类型用途：OrderStorage.selectSellableOrders 的返回结果，用于卖出数量计算与防重。
- * 数据来源：由 OrderStorage.selectSellableOrders 返回。
- * 使用范围：见调用方（如 signalProcessor、trader）。
- */
-export type SellableOrderResult = {
-  /** 可卖出的订单记录列表 */
-  readonly orders: ReadonlyArray<OrderRecord>;
-
-  /** 这些订单的总数量 */
-  readonly totalQuantity: number;
+  /** 成交时间戳 */
+  readonly executedTimeMs: number;
 };
 
 /**
@@ -311,133 +264,12 @@ export interface RateLimiter {
 }
 
 /**
- * 订单记录器中「待成交卖单 + 可卖订单」相关方法的共享契约。
- * 类型用途：OrderRecorder 与 OrderStorage 共用此方法集合，单一来源避免重复定义。
- * 数据来源：如适用。
- * 使用范围：OrderRecorder、OrderStorage 等订单记录相关契约；全项目可直接引用。
- */
-export interface OrderRecorderPendingSellAndSellable {
-  /** 更新待成交卖单元数据（卖单合并后同步数量与占用集合） */
-  updatePendingSell: (
-    orderId: string,
-    params: {
-      readonly submittedQuantity: number;
-      readonly relatedBuyOrderIds: ReadonlyArray<string>;
-    },
-  ) => PendingSellInfo | null;
-
-  /** 标记卖出订单完全成交 */
-  markSellFilled: (orderId: string) => PendingSellInfo | null;
-
-  /** 标记卖出订单部分成交 */
-  markSellPartialFilled: (orderId: string, filledQuantity: number) => PendingSellInfo | null;
-
-  /** 标记卖出订单取消 */
-  markSellCancelled: (orderId: string) => PendingSellInfo | null;
-
-  /** 获取待成交卖单快照（用于恢复一致性校验） */
-  getPendingSellSnapshot: () => ReadonlyArray<PendingSellInfo>;
-
-  /** 恢复期：为待恢复的卖单分配关联买单 ID */
-  allocateRelatedBuyOrderIdsForRecovery: (
-    symbol: string,
-    direction: 'LONG' | 'SHORT',
-    quantity: number,
-  ) => readonly string[];
-
-  /** 获取指定标的的成本均价（实时计算，无缓存） */
-  getCostAveragePrice: (symbol: string, isLongSymbol: boolean) => number | null;
-
-  /** 按策略筛选可卖订单（统一处理占用过滤、整笔截断与可选额外排除） */
-  selectSellableOrders: (params: SellableOrderSelectParams) => SellableOrderResult;
-}
-
-/**
- * 订单记录器接口。
- * 类型用途：依赖注入用接口，管理买卖订单的本地记录与 API 同步，提供成本价、可卖订单、待成交卖单追踪等。
- * 数据来源：本地记录 + Longbridge 订单 API 同步。
- * 使用范围：Trader、RiskChecker、信号处理、主循环等；全项目可引用。
- */
-export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
-  /** 记录本地买入订单 */
-  recordLocalBuy: (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
-    isLongSymbol: boolean,
-    executedTimeMs: number,
-  ) => void;
-
-  /** 记录本地卖出订单 */
-  recordLocalSell: (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
-    isLongSymbol: boolean,
-    executedTimeMs: number,
-    orderId?: string | null,
-    relatedBuyOrderIds?: ReadonlyArray<string> | null,
-  ) => void;
-
-  /** 清空指定标的的买入订单记录 */
-  clearBuyOrders: (symbol: string, isLongSymbol: boolean, quote?: Quote | null) => void;
-
-  /** 获取最新买入订单价格 */
-  getLatestBuyOrderPrice: (symbol: string, isLongSymbol: boolean) => number | null;
-
-  /** 获取最新卖出订单记录 */
-  getLatestSellRecord: (symbol: string, isLongSymbol: boolean) => OrderRecord | null;
-
-  /** 按订单 ID 获取卖出成交记录 */
-  getSellRecordByOrderId: (orderId: string) => OrderRecord | null;
-
-  /** 从 API 获取全量订单 */
-  fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
-
-  /** 使用全量订单刷新指定标的记录（做多标的） */
-  refreshOrdersFromAllOrdersForLong: (
-    symbol: string,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    quote?: Quote | null,
-  ) => Promise<ReadonlyArray<OrderRecord>>;
-
-  /** 使用全量订单刷新指定标的记录（做空标的） */
-  refreshOrdersFromAllOrdersForShort: (
-    symbol: string,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    quote?: Quote | null,
-  ) => Promise<ReadonlyArray<OrderRecord>>;
-
-  /** 清理指定标的的 API 订单缓存（不影响本地订单记录） */
-  clearOrdersCacheForSymbol: (symbol: string) => void;
-
-  /** 获取指定标的的买入订单 */
-  getBuyOrdersForSymbol: (symbol: string, isLongSymbol: boolean) => ReadonlyArray<OrderRecord>;
-
-  /** 提交卖出订单时调用（添加待成交追踪） */
-  submitSellOrder: (
-    orderId: string,
-    symbol: string,
-    direction: 'LONG' | 'SHORT',
-    quantity: number,
-    relatedBuyOrderIds: readonly string[],
-    submittedAtMs?: number,
-  ) => void;
-
-  /** 重置全部订单记录与 API 缓存 */
-  resetAll: () => void;
-}
-
-/**
  * 交易器接口。
  * 类型用途：依赖注入用接口，封装 Longbridge 交易 API，提供账户/持仓、订单执行、订单监控与信号执行等。
  * 数据来源：实现层对接 Longbridge TradeContext；账户与订单数据来自 API。
  * 使用范围：主循环、StrategyRuntime、信号处理、门禁等；全项目可引用。
  */
 export interface Trader {
-  /** 订单记录器实例 */
-  readonly orderRecorder: OrderRecorder;
-
   // ========== 账户相关 ==========
 
   /** 获取账户快照 */
@@ -459,6 +291,9 @@ export interface Trader {
 
   /** 获取订单订阅保留标的集合 */
   getOrderHoldSymbols: () => ReadonlySet<string>;
+
+  /** 是否存在指定标的的未完成卖单链路 */
+  hasPendingSellOrders: (symbol: string) => boolean;
 
   // ========== 订单监控 ==========
 
@@ -496,6 +331,9 @@ export interface Trader {
 
   /** 生命周期开盘重建：基于快照恢复订单追踪 */
   recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<RawOrderFromAPI>) => Promise<void>;
+
+  /** 读取最近成交订单摘要 */
+  getRecentFilledOrder: (orderId: string) => RecentFilledOrderSummary | null;
 
   /** 执行交易信号；返回实际提交数量与订单 ID 列表（保护性清仓等仅在真正提交后才更新缓存） */
   executeSignals: (
@@ -606,7 +444,7 @@ export type RiskCheckResult = {
 /**
  * 浮亏数据。
  * 类型用途：存储执行标的累计买入金额/数量等，用于计算浮动亏损与强平判定。
- * 数据来源：OrderRecorder 订单记录 + RiskChecker 刷新与计算。
+ * 数据来源：Position.costPrice/quantity 与 RiskChecker 刷新计算。
  * 使用范围：RiskChecker、UnrealizedLossMonitor 等；全项目可引用。
  */
 export type UnrealizedLossData = {
@@ -701,9 +539,6 @@ export type RiskCheckContext = {
   /** 风险检查器 */
   readonly riskChecker: RiskChecker;
 
-  /** 订单记录器 */
-  readonly orderRecorder: OrderRecorder;
-
   /** 做多标的行情 */
   readonly longQuote: Quote | null;
 
@@ -757,7 +592,7 @@ export type RiskCheckContext = {
 /**
  * 风险检查器接口。
  * 类型用途：依赖注入用接口，门面模式协调牛熊证风险、持仓限制与浮亏检查，供信号处理与买卖流程调用。
- * 数据来源：实现层对接行情与订单记录；牛熊证/浮亏数据由内部缓存与 API 维护。
+ * 数据来源：实现层对接行情与持仓缓存；牛熊证/浮亏数据由内部缓存与 API 维护。
  * 使用范围：StrategyRuntime、信号处理、主循环等；全项目可引用。
  */
 export interface RiskChecker {
@@ -815,8 +650,8 @@ export interface RiskChecker {
 
   /** 刷新浮亏数据 */
   refreshUnrealizedLossData: (
-    orderRecorder: OrderRecorder,
     symbol: string,
+    position: Position | null,
     isLongSymbol: boolean,
     quote?: Quote | null,
     dailyLossOffset?: number,

@@ -18,8 +18,8 @@ import type {
   RateLimiter,
   PendingRefreshSymbol,
   RawOrderFromAPI,
-  OrderRecorder,
   MarketDataClient,
+  RecentFilledOrderSummary,
 } from '../../types/services.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import type { CancelOrderOutcome } from '../../types/trader.js';
@@ -131,7 +131,6 @@ export type SubmitOrderParams = {
   readonly timeInForce: TimeInForceType;
   readonly remark: string | undefined;
   readonly overridePrice: number | undefined;
-  readonly relatedBuyOrderIds?: ReadonlyArray<string> | null;
   readonly isShortSymbol: boolean;
   readonly monitorConfig?: StrategyRuntimeConfig | null;
 };
@@ -217,6 +216,12 @@ export interface OrderMonitor {
 
   /** 获取指定标的的未成交卖单快照 */
   getPendingSellOrders: (symbol: string) => ReadonlyArray<PendingSellOrderSnapshot>;
+
+  /** 是否存在指定标的的未完成卖单链路 */
+  hasPendingSellOrders: (symbol: string) => boolean;
+
+  /** 按订单 ID 读取最近成交摘要 */
+  getRecentFilledOrder: (orderId: string) => RecentFilledOrderSummary | null;
 
   /**
    * 获取并清空待刷新浮亏数据的标的列表
@@ -499,9 +504,6 @@ export type OrderMonitorDeps = {
   readonly globalConfig: GlobalConfig;
   readonly monitorConfig: StrategyRuntimeConfig;
 
-  /** 订单记录器（用于成交后更新本地记录） */
-  readonly orderRecorder: OrderRecorder;
-
   /** 当日亏损跟踪器（成交后增量记录） */
   readonly dailyLossTracker: DailyLossTracker;
 
@@ -547,9 +549,6 @@ export type OrderExecutorDeps = {
   readonly orderMonitor: OrderMonitor;
   readonly globalConfig: GlobalConfig;
   readonly monitorConfig: StrategyRuntimeConfig;
-
-  /** 订单记录器（用于卖出订单防重追踪） */
-  readonly orderRecorder: OrderRecorder;
 
   /** 标的注册表（用于解析动态标的归属） */
   readonly symbolRegistry: SymbolRegistry;

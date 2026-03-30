@@ -8,7 +8,7 @@ import {
 import type { CandleData } from '../../../../src/types/data.js';
 import type { FactorSnapshot, StrategyThresholdConfig } from '../../../../src/types/factor.js';
 import { createStrategyRuntimeConfig } from '../../../../mock/factories/configFactory.js';
-import { createOrderRecorderDouble } from '../../../helpers/testDoubles.js';
+import { createPositionCacheDouble, createPositionDouble } from '../../../helpers/testDoubles.js';
 
 const TEST_TIMESTAMP_MS = Date.UTC(2026, 2, 29, 2, 15, 0);
 const TEST_HK_YEAR = 2026;
@@ -267,7 +267,7 @@ describe('factor runtime', () => {
       strategyConfig,
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
-      orderRecorder: createOrderRecorderDouble(),
+      positionCache: createPositionCacheDouble(),
     });
 
     expect(decisionSnapshot.actions.map((action) => action.action)).toEqual(['BUYCALL']);
@@ -294,7 +294,7 @@ describe('factor runtime', () => {
       strategyConfig,
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
-      orderRecorder: createOrderRecorderDouble(),
+      positionCache: createPositionCacheDouble(),
     });
 
     expect(decisionSnapshot.actions).toHaveLength(0);
@@ -335,22 +335,13 @@ describe('factor runtime', () => {
       strategyConfig,
       longSymbol: 'BULL.HK',
       shortSymbol: '',
-      orderRecorder: createOrderRecorderDouble({
-        getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
-          isLongSymbol && symbol === 'BULL.HK'
-            ? [
-                {
-                  orderId: 'BUY-1',
-                  symbol: 'BULL.HK',
-                  executedPrice: 100,
-                  executedQuantity: 100,
-                  executedTime: TEST_TIMESTAMP_MS,
-                  submittedAt: undefined,
-                  updatedAt: undefined,
-                },
-              ]
-            : [],
-      }),
+      positionCache: createPositionCacheDouble([
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 100,
+          availableQuantity: 100,
+        }),
+      ]),
     });
 
     expect(decisionSnapshot.actions.map((action) => action.action)).toEqual(['SELLCALL']);

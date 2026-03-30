@@ -25,7 +25,7 @@ import {
   resolveNextSearchFailureState,
   resolveSeatOnStartup,
 } from '../../services/autoSymbolManager/utils.js';
-import { getLatestTradedSymbol } from '../../core/orderRecorder/orderOwnershipParser.js';
+import { getLatestTradedSymbol } from '../../core/riskController/orderOwnership.js';
 import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../constants/index.js';
 import { getHKDateKey } from '../../utils/time/index.js';
 

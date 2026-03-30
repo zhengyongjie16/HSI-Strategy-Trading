@@ -10,7 +10,6 @@ import type { Signal } from '../../../types/signal.js';
 import type { SeatState, SymbolRegistry } from '../../../types/seat.js';
 import type {
   RawOrderFromAPI,
-  OrderRecorder,
   RiskChecker,
   Trader,
   MarketDataClient,
@@ -179,14 +178,13 @@ export type CreateLiquidationTaskParams = Readonly<{
 
 /**
  * 监控任务处理上下文（处理器执行任务时的运行时依赖）。
- * 类型用途：处理器执行监控任务时所需的上下文，含 symbolRegistry、orderRecorder、riskChecker、名称缓存等；由 monitorContext 直接注入。
+ * 类型用途：处理器执行监控任务时所需的上下文，含 symbolRegistry、riskChecker、名称缓存等；由 monitorContext 直接注入。
  * 数据来源：由 app/runtime 从单实例 monitorContext 组装并注入。
  * 使用范围：仅 monitorTaskProcessor 内部使用。
  */
 export type MonitorTaskContext = Readonly<{
   symbolRegistry: SymbolRegistry;
   autoSymbolManager: AutoSymbolManagerPort;
-  orderRecorder: OrderRecorder;
   dailyLossTracker: DailyLossTracker;
   riskChecker: RiskChecker;
   unrealizedLossMonitor: UnrealizedLossMonitor;
@@ -220,9 +218,7 @@ export type StrategyRuntimeAndSeatReadiness = Readonly<{
  * 使用范围：仅 MonitorTaskProcessor 内部使用。
  */
 export type RefreshHelpers = Readonly<{
-  ensureAllOrders: (
-    orderRecorder: MonitorTaskContext['orderRecorder'],
-  ) => Promise<ReadonlyArray<RawOrderFromAPI>>;
+  ensureAllOrders: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
   refreshAccountCaches: () => Promise<void>;
 }>;
 

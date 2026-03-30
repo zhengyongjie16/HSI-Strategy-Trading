@@ -71,7 +71,4 @@ export type Signal = {
     timestamp: Date;
     indicators: Readonly<Record<string, number>>;
   }> | null;
-
-  /** 关联的买入订单ID列表（仅卖出订单使用，用于全平卖出归因与防重） */
-  relatedBuyOrderIds?: readonly string[] | null;
 };

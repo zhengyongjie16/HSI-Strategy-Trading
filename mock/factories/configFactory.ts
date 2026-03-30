@@ -98,7 +98,7 @@ export function createStrategyRuntimeConfig(
       switchDistanceRangeBear: null,
     },
 
-    orderOwnershipMapping: [],
+    orderOwnershipMapping: ['HSI'],
     targetNotional: 5000,
     maxPositionNotional: 50000,
     maxUnrealizedLossPerSymbol: 2000,

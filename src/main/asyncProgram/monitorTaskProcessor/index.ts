@@ -136,8 +136,8 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     baseInstrumentSymbol,
     getContextOrSkip,
     clearMonitorDirectionQueues,
-    monitorConfig,
     marketDataClient,
+    lastState,
   });
   const handleLiquidationDistanceCheck = createLiquidationDistanceHandler({
     baseInstrumentSymbol,

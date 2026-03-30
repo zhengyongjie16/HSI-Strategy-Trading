@@ -229,8 +229,8 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
       );
       try {
         await monitorContext.riskChecker.refreshUnrealizedLossData(
-          monitorContext.orderRecorder,
           symbol,
+          lastState.positionCache.get(symbol),
           isLongSymbol,
           quote,
           dailyLossOffset,

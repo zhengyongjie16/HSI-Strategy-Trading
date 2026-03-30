@@ -1,13 +1,18 @@
 /**
  * websocket-out-of-order 混沌测试
  *
- * 功能：
- * - 验证 WebSocket 乱序场景下的行为与恢复期望。
+ * 验证 BOOTSTRAPPING 阶段乱序 WS 事件不会把恢复后的订单状态拉回旧状态。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType, type TradeContext } from 'longbridge';
-
+import {
+  OrderSide,
+  OrderStatus,
+  OrderType,
+  type PushOrderChanged,
+  type TradeContext,
+} from 'longbridge';
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
+import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
 import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
 import {
   createGlobalConfig,
@@ -16,180 +21,104 @@ import {
 import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
+  createDailyLossTrackerDouble,
   createMarketDataClientDouble,
-  createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createQuoteDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
 
-function createDeps(params?: {
-  readonly orderRecorder?: ReturnType<typeof createOrderRecorderDouble>;
-}): {
-  deps: OrderMonitorDeps;
-  tradeCtx: ReturnType<typeof createTradeContextMock>;
-} {
-  const tradeCtx = createTradeContextMock();
-  const monitorConfig = createStrategyRuntimeConfig();
-
-  const deps: OrderMonitorDeps = {
-    ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
-    rateLimiter: {
-      throttle: async () => {},
-    },
-    cacheManager: {
-      clearCache: () => {},
-      getPendingOrders: async () => [],
-    },
-    marketDataClient: createMarketDataClientDouble(),
-    orderRecorder: params?.orderRecorder ?? createOrderRecorderDouble(),
-    dailyLossTracker: {
-      resetAll: () => {},
-      startNewProtectionEpisode: () => {},
-      recalculateFromAllOrders: () => {},
-      recordFilledOrder: () => {},
-      getLossOffset: () => 0,
-    },
-    orderHoldRegistry: {
-      trackOrder: () => {},
-      markOrderClosed: () => {},
-      seedFromOrders: () => {},
-      getHoldSymbols: () => new Set<string>(),
-      clear: () => {},
-    },
-    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    globalConfig: createGlobalConfig(),
-    monitorConfig,
-    symbolRegistry: createSymbolRegistryDouble(),
-    isExecutionAllowed: () => true,
-  };
-
-  return { deps, tradeCtx };
-}
-
-describe('chaos: websocket out-of-order and duplicate pushes', () => {
-  it('keeps sell fill side-effects idempotent under out-of-order/duplicate orderChanged events', async () => {
-    let localSellCount = 0;
-    let markSellFilledCount = 0;
-    let markSellPartialCount = 0;
-
-    const orderRecorder = createOrderRecorderDouble({
-      recordLocalSell: () => {
-        localSellCount += 1;
+describe('chaos: websocket out of order', () => {
+  it('keeps latest terminal event during bootstrapping replay', async () => {
+    let handleOrderChanged: (event: PushOrderChanged) => void = () => {};
+    const tradeCtx = createTradeContextMock();
+    const deps: OrderMonitorDeps = {
+      ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
+      rateLimiter: {
+        throttle: async () => {},
       },
-      markSellFilled: () => {
-        markSellFilledCount += 1;
-        return null;
+      cacheManager: {
+        clearCache: () => {},
+        getPendingOrders: async () => [],
       },
-      markSellPartialFilled: () => {
-        markSellPartialCount += 1;
-        return null;
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.02)]]),
+      }),
+      globalConfig: createGlobalConfig(),
+      monitorConfig: createStrategyRuntimeConfig({
+        orderOwnershipMapping: ['HSI'],
+      }),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () => true,
+      testHooks: {
+        setHandleOrderChanged: (handler) => {
+          handleOrderChanged = handler;
+        },
       },
-    });
+    };
 
-    const { deps, tradeCtx } = createDeps({ orderRecorder });
     const monitor = createOrderMonitor(deps);
-
     await monitor.initialize();
-    await monitor.recoverOrderTrackingFromSnapshot([]);
 
-    monitor.trackOrder({
-      orderId: 'WS-CHAOS-001',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
-      quantity: 100,
-      isLongSymbol: true,
-      baseInstrumentSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
-    });
-
-    monitor.trackOrder({
-      orderId: 'WS-CHAOS-002',
-      symbol: 'BEAR.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
-      quantity: 100,
-      isLongSymbol: false,
-      baseInstrumentSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
-    });
-
-    tradeCtx.emitOrderChanged(
+    handleOrderChanged(
       createPushOrderChanged({
-        orderId: 'WS-CHAOS-001',
+        orderId: 'SELL-BOOT-001',
         symbol: 'BULL.HK',
         side: OrderSide.Sell,
         status: OrderStatus.Filled,
-        orderType: OrderType.ELO,
         submittedQuantity: 100,
         executedQuantity: 100,
+        executedPrice: 1.04,
         submittedPrice: 1,
-        executedPrice: 1,
-      }),
-      { sequence: 1 },
-    );
-
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
-        orderId: 'WS-CHAOS-002',
-        symbol: 'BEAR.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
         orderType: OrderType.ELO,
-        submittedQuantity: 100,
-        executedQuantity: 100,
-        submittedPrice: 1,
-        executedPrice: 1,
+        updatedAtMs: Date.parse('2026-02-16T01:31:00.000Z'),
       }),
-      { sequence: 2 },
     );
 
-    // 乱序: 更晚才到达的 PartialFilled，不应回写已完成订单状态。
-    tradeCtx.emitOrderChanged(
+    handleOrderChanged(
       createPushOrderChanged({
-        orderId: 'WS-CHAOS-002',
-        symbol: 'BEAR.HK',
+        orderId: 'SELL-BOOT-001',
+        symbol: 'BULL.HK',
         side: OrderSide.Sell,
         status: OrderStatus.PartialFilled,
-        orderType: OrderType.ELO,
         submittedQuantity: 100,
-        executedQuantity: 20,
+        executedQuantity: 30,
+        executedPrice: 1.02,
         submittedPrice: 1,
-        executedPrice: 1,
+        orderType: OrderType.ELO,
+        updatedAtMs: Date.parse('2026-02-16T01:30:00.000Z'),
       }),
-      { sequence: 3 },
     );
 
-    // 重复 Filled 推送。
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
-        orderId: 'WS-CHAOS-001',
+    await monitor.recoverOrderTrackingFromSnapshot([
+      {
+        orderId: 'SELL-BOOT-001',
         symbol: 'BULL.HK',
+        stockName: 'HSI RC',
         side: OrderSide.Sell,
-        status: OrderStatus.Filled,
+        status: OrderStatus.New,
         orderType: OrderType.ELO,
-        submittedQuantity: 100,
-        executedQuantity: 100,
-        submittedPrice: 1,
-        executedPrice: 1,
-      }),
-      { sequence: 4 },
-    );
+        remark: '',
+        price: '1',
+        quantity: '100',
+        executedPrice: '0',
+        executedQuantity: '0',
+        submittedAt: new Date('2026-02-16T01:00:00.000Z'),
+        updatedAt: new Date('2026-02-16T01:00:00.000Z'),
+      },
+    ]);
 
-    expect(tradeCtx.flushAllEvents()).toBe(4);
-    expect(tradeCtx.getCalls('orderDetail')).toHaveLength(0);
-    expect(localSellCount).toBe(2);
-    expect(markSellFilledCount).toBe(2);
-    expect(markSellPartialCount).toBe(0);
-
-    const pendingRefresh = monitor.getAndClearPendingRefreshSymbols();
-    expect(pendingRefresh).toHaveLength(2);
-    expect(monitor.getAndClearPendingRefreshSymbols()).toHaveLength(0);
-    expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
-    expect(monitor.getPendingSellOrders('BEAR.HK')).toHaveLength(0);
+    expect(monitor.hasPendingSellOrders('BULL.HK')).toBeFalse();
+    expect(monitor.getRecentFilledOrder('SELL-BOOT-001')).toEqual({
+      orderId: 'SELL-BOOT-001',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      executedPrice: 1.04,
+      executedQuantity: 100,
+      executedTimeMs: Date.parse('2026-02-16T01:31:00.000Z'),
+    });
   });
 });

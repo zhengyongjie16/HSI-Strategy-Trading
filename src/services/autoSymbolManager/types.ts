@@ -5,8 +5,8 @@ import type { Signal } from '../../types/signal.js';
 import type { SeatState, SeatStatus, SymbolRegistry } from '../../types/seat.js';
 import type {
   MarketDataClient,
-  OrderRecorder,
   PendingOrder,
+  PositionCache,
   RiskChecker,
   Trader,
 } from '../../types/services.js';
@@ -53,7 +53,7 @@ export type AutoSymbolManagerDeps = {
   readonly symbolRegistry: SymbolRegistry;
   readonly marketDataClient: MarketDataClient;
   readonly trader: Trader;
-  readonly orderRecorder: OrderRecorder;
+  readonly positionCache: PositionCache;
   readonly riskChecker: RiskChecker;
   readonly warrantListCacheConfig?: WarrantListCacheConfig;
   readonly findBestWarrant?: FindBestWarrant;
@@ -128,10 +128,10 @@ export type SwitchState = {
 /**
  * 周期换标本地阻塞来源。
  * 类型用途：表达当前席位为何仍不能执行周期换标；EMPTY 表示本地已满足换标条件。
- * 数据来源：由周期换标入口基于 orderRecorder 与 trader.getOrderHoldSymbols() 联合判定。
+ * 数据来源：由周期换标入口基于 positionCache/持仓与 trader.getOrderHoldSymbols() 联合判定。
  * 使用范围：仅 autoSymbolManager 模块内部使用。
  */
-export type PeriodicSeatBlockSource = 'ORDER_RECORDER' | 'LOCAL_PENDING_ORDER' | 'EMPTY';
+export type PeriodicSeatBlockSource = 'POSITION' | 'LOCAL_PENDING_ORDER' | 'EMPTY';
 
 /**
  * 周期换标阻塞来源（有效阻塞值）。
@@ -539,7 +539,7 @@ export type SwitchStateMachineDeps = {
   readonly baseInstrumentSymbol: string;
   readonly symbolRegistry: SymbolRegistry;
   readonly trader: Trader;
-  readonly orderRecorder: OrderRecorder;
+  readonly positionCache: PositionCache;
   readonly riskChecker: RiskChecker;
   readonly marketDataClient: MarketDataClient;
   readonly now: () => Date;

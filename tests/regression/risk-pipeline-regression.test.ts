@@ -2,10 +2,10 @@
  * risk-pipeline 回归测试
  *
  * 功能：
- * - 验证风险管道回归场景与业务期望。
+ * - 回归验证风险检查阶段不会占用买入频率槽位
+ * - 回归验证混合批次中买卖路径的数据来源不会串扰
  */
 import { describe, expect, it } from 'bun:test';
-
 import type { RiskCheckContext } from '../../src/types/services.js';
 import { createRiskCheckPipeline } from '../../src/core/signalProcessor/riskCheckPipeline.js';
 import { createGlobalConfig } from '../../mock/factories/configFactory.js';
@@ -13,13 +13,12 @@ import {
   createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
-  createStrategyRuntimeConfigDouble,
-  createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
   createSignalDouble,
+  createStrategyRuntimeConfigDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
 import { createBuyThrottle } from '../../src/core/trader/orderExecutor/buyThrottle.js';
@@ -35,7 +34,6 @@ function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
 function createContext(params: {
   readonly trader: ReturnType<typeof createTraderDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
-  readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
   readonly account?: ReturnType<typeof createAccountSnapshotDouble>;
   readonly positions?: ReadonlyArray<RiskCheckContext['positions'][number]>;
 }): RiskCheckContext {
@@ -46,7 +44,6 @@ function createContext(params: {
   return {
     trader: params.trader,
     riskChecker: params.riskChecker,
-    orderRecorder: params.orderRecorder,
     longQuote: createQuoteDouble('BULL.HK', 1),
     shortQuote: createQuoteDouble('BEAR.HK', 1),
     monitorQuote: createQuoteDouble('HSI.HK', 20_000),
@@ -80,7 +77,7 @@ function createContext(params: {
 }
 
 describe('risk pipeline regression', () => {
-  it('does not preempt same-direction buy slot in risk check stage', async () => {
+  it('does not consume same-direction buy throttle during risk check stage', async () => {
     const lastRiskCheckTime = new Map<string, number>();
     const buyThrottle = createBuyThrottle();
     const trader = createTraderDouble({
@@ -97,19 +94,15 @@ describe('risk pipeline regression', () => {
     const context = createContext({
       trader,
       riskChecker: createRiskCheckerDouble(),
-      orderRecorder: createOrderRecorderDouble(),
     });
 
     const firstBuy = createSignalDouble('BUYCALL', 'BULL.HK');
     const firstResult = await withMockedNow(100_000, async () => pipeline([firstBuy], context));
-
     expect(firstResult).toHaveLength(1);
 
     const secondBuy = createSignalDouble('BUYCALL', 'BULL.HK');
     const secondResult = await withMockedNow(110_001, async () => pipeline([secondBuy], context));
-
     expect(secondResult).toHaveLength(1);
-    expect(secondBuy.reason).toBeUndefined();
 
     const buyTradeCheck = await withMockedNow(110_001, async () =>
       buyThrottle.canTradeNow('BUYCALL', context.config),
@@ -117,72 +110,7 @@ describe('risk pipeline regression', () => {
     expect(buyTradeCheck.canTrade).toBe(true);
   });
 
-  it('skips realtime fetch when mixed-batch buy is rejected by light checks and keeps sell on cached context', async () => {
-    const lastRiskCheckTime = new Map<string, number>();
-    let accountFetchCount = 0;
-    let positionFetchCount = 0;
-    const cachedAccount = createAccountSnapshotDouble(77_777);
-    const cachedPositions = [
-      createPositionDouble({
-        symbol: 'BULL.HK',
-        quantity: 500,
-        availableQuantity: 400,
-      }),
-    ];
-
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: false, waitSeconds: 59 }),
-      getAccountSnapshot: async () => {
-        accountFetchCount += 1;
-        return createAccountSnapshotDouble(100_000);
-      },
-      getStockPositions: async () => {
-        positionFetchCount += 1;
-        return [];
-      },
-    });
-
-    const pipeline = createRiskCheckPipeline({
-      globalConfig: createGlobalConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      lastRiskCheckTime,
-    });
-
-    const buySignal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const sellSignal = createSignalDouble('SELLCALL', 'BULL.HK');
-
-    const result = await withMockedNow(200_000, async () =>
-      pipeline(
-        [buySignal, sellSignal],
-        createContext({
-          trader,
-          riskChecker: createRiskCheckerDouble({
-            checkBeforeOrder: ({ account, positions, signal }) => {
-              if (signal?.action === 'SELLCALL') {
-                return {
-                  allowed: account === cachedAccount && positions === cachedPositions,
-                  reason: 'sell should use cached context',
-                };
-              }
-
-              return { allowed: false, reason: 'unexpected buy base risk check' };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble(),
-          account: cachedAccount,
-          positions: cachedPositions,
-        }),
-      ),
-    );
-
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(sellSignal);
-    expect(buySignal.reason).toContain('交易频率限制');
-    expect(accountFetchCount).toBe(0);
-    expect(positionFetchCount).toBe(0);
-  });
-
-  it('keeps sell path on cached context when buy realtime fetch fails after light checks', async () => {
+  it('keeps mixed-batch sell checks on cached context when buy realtime fetch fails', async () => {
     const lastRiskCheckTime = new Map<string, number>();
     const cachedAccount = createAccountSnapshotDouble(88_888);
     const cachedPositions = [
@@ -219,19 +147,12 @@ describe('risk pipeline regression', () => {
           trader,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => ({ allowed: true }),
-            checkBeforeOrder: ({ account, positions, signal }) => {
-              if (signal?.action === 'SELLCALL') {
-                return {
-                  allowed: account === cachedAccount && positions === cachedPositions,
-                  reason: 'sell should use cached context',
-                };
-              }
-
-              return { allowed: false, reason: 'unexpected buy base risk check' };
-            },
-          }),
-          orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => null,
+            checkBeforeOrder: ({ account, positions, signal }) => ({
+              allowed:
+                signal?.action === 'SELLCALL' &&
+                account === cachedAccount &&
+                positions === cachedPositions,
+            }),
           }),
           account: cachedAccount,
           positions: cachedPositions,

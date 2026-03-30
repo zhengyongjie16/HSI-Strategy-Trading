@@ -3,8 +3,8 @@ import type { Signal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
 import type {
   MarketDataClient,
-  OrderRecorder,
   OrderRecord,
+  RawOrderFromAPI,
   BullBearWarrantType,
   RiskCheckResult,
   WarrantDistanceInfo,
@@ -97,8 +97,8 @@ export interface UnrealizedLossChecker {
   /** 清空浮亏数据，symbol 为空时清空全部 */
   clearUnrealizedLossData: (symbol?: string | null) => void;
   refresh: (
-    orderRecorder: OrderRecorder,
     symbol: string,
+    position: Position | null,
     isLongSymbol: boolean,
     quote?: Quote | null,
     dailyLossOffset?: number,
@@ -194,6 +194,30 @@ export type OrderOwnershipDiagnostics = {
   readonly inDayFilled: number;
   readonly unmatchedFilled: number;
   readonly unmatchedSamples: ReadonlyArray<OrderOwnershipDiagnosticSample>;
+};
+
+/**
+ * 订单重建分类结果。
+ * 类型用途：启动/重建阶段按执行标的将全量订单按成交状态与买卖方向分流。
+ * 数据来源：由 orderRecords.classifyOrdersForRebuild 从 RawOrderFromAPI 转换得到。
+ * 使用范围：riskController 侧共享订单转换逻辑与相关测试。
+ */
+export type OrderRebuildClassification = {
+  readonly filledBuyOrders: ReadonlyArray<OrderRecord>;
+  readonly filledSellOrders: ReadonlyArray<OrderRecord>;
+  readonly pendingBuyOrders: ReadonlyArray<RawOrderFromAPI>;
+  readonly pendingSellOrders: ReadonlyArray<RawOrderFromAPI>;
+};
+
+/**
+ * 订单过滤算法中间状态。
+ * 类型用途：过滤算法中的中间结构（m0Orders 保留，candidateOrders 待过滤）。
+ * 数据来源：orderFilteringEngine 内部构造。
+ * 使用范围：仅 riskController 侧订单过滤实现使用。
+ */
+export type FilteringState = {
+  readonly m0Orders: ReadonlyArray<OrderRecord>;
+  readonly candidateOrders: ReadonlyArray<OrderRecord>;
 };
 
 /**

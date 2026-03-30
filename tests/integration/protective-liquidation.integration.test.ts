@@ -21,19 +21,17 @@ import {
 import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
+  createDailyLossTrackerDouble,
   createMarketDataClientDouble,
-  createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
 
 describe('protective-liquidation integration', () => {
-  it('records protective episode progress + local sell update after protective liquidation fill event', async () => {
+  it('records protective episode progress after protective liquidation fill event', async () => {
     let capturedHandler: (event: PushOrderChanged) => void = (_event: PushOrderChanged) => {
       throw new Error('order changed handler was not captured');
     };
-    let recordLocalSellCount = 0;
-    let markSellFilledCount = 0;
     let episodeProgressRecords = 0;
     let staleMarks = 0;
 
@@ -50,22 +48,7 @@ describe('protective-liquidation integration', () => {
         getPendingOrders: async () => [],
       },
       marketDataClient: createMarketDataClientDouble(),
-      orderRecorder: createOrderRecorderDouble({
-        recordLocalSell: () => {
-          recordLocalSellCount += 1;
-        },
-        markSellFilled: () => {
-          markSellFilledCount += 1;
-          return null;
-        },
-      }),
-      dailyLossTracker: {
-        resetAll: () => {},
-        startNewProtectionEpisode: () => {},
-        recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
-        getLossOffset: () => 0,
-      },
+      dailyLossTracker: createDailyLossTrackerDouble(),
       orderHoldRegistry: {
         trackOrder: () => {},
         markOrderClosed: () => {},
@@ -132,8 +115,6 @@ describe('protective-liquidation integration', () => {
       }),
     );
 
-    expect(recordLocalSellCount).toBe(1);
-    expect(markSellFilledCount).toBe(1);
     expect(episodeProgressRecords).toBe(1);
     expect(staleMarks).toBe(1);
 

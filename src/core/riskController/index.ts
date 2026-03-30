@@ -25,7 +25,6 @@ import type { Signal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
 import type {
   MarketDataClient,
-  OrderRecorder,
   RiskCheckResult,
   UnrealizedLossMetrics,
   UnrealizedLossCheckResult,
@@ -252,19 +251,13 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     },
 
     async refreshUnrealizedLossData(
-      orderRecorder: OrderRecorder,
       symbol: string,
+      position: Position | null,
       isLongSymbol: boolean,
       quote?: Quote | null,
       dailyLossOffset?: number,
     ): Promise<{ r1: number; n1: number } | null> {
-      return unrealizedLossChecker.refresh(
-        orderRecorder,
-        symbol,
-        isLongSymbol,
-        quote,
-        dailyLossOffset,
-      );
+      return unrealizedLossChecker.refresh(symbol, position, isLongSymbol, quote, dailyLossOffset);
     },
 
     checkUnrealizedLoss(

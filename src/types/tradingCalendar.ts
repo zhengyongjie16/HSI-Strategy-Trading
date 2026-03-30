@@ -13,7 +13,7 @@ export type TradingCalendarDayInfo = {
  * 交易日历快照。
  * 类型用途：按港股日期键（YYYY-MM-DD）索引交易日信息，作为交易时段计算的唯一输入。
  * 数据来源：生命周期启动/重建时维护。
- * 使用范围：signalProcessor、orderRecorder、autoSymbolManager、tests 等跨模块共享。
+ * 使用范围：signalProcessor、riskController、autoSymbolManager、tests 等跨模块共享。
  */
 export type TradingCalendarSnapshot = ReadonlyMap<string, TradingCalendarDayInfo>;
 

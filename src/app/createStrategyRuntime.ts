@@ -29,7 +29,7 @@ function createTrendIndicatorDisplayProfile(): IndicatorDisplayProfile {
  * 创建单实例策略运行时，从注册表读取席位状态与版本号，从行情 Map 提取标的名称，
  * 并预编译指标画像，避免主循环每 tick 重复解析。
  *
- * @param deps 工厂依赖（config、state、symbolRegistry、quotesMap、strategy、orderRecorder 等）
+ * @param deps 工厂依赖（config、state、symbolRegistry、quotesMap、strategy、riskChecker 等）
  * @returns 单实例 StrategyRuntime 实例
  */
 export function createStrategyRuntime(deps: StrategyRuntimeFactoryDeps): StrategyRuntime {
@@ -39,7 +39,6 @@ export function createStrategyRuntime(deps: StrategyRuntimeFactoryDeps): Strateg
     symbolRegistry,
     quotesMap,
     strategy,
-    orderRecorder,
     dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor,
@@ -62,7 +61,6 @@ export function createStrategyRuntime(deps: StrategyRuntimeFactoryDeps): Strateg
     seatVersion: runtimeSnapshot.seatVersion,
     autoSymbolManager,
     strategy,
-    orderRecorder,
     dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor,

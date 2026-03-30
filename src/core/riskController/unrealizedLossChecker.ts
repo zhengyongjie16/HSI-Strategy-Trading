@@ -2,8 +2,8 @@
  * 浮亏检查模块
  *
  * 监控执行标的浮亏，超过阈值时触发保护性清仓：
- * - R1 = 开仓成本（未平仓买入订单的成本总和）
- * - N1 = 持仓数量（未平仓买入订单的成交数量总和）
+ * - R1 = 开仓成本（持仓成本价 × 持仓数量）
+ * - N1 = 持仓数量
  * - R2 = 当前市值（当前价格 × N1）
  * - 浮亏 = R2 - R1（负值表示亏损）
  */
@@ -15,56 +15,17 @@ import {
   getShortDirectionName,
 } from '../utils.js';
 import {
-  decimalAdd,
-  decimalGt,
   decimalLt,
   decimalMul,
   decimalNeg,
   decimalSub,
   decimalToNumberValue,
   formatDecimal,
-  toDecimalStrict,
-  toDecimalValue,
 } from '../../utils/numeric/index.js';
+import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
-import type {
-  OrderRecorder,
-  UnrealizedLossData,
-  UnrealizedLossCheckResult,
-} from '../../types/services.js';
+import type { UnrealizedLossData, UnrealizedLossCheckResult } from '../../types/services.js';
 import type { UnrealizedLossChecker, UnrealizedLossCheckerDeps } from './types.js';
-
-/**
- * 从未平仓买入订单列表计算 R1（开仓成本总和）和 N1（持仓数量总和）。
- * 价格或数量无效的订单将被跳过，不计入结果。
- *
- * @param buyOrders 未平仓买入订单（含 executedPrice、executedQuantity）
- * @returns 含 r1（成本总和）、n1（数量总和）的对象
- */
-function calculateCostAndQuantity(
-  buyOrders: ReadonlyArray<{ executedPrice: number | string; executedQuantity: number | string }>,
-): Readonly<{ r1: number; n1: number }> {
-  let r1 = toDecimalValue(0);
-  let n1 = toDecimalValue(0);
-
-  for (const order of buyOrders) {
-    const price = toDecimalStrict(order.executedPrice);
-    const quantity = toDecimalStrict(order.executedQuantity);
-
-    if (!price || !quantity) {
-      continue;
-    }
-
-    if (!decimalGt(price, 0) || !decimalGt(quantity, 0)) {
-      continue;
-    }
-
-    r1 = decimalAdd(r1, decimalMul(price, quantity));
-    n1 = decimalAdd(n1, quantity);
-  }
-
-  return { r1: decimalToNumberValue(r1), n1: decimalToNumberValue(n1) };
-}
 
 /**
  * 创建浮亏检查器。
@@ -110,24 +71,19 @@ export const createUnrealizedLossChecker = (
    * dailyLossOffset 仅记录亏损偏移（<=0）；调整后 R1 按 baseR1 - dailyLossOffset 计算。
    */
   const refresh = (
-    orderRecorder: OrderRecorder | null,
     symbol: string,
+    position: Position | null,
     isLongSymbol: boolean,
     quote?: Quote | null,
     dailyLossOffset?: number,
   ): Promise<{ r1: number; n1: number } | null> => {
-    if (!orderRecorder) {
-      const symbolDisplay = formatSymbolDisplayFromQuote(quote, symbol);
-      logger.warn(`[浮亏监控] 未提供 OrderRecorder 实例，无法刷新标的 ${symbolDisplay} 的浮亏数据`);
-      return Promise.resolve(null);
-    }
-
     try {
-      // 使用公共方法获取订单列表
-      const buyOrders = orderRecorder.getBuyOrdersForSymbol(symbol, isLongSymbol);
-
-      // 计算R1（开仓成本）和N1（持仓数量）
-      const { r1: baseR1, n1 } = calculateCostAndQuantity(buyOrders);
+      const quantity = position?.quantity ?? 0;
+      const costPrice = position?.costPrice ?? 0;
+      const normalizedQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
+      const normalizedCostPrice = Number.isFinite(costPrice) && costPrice > 0 ? costPrice : 0;
+      const baseR1 = decimalToNumberValue(decimalMul(normalizedCostPrice, normalizedQuantity));
+      const n1 = normalizedQuantity;
       const rawOffset =
         dailyLossOffset !== undefined && Number.isFinite(dailyLossOffset) ? dailyLossOffset : 0;
       const normalizedOffset = Math.min(rawOffset, 0);
@@ -156,7 +112,7 @@ export const createUnrealizedLossChecker = (
           `R1(开仓成本)=${formatDecimal(baseR1, 2)} HKD, ` +
           `当日偏移=${formatDecimal(normalizedOffset, 2)} HKD, ` +
           `调整后R1(开仓成本)=${formatDecimal(adjustedR1, 2)} HKD, ` +
-          `N1(持仓数量)=${n1}, 未平仓订单数=${buyOrders.length}`,
+          `N1(持仓数量)=${n1}, 持仓成本价=${formatDecimal(normalizedCostPrice, 4)}`,
       );
 
       return Promise.resolve({ r1: adjustedR1, n1 });

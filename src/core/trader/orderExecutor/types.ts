@@ -2,7 +2,7 @@ import type { Decimal, TradeContext } from 'longbridge';
 import type { StrategyRuntimeConfig, GlobalConfig } from '../../../types/config.js';
 import type { Signal, SignalType } from '../../../types/signal.js';
 import type { OrderCacheManager, OrderMonitor } from '../types.js';
-import type { OrderRecorder, RateLimiter, TradeCheckResult } from '../../../types/services.js';
+import type { RateLimiter, TradeCheckResult } from '../../../types/services.js';
 
 /**
  * 提交目标订单函数签名。
@@ -28,7 +28,6 @@ export type SubmitTargetOrderDeps = {
   readonly rateLimiter: RateLimiter;
   readonly cacheManager: OrderCacheManager;
   readonly orderMonitor: OrderMonitor;
-  readonly orderRecorder: OrderRecorder;
   readonly globalConfig: GlobalConfig;
   readonly canExecuteSignal: (signal: Signal, stage: string) => boolean;
   readonly recordBuyAttempt: (
@@ -62,6 +61,6 @@ export interface BuyThrottle {
  * 使用范围：仅 orderExecutor 目录内部使用。
  */
 export interface QuantityResolver {
-  calculateSellQuantity: (ctx: TradeContext, symbol: string, signal: Signal) => Promise<Decimal>;
+  calculateSellQuantity: (signal: Signal) => Decimal;
   resolveBuyQuantity: (signal: Signal, isShortSymbol: boolean, targetNotional: number) => Decimal;
 }

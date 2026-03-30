@@ -7,7 +7,7 @@ import {
   toDecimalValue,
 } from '../../utils/numeric/index.js';
 import type { StrategyRuntimeConfig } from '../../types/config.js';
-import type { OrderOwnership } from '../../types/orderRecorder.js';
+import type { OrderOwnership } from '../../types/risk.js';
 import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
 import type { OrderOwnershipDiagnostics, OrderOwnershipDiagnosticSample } from './types.js';
 

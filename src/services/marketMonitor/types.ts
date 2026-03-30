@@ -4,8 +4,8 @@ import type { UnrealizedLossMetrics, WarrantDistanceInfo } from '../../types/ser
 
 /**
  * 价格展示附加信息。
- * 类型用途：封装做多/做空标的价格日志所需的距回收价、持仓市值/持仓盈亏、订单数量。
- * 数据来源：processMonitor.riskTasks 从 RiskChecker 与 OrderRecorder 聚合生成。
+ * 类型用途：封装做多/做空标的价格日志所需的距回收价、持仓市值/持仓盈亏、持仓数量。
+ * 数据来源：processMonitor.riskTasks 从 RiskChecker 的实时缓存计算得到。
  * 使用范围：marketMonitor.monitorPriceChanges 入参。
  */
 export type PriceDisplayInfo = {
@@ -15,8 +15,8 @@ export type PriceDisplayInfo = {
   /** 浮亏实时指标 */
   readonly unrealizedLossMetrics: UnrealizedLossMetrics | null;
 
-  /** 未平仓买入订单数量（笔数） */
-  readonly orderCount: number | null;
+  /** 当前席位持仓数量（单席位场景下通常为 0 或 1） */
+  readonly positionCount: number | null;
 };
 
 /**

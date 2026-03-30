@@ -45,7 +45,7 @@ import { isCancelAcceptedOrTerminalNonFilledClose } from '../../utils/trading/or
  * @returns 填充后的 Signal，或 null（调用方需在不用时释放回对象池）
  */
 function createClearanceSignal(params: ClearanceSignalParams): Signal | null {
-  const { symbol, symbolName, action, price, lotSize, positionType } = params;
+  const { symbol, symbolName, action, price, lotSize, quantity, positionType } = params;
   const positionLabel = positionType === 'short' ? '做空标的' : '做多标的';
 
   // 对象池返回 PoolableSignal；末日清仓信号会在此处完整填充后按 Signal 使用
@@ -56,6 +56,7 @@ function createClearanceSignal(params: ClearanceSignalParams): Signal | null {
   signal.reason = `末日保护程序：收盘前5分钟自动清仓（${positionLabel}持仓）`;
   signal.price = price;
   signal.lotSize = lotSize;
+  signal.quantity = quantity;
   signal.triggerTime = new Date(); // 末日保护信号的触发时间为当前时间
   return signal;
 }
@@ -163,6 +164,7 @@ function processPositionForClearance(
     action,
     price: currentPrice,
     lotSize,
+    quantity: availableQty,
     positionType,
   });
   if (signal) {
@@ -342,7 +344,6 @@ export function createDoomsdayProtection(deps?: {
     let submittedCount = 0;
     if (uniqueClearanceSignals.length > 0) {
       logger.info(`[末日保护程序] 生成 ${uniqueClearanceSignals.length} 个清仓信号，准备执行`);
-      const submittedSymbols = new Set(uniqueClearanceSignals.map((signal) => signal.symbol));
       try {
         const executionResult = await trader.executeSignals(uniqueClearanceSignals);
         submittedCount = executionResult.submittedCount;
@@ -352,23 +353,9 @@ export function createDoomsdayProtection(deps?: {
 
       if (submittedCount === uniqueClearanceSignals.length) {
         lastState.cachedAccount = null;
-        lastState.cachedPositions = lastState.cachedPositions.filter(
-          (position) => !submittedSymbols.has(position.symbol),
-        );
-        lastState.positionCache.update(lastState.cachedPositions);
-
-        if (longSymbol && submittedSymbols.has(longSymbol)) {
-          const quote = quoteMap.get(longSymbol) ?? null;
-          monitorContext.orderRecorder.clearBuyOrders(longSymbol, true, quote);
-        }
-
-        if (shortSymbol && submittedSymbols.has(shortSymbol)) {
-          const quote = quoteMap.get(shortSymbol) ?? null;
-          monitorContext.orderRecorder.clearBuyOrders(shortSymbol, false, quote);
-        }
       } else {
         logger.warn(
-          `[末日保护程序] 清仓信号仅提交 ${submittedCount}/${uniqueClearanceSignals.length} 个，保留缓存与订单记录等待后续刷新`,
+          `[末日保护程序] 清仓信号仅提交 ${submittedCount}/${uniqueClearanceSignals.length} 个，等待成交后刷新持仓缓存`,
         );
       }
     } else {

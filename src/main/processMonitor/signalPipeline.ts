@@ -151,7 +151,7 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
   const baseInstrumentSymbol = monitorContext.config.baseInstrumentSymbol;
   const { canTradeNow, openProtectionActive, isTradingEnabled } = runtimeFlags;
   const canEnqueue = isTradingEnabled && canTradeNow;
-  const { strategy, orderRecorder } = monitorContext;
+  const { strategy } = monitorContext;
   const { lastState, buyTaskQueue, sellTaskQueue } = mainContext;
   const {
     longSeatState,
@@ -180,7 +180,7 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
       monitorSnapshot.factorSnapshot ?? null,
       longSymbol,
       shortSymbol,
-      orderRecorder,
+      lastState.positionCache,
     );
 
     /**

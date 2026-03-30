@@ -98,7 +98,7 @@ function releaseLiquidationTasks(liquidationTasks: ReadonlyArray<LiquidationTask
 }
 
 /**
- * 执行已就绪的距回收价清仓任务，并在全部提交成功后刷新订单记录与浮亏缓存。
+ * 执行已就绪的距回收价清仓任务。
  *
  * @param params 清仓执行依赖与任务列表
  * @returns 无返回值
@@ -123,27 +123,11 @@ async function executeReadyLiquidationTasks(params: {
   const signalsToExecute = executableTasks.map((taskItem) => taskItem.signal);
   const executionResult = await trader.executeSignals(signalsToExecute);
   if (executionResult.submittedCount === executableTasks.length) {
-    for (const taskItem of executableTasks) {
-      const isLongDirection = taskItem.direction === 'LONG';
-
-      context.orderRecorder.clearBuyOrders(taskItem.signal.symbol, isLongDirection, taskItem.quote);
-      const dailyLossOffset = context.dailyLossTracker.getLossOffset(
-        isLongDirection ? 'LONG' : 'SHORT',
-      );
-      await context.riskChecker.refreshUnrealizedLossData(
-        context.orderRecorder,
-        taskItem.signal.symbol,
-        isLongDirection,
-        taskItem.quote,
-        dailyLossOffset,
-      );
-    }
-
     return;
   }
 
   logger.warn(
-    `[牛熊证距回收价清仓] 信号仅提交 ${executionResult.submittedCount}/${executableTasks.length}，保留缓存与订单记录等待后续刷新`,
+    `[牛熊证距回收价清仓] 信号仅提交 ${executionResult.submittedCount}/${executableTasks.length}，等待成交后刷新持仓缓存`,
   );
 }
 

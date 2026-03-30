@@ -13,7 +13,7 @@ import {
   type Order,
   type TradeContext,
 } from 'longbridge';
-import { createOrderAPIManager } from '../../../src/core/orderRecorder/orderApiManager.js';
+import { createOrderAPIManager } from '../../../src/core/trader/orderApiManager.js';
 import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
 
 function createSdkOrder(params: {

@@ -119,7 +119,6 @@ function mapStateCheckResultToCancelOutcome(
       kind: 'ALREADY_CLOSED',
       closedReason: queryResult.closedReason,
       source: 'API_ERROR',
-      relatedBuyOrderIds: null,
     };
   }
 
@@ -259,7 +258,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         kind: 'CANCEL_CONFIRMED',
         closedReason: 'CANCELED',
         source: 'API',
-        relatedBuyOrderIds: null,
       };
     } catch (error) {
       const errorCode = extractErrorCode(error);

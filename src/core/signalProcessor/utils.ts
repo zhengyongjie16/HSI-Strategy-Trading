@@ -1,6 +1,5 @@
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
-import type { OrderRecorder } from '../../types/services.js';
 import type { SellContextValidationResult } from './types.js';
 
 /**
@@ -66,56 +65,27 @@ export function validateSellContext(
 }
 
 /**
- * 解析全平卖出的关联买单 ID。
- * 默认行为：订单记录不可用时返回空数组。
- *
- * @param orderRecorder 订单记录器
- * @param symbol 标的代码
- * @param direction 仓位方向
- * @returns 当前本地仍在跟踪的买单 ID 列表
- */
-export function resolveRelatedBuyOrderIdsForFullClose(params: {
-  readonly orderRecorder: OrderRecorder | null;
-  readonly symbol: string;
-  readonly direction: 'LONG' | 'SHORT';
-}): readonly string[] {
-  const { orderRecorder, symbol, direction } = params;
-  if (orderRecorder === null) {
-    return [];
-  }
-
-  return orderRecorder
-    .getBuyOrdersForSymbol(symbol, direction === 'LONG')
-    .map((order) => order.orderId);
-}
-
-/**
- * 全仓平仓：返回全部可用数量，并附带当前买单归因信息。
+ * 全仓平仓：返回全部可用数量。
  *
  * @param availableQuantity 当前可用持仓数量
  * @param directionName 方向中文名称，用于构建原因说明
- * @param relatedBuyOrderIds 当前本地仍在跟踪的买单 ID 列表
- * @returns 包含全部可用数量、shouldHold=false、原因说明及关联订单列表的结果
+ * @returns 包含全部可用数量、shouldHold=false 与原因说明的结果
  */
 export function resolveSellQuantityByFullClose({
   availableQuantity,
   directionName,
-  relatedBuyOrderIds,
 }: {
   availableQuantity: number;
   directionName: string;
-  relatedBuyOrderIds: readonly string[];
 }): {
   quantity: number;
   shouldHold: boolean;
   reason: string;
-  relatedBuyOrderIds: readonly string[];
 } {
   return {
     quantity: availableQuantity,
     shouldHold: false,
     reason: `趋势退出触发全平，直接清空所有${directionName}持仓`,
-    relatedBuyOrderIds,
   };
 }
 

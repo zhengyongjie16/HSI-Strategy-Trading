@@ -53,8 +53,8 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     symbolRegistry,
     marketDataClient,
     trader,
+    positionCache,
     riskChecker,
-    orderRecorder,
     warrantListCacheConfig,
   } = deps;
   const now = deps.now ?? (() => new Date());
@@ -105,7 +105,7 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     baseInstrumentSymbol,
     symbolRegistry,
     trader,
-    orderRecorder,
+    positionCache,
     riskChecker,
     marketDataClient,
     now,

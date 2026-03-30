@@ -5,7 +5,7 @@
  * - 作为 factor runtime 的对外稳定入口
  * - 将 candle 编排、indicator 编排、信号规划与信号构造分派到独立子模块
  */
-import type { OrderRecorder } from '../../../types/services.js';
+import type { PositionCache } from '../../../types/services.js';
 import type { Signal } from '../../../types/signal.js';
 import type {
   DecisionSnapshot,
@@ -43,7 +43,7 @@ export function planFactorSignals(params: {
   readonly strategyConfig: StrategyThresholdConfig;
   readonly longSymbol: string;
   readonly shortSymbol: string;
-  readonly orderRecorder: OrderRecorder;
+  readonly positionCache: PositionCache;
 }): DecisionSnapshot {
   return signalPlanner.planFactorSignals(params);
 }

@@ -16,11 +16,11 @@ import type {
 import type { FactorSnapshot } from '../../src/types/factor.js';
 import type { StrategyRuntime, StrategyState } from '../../src/types/state.js';
 import type {
-  OrderRecorder,
   MarketDataClient,
   PendingOrder,
   PendingRefreshSymbol,
   PositionCache,
+  RecentFilledOrderSummary,
   RiskChecker,
   RiskCheckResult,
   Trader,
@@ -41,6 +41,7 @@ import type {
 } from '../../src/core/doomsdayProtection/types.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
 import { createStrategyRuntimeConfig } from '../../mock/factories/configFactory.js';
+import type { OrderMonitor } from '../../src/core/trader/types.js';
 import type {
   GetRemainingMsParams,
   LiquidationCooldownTracker,
@@ -161,36 +162,28 @@ export function createPositionCacheDouble(initial: ReadonlyArray<Position> = [])
 }
 
 /**
- * 创建 OrderRecorder 测试替身。
+ * 创建 OrderMonitor 测试替身。
  *
- * 默认提供空实现，并允许按用例覆盖关键行为。
+ * 用于订单执行、换标和集成测试，统一提供当前生产契约所需的最小方法集合。
  */
-export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}): OrderRecorder {
-  const base: OrderRecorder = {
-    recordLocalBuy: () => {},
-    recordLocalSell: () => {},
-    clearBuyOrders: () => {},
-    getLatestBuyOrderPrice: () => null,
-    getLatestSellRecord: () => null,
-    getSellRecordByOrderId: () => null,
-    fetchAllOrdersFromAPI: async () => [],
-    refreshOrdersFromAllOrdersForLong: async () => [],
-    refreshOrdersFromAllOrdersForShort: async () => [],
-    clearOrdersCacheForSymbol: () => {},
-    getBuyOrdersForSymbol: () => [],
-    submitSellOrder: () => {},
-    updatePendingSell: () => null,
-    markSellFilled: () => null,
-    markSellPartialFilled: () => null,
-    markSellCancelled: () => null,
-    getPendingSellSnapshot: () => [],
-    allocateRelatedBuyOrderIdsForRecovery: () => [],
-    getCostAveragePrice: () => null,
-    selectSellableOrders: () => ({
-      orders: [],
-      totalQuantity: 0,
+export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}): OrderMonitor {
+  const base: OrderMonitor = {
+    initialize: async () => {},
+    trackOrder: () => {},
+    cancelOrder: async () => ({
+      kind: 'CANCEL_CONFIRMED',
+      closedReason: 'CANCELED',
+      source: 'API',
     }),
-    resetAll: () => {},
+    replaceOrderPrice: async () => {},
+    processWithLatestQuotes: async () => {},
+    recoverOrderTrackingFromSnapshot: async () => {},
+    getPendingSellOrders: () => [],
+    hasPendingSellOrders: () => false,
+    getRecentFilledOrder: () => null,
+    getAndClearPendingRefreshSymbols: () => [],
+    hasPendingProtectiveLiquidationOrders: () => false,
+    clearTrackedOrders: () => {},
   };
 
   return {
@@ -205,20 +198,17 @@ export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}
  * 用于隔离下单与查询副作用，聚焦流程编排断言。
  */
 export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
-  const baseOrderRecorder = createOrderRecorderDouble();
-
   const base: Trader = {
-    orderRecorder: baseOrderRecorder,
     getAccountSnapshot: async () => null,
     getStockPositions: async () => [],
     getPendingOrders: async (): Promise<PendingOrder[]> => [],
     seedOrderHoldSymbols: () => {},
     getOrderHoldSymbols: () => new Set<string>(),
+    hasPendingSellOrders: () => false,
     cancelOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
       closedReason: 'CANCELED',
       source: 'API',
-      relatedBuyOrderIds: null,
     }),
     monitorAndManageOrders: async () => {},
     getAndClearPendingRefreshSymbols: (): ReadonlyArray<PendingRefreshSymbol> => [],
@@ -228,13 +218,13 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
     fetchAllOrdersFromAPI: async () => [],
     resetRuntimeState: () => {},
     recoverOrderTrackingFromSnapshot: async () => {},
+    getRecentFilledOrder: (_orderId: string): RecentFilledOrderSummary | null => null,
     executeSignals: async () => ({ submittedCount: 0, submittedOrderIds: [] }),
   };
 
   return {
     ...base,
     ...overrides,
-    orderRecorder: overrides.orderRecorder ?? base.orderRecorder,
   };
 }
 
@@ -892,7 +882,6 @@ export function createStrategyRuntimeDouble(
     },
     autoSymbolManager: overrides.autoSymbolManager ?? createAutoSymbolManagerDouble(),
     strategy: overrides.strategy ?? createStrategyDouble(),
-    orderRecorder: overrides.orderRecorder ?? createOrderRecorderDouble(),
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
     riskChecker: overrides.riskChecker ?? createRiskCheckerDouble(),
     unrealizedLossMonitor: overrides.unrealizedLossMonitor ?? createUnrealizedLossMonitorDouble(),

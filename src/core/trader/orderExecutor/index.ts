@@ -25,7 +25,7 @@ import {
 /**
  * 创建订单执行器（核心业务流程：信号执行与订单提交）。
  *
- * @param deps 依赖注入（ctxPromise、rateLimiter、cacheManager、orderMonitor、orderRecorder、globalConfig、monitorConfig、symbolRegistry、isExecutionAllowed）
+ * @param deps 依赖注入（ctxPromise、rateLimiter、cacheManager、orderMonitor、globalConfig、monitorConfig、symbolRegistry、isExecutionAllowed）
  * @returns OrderExecutor 接口实例
  */
 export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
@@ -34,7 +34,6 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     rateLimiter,
     cacheManager,
     orderMonitor,
-    orderRecorder,
     globalConfig,
     monitorConfig,
     symbolRegistry,
@@ -113,7 +112,6 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     rateLimiter,
     cacheManager,
     orderMonitor,
-    orderRecorder,
     globalConfig,
     canExecuteSignal,
     recordBuyAttempt: buyThrottle.recordBuyAttempt,

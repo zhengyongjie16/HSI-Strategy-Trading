@@ -148,7 +148,6 @@ export function createQuoteFlow(deps: QuoteFlowDeps): QuoteFlow {
     runtime,
     config,
     thresholdDecimal,
-    orderRecorder,
     marketDataClient,
     ctxPromise,
     rateLimiter,
@@ -364,22 +363,6 @@ export function createQuoteFlow(deps: QuoteFlowDeps): QuoteFlow {
       const response = await ctx.submitOrder(marketOrderPayload);
       const newOrderId = extractOrderId(response);
       try {
-        const direction: 'LONG' | 'SHORT' = order.isLongSymbol ? 'LONG' : 'SHORT';
-        const relatedBuyOrderIds =
-          settlementResult.relatedBuyOrderIds ??
-          orderRecorder.allocateRelatedBuyOrderIdsForRecovery(
-            order.symbol,
-            direction,
-            marketConversionQuantity,
-          );
-        orderRecorder.submitSellOrder(
-          newOrderId,
-          order.symbol,
-          direction,
-          marketConversionQuantity,
-          relatedBuyOrderIds,
-        );
-
         logger.info(
           `[订单监控] 卖出订单 ${orderId} 已转为市价单，新订单ID=${newOrderId}，数量=${marketConversionQuantity}`,
         );

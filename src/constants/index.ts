@@ -210,7 +210,7 @@ export const LIFECYCLE = {
   /** 交易日历预热向前看天数（需求窗口右边界） */
   CALENDAR_PREWARM_LOOKAHEAD_DAYS: 7,
 
-  /** 交易日历预热无仍持仓时回退回看天数 */
+  /** 交易日历预热固定回看天数 */
   CALENDAR_PREWARM_FALLBACK_LOOKBACK_DAYS: 14,
 
   /** 交易日历接口最大回看天数（超出则抛错阻断重建） */
