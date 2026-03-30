@@ -25,7 +25,7 @@ function createSwitchSuppressionsMap(): Map<'LONG' | 'SHORT', SwitchSuppression>
 describe('autoSymbolManager seatStateManager business flow', () => {
   it('enterSwitchingSeat bumps seat version and puts seat into SWITCHING with switch state snapshot', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -40,7 +40,7 @@ describe('autoSymbolManager seatStateManager business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -53,8 +53,8 @@ describe('autoSymbolManager seatStateManager business flow', () => {
       reason: 'test-enter-switching-seat',
     });
     expect(nextVersion).toBe(2);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     const switchState = switchStates.get('LONG');
@@ -70,13 +70,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('suppression is valid on same HK date and auto-clears on date rollover', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     let now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -95,13 +95,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('keeps PERIODIC and DISTANCE_SAFE_SIDE suppressions independent on same symbol and day', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -147,13 +147,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('keeps suppression independent when DISTANCE_SAFE_SIDE is recorded before PERIODIC', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -171,13 +171,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('keeps LONG and SHORT suppressions isolated on same symbol and day', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -194,13 +194,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('auto-clears suppression when symbol changes on same day', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,

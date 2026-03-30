@@ -20,10 +20,14 @@ import type { PostTradeRefresher } from '../../src/main/asyncProgram/postTradeRe
 import type { Processor } from '../../src/main/asyncProgram/types.js';
 import type { LastState } from '../../src/types/state.js';
 import { createWarrantListCache } from '../../src/services/autoSymbolFinder/utils.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createStrategyRuntimeConfig,
+  createTradingConfigFixture,
+} from '../../mock/factories/configFactory.js';
 import {
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
+  createStrategyRuntimeDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createSdkConfigDouble,
   createSymbolRegistryDouble,
@@ -87,6 +91,7 @@ function createSignalProcessorDouble(): SignalProcessor {
 }
 
 function createLastState(): LastState {
+  const monitorConfig = createStrategyRuntimeConfig();
   return {
     canTrade: null,
     isHalfDay: null,
@@ -104,20 +109,32 @@ function createLastState(): LastState {
     },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorStates: new Map(),
+    monitorState: {
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+      monitorPrice: null,
+      longPrice: null,
+      shortPrice: null,
+      signal: null,
+      pendingSignals: [],
+      monitorValues: null,
+      lastMonitorSnapshot: null,
+      lastCandlestickCacheVersion: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
 
 function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
   const lastState = createLastState();
-  const tradingConfig = createTradingConfig({ monitors: [] });
+  const monitorConfig = createStrategyRuntimeConfig();
+  const tradingConfig = createTradingConfigFixture();
   const warrantListCache = createWarrantListCache();
 
   return {
     preGateRuntime: {
       config: createSdkConfigDouble(),
       tradingConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       warrantListCache,
       warrantListCacheConfig: {
@@ -153,7 +170,10 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
       },
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts: new Map(),
+      monitorContext: createStrategyRuntimeDouble({
+        config: monitorConfig,
+        state: lastState.monitorState,
+      }),
       refreshGate: {
         markStale: () => 0,
         markFresh: () => {},
@@ -182,11 +202,6 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
         cancelPendingBuyOrders: async () => ({ executed: false, cancelRequestAcceptedCount: 0 }),
       },
       signalProcessor: createSignalProcessorDouble(),
-      indicatorCache: {
-        push: () => {},
-        getAt: () => null,
-        clearAll: () => {},
-      },
       buyTaskQueue: {
         push: () => {},
         pop: () => null,

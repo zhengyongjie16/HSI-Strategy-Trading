@@ -1,5 +1,5 @@
-import type { MonitorState } from '../../types/state.js';
-import type { MonitorConfig } from '../../types/config.js';
+import type { StrategyState } from '../../types/state.js';
+import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
 import type { SignalType } from '../../types/signal.js';
 import type { DecimalLike } from './types.js';
@@ -97,23 +97,22 @@ export function isBuyAction(action: SignalType): boolean {
 }
 
 /**
- * 根据监控配置初始化单标的监控状态。默认行为：无；所有可更新字段初始为 null 或空。
+ * 根据单实例运行时配置初始化策略状态。默认行为：无；所有可更新字段初始为 null 或空。
  *
- * @param config 监控配置（monitorSymbol 等）
- * @returns 初始化的 MonitorState
+ * @param config 单实例运行时配置（baseInstrumentSymbol 等）
+ * @returns 初始化的 StrategyState
  */
-export function initMonitorState(config: MonitorConfig): MonitorState {
+export function createStrategyState(config: StrategyRuntimeConfig): StrategyState {
   return {
-    monitorSymbol: config.monitorSymbol,
+    baseInstrumentSymbol: config.baseInstrumentSymbol,
     monitorPrice: null,
     longPrice: null,
     shortPrice: null,
     signal: null,
-    pendingDelayedSignals: [],
+    pendingSignals: [],
     monitorValues: null,
     lastMonitorSnapshot: null,
     lastCandlestickCacheVersion: null,
-    incrementalIndicatorRuntime: null,
   };
 }
 
@@ -127,16 +126,16 @@ export function initMonitorState(config: MonitorConfig): MonitorState {
  */
 export function releaseSnapshotObjects(
   snapshot: IndicatorSnapshot | null,
-  monitorValues: MonitorState['monitorValues'],
+  monitorValues: StrategyState['monitorValues'],
 ): void {
   if (!snapshot) {
     return;
   }
 
   // 释放周期指标对象（如果它们没有被 monitorValues 引用）
-  releaseDetachedPeriodRecord(snapshot.ema, monitorValues?.ema);
-  releaseDetachedPeriodRecord(snapshot.rsi, monitorValues?.rsi);
-  releaseDetachedPeriodRecord(snapshot.psy, monitorValues?.psy);
+  releaseDetachedPeriodRecord(snapshot.ema ?? null, monitorValues?.ema);
+  releaseDetachedPeriodRecord(snapshot.rsi ?? null, monitorValues?.rsi);
+  releaseDetachedPeriodRecord(snapshot.psy ?? null, monitorValues?.psy);
 
   // 释放 KDJ 对象（如果它没有被 monitorValues 引用）
   if (snapshot.kdj && monitorValues?.kdj !== snapshot.kdj) {

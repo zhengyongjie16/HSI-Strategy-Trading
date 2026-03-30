@@ -1,5 +1,5 @@
 import type { OrderSide } from 'longbridge';
-import type { MonitorConfig } from './config.js';
+import type { StrategyRuntimeConfig } from './config.js';
 import type { Quote } from './quote.js';
 import type {
   OrderRecord,
@@ -17,9 +17,8 @@ import type { OrderFilteringEngine, OrderOwnership } from './orderRecorder.js';
  * 使用范围：风险控制与订单监控链路；全项目可引用。
  */
 export type DailyLossFilledOrderInput = {
-  readonly monitorSymbol: string;
+  readonly direction: 'LONG' | 'SHORT';
   readonly symbol: string;
-  readonly isLongSymbol: boolean;
   readonly side: OrderSide;
   readonly executedPrice: number;
   readonly executedQuantity: number;
@@ -34,7 +33,6 @@ export type DailyLossFilledOrderInput = {
  * 使用范围：风险控制链路；全项目可引用。
  */
 export type StartNewProtectionEpisodeParams = {
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
 
   /** 最近一次已完成保护性清仓事件边界（毫秒） */
@@ -43,7 +41,7 @@ export type StartNewProtectionEpisodeParams = {
 
 /**
  * 当日亏损追踪器接口。
- * 类型用途：按监控标的与方向维护已实现盈亏偏移，供浮亏刷新、成交处理与生命周期重建共享。
+ * 类型用途：按方向维护已实现盈亏偏移，供浮亏刷新、成交处理与生命周期重建共享。
  * 数据来源：由 riskController 模块实现并注入。
  * 使用范围：主程序、生命周期、订单监控、浮亏监控；全项目可引用。
  */
@@ -54,16 +52,16 @@ export interface DailyLossTracker {
   /** 使用完整订单列表重新计算当日状态，作为启动初始化或纠偏手段。 */
   recalculateFromAllOrders: (
     allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitor: Pick<StrategyRuntimeConfig, 'baseInstrumentSymbol' | 'orderOwnershipMapping'>,
     now: Date,
-    protectionBoundaryByDirection?: ReadonlyMap<string, number>,
+    protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
   ) => void;
 
   /** 增量记录单笔成交，仅接受 executedTimeMs > 当前保护性边界 且 当日日键匹配的订单 */
   recordFilledOrder: (input: DailyLossFilledOrderInput) => void;
 
   /** 获取指定标的与方向的当日亏损偏移（仅亏损，<=0），未初始化时返回 0 */
-  getLossOffset: (monitorSymbol: string, isLongSymbol: boolean) => number;
+  getLossOffset: (direction: 'LONG' | 'SHORT') => number;
 
   /** 推进保护性边界并开启新周期（幂等且只允许边界单向前进）。 */
   startNewProtectionEpisode: (params: StartNewProtectionEpisodeParams) => void;
@@ -80,7 +78,7 @@ export type UnrealizedLossMonitorContext = {
   readonly shortQuote: Quote | null;
   readonly longSymbol: string;
   readonly shortSymbol: string;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly riskChecker: RiskChecker;
   readonly trader: Trader;
   readonly orderRecorder: OrderRecorder;
@@ -91,7 +89,7 @@ export type UnrealizedLossMonitorContext = {
  * 浮亏监控器接口。
  * 类型用途：依赖注入，由 riskController 模块实现，主循环调用以监控做多/做空浮亏并触发保护性清仓。
  * 数据来源：由 riskController 模块实现并注入。
- * 使用范围：主程序、监控任务处理器、MonitorContext；全项目可引用。
+ * 使用范围：主程序、监控任务处理器、StrategyRuntime；全项目可引用。
  */
 export interface UnrealizedLossMonitor {
   /**
@@ -111,7 +109,9 @@ export type DailyLossTrackerDeps = {
   readonly filteringEngine: OrderFilteringEngine;
   readonly resolveOrderOwnership: (
     order: RawOrderFromAPI,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitors: ReadonlyArray<
+      Pick<StrategyRuntimeConfig, 'baseInstrumentSymbol' | 'orderOwnershipMapping'>
+    >,
   ) => OrderOwnership | null;
   readonly classifyAndConvertOrders: (orders: ReadonlyArray<RawOrderFromAPI>) => {
     buyOrders: ReadonlyArray<OrderRecord>;

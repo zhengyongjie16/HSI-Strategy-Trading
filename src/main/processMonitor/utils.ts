@@ -4,7 +4,6 @@ import { SIGNAL_ACTION_DESCRIPTIONS } from '../../constants/index.js';
 import type { Position } from '../../types/account.js';
 import type { Signal, SignalType } from '../../types/signal.js';
 import type { PositionCache } from '../../types/services.js';
-import type { DelayedSignalVerifierPort } from '../../types/monitorContextPorts.js';
 import type { TaskQueue, BuyTaskType, SellTaskType } from '../asyncProgram/tradeTaskQueue/types.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
@@ -52,23 +51,20 @@ function isMonitorTaskForDirection(
 }
 
 /**
- * 从买入或卖出队列中移除指定监控标的和方向的信号任务，并释放信号对象到对象池。
+ * 从买入或卖出队列中移除指定方向的信号任务，并释放信号对象到对象池。
  *
  * @param queue 买入或卖出任务队列
- * @param monitorSymbol 监控标的代码
  * @param direction 方向（LONG 或 SHORT）
  * @param releaseSignal 信号对象释放回调（归还对象池）
  * @returns 移除的任务数量
  */
 function removeSignalTasks(
   queue: TaskQueue<BuyTaskType> | TaskQueue<SellTaskType>,
-  monitorSymbol: string,
   direction: 'LONG' | 'SHORT',
   releaseSignal: (signal: Signal) => void,
 ): number {
   return queue.removeTasks(
-    (task) =>
-      task.monitorSymbol === monitorSymbol && isDirectionAction(task.data.action, direction),
+    (task) => isDirectionAction(task.data.action, direction),
     (task) => {
       releaseSignal(task.data);
     },
@@ -76,39 +72,28 @@ function removeSignalTasks(
 }
 
 /**
- * 清理指定监控标的和方向的所有队列任务（延迟验证、买入、卖出、监控任务队列）。
+ * 清理指定监控标的和方向的所有队列任务（买入、卖出、监控任务队列）。
  *
- * @param params 清理参数，包含 monitorSymbol、direction、各队列实例及 releaseSignal 回调
- * @returns 各队列移除的任务数量汇总（removedDelayed、removedBuy、removedSell、removedMonitorTasks）
+ * @param params 清理参数，包含 baseInstrumentSymbol、direction、各队列实例及 releaseSignal 回调
+ * @returns 各队列移除的任务数量汇总（removedDelayed 固定为 0）
  */
 export function clearMonitorDirectionQueues(params: {
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
-  readonly delayedSignalVerifier: DelayedSignalVerifierPort;
   readonly buyTaskQueue: TaskQueue<BuyTaskType>;
   readonly sellTaskQueue: TaskQueue<SellTaskType>;
   readonly monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
   readonly releaseSignal: (signal: Signal) => void;
 }): QueueClearResult {
-  const {
-    monitorSymbol,
-    direction,
-    delayedSignalVerifier,
-    buyTaskQueue,
-    sellTaskQueue,
-    monitorTaskQueue,
-    releaseSignal,
-  } = params;
+  const { direction, buyTaskQueue, sellTaskQueue, monitorTaskQueue, releaseSignal } = params;
 
-  const removedDelayed = delayedSignalVerifier.cancelAllForDirection(monitorSymbol, direction);
-  const removedBuy = removeSignalTasks(buyTaskQueue, monitorSymbol, direction, releaseSignal);
-  const removedSell = removeSignalTasks(sellTaskQueue, monitorSymbol, direction, releaseSignal);
-  const removedMonitorTasks = monitorTaskQueue.removeTasks(
-    (task) => task.monitorSymbol === monitorSymbol && isMonitorTaskForDirection(task, direction),
+  const removedBuy = removeSignalTasks(buyTaskQueue, direction, releaseSignal);
+  const removedSell = removeSignalTasks(sellTaskQueue, direction, releaseSignal);
+  const removedMonitorTasks = monitorTaskQueue.removeTasks((task) =>
+    isMonitorTaskForDirection(task, direction),
   );
 
   return {
-    removedDelayed,
+    removedDelayed: 0,
     removedBuy,
     removedSell,
     removedMonitorTasks,

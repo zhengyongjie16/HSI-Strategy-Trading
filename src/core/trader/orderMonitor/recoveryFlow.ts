@@ -10,9 +10,9 @@ import { OrderSide, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { PENDING_ORDER_STATUSES } from '../../../constants/index.js';
-import type { MonitorConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { RawOrderFromAPI } from '../../../types/services.js';
-import { resolveOrderOwnership } from '../../orderRecorder/orderOwnershipParser.js';
+import { resolveOrderOwnershipForMonitor } from '../../orderRecorder/orderOwnershipParser.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
 import type {
   OrderSeatOwnership,
@@ -35,22 +35,13 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     runtime,
     orderHoldRegistry,
     orderRecorder,
-    tradingConfig,
+    monitorConfig,
     symbolRegistry,
     trackOrder,
     cancelOrder,
     settleOrder,
     handleOrderChangedWhenActive,
   } = deps;
-  const triggerLimitByMonitor = new Map(
-    tradingConfig.monitors.map((monitor) => [
-      monitor.monitorSymbol,
-      monitor.liquidationTriggerLimit,
-    ]),
-  );
-  const cooldownConfigByMonitor = new Map(
-    tradingConfig.monitors.map((monitor) => [monitor.monitorSymbol, monitor.liquidationCooldown]),
-  );
 
   /**
    * 基于订单名称映射解析监控标的与方向。
@@ -59,13 +50,13 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
    * @returns 归属信息，无法解析返回 null
    */
   function resolveOrderSeatOwnership(order: RawOrderFromAPI): OrderSeatOwnership | null {
-    const resolved = resolveOrderOwnership(order, tradingConfig.monitors);
+    const resolved = resolveOrderOwnershipForMonitor(order, monitorConfig);
     if (!resolved) {
       return null;
     }
 
     return {
-      monitorSymbol: resolved.monitorSymbol,
+      baseInstrumentSymbol: resolved.baseInstrumentSymbol,
       direction: resolved.direction,
       isLongSymbol: resolved.direction === 'LONG',
     };
@@ -74,31 +65,35 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
   /**
    * 获取监控标的的保护性清仓触发上限。
    *
-   * @param monitorSymbol 监控标的
+   * @param baseInstrumentSymbol 监控标的
    * @returns 触发上限，缺失时回退 1
    */
-  function resolveLiquidationTriggerLimit(monitorSymbol: string | null): number {
-    if (!monitorSymbol) {
+  function resolveLiquidationTriggerLimit(baseInstrumentSymbol: string | null): number {
+    if (!baseInstrumentSymbol) {
       return 1;
     }
 
-    return triggerLimitByMonitor.get(monitorSymbol) ?? 1;
+    return baseInstrumentSymbol === monitorConfig.baseInstrumentSymbol
+      ? monitorConfig.liquidationTriggerLimit
+      : 1;
   }
 
   /**
    * 获取监控标的的保护性清仓冷却配置。
    *
-   * @param monitorSymbol 监控标的
+   * @param baseInstrumentSymbol 监控标的
    * @returns 冷却配置，缺失时回退 null
    */
   function resolveLiquidationCooldownConfig(
-    monitorSymbol: string | null,
-  ): MonitorConfig['liquidationCooldown'] {
-    if (!monitorSymbol) {
+    baseInstrumentSymbol: string | null,
+  ): StrategyRuntimeConfig['liquidationCooldown'] {
+    if (!baseInstrumentSymbol) {
       return null;
     }
 
-    return cooldownConfigByMonitor.get(monitorSymbol) ?? null;
+    return baseInstrumentSymbol === monitorConfig.baseInstrumentSymbol
+      ? monitorConfig.liquidationCooldown
+      : null;
   }
 
   /**
@@ -109,7 +104,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
    * @returns true 表示席位匹配
    */
   function isSeatMatchedForOrder(order: RawOrderFromAPI, ownership: OrderSeatOwnership): boolean {
-    const seatState = symbolRegistry.getSeatState(ownership.monitorSymbol, ownership.direction);
+    const seatState = symbolRegistry.getSeatState(ownership.direction);
     if (!isSeatActive(seatState)) {
       return false;
     }
@@ -339,8 +334,10 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const submittedAtMs = resolveSubmittedAtMs(order.submittedAt);
     const executedQuantity = decimalToNumber(order.executedQuantity);
     const isProtectiveLiquidation = hasProtectiveLiquidationRemark(order.remark);
-    const liquidationTriggerLimit = resolveLiquidationTriggerLimit(ownership.monitorSymbol);
-    const liquidationCooldownConfig = resolveLiquidationCooldownConfig(ownership.monitorSymbol);
+    const liquidationTriggerLimit = resolveLiquidationTriggerLimit(ownership.baseInstrumentSymbol);
+    const liquidationCooldownConfig = resolveLiquidationCooldownConfig(
+      ownership.baseInstrumentSymbol,
+    );
     const trackOrderParams: TrackOrderParams = {
       orderId: order.orderId,
       symbol: order.symbol,
@@ -351,7 +348,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       ...(submittedAtMs === null ? {} : { submittedAtMs }),
       initialStatus: order.status,
       isLongSymbol: ownership.isLongSymbol,
-      monitorSymbol: ownership.monitorSymbol,
+      baseInstrumentSymbol: ownership.baseInstrumentSymbol,
       isProtectiveLiquidation,
       orderType: order.orderType,
       liquidationTriggerLimit,
@@ -452,13 +449,13 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               executedTimeMs: queriedTerminalState.executedTimeMs,
               symbol: order.symbol,
               side: 'BUY',
-              monitorSymbol: ownership?.monitorSymbol ?? null,
+              baseInstrumentSymbol: ownership?.baseInstrumentSymbol ?? null,
               isProtectiveLiquidation: hasProtectiveLiquidationRemark(order.remark),
               liquidationTriggerLimit: resolveLiquidationTriggerLimit(
-                ownership?.monitorSymbol ?? null,
+                ownership?.baseInstrumentSymbol ?? null,
               ),
               liquidationCooldownConfig: resolveLiquidationCooldownConfig(
-                ownership?.monitorSymbol ?? null,
+                ownership?.baseInstrumentSymbol ?? null,
               ),
               ...(ownership?.isLongSymbol === undefined
                 ? {}

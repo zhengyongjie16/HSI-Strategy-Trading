@@ -1,256 +1,240 @@
+/**
+ * createTrendContinuationStrategy 业务测试
+ *
+ * 功能：
+ * - 验证 factor snapshot 驱动的开平仓输出
+ */
 import { describe, expect, it } from 'bun:test';
-import { parseSignalConfig } from '../../../src/config/utils.js';
-import { createHangSengMultiIndicatorStrategy } from '../../../src/core/strategy/index.js';
-import type { IndicatorSnapshot } from '../../../src/types/quote.js';
+
+import { createTrendContinuationStrategy } from '../../../src/core/strategy/index.js';
+import { createStrategyRuntimeConfig } from '../../../mock/factories/configFactory.js';
+import type { FactorSnapshot } from '../../../src/types/factor.js';
 import {
-  createIndicatorUsageProfileDouble,
+  createFactorSnapshotDouble,
   createOrderRecorderDouble,
 } from '../../helpers/testDoubles.js';
 
-function requireSignalConfig(configText: string) {
-  const signalConfig = parseSignalConfig(configText);
-  if (signalConfig === null) {
-    throw new Error(`failed to parse signal config: ${configText}`);
-  }
+const TEST_TIMESTAMP_MS = Date.UTC(2026, 2, 29, 2, 15, 0);
 
-  return signalConfig;
-}
-
-function createSnapshot(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot {
-  return {
-    price: 1,
-    changePercent: null,
-    ema: null,
-    rsi: null,
-    psy: null,
-    mfi: null,
-    kdj: {
-      k: 90,
-      d: 60,
-      j: 120,
-    },
-    macd: null,
-    adx: 30,
+function createFactorSnapshot(overrides: Partial<FactorSnapshot> = {}): FactorSnapshot {
+  return createFactorSnapshotDouble({
     ...overrides,
-  };
+  });
 }
 
-describe('createHangSengMultiIndicatorStrategy', () => {
-  it('routes immediate and delayed signals by action-specific verification mode', () => {
-    const strategy = createHangSengMultiIndicatorStrategy({
-      signalConfig: {
-        buycall: requireSignalConfig('(K>80)'),
-        sellcall: requireSignalConfig('(D>50)'),
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 0,
-          indicators: ['K'],
-        },
-        sell: {
-          delaySeconds: 10,
-          indicators: ['K'],
-        },
-      },
-    });
-    const orderRecorder = createOrderRecorderDouble({
-      getBuyOrdersForSymbol: () => [
-        {
-          orderId: 'BUY-1',
-          symbol: 'BULL.HK',
-          executedPrice: 1,
-          executedQuantity: 100,
-          executedTime: Date.now(),
-          submittedAt: undefined,
-          updatedAt: undefined,
-        },
-      ],
-    });
-
+describe('createTrendContinuationStrategy', () => {
+  it('emits buy signals for aligned bullish factors', () => {
+    const strategy = createTrendContinuationStrategy(createStrategyRuntimeConfig().strategyConfig);
     const result = strategy.generateSignals(
-      createSnapshot(),
+      createFactorSnapshot(),
       'BULL.HK',
-      '',
-      orderRecorder,
-      createIndicatorUsageProfileDouble({
-        verificationIndicatorsBySide: {
-          buy: ['K'],
-          sell: ['D'],
-        },
-      }),
+      'BEAR.HK',
+      createOrderRecorderDouble(),
     );
 
-    expect(result.immediateSignals.map((signal) => signal.action)).toEqual(['BUYCALL']);
-    expect(result.delayedSignals.map((signal) => signal.action)).toEqual(['SELLCALL']);
+    expect(result.map((signal) => signal.action)).toEqual(['BUYCALL']);
+    expect(result[0]?.reason ?? '').toContain('trend');
   });
 
-  it('does not generate sell signals when no matching buy orders exist', () => {
-    const strategy = createHangSengMultiIndicatorStrategy({
-      signalConfig: {
-        buycall: null,
-        sellcall: requireSignalConfig('(K>80)'),
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 0,
-          indicators: [],
-        },
-        sell: {
-          delaySeconds: 0,
-          indicators: [],
-        },
-      },
-    });
-
+  it('emits exit signals when the held long symbol is no longer supported', () => {
+    const strategy = createTrendContinuationStrategy(createStrategyRuntimeConfig().strategyConfig);
     const result = strategy.generateSignals(
-      createSnapshot(),
+      createFactorSnapshot({
+        trendClassification: 'trend_down',
+        trendScore: -1.2,
+        reverseTrendScore: 1.2,
+        er15: 0.5,
+        er30: 0.45,
+        openingStructure: {
+          orHigh: 101,
+          orLow: 99,
+          breakoutUp: false,
+          breakoutDown: true,
+          outsidePersistenceUp: null,
+          outsidePersistenceDown: 1,
+          retestHoldUp: false,
+          retestHoldDown: false,
+          failedBreakout: false,
+        },
+        confirmation: {
+          longAllowed: false,
+          shortAllowed: true,
+          emaAlignedLong: false,
+          emaAlignedShort: true,
+          macdAlignedLong: false,
+          macdAlignedShort: true,
+          vwapAlignedLong: false,
+          vwapAlignedShort: true,
+        },
+      }),
       'BULL.HK',
       '',
       createOrderRecorderDouble({
-        getBuyOrdersForSymbol: () => [],
+        getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
+          isLongSymbol && symbol === 'BULL.HK'
+            ? [
+                {
+                  orderId: 'BUY-1',
+                  symbol: 'BULL.HK',
+                  executedPrice: 100,
+                  executedQuantity: 100,
+                  executedTime: TEST_TIMESTAMP_MS,
+                  submittedAt: undefined,
+                  updatedAt: undefined,
+                },
+              ]
+            : [],
       }),
-      createIndicatorUsageProfileDouble(),
     );
 
-    expect(result.immediateSignals).toHaveLength(0);
-    expect(result.delayedSignals).toHaveLength(0);
+    expect(result.map((signal) => signal.action)).toEqual(['SELLCALL']);
   });
 
-  it('drops delayed signals when compiled verification indicator list is empty', () => {
-    const strategy = createHangSengMultiIndicatorStrategy({
-      signalConfig: {
-        buycall: requireSignalConfig('(K>80)'),
-        sellcall: null,
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 10,
-          indicators: ['K'],
-        },
-        sell: {
-          delaySeconds: 0,
-          indicators: [],
-        },
-      },
-    });
-
+  it('does not emit strategic exits when factor readiness is not ready', () => {
+    const strategy = createTrendContinuationStrategy(createStrategyRuntimeConfig().strategyConfig);
     const result = strategy.generateSignals(
-      createSnapshot(),
+      createFactorSnapshot({
+        readiness: {
+          regimeReady: false,
+          trendReady: false,
+          structureReady: false,
+          confirmationReady: false,
+          overallReady: false,
+          reasons: ['波动率基线未就绪'],
+        },
+        volatilityRegime: null,
+        trendClassification: null,
+        trendScore: null,
+        reverseTrendScore: null,
+        er15: null,
+        er30: null,
+        momentum: {
+          mom15: null,
+          mom30: null,
+          mom60: null,
+          zMom15: null,
+          zMom30: null,
+          zMom60: null,
+          sameSignCount: 0,
+        },
+        vwap: {
+          amVwap: 100,
+          pmVwap: null,
+          dayVwap: 100,
+          activeSessionVwap: 100,
+          activeSessionVwapSlope: 1,
+          crossCountLast10m: 0,
+          distanceFromActiveVwap: 1,
+        },
+        openingStructure: {
+          orHigh: 101,
+          orLow: 99,
+          breakoutUp: false,
+          breakoutDown: false,
+          outsidePersistenceUp: null,
+          outsidePersistenceDown: null,
+          retestHoldUp: false,
+          retestHoldDown: false,
+          failedBreakout: false,
+        },
+        pmContinuation: {
+          amQualified: false,
+          middayHold: false,
+          pmConfirmed: false,
+        },
+        confirmation: {
+          longAllowed: false,
+          shortAllowed: false,
+          emaAlignedLong: false,
+          emaAlignedShort: false,
+          macdAlignedLong: false,
+          macdAlignedShort: false,
+          vwapAlignedLong: false,
+          vwapAlignedShort: false,
+        },
+        blockedByNoiseWindow: false,
+      }),
       'BULL.HK',
       '',
-      createOrderRecorderDouble(),
-      createIndicatorUsageProfileDouble({
-        verificationIndicatorsBySide: {
-          buy: [],
-          sell: [],
-        },
+      createOrderRecorderDouble({
+        getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
+          isLongSymbol && symbol === 'BULL.HK'
+            ? [
+                {
+                  orderId: 'BUY-1',
+                  symbol: 'BULL.HK',
+                  executedPrice: 100,
+                  executedQuantity: 100,
+                  executedTime: TEST_TIMESTAMP_MS,
+                  submittedAt: undefined,
+                  updatedAt: undefined,
+                },
+              ]
+            : [],
       }),
     );
 
-    expect(result.immediateSignals).toHaveLength(0);
-    expect(result.delayedSignals).toHaveLength(0);
+    expect(result).toHaveLength(0);
   });
 
-  it('releases pooled indicator records after delayed validation setup fails', () => {
-    const strategy = createHangSengMultiIndicatorStrategy({
-      signalConfig: {
-        buycall: requireSignalConfig('(K>80)'),
-        sellcall: null,
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 10,
-          indicators: ['K', 'ADX'],
-        },
-        sell: {
-          delaySeconds: 0,
-          indicators: [],
-        },
-      },
-    });
-    const orderRecorder = createOrderRecorderDouble();
-
-    const failedResult = strategy.generateSignals(
-      createSnapshot({
-        adx: null,
-      }),
-      'BULL.HK',
-      '',
-      orderRecorder,
-      createIndicatorUsageProfileDouble({
-        verificationIndicatorsBySide: {
-          buy: ['K', 'ADX'],
-          sell: [],
-        },
-      }),
-    );
-
-    expect(failedResult.immediateSignals).toHaveLength(0);
-    expect(failedResult.delayedSignals).toHaveLength(0);
-
-    const successfulResult = strategy.generateSignals(
-      createSnapshot(),
-      'BULL.HK',
-      '',
-      orderRecorder,
-      createIndicatorUsageProfileDouble({
-        verificationIndicatorsBySide: {
-          buy: ['D'],
-          sell: [],
-        },
-      }),
-    );
-
-    expect(successfulResult.delayedSignals).toHaveLength(1);
-    expect(successfulResult.delayedSignals[0]?.indicators1).toEqual({ D: 60 });
-  });
-
-  it('does not generate signals for manually injected ADX signal conditions', () => {
-    const strategy = createHangSengMultiIndicatorStrategy({
-      signalConfig: {
-        buycall: {
-          conditionGroups: [
-            {
-              conditions: [{ indicator: 'ADX', operator: '>', threshold: 25 }],
-              requiredCount: 1,
-            },
-          ],
-        },
-        sellcall: null,
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 0,
-          indicators: [],
-        },
-        sell: {
-          delaySeconds: 0,
-          indicators: [],
-        },
-      },
-    });
-
+  it('returns no signals for a neutral snapshot', () => {
+    const strategy = createTrendContinuationStrategy(createStrategyRuntimeConfig().strategyConfig);
     const result = strategy.generateSignals(
-      createSnapshot({
-        adx: 35,
+      createFactorSnapshot({
+        trendClassification: 'range',
+        trendScore: 0,
+        volatilityRegime: 'normal',
       }),
       'BULL.HK',
-      '',
+      'BEAR.HK',
       createOrderRecorderDouble(),
-      createIndicatorUsageProfileDouble(),
     );
 
-    expect(result.immediateSignals).toHaveLength(0);
-    expect(result.delayedSignals).toHaveLength(0);
+    expect(result).toHaveLength(0);
+  });
+
+  it('rejects long entry when structure confirmation is missing on the live path', () => {
+    const strategy = createTrendContinuationStrategy(createStrategyRuntimeConfig().strategyConfig);
+    const result = strategy.generateSignals(
+      createFactorSnapshot({
+        volatilityRegime: 'normal',
+        trendClassification: 'trend_up',
+        trendScore: 1.2,
+        reverseTrendScore: -1.2,
+        er15: 0.6,
+        er30: 0.6,
+        openingStructure: {
+          orHigh: 101,
+          orLow: 99,
+          breakoutUp: false,
+          breakoutDown: false,
+          outsidePersistenceUp: 0,
+          outsidePersistenceDown: 0,
+          retestHoldUp: false,
+          retestHoldDown: false,
+          failedBreakout: false,
+        },
+        pmContinuation: {
+          amQualified: false,
+          middayHold: false,
+          pmConfirmed: false,
+        },
+        confirmation: {
+          longAllowed: true,
+          shortAllowed: false,
+          emaAlignedLong: true,
+          emaAlignedShort: false,
+          macdAlignedLong: true,
+          macdAlignedShort: false,
+          vwapAlignedLong: true,
+          vwapAlignedShort: false,
+        },
+      }),
+      'BULL.HK',
+      'BEAR.HK',
+      createOrderRecorderDouble(),
+    );
+
+    expect(result).toHaveLength(0);
   });
 });

@@ -12,25 +12,26 @@ import {
   formatWarrantDistanceDisplay,
 } from '../../../src/services/marketMonitor/utils.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
-import type { MonitorState } from '../../../src/types/state.js';
+import type { StrategyState } from '../../../src/types/state.js';
 import {
-  createIndicatorUsageProfileDouble,
+  createFactorSnapshotDouble,
   createQuoteDouble,
   createWarrantDistanceInfoDouble,
 } from '../../helpers/testDoubles.js';
 
-function createMonitorState(monitorSymbol: string): MonitorState {
+function createStrategyState(baseInstrumentSymbol: string): StrategyState {
   return {
-    monitorSymbol,
+    baseInstrumentSymbol,
     monitorPrice: null,
     longPrice: null,
     shortPrice: null,
     signal: null,
-    pendingDelayedSignals: [],
+    pendingSignals: [],
     monitorValues: null,
     lastMonitorSnapshot: null,
     lastCandlestickCacheVersion: null,
-    incrementalIndicatorRuntime: null,
+    lastDisplaySignature: null,
+    displayPlan: ['price', 'changePercent'],
   };
 }
 
@@ -38,13 +39,7 @@ function createSnapshot(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSn
   return {
     price: 20_000,
     changePercent: 0,
-    ema: { 7: 19_980 },
-    rsi: { 6: 52 },
-    psy: { 13: 58 },
-    mfi: 45,
-    kdj: { k: 51, d: 49, j: 55 },
-    macd: { macd: 10, dif: 3, dea: 2 },
-    adx: null,
+    factorSnapshot: createFactorSnapshotDouble(),
     ...overrides,
   };
 }
@@ -96,7 +91,7 @@ describe('marketMonitor business flow', () => {
 
   it('detects price change with configured threshold and updates state', () => {
     const monitor = createMarketMonitor();
-    const state = createMonitorState('HSI.HK');
+    const state = createStrategyState('HSI.HK');
 
     const firstChanged = monitor.monitorPriceChanges(
       createQuoteDouble('LONG.HK', 1),
@@ -129,30 +124,27 @@ describe('marketMonitor business flow', () => {
     expect(state.longPrice).toBe(1.01);
   });
 
-  it('detects indicator changes and keeps monitorValues in sync', () => {
+  it('detects factor snapshot changes and stores a display signature', () => {
     const monitor = createMarketMonitor();
-    const state = createMonitorState('HSI.HK');
+    const state = createStrategyState('HSI.HK');
     const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
     const klineTimestamp = 1_708_000_000_000;
-    const indicatorProfile = createIndicatorUsageProfileDouble();
 
     const first = monitor.monitorIndicatorChanges({
       monitorSnapshot: createSnapshot(),
       monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
+      baseInstrumentSymbol: 'HSI.HK',
       klineTimestamp,
       monitorState: state,
     });
     expect(first).toBe(true);
-    expect(state.monitorValues?.price).toBe(20_000);
-    expect(state.monitorValues?.ema?.[7]).toBe(19_980);
+    expect(state.lastDisplaySignature).toContain('SESSION=am');
+    expect(state.lastMonitorSnapshot?.factorSnapshot?.trendClassification).toBe('trend_up');
 
     const unchanged = monitor.monitorIndicatorChanges({
       monitorSnapshot: createSnapshot(),
       monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
+      baseInstrumentSymbol: 'HSI.HK',
       klineTimestamp,
       monitorState: state,
     });
@@ -160,185 +152,38 @@ describe('marketMonitor business flow', () => {
 
     const changed = monitor.monitorIndicatorChanges({
       monitorSnapshot: createSnapshot({
-        macd: { macd: 12, dif: 4, dea: 2.2 },
+        factorSnapshot: createFactorSnapshotDouble({
+          trendScore: 1.5,
+          er15: 0.7,
+        }),
       }),
       monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
+      baseInstrumentSymbol: 'HSI.HK',
       klineTimestamp,
       monitorState: state,
     });
     expect(changed).toBe(true);
-    expect(state.monitorValues?.macd?.macd).toBe(12);
+    expect(state.lastDisplaySignature).toContain('SCORE=1.500');
   });
 
-  it('detects ADX change and writes adx to monitorValues', () => {
+  it('skips factor updates when snapshot does not carry factor runtime output', () => {
     const monitor = createMarketMonitor();
-    const state = createMonitorState('HSI.HK');
+    const state = createStrategyState('HSI.HK');
     const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
-    const klineTimestamp = 1_708_000_000_000;
-    const indicatorProfile = createIndicatorUsageProfileDouble();
-
-    // 首次写入
-    monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({ adx: 25 }),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(state.monitorValues?.adx).toBe(25);
-
-    // ADX 变化触发更新
-    const changed = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({ adx: 30 }),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(changed).toBe(true);
-    expect(state.monitorValues?.adx).toBe(30);
-  });
-
-  it('stores only displayPlan fields in monitorValues cache', () => {
-    const monitor = createMarketMonitor();
-    const state = createMonitorState('HSI.HK');
-    const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
-    const klineTimestamp = 1_708_000_000_000;
-    const indicatorProfile = createIndicatorUsageProfileDouble({
-      displayPlan: ['price', 'changePercent', 'EMA:7', 'K', 'ADX'],
-    });
 
     const changed = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({ adx: 25 }),
+      monitorSnapshot: {
+        price: 20_000,
+        changePercent: 0,
+        factorSnapshot: null,
+      },
       monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
+      baseInstrumentSymbol: 'HSI.HK',
+      klineTimestamp: 1_708_000_000_000,
       monitorState: state,
     });
 
-    expect(changed).toBe(true);
-    expect(state.monitorValues?.price).toBe(20_000);
-    expect(state.monitorValues?.changePercent).toBe(0);
-    expect(state.monitorValues?.ema?.[7]).toBe(19_980);
-    expect(state.monitorValues?.kdj).toEqual({ k: 51, d: 49, j: 55 });
-    expect(state.monitorValues?.adx).toBe(25);
-    expect(state.monitorValues?.rsi).toBeNull();
-    expect(state.monitorValues?.psy).toBeNull();
-    expect(state.monitorValues?.mfi).toBeNull();
-    expect(state.monitorValues?.macd).toBeNull();
-  });
-
-  it('ignores indicator changes outside displayPlan when detecting monitor updates', () => {
-    const monitor = createMarketMonitor();
-    const state = createMonitorState('HSI.HK');
-    const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
-    const klineTimestamp = 1_708_000_000_000;
-    const indicatorProfile = createIndicatorUsageProfileDouble({
-      displayPlan: ['price', 'EMA:7', 'K'],
-    });
-
-    const first = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot(),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(first).toBe(true);
-
-    const unchanged = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({
-        rsi: { 6: 80 },
-        macd: { macd: 12, dif: 4, dea: 2.2 },
-        adx: 35,
-        mfi: 10,
-        psy: { 13: 30 },
-      }),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-
-    expect(unchanged).toBe(false);
-    expect(state.monitorValues?.ema?.[7]).toBe(19_980);
-    expect(state.monitorValues?.kdj?.k).toBe(51);
-    expect(state.monitorValues?.rsi).toBeNull();
-    expect(state.monitorValues?.macd).toBeNull();
-    expect(state.monitorValues?.adx).toBeNull();
-  });
-
-  it('does not trigger update when only D/J change under displayPlan: [K]', () => {
-    const monitor = createMarketMonitor();
-    const state = createMonitorState('HSI.HK');
-    const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
-    const klineTimestamp = 1_708_000_000_000;
-    const indicatorProfile = createIndicatorUsageProfileDouble({
-      displayPlan: ['K'],
-    });
-
-    const first = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({ kdj: { k: 51, d: 49, j: 55 } }),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(first).toBe(true);
-
-    // 仅 D/J 变化，K 不变——displayPlan 只含 'K'，不应触发更新
-    const unchanged = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({ kdj: { k: 51, d: 30, j: 83 } }),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(unchanged).toBe(false);
-  });
-
-  it('does not trigger update when only non-MACD indicators change under displayPlan: [MACD]', () => {
-    const monitor = createMarketMonitor();
-    const state = createMonitorState('HSI.HK');
-    const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
-    const klineTimestamp = 1_708_000_000_000;
-    const indicatorProfile = createIndicatorUsageProfileDouble({
-      displayPlan: ['MACD'],
-    });
-
-    const first = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({ macd: { macd: 10, dif: 3, dea: 2 } }),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(first).toBe(true);
-
-    // RSI / ADX / KDJ 全部变化，MACD 本身不变——displayPlan 只含 'MACD'，不应触发更新
-    const unchanged = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({
-        macd: { macd: 10, dif: 3, dea: 2 },
-        rsi: { 6: 90 },
-        adx: 70,
-        kdj: { k: 10, d: 10, j: 10 },
-      }),
-      monitorQuote,
-      monitorSymbol: 'HSI.HK',
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(unchanged).toBe(false);
+    expect(changed).toBe(false);
+    expect(state.lastDisplaySignature).toBeNull();
   });
 });

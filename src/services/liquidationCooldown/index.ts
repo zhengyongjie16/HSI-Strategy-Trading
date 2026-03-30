@@ -9,6 +9,7 @@ import type {
   GetRemainingMsParams,
   LiquidationCooldownTracker,
   LiquidationCooldownTrackerDeps,
+  ProtectiveLiquidationDirection,
   RecordCooldownParams,
   RecordLiquidationTriggerParams,
   RecordLiquidationTriggerResult,
@@ -18,7 +19,7 @@ import { buildCooldownKey, resolveCooldownEndMs } from './utils.js';
 
 /**
  * 创建清仓冷却追踪器，记录保护性清仓成交时间并计算剩余冷却时长。
- * 内部以 symbol:direction 为键存储成交时间戳，查询时按冷却模式动态计算结束时间。
+ * 内部以 direction 为键存储成交时间戳，查询时按冷却模式动态计算结束时间。
  * 与保护性清仓完成链路的协作方式：
  * - getRemainingMs 仅做纯查询，不产生任何清理副作用
  * - recordLiquidationTrigger 仅在“保护性清仓事件完成”时调用一次
@@ -29,18 +30,18 @@ import { buildCooldownKey, resolveCooldownEndMs } from './utils.js';
 export function createLiquidationCooldownTracker(
   deps: LiquidationCooldownTrackerDeps,
 ): LiquidationCooldownTracker {
-  const cooldownMap = new Map<string, number>();
-  const triggerCountMap = new Map<string, number>();
+  const cooldownMap = new Map<ProtectiveLiquidationDirection, number>();
+  const triggerCountMap = new Map<ProtectiveLiquidationDirection, number>();
   const { nowMs } = deps;
 
   /** 记录保护性清仓成交时间，无效时间戳不写入，避免脏数据影响冷却判断 */
-  function recordCooldown({ symbol, direction, executedTimeMs }: RecordCooldownParams): void {
+  function recordCooldown({ direction, executedTimeMs }: RecordCooldownParams): void {
     // 无效时间戳不记录
     if (!Number.isFinite(executedTimeMs) || executedTimeMs <= 0) {
       return;
     }
 
-    cooldownMap.set(buildCooldownKey(symbol, direction), executedTimeMs);
+    cooldownMap.set(buildCooldownKey(direction), executedTimeMs);
   }
 
   /**
@@ -48,7 +49,6 @@ export function createLiquidationCooldownTracker(
    * 每次触发都会累加计数，达到 triggerLimit 时写入冷却记录。
    */
   function recordLiquidationTrigger({
-    symbol,
     direction,
     executedTimeMs,
     triggerLimit,
@@ -66,7 +66,7 @@ export function createLiquidationCooldownTracker(
       };
     }
 
-    const key = buildCooldownKey(symbol, direction);
+    const key = buildCooldownKey(direction);
 
     if (cooldownConfig !== null) {
       const previousCooldownExecutedTimeMs = cooldownMap.get(key);
@@ -114,12 +114,12 @@ export function createLiquidationCooldownTracker(
   }
 
   /** 恢复触发计数器，用于启动时从成交日志恢复当前周期计数。 */
-  function restoreTriggerCount({ symbol, direction, count }: RestoreTriggerCountParams): void {
+  function restoreTriggerCount({ direction, count }: RestoreTriggerCountParams): void {
     if (!Number.isInteger(count) || count <= 0) {
       return;
     }
 
-    triggerCountMap.set(buildCooldownKey(symbol, direction), count);
+    triggerCountMap.set(buildCooldownKey(direction), count);
   }
 
   /**
@@ -127,12 +127,11 @@ export function createLiquidationCooldownTracker(
    * 冷却已过期或无记录时返回 0，不产生清理副作用。
    */
   function getRemainingMs({
-    symbol,
     direction,
     cooldownConfig,
     currentTimeMs,
   }: GetRemainingMsParams): number {
-    const key = buildCooldownKey(symbol, direction);
+    const key = buildCooldownKey(direction);
     const executedTimeMs = cooldownMap.get(key);
     if (executedTimeMs === undefined || !Number.isFinite(executedTimeMs)) {
       return 0;

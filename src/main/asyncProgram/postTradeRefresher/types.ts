@@ -1,4 +1,4 @@
-import type { LastState, MonitorContext } from '../../../types/state.js';
+import type { LastState, StrategyRuntime } from '../../../types/state.js';
 import type { Quote } from '../../../types/quote.js';
 import type { PendingRefreshSymbol, Trader } from '../../../types/services.js';
 import type { DailyLossTracker } from '../../../types/risk.js';
@@ -19,7 +19,7 @@ export type PostTradeRefresherEnqueueParams = Readonly<{
 
 /**
  * 交易后刷新器依赖注入配置（创建 PostTradeRefresher 时的参数）。
- * 类型用途：创建 PostTradeRefresher 所需的全部外部依赖（refreshGate、trader、lastState、monitorContexts、displayAccountAndPositions）。
+ * 类型用途：创建 PostTradeRefresher 所需的全部外部依赖（refreshGate、trader、lastState、monitorContext、displayAccountAndPositions）。
  * 数据来源：由主程序/启动流程组装并传入工厂。
  * 使用范围：仅 postTradeRefresher 及启动流程使用，内部使用。
  */
@@ -27,7 +27,7 @@ export type PostTradeRefresherDeps = Readonly<{
   refreshGate: RefreshGate;
   trader: Trader;
   lastState: LastState;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: StrategyRuntime;
   dailyLossTracker: DailyLossTracker;
   liquidationCooldownTracker: LiquidationCooldownTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;

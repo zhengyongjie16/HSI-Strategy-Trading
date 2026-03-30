@@ -10,7 +10,7 @@ import { scheduleRiskTasks } from '../../../src/main/processMonitor/riskTasks.js
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 
 import type { MainProgramContext } from '../../../src/main/mainProgram/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import type { Quote } from '../../../src/types/quote.js';
 import type { SeatSyncResult } from '../../../src/main/processMonitor/types.js';
 import type { PriceDisplayInfo } from '../../../src/services/marketMonitor/types.js';
@@ -67,7 +67,7 @@ describe('riskTasks business scheduling', () => {
 
     const monitorContext = {
       state: {
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
       },
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: (isLong) => {
@@ -142,7 +142,7 @@ describe('riskTasks business scheduling', () => {
       }),
       longSymbolName: 'BULL',
       shortSymbolName: 'BEAR',
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const mainContext = {
       marketMonitor: {
@@ -151,7 +151,7 @@ describe('riskTasks business scheduling', () => {
           _shortQuote: Quote | null,
           _longSymbol: string,
           _shortSymbol: string,
-          _state: MonitorContext['state'],
+          _state: StrategyRuntime['state'],
           longDisplayInfo: PriceDisplayInfo | null | undefined,
           shortDisplayInfo: PriceDisplayInfo | null | undefined,
         ) => {
@@ -164,7 +164,7 @@ describe('riskTasks business scheduling', () => {
     } as unknown as MainProgramContext;
 
     scheduleRiskTasks({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorContext,
       mainContext,
       seatInfo: createSeatInfo(),
@@ -178,7 +178,7 @@ describe('riskTasks business scheduling', () => {
     const second = monitorTaskQueue.pop();
 
     expect(first?.type).toBe('LIQUIDATION_DISTANCE_CHECK');
-    expect(first?.dedupeKey).toBe('HSI.HK:LIQUIDATION_DISTANCE_CHECK');
+    expect(first?.dedupeKey).toBe('LIQUIDATION_DISTANCE_CHECK');
     expect((first?.data as { monitorPrice: number }).monitorPrice).toBe(20_000);
     const liquidationData = first?.data as {
       long: Record<string, unknown>;
@@ -188,7 +188,7 @@ describe('riskTasks business scheduling', () => {
     expect('quote' in liquidationData.short).toBeFalse();
 
     expect(second?.type).toBe('UNREALIZED_LOSS_CHECK');
-    expect(second?.dedupeKey).toBe('HSI.HK:UNREALIZED_LOSS_CHECK');
+    expect(second?.dedupeKey).toBe('UNREALIZED_LOSS_CHECK');
     const unrealizedData = second?.data as {
       long: Record<string, unknown>;
       short: Record<string, unknown>;
@@ -240,13 +240,13 @@ describe('riskTasks business scheduling', () => {
 
     const monitorContext = {
       state: {
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
       },
       riskChecker: createRiskCheckerDouble(),
       orderRecorder: createOrderRecorderDouble(),
       longSymbolName: 'BULL',
       shortSymbolName: 'BEAR',
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const mainContext = {
       marketMonitor: {
@@ -256,7 +256,7 @@ describe('riskTasks business scheduling', () => {
     } as unknown as MainProgramContext;
 
     scheduleRiskTasks({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorContext,
       mainContext,
       seatInfo: createSeatInfo(),

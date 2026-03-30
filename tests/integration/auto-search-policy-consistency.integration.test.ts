@@ -7,7 +7,6 @@
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, WarrantStatus, WarrantType } from 'longbridge';
 
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { toMockDecimal } from '../../mock/longbridge/decimal.js';
 import { createQuoteContextMock } from '../../mock/longbridge/quoteContextMock.js';
 import { prepareSeatsForRuntime } from '../../src/main/recovery/seatPreparation.js';
@@ -30,7 +29,7 @@ import { signalObjectPool } from '../../src/utils/objectPool/index.js';
 import { getHKDateKey } from '../../src/utils/time/index.js';
 import {
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createQuoteContextDouble,
   createQuoteDouble,
@@ -95,8 +94,8 @@ function toApiDistanceRatio(percentValue: number): number {
 describe('auto search policy consistency integration', () => {
   it('selects the same degraded candidate across startup search, runtime empty-seat search, and distance-switch presearch', async () => {
     const currentTime = new Date('2026-02-16T01:00:00.000Z');
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -131,7 +130,7 @@ describe('auto search policy consistency integration', () => {
 
     const startupLogger = createLoggerRecorder();
     const startupRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -152,7 +151,7 @@ describe('auto search policy consistency integration', () => {
       },
     });
     await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      monitorConfig,
       symbolRegistry: startupRegistry,
       positions: [],
       orders: [],
@@ -165,7 +164,7 @@ describe('auto search policy consistency integration', () => {
       isWithinMorningOpenProtection: () => false,
     });
 
-    const startupSeat = startupRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const startupSeat = startupRegistry.getSeatState('LONG');
     expect(startupSeat.status).toBe('ACTIVATING');
     expect(startupSeat.symbol).toBe('BEST_BULL.HK');
     expect(
@@ -177,7 +176,7 @@ describe('auto search policy consistency integration', () => {
 
     const runtimeLogger = createLoggerRecorder();
     const runtimeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -189,7 +188,7 @@ describe('auto search policy consistency integration', () => {
       },
     });
     const runtimeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: runtimeRegistry,
       switchStates: new Map(),
       switchSuppressions: new Map(),
@@ -199,7 +198,7 @@ describe('auto search policy consistency integration', () => {
     });
     const runtimeAutoSearch = createAutoSearch({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: runtimeRegistry,
       buildSeatState: runtimeSeatStateManager.buildSeatState,
       updateSeatState: runtimeSeatStateManager.updateSeatState,
@@ -207,13 +206,13 @@ describe('auto search policy consistency integration', () => {
         resolveDirectionalAutoSearchPolicy({
           ...params,
           autoSearchConfig: monitorConfig.autoSearchConfig,
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           logger: runtimeLogger.logger,
         }),
       buildFindBestWarrantInput: async ({ currentTime: nextTime, policy }) =>
         buildFindBestWarrantInputFromPolicy({
           ctx: createQuoteContextDouble(quoteContext),
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           currentTime: nextTime,
           policy,
           expiryMinMonths: monitorConfig.autoSearchConfig.autoSearchExpiryMinMonths,
@@ -233,7 +232,7 @@ describe('auto search policy consistency integration', () => {
       canTradeNow: true,
     });
 
-    const runtimeSeat = runtimeRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const runtimeSeat = runtimeRegistry.getSeatState('LONG');
     expect(runtimeSeat.status).toBe('ACTIVATING');
     expect(runtimeSeat.symbol).toBe('BEST_BULL.HK');
     expect(
@@ -247,7 +246,7 @@ describe('auto search policy consistency integration', () => {
     const switchStates = new Map();
     const switchSuppressions = new Map();
     const switchRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -260,7 +259,7 @@ describe('auto search policy consistency integration', () => {
       longVersion: 1,
     });
     const switchSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: switchRegistry,
       switchStates,
       switchSuppressions,
@@ -271,7 +270,7 @@ describe('auto search policy consistency integration', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const switchStateMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: switchRegistry,
       trader: createTraderDouble({
         getPendingOrders: async () => [],
@@ -296,13 +295,13 @@ describe('auto search policy consistency integration', () => {
         resolveDirectionalAutoSearchPolicy({
           ...params,
           autoSearchConfig: monitorConfig.autoSearchConfig,
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           logger: switchLogger.logger,
         }),
       buildFindBestWarrantInput: async ({ currentTime: nextTime, policy }) =>
         buildFindBestWarrantInputFromPolicy({
           ctx: createQuoteContextDouble(quoteContext),
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           currentTime: nextTime,
           policy,
           expiryMinMonths: monitorConfig.autoSearchConfig.autoSearchExpiryMinMonths,
@@ -332,7 +331,7 @@ describe('auto search policy consistency integration', () => {
       positions: [],
     });
 
-    const switchedSeat = switchRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const switchedSeat = switchRegistry.getSeatState('LONG');
     expect(switchedSeat.status).toBe('ACTIVATING');
     expect(switchedSeat.symbol).toBe('BEST_BULL.HK');
     expect(
@@ -346,8 +345,8 @@ describe('auto search policy consistency integration', () => {
 
   it('selects the same degraded SHORT candidate across startup search, runtime empty-seat search, and distance-switch presearch', async () => {
     const currentTime = new Date('2026-02-16T01:00:00.000Z');
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -382,7 +381,7 @@ describe('auto search policy consistency integration', () => {
 
     const startupLogger = createLoggerRecorder();
     const startupRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -403,7 +402,7 @@ describe('auto search policy consistency integration', () => {
       },
     });
     await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      monitorConfig,
       symbolRegistry: startupRegistry,
       positions: [],
       orders: [],
@@ -416,7 +415,7 @@ describe('auto search policy consistency integration', () => {
       isWithinMorningOpenProtection: () => false,
     });
 
-    const startupSeat = startupRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+    const startupSeat = startupRegistry.getSeatState('SHORT');
     expect(startupSeat.status).toBe('ACTIVATING');
     expect(startupSeat.symbol).toBe('BEST_BEAR.HK');
     expect(
@@ -428,7 +427,7 @@ describe('auto search policy consistency integration', () => {
 
     const runtimeLogger = createLoggerRecorder();
     const runtimeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       shortSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -440,7 +439,7 @@ describe('auto search policy consistency integration', () => {
       },
     });
     const runtimeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: runtimeRegistry,
       switchStates: new Map(),
       switchSuppressions: new Map(),
@@ -450,7 +449,7 @@ describe('auto search policy consistency integration', () => {
     });
     const runtimeAutoSearch = createAutoSearch({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: runtimeRegistry,
       buildSeatState: runtimeSeatStateManager.buildSeatState,
       updateSeatState: runtimeSeatStateManager.updateSeatState,
@@ -458,13 +457,13 @@ describe('auto search policy consistency integration', () => {
         resolveDirectionalAutoSearchPolicy({
           ...params,
           autoSearchConfig: monitorConfig.autoSearchConfig,
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           logger: runtimeLogger.logger,
         }),
       buildFindBestWarrantInput: async ({ currentTime: nextTime, policy }) =>
         buildFindBestWarrantInputFromPolicy({
           ctx: createQuoteContextDouble(quoteContext),
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           currentTime: nextTime,
           policy,
           expiryMinMonths: monitorConfig.autoSearchConfig.autoSearchExpiryMinMonths,
@@ -484,7 +483,7 @@ describe('auto search policy consistency integration', () => {
       canTradeNow: true,
     });
 
-    const runtimeSeat = runtimeRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+    const runtimeSeat = runtimeRegistry.getSeatState('SHORT');
     expect(runtimeSeat.status).toBe('ACTIVATING');
     expect(runtimeSeat.symbol).toBe('BEST_BEAR.HK');
     expect(
@@ -498,7 +497,7 @@ describe('auto search policy consistency integration', () => {
     const switchStates = new Map();
     const switchSuppressions = new Map();
     const switchRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -511,7 +510,7 @@ describe('auto search policy consistency integration', () => {
       shortVersion: 1,
     });
     const switchSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: switchRegistry,
       switchStates,
       switchSuppressions,
@@ -522,7 +521,7 @@ describe('auto search policy consistency integration', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const switchStateMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: switchRegistry,
       trader: createTraderDouble({
         getPendingOrders: async () => [],
@@ -547,13 +546,13 @@ describe('auto search policy consistency integration', () => {
         resolveDirectionalAutoSearchPolicy({
           ...params,
           autoSearchConfig: monitorConfig.autoSearchConfig,
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           logger: switchLogger.logger,
         }),
       buildFindBestWarrantInput: async ({ currentTime: nextTime, policy }) =>
         buildFindBestWarrantInputFromPolicy({
           ctx: createQuoteContextDouble(quoteContext),
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           currentTime: nextTime,
           policy,
           expiryMinMonths: monitorConfig.autoSearchConfig.autoSearchExpiryMinMonths,
@@ -583,7 +582,7 @@ describe('auto search policy consistency integration', () => {
       positions: [],
     });
 
-    const switchedSeat = switchRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+    const switchedSeat = switchRegistry.getSeatState('SHORT');
     expect(switchedSeat.status).toBe('ACTIVATING');
     expect(switchedSeat.symbol).toBe('BEST_BEAR.HK');
     expect(
@@ -597,8 +596,8 @@ describe('auto search policy consistency integration', () => {
 
   it('keeps candidate selection unchanged when safe/danger trigger semantics differ', async () => {
     const currentTime = new Date('2026-02-16T01:00:00.000Z');
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -633,7 +632,7 @@ describe('auto search policy consistency integration', () => {
 
     const runtimeLogger = createLoggerRecorder();
     const runtimeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -645,7 +644,7 @@ describe('auto search policy consistency integration', () => {
       },
     });
     const runtimeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: runtimeRegistry,
       switchStates: new Map(),
       switchSuppressions: new Map(),
@@ -655,7 +654,7 @@ describe('auto search policy consistency integration', () => {
     });
     const runtimeAutoSearch = createAutoSearch({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: runtimeRegistry,
       buildSeatState: runtimeSeatStateManager.buildSeatState,
       updateSeatState: runtimeSeatStateManager.updateSeatState,
@@ -663,13 +662,13 @@ describe('auto search policy consistency integration', () => {
         resolveDirectionalAutoSearchPolicy({
           ...params,
           autoSearchConfig: monitorConfig.autoSearchConfig,
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           logger: runtimeLogger.logger,
         }),
       buildFindBestWarrantInput: async ({ currentTime: nextTime, policy }) =>
         buildFindBestWarrantInputFromPolicy({
           ctx: createQuoteContextDouble(quoteContext),
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           currentTime: nextTime,
           policy,
           expiryMinMonths: monitorConfig.autoSearchConfig.autoSearchExpiryMinMonths,
@@ -688,14 +687,14 @@ describe('auto search policy consistency integration', () => {
       currentTime,
       canTradeNow: true,
     });
-    const runtimeSeat = runtimeRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const runtimeSeat = runtimeRegistry.getSeatState('LONG');
     expect(runtimeSeat.symbol).toBe('BEST_BULL.HK');
 
     const safeLogger = createLoggerRecorder();
     const safeSwitchStates = new Map();
     const safeSwitchSuppressions = new Map();
     const safeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'BEST_BULL.HK',
         status: 'ACTIVE',
@@ -708,7 +707,7 @@ describe('auto search policy consistency integration', () => {
       longVersion: 1,
     });
     const safeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: safeRegistry,
       switchStates: safeSwitchStates,
       switchSuppressions: safeSwitchSuppressions,
@@ -719,7 +718,7 @@ describe('auto search policy consistency integration', () => {
     const safeSignalBuilder = createSignalBuilder({ signalObjectPool });
     const safeSwitchMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: safeRegistry,
       trader: createTraderDouble({
         getPendingOrders: async () => [],
@@ -744,13 +743,13 @@ describe('auto search policy consistency integration', () => {
         resolveDirectionalAutoSearchPolicy({
           ...params,
           autoSearchConfig: monitorConfig.autoSearchConfig,
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           logger: safeLogger.logger,
         }),
       buildFindBestWarrantInput: async ({ currentTime: nextTime, policy }) =>
         buildFindBestWarrantInputFromPolicy({
           ctx: createQuoteContextDouble(quoteContext),
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           currentTime: nextTime,
           policy,
           expiryMinMonths: monitorConfig.autoSearchConfig.autoSearchExpiryMinMonths,
@@ -784,7 +783,7 @@ describe('auto search policy consistency integration', () => {
     const dangerSwitchStates = new Map();
     const dangerSwitchSuppressions = new Map();
     const dangerRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'BEST_BULL.HK',
         status: 'ACTIVE',
@@ -797,7 +796,7 @@ describe('auto search policy consistency integration', () => {
       longVersion: 1,
     });
     const dangerSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: dangerRegistry,
       switchStates: dangerSwitchStates,
       switchSuppressions: dangerSwitchSuppressions,
@@ -808,7 +807,7 @@ describe('auto search policy consistency integration', () => {
     const dangerSignalBuilder = createSignalBuilder({ signalObjectPool });
     const dangerSwitchMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       symbolRegistry: dangerRegistry,
       trader: createTraderDouble({
         getPendingOrders: async () => [],
@@ -833,13 +832,13 @@ describe('auto search policy consistency integration', () => {
         resolveDirectionalAutoSearchPolicy({
           ...params,
           autoSearchConfig: monitorConfig.autoSearchConfig,
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           logger: dangerLogger.logger,
         }),
       buildFindBestWarrantInput: async ({ currentTime: nextTime, policy }) =>
         buildFindBestWarrantInputFromPolicy({
           ctx: createQuoteContextDouble(quoteContext),
-          monitorSymbol: monitorConfig.monitorSymbol,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           currentTime: nextTime,
           policy,
           expiryMinMonths: monitorConfig.autoSearchConfig.autoSearchExpiryMinMonths,
@@ -869,8 +868,8 @@ describe('auto search policy consistency integration', () => {
       positions: [],
     });
 
-    const safeSeat = safeRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
-    const dangerSeat = dangerRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const safeSeat = safeRegistry.getSeatState('LONG');
+    const dangerSeat = dangerRegistry.getSeatState('LONG');
     expect(safeSeat.status).toBe('ACTIVE');
     expect(dangerSeat.status).toBe('ACTIVE');
     expect(safeSeat.symbol).toBe('BEST_BULL.HK');

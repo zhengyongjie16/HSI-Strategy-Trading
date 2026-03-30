@@ -26,7 +26,7 @@ import type { Quote } from '../../../src/types/quote.js';
 import {
   createWarrantDistanceInfoDouble,
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
@@ -77,14 +77,14 @@ function createPeriodicSwitchPendingMap(): Map<'LONG' | 'SHORT', PeriodicSwitchP
 }
 describe('autoSymbolManager switchStateMachine business flow', () => {
   it('treats periodic no-candidate as business closeout instead of state-machine failure', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: {
         ...getDefaultAutoSearchConfig(),
         switchIntervalMinutes: 1,
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -112,7 +112,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     };
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -128,7 +128,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -174,11 +174,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       openProtectionActive: false,
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('EMPTY');
     expect(seat.symbol).toBeNull();
     expect(seat.searchFailCountToday).toBe(1);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     expect(periodicSwitchPending.has('LONG')).toBeFalse();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
     expect(infoMessages.some((message) => message.includes('周期换标无候选，清空席位'))).toBeTrue();
@@ -189,11 +189,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('marks suppression only for safe-side distance same-symbol and skips switching', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -208,7 +208,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -219,7 +219,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -265,7 +265,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     const suppression = seatStateManager.resolveSuppression(
@@ -278,11 +278,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('does not mark suppression for danger-side distance same-symbol and skips switching', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -297,7 +297,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -308,7 +308,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -354,7 +354,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(
@@ -364,11 +364,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('does not let periodic suppression block safe-side distance presearch on same symbol and day', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -383,7 +383,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -397,7 +397,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -456,11 +456,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('ignores presearch result when seat changes during candidate lookup', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -476,7 +476,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -493,7 +493,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     );
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -538,9 +538,9 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const latestSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-    symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+    const latestSeat = symbolRegistry.getSeatState('LONG');
+    symbolRegistry.bumpSeatVersion('LONG');
+    symbolRegistry.updateSeatState('LONG', {
       ...latestSeat,
       symbol: 'MANUAL_BULL.HK',
       status: 'ACTIVE',
@@ -549,18 +549,18 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     resolveCandidate(createWarrantCandidate('NEW_BULL.HK'));
     await switchPromise;
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('MANUAL_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
   });
 
   it('switches to new symbol directly when no position exists', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -576,7 +576,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -595,7 +595,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder: createOrderRecorderDouble(),
@@ -638,22 +638,22 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BULL.HK');
     expect(seat.callPrice).toBe(21_000);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     expect(executeCalls).toBe(0);
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
   });
 
   it('executes sell then rebuy in pending-switch flow when position exists', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       targetNotional: 5_000,
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -669,7 +669,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -716,7 +716,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder,
@@ -787,18 +787,18 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     expect(executedActions[1]?.action).toBe('BUYCALL');
     expect(executedActions[1]?.symbol).toBe('NEW_BULL.HK');
     expect(executedActions[1]?.quantity).toBe(200);
-    const finalSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const finalSeat = symbolRegistry.getSeatState('LONG');
     expect(finalSeat.status).toBe('ACTIVATING');
     expect(finalSeat.symbol).toBe('NEW_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
   });
 
   it('allows SELL_OUT with execution-time price-only quote even when lotSize is missing', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -814,7 +814,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -870,7 +870,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder,
@@ -928,12 +928,12 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('fails switch flow after WAIT_QUOTE/REBUY execution-time quote retries exhaust without lotSize', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       targetNotional: 5_000,
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -949,7 +949,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1010,7 +1010,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder,
@@ -1075,16 +1075,16 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     expect(quoteRequests[0]).toEqual(['OLD_BULL.HK']);
     expect(quoteRequests.slice(1).every((symbols) => symbols[0] === 'NEW_BULL.HK')).toBeTrue();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
-    const finalSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const finalSeat = symbolRegistry.getSeatState('LONG');
     expect(finalSeat.status).toBe('EMPTY');
   });
 
   it('marks seat EMPTY when canceling pending buy orders fails during switch', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1100,7 +1100,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1140,7 +1140,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder: createOrderRecorderDouble(),
@@ -1183,7 +1183,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const longSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const longSeat = symbolRegistry.getSeatState('LONG');
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.symbol).toBeNull();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -1191,11 +1191,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('waits for pending buy order to disappear after cancel request is accepted', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1211,7 +1211,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1260,7 +1260,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder: createOrderRecorderDouble(),
@@ -1306,7 +1306,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
 
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
     expect(executeCalls).toBe(0);
 
     await machine.maybeSwitchOnDistance({
@@ -1316,17 +1316,17 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
 
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
     expect(executeCalls).toBe(0);
   });
 
   it('keeps periodic switch pending when canceled buy order is already filled and exposure remains', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1342,7 +1342,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1386,7 +1386,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder: createOrderRecorderDouble({
@@ -1452,18 +1452,18 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
   });
 
   it('completes distance switch when filled cancel has no open exposure snapshot yet', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1479,7 +1479,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:40:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1528,7 +1528,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder: createOrderRecorderDouble(),
@@ -1573,7 +1573,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
 
     await machine.maybeSwitchOnDistance({
       direction: 'LONG',
@@ -1582,18 +1582,18 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
 
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
     expect(executeCalls).toBe(0);
   });
 
   it('promotes unexpected filled pending buy into distance sell-and-rebuy flow', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       targetNotional: 5_000,
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1609,7 +1609,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1676,7 +1676,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder,
@@ -1748,17 +1748,17 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
     expect(executedActions).toEqual(['SELLCALL', 'BUYCALL']);
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
   });
 
   it('keeps pending switch state when rebuy quote is not ready', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       targetNotional: 5_000,
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1774,7 +1774,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1807,7 +1807,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder,
@@ -1891,12 +1891,12 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('keeps pending switch state when rebuy submission is rejected', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       targetNotional: 5_000,
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1912,7 +1912,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1950,7 +1950,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder,
@@ -2016,18 +2016,18 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
     expect(executedActions).toEqual(['SELLCALL', 'BUYCALL']);
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('NEW_BULL.HK');
   });
 
   it('releases rebuy signal when rebuy execution throws', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       targetNotional: 5_000,
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2043,7 +2043,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2089,7 +2089,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       });
       const machine = createSwitchStateMachine({
         autoSearchConfig: monitorConfig.autoSearchConfig,
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         symbolRegistry,
         trader,
         orderRecorder,
@@ -2166,11 +2166,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('fails and clears seat when rebuy sell-notional is unavailable', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2186,7 +2186,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2208,7 +2208,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder,
@@ -2269,18 +2269,18 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
     expect(executedActions).toEqual(['SELLCALL']);
-    const longSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const longSeat = symbolRegistry.getSeatState('LONG');
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.symbol).toBeNull();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
   });
 
   it('does not trigger distance switch when Decimal distance is slightly above the lower bound', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2296,7 +2296,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2308,7 +2308,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     let findCalls = 0;
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -2354,7 +2354,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(findCalls).toBe(0);
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
@@ -2362,11 +2362,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('switches SHORT seat when bear distance is outside the upper bound', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -2382,7 +2382,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2394,7 +2394,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     let executeCalls = 0;
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -2450,21 +2450,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'SHORT');
+    const seat = symbolRegistry.getSeatState('SHORT');
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BEAR.HK');
     expect(seat.callPrice).toBe(19_500);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'SHORT')).toBe(2);
+    expect(symbolRegistry.getSeatVersion('SHORT')).toBe(2);
     expect(executeCalls).toBe(0);
     expect(machine.hasPendingSwitch('SHORT')).toBeFalse();
   });
 
   it('marks suppression for SHORT safe-side same-symbol and skips switching', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -2479,7 +2479,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2490,7 +2490,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -2539,7 +2539,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'SHORT');
+    const seat = symbolRegistry.getSeatState('SHORT');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BEAR.HK');
     expect(
@@ -2549,11 +2549,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
   });
 
   it('does not mark suppression for SHORT danger-side same-symbol and skips switching', async () => {
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -2568,7 +2568,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2579,7 +2579,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ signalObjectPool });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader: createTraderDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -2628,7 +2628,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'SHORT');
+    const seat = symbolRegistry.getSeatState('SHORT');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BEAR.HK');
     expect(

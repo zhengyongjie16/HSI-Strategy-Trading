@@ -68,7 +68,7 @@ export async function refreshAccountAndPositions(
 /**
  * 收集运行时需要获取行情的标的代码集合（监控标的 + 席位占用标的 + 持仓标的 + 订单持有标的）。默认行为：合并去重后返回 Set。
  *
- * @param monitorConfigs 监控配置数组（monitorSymbol、longSymbol、shortSymbol）
+ * @param monitorConfigs 监控配置数组（baseInstrumentSymbol、longSymbol、shortSymbol）
  * @param symbolRegistry 标的注册表，用于解析席位当前占用标的
  * @param positions 当前持仓数组
  * @param orderHoldSymbols 订单持有标的集合
@@ -76,7 +76,7 @@ export async function refreshAccountAndPositions(
  */
 export function collectRuntimeQuoteSymbols(
   monitorConfigs: ReadonlyArray<{
-    readonly monitorSymbol: string;
+    readonly baseInstrumentSymbol: string;
     readonly longSymbol: string;
     readonly shortSymbol: string;
   }>,
@@ -131,13 +131,13 @@ export function diffQuoteSymbols(
 /**
  * 收集所有需要获取行情的标的代码（监控标的 + 席位占用标的），用于主循环一次性批量拉取行情。
  *
- * @param monitorConfigs 监控配置数组（monitorSymbol、longSymbol、shortSymbol）
+ * @param monitorConfigs 监控配置数组（baseInstrumentSymbol、longSymbol、shortSymbol）
  * @param symbolRegistry 标的注册表，可选；传入时从席位状态解析做多/做空占用标的并加入集合
  * @returns 需要拉取行情的标的代码集合
  */
 function collectAllQuoteSymbols(
   monitorConfigs: ReadonlyArray<{
-    readonly monitorSymbol: string;
+    readonly baseInstrumentSymbol: string;
     readonly longSymbol: string;
     readonly shortSymbol: string;
   }>,
@@ -145,13 +145,13 @@ function collectAllQuoteSymbols(
 ): Set<string> {
   const symbols = new Set<string>();
   for (const config of monitorConfigs) {
-    symbols.add(config.monitorSymbol);
+    symbols.add(config.baseInstrumentSymbol);
     if (!symbolRegistry) {
       continue;
     }
 
-    const longSeat = symbolRegistry.getSeatState(config.monitorSymbol, 'LONG');
-    const shortSeat = symbolRegistry.getSeatState(config.monitorSymbol, 'SHORT');
+    const longSeat = symbolRegistry.getSeatState('LONG');
+    const shortSeat = symbolRegistry.getSeatState('SHORT');
     if (longSeat.symbol) {
       symbols.add(longSeat.symbol);
     }

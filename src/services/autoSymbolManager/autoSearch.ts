@@ -16,7 +16,7 @@ import { isSeatFrozenToday, resolveNextSearchFailureState } from './utils.js';
 export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
   const {
     autoSearchConfig,
-    monitorSymbol,
+    baseInstrumentSymbol,
     symbolRegistry,
     buildSeatState,
     updateSeatState,
@@ -42,7 +42,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       return;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (seatState.status !== 'EMPTY') {
       return;
     }
@@ -95,11 +95,11 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       });
       best = await findBestWarrant(input);
     } catch (err) {
-      logger.error(`[自动寻标] ${monitorSymbol} ${direction} 寻标异常: ${String(err)}`);
+      logger.error(`[自动寻标] ${baseInstrumentSymbol} ${direction} 寻标异常: ${String(err)}`);
     }
 
     if (!best) {
-      const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const currentSeat = symbolRegistry.getSeatState(direction);
       const hkDateKey = getHKDateKey(currentTime);
       const { nextFailCount, frozenTradingDayKey, shouldFreeze } = resolveNextSearchFailureState({
         currentSeat,
@@ -108,7 +108,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       });
       if (shouldFreeze) {
         logger.warn(
-          `[自动寻标] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
+          `[自动寻标] ${baseInstrumentSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
         );
       }
 

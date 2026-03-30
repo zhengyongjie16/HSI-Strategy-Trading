@@ -9,7 +9,10 @@ import { OrderSide, OrderStatus, OrderType, type TradeContext } from 'longbridge
 
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createGlobalConfig,
+  createStrategyRuntimeConfig,
+} from '../../mock/factories/configFactory.js';
 import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
@@ -26,6 +29,8 @@ function createDeps(params?: {
   tradeCtx: ReturnType<typeof createTradeContextMock>;
 } {
   const tradeCtx = createTradeContextMock();
+  const monitorConfig = createStrategyRuntimeConfig();
+
   const deps: OrderMonitorDeps = {
     ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
     rateLimiter: {
@@ -52,7 +57,8 @@ function createDeps(params?: {
       clear: () => {},
     },
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    tradingConfig: createTradingConfig(),
+    globalConfig: createGlobalConfig(),
+    monitorConfig,
     symbolRegistry: createSymbolRegistryDouble(),
     isExecutionAllowed: () => true,
   };
@@ -94,7 +100,7 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -107,7 +113,7 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: false,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });

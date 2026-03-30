@@ -12,8 +12,7 @@ import { createRefreshGate } from '../../src/utils/refreshGate/index.js';
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 
-import type { MultiMonitorTradingConfig } from '../../src/types/config.js';
-import type { LastState, MonitorContext } from '../../src/types/state.js';
+import type { LastState, StrategyRuntime } from '../../src/types/state.js';
 import type { MainProgramContext } from '../../src/main/mainProgram/types.js';
 import type {
   MonitorTaskDataMap,
@@ -22,7 +21,7 @@ import type {
 
 import {
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createRiskCheckerDouble,
@@ -48,7 +47,17 @@ function createLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: {
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorPrice: null,
+      longPrice: null,
+      shortPrice: null,
+      signal: null,
+      pendingSignals: [],
+      monitorValues: null,
+      lastMonitorSnapshot: null,
+      lastCandlestickCacheVersion: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -77,8 +86,8 @@ describe('periodic auto-symbol full chain integration', () => {
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
     ]);
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -94,7 +103,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -167,11 +176,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -180,14 +189,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -196,7 +203,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -210,18 +217,18 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const seatAfterPeriodicMiss = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seatAfterPeriodicMiss = symbolRegistry.getSeatState('LONG');
       expect(seatAfterPeriodicMiss.status).toBe('EMPTY');
       expect(seatAfterPeriodicMiss.symbol).toBeNull();
       expect(seatAfterPeriodicMiss.searchFailCountToday).toBe(1);
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
 
       statuses.length = 0;
       currentNowMs += 600_000;
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -235,12 +242,12 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const seatAfterAutoSearch = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seatAfterAutoSearch = symbolRegistry.getSeatState('LONG');
       expect(seatAfterAutoSearch.status).toBe('ACTIVATING');
       expect(seatAfterAutoSearch.symbol).toBe('NEW_BULL.HK');
       expect(seatAfterAutoSearch.searchFailCountToday).toBe(0);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(3);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(3);
     } finally {
       await processor.stopAndDrain();
     }
@@ -254,8 +261,8 @@ describe('periodic auto-symbol full chain integration', () => {
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
     ]);
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -271,7 +278,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -350,11 +357,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -363,14 +370,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -379,7 +384,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -393,7 +398,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const switchingSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const switchingSeat = symbolRegistry.getSeatState('LONG');
       expect(switchingSeat.status).toBe('SWITCHING');
       expect(switchingSeat.symbol).toBe('OLD_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeTrue();
@@ -403,7 +408,7 @@ describe('periodic auto-symbol full chain integration', () => {
       currentNowMs += 1_000;
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -417,14 +422,14 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 3);
       expect(statuses).toEqual(['processed', 'processed', 'processed']);
 
-      const finalSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const finalSeat = symbolRegistry.getSeatState('LONG');
       expect(finalSeat.status).toBe('ACTIVATING');
       expect(finalSeat.symbol).toBe('NEW_BULL.HK');
       expect(finalSeat.lastSeatActivatedAt).toBeNull();
       expect(finalSeat.callPrice).toBe(21_000);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
       expect(executeSignalsCalls).toBe(0);
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();
     }
@@ -438,8 +443,8 @@ describe('periodic auto-symbol full chain integration', () => {
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
     ]);
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -455,7 +460,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -530,11 +535,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -543,14 +548,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -559,7 +562,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -572,10 +575,10 @@ describe('periodic auto-symbol full chain integration', () => {
 
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
-      const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seat = symbolRegistry.getSeatState('LONG');
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(1);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
@@ -590,8 +593,8 @@ describe('periodic auto-symbol full chain integration', () => {
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
     ]);
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -607,7 +610,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -682,11 +685,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -695,14 +698,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -711,7 +712,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -724,10 +725,10 @@ describe('periodic auto-symbol full chain integration', () => {
 
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
-      const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seat = symbolRegistry.getSeatState('LONG');
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(1);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
@@ -746,8 +747,8 @@ describe('periodic auto-symbol full chain integration', () => {
       ['2026-02-17', { isTradingDay: true, isHalfDay: false }],
     ]);
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -763,7 +764,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -842,11 +843,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -855,14 +856,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -871,7 +870,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -884,14 +883,14 @@ describe('periodic auto-symbol full chain integration', () => {
 
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
-      expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+      expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
 
       statuses.length = 0;
       currentNowMs += 60_000; // Day2 09:31 HK
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -905,7 +904,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const switchingSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const switchingSeat = symbolRegistry.getSeatState('LONG');
       expect(switchingSeat.status).toBe('SWITCHING');
       expect(switchingSeat.symbol).toBe('OLD_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeTrue();
@@ -914,7 +913,7 @@ describe('periodic auto-symbol full chain integration', () => {
       currentNowMs += 1_000;
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -928,14 +927,14 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 3);
       expect(statuses).toEqual(['processed', 'processed', 'processed']);
 
-      const finalSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const finalSeat = symbolRegistry.getSeatState('LONG');
       expect(finalSeat.status).toBe('ACTIVATING');
       expect(finalSeat.symbol).toBe('NEW_BULL.HK');
       expect(finalSeat.lastSeatActivatedAt).toBeNull();
       expect(finalSeat.callPrice).toBe(21_000);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
       expect(executeSignalsCalls).toBe(0);
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();
     }
@@ -951,8 +950,8 @@ describe('periodic auto-symbol full chain integration', () => {
       createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
     ];
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -968,7 +967,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1046,11 +1045,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -1059,14 +1058,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -1075,7 +1072,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1088,7 +1085,7 @@ describe('periodic auto-symbol full chain integration', () => {
 
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
-      expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+      expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
       expect(findBestCalls).toBe(1);
 
       statuses.length = 0;
@@ -1096,7 +1093,7 @@ describe('periodic auto-symbol full chain integration', () => {
       distanceToStrikePercent = 0.1;
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1110,7 +1107,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 3);
       expect(statuses).toEqual(['processed', 'processed', 'processed']);
 
-      const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seat = symbolRegistry.getSeatState('LONG');
       expect(seat.status).toBe('ACTIVATING');
       expect(seat.symbol).toBe('NEW_BULL.HK');
       expect(findBestCalls).toBe(2);
@@ -1129,8 +1126,8 @@ describe('periodic auto-symbol full chain integration', () => {
       createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
     ];
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -1146,7 +1143,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1237,11 +1234,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -1250,14 +1247,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -1266,7 +1261,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1280,8 +1275,8 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const pendingSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-      symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+      const pendingSeat = symbolRegistry.getSeatState('LONG');
+      symbolRegistry.updateSeatState('LONG', {
         ...pendingSeat,
         lastSeatActivatedAt: currentNowMs,
       });
@@ -1290,7 +1285,7 @@ describe('periodic auto-symbol full chain integration', () => {
       currentNowMs += 1_000;
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1304,7 +1299,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 3);
       expect(statuses).toEqual(['processed', 'processed', 'processed']);
 
-      const dangerSameSymbolSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const dangerSameSymbolSeat = symbolRegistry.getSeatState('LONG');
       expect(dangerSameSymbolSeat.status).toBe('ACTIVE');
       expect(dangerSameSymbolSeat.symbol).toBe('OLD_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
@@ -1314,7 +1309,7 @@ describe('periodic auto-symbol full chain integration', () => {
       currentNowMs += 1_000;
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1328,7 +1323,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const resumedSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const resumedSeat = symbolRegistry.getSeatState('LONG');
       expect(resumedSeat.status).toBe('SWITCHING');
       expect(resumedSeat.symbol).toBe('OLD_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeTrue();
@@ -1343,8 +1338,8 @@ describe('periodic auto-symbol full chain integration', () => {
     let buyOrdersCount = 1;
     candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 })];
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -1360,7 +1355,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1451,11 +1446,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -1464,14 +1459,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -1480,7 +1473,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1494,8 +1487,8 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const pendingSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-      symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+      const pendingSeat = symbolRegistry.getSeatState('LONG');
+      symbolRegistry.updateSeatState('LONG', {
         ...pendingSeat,
         lastSeatActivatedAt: currentNowMs,
       });
@@ -1505,7 +1498,7 @@ describe('periodic auto-symbol full chain integration', () => {
       currentNowMs += 1_000;
 
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1519,12 +1512,12 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 3);
       expect(statuses).toEqual(['processed', 'processed', 'processed']);
 
-      const takeoverSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const takeoverSeat = symbolRegistry.getSeatState('LONG');
       expect(takeoverSeat.status).toBe('ACTIVATING');
       expect(takeoverSeat.symbol).toBe('NEW_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
 
-      symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+      symbolRegistry.updateSeatState('LONG', {
         ...takeoverSeat,
         status: 'ACTIVE',
         lastSeatActivatedAt: currentNowMs,
@@ -1533,7 +1526,7 @@ describe('periodic auto-symbol full chain integration', () => {
       statuses.length = 0;
       currentNowMs += 1_000;
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1547,7 +1540,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 2);
       expect(statuses).toEqual(['processed', 'processed']);
 
-      const seatAfterOneSecond = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seatAfterOneSecond = symbolRegistry.getSeatState('LONG');
       expect(seatAfterOneSecond.status).toBe('ACTIVE');
       expect(seatAfterOneSecond.symbol).toBe('NEW_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
@@ -1565,8 +1558,8 @@ describe('periodic auto-symbol full chain integration', () => {
       createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
     ];
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -1582,7 +1575,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1660,11 +1653,11 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
+      baseInstrumentName: 'HSI.HK',
       longQuote: null,
       shortQuote: null,
       monitorQuote: null,
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
@@ -1673,14 +1666,12 @@ describe('periodic auto-symbol full chain integration', () => {
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate: createRefreshGate(),
-      getMonitorContext: () => monitorContext as never,
+      monitorContext: monitorContext as never,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      monitorConfig,
       onProcessed: (_task, status) => {
         statuses.push(status);
       },
@@ -1689,7 +1680,7 @@ describe('periodic auto-symbol full chain integration', () => {
     processor.start();
     try {
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1703,12 +1694,12 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 3);
       expect(statuses).toEqual(['processed', 'processed', 'processed']);
       expect(findBestCalls).toBe(1);
-      expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+      expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
 
       statuses.length = 0;
       currentNowMs += 1_000;
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1726,7 +1717,7 @@ describe('periodic auto-symbol full chain integration', () => {
       statuses.length = 0;
       currentNowMs += 1_000;
       scheduleAutoSymbolTasks({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         monitorContext,
         mainContext,
         autoSearchEnabled: true,
@@ -1740,7 +1731,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length >= 3);
       expect(statuses).toEqual(['processed', 'processed', 'processed']);
       expect(findBestCalls).toBe(2);
-      const finalSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const finalSeat = symbolRegistry.getSeatState('LONG');
       expect(finalSeat.status).toBe('ACTIVE');
       expect(finalSeat.symbol).toBe('OLD_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();

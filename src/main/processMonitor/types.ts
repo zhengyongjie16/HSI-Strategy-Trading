@@ -1,4 +1,4 @@
-import type { MonitorContext } from '../../types/state.js';
+import type { StrategyRuntime } from '../../types/state.js';
 import type { IndicatorSnapshot, Quote } from '../../types/quote.js';
 import type { Position } from '../../types/account.js';
 import type { SeatState } from '../../types/seat.js';
@@ -10,14 +10,14 @@ import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/trade
 import type { MainProgramContext } from '../mainProgram/types.js';
 
 /**
- * processMonitor 函数参数类型（单标的处理入口的入参）。
+ * processMonitor 函数参数类型（单实例处理入口的入参）。
  * 类型用途：处理单个监控标的所需的主上下文、监控上下文与运行时标志（门禁、半日市、是否可交易等）。
  * 数据来源：由 mainProgram 主循环按每个 monitorContext 与当前时间等组装传入。
  * 使用范围：仅 processMonitor 及其调用方（mainProgram）使用，内部使用。
  */
 export type ProcessMonitorParams = {
   readonly context: MainProgramContext;
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: StrategyRuntime;
   readonly runtimeFlags: {
     readonly currentTime: Date;
     readonly isHalfDay: boolean;
@@ -36,8 +36,8 @@ export type ProcessMonitorParams = {
  * 使用范围：仅 processMonitor 内部（autoSymbolTasks）使用。
  */
 export type AutoSymbolTasksParams = Readonly<{
-  monitorSymbol: string;
-  monitorContext: MonitorContext;
+  baseInstrumentSymbol?: string;
+  monitorContext: StrategyRuntime;
   mainContext: MainProgramContext;
   autoSearchEnabled: boolean;
   currentTimeMs: number;
@@ -54,8 +54,8 @@ export type AutoSymbolTasksParams = Readonly<{
  * 使用范围：仅 processMonitor 内部使用。
  */
 export type SeatSyncParams = Readonly<{
-  monitorSymbol: string;
-  monitorContext: MonitorContext;
+  baseInstrumentSymbol?: string;
+  monitorContext: StrategyRuntime;
   mainContext: MainProgramContext;
   quotesMap: ReadonlyMap<string, Quote | null>;
   releaseSignal: (signal: Signal) => void;
@@ -87,8 +87,8 @@ export type SeatSyncResult = Readonly<{
  * 使用范围：仅 processMonitor 内部使用。
  */
 export type RiskTasksParams = Readonly<{
-  monitorSymbol: string;
-  monitorContext: MonitorContext;
+  baseInstrumentSymbol?: string;
+  monitorContext: StrategyRuntime;
   mainContext: MainProgramContext;
   seatInfo: SeatSyncResult;
   autoSearchEnabled: boolean;
@@ -104,21 +104,21 @@ export type RiskTasksParams = Readonly<{
  * 使用范围：仅 processMonitor 内部使用。
  */
 export type IndicatorPipelineParams = Readonly<{
-  monitorSymbol: string;
-  monitorContext: MonitorContext;
+  baseInstrumentSymbol?: string;
+  monitorContext: StrategyRuntime;
   mainContext: MainProgramContext;
   monitorQuote: Quote | null;
 }>;
 
 /**
- * 信号流水线参数（执行信号生成、延迟验证入队等时的入参）。
+ * 信号流水线参数（执行信号生成与立即分流时的入参）。
  * 类型用途：封装信号流水线所需的监控标的、上下文、席位信息、指标快照与释放回调。
  * 数据来源：由 processMonitor 从 ProcessMonitorParams、seatInfo、指标流水线输出等组装。
  * 使用范围：仅 processMonitor 内部使用。
  */
 export type SignalPipelineParams = Readonly<{
-  monitorSymbol: string;
-  monitorContext: MonitorContext;
+  baseInstrumentSymbol?: string;
+  monitorContext: StrategyRuntime;
   mainContext: MainProgramContext;
   runtimeFlags: ProcessMonitorParams['runtimeFlags'];
   seatInfo: SeatSyncResult;
@@ -129,14 +129,14 @@ export type SignalPipelineParams = Readonly<{
 
 /**
  * 带日志的队列清理参数。
- * 类型用途：清理指定监控标的方向下的延迟/买卖/监控任务并输出日志。
+ * 类型用途：清理指定监控标的方向下的买卖/监控任务并输出日志。
  * 数据来源：由 app 顶层装配在创建 MonitorTaskProcessor 时传入。
  * 使用范围：仅 processMonitor/queueCleanup 使用。
  */
 export type ClearQueuesForDirectionWithLogParams = Readonly<{
-  monitorSymbol: string;
+  baseInstrumentSymbol?: string;
   direction: 'LONG' | 'SHORT';
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: StrategyRuntime;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;

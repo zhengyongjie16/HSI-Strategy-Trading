@@ -1,8 +1,7 @@
 /**
  * 信号运行时缓存域单元测试
  *
- * 覆盖：midnightClear 停止并排空处理器、清空队列并释放信号、取消延迟信号、
- * clearPending、indicatorCache.clearAll；
+ * 覆盖：midnightClear 停止并排空处理器、清空队列并释放信号、clearPending；
  * openRebuild 重启处理器并 markFresh
  */
 import { describe, it, expect } from 'bun:test';
@@ -30,7 +29,7 @@ function createMockProcessor() {
 }
 
 describe('createSignalRuntimeDomain', () => {
-  it('midnightClear 依次停止排空各处理器、清空队列并 releaseSignal、取消延迟信号、清理缓存', async () => {
+  it('midnightClear 依次停止排空各处理器、清空队列并 releaseSignal', async () => {
     const buyProcessor = createMockProcessor();
     const sellProcessor = createMockProcessor();
     const monitorTaskProcessor = createMockProcessor();
@@ -40,9 +39,6 @@ describe('createSignalRuntimeDomain', () => {
     let clearAllBuy = 0;
     let clearAllSell = 0;
     let clearAllMonitor = 0;
-    let cancelAllCount = 0;
-    let indicatorClearAllCount = 0;
-
     const buyTaskQueue = {
       clearAll: (onRemove?: (task: { data: Signal }) => void) => {
         clearAllBuy += 1;
@@ -70,31 +66,13 @@ describe('createSignalRuntimeDomain', () => {
         return 0;
       },
     };
-    const monitorContexts = new Map([
-      [
-        'HSI.HK',
-        {
-          delayedSignalVerifier: {
-            cancelAll: () => {
-              cancelAllCount += 1;
-              return 3;
-            },
-          },
-        },
-      ],
-    ]) as unknown as SignalRuntimeDomainDeps['monitorContexts'];
-    const indicatorCache = {
-      clearAll: () => {
-        indicatorClearAllCount += 1;
-      },
-    };
     const refreshGate = {
       getStatus: () => ({ staleVersion: 1 }),
       markFresh: (_v: number) => {},
     };
 
     const deps: SignalRuntimeDomainDeps = {
-      monitorContexts,
+      monitorContext: {} as SignalRuntimeDomainDeps['monitorContext'],
       buyProcessor: buyProcessor as unknown as SignalRuntimeDomainDeps['buyProcessor'],
       sellProcessor: sellProcessor as unknown as SignalRuntimeDomainDeps['sellProcessor'],
       monitorTaskProcessor:
@@ -103,7 +81,6 @@ describe('createSignalRuntimeDomain', () => {
         orderMonitorWorker as unknown as SignalRuntimeDomainDeps['orderMonitorWorker'],
       postTradeRefresher:
         postTradeRefresher as unknown as SignalRuntimeDomainDeps['postTradeRefresher'],
-      indicatorCache: indicatorCache as unknown as SignalRuntimeDomainDeps['indicatorCache'],
       buyTaskQueue: buyTaskQueue as unknown as SignalRuntimeDomainDeps['buyTaskQueue'],
       sellTaskQueue: sellTaskQueue as unknown as SignalRuntimeDomainDeps['sellTaskQueue'],
       monitorTaskQueue: monitorTaskQueue as unknown as SignalRuntimeDomainDeps['monitorTaskQueue'],
@@ -125,9 +102,7 @@ describe('createSignalRuntimeDomain', () => {
     expect(clearAllSell).toBe(1);
     expect(clearAllMonitor).toBe(1);
     expect(releaseSignalCount).toBe(3);
-    expect(cancelAllCount).toBe(1);
     expect(postTradeRefresher.calls).toContain('clearPending');
-    expect(indicatorClearAllCount).toBe(1);
   });
 
   it('openRebuild 重启各处理器并调用 refreshGate.markFresh', async () => {
@@ -145,7 +120,7 @@ describe('createSignalRuntimeDomain', () => {
     };
 
     const deps: SignalRuntimeDomainDeps = {
-      monitorContexts: new Map(),
+      monitorContext: {} as SignalRuntimeDomainDeps['monitorContext'],
       buyProcessor: buyProcessor as unknown as SignalRuntimeDomainDeps['buyProcessor'],
       sellProcessor: sellProcessor as unknown as SignalRuntimeDomainDeps['sellProcessor'],
       monitorTaskProcessor:
@@ -154,9 +129,6 @@ describe('createSignalRuntimeDomain', () => {
         orderMonitorWorker as unknown as SignalRuntimeDomainDeps['orderMonitorWorker'],
       postTradeRefresher:
         postTradeRefresher as unknown as SignalRuntimeDomainDeps['postTradeRefresher'],
-      indicatorCache: {
-        clearAll: () => {},
-      } as unknown as SignalRuntimeDomainDeps['indicatorCache'],
       buyTaskQueue: { clearAll: () => 0 } as unknown as SignalRuntimeDomainDeps['buyTaskQueue'],
       sellTaskQueue: { clearAll: () => 0 } as unknown as SignalRuntimeDomainDeps['sellTaskQueue'],
       monitorTaskQueue: {

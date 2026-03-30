@@ -41,7 +41,7 @@ export type DirectionalAutoSearchPolicy = {
 export type ResolveDirectionalAutoSearchPolicyInput = {
   readonly direction: 'LONG' | 'SHORT';
   readonly autoSearchConfig: AutoSearchConfig;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly logPrefix: string;
   readonly logger: Logger;
 };
@@ -54,7 +54,7 @@ export type ResolveDirectionalAutoSearchPolicyInput = {
  */
 export type BuildFindBestWarrantInputFromPolicyParams = {
   readonly ctx: QuoteContext;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly currentTime: Date;
   readonly policy: DirectionalAutoSearchPolicy;
   readonly expiryMinMonths: number;
@@ -71,7 +71,7 @@ export type BuildFindBestWarrantInputFromPolicyParams = {
  */
 export type FindBestWarrantInput = {
   readonly ctx: QuoteContext;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly tradingMinutes: number;
   readonly policy: DirectionalAutoSearchPolicy;
   readonly expiryMinMonths: number;
@@ -231,7 +231,7 @@ export type WarrantSelectionResult = {
  */
 export type WarrantListFetchParams = {
   readonly ctx: FindBestWarrantInput['ctx'];
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly warrantType: WarrantType;
   readonly expiryFilters: ReadonlyArray<FilterWarrantExpiryDate>;
   readonly cacheConfig: WarrantListCacheConfig;
@@ -245,7 +245,7 @@ export type WarrantListFetchParams = {
  */
 export type WarrantListRequestParams = {
   readonly ctx: FindBestWarrantInput['ctx'];
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly warrantType: WarrantType;
   readonly expiryFilters: ReadonlyArray<FilterWarrantExpiryDate>;
 };

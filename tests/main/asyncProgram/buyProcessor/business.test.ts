@@ -18,12 +18,12 @@ import {
   createSignalDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
-import { createLastState, createMonitorContext, runProcessorFlow } from '../utils.js';
+import { createLastState, createStrategyRuntime, runProcessorFlow } from '../utils.js';
 
 describe('buyProcessor business flow', () => {
   it('runs risk pipeline then executes buy order with execution-time realtime quote price/lotSize', async () => {
     const queue = createBuyTaskQueue();
-    const monitorContext = createMonitorContext();
+    const monitorContext = createStrategyRuntime();
 
     let riskCheckCalls = 0;
     const signalProcessor = {
@@ -67,7 +67,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient,
@@ -85,7 +85,6 @@ describe('buyProcessor business flow', () => {
       pushTask: () => {
         queue.push({
           type: 'IMMEDIATE_BUY',
-          monitorSymbol: 'HSI.HK',
           data: signal,
         });
       },
@@ -125,7 +124,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -148,7 +147,7 @@ describe('buyProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_BUY', monitorSymbol: 'HSI.HK', data: signal });
+        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
       },
       waitCondition: () => queue.isEmpty(),
       timeoutMs: 800,
@@ -182,7 +181,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -205,7 +204,7 @@ describe('buyProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_BUY', monitorSymbol: 'HSI.HK', data: signal });
+        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
       },
       waitCondition: () => riskCalls === 1,
       timeoutMs: 800,
@@ -238,7 +237,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -259,7 +258,7 @@ describe('buyProcessor business flow', () => {
     staleSignal.seatVersion = 1;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_BUY', monitorSymbol: 'HSI.HK', data: staleSignal });
+    queue.push({ type: 'IMMEDIATE_BUY', data: staleSignal });
 
     await Bun.sleep(40);
     await processor.stopAndDrain();
@@ -270,7 +269,7 @@ describe('buyProcessor business flow', () => {
 
   it('drops buy signal when seat version changes after risk checks and before execution', async () => {
     const queue = createBuyTaskQueue();
-    const monitorContext = createMonitorContext();
+    const monitorContext = createStrategyRuntime();
 
     let riskCalls = 0;
     const signalProcessor = {
@@ -293,14 +292,14 @@ describe('buyProcessor business flow', () => {
     let quoteCalls = 0;
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
           quoteCalls += 1;
           if (quoteCalls === 2) {
-            monitorContext.symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+            monitorContext.symbolRegistry.bumpSeatVersion('LONG');
           }
 
           return new Map([
@@ -322,7 +321,7 @@ describe('buyProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_BUY', monitorSymbol: 'HSI.HK', data: signal });
+        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
       },
       waitCondition: () => riskCalls === 1,
       timeoutMs: 800,
@@ -347,7 +346,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble({
@@ -368,7 +367,7 @@ describe('buyProcessor business flow', () => {
     signal.seatVersion = 2;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_BUY', monitorSymbol: 'HSI.HK', data: signal });
+    queue.push({ type: 'IMMEDIATE_BUY', data: signal });
 
     await Bun.sleep(40);
     await processor.stopAndDrain();

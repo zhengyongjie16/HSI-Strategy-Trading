@@ -11,7 +11,7 @@ import { logger } from '../../../utils/logger/index.js';
 import { TRADING } from '../../../constants/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
-import type { MonitorConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { Signal } from '../../../types/signal.js';
 import type { CancelOrderOutcome } from '../../../types/trader.js';
 import type { OrderPayload, SubmitOrderParams } from '../types.js';
@@ -175,7 +175,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           initialSubmittedPrice: resolvedPrice ?? 0,
           quantity: submittedQuantityNum,
           isLongSymbol,
-          monitorSymbol: monitorConfig?.monitorSymbol ?? null,
+          baseInstrumentSymbol: monitorConfig?.baseInstrumentSymbol ?? null,
           isProtectiveLiquidation,
           orderType: orderTypeParam,
           liquidationTriggerLimit: monitorConfig?.liquidationTriggerLimit ?? 1,
@@ -230,7 +230,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     signal: Signal,
     targetSymbol: string,
     isShortSymbol: boolean,
-    monitorConfig: MonitorConfig | null = null,
+    monitorConfig: StrategyRuntimeConfig | null = null,
   ): Promise<string | null> {
     if (!signal.symbol || typeof signal.symbol !== 'string') {
       logger.error(`[订单提交] 信号缺少有效的标的代码: ${JSON.stringify(signal)}`);

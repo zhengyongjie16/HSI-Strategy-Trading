@@ -11,7 +11,7 @@ import { TIME } from '../../../src/constants/index.js';
 import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
 import { listHKDateKeysBetween } from '../../../src/main/lifecycle/utils.js';
 import type { RebuildTradingDayStateDeps } from '../../../src/main/lifecycle/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import type { SymbolRegistry } from '../../../src/types/seat.js';
 import type { Quote } from '../../../src/types/quote.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
@@ -74,24 +74,24 @@ function createBuyOrder(executedTime: number, symbol: string): OrderRecord {
   };
 }
 
-function createMonitorContext(params: {
+function createStrategyRuntime(params: {
   symbolRegistry: SymbolRegistry;
-  monitorSymbol?: string;
+  baseInstrumentSymbol?: string;
   buyOrders?: ReadonlyArray<OrderRecord>;
   onRefreshLong?: (
     symbol: string,
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     quote?: Quote | null,
   ) => Promise<ReadonlyArray<OrderRecord>>;
-}): MonitorContext {
+}): StrategyRuntime {
   const {
     symbolRegistry,
-    monitorSymbol = 'HSI.HK',
+    baseInstrumentSymbol = 'HSI.HK',
     buyOrders = [],
     onRefreshLong = async () => [],
   } = params;
   return {
-    config: { monitorSymbol },
+    config: { baseInstrumentSymbol },
     symbolRegistry,
     orderRecorder: {
       refreshOrdersFromAllOrdersForLong: onRefreshLong,
@@ -106,7 +106,7 @@ function createMonitorContext(params: {
     longQuote: null,
     shortQuote: null,
     monitorQuote: null,
-  } as unknown as MonitorContext;
+  } as unknown as StrategyRuntime;
 }
 
 function createDefaultMarketDataClient(
@@ -136,7 +136,9 @@ function createRebuildDeps(
     trader,
     lastState: createMinimalLastState(),
     symbolRegistry: createSymbolRegistry('EMPTY'),
-    monitorContexts: new Map<string, MonitorContext>(),
+    monitorContext: createStrategyRuntime({
+      symbolRegistry: createSymbolRegistry('EMPTY'),
+    }),
     dailyLossTracker: {
       getLossOffset: () => 0,
     } as unknown as RebuildTradingDayStateDeps['dailyLossTracker'],
@@ -149,14 +151,9 @@ describe('createRebuildTradingDayState', () => {
     let recoverCalled = false;
     let displayCalled = false;
     const registry = createSymbolRegistry('EMPTY');
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContext({
-          symbolRegistry: registry,
-        }),
-      ],
-    ]);
+    const monitorContext = createStrategyRuntime({
+      symbolRegistry: registry,
+    });
     const deps = createRebuildDeps({
       symbolRegistry: registry,
       trader: {
@@ -167,7 +164,7 @@ describe('createRebuildTradingDayState', () => {
       displayAccountAndPositions: async () => {
         displayCalled = true;
       },
-      monitorContexts,
+      monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
     await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap });
@@ -180,19 +177,14 @@ describe('createRebuildTradingDayState', () => {
     const now = new Date('2026-02-20T03:00:00.000Z');
     const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
     const registry = createSymbolRegistry('ACTIVE');
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContext({
-          symbolRegistry: registry,
-          buyOrders: [],
-        }),
-      ],
-    ]);
+    const monitorContext = createStrategyRuntime({
+      symbolRegistry: registry,
+      buyOrders: [],
+    });
     const deps = createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
-      monitorContexts,
+      monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
     await rebuild({
@@ -226,20 +218,15 @@ describe('createRebuildTradingDayState', () => {
     const oldOpenOrderTime = new Date('2025-12-15T03:00:00.000Z').getTime();
     const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
     const registry = createSymbolRegistry('ACTIVE');
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContext({
-          symbolRegistry: registry,
-          buyOrders: [createBuyOrder(oldOpenOrderTime, 'BULL.HK')],
-        }),
-      ],
-    ]);
+    const monitorContext = createStrategyRuntime({
+      symbolRegistry: registry,
+      buyOrders: [createBuyOrder(oldOpenOrderTime, 'BULL.HK')],
+    });
     const lastState = createMinimalLastState();
     const deps = createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
-      monitorContexts,
+      monitorContext,
       lastState,
     });
     const rebuild = createRebuildTradingDayState(deps);
@@ -265,19 +252,14 @@ describe('createRebuildTradingDayState', () => {
     const now = new Date('2026-02-20T03:00:00.000Z');
     const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
     const registry = createSymbolRegistry('ACTIVE');
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContext({
-          symbolRegistry: registry,
-          buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
-        }),
-      ],
-    ]);
+    const monitorContext = createStrategyRuntime({
+      symbolRegistry: registry,
+      buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
+    });
     const deps = createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
-      monitorContexts,
+      monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
     await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
@@ -295,19 +277,14 @@ describe('createRebuildTradingDayState', () => {
     const openOrderTime = earliestAllowedMs - 60 * 60 * 1000;
     const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
     const registry = createSymbolRegistry('ACTIVE');
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContext({
-          symbolRegistry: registry,
-          buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
-        }),
-      ],
-    ]);
+    const monitorContext = createStrategyRuntime({
+      symbolRegistry: registry,
+      buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
+    });
     const deps = createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
-      monitorContexts,
+      monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
     let caughtError: unknown = null;
@@ -324,20 +301,15 @@ describe('createRebuildTradingDayState', () => {
 
   it('rebuildOrderRecords 中抛错时抛出带 [Lifecycle] 重建交易日状态失败 前缀的错误', async () => {
     const registry = createSymbolRegistry('ACTIVE');
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContext({
-          symbolRegistry: registry,
-          onRefreshLong: async () => {
-            throw new Error('order refresh fail');
-          },
-        }),
-      ],
-    ]);
+    const monitorContext = createStrategyRuntime({
+      symbolRegistry: registry,
+      onRefreshLong: async () => {
+        throw new Error('order refresh fail');
+      },
+    });
     const deps = createRebuildDeps({
       symbolRegistry: registry,
-      monitorContexts,
+      monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
     expect(rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap })).rejects.toThrow(
@@ -347,15 +319,10 @@ describe('createRebuildTradingDayState', () => {
 
   it('交易日历预热失败时，rebuildTradingDayState 会抛错', async () => {
     const registry = createSymbolRegistry('ACTIVE');
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContext({
-          symbolRegistry: registry,
-          buyOrders: [createBuyOrder(Date.now() - 2 * TIME.MILLISECONDS_PER_DAY, 'BULL.HK')],
-        }),
-      ],
-    ]);
+    const monitorContext = createStrategyRuntime({
+      symbolRegistry: registry,
+      buyOrders: [createBuyOrder(Date.now() - 2 * TIME.MILLISECONDS_PER_DAY, 'BULL.HK')],
+    });
     const deps = createRebuildDeps({
       marketDataClient: {
         getTradingDays: async () => {
@@ -363,7 +330,7 @@ describe('createRebuildTradingDayState', () => {
         },
       } as unknown as MarketDataClient,
       symbolRegistry: registry,
-      monitorContexts,
+      monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
     expect(rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap })).rejects.toThrow(

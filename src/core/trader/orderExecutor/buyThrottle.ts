@@ -9,7 +9,7 @@
 import { TIME } from '../../../constants/index.js';
 import { isBuyAction } from '../../../utils/helpers/index.js';
 import { isSellAction } from '../../../utils/display/index.js';
-import type { MonitorConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { SignalType } from '../../../types/signal.js';
 import type { BuyThrottle } from './types.js';
 import { buildBuyTimeKey } from './utils.js';
@@ -29,7 +29,7 @@ export function createBuyThrottle(): BuyThrottle {
    * @param monitorConfig 监控配置
    * @returns 频率检查结果
    */
-  function canTradeNow(signalAction: SignalType, monitorConfig?: MonitorConfig | null) {
+  function canTradeNow(signalAction: SignalType, monitorConfig?: StrategyRuntimeConfig | null) {
     if (isSellAction(signalAction)) {
       return { canTrade: true };
     }
@@ -65,7 +65,10 @@ export function createBuyThrottle(): BuyThrottle {
    * @param monitorConfig 监控配置
    * @returns 无返回值
    */
-  function recordBuyAttempt(signalAction: SignalType, monitorConfig?: MonitorConfig | null): void {
+  function recordBuyAttempt(
+    signalAction: SignalType,
+    monitorConfig?: StrategyRuntimeConfig | null,
+  ): void {
     if (isBuyAction(signalAction)) {
       lastBuyTime.set(buildBuyTimeKey(signalAction, monitorConfig), Date.now());
     }

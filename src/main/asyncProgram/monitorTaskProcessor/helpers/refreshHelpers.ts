@@ -24,28 +24,25 @@ export function createRefreshHelpers({
   readonly trader: Trader;
   readonly lastState: LastState;
 }): RefreshHelpers {
-  const cachedAllOrdersByMonitor = new Map<string, ReadonlyArray<RawOrderFromAPI>>();
+  let cachedAllOrders: ReadonlyArray<RawOrderFromAPI> | null = null;
   let cachedAccountSnapshot: typeof lastState.cachedAccount | null | undefined;
   let cachedPositionsSnapshot: ReadonlyArray<Position> | null | undefined;
 
   /**
-   * 获取指定监控标的的全量订单，批次内命中缓存则直接返回，避免重复请求 API
+   * 获取全量订单，批次内命中缓存则直接返回，避免重复请求 API
    *
-   * @param monitorSymbol 监控标的代码
    * @param orderRecorder 订单记录器，用于拉取全量订单
-   * @returns 该监控标的对应的全量订单列表
+   * @returns 全量订单列表
    */
   async function ensureAllOrders(
-    monitorSymbol: string,
     orderRecorder: MonitorTaskContext['orderRecorder'],
   ): Promise<ReadonlyArray<RawOrderFromAPI>> {
-    const cached = cachedAllOrdersByMonitor.get(monitorSymbol);
-    if (cached) {
-      return cached;
+    if (cachedAllOrders !== null) {
+      return cachedAllOrders;
     }
 
     const allOrders = await orderRecorder.fetchAllOrdersFromAPI(true);
-    cachedAllOrdersByMonitor.set(monitorSymbol, allOrders);
+    cachedAllOrders = allOrders;
     return allOrders;
   }
 

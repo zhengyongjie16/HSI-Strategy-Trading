@@ -24,7 +24,7 @@ import type {
   TradingCalendarDayInfo,
   TradingCalendarSnapshot,
 } from '../../types/tradingCalendar.js';
-import type { AutoSymbolManagerPort } from '../../types/monitorContextPorts.js';
+import type { AutoSymbolManagerPort } from '../../types/strategyRuntimePorts.js';
 import type {
   AutoSymbolManagerDeps,
   PeriodicSwitchPendingState,
@@ -61,14 +61,14 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
   const injectedFindBestWarrant = deps.findBestWarrant ?? findBestWarrant;
   const getTradingCalendarSnapshot: () => TradingCalendarSnapshot =
     deps.getTradingCalendarSnapshot ?? (() => new Map<string, TradingCalendarDayInfo>());
-  const monitorSymbol = monitorConfig.monitorSymbol;
+  const baseInstrumentSymbol = monitorConfig.baseInstrumentSymbol;
   const autoSearchConfig = monitorConfig.autoSearchConfig;
   const switchStates = new Map<'LONG' | 'SHORT', SwitchState>();
   const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
   const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
   const thresholdResolver = createThresholdResolver({
     autoSearchConfig,
-    monitorSymbol,
+    baseInstrumentSymbol,
     marketDataClient,
     logger,
     getTradingMinutesSinceOpen,
@@ -77,7 +77,7 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
   });
   const signalBuilder = createSignalBuilder({ signalObjectPool });
   const seatStateManager = createSeatStateManager({
-    monitorSymbol,
+    baseInstrumentSymbol,
     symbolRegistry,
     switchStates,
     switchSuppressions,
@@ -87,7 +87,7 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
   });
   const autoSearch = createAutoSearch({
     autoSearchConfig,
-    monitorSymbol,
+    baseInstrumentSymbol,
     symbolRegistry,
     buildSeatState: seatStateManager.buildSeatState,
     updateSeatState: seatStateManager.updateSeatState,
@@ -102,7 +102,7 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
   });
   const switchStateMachine = createSwitchStateMachine({
     autoSearchConfig,
-    monitorSymbol,
+    baseInstrumentSymbol,
     symbolRegistry,
     trader,
     orderRecorder,

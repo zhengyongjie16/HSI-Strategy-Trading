@@ -2,17 +2,18 @@ import { TIME, TRADING } from '../../constants/index.js';
 import { getHKTime } from '../../utils/time/index.js';
 import type { TradeRecord } from '../../types/trader.js';
 import type { LiquidationCooldownConfig } from '../../types/config.js';
-import type { CooldownCandidate } from './types.js';
+import type { CooldownCandidate, ProtectiveLiquidationDirection } from './types.js';
 
 /**
  * 构建冷却记录的 key。
  *
- * @param symbol 标的代码
  * @param direction 方向（LONG / SHORT）
- * @returns 格式为 `symbol:direction` 的字符串键
+ * @returns 方向级字符串键
  */
-export function buildCooldownKey(symbol: string, direction: 'LONG' | 'SHORT'): string {
-  return `${symbol}:${direction}`;
+export function buildCooldownKey(
+  direction: ProtectiveLiquidationDirection,
+): ProtectiveLiquidationDirection {
+  return direction;
 }
 
 /**
@@ -150,37 +151,36 @@ export function toBooleanOrNull(value: unknown): boolean | null {
 }
 
 /**
- * 从成交记录中按监控标的和方向收集保护性清仓“完成事件”记录。
+ * 从成交记录中按方向收集保护性清仓“完成事件”记录。
  * 仅识别 reason = PROTECTIVE_LIQUIDATION_COMPLETED 的日志。
  *
- * @param params.monitorSymbols 当前监控标的代码集合
+ * @param params.baseInstrument 当前基础对象代码
  * @param params.tradeRecords 当日成交记录列表
- * @returns 按 monitorSymbol:direction 分组的保护性清仓记录（组内按时间升序）
+ * @returns 按 direction 分组的保护性清仓记录（组内按时间升序）
  */
-export function collectLiquidationRecordsByMonitor({
-  monitorSymbols,
+export function collectLiquidationRecordsByDirection({
+  baseInstrument,
   tradeRecords,
 }: {
-  readonly monitorSymbols: ReadonlySet<string>;
+  readonly baseInstrument: string;
   readonly tradeRecords: ReadonlyArray<TradeRecord>;
-}): ReadonlyMap<string, ReadonlyArray<CooldownCandidate>> {
-  if (monitorSymbols.size === 0 || tradeRecords.length === 0) {
+}): ReadonlyMap<ProtectiveLiquidationDirection, ReadonlyArray<CooldownCandidate>> {
+  if (!baseInstrument || tradeRecords.length === 0) {
     return new Map();
   }
 
-  const grouped = new Map<string, CooldownCandidate[]>();
+  const grouped = new Map<ProtectiveLiquidationDirection, CooldownCandidate[]>();
   for (const record of tradeRecords) {
     if (record.reason !== TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON) {
       continue;
     }
 
-    const monitorSymbol = record.monitorSymbol;
     const executedAtMs = record.executedAtMs;
-    if (!monitorSymbol || typeof executedAtMs !== 'number' || !Number.isFinite(executedAtMs)) {
+    if (record.baseInstrumentSymbol !== baseInstrument) {
       continue;
     }
 
-    if (!monitorSymbols.has(monitorSymbol)) {
+    if (typeof executedAtMs !== 'number' || !Number.isFinite(executedAtMs)) {
       continue;
     }
 
@@ -189,14 +189,14 @@ export function collectLiquidationRecordsByMonitor({
       continue;
     }
 
-    const key = buildCooldownKey(monitorSymbol, direction);
+    const key = buildCooldownKey(direction);
     const list = grouped.get(key);
     if (list) {
-      list.push({ monitorSymbol, direction, executedAtMs });
+      list.push({ direction, executedAtMs });
       continue;
     }
 
-    grouped.set(key, [{ monitorSymbol, direction, executedAtMs }]);
+    grouped.set(key, [{ direction, executedAtMs }]);
   }
 
   for (const list of grouped.values()) {
@@ -286,7 +286,7 @@ export function simulateTriggerCycle({
  * @param action 信号 action
  * @returns LONG / SHORT / null
  */
-function resolveDirectionFromAction(action: string | null): 'LONG' | 'SHORT' | null {
+function resolveDirectionFromAction(action: string | null): ProtectiveLiquidationDirection | null {
   if (action === 'SELLCALL') {
     return 'LONG';
   }

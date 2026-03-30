@@ -19,7 +19,8 @@ import { signalObjectPool } from '../../utils/objectPool/index.js';
 import { isSeatActive } from '../../utils/seat/guards.js';
 import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
 import { isQuoteReadyForRequirement, resolveNextQuoteRetry } from '../../utils/quoteRetry/index.js';
-import type { MonitorContext } from '../../types/state.js';
+import type { StrategyRuntimeConfig } from '../../types/config.js';
+import type { StrategyRuntime } from '../../types/state.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { Signal, SignalType } from '../../types/signal.js';
@@ -63,24 +64,19 @@ function createClearanceSignal(params: ClearanceSignalParams): Signal | null {
  * 从监控上下文中解析席位对应的交易标的。
  * 用于末日清仓时确定每个监控标的下的多/空实际交易标的（牛熊证代码）。
  *
- * @param context 监控上下文，缺失时无法解析
- * @param monitorSymbol 监控标的代码（如 HSI.HK）
+ * @param context 监控上下文
+ * @param baseInstrumentSymbol 监控标的代码
  * @param direction 多空方向（LONG/SHORT）
  * @returns 该席位对应的交易标的代码，席位未就绪或上下文缺失时返回 null
  */
 function resolveSeatSymbol(
-  context: MonitorContext | undefined,
-  monitorSymbol: string,
+  context: StrategyRuntime,
+  baseInstrumentSymbol: string,
   direction: 'LONG' | 'SHORT',
 ): string | null {
-  if (!context) {
-    logger.warn(`[末日保护程序] 未找到监控上下文，跳过席位: ${monitorSymbol} ${direction}`);
-    return null;
-  }
-
-  const seatState = context.symbolRegistry.getSeatState(monitorSymbol, direction);
+  const seatState = context.symbolRegistry.getSeatState(direction);
   if (!isSeatActive(seatState)) {
-    logger.debug(`[末日保护程序] 席位未就绪，跳过: ${monitorSymbol} ${direction}`);
+    logger.debug(`[末日保护程序] 席位未就绪，跳过: ${baseInstrumentSymbol} ${direction}`);
     return null;
   }
 
@@ -88,21 +84,20 @@ function resolveSeatSymbol(
 }
 
 /**
- * 解析指定监控标的的多空席位交易标的。
- * 供清仓流程按监控维度获取做多/做空标的，用于匹配持仓与拉取行情。
+ * 解析当前单实例监控上下文的多空席位交易标的。
+ * 供清仓流程获取做多/做空标的，用于匹配持仓与拉取行情。
  *
- * @param monitorSymbol 监控标的代码
- * @param monitorContexts 各监控标的的上下文 Map
+ * @param monitorConfig 单实例监控配置
+ * @param monitorContext 单实例监控上下文
  * @returns 该监控标的下的 longSymbol 与 shortSymbol（未就绪时为 null）
  */
 function resolveMonitorSymbols(
-  monitorSymbol: string,
-  monitorContexts: DoomsdayClearanceContext['monitorContexts'],
+  monitorConfig: StrategyRuntimeConfig,
+  monitorContext: StrategyRuntime,
 ): { longSymbol: string | null; shortSymbol: string | null } {
-  const context = monitorContexts.get(monitorSymbol);
   return {
-    longSymbol: resolveSeatSymbol(context, monitorSymbol, 'LONG'),
-    shortSymbol: resolveSeatSymbol(context, monitorSymbol, 'SHORT'),
+    longSymbol: resolveSeatSymbol(monitorContext, monitorConfig.baseInstrumentSymbol, 'LONG'),
+    shortSymbol: resolveSeatSymbol(monitorContext, monitorConfig.baseInstrumentSymbol, 'SHORT'),
   };
 }
 
@@ -239,8 +234,8 @@ export function createDoomsdayProtection(deps?: {
       currentTime,
       isHalfDay,
       positions,
-      monitorConfigs,
-      monitorContexts,
+      monitorConfig,
+      monitorContext,
       trader,
       marketDataClient,
       lastState,
@@ -281,65 +276,54 @@ export function createDoomsdayProtection(deps?: {
     }
 
     const allTradingSymbols = new Set<string>();
-    for (const monitorConfig of monitorConfigs) {
-      const { longSymbol, shortSymbol } = resolveMonitorSymbols(
-        monitorConfig.monitorSymbol,
-        monitorContexts,
-      );
-      if (longSymbol) {
-        allTradingSymbols.add(longSymbol);
-      }
+    const { longSymbol, shortSymbol } = resolveMonitorSymbols(monitorConfig, monitorContext);
+    if (longSymbol) {
+      allTradingSymbols.add(longSymbol);
+    }
 
-      if (shortSymbol) {
-        allTradingSymbols.add(shortSymbol);
-      }
+    if (shortSymbol) {
+      allTradingSymbols.add(shortSymbol);
     }
 
     const quoteMap = await batchGetQuotes(marketDataClient, allTradingSymbols);
     const allClearanceSignals: Signal[] = [];
     const unresolvedSymbols = new Set<string>();
 
-    for (const monitorConfig of monitorConfigs) {
-      const { longSymbol, shortSymbol } = resolveMonitorSymbols(
-        monitorConfig.monitorSymbol,
-        monitorContexts,
+    const longQuote = longSymbol ? (quoteMap.get(longSymbol) ?? null) : null;
+    const shortQuote = shortSymbol ? (quoteMap.get(shortSymbol) ?? null) : null;
+
+    for (const pos of processingPositions) {
+      if (pos.symbol === longSymbol) {
+        const quoteReady = isQuoteReadyForRequirement({
+          quote: longQuote,
+          requirement: 'PRICE',
+        });
+        if (!quoteReady) {
+          unresolvedSymbols.add(pos.symbol);
+          continue;
+        }
+      }
+
+      if (pos.symbol === shortSymbol) {
+        const quoteReady = isQuoteReadyForRequirement({
+          quote: shortQuote,
+          requirement: 'PRICE',
+        });
+        if (!quoteReady) {
+          unresolvedSymbols.add(pos.symbol);
+          continue;
+        }
+      }
+
+      const signal = processPositionForClearance(
+        pos,
+        longSymbol,
+        shortSymbol,
+        longQuote,
+        shortQuote,
       );
-      const longQuote = longSymbol ? (quoteMap.get(longSymbol) ?? null) : null;
-      const shortQuote = shortSymbol ? (quoteMap.get(shortSymbol) ?? null) : null;
-
-      for (const pos of processingPositions) {
-        if (pos.symbol === longSymbol) {
-          const quoteReady = isQuoteReadyForRequirement({
-            quote: longQuote,
-            requirement: 'PRICE',
-          });
-          if (!quoteReady) {
-            unresolvedSymbols.add(pos.symbol);
-            continue;
-          }
-        }
-
-        if (pos.symbol === shortSymbol) {
-          const quoteReady = isQuoteReadyForRequirement({
-            quote: shortQuote,
-            requirement: 'PRICE',
-          });
-          if (!quoteReady) {
-            unresolvedSymbols.add(pos.symbol);
-            continue;
-          }
-        }
-
-        const signal = processPositionForClearance(
-          pos,
-          longSymbol,
-          shortSymbol,
-          longQuote,
-          shortQuote,
-        );
-        if (signal) {
-          allClearanceSignals.push(signal);
-        }
+      if (signal) {
+        allClearanceSignals.push(signal);
       }
     }
 
@@ -373,21 +357,14 @@ export function createDoomsdayProtection(deps?: {
         );
         lastState.positionCache.update(lastState.cachedPositions);
 
-        for (const monitorContext of monitorContexts.values()) {
-          const { config, orderRecorder } = monitorContext;
-          const { longSymbol, shortSymbol } = resolveMonitorSymbols(
-            config.monitorSymbol,
-            monitorContexts,
-          );
-          if (longSymbol && submittedSymbols.has(longSymbol)) {
-            const quote = quoteMap.get(longSymbol) ?? null;
-            orderRecorder.clearBuyOrders(longSymbol, true, quote);
-          }
+        if (longSymbol && submittedSymbols.has(longSymbol)) {
+          const quote = quoteMap.get(longSymbol) ?? null;
+          monitorContext.orderRecorder.clearBuyOrders(longSymbol, true, quote);
+        }
 
-          if (shortSymbol && submittedSymbols.has(shortSymbol)) {
-            const quote = quoteMap.get(shortSymbol) ?? null;
-            orderRecorder.clearBuyOrders(shortSymbol, false, quote);
-          }
+        if (shortSymbol && submittedSymbols.has(shortSymbol)) {
+          const quote = quoteMap.get(shortSymbol) ?? null;
+          monitorContext.orderRecorder.clearBuyOrders(shortSymbol, false, quote);
         }
       } else {
         logger.warn(
@@ -465,7 +442,7 @@ export function createDoomsdayProtection(deps?: {
     async cancelPendingBuyOrders(
       context: CancelPendingBuyOrdersContext,
     ): Promise<CancelPendingBuyOrdersResult> {
-      const { currentTime, isHalfDay, monitorConfigs, monitorContexts, trader } = context;
+      const { currentTime, isHalfDay, monitorConfig, monitorContext, trader } = context;
 
       // 检查是否在收盘前15分钟内
       if (!isBeforeClose15Minutes(currentTime, isHalfDay)) {
@@ -486,18 +463,13 @@ export function createDoomsdayProtection(deps?: {
 
       // 收集所有唯一的交易标的
       const allTradingSymbols = new Set<string>();
-      for (const monitorConfig of monitorConfigs) {
-        const { longSymbol, shortSymbol } = resolveMonitorSymbols(
-          monitorConfig.monitorSymbol,
-          monitorContexts,
-        );
-        if (longSymbol) {
-          allTradingSymbols.add(longSymbol);
-        }
+      const { longSymbol, shortSymbol } = resolveMonitorSymbols(monitorConfig, monitorContext);
+      if (longSymbol) {
+        allTradingSymbols.add(longSymbol);
+      }
 
-        if (shortSymbol) {
-          allTradingSymbols.add(shortSymbol);
-        }
+      if (shortSymbol) {
+        allTradingSymbols.add(shortSymbol);
       }
 
       if (allTradingSymbols.size === 0) {

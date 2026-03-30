@@ -17,9 +17,8 @@
  * 8. 基础风险检查（浮亏和持仓限制）
  *
  * 卖出策略：
- * - 智能平仓开启：三阶段卖出（整体盈利全卖 -> 未盈利先卖盈利订单 -> 可选卖出超时订单）
- * - 智能平仓关闭：清空所有持仓
- * - 无符合条件订单：信号设为 HOLD
+ * - 趋势退出与结构失效统一使用全平语义
+ * - 末日保护继续独立生成无条件清仓信号
  */
 import { createRiskCheckPipeline } from './riskCheckPipeline.js';
 import { processSellSignals } from './sellQuantityCalculator.js';
@@ -27,18 +26,18 @@ import type { SignalProcessor, SignalProcessorDeps } from './types.js';
 
 /**
  * 创建信号处理器（工厂函数）
- * @param tradingConfig - 交易配置，包含监控标的配置和风控参数
+ * @param globalConfig - 全局交易配置，包含末日保护等系统级风控参数
  * @param liquidationCooldownTracker - 清仓冷却追踪器，用于判断是否在冷却期内
  * @returns SignalProcessor 实例
  */
 export const createSignalProcessor = ({
-  tradingConfig,
+  globalConfig,
   liquidationCooldownTracker,
 }: SignalProcessorDeps): SignalProcessor => {
   /** 冷却时间记录：Map<symbol_direction, timestamp>，防止重复信号频繁触发风险检查 */
   const lastRiskCheckTime = new Map<string, number>();
   const applyRiskChecks = createRiskCheckPipeline({
-    tradingConfig,
+    globalConfig,
     liquidationCooldownTracker,
     lastRiskCheckTime,
   });

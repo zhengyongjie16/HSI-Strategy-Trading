@@ -4,7 +4,7 @@ import type { OrderTypeConfig, SignalType } from '../../types/signal.js';
 /**
  * 对象池 - Signal（可池化交易信号）。
  * 类型用途：交易信号的可池化版本，供对象池复用以减少 GC 压力；属性可变以支持重置复用。
- * 数据来源：由策略模块生成，经延迟验证器和风险检查流水线处理后写入。
+ * 数据来源：由策略模块生成，经历史验证链路和风险检查流水线处理后写入。
  * 使用范围：仅对象池内部使用，外部通过 acquire/release 访问。
  */
 export type PoolableSignal = {
@@ -22,7 +22,7 @@ export type PoolableSignal = {
   /**
    * 信号触发时间（统一使用此字段）
    * - 立即信号：信号生成时间
-   * - 延迟信号：延迟验证的基准时间（T0）
+   * - 延迟信号：历史验证的基准时间（T0）
    * - 末日保护信号：信号生成时间
    */
   triggerTime?: Date | null;
@@ -91,8 +91,8 @@ export type PoolablePosition = {
 };
 
 /**
- * 对象池 - VerificationEntry（可池化延迟验证条目）。
- * 类型用途：延迟验证历史记录条目的可池化版本，供对象池复用；属性可变以支持重置复用。
+ * 对象池 - VerificationEntry（可池化历史验证条目）。
+ * 类型用途：历史验证历史记录条目的可池化版本，供对象池复用；属性可变以支持重置复用。
  * 数据来源：由延迟信号验证器写入，记录每次验证时的时间戳与指标快照。
  * 使用范围：仅对象池内部使用，外部通过 acquire/release 访问。
  */

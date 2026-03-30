@@ -24,7 +24,7 @@ import {
 import type { RefreshGate } from '../../../../utils/types.js';
 import { getPositions } from '../../../processMonitor/utils.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
-import { evaluateMonitorContextAndSeatReadiness } from '../utils.js';
+import { evaluateStrategyRuntimeAndSeatReadiness } from '../utils.js';
 import type {
   CreateLiquidationTaskParams,
   LiquidationDistanceCheckTaskData,
@@ -105,14 +105,12 @@ function releaseLiquidationTasks(liquidationTasks: ReadonlyArray<LiquidationTask
  */
 async function executeReadyLiquidationTasks(params: {
   readonly liquidationTasks: ReadonlyArray<LiquidationTask>;
-  readonly data: LiquidationDistanceCheckTaskData;
   readonly context: MonitorTaskContext;
   readonly trader: Trader;
 }): Promise<void> {
-  const { liquidationTasks, data, context, trader } = params;
+  const { liquidationTasks, context, trader } = params;
   const executableTasks = liquidationTasks.filter((taskItem) => {
     const seatValidation = validateSignalSeat({
-      monitorSymbol: data.monitorSymbol,
       signal: taskItem.signal,
       symbolRegistry: context.symbolRegistry,
     });
@@ -130,8 +128,7 @@ async function executeReadyLiquidationTasks(params: {
 
       context.orderRecorder.clearBuyOrders(taskItem.signal.symbol, isLongDirection, taskItem.quote);
       const dailyLossOffset = context.dailyLossTracker.getLossOffset(
-        data.monitorSymbol,
-        isLongDirection,
+        isLongDirection ? 'LONG' : 'SHORT',
       );
       await context.riskChecker.refreshUnrealizedLossData(
         context.orderRecorder,
@@ -158,6 +155,7 @@ async function executeReadyLiquidationTasks(params: {
  * @returns 处理 LIQUIDATION_DISTANCE_CHECK 任务的异步函数
  */
 export function createLiquidationDistanceHandler({
+  baseInstrumentSymbol,
   getContextOrSkip,
   refreshGate,
   lastState,
@@ -165,7 +163,8 @@ export function createLiquidationDistanceHandler({
   marketDataClient,
   getCanProcessTask,
 }: {
-  readonly getContextOrSkip: (monitorSymbol: string) => MonitorTaskContext | null;
+  readonly baseInstrumentSymbol: string;
+  readonly getContextOrSkip: () => MonitorTaskContext | null;
   readonly refreshGate: RefreshGate;
   readonly lastState: LastState;
   readonly trader: Trader;
@@ -182,10 +181,10 @@ export function createLiquidationDistanceHandler({
     readonly retryRequest: MonitorTaskRetryRequest<'LIQUIDATION_DISTANCE_CHECK'> | null;
   }> {
     const data: LiquidationDistanceCheckTaskData = task.data;
-    const evaluated = await evaluateMonitorContextAndSeatReadiness({
+    const evaluated = await evaluateStrategyRuntimeAndSeatReadiness({
       getContextOrSkip,
       refreshGate,
-      monitorSymbol: data.monitorSymbol,
+      baseInstrumentSymbol,
       longSnapshot: { seatVersion: data.long.seatVersion, symbol: data.long.symbol },
       shortSnapshot: { seatVersion: data.short.seatVersion, symbol: data.short.symbol },
     });
@@ -195,7 +194,7 @@ export function createLiquidationDistanceHandler({
 
     const { context, seatReadiness } = evaluated;
     const { isLongReady, isShortReady, longSymbol, shortSymbol } = seatReadiness;
-    const retryKey = `${data.monitorSymbol}:LIQUIDATION_DISTANCE_CHECK`;
+    const retryKey = 'LIQUIDATION_DISTANCE_CHECK';
     const previousRetryAttempts =
       typeof data.retryAttempts === 'number' && Number.isFinite(data.retryAttempts)
         ? data.retryAttempts
@@ -205,7 +204,7 @@ export function createLiquidationDistanceHandler({
       longSymbol,
       shortSymbol,
     );
-    const quoteSymbolSet = new Set<string>([data.monitorSymbol]);
+    const quoteSymbolSet = new Set<string>([baseInstrumentSymbol]);
     if (isLongReady) {
       quoteSymbolSet.add(longSymbol);
     }
@@ -215,7 +214,7 @@ export function createLiquidationDistanceHandler({
     }
 
     const executionQuotes = await marketDataClient.getQuotes(quoteSymbolSet);
-    const monitorExecutionQuote = executionQuotes.get(data.monitorSymbol) ?? null;
+    const monitorExecutionQuote = executionQuotes.get(baseInstrumentSymbol) ?? null;
     const monitorQuoteReady = isQuoteReadyForRequirement({
       quote: monitorExecutionQuote,
       requirement: 'PRICE',
@@ -284,7 +283,6 @@ export function createLiquidationDistanceHandler({
         try {
           await executeReadyLiquidationTasks({
             liquidationTasks,
-            data,
             context,
             trader,
           });
@@ -304,7 +302,7 @@ export function createLiquidationDistanceHandler({
         });
         if (nextRetry.exhausted) {
           logger.warn(
-            `[MonitorTaskProcessor] LIQUIDATION_DISTANCE_CHECK 行情重试耗尽: ${data.monitorSymbol} symbols=${[...unresolvedSymbols].join(',')}`,
+            `[MonitorTaskProcessor] LIQUIDATION_DISTANCE_CHECK 行情重试耗尽: ${baseInstrumentSymbol} symbols=${[...unresolvedSymbols].join(',')}`,
           );
           return { status: 'processed', retryRequest: null };
         }
@@ -318,7 +316,6 @@ export function createLiquidationDistanceHandler({
             task: {
               type: task.type,
               dedupeKey: task.dedupeKey,
-              monitorSymbol: task.monitorSymbol,
               data: {
                 ...task.data,
                 retryAttempts: nextRetry.nextAttempts,

@@ -69,7 +69,6 @@ function buildPriceDisplayInfo(params: {
  */
 export function scheduleRiskTasks(params: RiskTasksParams): void {
   const {
-    monitorSymbol,
     monitorContext,
     mainContext,
     seatInfo,
@@ -96,10 +95,8 @@ export function scheduleRiskTasks(params: RiskTasksParams): void {
   if (monitorPriceChanged && !autoSearchEnabled && resolvedMonitorPrice !== null) {
     monitorTaskQueue.scheduleLatest({
       type: 'LIQUIDATION_DISTANCE_CHECK',
-      dedupeKey: `${monitorSymbol}:LIQUIDATION_DISTANCE_CHECK`,
-      monitorSymbol,
+      dedupeKey: 'LIQUIDATION_DISTANCE_CHECK',
       data: {
-        monitorSymbol,
         monitorPrice: resolvedMonitorPrice,
         long: {
           seatVersion: longSeatVersion,
@@ -147,10 +144,8 @@ export function scheduleRiskTasks(params: RiskTasksParams): void {
   if (priceChanged) {
     monitorTaskQueue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
-      dedupeKey: `${monitorSymbol}:UNREALIZED_LOSS_CHECK`,
-      monitorSymbol,
+      dedupeKey: 'UNREALIZED_LOSS_CHECK',
       data: {
-        monitorSymbol,
         long: {
           seatVersion: longSeatVersion,
           symbol: longSeatState.symbol ?? null,

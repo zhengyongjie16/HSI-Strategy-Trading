@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
-import { createMonitorContext } from '../../src/app/createMonitorContext.js';
+import { createStrategyRuntime } from '../../src/app/createStrategyRuntime.js';
 import { mainProgram } from '../../src/main/mainProgram/index.js';
 import { processMonitor } from '../../src/main/processMonitor/index.js';
 import { createBuyProcessor } from '../../src/main/asyncProgram/buyProcessor/index.js';
@@ -17,20 +17,18 @@ import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createIndicatorCache } from '../../src/main/asyncProgram/indicatorCache/index.js';
-import { createDelayedSignalVerifier } from '../../src/main/asyncProgram/delayedSignalVerifier/index.js';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
 import { createRefreshGate } from '../../src/utils/refreshGate/index.js';
-import { initMonitorState } from '../../src/utils/helpers/index.js';
+import { createStrategyState } from '../../src/utils/helpers/index.js';
 import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
 import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createTradingConfigFixtureFromRuntimeConfig } from '../../mock/factories/configFactory.js';
 import { Period, type Candlestick } from 'longbridge';
 import type { CandleData } from '../../src/types/data.js';
-import type { LastState, MonitorContext } from '../../src/types/state.js';
-import type { MultiMonitorTradingConfig, MonitorConfig } from '../../src/types/config.js';
+import type { LastState } from '../../src/types/state.js';
+import type { StrategyRuntimeConfig } from '../../src/types/config.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
 import type { CandlestickCacheSnapshot } from '../../src/types/services.js';
 import type { DayLifecycleManager } from '../../src/main/lifecycle/types.js';
@@ -39,7 +37,7 @@ import {
   createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
@@ -54,7 +52,44 @@ import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManag
 
 let autoSymbolCandidates: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
 
-function createCandles(length: number, start: number, step: number): CandleData[] {
+function createHongKongSessionBaseTimestamp(hour: number, minute: number): number {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = formatter.formatToParts(new Date());
+  let year = '';
+  let month = '';
+  let day = '';
+  for (const part of parts) {
+    if (part.type === 'year') {
+      year = part.value;
+      continue;
+    }
+
+    if (part.type === 'month') {
+      month = part.value;
+      continue;
+    }
+
+    if (part.type === 'day') {
+      day = part.value;
+    }
+  }
+
+  return Date.parse(
+    `${year}-${month}-${day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`,
+  );
+}
+
+function createCandles(
+  length: number,
+  start: number,
+  step: number,
+  baseTimestamp: number = createHongKongSessionBaseTimestamp(9, 30),
+): CandleData[] {
   const candles: CandleData[] = [];
   for (let index = 0; index < length; index += 1) {
     const close = start + index * step;
@@ -64,6 +99,7 @@ function createCandles(length: number, start: number, step: number): CandleData[
       low: close - 0.4,
       close,
       volume: 5_000 + index,
+      timestamp: baseTimestamp + index * 60_000,
     });
   }
 
@@ -122,17 +158,9 @@ function createNoopDayLifecycleManager(): DayLifecycleManager {
   };
 }
 
-function createTradingConfigForMonitor(monitorConfig: MonitorConfig): MultiMonitorTradingConfig {
-  const base = createTradingConfig();
-  return {
-    monitors: [monitorConfig],
-    global: base.global,
-  };
-}
-
 function createSimulationLastState(params: {
-  readonly monitorConfig: MonitorConfig;
-  readonly monitorState: ReturnType<typeof initMonitorState>;
+  readonly monitorConfig: StrategyRuntimeConfig;
+  readonly monitorState: ReturnType<typeof createStrategyState>;
   readonly positions: ReadonlyArray<ReturnType<typeof createPositionDouble>>;
   readonly currentDayKey: string;
 }): LastState {
@@ -152,22 +180,21 @@ function createSimulationLastState(params: {
       isTradingDay: true,
       isHalfDay: false,
     },
-    monitorStates: new Map([[params.monitorConfig.monitorSymbol, params.monitorState]]),
+    monitorState: params.monitorState,
     allTradingSymbols: new Set<string>(),
   };
 }
 
 describe('full business simulation integration', () => {
   it('simulates main loop -> risk checks -> sell execution while buy is blocked by risk rule', async () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
-      smartCloseEnabled: true,
     });
-    const tradingConfig = createTradingConfigForMonitor(monitorConfig);
+    const tradingConfig = createTradingConfigFixtureFromRuntimeConfig(monitorConfig);
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -190,11 +217,10 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache({ maxEntries: 300 });
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorState = initMonitorState(monitorConfig);
+    const monitorState = createStrategyState(monitorConfig);
     const positions = [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 300, availableQuantity: 300 }),
     ];
@@ -230,31 +256,24 @@ describe('full business simulation integration', () => {
       }),
     });
 
-    const delayedSignalVerifier = createDelayedSignalVerifier({
-      indicatorCache,
-    });
-
     const strategy = {
-      generateSignals: () => ({
-        immediateSignals: [
-          createSignal({
-            symbol: 'BULL.HK',
-            action: 'BUYCALL',
-            reason: 'full-simulation-buy',
-            triggerTimeMs: Date.now(),
-          }),
-          createSignal({
-            symbol: 'BULL.HK',
-            action: 'SELLCALL',
-            reason: 'full-simulation-sell',
-            triggerTimeMs: Date.now(),
-          }),
-        ],
-        delayedSignals: [],
-      }),
+      generateSignals: () => [
+        createSignal({
+          symbol: 'BULL.HK',
+          action: 'BUYCALL',
+          reason: 'full-simulation-buy',
+          triggerTimeMs: Date.now(),
+        }),
+        createSignal({
+          symbol: 'BULL.HK',
+          action: 'SELLCALL',
+          reason: 'full-simulation-sell',
+          triggerTimeMs: Date.now(),
+        }),
+      ],
     };
 
-    const monitorContext = createMonitorContext({
+    const monitorContext = createStrategyRuntime({
       config: monitorConfig,
       state: monitorState,
       symbolRegistry,
@@ -268,7 +287,6 @@ describe('full business simulation integration', () => {
       dailyLossTracker: createNoopDailyLossTracker(),
       riskChecker,
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
-      delayedSignalVerifier,
       autoSymbolManager: {
         maybeSearchOnTick: async () => {},
         maybeSwitchOnInterval: async () => {},
@@ -277,10 +295,6 @@ describe('full business simulation integration', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContexts = new Map<string, MonitorContext>([
-      [monitorConfig.monitorSymbol, monitorContext],
-    ]);
-
     const submittedActions: string[] = [];
     const trader = createTraderDouble({
       getAccountSnapshot: async () => createAccountSnapshotDouble(200_000),
@@ -295,7 +309,7 @@ describe('full business simulation integration', () => {
     });
 
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig: tradingConfig.global,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -309,7 +323,7 @@ describe('full business simulation integration', () => {
     const refreshGate = createRefreshGate();
     const buyProcessor = createBuyProcessor({
       taskQueue: buyTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -337,7 +351,7 @@ describe('full business simulation integration', () => {
     });
     const sellProcessor = createSellProcessor({
       taskQueue: sellTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -389,7 +403,7 @@ describe('full business simulation integration', () => {
             return quotes;
           },
           getCandlestickSnapshot: (symbol) =>
-            symbol === monitorConfig.monitorSymbol
+            symbol === monitorConfig.baseInstrumentSymbol
               ? createCandlestickSnapshot(symbol, candles as unknown as ReadonlyArray<CandleData>)
               : null,
         }),
@@ -402,10 +416,10 @@ describe('full business simulation integration', () => {
         doomsdayProtection: createDoomsdayProtectionDouble(),
         signalProcessor,
         tradingConfig,
+        monitorConfig,
         dailyLossTracker: createNoopDailyLossTracker(),
-        monitorContexts,
+        monitorContext,
         symbolRegistry,
-        indicatorCache,
         buyTaskQueue,
         sellTaskQueue,
         monitorTaskQueue,
@@ -434,7 +448,6 @@ describe('full business simulation integration', () => {
       expect(orderMonitorScheduleCount).toBe(1);
       expect(postTradeEnqueueCount).toBe(1);
     } finally {
-      delayedSignalVerifier.destroy();
       await Promise.all([buyProcessor.stopAndDrain(), sellProcessor.stopAndDrain()]);
     }
   });
@@ -446,8 +459,8 @@ describe('full business simulation integration', () => {
       createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
     ];
 
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
       targetNotional: 5_000,
@@ -464,9 +477,9 @@ describe('full business simulation integration', () => {
         switchDistanceRangeBear: { min: -1.5, max: -0.2 },
       },
     });
-    const tradingConfig = createTradingConfigForMonitor(monitorConfig);
+    const tradingConfig = createTradingConfigFixtureFromRuntimeConfig(monitorConfig);
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -489,11 +502,10 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache({ maxEntries: 300 });
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorState = initMonitorState(monitorConfig);
+    const monitorState = createStrategyState(monitorConfig);
     const lastState = createSimulationLastState({
       monitorConfig,
       monitorState,
@@ -581,42 +593,31 @@ describe('full business simulation integration', () => {
       now: () => new Date('2026-02-16T01:00:00.000Z'),
     });
 
-    const delayedSignalVerifier = createDelayedSignalVerifier({
-      indicatorCache,
-    });
-    const monitorContext = createMonitorContext({
+    const monitorContext = createStrategyRuntime({
       config: monitorConfig,
       state: monitorState,
       symbolRegistry,
       quotesMap: new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)]]),
       strategy: {
-        generateSignals: () => ({
-          immediateSignals: [],
-          delayedSignals: [],
-        }),
+        generateSignals: () => [],
       },
       orderRecorder,
       dailyLossTracker: createNoopDailyLossTracker(),
       riskChecker,
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
-      delayedSignalVerifier,
       autoSymbolManager,
     });
-    const monitorContexts = new Map<string, MonitorContext>([
-      [monitorConfig.monitorSymbol, monitorContext],
-    ]);
-
     const processedTaskTypes: string[] = [];
     const refreshGate = createRefreshGate();
     const monitorTaskProcessor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol) ?? null,
+      monitorContext,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState,
-      tradingConfig,
+      monitorConfig,
       getCanProcessTask: () => true,
       onProcessed: (task, status) => {
         processedTaskTypes.push(`${task.type}:${status}`);
@@ -624,7 +625,7 @@ describe('full business simulation integration', () => {
     });
 
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig: tradingConfig.global,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -637,7 +638,7 @@ describe('full business simulation integration', () => {
 
     const buyProcessor = createBuyProcessor({
       taskQueue: buyTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -650,7 +651,7 @@ describe('full business simulation integration', () => {
     });
     const sellProcessor = createSellProcessor({
       taskQueue: sellTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -666,7 +667,7 @@ describe('full business simulation integration', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: autoSwitchMarketDataClient.getQuotes,
         getCandlestickSnapshot: (symbol) =>
-          symbol === monitorConfig.monitorSymbol
+          symbol === monitorConfig.baseInstrumentSymbol
             ? createCandlestickSnapshot(symbol, sharedMainCandles)
             : null,
       }),
@@ -679,10 +680,10 @@ describe('full business simulation integration', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       signalProcessor,
       tradingConfig,
+      monitorConfig,
       dailyLossTracker: createNoopDailyLossTracker(),
-      monitorContexts,
+      monitorContext,
       symbolRegistry,
-      indicatorCache,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -721,14 +722,14 @@ describe('full business simulation integration', () => {
       );
 
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return seat.status === 'ACTIVATING' && seat.symbol === 'OLD_BULL.HK';
       });
 
-      const searchedSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+      const searchedSeat = symbolRegistry.getSeatState('LONG');
       expect(searchedSeat.status).toBe('ACTIVATING');
       expect(searchedSeat.symbol).toBe('OLD_BULL.HK');
-      expect(symbolRegistry.getSeatVersion(monitorConfig.monitorSymbol, 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
 
       await processMonitor(
         {
@@ -749,15 +750,15 @@ describe('full business simulation integration', () => {
       );
 
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return seat.status === 'ACTIVE' && seat.symbol === 'OLD_BULL.HK';
       }).catch((error: unknown) => {
         throw new Error(
-          `seat activation timeout after second monitor cycle: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `seat activation timeout after second monitor cycle: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
-      const activatedSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+      const activatedSeat = symbolRegistry.getSeatState('LONG');
       expect(activatedSeat.status).toBe('ACTIVE');
       expect(activatedSeat.symbol).toBe('OLD_BULL.HK');
 
@@ -848,16 +849,16 @@ describe('full business simulation integration', () => {
 
       await waitUntil(() => executedActions.length > 1).catch((error: unknown) => {
         throw new Error(
-          `rebuy action timeout: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `rebuy action timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return seat.status === 'ACTIVATING' && seat.symbol === 'NEW_BULL.HK';
       }).catch((error: unknown) => {
         throw new Error(
-          `rebuy seat transition timeout: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `rebuy seat transition timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
@@ -884,20 +885,19 @@ describe('full business simulation integration', () => {
       );
 
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return seat.status === 'ACTIVE' && seat.symbol === 'NEW_BULL.HK';
       }).catch((error: unknown) => {
         throw new Error(
-          `final seat activation timeout: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `final seat activation timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
-      const finalSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+      const finalSeat = symbolRegistry.getSeatState('LONG');
       expect(finalSeat.status).toBe('ACTIVE');
       expect(finalSeat.symbol).toBe('NEW_BULL.HK');
-      expect(symbolRegistry.getSeatVersion(monitorConfig.monitorSymbol, 'LONG')).toBe(3);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(3);
     } finally {
-      delayedSignalVerifier.destroy();
       await Promise.all([
         buyProcessor.stopAndDrain(),
         sellProcessor.stopAndDrain(),
@@ -907,15 +907,14 @@ describe('full business simulation integration', () => {
   });
 
   it('simulates cross-day cleanup and open rebuild via main loop lifecycle domains', async () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
-      smartCloseEnabled: true,
     });
-    const tradingConfig = createTradingConfigForMonitor(monitorConfig);
+    const tradingConfig = createTradingConfigFixtureFromRuntimeConfig(monitorConfig);
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -938,11 +937,10 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache({ maxEntries: 300 });
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorState = initMonitorState(monitorConfig);
+    const monitorState = createStrategyState(monitorConfig);
     const longPosition = createPositionDouble({
       symbol: 'BULL.HK',
       quantity: 200,
@@ -972,21 +970,9 @@ describe('full business simulation integration', () => {
         totalQuantity: 100,
       }),
     });
-    let cancelAllCalls = 0;
-    const delayedSignalVerifier = {
-      addSignal: () => {},
-      cancelAllForSymbol: () => {},
-      cancelAllForDirection: () => 0,
-      cancelAll: () => {
-        cancelAllCalls += 1;
-        return 1;
-      },
-      getPendingCount: () => 1,
-      onVerified: () => {},
-      destroy: () => {},
-    };
+    const cancelAllCalls = 0;
 
-    const monitorContext = createMonitorContext({
+    const monitorContext = createStrategyRuntime({
       config: monitorConfig,
       state: monitorState,
       symbolRegistry,
@@ -996,16 +982,12 @@ describe('full business simulation integration', () => {
         ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.95, 100)],
       ]),
       strategy: {
-        generateSignals: () => ({
-          immediateSignals: [],
-          delayedSignals: [],
-        }),
+        generateSignals: () => [],
       },
       orderRecorder,
       dailyLossTracker: createNoopDailyLossTracker(),
       riskChecker: createRiskCheckerDouble(),
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
-      delayedSignalVerifier,
       autoSymbolManager: {
         maybeSearchOnTick: async () => {},
         maybeSwitchOnInterval: async () => {},
@@ -1014,10 +996,6 @@ describe('full business simulation integration', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContexts = new Map<string, MonitorContext>([
-      [monitorConfig.monitorSymbol, monitorContext],
-    ]);
-
     const submittedActions: string[] = [];
     const trader = createTraderDouble({
       getAccountSnapshot: async () => createAccountSnapshotDouble(200_000),
@@ -1031,7 +1009,7 @@ describe('full business simulation integration', () => {
       },
     });
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig: tradingConfig.global,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -1045,7 +1023,7 @@ describe('full business simulation integration', () => {
     const refreshGate = createRefreshGate();
     const buyProcessor = createBuyProcessor({
       taskQueue: buyTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -1073,7 +1051,7 @@ describe('full business simulation integration', () => {
     });
     const sellProcessor = createSellProcessor({
       taskQueue: sellTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -1101,12 +1079,12 @@ describe('full business simulation integration', () => {
     const monitorTaskProcessor = createMonitorTaskProcessor({
       monitorTaskQueue,
       refreshGate,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol) ?? null,
+      monitorContext,
       clearMonitorDirectionQueues: () => {},
       trader,
       marketDataClient: createMarketDataClientDouble(),
       lastState,
-      tradingConfig,
+      monitorConfig,
       getCanProcessTask: () => lastState.isTradingEnabled,
     });
 
@@ -1117,7 +1095,7 @@ describe('full business simulation integration', () => {
     let postTradeStopCount = 0;
 
     const signalRuntimeDomain = createSignalRuntimeDomain({
-      monitorContexts,
+      monitorContext,
       buyProcessor,
       sellProcessor,
       monitorTaskProcessor,
@@ -1140,7 +1118,6 @@ describe('full business simulation integration', () => {
         },
         clearPending: () => {},
       },
-      indicatorCache,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -1179,7 +1156,6 @@ describe('full business simulation integration', () => {
 
     buyTaskQueue.push({
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: monitorConfig.monitorSymbol,
       data: createSignal({
         symbol: 'BULL.HK',
         action: 'BUYCALL',
@@ -1190,7 +1166,6 @@ describe('full business simulation integration', () => {
 
     sellTaskQueue.push({
       type: 'IMMEDIATE_SELL',
-      monitorSymbol: monitorConfig.monitorSymbol,
       data: createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
@@ -1218,7 +1193,7 @@ describe('full business simulation integration', () => {
           return quotes;
         },
         getCandlestickSnapshot: (symbol) =>
-          symbol === monitorConfig.monitorSymbol
+          symbol === monitorConfig.baseInstrumentSymbol
             ? createCandlestickSnapshot(symbol, createCandles(120, 100, 0.2))
             : null,
       });
@@ -1234,10 +1209,10 @@ describe('full business simulation integration', () => {
         doomsdayProtection: createDoomsdayProtectionDouble(),
         signalProcessor,
         tradingConfig,
+        monitorConfig,
         dailyLossTracker: createNoopDailyLossTracker(),
-        monitorContexts,
+        monitorContext,
         symbolRegistry,
-        indicatorCache,
         buyTaskQueue,
         sellTaskQueue,
         monitorTaskQueue,
@@ -1261,7 +1236,7 @@ describe('full business simulation integration', () => {
       expect(lastState.isTradingEnabled).toBeFalse();
       expect(buyTaskQueue.isEmpty()).toBeTrue();
       expect(sellTaskQueue.isEmpty()).toBeTrue();
-      expect(cancelAllCalls).toBe(1);
+      expect(cancelAllCalls).toBe(0);
       expect(orderMonitorStopCount).toBe(1);
       expect(postTradeStopCount).toBe(1);
 
@@ -1276,10 +1251,10 @@ describe('full business simulation integration', () => {
         doomsdayProtection: createDoomsdayProtectionDouble(),
         signalProcessor,
         tradingConfig,
+        monitorConfig,
         dailyLossTracker: createNoopDailyLossTracker(),
-        monitorContexts,
+        monitorContext,
         symbolRegistry,
-        indicatorCache,
         buyTaskQueue,
         sellTaskQueue,
         monitorTaskQueue,
@@ -1307,7 +1282,6 @@ describe('full business simulation integration', () => {
 
       sellTaskQueue.push({
         type: 'IMMEDIATE_SELL',
-        monitorSymbol: monitorConfig.monitorSymbol,
         data: createSignal({
           symbol: 'BULL.HK',
           action: 'SELLCALL',

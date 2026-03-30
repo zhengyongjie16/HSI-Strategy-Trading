@@ -49,21 +49,21 @@ function assertNeverTask(_task: never): never {
 
 /**
  * 创建监控任务处理器。
- * 消费 MonitorTaskQueue 中的任务，使用 setImmediate 异步执行；依赖 getMonitorContext、refreshGate 等完成席位校验与刷新。
+ * 消费 MonitorTaskQueue 中的任务，使用 setImmediate 异步执行；依赖 monitorContext、refreshGate 等完成席位校验与刷新。
  *
- * @param deps 依赖注入，包含 monitorTaskQueue、refreshGate、getMonitorContext、各 handler 依赖等
+ * @param deps 依赖注入，包含 monitorTaskQueue、refreshGate、monitorContext、各 handler 依赖等
  * @returns 实现 start/stop/stopAndDrain/restart 的处理器实例
  */
 export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): MonitorTaskProcessor {
   const {
     monitorTaskQueue,
     refreshGate,
-    getMonitorContext,
+    monitorContext,
     clearMonitorDirectionQueues,
     trader,
     marketDataClient,
     lastState,
-    tradingConfig,
+    monitorConfig,
     scheduleRetry,
     clearRetry,
     getCanProcessTask,
@@ -86,6 +86,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     });
   const retryRegistry = new Map<string, RetryRegistryEntry>();
   let lifecycleActive = true;
+  const baseInstrumentSymbol = monitorConfig.baseInstrumentSymbol;
 
   function clearRetryEntry(retryKey: string): void {
     const retryEntry = retryRegistry.get(retryKey);
@@ -120,29 +121,26 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     retryRegistry.set(retryRequest.retryKey, { handle });
   }
 
-  /** 根据 monitorSymbol 获取监控上下文，未找到时打日志并返回 null */
-  function getContextOrSkip(monitorSymbol: string): MonitorTaskContext | null {
-    const context = getMonitorContext(monitorSymbol);
-    if (!context) {
-      logger.warn(`[MonitorTaskProcessor] 未找到监控上下文: ${monitorSymbol}`);
-      return null;
-    }
-
-    return context;
+  /** 获取单实例监控上下文。 */
+  function getContextOrSkip(): MonitorTaskContext | null {
+    return monitorContext;
   }
   const { handleAutoSymbolTick, handleAutoSymbolSwitchDistance } = createAutoSymbolHandlers({
+    baseInstrumentSymbol,
     getContextOrSkip,
     refreshGate,
     lastState,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
   });
   const handleSeatRefresh = createSeatRefreshHandler({
+    baseInstrumentSymbol,
     getContextOrSkip,
     clearMonitorDirectionQueues,
-    tradingConfig,
+    monitorConfig,
     marketDataClient,
   });
   const handleLiquidationDistanceCheck = createLiquidationDistanceHandler({
+    baseInstrumentSymbol,
     getContextOrSkip,
     refreshGate,
     marketDataClient,
@@ -151,6 +149,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
   });
   const handleUnrealizedLossCheck = createUnrealizedLossHandler({
+    baseInstrumentSymbol,
     getContextOrSkip,
     refreshGate,
     marketDataClient,
@@ -202,7 +201,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
 
       if (getCanProcessTask && !getCanProcessTask()) {
         logger.debug(
-          `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+          `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${baseInstrumentSymbol} dedupe=${task.dedupeKey}`,
         );
         onProcessed?.(task, 'skipped');
         continue;
@@ -221,7 +220,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
         task.type === 'LIQUIDATION_DISTANCE_CHECK' ||
         task.type === 'UNREALIZED_LOSS_CHECK'
       ) {
-        clearRetryEntry(`${task.monitorSymbol}:${task.type}`);
+        clearRetryEntry(task.type);
       }
 
       onProcessed?.(task, result.status);

@@ -6,9 +6,9 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { createSeatDomain } from '../../../../src/main/lifecycle/cacheDomains/seatDomain.js';
-import type { MultiMonitorTradingConfig } from '../../../../src/types/config.js';
+import { createTradingConfigFixture } from '../../../../mock/factories/configFactory.js';
 import type { SeatState, SymbolRegistry } from '../../../../src/types/seat.js';
-import type { MonitorContext } from '../../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../../src/types/state.js';
 import type { WarrantListCache } from '../../../../src/services/autoSymbolFinder/types.js';
 
 const emptySeatState = {
@@ -46,48 +46,38 @@ describe('createSeatDomain', () => {
       frozenTradingDayKey: null,
     };
     const updateCalls: Array<{
-      monitorSymbol: string;
       direction: string;
       nextState: SeatState;
     }> = [];
-    const bumpCalls: Array<{ monitorSymbol: string; direction: string }> = [];
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: { monitorSymbol: 'HSI.HK' },
-          seatState: { long: emptySeatState, short: emptySeatState },
-          seatVersion: { long: 1, short: 1 },
-          autoSymbolManager: {
-            resetAllState: () => {
-              resetAllStateCount += 1;
-            },
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
-    const tradingConfig: MultiMonitorTradingConfig = {
-      monitors: [
-        { monitorSymbol: 'HSI.HK' } as unknown as MultiMonitorTradingConfig['monitors'][0],
-      ],
-      global: {} as MultiMonitorTradingConfig['global'],
-    };
+    const bumpCalls: Array<{ direction: string }> = [];
+    const monitorContext = {
+      config: { baseInstrumentSymbol: 'HSI.HK' },
+      seatState: { long: emptySeatState, short: emptySeatState },
+      seatVersion: { long: 1, short: 1 },
+      autoSymbolManager: {
+        resetAllState: () => {
+          resetAllStateCount += 1;
+        },
+      },
+    } as unknown as StrategyRuntime;
+    const tradingConfig = createTradingConfigFixture({
+      baseInstrument: 'HSI.HK',
+    });
+    const monitorConfig = {
+      baseInstrumentSymbol: 'HSI.HK',
+    } as never;
     const symbolRegistry: SymbolRegistry = {
-      getSeatState: (_monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
+      getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longBeforeClear : shortBeforeClear;
       },
       getSeatVersion: () => 1,
       resolveSeatBySymbol: () => null,
-      updateSeatState: (
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-        nextState: SeatState,
-      ) => {
-        updateCalls.push({ monitorSymbol, direction, nextState });
+      updateSeatState: (direction: 'LONG' | 'SHORT', nextState: SeatState) => {
+        updateCalls.push({ direction, nextState });
         return nextState;
       },
-      bumpSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
-        bumpCalls.push({ monitorSymbol, direction });
+      bumpSeatVersion: (direction: 'LONG' | 'SHORT') => {
+        bumpCalls.push({ direction });
         return 2;
       },
     };
@@ -99,8 +89,9 @@ describe('createSeatDomain', () => {
 
     const domain = createSeatDomain({
       tradingConfig,
+      monitorConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       warrantListCache,
     });
 
@@ -113,10 +104,8 @@ describe('createSeatDomain', () => {
     expect(clearCount).toBe(1);
     expect(updateCalls).toHaveLength(2);
     expect(
-      updateCalls
-        .map((c) => `${c.monitorSymbol}-${c.direction}`)
-        .sort((left, right) => left.localeCompare(right, 'en')),
-    ).toEqual(['HSI.HK-LONG', 'HSI.HK-SHORT']);
+      updateCalls.map((c) => c.direction).sort((left, right) => left.localeCompare(right, 'en')),
+    ).toEqual(['LONG', 'SHORT']);
     const longAfterClear = updateCalls.find((item) => item.direction === 'LONG')?.nextState;
     const shortAfterClear = updateCalls.find((item) => item.direction === 'SHORT')?.nextState;
     expect(longAfterClear?.status).toBe('EMPTY');
@@ -133,8 +122,12 @@ describe('createSeatDomain', () => {
   });
 
   it('openRebuild 为空操作，不抛错', async () => {
-    const monitorContexts = new Map<string, MonitorContext>();
-    const tradingConfig = { monitors: [], global: {} } as unknown as MultiMonitorTradingConfig;
+    const tradingConfig = createTradingConfigFixture({
+      baseInstrument: 'HSI.HK',
+    });
+    const monitorConfig = {
+      baseInstrumentSymbol: 'HSI.HK',
+    } as never;
     const symbolRegistry = {
       getSeatState: () => emptySeatState,
       getSeatVersion: () => 0,
@@ -145,8 +138,14 @@ describe('createSeatDomain', () => {
 
     const domain = createSeatDomain({
       tradingConfig,
+      monitorConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext: {
+        config: { baseInstrumentSymbol: 'HSI.HK' },
+        seatState: { long: emptySeatState, short: emptySeatState },
+        seatVersion: { long: 0, short: 0 },
+        autoSymbolManager: { resetAllState: () => {} },
+      } as unknown as StrategyRuntime,
       warrantListCache,
     });
     await domain.openRebuild({

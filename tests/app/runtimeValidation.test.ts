@@ -7,69 +7,35 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { collectRuntimeValidationSymbols } from '../../src/app/runtimeValidation.js';
-import type { MultiMonitorTradingConfig } from '../../src/types/config.js';
 import {
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createPositionDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
-
-function createTradingConfig(
-  monitors: MultiMonitorTradingConfig['monitors'],
-): MultiMonitorTradingConfig {
-  return {
-    monitors,
-    global: {
-      doomsdayProtection: true,
-      debug: false,
-      openProtection: {
-        morning: {
-          enabled: true,
-          minutes: 3,
-        },
-        afternoon: {
-          enabled: true,
-          minutes: 3,
-        },
-      },
-      orderMonitorPriceUpdateInterval: 3,
-      allowBuyOrderTrackingAboveInitialPrice: true,
-      tradingOrderType: 'LO',
-      liquidationOrderType: 'ELO',
-      buyOrderTimeout: {
-        enabled: true,
-        timeoutSeconds: 30,
-      },
-      sellOrderTimeout: {
-        enabled: true,
-        timeoutSeconds: 30,
-      },
-    },
-  };
-}
+import { createTradingConfigFixture } from '../../mock/factories/configFactory.js';
 
 describe('app runtimeValidation', () => {
   it('deduplicates monitor, seat and position symbols while keeping required seat symbols', () => {
-    const tradingConfig = createTradingConfig([
-      createMonitorConfigDouble({
-        originalIndex: 1,
-        monitorSymbol: 'HSI.HK',
-        autoSearchConfig: {
-          autoSearchEnabled: false,
-          autoSearchMinDistancePctBull: null,
-          autoSearchMinDistancePctBear: null,
-          autoSearchMinTurnoverPerMinuteBull: null,
-          autoSearchMinTurnoverPerMinuteBear: null,
-          autoSearchOpenDelayMinutes: 0,
-          autoSearchExpiryMinMonths: 0,
-          switchIntervalMinutes: 0,
-          switchDistanceRangeBull: null,
-          switchDistanceRangeBear: null,
-        },
-      }),
-    ]);
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
+      autoSearchConfig: {
+        autoSearchEnabled: false,
+        autoSearchMinDistancePctBull: null,
+        autoSearchMinDistancePctBear: null,
+        autoSearchMinTurnoverPerMinuteBull: null,
+        autoSearchMinTurnoverPerMinuteBear: null,
+        autoSearchOpenDelayMinutes: 0,
+        autoSearchExpiryMinMonths: 0,
+        switchIntervalMinutes: 0,
+        switchDistanceRangeBull: null,
+        switchDistanceRangeBear: null,
+      },
+    });
+    const tradingConfig = createTradingConfigFixture({
+      baseInstrument: monitorConfig.baseInstrumentSymbol,
+    });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -92,6 +58,7 @@ describe('app runtimeValidation', () => {
 
     const collector = collectRuntimeValidationSymbols({
       tradingConfig,
+      monitorConfig,
       symbolRegistry,
       positions: [
         createPositionDouble({
@@ -110,19 +77,19 @@ describe('app runtimeValidation', () => {
     expect(collector.runtimeValidationInputs).toEqual([
       {
         symbol: 'HSI.HK',
-        label: '监控标的 1',
+        label: '基础对象',
         requireLotSize: false,
         required: true,
       },
       {
         symbol: 'BULL.HK',
-        label: '做多席位标的 1',
+        label: '做多席位标的',
         requireLotSize: true,
         required: true,
       },
       {
         symbol: 'BEAR.HK',
-        label: '做空席位标的 1',
+        label: '做空席位标的',
         requireLotSize: true,
         required: true,
       },
@@ -137,50 +104,51 @@ describe('app runtimeValidation', () => {
   });
 
   it('marks seat symbols as optional when auto search is enabled', () => {
-    const tradingConfig = createTradingConfig([
-      createMonitorConfigDouble({
-        originalIndex: 2,
-        monitorSymbol: 'HSCEI.HK',
-        autoSearchConfig: {
-          autoSearchEnabled: true,
-          autoSearchMinDistancePctBull: 0.35,
-          autoSearchMinDistancePctBear: -0.35,
-          autoSearchMinTurnoverPerMinuteBull: 1_000_000,
-          autoSearchMinTurnoverPerMinuteBear: 1_000_000,
-          autoSearchOpenDelayMinutes: 0,
-          autoSearchExpiryMinMonths: 0,
-          switchIntervalMinutes: 0,
-          switchDistanceRangeBull: {
-            min: 0.35,
-            max: 0.8,
-          },
-          switchDistanceRangeBear: {
-            min: -0.8,
-            max: -0.35,
-          },
+    const monitorConfig = createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSCEI.HK',
+      autoSearchConfig: {
+        autoSearchEnabled: true,
+        autoSearchMinDistancePctBull: 0.35,
+        autoSearchMinDistancePctBear: -0.35,
+        autoSearchMinTurnoverPerMinuteBull: 1_000_000,
+        autoSearchMinTurnoverPerMinuteBear: 1_000_000,
+        autoSearchOpenDelayMinutes: 0,
+        autoSearchExpiryMinMonths: 0,
+        switchIntervalMinutes: 0,
+        switchDistanceRangeBull: {
+          min: 0.35,
+          max: 0.8,
         },
-      }),
-    ]);
+        switchDistanceRangeBear: {
+          min: -0.8,
+          max: -0.35,
+        },
+      },
+    });
+    const tradingConfig = createTradingConfigFixture({
+      baseInstrument: monitorConfig.baseInstrumentSymbol,
+    });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSCEI.HK',
+      baseInstrumentSymbol: 'HSCEI.HK',
     });
 
     const collector = collectRuntimeValidationSymbols({
       tradingConfig,
+      monitorConfig,
       symbolRegistry,
       positions: [],
     });
 
     expect(collector.runtimeValidationInputs[1]).toEqual({
       symbol: 'BULL.HK',
-      label: '做多席位标的 2',
+      label: '做多席位标的',
       requireLotSize: true,
       required: false,
     });
 
     expect(collector.runtimeValidationInputs[2]).toEqual({
       symbol: 'BEAR.HK',
-      label: '做空席位标的 2',
+      label: '做空席位标的',
       requireLotSize: true,
       required: false,
     });

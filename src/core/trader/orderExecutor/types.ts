@@ -1,5 +1,5 @@
 import type { Decimal, TradeContext } from 'longbridge';
-import type { MonitorConfig, GlobalConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig, GlobalConfig } from '../../../types/config.js';
 import type { Signal, SignalType } from '../../../types/signal.js';
 import type { OrderCacheManager, OrderMonitor } from '../types.js';
 import type { OrderRecorder, RateLimiter, TradeCheckResult } from '../../../types/services.js';
@@ -15,7 +15,7 @@ export type SubmitTargetOrder = (
   signal: Signal,
   targetSymbol: string,
   isShortSymbol: boolean,
-  monitorConfig?: MonitorConfig | null,
+  monitorConfig?: StrategyRuntimeConfig | null,
 ) => Promise<string | null>;
 
 /**
@@ -33,7 +33,7 @@ export type SubmitTargetOrderDeps = {
   readonly canExecuteSignal: (signal: Signal, stage: string) => boolean;
   readonly recordBuyAttempt: (
     signalAction: SignalType,
-    monitorConfig?: MonitorConfig | null,
+    monitorConfig?: StrategyRuntimeConfig | null,
   ) => void;
 };
 
@@ -44,9 +44,15 @@ export type SubmitTargetOrderDeps = {
  * 使用范围：仅 orderExecutor 目录内部使用。
  */
 export interface BuyThrottle {
-  canTradeNow: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => TradeCheckResult;
+  canTradeNow: (
+    signalAction: SignalType,
+    monitorConfig?: StrategyRuntimeConfig | null,
+  ) => TradeCheckResult;
   resetBuyThrottle: () => void;
-  recordBuyAttempt: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => void;
+  recordBuyAttempt: (
+    signalAction: SignalType,
+    monitorConfig?: StrategyRuntimeConfig | null,
+  ) => void;
 }
 
 /**

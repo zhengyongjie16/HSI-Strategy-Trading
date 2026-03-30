@@ -32,51 +32,49 @@ import { getHKDateKey } from '../../utils/time/index.js';
 /**
  * 基于订单与持仓生成席位快照，用于恢复运行时席位标的。
  *
- * @param input 包含 monitors、positions、orders 的输入
- * @returns 席位快照，含各监控标的与方向的解析结果条目
+ * @param input 包含 monitorConfig、positions、orders 的输入
+ * @returns 席位快照，含监控标的双方向的解析结果条目
  */
 function resolveSeatSnapshot(input: SeatSnapshotInput): SeatSnapshot {
-  const { monitors, positions, orders } = input;
+  const { monitorConfig, positions, orders } = input;
   const entries: SeatSymbolSnapshotEntry[] = [];
 
-  for (const monitor of monitors) {
-    const candidateLongSymbol = getLatestTradedSymbol(
-      orders,
-      monitor.orderOwnershipMapping,
-      'LONG',
-    );
-    const candidateShortSymbol = getLatestTradedSymbol(
-      orders,
-      monitor.orderOwnershipMapping,
-      'SHORT',
-    );
-    const resolvedLongSymbol = resolveSeatOnStartup({
-      autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
-      candidateSymbol: candidateLongSymbol ?? null,
-      configuredSymbol: monitor.longSymbol,
-      positions,
+  const candidateLongSymbol = getLatestTradedSymbol(
+    orders,
+    monitorConfig.orderOwnershipMapping,
+    'LONG',
+  );
+  const candidateShortSymbol = getLatestTradedSymbol(
+    orders,
+    monitorConfig.orderOwnershipMapping,
+    'SHORT',
+  );
+  const resolvedLongSymbol = resolveSeatOnStartup({
+    autoSearchEnabled: monitorConfig.autoSearchConfig.autoSearchEnabled,
+    candidateSymbol: candidateLongSymbol ?? null,
+    configuredSymbol: monitorConfig.longSymbol,
+    positions,
+  });
+  if (resolvedLongSymbol) {
+    entries.push({
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+      direction: 'LONG',
+      symbol: resolvedLongSymbol,
     });
-    if (resolvedLongSymbol) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'LONG',
-        symbol: resolvedLongSymbol,
-      });
-    }
+  }
 
-    const resolvedShortSymbol = resolveSeatOnStartup({
-      autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
-      candidateSymbol: candidateShortSymbol ?? null,
-      configuredSymbol: monitor.shortSymbol,
-      positions,
+  const resolvedShortSymbol = resolveSeatOnStartup({
+    autoSearchEnabled: monitorConfig.autoSearchConfig.autoSearchEnabled,
+    candidateSymbol: candidateShortSymbol ?? null,
+    configuredSymbol: monitorConfig.shortSymbol,
+    positions,
+  });
+  if (resolvedShortSymbol) {
+    entries.push({
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+      direction: 'SHORT',
+      symbol: resolvedShortSymbol,
     });
-    if (resolvedShortSymbol) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'SHORT',
-        symbol: resolvedShortSymbol,
-      });
-    }
   }
 
   return { entries };
@@ -86,67 +84,73 @@ function resolveSeatSnapshot(input: SeatSnapshotInput): SeatSnapshot {
  * 获取指定监控标的和方向的已绑定席位标的代码。
  *
  * @param symbolRegistry 席位注册表
- * @param monitorSymbol 监控标的代码
+ * @param baseInstrumentSymbol 监控标的代码
  * @param direction 方向（LONG 或 SHORT）
  * @returns 席位已绑定 symbol 时返回标的代码，否则返回 null
  */
 export function resolveBoundSeatSymbol(
   symbolRegistry: SymbolRegistry,
-  monitorSymbol: string,
+  _baseInstrumentSymbol: string,
   direction: 'LONG' | 'SHORT',
 ): string | null {
-  const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+  const seatState = symbolRegistry.getSeatState(direction);
   return hasSeatSymbol(seatState) ? seatState.symbol : null;
 }
 
 /**
- * 收集所有监控标的当前已绑定席位的标的代码列表，用于订阅行情。
+ * 收集当前监控标的已绑定席位的标的代码列表，用于订阅行情。
  *
- * @param params 包含 monitors、symbolRegistry
- * @returns 已绑定席位的 monitorSymbol + direction + symbol 条目数组
+ * @param params 包含 monitorConfig、symbolRegistry
+ * @returns 已绑定席位的 baseInstrumentSymbol + direction + symbol 条目数组
  */
 function collectSeatSymbols({
-  monitors,
+  monitorConfig,
   symbolRegistry,
 }: CollectSeatSymbolsParams): ReadonlyArray<SeatSymbolSnapshotEntry> {
   const entries: SeatSymbolSnapshotEntry[] = [];
 
-  for (const monitor of monitors) {
-    const longSymbol = resolveBoundSeatSymbol(symbolRegistry, monitor.monitorSymbol, 'LONG');
-    if (longSymbol) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'LONG',
-        symbol: longSymbol,
-      });
-    }
+  const longSymbol = resolveBoundSeatSymbol(
+    symbolRegistry,
+    monitorConfig.baseInstrumentSymbol,
+    'LONG',
+  );
+  if (longSymbol) {
+    entries.push({
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+      direction: 'LONG',
+      symbol: longSymbol,
+    });
+  }
 
-    const shortSymbol = resolveBoundSeatSymbol(symbolRegistry, monitor.monitorSymbol, 'SHORT');
-    if (shortSymbol) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'SHORT',
-        symbol: shortSymbol,
-      });
-    }
+  const shortSymbol = resolveBoundSeatSymbol(
+    symbolRegistry,
+    monitorConfig.baseInstrumentSymbol,
+    'SHORT',
+  );
+  if (shortSymbol) {
+    entries.push({
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+      direction: 'SHORT',
+      symbol: shortSymbol,
+    });
   }
 
   return entries;
 }
 
 /**
- * 恢复全部席位：
+ * 恢复监控标的的双席位：
  * - 先恢复历史标的
- * - 对启用自动寻标的席位执行寻标
+ * - 对启用自动寻标的空席位执行寻标
  *
- * @param deps 依赖注入，包含 tradingConfig、symbolRegistry、positions、orders、marketDataClient、now、logger 等
+ * @param deps 依赖注入，包含 monitorConfig、symbolRegistry、positions、orders、marketDataClient、now、logger 等
  * @returns 已绑定席位的标的列表（seatSymbols），用于后续订阅行情
  */
 export async function prepareSeatsForRuntime(
   deps: PrepareSeatsForRuntimeDeps,
 ): Promise<PreparedSeats> {
   const {
-    tradingConfig,
+    monitorConfig,
     symbolRegistry,
     positions,
     orders,
@@ -158,22 +162,26 @@ export async function prepareSeatsForRuntime(
     warrantListCacheConfig,
   } = deps;
   const snapshot = resolveSeatSnapshot({
-    monitors: tradingConfig.monitors,
+    monitorConfig,
     positions,
     orders,
   });
   const snapshotMap = new Map<string, string>();
 
   for (const entry of snapshot.entries) {
-    snapshotMap.set(`${entry.monitorSymbol}:${entry.direction}`, entry.symbol);
+    snapshotMap.set(`${entry.baseInstrumentSymbol}:${entry.direction}`, entry.symbol);
   }
 
+  /**
+   * 用快照结果初始化席位状态。
+   * 运行时恢复阶段只负责绑定 symbol，不在这里推进 ACTIVE。
+   */
   function updateSeatOnRuntimeRecovery(
-    monitorSymbol: string,
+    _baseInstrumentSymbol: string,
     direction: 'LONG' | 'SHORT',
     symbol: string | null,
   ): void {
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    symbolRegistry.updateSeatState(direction, {
       symbol,
       status: symbol ? 'ACTIVATING' : 'EMPTY',
       lastSwitchAt: null,
@@ -185,21 +193,19 @@ export async function prepareSeatsForRuntime(
     });
   }
 
-  for (const monitorConfig of tradingConfig.monitors) {
-    const longKey = `${monitorConfig.monitorSymbol}:LONG`;
-    const shortKey = `${monitorConfig.monitorSymbol}:SHORT`;
-    updateSeatOnRuntimeRecovery(
-      monitorConfig.monitorSymbol,
-      'LONG',
-      snapshotMap.get(longKey) ?? null,
-    );
+  const longKey = `${monitorConfig.baseInstrumentSymbol}:LONG`;
+  const shortKey = `${monitorConfig.baseInstrumentSymbol}:SHORT`;
+  updateSeatOnRuntimeRecovery(
+    monitorConfig.baseInstrumentSymbol,
+    'LONG',
+    snapshotMap.get(longKey) ?? null,
+  );
 
-    updateSeatOnRuntimeRecovery(
-      monitorConfig.monitorSymbol,
-      'SHORT',
-      snapshotMap.get(shortKey) ?? null,
-    );
-  }
+  updateSeatOnRuntimeRecovery(
+    monitorConfig.baseInstrumentSymbol,
+    'SHORT',
+    snapshotMap.get(shortKey) ?? null,
+  );
 
   let quoteContextPromise: ReturnType<typeof marketDataClient.getQuoteContext> | null = null;
 
@@ -208,8 +214,12 @@ export async function prepareSeatsForRuntime(
     return quoteContextPromise;
   }
 
+  /**
+   * 对空席位执行一次恢复寻标。
+   * 该流程只负责把席位推进到 ACTIVATING，并记录寻标失败/冻结状态。
+   */
   async function searchSeatSymbol({
-    monitorSymbol,
+    baseInstrumentSymbol,
     direction,
     autoSearchConfig,
     currentTime,
@@ -217,7 +227,7 @@ export async function prepareSeatsForRuntime(
     const policy = resolveDirectionalAutoSearchPolicy({
       direction,
       autoSearchConfig,
-      monitorSymbol,
+      baseInstrumentSymbol,
       logPrefix: '[席位恢复] 缺少自动寻标阈值配置，跳过恢复寻标',
       logger,
     });
@@ -225,9 +235,9 @@ export async function prepareSeatsForRuntime(
       return null;
     }
 
-    const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const currentSeat = symbolRegistry.getSeatState(direction);
     const nowMs = currentTime.getTime();
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    symbolRegistry.updateSeatState(direction, {
       symbol: null,
       status: 'SEARCHING',
       lastSwitchAt: currentSeat.lastSwitchAt ?? null,
@@ -241,7 +251,7 @@ export async function prepareSeatsForRuntime(
     const best = await findBestWarrant(
       buildFindBestWarrantInputFromPolicy({
         ctx,
-        monitorSymbol,
+        baseInstrumentSymbol,
         currentTime,
         policy,
         expiryMinMonths: autoSearchConfig.autoSearchExpiryMinMonths,
@@ -251,7 +261,7 @@ export async function prepareSeatsForRuntime(
       }),
     );
     if (!best) {
-      const updatedSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const updatedSeat = symbolRegistry.getSeatState(direction);
       const hkDateKey = getHKDateKey(currentTime);
       const { nextFailCount, frozenTradingDayKey, shouldFreeze } = resolveNextSearchFailureState({
         currentSeat: updatedSeat,
@@ -260,11 +270,11 @@ export async function prepareSeatsForRuntime(
       });
       if (shouldFreeze) {
         logger.warn(
-          `[席位恢复] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
+          `[席位恢复] ${baseInstrumentSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
         );
       }
 
-      symbolRegistry.updateSeatState(monitorSymbol, direction, {
+      symbolRegistry.updateSeatState(direction, {
         symbol: null,
         status: 'EMPTY',
         lastSwitchAt: updatedSeat.lastSwitchAt ?? null,
@@ -277,7 +287,7 @@ export async function prepareSeatsForRuntime(
       return null;
     }
 
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    symbolRegistry.updateSeatState(direction, {
       symbol: best.symbol,
       status: 'ACTIVATING',
       lastSwitchAt: nowMs,
@@ -290,12 +300,15 @@ export async function prepareSeatsForRuntime(
     return best.symbol;
   }
 
+  /**
+   * 恢复寻标异常时，把停留在 SEARCHING 的席位回退为空席位并累加失败次数。
+   */
   function handleSearchException(
-    monitorSymbol: string,
+    baseInstrumentSymbol: string,
     direction: 'LONG' | 'SHORT',
     currentTime: Date,
   ): void {
-    const stuckSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const stuckSeat = symbolRegistry.getSeatState(direction);
     if (stuckSeat.status !== 'SEARCHING') {
       return;
     }
@@ -308,11 +321,11 @@ export async function prepareSeatsForRuntime(
     });
     if (shouldFreeze) {
       logger.warn(
-        `[席位恢复] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
+        `[席位恢复] ${baseInstrumentSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
       );
     }
 
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    symbolRegistry.updateSeatState(direction, {
       symbol: null,
       status: 'EMPTY',
       lastSwitchAt: stuckSeat.lastSwitchAt ?? null,
@@ -324,6 +337,10 @@ export async function prepareSeatsForRuntime(
     });
   }
 
+  /**
+   * 判断恢复阶段是否应跳过某个空席位的寻标。
+   * 已有 symbol 或仍处于开盘保护期时都不应触发恢复寻标。
+   */
   function shouldSkipRuntimeRecoverySearch(
     seatState: ReturnType<SymbolRegistry['getSeatState']>,
     openDelayMinutes: number,
@@ -340,39 +357,40 @@ export async function prepareSeatsForRuntime(
     return false;
   }
 
+  /**
+   * 对单监控标的的双方向空席位执行恢复寻标。
+   * static 模式或未启用 auto-search 时直接跳过。
+   */
   async function trySearchEmptySeats(): Promise<void> {
-    const currentTime = now();
+    if (!monitorConfig.autoSearchConfig.autoSearchEnabled) {
+      return;
+    }
 
-    for (const monitorConfig of tradingConfig.monitors) {
-      if (!monitorConfig.autoSearchConfig.autoSearchEnabled) {
+    const currentTime = now();
+    for (const direction of ['LONG', 'SHORT'] as const) {
+      const seatState = symbolRegistry.getSeatState(direction);
+      const openDelayMinutes = monitorConfig.autoSearchConfig.autoSearchOpenDelayMinutes;
+      if (shouldSkipRuntimeRecoverySearch(seatState, openDelayMinutes, currentTime)) {
         continue;
       }
 
-      for (const direction of ['LONG', 'SHORT'] as const) {
-        const seatState = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
-        const openDelayMinutes = monitorConfig.autoSearchConfig.autoSearchOpenDelayMinutes;
-        if (shouldSkipRuntimeRecoverySearch(seatState, openDelayMinutes, currentTime)) {
-          continue;
-        }
-
-        try {
-          const symbol = await searchSeatSymbol({
-            monitorSymbol: monitorConfig.monitorSymbol,
-            direction,
-            autoSearchConfig: monitorConfig.autoSearchConfig,
-            currentTime,
-          });
-          if (symbol) {
-            logger.info(
-              `[席位恢复] ${monitorConfig.monitorSymbol} ${direction} 已进入激活阶段: ${symbol}`,
-            );
-          }
-        } catch (err) {
-          handleSearchException(monitorConfig.monitorSymbol, direction, currentTime);
-          logger.error(
-            `[席位恢复] ${monitorConfig.monitorSymbol} ${direction} 寻标异常: ${String(err)}`,
+      try {
+        const symbol = await searchSeatSymbol({
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+          direction,
+          autoSearchConfig: monitorConfig.autoSearchConfig,
+          currentTime,
+        });
+        if (symbol) {
+          logger.info(
+            `[席位恢复] ${monitorConfig.baseInstrumentSymbol} ${direction} 已进入激活阶段: ${symbol}`,
           );
         }
+      } catch (err) {
+        handleSearchException(monitorConfig.baseInstrumentSymbol, direction, currentTime);
+        logger.error(
+          `[席位恢复] ${monitorConfig.baseInstrumentSymbol} ${direction} 寻标异常: ${String(err)}`,
+        );
       }
     }
   }
@@ -381,7 +399,7 @@ export async function prepareSeatsForRuntime(
 
   return {
     seatSymbols: collectSeatSymbols({
-      monitors: tradingConfig.monitors,
+      monitorConfig,
       symbolRegistry,
     }),
   };

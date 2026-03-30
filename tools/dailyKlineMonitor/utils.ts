@@ -174,7 +174,7 @@ function hasKdjChanged(
   last: IndicatorSnapshot['kdj'],
   threshold: number,
 ): boolean {
-  if (current === null) {
+  if (!current) {
     return false;
   }
 
@@ -204,7 +204,7 @@ function hasMacdChanged(
   last: IndicatorSnapshot['macd'],
   threshold: number,
 ): boolean {
-  if (current === null) {
+  if (!current) {
     return false;
   }
 
@@ -254,7 +254,7 @@ export function detectIndicatorChanges(
 
   if (
     hasPeriodRecordChanged(
-      snapshot.ema,
+      snapshot.ema ?? null,
       state.lastEma,
       config.indicatorPeriods.emaPeriods,
       config.changeThreshold,
@@ -265,7 +265,7 @@ export function detectIndicatorChanges(
 
   if (
     hasPeriodRecordChanged(
-      snapshot.rsi,
+      snapshot.rsi ?? null,
       state.lastRsi,
       config.indicatorPeriods.rsiPeriods,
       config.changeThreshold,
@@ -308,11 +308,24 @@ export function updateState(
 ): void {
   state.lastPrice = snapshot.price;
   state.lastChangePercent = calculateChangePercent(snapshot.price, quote?.prevClose ?? null);
-  state.lastEma = snapshot.ema === null ? null : { ...snapshot.ema };
-  state.lastRsi = snapshot.rsi === null ? null : { ...snapshot.rsi };
-  state.lastMfi = snapshot.mfi;
-  state.lastKdj = snapshot.kdj === null ? null : { ...snapshot.kdj };
-  state.lastMacd = snapshot.macd === null ? null : { ...snapshot.macd };
+  state.lastEma = snapshot.ema ? { ...snapshot.ema } : null;
+  state.lastRsi = snapshot.rsi ? { ...snapshot.rsi } : null;
+  state.lastMfi = snapshot.mfi ?? null;
+  state.lastKdj = snapshot.kdj
+    ? {
+        k: snapshot.kdj.k,
+        d: snapshot.kdj.d,
+        j: snapshot.kdj.j,
+      }
+    : null;
+
+  state.lastMacd = snapshot.macd
+    ? {
+        macd: snapshot.macd.macd,
+        dif: snapshot.macd.dif,
+        dea: snapshot.macd.dea,
+      }
+    : null;
 }
 
 /**
@@ -339,7 +352,7 @@ function buildIndicatorSegments(
     segments.push(`涨跌幅=${sign}${formatNumber(changePercent, 2)}%`);
   }
 
-  if (snapshot.ema !== null) {
+  if (snapshot.ema) {
     for (const period of periods.emaPeriods) {
       const value = snapshot.ema[period];
       if (value !== undefined && Number.isFinite(value)) {
@@ -348,7 +361,7 @@ function buildIndicatorSegments(
     }
   }
 
-  if (snapshot.rsi !== null) {
+  if (snapshot.rsi) {
     for (const period of periods.rsiPeriods) {
       const value = snapshot.rsi[period];
       if (value !== undefined && Number.isFinite(value)) {
@@ -357,11 +370,11 @@ function buildIndicatorSegments(
     }
   }
 
-  if (snapshot.mfi !== null && Number.isFinite(snapshot.mfi)) {
+  if (snapshot.mfi !== null && snapshot.mfi !== undefined && Number.isFinite(snapshot.mfi)) {
     segments.push(`MFI=${formatIndicator(snapshot.mfi, 3)}`);
   }
 
-  if (snapshot.kdj !== null) {
+  if (snapshot.kdj) {
     if (Number.isFinite(snapshot.kdj.k)) {
       segments.push(`K=${formatIndicator(snapshot.kdj.k, 3)}`);
     }
@@ -375,7 +388,7 @@ function buildIndicatorSegments(
     }
   }
 
-  if (snapshot.macd !== null) {
+  if (snapshot.macd) {
     if (Number.isFinite(snapshot.macd.macd)) {
       segments.push(`MACD=${formatIndicator(snapshot.macd.macd, 3)}`);
     }
@@ -408,11 +421,11 @@ export function displayIndicators(context: DisplayContext): void {
     changePercent,
     context.indicatorPeriods,
   );
-  const symbolName = context.quote?.name ?? context.monitorSymbol;
+  const symbolName = context.quote?.name ?? context.baseInstrumentSymbol;
   const timePrefix = formatKlineTimePrefix(context.quote?.timestamp);
 
   console.log(
-    `${timePrefix}[监控标的] ${symbolName}(${context.monitorSymbol}) ${indicatorSegments.join(' ')}`,
+    `${timePrefix}[监控标的] ${symbolName}(${context.baseInstrumentSymbol}) ${indicatorSegments.join(' ')}`,
   );
 }
 

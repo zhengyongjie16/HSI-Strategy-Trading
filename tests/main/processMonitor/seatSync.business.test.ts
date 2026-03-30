@@ -15,7 +15,7 @@ import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTa
 
 import type { Signal } from '../../../src/types/signal.js';
 import type { MainProgramContext } from '../../../src/main/mainProgram/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 
 import {
@@ -23,13 +23,14 @@ import {
   createSignalDouble,
   createSymbolRegistryDouble,
   createRiskCheckerDouble,
+  createStrategyRuntimeConfigDouble,
 } from '../../helpers/testDoubles.js';
 
 describe('seatSync business flow', () => {
   it('clears long-side runtime queues when LONG seat leaves ACTIVE', () => {
-    const monitorSymbol = 'HSI.HK';
+    const baseInstrumentSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
+      baseInstrumentSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -67,17 +68,15 @@ describe('seatSync business flow', () => {
 
     const buySignals = [longBuySignal, shortBuySignal];
     for (const signal of buySignals) {
-      buyTaskQueue.push({ type: 'IMMEDIATE_BUY', monitorSymbol, data: signal });
+      buyTaskQueue.push({ type: 'IMMEDIATE_BUY', data: signal });
     }
 
-    sellTaskQueue.push({ type: 'IMMEDIATE_SELL', monitorSymbol, data: longSellSignal });
+    sellTaskQueue.push({ type: 'IMMEDIATE_SELL', data: longSellSignal });
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
-      dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:LONG`,
-      monitorSymbol,
+      dedupeKey: `${baseInstrumentSymbol}:AUTO_SYMBOL_TICK:LONG`,
       data: {
-        monitorSymbol,
         direction: 'LONG',
         seatVersion: 1,
         symbol: 'BULL.HK',
@@ -89,10 +88,8 @@ describe('seatSync business flow', () => {
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
-      dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:SHORT`,
-      monitorSymbol,
+      dedupeKey: `${baseInstrumentSymbol}:AUTO_SYMBOL_TICK:SHORT`,
       data: {
-        monitorSymbol,
         direction: 'SHORT',
         seatVersion: 1,
         symbol: 'BEAR.HK',
@@ -102,21 +99,12 @@ describe('seatSync business flow', () => {
       },
     });
 
-    let delayedCancelled = 0;
     const releasedSignals: Signal[] = [];
+    const config = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol });
 
     const monitorContext = {
+      config,
       riskChecker,
-      delayedSignalVerifier: {
-        cancelAllForDirection: (_symbol: string, direction: 'LONG' | 'SHORT') => {
-          if (direction === 'LONG') {
-            delayedCancelled += 2;
-            return 2;
-          }
-
-          return 0;
-        },
-      },
       symbolRegistry,
       seatState: {
         long: {
@@ -141,7 +129,7 @@ describe('seatSync business flow', () => {
       seatVersion: { long: 1, short: 1 },
       longSymbolName: 'BULL.HK',
       shortSymbolName: 'BEAR.HK',
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const mainContext = {
       buyTaskQueue,
@@ -150,7 +138,7 @@ describe('seatSync business flow', () => {
     } as unknown as MainProgramContext;
 
     syncSeatState({
-      monitorSymbol,
+      baseInstrumentSymbol,
       monitorContext,
       mainContext,
       quotesMap: new Map<string, ReturnType<typeof createQuoteDouble>>([
@@ -162,7 +150,6 @@ describe('seatSync business flow', () => {
     });
 
     expect(clearLongCalls).toBe(1);
-    expect(delayedCancelled).toBe(2);
     expect(releasedSignals).toEqual([longBuySignal, longSellSignal]);
 
     expect(buyTaskQueue.pop()?.data.action).toBe('BUYPUT');
@@ -175,9 +162,9 @@ describe('seatSync business flow', () => {
   });
 
   it('schedules SEAT_REFRESH when registry updates seat from ACTIVE to ACTIVATING after snapshot capture', () => {
-    const monitorSymbol = 'HSI.HK';
+    const baseInstrumentSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
+      baseInstrumentSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -202,9 +189,9 @@ describe('seatSync business flow', () => {
       shortVersion: 6,
     });
 
-    const previousLongSeat = symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-    const previousShortSeat = symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
-    symbolRegistry.updateSeatState(monitorSymbol, 'LONG', {
+    const previousLongSeat = symbolRegistry.getSeatState('LONG');
+    const previousShortSeat = symbolRegistry.getSeatState('SHORT');
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'NEW_BULL.HK',
       status: 'ACTIVATING',
       callPrice: 21000,
@@ -215,7 +202,7 @@ describe('seatSync business flow', () => {
       frozenTradingDayKey: null,
     });
 
-    symbolRegistry.updateSeatState(monitorSymbol, 'SHORT', {
+    symbolRegistry.updateSeatState('SHORT', {
       symbol: 'NEW_BEAR.HK',
       status: 'ACTIVATING',
       callPrice: 19000,
@@ -227,11 +214,10 @@ describe('seatSync business flow', () => {
     });
 
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const config = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol });
     const monitorContext = {
+      config,
       riskChecker: createRiskCheckerDouble(),
-      delayedSignalVerifier: {
-        cancelAllForDirection: () => 0,
-      },
       symbolRegistry,
       seatState: {
         long: previousLongSeat,
@@ -240,7 +226,7 @@ describe('seatSync business flow', () => {
       seatVersion: { long: 1, short: 1 },
       longSymbolName: 'OLD_BULL',
       shortSymbolName: 'OLD_BEAR',
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const mainContext = {
       buyTaskQueue: createBuyTaskQueue(),
@@ -254,7 +240,7 @@ describe('seatSync business flow', () => {
     ]);
 
     syncSeatState({
-      monitorSymbol,
+      baseInstrumentSymbol,
       monitorContext,
       mainContext,
       quotesMap,
@@ -265,14 +251,14 @@ describe('seatSync business flow', () => {
     const secondTask = monitorTaskQueue.pop();
 
     expect(firstTask?.type).toBe('SEAT_REFRESH');
-    expect(firstTask?.dedupeKey).toBe(`${monitorSymbol}:SEAT_REFRESH:LONG`);
+    expect(firstTask?.dedupeKey).toBe('SEAT_REFRESH:LONG');
     expect((firstTask?.data as { nextSymbol: string }).nextSymbol).toBe('NEW_BULL.HK');
     const firstTaskData = firstTask?.data as Record<string, unknown>;
     expect('quote' in firstTaskData).toBeFalse();
     expect('quotesMap' in firstTaskData).toBeFalse();
 
     expect(secondTask?.type).toBe('SEAT_REFRESH');
-    expect(secondTask?.dedupeKey).toBe(`${monitorSymbol}:SEAT_REFRESH:SHORT`);
+    expect(secondTask?.dedupeKey).toBe('SEAT_REFRESH:SHORT');
     expect((secondTask?.data as { nextSymbol: string }).nextSymbol).toBe('NEW_BEAR.HK');
     const secondTaskData = secondTask?.data as Record<string, unknown>;
     expect('quote' in secondTaskData).toBeFalse();

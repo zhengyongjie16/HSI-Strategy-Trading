@@ -9,7 +9,7 @@ import { createSignalDouble, createSymbolRegistryDouble } from '../../helpers/te
 describe('autoSymbolManager utils business flow', () => {
   it('accepts signal when current seat version and symbol both match', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -25,7 +25,6 @@ describe('autoSymbolManager utils business flow', () => {
     signal.seatVersion = 2;
 
     const result = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
@@ -39,7 +38,7 @@ describe('autoSymbolManager utils business flow', () => {
 
   it('reports seat-unavailable reason when seat is not ready', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -54,7 +53,6 @@ describe('autoSymbolManager utils business flow', () => {
     signal.seatVersion = 1;
 
     const result = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
@@ -68,7 +66,7 @@ describe('autoSymbolManager utils business flow', () => {
 
   it('reports version mismatch before symbol mismatch', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'BEAR_NEW.HK',
         status: 'ACTIVE',
@@ -84,7 +82,6 @@ describe('autoSymbolManager utils business flow', () => {
     signal.seatVersion = 4;
 
     const versionMismatch = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
@@ -97,7 +94,6 @@ describe('autoSymbolManager utils business flow', () => {
 
     signal.seatVersion = 5;
     const symbolMismatch = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
@@ -111,7 +107,7 @@ describe('autoSymbolManager utils business flow', () => {
 
   it('rejects HOLD signal without throwing', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -127,7 +123,6 @@ describe('autoSymbolManager utils business flow', () => {
     signal.seatVersion = 2;
 
     const result = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });

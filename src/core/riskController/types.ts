@@ -72,7 +72,7 @@ export interface WarrantRiskChecker {
 
 /**
  * 持仓限制检查器接口。
- * 类型用途：依赖注入，由 RiskChecker 门面聚合，提供单标的最大持仓市值限制检查。
+ * 类型用途：依赖注入，由 RiskChecker 门面聚合，提供执行标的最大持仓市值限制检查。
  * 数据来源：如适用（配置中的 maxPositionNotional）。
  * 使用范围：仅 riskController 模块实现；主程序通过 RiskChecker 使用。
  */
@@ -158,7 +158,7 @@ export type RiskCheckerDeps = {
 
 /**
  * 单监控标的单方向的当日亏损状态。
- * 类型用途：DailyLossTracker 内部状态，按 monitorSymbol + 方向分组存储。
+ * 类型用途：DailyLossTracker 内部状态，按方向分组存储。
  * 数据来源：由 DailyLossTracker 内部维护（买入/卖出订单与偏移）。
  * 使用范围：仅 riskController 模块内部使用。
  */
@@ -203,6 +203,6 @@ export type OrderOwnershipDiagnostics = {
  * 使用范围：仅 riskController 模块内部使用。
  */
 export type UnrealizedLossMonitorDeps = {
-  /** 单标的最大浮亏阈值（港币），<=0 表示禁用浮亏监控 */
+  /** 执行标的最大浮亏阈值（港币），<=0 表示禁用浮亏监控 */
   readonly maxUnrealizedLossPerSymbol: number;
 };

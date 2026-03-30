@@ -6,10 +6,11 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { createRiskDomain } from '../../../../src/main/lifecycle/cacheDomains/riskDomain.js';
-import type { MonitorContext } from '../../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../../src/types/state.js';
 import type { DailyLossTracker } from '../../../../src/types/risk.js';
 import type { SignalProcessor } from '../../../../src/core/signalProcessor/types.js';
 import type { LiquidationCooldownTracker } from '../../../../src/services/liquidationCooldown/types.js';
+import type { ProtectiveLiquidationDirection } from '../../../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import { createProtectiveLiquidationEpisodeTrackerDouble } from '../../../helpers/testDoubles.js';
 
 describe('createRiskDomain', () => {
@@ -18,33 +19,29 @@ describe('createRiskDomain', () => {
     let resetAllCalled = false;
     let resetAllNow: Date | null = null as Date | null;
     let resetAllTriggerCountsCalled = false;
-    let clearMidnightEligibleKeys: Set<string> | null = null as Set<string> | null;
+    let clearMidnightEligibleKeys: Set<ProtectiveLiquidationDirection> | null =
+      null as Set<ProtectiveLiquidationDirection> | null;
     let clearUnrealizedCount = 0;
     let clearLongCount = 0;
     let clearShortCount = 0;
 
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: {
-            monitorSymbol: 'HSI.HK',
-            liquidationCooldown: { mode: 'half-day' },
-          },
-          riskChecker: {
-            clearUnrealizedLossData: () => {
-              clearUnrealizedCount += 1;
-            },
-            clearLongWarrantInfo: () => {
-              clearLongCount += 1;
-            },
-            clearShortWarrantInfo: () => {
-              clearShortCount += 1;
-            },
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
+    const monitorContext = {
+      config: {
+        baseInstrumentSymbol: 'HSI.HK',
+        liquidationCooldown: { mode: 'half-day' },
+      },
+      riskChecker: {
+        clearUnrealizedLossData: () => {
+          clearUnrealizedCount += 1;
+        },
+        clearLongWarrantInfo: () => {
+          clearLongCount += 1;
+        },
+        clearShortWarrantInfo: () => {
+          clearShortCount += 1;
+        },
+      },
+    } as unknown as StrategyRuntime;
     const signalProcessor: SignalProcessor = {
       resetRiskCheckCooldown: () => {
         resetRiskCheckCooldownCalled = true;
@@ -74,7 +71,7 @@ describe('createRiskDomain', () => {
       signalProcessor,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts,
+      monitorContext,
       liquidationCooldownTracker,
     });
     const now = new Date('2025-02-15T00:00:00Z');
@@ -88,31 +85,27 @@ describe('createRiskDomain', () => {
     expect(resetAllNow?.getTime()).toBe(now.getTime());
     expect(resetAllTriggerCountsCalled).toBe(true);
     expect(clearMidnightEligibleKeys).not.toBe(null);
-    expect(clearMidnightEligibleKeys?.has('HSI.HK:LONG')).toBe(true);
-    expect(clearMidnightEligibleKeys?.has('HSI.HK:SHORT')).toBe(true);
+    expect(clearMidnightEligibleKeys?.has('LONG')).toBe(true);
+    expect(clearMidnightEligibleKeys?.has('SHORT')).toBe(true);
     expect(clearUnrealizedCount).toBe(1);
     expect(clearLongCount).toBe(1);
     expect(clearShortCount).toBe(1);
   });
 
   it('liquidationCooldown 为 minutes 模式时不向 keysToClear 添加该监控标的 key', async () => {
-    let clearMidnightEligibleKeys: Set<string> | null = null as Set<string> | null;
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: {
-            monitorSymbol: 'HSI.HK',
-            liquidationCooldown: { mode: 'minutes' },
-          },
-          riskChecker: {
-            clearUnrealizedLossData: () => {},
-            clearLongWarrantInfo: () => {},
-            clearShortWarrantInfo: () => {},
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
+    let clearMidnightEligibleKeys: Set<ProtectiveLiquidationDirection> | null =
+      null as Set<ProtectiveLiquidationDirection> | null;
+    const monitorContext = {
+      config: {
+        baseInstrumentSymbol: 'HSI.HK',
+        liquidationCooldown: { mode: 'minutes' },
+      },
+      riskChecker: {
+        clearUnrealizedLossData: () => {},
+        clearLongWarrantInfo: () => {},
+        clearShortWarrantInfo: () => {},
+      },
+    } as unknown as StrategyRuntime;
     const liquidationCooldownTracker: LiquidationCooldownTracker = {
       recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
       recordCooldown: () => {},
@@ -131,7 +124,7 @@ describe('createRiskDomain', () => {
         startNewProtectionEpisode: () => {},
       } as unknown as DailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts,
+      monitorContext,
       liquidationCooldownTracker,
     });
     await domain.midnightClear({
@@ -150,7 +143,17 @@ describe('createRiskDomain', () => {
         startNewProtectionEpisode: () => {},
       } as unknown as DailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts: new Map(),
+      monitorContext: {
+        config: {
+          baseInstrumentSymbol: 'HSI.HK',
+          liquidationCooldown: null,
+        },
+        riskChecker: {
+          clearUnrealizedLossData: () => {},
+          clearLongWarrantInfo: () => {},
+          clearShortWarrantInfo: () => {},
+        },
+      } as unknown as StrategyRuntime,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},

@@ -9,7 +9,10 @@ import { OrderSide, OrderStatus, OrderType, type TradeContext } from 'longbridge
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createOrderStorage } from '../../src/core/orderRecorder/orderStorage.js';
 import { createOrderExecutor } from '../../src/core/trader/orderExecutor/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createGlobalConfig,
+  createStrategyRuntimeConfig,
+} from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import { createStockPositionsResponse } from '../../mock/factories/tradeFactory.js';
@@ -20,11 +23,19 @@ import {
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
 
+function createTradingFixture() {
+  const monitorConfig = createStrategyRuntimeConfig();
+  return {
+    globalConfig: createGlobalConfig(),
+    monitorConfig,
+  };
+}
+
 describe('sell-flow integration', () => {
-  it('runs smart-close sell quantity resolution then submits sell order with capped quantity', async () => {
-    const tradingConfig = createTradingConfig();
+  it('runs full-close sell quantity resolution then submits sell order with full quantity', async () => {
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -43,6 +54,8 @@ describe('sell-flow integration', () => {
     const recorder = createOrderRecorderDouble({
       getCostAveragePrice: (symbol, isLongSymbol) =>
         storage.getCostAveragePrice(symbol, isLongSymbol),
+      getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
+        storage.getBuyOrdersList(symbol, isLongSymbol),
       selectSellableOrders: (params) => storage.selectSellableOrders(params),
       submitSellOrder: (orderId, _symbol, _direction, _quantity, relatedBuyOrderIds) => {
         sellOrderLinks.push({ orderId, related: relatedBuyOrderIds });
@@ -67,16 +80,11 @@ describe('sell-flow integration', () => {
       longQuote: createQuoteDouble('BULL.HK', 1.05),
       shortQuote: null,
       orderRecorder: recorder,
-      smartCloseEnabled: true,
-      smartCloseTimeoutMinutes: null,
-      nowMs: Date.parse('2026-02-25T03:00:00.000Z'),
-      isHalfDay: false,
-      tradingCalendarSnapshot: new Map(),
     });
 
     expect(processed[0]?.action).toBe('SELLCALL');
-    expect(processed[0]?.quantity).toBe(100);
-    expect(processed[0]?.relatedBuyOrderIds?.length).toBe(1);
+    expect(processed[0]?.quantity).toBe(300);
+    expect(processed[0]?.relatedBuyOrderIds?.length).toBe(2);
 
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedStockPositions(
@@ -116,7 +124,8 @@ describe('sell-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: recorder,
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -126,7 +135,7 @@ describe('sell-flow integration', () => {
     expect(executeResult.submittedCount).toBe(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
-    expect(trackedOrders[0]?.quantity).toBe(100);
+    expect(trackedOrders[0]?.quantity).toBe(300);
 
     const submitCall = tradeCtx.getCalls('submitOrder')[0];
     const payload = submitCall?.args[0] as {
@@ -137,14 +146,14 @@ describe('sell-flow integration', () => {
 
     expect(payload.orderType).toBe(OrderType.ELO);
     expect(payload.side).toBe(OrderSide.Sell);
-    expect(Number(payload.submittedQuantity.toString())).toBe(100);
-    expect(sellOrderLinks[0]?.related.length).toBe(1);
+    expect(Number(payload.submittedQuantity.toString())).toBe(300);
+    expect(sellOrderLinks[0]?.related.length).toBe(2);
   });
 
-  it('runs stage2+stage3 with pending occupancy and submits remaining timeout quantity', async () => {
-    const tradingConfig = createTradingConfig();
+  it('ignores legacy occupancy heuristics and still submits full long quantity', async () => {
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -180,6 +189,8 @@ describe('sell-flow integration', () => {
     const recorder = createOrderRecorderDouble({
       getCostAveragePrice: (symbol, isLongSymbol) =>
         storage.getCostAveragePrice(symbol, isLongSymbol),
+      getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
+        storage.getBuyOrdersList(symbol, isLongSymbol),
       selectSellableOrders: (params) => storage.selectSellableOrders(params),
       submitSellOrder: (orderId, _symbol, _direction, _quantity, relatedBuyOrderIds) => {
         sellOrderLinks.push({ orderId, related: relatedBuyOrderIds });
@@ -204,20 +215,11 @@ describe('sell-flow integration', () => {
       longQuote: createQuoteDouble('BULL.HK', 1.05),
       shortQuote: null,
       orderRecorder: recorder,
-      smartCloseEnabled: true,
-      smartCloseTimeoutMinutes: 60,
-      nowMs: Date.parse('2026-02-25T03:00:00.000Z'),
-      isHalfDay: false,
-      tradingCalendarSnapshot: new Map([
-        ['2026-02-24', { isTradingDay: true, isHalfDay: false }],
-        ['2026-02-25', { isTradingDay: true, isHalfDay: false }],
-      ]),
     });
 
     expect(processed[0]?.action).toBe('SELLCALL');
-    expect(processed[0]?.quantity).toBe(200);
-    expect(processed[0]?.relatedBuyOrderIds?.length).toBe(2);
-    expect(processed[0]?.relatedBuyOrderIds).not.toContain(occupiedOrder.orderId);
+    expect(processed[0]?.quantity).toBe(300);
+    expect(processed[0]?.relatedBuyOrderIds?.length).toBe(3);
 
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedStockPositions(
@@ -257,7 +259,8 @@ describe('sell-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: recorder,
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -267,7 +270,7 @@ describe('sell-flow integration', () => {
     expect(executeResult.submittedCount).toBe(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
-    expect(trackedOrders[0]?.quantity).toBe(200);
+    expect(trackedOrders[0]?.quantity).toBe(300);
 
     const submitCall = tradeCtx.getCalls('submitOrder')[0];
     const payload = submitCall?.args[0] as {
@@ -278,14 +281,14 @@ describe('sell-flow integration', () => {
 
     expect(payload.orderType).toBe(OrderType.ELO);
     expect(payload.side).toBe(OrderSide.Sell);
-    expect(Number(payload.submittedQuantity.toString())).toBe(200);
-    expect(sellOrderLinks[0]?.related.length).toBe(2);
+    expect(Number(payload.submittedQuantity.toString())).toBe(300);
+    expect(sellOrderLinks[0]?.related.length).toBe(3);
   });
 
-  it('supports SELLPUT symmetry with smart-close stage2+stage3 and submits short sell order', async () => {
-    const tradingConfig = createTradingConfig();
+  it('supports SELLPUT symmetry with full-close quantity and submits short sell order', async () => {
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -304,6 +307,8 @@ describe('sell-flow integration', () => {
     const recorder = createOrderRecorderDouble({
       getCostAveragePrice: (symbol, isLongSymbol) =>
         storage.getCostAveragePrice(symbol, isLongSymbol),
+      getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
+        storage.getBuyOrdersList(symbol, isLongSymbol),
       selectSellableOrders: (params) => storage.selectSellableOrders(params),
       submitSellOrder: (orderId, _symbol, _direction, _quantity, relatedBuyOrderIds) => {
         sellOrderLinks.push({ orderId, related: relatedBuyOrderIds });
@@ -328,14 +333,6 @@ describe('sell-flow integration', () => {
       longQuote: null,
       shortQuote: createQuoteDouble('BEAR.HK', 1.05),
       orderRecorder: recorder,
-      smartCloseEnabled: true,
-      smartCloseTimeoutMinutes: 60,
-      nowMs: Date.parse('2026-02-25T03:00:00.000Z'),
-      isHalfDay: false,
-      tradingCalendarSnapshot: new Map([
-        ['2026-02-24', { isTradingDay: true, isHalfDay: false }],
-        ['2026-02-25', { isTradingDay: true, isHalfDay: false }],
-      ]),
     });
 
     expect(processed[0]?.action).toBe('SELLPUT');
@@ -380,7 +377,8 @@ describe('sell-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: recorder,
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -406,7 +404,7 @@ describe('sell-flow integration', () => {
   });
 
   it('merges pending sell occupancy on REPLACE without releasing original related buy orders', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedStockPositions(
       createStockPositionsResponse({
@@ -489,7 +487,8 @@ describe('sell-flow integration', () => {
           return null;
         },
       }),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -530,7 +529,7 @@ describe('sell-flow integration', () => {
   });
 
   it('does not submit merged sell order before cancel reaches confirmed terminal close', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedStockPositions(
       createStockPositionsResponse({
@@ -582,7 +581,8 @@ describe('sell-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -608,7 +608,7 @@ describe('sell-flow integration', () => {
   });
 
   it('carries original related buy orders into CANCEL_AND_SUBMIT merged sell order', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedStockPositions(
       createStockPositionsResponse({
@@ -677,7 +677,8 @@ describe('sell-flow integration', () => {
           });
         },
       }),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });

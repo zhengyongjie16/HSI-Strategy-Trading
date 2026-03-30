@@ -10,12 +10,12 @@ import { TRADING } from '../../../src/constants/index.js';
 import type { TradeRecord } from '../../../src/types/trader.js';
 import type { CooldownCandidate } from '../../../src/services/liquidationCooldown/types.js';
 import {
-  collectLiquidationRecordsByMonitor,
+  collectLiquidationRecordsByDirection,
   simulateTriggerCycle,
 } from '../../../src/services/liquidationCooldown/utils.js';
 
 function createTradeRecord(params: {
-  readonly monitorSymbol: string | null;
+  readonly baseInstrumentSymbol: string | null;
   readonly symbol: string;
   readonly action: string | null;
   readonly executedAtMs: number;
@@ -26,7 +26,7 @@ function createTradeRecord(params: {
     orderId: 'order-id',
     symbol: params.symbol,
     symbolName: null,
-    monitorSymbol: params.monitorSymbol,
+    baseInstrumentSymbol: params.baseInstrumentSymbol,
     action: params.action,
     side: 'SELL',
     quantity: '1000',
@@ -45,17 +45,16 @@ function createTradeRecord(params: {
 
 function createCandidate(executedAtMs: number): CooldownCandidate {
   return {
-    monitorSymbol: 'HSI.HK',
     direction: 'LONG',
     executedAtMs,
   };
 }
 
 describe('liquidationCooldown utils', () => {
-  it('collectLiquidationRecordsByMonitor groups by monitor + direction and sorts by time', () => {
+  it('collectLiquidationRecordsByDirection groups by baseInstrument + direction and sorts by time', () => {
     const records = [
       createTradeRecord({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         symbol: 'BULL1.HK',
         action: 'SELLCALL',
         executedAtMs: 300,
@@ -63,7 +62,7 @@ describe('liquidationCooldown utils', () => {
         reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
       }),
       createTradeRecord({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         symbol: 'BULL2.HK',
         action: 'SELLCALL',
         executedAtMs: 100,
@@ -71,7 +70,7 @@ describe('liquidationCooldown utils', () => {
         reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
       }),
       createTradeRecord({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         symbol: 'BEAR1.HK',
         action: 'SELLPUT',
         executedAtMs: 200,
@@ -79,7 +78,7 @@ describe('liquidationCooldown utils', () => {
         reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
       }),
       createTradeRecord({
-        monitorSymbol: 'QQQ.HK',
+        baseInstrumentSymbol: 'QQQ.HK',
         symbol: 'QQQ_BULL.HK',
         action: 'SELLCALL',
         executedAtMs: 50,
@@ -87,7 +86,7 @@ describe('liquidationCooldown utils', () => {
         reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
       }),
       createTradeRecord({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         symbol: 'BULL3.HK',
         action: 'BUYCALL',
         executedAtMs: 400,
@@ -96,24 +95,24 @@ describe('liquidationCooldown utils', () => {
       }),
     ];
 
-    const grouped = collectLiquidationRecordsByMonitor({
-      monitorSymbols: new Set(['HSI.HK']),
+    const grouped = collectLiquidationRecordsByDirection({
+      baseInstrument: 'HSI.HK',
       tradeRecords: records,
     });
 
-    const longGroup = grouped.get('HSI.HK:LONG') ?? [];
-    const shortGroup = grouped.get('HSI.HK:SHORT') ?? [];
+    const longGroup = grouped.get('LONG') ?? [];
+    const shortGroup = grouped.get('SHORT') ?? [];
     expect(longGroup.map((item) => item.executedAtMs)).toEqual([100, 300]);
     expect(shortGroup.map((item) => item.executedAtMs)).toEqual([200]);
-    expect(grouped.has('QQQ.HK:LONG')).toBe(false);
+    expect(grouped.size).toBe(2);
   });
 
-  it('collectLiquidationRecordsByMonitor returns empty map for non-completion records', () => {
-    const grouped = collectLiquidationRecordsByMonitor({
-      monitorSymbols: new Set(['HSI.HK']),
+  it('collectLiquidationRecordsByDirection returns empty map for non-completion records', () => {
+    const grouped = collectLiquidationRecordsByDirection({
+      baseInstrument: 'HSI.HK',
       tradeRecords: [
         createTradeRecord({
-          monitorSymbol: 'HSI.HK',
+          baseInstrumentSymbol: 'HSI.HK',
           symbol: 'BULL.HK',
           action: 'SELLCALL',
           executedAtMs: 100,

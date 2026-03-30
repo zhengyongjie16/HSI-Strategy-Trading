@@ -15,7 +15,10 @@ import {
 
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createGlobalConfig,
+  createStrategyRuntimeConfig,
+} from '../../mock/factories/configFactory.js';
 import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
@@ -41,6 +44,19 @@ function createDeps(params?: {
   let quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>([
     ['BULL.HK', createQuoteDouble('BULL.HK', 1.02)],
   ]);
+  const globalConfig = createGlobalConfig({
+    buyOrderTimeout: {
+      enabled: true,
+      timeoutSeconds: params?.buyTimeoutSeconds ?? 999,
+    },
+    sellOrderTimeout: {
+      enabled: true,
+      timeoutSeconds: params?.sellTimeoutSeconds ?? 999,
+    },
+    orderMonitorPriceUpdateInterval: 0,
+    allowBuyOrderTrackingAboveInitialPrice: params?.allowBuyOrderTrackingAboveInitialPrice ?? true,
+  });
+  const monitorConfig = createStrategyRuntimeConfig();
 
   const deps: OrderMonitorDeps = {
     ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
@@ -70,22 +86,8 @@ function createDeps(params?: {
       clear: () => {},
     },
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    tradingConfig: createTradingConfig({
-      global: {
-        ...createTradingConfig().global,
-        buyOrderTimeout: {
-          enabled: true,
-          timeoutSeconds: params?.buyTimeoutSeconds ?? 999,
-        },
-        sellOrderTimeout: {
-          enabled: true,
-          timeoutSeconds: params?.sellTimeoutSeconds ?? 999,
-        },
-        orderMonitorPriceUpdateInterval: 0,
-        allowBuyOrderTrackingAboveInitialPrice:
-          params?.allowBuyOrderTrackingAboveInitialPrice ?? true,
-      },
-    }),
+    globalConfig,
+    monitorConfig,
     symbolRegistry: createSymbolRegistryDouble(),
     isExecutionAllowed: () => true,
     ...(params?.onHandleOrderChanged
@@ -127,7 +129,7 @@ describe('order monitor regression', () => {
       initialSubmittedPrice: 0.059,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -146,7 +148,7 @@ describe('order monitor regression', () => {
       initialSubmittedPrice: 0.059,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -176,7 +178,7 @@ describe('order monitor regression', () => {
       initialSubmittedPrice: 0.5,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -204,7 +206,7 @@ describe('order monitor regression', () => {
       initialSubmittedPrice: 0.5,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -230,7 +232,7 @@ describe('order monitor regression', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -281,7 +283,7 @@ describe('order monitor regression', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -368,7 +370,7 @@ describe('order monitor regression', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });

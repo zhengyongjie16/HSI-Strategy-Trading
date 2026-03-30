@@ -124,7 +124,7 @@ export function createFindBestWarrantInputDouble(
 ): FindBestWarrantInput {
   return {
     ctx: createQuoteContextDouble(),
-    monitorSymbol: 'HSI.HK',
+    baseInstrumentSymbol: 'HSI.HK',
     tradingMinutes: 10,
     policy,
     expiryMinMonths: 3,

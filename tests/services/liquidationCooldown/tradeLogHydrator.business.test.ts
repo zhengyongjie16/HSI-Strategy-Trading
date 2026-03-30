@@ -7,14 +7,14 @@
 import { describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import { TRADING } from '../../../src/constants/index.js';
-import { createTradingConfig, createMonitorConfig } from '../../../mock/factories/configFactory.js';
+import { createStrategyRuntimeConfig } from '../../../mock/factories/configFactory.js';
 import { createLiquidationCooldownTracker } from '../../../src/services/liquidationCooldown/index.js';
 import { createTradeLogHydrator } from '../../../src/services/liquidationCooldown/tradeLogHydrator.js';
 
 const TEST_LOG_ROOT_DIR = path.join(process.cwd(), 'tests', 'logs');
 
 function createCompletedRecord(params: {
-  monitorSymbol: string;
+  baseInstrumentSymbol: string;
   action: 'SELLCALL' | 'SELLPUT';
   executedAtMs: number;
 }): Record<string, unknown> {
@@ -22,7 +22,7 @@ function createCompletedRecord(params: {
     orderId: null,
     symbol: null,
     symbolName: null,
-    monitorSymbol: params.monitorSymbol,
+    baseInstrumentSymbol: params.baseInstrumentSymbol,
     action: params.action,
     side: 'SELL',
     quantity: null,
@@ -58,7 +58,7 @@ describe('tradeLogHydrator business flow', () => {
         error: () => {},
         debug: () => {},
       },
-      tradingConfig: createTradingConfig(),
+      monitorConfig: createStrategyRuntimeConfig(),
       liquidationCooldownTracker: tracker,
     });
 
@@ -73,18 +73,14 @@ describe('tradeLogHydrator business flow', () => {
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => nowMs,
     });
-    const tradingConfig = createTradingConfig({
-      monitors: [
-        createMonitorConfig({
-          monitorSymbol: 'HSI.HK',
-          liquidationTriggerLimit: 2,
-          liquidationCooldown: { mode: 'minutes', minutes: 5 },
-        }),
-      ],
+    const monitorConfig = createStrategyRuntimeConfig({
+      baseInstrumentSymbol: 'HSI.HK',
+      liquidationTriggerLimit: 2,
+      liquidationCooldown: { mode: 'minutes', minutes: 5 },
     });
     const records = [
       createCompletedRecord({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         action: 'SELLCALL',
         executedAtMs: nowMs - 10_000,
       }),
@@ -100,14 +96,13 @@ describe('tradeLogHydrator business flow', () => {
         error: () => {},
         debug: () => {},
       },
-      tradingConfig,
+      monitorConfig,
       liquidationCooldownTracker: tracker,
     });
 
     const boundaries = hydrator.hydrate();
 
     const next = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: nowMs,
       triggerLimit: 2,
@@ -117,7 +112,7 @@ describe('tradeLogHydrator business flow', () => {
       currentCount: 2,
       cooldownActivated: true,
     });
-    expect(boundaries.get('HSI.HK:LONG')).toBe(nowMs - 10_000);
+    expect(boundaries.get('LONG')).toBe(nowMs - 10_000);
   });
 
   it('restores active cooldown from completed events', () => {
@@ -126,18 +121,14 @@ describe('tradeLogHydrator business flow', () => {
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => nowMs,
     });
-    const tradingConfig = createTradingConfig({
-      monitors: [
-        createMonitorConfig({
-          monitorSymbol: 'HSI.HK',
-          liquidationTriggerLimit: 1,
-          liquidationCooldown: { mode: 'minutes', minutes: 5 },
-        }),
-      ],
+    const monitorConfig = createStrategyRuntimeConfig({
+      baseInstrumentSymbol: 'HSI.HK',
+      liquidationTriggerLimit: 1,
+      liquidationCooldown: { mode: 'minutes', minutes: 5 },
     });
     const records = [
       createCompletedRecord({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         action: 'SELLCALL',
         executedAtMs,
       }),
@@ -153,19 +144,18 @@ describe('tradeLogHydrator business flow', () => {
         error: () => {},
         debug: () => {},
       },
-      tradingConfig,
+      monitorConfig,
       liquidationCooldownTracker: tracker,
     });
 
     const boundaries = hydrator.hydrate();
 
     const remainingMs = tracker.getRemainingMs({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       cooldownConfig: { mode: 'minutes', minutes: 5 },
       currentTimeMs: nowMs,
     });
     expect(remainingMs).toBe(270_000);
-    expect(boundaries.get('HSI.HK:LONG')).toBe(executedAtMs);
+    expect(boundaries.get('LONG')).toBe(executedAtMs);
   });
 });

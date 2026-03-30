@@ -8,12 +8,12 @@ import { describe, expect, it } from 'bun:test';
 
 import type { RiskCheckContext } from '../../src/types/services.js';
 import { createRiskCheckPipeline } from '../../src/core/signalProcessor/riskCheckPipeline.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createGlobalConfig } from '../../mock/factories/configFactory.js';
 import {
   createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
@@ -39,7 +39,7 @@ function createContext(params: {
   readonly account?: ReturnType<typeof createAccountSnapshotDouble>;
   readonly positions?: ReadonlyArray<RiskCheckContext['positions'][number]>;
 }): RiskCheckContext {
-  const monitorConfig = createMonitorConfigDouble();
+  const monitorConfig = createStrategyRuntimeConfigDouble();
   const account = params.account ?? createAccountSnapshotDouble(100_000);
   const positions = params.positions ?? [];
 
@@ -90,7 +90,7 @@ describe('risk pipeline regression', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -143,7 +143,7 @@ describe('risk pipeline regression', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -202,7 +202,7 @@ describe('risk pipeline regression', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => 0,
       }),

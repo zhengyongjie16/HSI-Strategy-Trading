@@ -1,6 +1,6 @@
 /**
  * 保护性清仓事件方向。
- * 类型用途：按 monitorSymbol + direction 隔离保护性清仓事件状态。
+ * 类型用途：按方向隔离保护性清仓事件状态。
  * 数据来源：订单归属解析与风控链路。
  * 使用范围：protectiveLiquidationEpisodeTracker 及其调用方。
  */
@@ -13,7 +13,6 @@ export type ProtectiveLiquidationDirection = 'LONG' | 'SHORT';
  * 使用范围：protectiveLiquidationEpisodeTracker。
  */
 type RecordProtectiveFillProgressParams = Readonly<{
-  monitorSymbol: string;
   direction: ProtectiveLiquidationDirection;
   executedTimeMs: number;
 }>;
@@ -25,7 +24,6 @@ type RecordProtectiveFillProgressParams = Readonly<{
  * 使用范围：protectiveLiquidationEpisodeTracker。
  */
 type CompleteIfEligibleParams = Readonly<{
-  monitorSymbol: string;
   direction: ProtectiveLiquidationDirection;
   isDirectionFlat: boolean;
   hasPendingProtectiveOrders: boolean;
@@ -38,7 +36,6 @@ type CompleteIfEligibleParams = Readonly<{
  * 使用范围：postTradeRefresher、dailyLossTracker、liquidationCooldownTracker。
  */
 export type ProtectiveLiquidationCompletedEvent = Readonly<{
-  monitorSymbol: string;
   direction: ProtectiveLiquidationDirection;
   boundaryExecutedTimeMs: number;
 }>;
@@ -50,7 +47,6 @@ export type ProtectiveLiquidationCompletedEvent = Readonly<{
  * 使用范围：protectiveLiquidationEpisodeTracker。
  */
 type RestoreCompletedBoundaryParams = Readonly<{
-  monitorSymbol: string;
   direction: ProtectiveLiquidationDirection;
   boundaryExecutedTimeMs: number;
 }>;
@@ -62,7 +58,6 @@ type RestoreCompletedBoundaryParams = Readonly<{
  * 使用范围：protectiveLiquidationEpisodeTracker。
  */
 type RestoreInProgressEpisodeParams = Readonly<{
-  monitorSymbol: string;
   direction: ProtectiveLiquidationDirection;
   latestExecutedTimeMs: number;
 }>;
@@ -74,7 +69,6 @@ type RestoreInProgressEpisodeParams = Readonly<{
  * 使用范围：postTradeRefresher。
  */
 export type InProgressProtectiveEpisode = Readonly<{
-  monitorSymbol: string;
   direction: ProtectiveLiquidationDirection;
   latestExecutedTimeMs: number;
 }>;
@@ -92,7 +86,7 @@ export interface ProtectiveLiquidationEpisodeTracker {
   ) => ProtectiveLiquidationCompletedEvent | null;
   restoreCompletedBoundary: (params: RestoreCompletedBoundaryParams) => void;
   restoreInProgressEpisode: (params: RestoreInProgressEpisodeParams) => void;
-  getLatestProtectionBoundaryByDirection: () => ReadonlyMap<string, number>;
+  getLatestProtectionBoundaryByDirection: () => ReadonlyMap<ProtectiveLiquidationDirection, number>;
   getInProgressEpisodes: () => ReadonlyArray<InProgressProtectiveEpisode>;
   resetAll: () => void;
 }

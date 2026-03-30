@@ -3,86 +3,153 @@
  *
  * 功能：
  * - 每秒从应用层本地 K 线缓存读取快照
- * - 在缓存 version 未变化时复用上次快照
- * - 在缓存 version 变化时推进增量 runtime 并构建新快照
- * - 每拍都写入 indicatorCache，保持延迟验证时间轴连续
+ * - 直接构建当前趋势策略所需的 factor snapshot
+ * - 同步写回 monitorState 与展示层缓存
  */
-import {
-  bootstrapIndicatorRuntime,
-  buildSnapshotFromRuntime,
-  updateRuntimeForCandlestickSnapshot,
-} from '../../services/indicators/runtime/index.js';
+import { buildTrendFactorSnapshot } from '../../services/factors/runtime/index.js';
 import { logger } from '../../utils/logger/index.js';
 import { releaseSnapshotObjects } from '../../utils/helpers/index.js';
-import { TRADING } from '../../constants/index.js';
+import { Period } from 'longbridge';
+import type { CandleData } from '../../types/data.js';
+import type { StrategyThresholdConfig } from '../../types/factor.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
 import type { IndicatorPipelineParams } from './types.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 
+type TrendFactorCandlesByPeriod = {
+  readonly min1: ReadonlyArray<CandleData>;
+  readonly min5: ReadonlyArray<CandleData>;
+  readonly min15: ReadonlyArray<CandleData>;
+};
+
+function buildTrendIndicatorSnapshot(params: {
+  readonly cacheSnapshot: NonNullable<
+    ReturnType<IndicatorPipelineParams['mainContext']['marketDataClient']['getCandlestickSnapshot']>
+  >;
+  readonly candlesByPeriod: TrendFactorCandlesByPeriod;
+  readonly monitorQuote: IndicatorPipelineParams['monitorQuote'];
+  readonly strategyConfig: StrategyThresholdConfig;
+}): IndicatorSnapshot | null {
+  const { cacheSnapshot, candlesByPeriod, monitorQuote, strategyConfig } = params;
+  const quotePrice = monitorQuote?.price ?? null;
+  const resolvedQuotePrice =
+    quotePrice !== null && Number.isFinite(quotePrice) && quotePrice > 0 ? quotePrice : null;
+
+  const changePercent =
+    resolvedQuotePrice !== null && monitorQuote !== null && monitorQuote.prevClose > 0
+      ? ((resolvedQuotePrice - monitorQuote.prevClose) / monitorQuote.prevClose) * 100
+      : null;
+  const factorSnapshot = buildTrendFactorSnapshot({
+    candlesByPeriod,
+    // monitorQuote 价格异常时传 0，让因子 runtime 统一回退到最新有效 close。
+    currentPrice: resolvedQuotePrice ?? 0,
+    strategyConfig,
+  });
+  if (!factorSnapshot) {
+    return null;
+  }
+
+  return {
+    symbol: cacheSnapshot.symbol,
+    price: resolvedQuotePrice ?? factorSnapshot.benchmarkPrice,
+    changePercent,
+    factorSnapshot,
+  };
+}
+
+function isValidCandlestickSnapshot(
+  snapshot: ReturnType<
+    IndicatorPipelineParams['mainContext']['marketDataClient']['getCandlestickSnapshot']
+  >,
+): snapshot is NonNullable<
+  ReturnType<IndicatorPipelineParams['mainContext']['marketDataClient']['getCandlestickSnapshot']>
+> {
+  return snapshot !== null && snapshot.initialized && snapshot.candles.length > 0;
+}
+
+function getRequiredCandlesByPeriod(params: {
+  readonly marketDataClient: IndicatorPipelineParams['mainContext']['marketDataClient'];
+  readonly baseInstrumentSymbol: string;
+  readonly baseInstrumentName: string;
+}): {
+  readonly cacheSnapshot: NonNullable<
+    ReturnType<IndicatorPipelineParams['mainContext']['marketDataClient']['getCandlestickSnapshot']>
+  >;
+  readonly candlesByPeriod: TrendFactorCandlesByPeriod;
+} | null {
+  const min1Snapshot = params.marketDataClient.getCandlestickSnapshot(
+    params.baseInstrumentSymbol,
+    Period.Min_1,
+  );
+  const min5Snapshot = params.marketDataClient.getCandlestickSnapshot(
+    params.baseInstrumentSymbol,
+    Period.Min_5,
+  );
+  const min15Snapshot = params.marketDataClient.getCandlestickSnapshot(
+    params.baseInstrumentSymbol,
+    Period.Min_15,
+  );
+
+  if (!isValidCandlestickSnapshot(min1Snapshot)) {
+    logger.warn(
+      `未获取到监控标的 ${formatSymbolDisplay(params.baseInstrumentSymbol, params.baseInstrumentName)} 1m K线缓存快照`,
+    );
+    return null;
+  }
+
+  if (!isValidCandlestickSnapshot(min5Snapshot)) {
+    logger.warn(
+      `未获取到监控标的 ${formatSymbolDisplay(params.baseInstrumentSymbol, params.baseInstrumentName)} 5m K线缓存快照`,
+    );
+    return null;
+  }
+
+  if (!isValidCandlestickSnapshot(min15Snapshot)) {
+    logger.warn(
+      `未获取到监控标的 ${formatSymbolDisplay(params.baseInstrumentSymbol, params.baseInstrumentName)} 15m K线缓存快照`,
+    );
+    return null;
+  }
+
+  return {
+    cacheSnapshot: min1Snapshot,
+    candlesByPeriod: {
+      min1: min1Snapshot.candles,
+      min5: min5Snapshot.candles,
+      min15: min15Snapshot.candles,
+    },
+  };
+}
+
 /**
  * 执行指标处理流水线。
- * 缓存 version 不变时复用上次快照，但仍按主循环采样时间写入 indicatorCache。
+ * 当前趋势路径直接从最新 K 线快照构建 factor snapshot。
  */
 export function runIndicatorPipeline(params: IndicatorPipelineParams): IndicatorSnapshot | null {
-  const { monitorSymbol, monitorContext, mainContext, monitorQuote } = params;
-  const { marketDataClient, indicatorCache, marketMonitor } = mainContext;
-  const { state, indicatorProfile } = monitorContext;
+  const { monitorContext, mainContext, monitorQuote } = params;
+  const { marketDataClient, marketMonitor } = mainContext;
+  const { state } = monitorContext;
+  const baseInstrumentSymbol = monitorContext.config.baseInstrumentSymbol;
 
-  const cacheSnapshot = marketDataClient.getCandlestickSnapshot(
-    monitorSymbol,
-    TRADING.CANDLE_PERIOD,
-  );
-  if (cacheSnapshot === null || !cacheSnapshot.initialized || cacheSnapshot.candles.length === 0) {
-    logger.warn(
-      `未获取到监控标的 ${formatSymbolDisplay(monitorSymbol, monitorContext.monitorSymbolName)} K线缓存快照`,
-    );
+  const requiredSnapshots = getRequiredCandlesByPeriod({
+    marketDataClient,
+    baseInstrumentSymbol,
+    baseInstrumentName: monitorContext.baseInstrumentName,
+  });
+  if (requiredSnapshots === null) {
     return null;
   }
 
-  const klineTimestamp = cacheSnapshot.lastBarTimestamp;
-  if (
-    state.lastCandlestickCacheVersion !== null &&
-    cacheSnapshot.version === state.lastCandlestickCacheVersion &&
-    state.lastMonitorSnapshot !== null
-  ) {
-    // indicatorCache 继续按主循环采样时间每秒写入，供 delayed verification 按真实时间轴取样。
-    // 即使本秒 K 线缓存没有变化，也要 push 最近一次 snapshot，不能改成“仅事件时写入”。
-    indicatorCache.push(monitorSymbol, state.lastMonitorSnapshot);
-    marketMonitor.monitorIndicatorChanges({
-      monitorSnapshot: state.lastMonitorSnapshot,
-      monitorQuote,
-      monitorSymbol,
-      indicatorProfile,
-      klineTimestamp,
-      monitorState: state,
-    });
-    return state.lastMonitorSnapshot;
-  }
-
-  let runtime = state.incrementalIndicatorRuntime;
-  runtime =
-    runtime === null
-      ? bootstrapIndicatorRuntime({
-          symbol: monitorSymbol,
-          cacheSnapshot,
-          indicatorProfile,
-        })
-      : updateRuntimeForCandlestickSnapshot({
-          runtime,
-          cacheSnapshot,
-        });
-
-  if (runtime === null) {
-    logger.warn(
-      `[${formatSymbolDisplay(monitorSymbol, monitorContext.monitorSymbolName)}] 无法从缓存快照构建增量运行态，跳过本次处理`,
-    );
-    return null;
-  }
-
-  const monitorSnapshot = buildSnapshotFromRuntime(runtime);
+  const { cacheSnapshot, candlesByPeriod } = requiredSnapshots;
+  const monitorSnapshot = buildTrendIndicatorSnapshot({
+    cacheSnapshot,
+    candlesByPeriod,
+    monitorQuote,
+    strategyConfig: monitorContext.config.strategyConfig,
+  });
   if (!monitorSnapshot) {
     logger.warn(
-      `[${formatSymbolDisplay(monitorSymbol, monitorContext.monitorSymbolName)}] 无法构建指标快照，跳过本次处理`,
+      `[${formatSymbolDisplay(baseInstrumentSymbol, monitorContext.baseInstrumentName)}] 无法构建趋势因子快照，跳过本次处理`,
     );
     return null;
   }
@@ -90,18 +157,17 @@ export function runIndicatorPipeline(params: IndicatorPipelineParams): Indicator
   marketMonitor.monitorIndicatorChanges({
     monitorSnapshot,
     monitorQuote,
-    monitorSymbol,
-    indicatorProfile,
-    klineTimestamp,
+    baseInstrumentSymbol,
+    klineTimestamp: cacheSnapshot.lastBarTimestamp,
     monitorState: state,
   });
-  indicatorCache.push(monitorSymbol, monitorSnapshot);
+
   if (state.lastMonitorSnapshot !== monitorSnapshot) {
     releaseSnapshotObjects(state.lastMonitorSnapshot, state.monitorValues);
   }
 
-  state.incrementalIndicatorRuntime = runtime;
   state.lastMonitorSnapshot = monitorSnapshot;
   state.lastCandlestickCacheVersion = cacheSnapshot.version;
+
   return monitorSnapshot;
 }

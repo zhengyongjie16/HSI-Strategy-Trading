@@ -85,8 +85,8 @@ export type TradeRecord = {
   /** 交易标的名称（如 阿里摩通六甲牛G） */
   readonly symbolName: string | null;
 
-  /** 监控标的代码（如 HSI.HK） */
-  readonly monitorSymbol: string | null;
+  /** 监控标的代码 */
+  readonly baseInstrumentSymbol: string | null;
 
   /** 信号动作（BUYCALL/SELLCALL/BUYPUT/SELLPUT） */
   readonly action: string | null;

@@ -14,6 +14,7 @@ import { clearMonitorDirectionQueuesWithLog } from '../../main/processMonitor/qu
 import { logger } from '../../utils/logger/index.js';
 import { displayAccountAndPositions } from '../../services/accountDisplay/index.js';
 import { signalObjectPool } from '../../utils/objectPool/index.js';
+import { requireStrategyRuntime } from '../singleRuntimeHelpers.js';
 import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
 
 /**
@@ -24,9 +25,9 @@ import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
  */
 export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntime {
   const { preGateRuntime, postGateRuntime } = params;
-  const { tradingConfig } = preGateRuntime;
+  const { monitorConfig } = preGateRuntime;
+  const monitorContext = requireStrategyRuntime(postGateRuntime.monitorContext);
   const {
-    monitorContexts,
     refreshGate,
     trader,
     lastState,
@@ -46,7 +47,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     refreshGate,
     trader,
     lastState,
-    monitorContexts,
+    monitorContext,
     dailyLossTracker,
     liquidationCooldownTracker,
     protectiveLiquidationEpisodeTracker,
@@ -55,12 +56,11 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   const monitorTaskProcessor = createMonitorTaskProcessor({
     monitorTaskQueue,
     refreshGate,
-    getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol) ?? null,
-    clearMonitorDirectionQueues: (monitorSymbol, direction) => {
+    monitorContext,
+    clearMonitorDirectionQueues: (direction) => {
       clearMonitorDirectionQueuesWithLog({
-        monitorSymbol,
         direction,
-        monitorContexts,
+        monitorContext,
         buyTaskQueue,
         sellTaskQueue,
         monitorTaskQueue,
@@ -73,12 +73,12 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     trader,
     marketDataClient: preGateRuntime.marketDataClient,
     lastState,
-    tradingConfig,
+    monitorConfig,
     getCanProcessTask: () => lastState.isTradingEnabled,
   });
   const buyProcessor = createBuyProcessor({
     taskQueue: buyTaskQueue,
-    getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+    monitorContext,
     signalProcessor,
     trader,
     marketDataClient: preGateRuntime.marketDataClient,
@@ -89,7 +89,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   });
   const sellProcessor = createSellProcessor({
     taskQueue: sellTaskQueue,
-    getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+    monitorContext,
     signalProcessor,
     trader,
     marketDataClient: preGateRuntime.marketDataClient,

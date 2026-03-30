@@ -1,13 +1,13 @@
-import type { AutoSymbolManagerPort } from '../../../types/monitorContextPorts.js';
+import type { AutoSymbolManagerPort } from '../../../types/strategyRuntimePorts.js';
 import type { RefreshGate } from '../../../utils/types.js';
 import type { QuoteRetryRequirement } from '../../../utils/quoteRetry/types.js';
 import type { MonitorTaskQueue, MonitorTask, MonitorTaskInput } from '../monitorTaskQueue/types.js';
 import type { LastState } from '../../../types/state.js';
 import type { Position } from '../../../types/account.js';
-import type { MultiMonitorTradingConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { Quote } from '../../../types/quote.js';
 import type { Signal } from '../../../types/signal.js';
-import type { SymbolRegistry } from '../../../types/seat.js';
+import type { SeatState, SymbolRegistry } from '../../../types/seat.js';
 import type {
   RawOrderFromAPI,
   OrderRecorder,
@@ -35,7 +35,6 @@ export type SeatSnapshot = Readonly<{
  * 使用范围：仅 monitorTaskProcessor、processMonitor 内部使用。
  */
 export type AutoSymbolTickTaskData = Readonly<{
-  monitorSymbol: string;
   direction: 'LONG' | 'SHORT';
   seatVersion: number;
   symbol: string | null;
@@ -51,7 +50,6 @@ export type AutoSymbolTickTaskData = Readonly<{
  * 使用范围：仅 monitorTaskProcessor、processMonitor 内部使用。
  */
 export type AutoSymbolSwitchDistanceTaskData = Readonly<{
-  monitorSymbol: string;
   monitorPrice: number | null;
   seatSnapshots: Readonly<{
     long: SeatSnapshot;
@@ -66,7 +64,6 @@ export type AutoSymbolSwitchDistanceTaskData = Readonly<{
  * 使用范围：仅 monitorTaskProcessor、processMonitor 内部使用。
  */
 export type SeatRefreshTaskData = Readonly<{
-  monitorSymbol: string;
   direction: 'LONG' | 'SHORT';
   seatVersion: number;
   previousSymbol: string | null;
@@ -82,7 +79,6 @@ export type SeatRefreshTaskData = Readonly<{
  * 使用范围：仅 monitorTaskProcessor、processMonitor 内部使用。
  */
 export type LiquidationDistanceCheckTaskData = Readonly<{
-  monitorSymbol: string;
   monitorPrice: number;
   retryAttempts?: number;
   long: Readonly<{
@@ -104,7 +100,6 @@ export type LiquidationDistanceCheckTaskData = Readonly<{
  * 使用范围：仅 monitorTaskProcessor、processMonitor 内部使用。
  */
 export type UnrealizedLossCheckTaskData = Readonly<{
-  monitorSymbol: string;
   retryAttempts?: number;
   long: Readonly<{
     seatVersion: number;
@@ -184,8 +179,8 @@ export type CreateLiquidationTaskParams = Readonly<{
 
 /**
  * 监控任务处理上下文（处理器执行任务时的运行时依赖）。
- * 类型用途：处理器执行监控任务时所需的上下文，含 symbolRegistry、orderRecorder、riskChecker、名称缓存等；由 getMonitorContext(monitorSymbol) 获取。
- * 数据来源：由 mainProgram 的 getMonitorContext 按 monitorSymbol 从 monitorContexts 等组装返回。
+ * 类型用途：处理器执行监控任务时所需的上下文，含 symbolRegistry、orderRecorder、riskChecker、名称缓存等；由 monitorContext 直接注入。
+ * 数据来源：由 app/runtime 从单实例 monitorContext 组装并注入。
  * 使用范围：仅 monitorTaskProcessor 内部使用。
  */
 export type MonitorTaskContext = Readonly<{
@@ -197,7 +192,25 @@ export type MonitorTaskContext = Readonly<{
   unrealizedLossMonitor: UnrealizedLossMonitor;
   longSymbolName: string;
   shortSymbolName: string;
-  monitorSymbolName: string;
+  baseInstrumentName: string;
+}>;
+
+/**
+ * 监控上下文与席位就绪结果。
+ * 类型用途：evaluateStrategyRuntimeAndSeatReadiness 的返回值，供 liquidationDistance、unrealizedLoss 等 handler 使用。
+ * 数据来源：由 evaluateStrategyRuntimeAndSeatReadiness 在校验与解析后构造。
+ * 使用范围：仅 monitorTaskProcessor 各 handler 内部使用。
+ */
+export type StrategyRuntimeAndSeatReadiness = Readonly<{
+  context: MonitorTaskContext;
+  seatReadiness: Readonly<{
+    longSeat: SeatState;
+    shortSeat: SeatState;
+    isLongReady: boolean;
+    isShortReady: boolean;
+    longSymbol: string;
+    shortSymbol: string;
+  }>;
 }>;
 
 /**
@@ -208,7 +221,6 @@ export type MonitorTaskContext = Readonly<{
  */
 export type RefreshHelpers = Readonly<{
   ensureAllOrders: (
-    monitorSymbol: string,
     orderRecorder: MonitorTaskContext['orderRecorder'],
   ) => Promise<ReadonlyArray<RawOrderFromAPI>>;
   refreshAccountCaches: () => Promise<void>;
@@ -216,19 +228,19 @@ export type RefreshHelpers = Readonly<{
 
 /**
  * MonitorTaskProcessor 依赖注入配置（创建监控任务处理器时的参数）。
- * 类型用途：创建 MonitorTaskProcessor 所需的全部外部依赖（队列、refreshGate、getMonitorContext、trader 等）。
+ * 类型用途：创建 MonitorTaskProcessor 所需的全部外部依赖（队列、refreshGate、monitorContext、trader 等）。
  * 数据来源：由主程序/启动流程组装并传入工厂。
  * 使用范围：仅 monitorTaskProcessor 及启动流程使用，内部使用。
  */
 export type MonitorTaskProcessorDeps = Readonly<{
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
   refreshGate: RefreshGate;
-  getMonitorContext: (monitorSymbol: string) => MonitorTaskContext | null;
-  clearMonitorDirectionQueues: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => void;
+  monitorContext: MonitorTaskContext;
+  clearMonitorDirectionQueues: (direction: 'LONG' | 'SHORT') => void;
   trader: Trader;
   marketDataClient: MarketDataClient;
   lastState: LastState;
-  tradingConfig: MultiMonitorTradingConfig;
+  monitorConfig: StrategyRuntimeConfig;
 
   /** 一次性路径 quote retry 调度器 */
   scheduleRetry?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;

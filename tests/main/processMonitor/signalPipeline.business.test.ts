@@ -15,29 +15,25 @@ import {
 import type { Signal } from '../../../src/types/signal.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
 import type { MainProgramContext } from '../../../src/main/mainProgram/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import type { SeatSyncResult } from '../../../src/main/processMonitor/types.js';
 
 import {
-  createIndicatorUsageProfileDouble,
+  createFactorSnapshotDouble,
+  createIndicatorDisplayProfileDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
   createQuoteDouble,
   createSignalDouble,
+  createStrategyRuntimeConfigDouble,
 } from '../../helpers/testDoubles.js';
 
 function createSnapshot(): IndicatorSnapshot {
   return {
     price: 100,
     changePercent: 0,
-    ema: null,
-    rsi: null,
-    psy: null,
-    mfi: null,
-    kdj: null,
-    macd: null,
-    adx: null,
+    factorSnapshot: createFactorSnapshotDouble(),
   };
 }
 
@@ -67,8 +63,20 @@ function createSeatInfo(overrides: Partial<SeatSyncResult> = {}): SeatSyncResult
     shortSeatActive: true,
     longSymbol: 'BULL.HK',
     shortSymbol: 'BEAR.HK',
-    longQuote: createQuoteDouble('BULL.HK', 1.2),
-    shortQuote: createQuoteDouble('BEAR.HK', 0.9),
+    longQuote: {
+      ...createQuoteDouble('BULL.HK', 1.2),
+      staticInfo: {
+        callPrice: 50,
+        warrantType: 'BULL',
+      },
+    },
+    shortQuote: {
+      ...createQuoteDouble('BEAR.HK', 0.9),
+      staticInfo: {
+        callPrice: 150,
+        warrantType: 'BEAR',
+      },
+    },
   };
 
   return {
@@ -78,8 +86,7 @@ function createSeatInfo(overrides: Partial<SeatSyncResult> = {}): SeatSyncResult
 }
 
 function createPipelineHarness(params: {
-  immediateSignals: ReadonlyArray<Signal>;
-  delayedSignals: ReadonlyArray<Signal>;
+  signals: ReadonlyArray<Signal>;
   seatInfo?: SeatSyncResult;
   canTradeNow?: boolean;
   openProtectionActive?: boolean;
@@ -87,32 +94,23 @@ function createPipelineHarness(params: {
 }): {
   buyTaskQueue: ReturnType<typeof createBuyTaskQueue>;
   sellTaskQueue: ReturnType<typeof createSellTaskQueue>;
-  delayedAdded: Signal[];
   releasedSignals: Signal[];
   releasedPositions: Array<string>;
 } {
   const buyTaskQueue = createBuyTaskQueue();
   const sellTaskQueue = createSellTaskQueue();
 
-  const delayedAdded: Signal[] = [];
   const releasedSignals: Signal[] = [];
   const releasedPositions: Array<string> = [];
 
   const monitorContext = {
+    config: createStrategyRuntimeConfigDouble(),
     strategy: {
-      generateSignals: () => ({
-        immediateSignals: params.immediateSignals,
-        delayedSignals: params.delayedSignals,
-      }),
+      generateSignals: () => params.signals,
     },
     orderRecorder: createOrderRecorderDouble(),
-    indicatorProfile: createIndicatorUsageProfileDouble(),
-    delayedSignalVerifier: {
-      addSignal: (queuedSignal: { readonly signal: Signal }) => {
-        delayedAdded.push(queuedSignal.signal);
-      },
-    },
-  } as unknown as MonitorContext;
+    indicatorProfile: createIndicatorDisplayProfileDouble(),
+  } as unknown as StrategyRuntime;
 
   const positionCache = createPositionCacheDouble([
     createPositionDouble({ symbol: 'BULL.HK', quantity: 200, availableQuantity: 200 }),
@@ -128,7 +126,7 @@ function createPipelineHarness(params: {
   } as unknown as MainProgramContext;
 
   runSignalPipeline({
-    monitorSymbol: 'HSI.HK',
+    baseInstrumentSymbol: 'HSI.HK',
     monitorSnapshot: createSnapshot(),
     monitorContext,
     mainContext,
@@ -151,24 +149,20 @@ function createPipelineHarness(params: {
   return {
     buyTaskQueue,
     sellTaskQueue,
-    delayedAdded,
     releasedSignals,
     releasedPositions,
   };
 }
 
 describe('signalPipeline business flow', () => {
-  it('routes immediate/delayed signals to correct queues and enriches seatVersion/symbolName', () => {
-    const immediateBuy = createSignalDouble('BUYCALL', 'BULL.HK');
-    immediateBuy.symbolName = null;
-    const immediateSell = createSignalDouble('SELLPUT', 'BEAR.HK');
-    immediateSell.symbolName = null;
-    const delayedBuy = createSignalDouble('BUYPUT', 'BEAR.HK');
-    delayedBuy.symbolName = null;
+  it('routes ready signals to correct queues and enriches seatVersion/symbolName', () => {
+    const buySignal = createSignalDouble('BUYCALL', 'BULL.HK');
+    buySignal.symbolName = null;
+    const sellSignal = createSignalDouble('SELLPUT', 'BEAR.HK');
+    sellSignal.symbolName = null;
 
     const harness = createPipelineHarness({
-      immediateSignals: [immediateBuy, immediateSell],
-      delayedSignals: [delayedBuy],
+      signals: [buySignal, sellSignal],
     });
 
     const queuedBuy = harness.buyTaskQueue.pop();
@@ -182,8 +176,6 @@ describe('signalPipeline business flow', () => {
     expect(queuedSell?.data.seatVersion).toBe(11);
     expect(queuedSell?.data.symbolName).toBe('BEAR.HK');
 
-    expect(harness.delayedAdded).toHaveLength(1);
-    expect(harness.delayedAdded[0]?.seatVersion).toBe(11);
     expect(harness.releasedSignals).toHaveLength(0);
     expect(harness.releasedPositions).toEqual(['BULL.HK', 'BEAR.HK']);
   });
@@ -193,8 +185,7 @@ describe('signalPipeline business flow', () => {
     const immediateSell = createSignalDouble('SELLCALL', 'BULL.HK');
 
     const harness = createPipelineHarness({
-      immediateSignals: [immediateBuy, immediateSell],
-      delayedSignals: [],
+      signals: [immediateBuy, immediateSell],
       seatInfo: createSeatInfo({
         longQuote: null,
       }),
@@ -210,24 +201,21 @@ describe('signalPipeline business flow', () => {
 
   it('releases valid signals instead of enqueue when trading gate is disabled', () => {
     const immediateBuy = createSignalDouble('BUYCALL', 'BULL.HK');
-    const delayedBuy = createSignalDouble('BUYPUT', 'BEAR.HK');
+    const immediateShortBuy = createSignalDouble('BUYPUT', 'BEAR.HK');
 
     const harness = createPipelineHarness({
-      immediateSignals: [immediateBuy],
-      delayedSignals: [delayedBuy],
+      signals: [immediateBuy, immediateShortBuy],
       isTradingEnabled: false,
     });
 
     expect(harness.buyTaskQueue.isEmpty()).toBeTrue();
     expect(harness.sellTaskQueue.isEmpty()).toBeTrue();
-    expect(harness.delayedAdded).toHaveLength(0);
-    expect(harness.releasedSignals).toEqual([immediateBuy, delayedBuy]);
+    expect(harness.releasedSignals).toEqual([immediateBuy, immediateShortBuy]);
   });
 
   it('returns early during opening protection and still releases pooled positions', () => {
     const harness = createPipelineHarness({
-      immediateSignals: [createSignalDouble('BUYCALL', 'BULL.HK')],
-      delayedSignals: [createSignalDouble('BUYPUT', 'BEAR.HK')],
+      signals: [createSignalDouble('BUYCALL', 'BULL.HK'), createSignalDouble('BUYPUT', 'BEAR.HK')],
       openProtectionActive: true,
     });
 

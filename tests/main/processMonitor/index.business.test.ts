@@ -12,17 +12,17 @@ import {
   createSellTaskQueue,
 } from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import { createIndicatorCache } from '../../../src/main/asyncProgram/indicatorCache/index.js';
 import type { CandleData } from '../../../src/types/data.js';
 import type { Quote } from '../../../src/types/quote.js';
+import type { Signal } from '../../../src/types/signal.js';
 import type { ProcessMonitorParams } from '../../../src/main/processMonitor/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import {
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createPositionCacheDouble,
   createQuoteDouble,
 } from '../../helpers/testDoubles.js';
-import { createMonitorContext as createMonitorContextFromAsync } from '../asyncProgram/utils.js';
+import { createStrategyRuntime as createStrategyRuntimeFromAsync } from '../asyncProgram/utils.js';
 
 type ProcessMonitorFn = (
   context: ProcessMonitorParams,
@@ -51,13 +51,45 @@ function createCandles(length: number, start: number, step: number): ReadonlyArr
   return candles;
 }
 
-function createMonitorContext(params: {
+function createHongKongSessionBaseTimestamp(hour: number, minute: number): number {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = formatter.formatToParts(new Date());
+  let year = '';
+  let month = '';
+  let day = '';
+  for (const part of parts) {
+    if (part.type === 'year') {
+      year = part.value;
+      continue;
+    }
+
+    if (part.type === 'month') {
+      month = part.value;
+      continue;
+    }
+
+    if (part.type === 'day') {
+      day = part.value;
+    }
+  }
+
+  return Date.parse(
+    `${year}-${month}-${day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`,
+  );
+}
+
+function createStrategyRuntime(params: {
   readonly autoSearchEnabled: boolean;
-  readonly strategyGenerate: () => { immediateSignals: []; delayedSignals: [] };
-}): MonitorContext {
-  return createMonitorContextFromAsync({
-    config: createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
+  readonly strategyGenerate: () => ReadonlyArray<Signal>;
+}): StrategyRuntime {
+  return createStrategyRuntimeFromAsync({
+    config: createStrategyRuntimeConfigDouble({
+      baseInstrumentSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: params.autoSearchEnabled,
         autoSearchMinDistancePctBull: 0.35,
@@ -72,16 +104,15 @@ function createMonitorContext(params: {
       },
     }),
     state: {
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorPrice: 20_000,
       longPrice: null,
       shortPrice: null,
       signal: null,
-      pendingDelayedSignals: [],
+      pendingSignals: [],
       monitorValues: null,
       lastMonitorSnapshot: null,
       lastCandlestickCacheVersion: null,
-      incrementalIndicatorRuntime: null,
     },
     strategy: {
       generateSignals: params.strategyGenerate,
@@ -110,11 +141,11 @@ describe('processMonitor end-to-end orchestration', () => {
   it('returns early when indicator pipeline cannot build snapshot', async () => {
     const processMonitor = await loadProcessMonitor();
     let strategyCalls = 0;
-    const monitorContext = createMonitorContext({
+    const monitorContext = createStrategyRuntime({
       autoSearchEnabled: false,
       strategyGenerate: () => {
         strategyCalls += 1;
-        return { immediateSignals: [], delayedSignals: [] };
+        return [];
       },
     });
 
@@ -127,7 +158,6 @@ describe('processMonitor end-to-end orchestration', () => {
         marketDataClient: {
           getCandlestickSnapshot: () => null,
         },
-        indicatorCache: createIndicatorCache(),
         marketMonitor: {
           monitorPriceChanges: () => false,
           monitorIndicatorChanges: () => false,
@@ -159,25 +189,29 @@ describe('processMonitor end-to-end orchestration', () => {
   it('runs indicator+signal chain when candles are available and updates monitor price', async () => {
     const processMonitor = await loadProcessMonitor();
     let strategyCalls = 0;
-    const monitorContext = createMonitorContext({
+    const monitorContext = createStrategyRuntime({
       autoSearchEnabled: false,
       strategyGenerate: () => {
         strategyCalls += 1;
-        return { immediateSignals: [], delayedSignals: [] };
+        return [];
       },
     });
 
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue();
-    const candles = createCandles(60, 100, 0.2);
+    const sessionBaseTimestamp = createHongKongSessionBaseTimestamp(9, 30);
+    const candles = createCandles(120, 20_000, 2);
+    const sessionCandles = candles.map((candle, index) => ({
+      ...candle,
+      timestamp: sessionBaseTimestamp + index * 60_000,
+    }));
 
     const params: ProcessMonitorParams = {
       context: {
         marketDataClient: {
-          getCandlestickSnapshot: () => createCacheSnapshot(candles, 1),
+          getCandlestickSnapshot: () => createCacheSnapshot(sessionCandles, 1),
         },
-        indicatorCache: createIndicatorCache(),
         marketMonitor: {
           monitorPriceChanges: () => false,
           monitorIndicatorChanges: () => false,

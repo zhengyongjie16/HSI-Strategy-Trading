@@ -12,7 +12,7 @@ export type CandleValue = number | string | { toString: () => string } | null | 
  * K 线数据。
  * 类型用途：表示单根 K 线的 OHLCV 数据，用于指标计算、策略输入等。
  * 数据来源：Longbridge K 线 API（如 candlesticks、实时 K 线）。
- * 使用范围：indicators、策略、indicatorCache 等；全项目可引用。
+ * 使用范围：indicators、策略、monitor 流水线等；全项目可引用。
  */
 export type CandleData = {
   /** K 线时间戳（毫秒） */
@@ -36,9 +36,9 @@ export type CandleData = {
 
 /**
  * 监控值。
- * 类型用途：市场监控用的技术指标集合（价格、EMA、RSI、KDJ、MACD、MFI、ADX 等），作为 MonitorState.monitorValues 类型；需可变以支持对象池（PoolableMonitorValues）。
- * 数据来源：由 K 线经指标计算得到（如 indicatorCache、marketMonitor）。
- * 使用范围：MonitorState、策略、主循环等；全项目可引用。
+ * 类型用途：市场监控用的技术指标集合（价格、EMA、RSI、KDJ、MACD、MFI、ADX 等），作为 StrategyState.monitorValues 类型；需可变以支持对象池（PoolableMonitorValues）。
+ * 数据来源：由 K 线经指标计算得到（如 factors runtime、marketMonitor）。
+ * 使用范围：StrategyState、策略、主循环等；全项目可引用。
  */
 export type MonitorValues = {
   /** 当前价格 */

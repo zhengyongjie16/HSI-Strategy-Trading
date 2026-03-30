@@ -10,11 +10,13 @@ import { createSellTaskQueue } from '../../../../src/main/asyncProgram/tradeTask
 import { createSellProcessor } from '../../../../src/main/asyncProgram/sellProcessor/index.js';
 import { createRefreshGate } from '../../../../src/utils/refreshGate/index.js';
 
+import type { Position } from '../../../../src/types/account.js';
+import type { Quote } from '../../../../src/types/quote.js';
 import type { Signal } from '../../../../src/types/signal.js';
 
 import {
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createQuoteDouble,
   createSignalDouble,
   createTraderDouble,
@@ -22,31 +24,23 @@ import {
 import {
   createLastState,
   createLastStateWithPositions,
-  createMonitorContext,
+  createStrategyRuntime,
   runProcessorFlow,
   waitUntil,
 } from '../utils.js';
 
 describe('sellProcessor business flow', () => {
-  it('passes timeout and trading-calendar context into processSellSignals', async () => {
+  it('passes execution-time positions and quotes into processSellSignals', async () => {
     type CapturedSellParams = {
       readonly signals: Signal[];
-      readonly smartCloseTimeoutMinutes: number | null;
-      readonly isHalfDay: boolean;
-      readonly tradingCalendarSnapshot: ReadonlyMap<
-        string,
-        { readonly isTradingDay: boolean; readonly isHalfDay: boolean }
-      >;
-      readonly nowMs: number;
+      readonly longPosition: Position | null;
+      readonly shortPosition: Position | null;
+      readonly longQuote: Quote | null;
+      readonly shortQuote: Quote | null;
     };
 
     const queue = createSellTaskQueue();
-    const tradingCalendarSnapshot = new Map([
-      ['2026-02-16', { isTradingDay: true, isHalfDay: true }],
-    ]);
     const lastState = createLastStateWithPositions();
-    lastState.isHalfDay = true;
-    lastState.tradingCalendarSnapshot = tradingCalendarSnapshot;
 
     let capturedInput: CapturedSellParams | null = null;
     const signalProcessor = {
@@ -63,10 +57,8 @@ describe('sellProcessor business flow', () => {
       executeSignals: async () => ({ submittedCount: 1, submittedOrderIds: [] }),
     });
 
-    const monitorContext = createMonitorContext({
-      config: createMonitorConfigDouble({
-        smartCloseTimeoutMinutes: 45,
-      }),
+    const monitorContext = createStrategyRuntime({
+      config: createStrategyRuntimeConfigDouble(),
     });
 
     let quoteRequest: Iterable<string> | null = null;
@@ -82,7 +74,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient,
@@ -97,7 +89,7 @@ describe('sellProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
       },
       waitCondition: () => capturedInput !== null,
     });
@@ -107,10 +99,10 @@ describe('sellProcessor business flow', () => {
       throw new Error('processSellSignals input not captured');
     }
 
-    expect(captured.smartCloseTimeoutMinutes).toBe(45);
-    expect(captured.isHalfDay).toBe(true);
-    expect(captured.tradingCalendarSnapshot).toBe(tradingCalendarSnapshot);
-    expect(Number.isFinite(captured.nowMs)).toBe(true);
+    expect(captured.longPosition?.symbol).toBe('BULL.HK');
+    expect(captured.shortPosition?.symbol).toBe('BEAR.HK');
+    expect(captured.longQuote?.symbol).toBe('BULL.HK');
+    expect(captured.shortQuote?.symbol).toBe('BEAR.HK');
     const requestedSymbols = [...quoteRequest!] as string[];
     expect(requestedSymbols.length).toBe(2);
     expect(requestedSymbols[0]).toBe('BULL.HK');
@@ -142,7 +134,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -161,7 +153,7 @@ describe('sellProcessor business flow', () => {
     signal.seatVersion = 2;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
 
     await Bun.sleep(50);
     expect(processSellCalls).toBe(0);
@@ -197,7 +189,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -216,7 +208,7 @@ describe('sellProcessor business flow', () => {
     staleSignal.seatVersion = 1;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: staleSignal });
+    queue.push({ type: 'IMMEDIATE_SELL', data: staleSignal });
 
     await Bun.sleep(40);
     await processor.stopAndDrain();
@@ -227,14 +219,14 @@ describe('sellProcessor business flow', () => {
 
   it('drops sell signal when seat version changes after quantity resolution and before execution', async () => {
     const queue = createSellTaskQueue();
-    const monitorContext = createMonitorContext();
+    const monitorContext = createStrategyRuntime();
 
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
       processSellSignals: ({ signals }: { signals: Signal[] }) => {
         processSellCalls += 1;
-        monitorContext.symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+        monitorContext.symbolRegistry.bumpSeatVersion('LONG');
         return signals;
       },
       resetRiskCheckCooldown: () => {},
@@ -250,7 +242,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -271,7 +263,7 @@ describe('sellProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
       },
       waitCondition: () => processSellCalls === 1,
       timeoutMs: 800,
@@ -306,7 +298,7 @@ describe('sellProcessor business flow', () => {
     let clearedRetryHandles = 0;
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -332,7 +324,7 @@ describe('sellProcessor business flow', () => {
     signal.seatVersion = 2;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
     await waitUntil(() => scheduledRetries.length === 1);
     expect(processSellCalls).toBe(0);
     expect(executeCalls).toBe(0);
@@ -375,7 +367,7 @@ describe('sellProcessor business flow', () => {
     let clearedRetryHandles = 0;
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -401,7 +393,7 @@ describe('sellProcessor business flow', () => {
     signal.seatVersion = 2;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
     await waitUntil(() => scheduledRetries.length === 1);
 
     await processor.stopAndDrain();
@@ -439,7 +431,7 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -470,7 +462,7 @@ describe('sellProcessor business flow', () => {
     signal.seatVersion = 2;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
     await waitUntil(() => scheduledRetries.length === 1);
 
     const firstRetry = scheduledRetries[0];
@@ -510,7 +502,7 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble({
@@ -533,7 +525,7 @@ describe('sellProcessor business flow', () => {
     signal.seatVersion = 2;
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
     await waitUntil(() => releaseQuotes !== null);
 
     const drainPromise = processor.stopAndDrain();
@@ -579,7 +571,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -600,7 +592,7 @@ describe('sellProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
       },
       waitCondition: () => processSellCalls === 1,
       timeoutMs: 800,
@@ -639,7 +631,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createStrategyRuntime(),
       signalProcessor: signalProcessor as never,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -660,7 +652,7 @@ describe('sellProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'HSI.HK', data: signal });
+        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
       },
       waitCondition: () => processSellCalls === 1,
       timeoutMs: 800,

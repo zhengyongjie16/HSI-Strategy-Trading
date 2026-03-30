@@ -9,7 +9,10 @@ import { OrderSide, OrderType, TimeInForceType, type TradeContext } from 'longbr
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createOrderExecutor } from '../../src/core/trader/orderExecutor/index.js';
 import { VERIFICATION } from '../../src/constants/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createGlobalConfig,
+  createStrategyRuntimeConfig,
+} from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
@@ -22,6 +25,14 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+
+function createTradingFixture() {
+  const monitorConfig = createStrategyRuntimeConfig();
+  return {
+    globalConfig: createGlobalConfig(),
+    monitorConfig,
+  };
+}
 
 function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
   const originalNow = Date.now;
@@ -37,10 +48,7 @@ function createRiskContext(params: {
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
 }) {
   const cachedAccount = createAccountSnapshotDouble(100000);
-  const monitorConfig = createTradingConfig().monitors[0];
-  if (!monitorConfig) {
-    throw new Error('missing monitor config for integration test');
-  }
+  const { monitorConfig } = createTradingFixture();
 
   return {
     trader: params.trader,
@@ -80,7 +88,7 @@ function createRiskContext(params: {
 
 describe('buy-flow integration', () => {
   it('rejects broker success responses that do not contain a real orderId', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
     const orderExecutor = createOrderExecutor({
       ctxPromise: Promise.resolve({
@@ -112,7 +120,8 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -139,7 +148,7 @@ describe('buy-flow integration', () => {
   });
 
   it('surfaces local tracking failures after broker submit succeeds', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock();
     const orderExecutor = createOrderExecutor({
       ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
@@ -169,7 +178,8 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -198,9 +208,9 @@ describe('buy-flow integration', () => {
   });
 
   it('runs risk pipeline -> order execution and submits notional-based buy quantity', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -241,7 +251,8 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -291,7 +302,7 @@ describe('buy-flow integration', () => {
   });
 
   it('uses explicit signal quantity when valid quantity is provided', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock();
     const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
     const orderExecutor = createOrderExecutor({
@@ -322,7 +333,8 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -352,7 +364,7 @@ describe('buy-flow integration', () => {
   });
 
   it('rejects invalid explicit buy quantity without fallback to targetNotional', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock();
     const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
     const orderExecutor = createOrderExecutor({
@@ -383,7 +395,8 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -407,7 +420,7 @@ describe('buy-flow integration', () => {
 
   it('blocks the next same-direction buy only after a successful submit', async () => {
     const fixedNow = 1_000_000;
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock({ now: () => fixedNow });
     const orderExecutor = createOrderExecutor({
       ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
@@ -435,15 +448,11 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
-
-    const monitorConfig = tradingConfig.monitors[0];
-    if (!monitorConfig) {
-      throw new Error('missing monitor config for integration test');
-    }
 
     const firstSignal = createSignal({
       symbol: 'BULL.HK',
@@ -469,7 +478,7 @@ describe('buy-flow integration', () => {
 
   it('still blocks the next same-direction buy when submit fails after frequency check passed', async () => {
     const fixedNow = 2_000_000;
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const tradeCtx = createTradeContextMock({ now: () => fixedNow });
     tradeCtx.setFailureRule('submitOrder', {
       failAtCalls: [1],
@@ -502,15 +511,11 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
-
-    const monitorConfig = tradingConfig.monitors[0];
-    if (!monitorConfig) {
-      throw new Error('missing monitor config for integration test');
-    }
 
     const failedSignal = createSignal({
       symbol: 'BULL.HK',
@@ -537,9 +542,9 @@ describe('buy-flow integration', () => {
   });
 
   it('blocks the next buy in applyRiskChecks once the previous buy has passed frequency check, regardless of submit success', async () => {
-    const tradingConfig = createTradingConfig();
+    const { globalConfig, monitorConfig } = createTradingFixture();
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},
@@ -578,7 +583,8 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
@@ -672,7 +678,8 @@ describe('buy-flow integration', () => {
         clearTrackedOrders: () => {},
       },
       orderRecorder: createOrderRecorderDouble(),
-      tradingConfig,
+      globalConfig,
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });

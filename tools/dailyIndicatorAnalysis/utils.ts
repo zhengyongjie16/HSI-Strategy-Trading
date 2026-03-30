@@ -1,11 +1,8 @@
 import type { Candlestick } from 'longbridge';
 import { decimalToNumber } from '../../src/utils/helpers/index.js';
 import { toHongKongTimeLog } from '../../src/utils/time/index.js';
-import { calculateEMA } from '../../src/services/indicators/runtime/ema.js';
-import { calculateKDJ } from '../../src/services/indicators/runtime/kdj.js';
-import { calculateMFI } from '../../src/services/indicators/runtime/mfi.js';
-import { calculateRSI } from '../../src/services/indicators/runtime/rsi.js';
 import type { CandleData } from '../../src/types/data.js';
+import { calculateEMA, calculateKDJ, calculateMFI, calculateRSI } from '../indicatorRuntime.js';
 import { formatFiniteNumber } from '../utils.js';
 import type {
   CandleNumbers,

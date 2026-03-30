@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 
 import {
-  resolveMonitorContextRuntimeSnapshot,
-  resolveMonitorContextSeatSnapshot,
+  resolveStrategyRuntimeSnapshot,
+  resolveStrategyRuntimeSeatSnapshot,
 } from '../../src/utils/utils.js';
 import { createQuoteDouble, createSymbolRegistryDouble } from '../helpers/testDoubles.js';
 
 describe('shared utils business flow', () => {
   it('resolves monitor runtime snapshot from ready seats and quotes', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'LONG_READY.HK',
         status: 'ACTIVE',
@@ -32,13 +32,13 @@ describe('shared utils business flow', () => {
       shortVersion: 4,
     });
 
-    const snapshot = resolveMonitorContextRuntimeSnapshot(
+    const snapshot = resolveStrategyRuntimeSnapshot(
       'HSI.HK',
       symbolRegistry,
       new Map([
         ['LONG_READY.HK', { ...createQuoteDouble('LONG_READY.HK', 1.1), name: 'LongReady' }],
         ['SHORT_READY.HK', { ...createQuoteDouble('SHORT_READY.HK', 0.9), name: 'ShortReady' }],
-        ['HSI.HK', { ...createQuoteDouble('HSI.HK', 20_100), name: 'HangSeng' }],
+        ['HSI.HK', { ...createQuoteDouble('HSI.HK', 20_100), name: 'Base Instrument' }],
       ]),
     );
 
@@ -47,12 +47,12 @@ describe('shared utils business flow', () => {
     expect(snapshot.shortSymbol).toBe('SHORT_READY.HK');
     expect(snapshot.longSymbolName).toBe('LongReady');
     expect(snapshot.shortSymbolName).toBe('ShortReady');
-    expect(snapshot.monitorSymbolName).toBe('HangSeng');
+    expect(snapshot.baseInstrumentName).toBe('Base Instrument');
   });
 
   it('returns empty seat symbols when seats are not ready', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -73,8 +73,8 @@ describe('shared utils business flow', () => {
       },
     });
 
-    const seatSnapshot = resolveMonitorContextSeatSnapshot('HSI.HK', symbolRegistry);
-    const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
+    const seatSnapshot = resolveStrategyRuntimeSeatSnapshot('HSI.HK', symbolRegistry);
+    const runtimeSnapshot = resolveStrategyRuntimeSnapshot(
       'HSI.HK',
       symbolRegistry,
       new Map([
@@ -86,12 +86,12 @@ describe('shared utils business flow', () => {
     expect(runtimeSnapshot.longQuote).toBeNull();
     expect(runtimeSnapshot.longSymbolName).toBe('');
     expect(runtimeSnapshot.shortSymbolName).toBe('ShortReady');
-    expect(runtimeSnapshot.monitorSymbolName).toBe('HSI.HK');
+    expect(runtimeSnapshot.baseInstrumentName).toBe('HSI.HK');
   });
 
   it('does not expose activating seat symbols to runtime consumers', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'LONG_ACTIVATING.HK',
         status: 'ACTIVATING',
@@ -112,8 +112,8 @@ describe('shared utils business flow', () => {
       },
     });
 
-    const seatSnapshot = resolveMonitorContextSeatSnapshot('HSI.HK', symbolRegistry);
-    const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
+    const seatSnapshot = resolveStrategyRuntimeSeatSnapshot('HSI.HK', symbolRegistry);
+    const runtimeSnapshot = resolveStrategyRuntimeSnapshot(
       'HSI.HK',
       symbolRegistry,
       new Map([

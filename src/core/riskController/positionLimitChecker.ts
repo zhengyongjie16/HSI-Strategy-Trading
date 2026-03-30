@@ -1,7 +1,7 @@
 /**
  * 持仓市值限制检查模块
  *
- * 检查单标的持仓市值是否超过限制：
+ * 检查执行标的持仓市值是否超过限制：
  * - 下单金额不能超过 maxPositionNotional
  * - 现有持仓市值 + 下单金额不能超过限制
  * - 已有持仓时使用成本价计算市值
@@ -16,11 +16,11 @@ import type { PositionLimitChecker, PositionLimitCheckerDeps } from './types.js'
  * 构建下单金额超限的拒绝原因文本，供多处复用以保持消息格式一致。
  *
  * @param orderNotional 本次计划下单金额
- * @param max 单标的最大持仓市值限制
+ * @param max 执行标的最大持仓市值限制
  * @returns 格式化的拒绝原因字符串
  */
 function buildOrderNotionalExceededReason(orderNotional: number, max: number): string {
-  return `本次计划下单金额 ${formatDecimal(orderNotional, 2)} HKD 超过单标的最大持仓市值限制 ${formatDecimal(max, 2)} HKD`;
+  return `本次计划下单金额 ${formatDecimal(orderNotional, 2)} HKD 超过执行标的最大持仓市值限制 ${formatDecimal(max, 2)} HKD`;
 }
 
 /**
@@ -96,7 +96,7 @@ export const createPositionLimitChecker = (
         )}），加上本次计划下单 ${formatDecimal(
           orderNotional,
           2,
-        )} HKD 将超过单标的最大持仓市值限制 ${formatDecimal(maxPositionNotional, 2)} HKD`,
+        )} HKD 将超过执行标的最大持仓市值限制 ${formatDecimal(maxPositionNotional, 2)} HKD`,
       };
     }
 
@@ -104,7 +104,7 @@ export const createPositionLimitChecker = (
   };
 
   /**
-   * 检查单标的最大持仓市值限制：先验证下单金额，再叠加现有持仓市值判断是否超限。
+   * 检查执行标的最大持仓市值限制：先验证下单金额，再叠加现有持仓市值判断是否超限。
    * 有持仓时仅使用成本价估算市值；成本价无效时仅检查下单金额，不回退到当前市价。
    */
   const checkLimit = (

@@ -2,20 +2,19 @@
  * 信号处理流水线模块
  *
  * 功能：
- * - 接收策略生成的交易信号（立即信号和延迟验证信号）
- * - 进行席位状态校验（席位就绪、版本匹配、标的匹配）
- * - 丰富信号数据（添加标的名称、价格、最小买卖单位）
- * - 根据信号类型分流到对应的任务队列
+ * - 接收策略生成的立即交易信号
+ * - 进行席位状态校验（席位就绪、标的匹配、买入行情就绪）
+ * - 丰富信号数据（补全标的名称与席位版本）
+ * - 按买卖方向分流到对应任务队列
  *
  * 信号分流规则：
  * - 立即买入信号 → buyTaskQueue (IMMEDIATE_BUY)
  * - 立即卖出信号 → sellTaskQueue (IMMEDIATE_SELL)
- * - 延迟验证信号 → delayedSignalVerifier
  *
  * 席位校验条件：
  * 1. 席位状态必须为 ACTIVE
- * 2. 信号中的席位版本必须与当前席位版本匹配
- * 3. 信号标的必须与席位当前标的匹配
+ * 2. 信号标的必须与席位当前标的匹配
+ * 3. 买入信号要求席位行情已就绪
  */
 import { logger } from '../../utils/logger/index.js';
 import { isBuyAction } from '../../utils/helpers/index.js';
@@ -28,15 +27,119 @@ import type { Signal } from '../../types/signal.js';
 import type { SignalPipelineParams } from './types.js';
 import { formatSymbolDisplay, isSellAction } from '../../utils/display/index.js';
 
+function resolveSeatMode(
+  config: SignalPipelineParams['monitorContext']['config'],
+): 'static' | 'auto' {
+  return Reflect.get(config, 'seatMode') === 'auto' ? 'auto' : 'static';
+}
+
+function computeDistancePercent(params: {
+  readonly monitorPrice: number;
+  readonly quote: Quote;
+}): number | null {
+  const callPrice = params.quote.staticInfo?.callPrice ?? null;
+  if (!Number.isFinite(callPrice) || callPrice === null || callPrice <= 0) {
+    return null;
+  }
+
+  return ((params.monitorPrice - callPrice) / callPrice) * 100;
+}
+
+function applyInstrumentAdaptationGate(params: {
+  readonly signal: Signal;
+  readonly monitorSnapshot: SignalPipelineParams['monitorSnapshot'];
+  readonly longQuote: Quote | null;
+  readonly shortQuote: Quote | null;
+  readonly monitorContext: SignalPipelineParams['monitorContext'];
+}): {
+  readonly passed: boolean;
+  readonly reason: string;
+} {
+  if (!isBuyAction(params.signal.action)) {
+    return {
+      passed: true,
+      reason: 'sell signal bypasses instrument adaptation gate',
+    };
+  }
+
+  const monitorPrice = params.monitorSnapshot.price;
+  if (!Number.isFinite(monitorPrice) || monitorPrice <= 0) {
+    return {
+      passed: false,
+      reason: 'monitor price invalid',
+    };
+  }
+
+  const seatMode = resolveSeatMode(params.monitorContext.config);
+  const quote = params.signal.action === 'BUYCALL' ? params.longQuote : params.shortQuote;
+  if (!quote?.staticInfo) {
+    return {
+      passed: false,
+      reason: 'seat quote static info missing',
+    };
+  }
+
+  const distancePercent = computeDistancePercent({
+    monitorPrice,
+    quote,
+  });
+  if (distancePercent === null) {
+    return {
+      passed: false,
+      reason: 'call price invalid',
+    };
+  }
+
+  const rules = params.monitorContext.config.strategyConfig.instrumentAdaptationRules;
+  if (params.signal.action === 'BUYCALL') {
+    if (quote.staticInfo.warrantType !== 'BULL') {
+      return {
+        passed: false,
+        reason: 'non-bull instrument on long seat',
+      };
+    }
+
+    const threshold =
+      seatMode === 'auto' ? rules.autoSearchPrimaryDistanceBull : rules.bullBuyMinDistancePct;
+    return distancePercent > threshold
+      ? {
+          passed: true,
+          reason: `bull distance ${distancePercent.toFixed(3)}% > ${threshold.toFixed(3)}%`,
+        }
+      : {
+          passed: false,
+          reason: `bull distance ${distancePercent.toFixed(3)}% <= ${threshold.toFixed(3)}%`,
+        };
+  }
+
+  if (quote.staticInfo.warrantType !== 'BEAR') {
+    return {
+      passed: false,
+      reason: 'non-bear instrument on short seat',
+    };
+  }
+
+  const threshold =
+    seatMode === 'auto' ? rules.autoSearchPrimaryDistanceBear : rules.bearBuyMaxDistancePct;
+  return distancePercent < threshold
+    ? {
+        passed: true,
+        reason: `bear distance ${distancePercent.toFixed(3)}% < ${threshold.toFixed(3)}%`,
+      }
+    : {
+        passed: false,
+        reason: `bear distance ${distancePercent.toFixed(3)}% >= ${threshold.toFixed(3)}%`,
+      };
+}
+
 /**
  * 执行信号处理流水线。
  * 调用策略生成平仓信号后，对每个信号进行席位校验（状态、版本、标的匹配）和数据丰富，
- * 再按信号类型分流：立即信号入买卖队列，延迟信号交由 delayedSignalVerifier 管理。
+ * 再按信号类型分流到买卖任务队列。
  * 非交易时段或门禁关闭时记录日志并释放信号对象。
  */
 export function runSignalPipeline(params: SignalPipelineParams): void {
   const {
-    monitorSymbol,
     monitorSnapshot,
     monitorContext,
     mainContext,
@@ -45,9 +148,10 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
     releaseSignal,
     releasePosition,
   } = params;
+  const baseInstrumentSymbol = monitorContext.config.baseInstrumentSymbol;
   const { canTradeNow, openProtectionActive, isTradingEnabled } = runtimeFlags;
   const canEnqueue = isTradingEnabled && canTradeNow;
-  const { strategy, orderRecorder, delayedSignalVerifier, indicatorProfile } = monitorContext;
+  const { strategy, orderRecorder } = monitorContext;
   const { lastState, buyTaskQueue, sellTaskQueue } = mainContext;
   const {
     longSeatState,
@@ -66,15 +170,17 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
   );
   try {
     if (openProtectionActive) {
+      logger.debug(
+        `[跳过信号] ${formatSymbolDisplay(baseInstrumentSymbol, monitorContext.baseInstrumentName)} 处于开盘保护窗口，暂停信号分流`,
+      );
       return;
     }
 
-    const { immediateSignals, delayedSignals } = strategy.generateSignals(
-      monitorSnapshot,
+    const signals = strategy.generateSignals(
+      monitorSnapshot.factorSnapshot ?? null,
       longSymbol,
       shortSymbol,
       orderRecorder,
-      indicatorProfile,
     );
 
     /**
@@ -123,7 +229,7 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
     /**
      * 校验信号合法性并完成数据丰富。
      * 依次检查信号字段完整性、action 合法性、席位就绪状态、标的匹配及行情就绪，
-     * 任一校验失败则释放信号对象并返回 false。通过后写入席位版本和标的名称。
+     * 任一校验失败则释放信号对象并返回 false。通过后写入当前席位版本与标的名称。
      */
     function prepareSignal(signal: Signal): boolean {
       if (!signal.symbol) {
@@ -168,52 +274,43 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
       return true;
     }
 
-    for (const signal of immediateSignals) {
+    for (const signal of signals) {
       if (!prepareSignal(signal)) {
         continue;
       }
 
       if (canEnqueue) {
+        const adaptationResult = applyInstrumentAdaptationGate({
+          signal,
+          monitorSnapshot,
+          longQuote,
+          shortQuote,
+          monitorContext,
+        });
+        if (!adaptationResult.passed) {
+          logger.debug(
+            `[跳过信号] instrument adaptation rejected: ${formatSignalLog(signal)} reason=${adaptationResult.reason}`,
+          );
+          releaseSignal(signal);
+          continue;
+        }
+
         logger.debug(`[立即信号] ${formatSignalLog(signal)}`);
         const isSellSignal = isSellAction(signal.action);
         if (isSellSignal) {
           sellTaskQueue.push({
             type: 'IMMEDIATE_SELL',
             data: signal,
-            monitorSymbol,
           });
         } else {
           buyTaskQueue.push({
             type: 'IMMEDIATE_BUY',
             data: signal,
-            monitorSymbol,
           });
         }
       } else {
         const reason = isTradingEnabled ? '非交易时段，暂不执行' : '交易门禁关闭，暂不执行';
         logger.debug(`[立即信号] ${formatSignalLog(signal)}（${reason}）`);
-        releaseSignal(signal);
-      }
-    }
-
-    for (const signal of delayedSignals) {
-      if (!prepareSignal(signal)) {
-        continue;
-      }
-
-      if (canEnqueue) {
-        logger.debug(`[延迟验证信号] ${formatSignalLog(signal)}`);
-        const verificationIndicators = isBuyAction(signal.action)
-          ? indicatorProfile.verificationIndicatorsBySide.buy
-          : indicatorProfile.verificationIndicatorsBySide.sell;
-        delayedSignalVerifier.addSignal({
-          signal,
-          monitorSymbol,
-          verificationIndicators,
-        });
-      } else {
-        const reason = isTradingEnabled ? '非交易时段，暂不添加验证' : '交易门禁关闭，暂不添加验证';
-        logger.debug(`[延迟验证信号] ${formatSignalLog(signal)}（${reason}）`);
         releaseSignal(signal);
       }
     }

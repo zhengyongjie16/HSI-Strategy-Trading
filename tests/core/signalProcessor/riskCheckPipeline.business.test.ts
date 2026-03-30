@@ -11,7 +11,7 @@ import {
   createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
@@ -20,7 +20,7 @@ import {
   createSignalDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
-import { createTradingConfig } from '../../../mock/factories/configFactory.js';
+import { createGlobalConfig } from '../../../mock/factories/configFactory.js';
 import { createBuyThrottle } from '../../../src/core/trader/orderExecutor/buyThrottle.js';
 
 function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
@@ -39,7 +39,7 @@ function createContext(params: {
   readonly account?: ReturnType<typeof createAccountSnapshotDouble>;
   readonly positions?: ReadonlyArray<RiskCheckContext['positions'][number]>;
 }): RiskCheckContext {
-  const monitorConfig = createMonitorConfigDouble();
+  const monitorConfig = createStrategyRuntimeConfigDouble();
   const account = params.account ?? createAccountSnapshotDouble(100000);
   const positions = params.positions ?? [];
 
@@ -111,7 +111,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => {
           getRemainingMsCount += 1;
@@ -211,7 +211,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => {
           steps.push('getRemainingMs');
@@ -257,7 +257,7 @@ describe('riskCheckPipeline business flow', () => {
 
   it('does not refresh buy throttle in risk check stage when buy later fails on realtime fetch', async () => {
     const buyThrottle = createBuyThrottle();
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
       getAccountSnapshot: async () => {
@@ -267,7 +267,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -334,7 +334,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -375,7 +375,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -404,7 +404,7 @@ describe('riskCheckPipeline business flow', () => {
 
   it('does not refresh buy throttle when base risk check rejects after realtime fetch', async () => {
     const buyThrottle = createBuyThrottle();
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
@@ -413,7 +413,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -465,7 +465,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => {
           getRemainingMsCount += 1;
@@ -538,7 +538,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: (params) => {
           if (params.direction === 'LONG') {
@@ -612,7 +612,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -673,7 +673,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -727,7 +727,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
     });
@@ -810,7 +810,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => {
           steps.push('getRemainingMs');
@@ -888,7 +888,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => {
           steps.push('getRemainingMs');
@@ -972,7 +972,7 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const pipeline = createRiskCheckPipeline({
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => {
           steps.push('getRemainingMs');

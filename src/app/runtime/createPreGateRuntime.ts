@@ -7,9 +7,10 @@
  * - 固定 pre-gate 对象所有权边界
  */
 import { AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS, TRADING } from '../../constants/index.js';
-import { validateAllConfig } from '../../config/validator/index.js';
 import { createSdkConfigFromAuth } from '../../config/auth/index.js';
-import { createMultiMonitorTradingConfig } from '../../config/trading/index.js';
+import { createTradingConfig } from '../../config/trading/index.js';
+import { createStrategyRuntimeConfigFromTradingConfig } from '../../config/trading/runtime.js';
+import { validateAllConfig } from '../../config/validator/index.js';
 import { createStartupGate } from '../../main/startup/gate.js';
 import { sleep } from '../../main/utils.js';
 import { createWarrantListCache } from '../../services/autoSymbolFinder/utils.js';
@@ -35,17 +36,20 @@ import type { AppEnvironmentParams, PreGateRuntime } from '../types.js';
  */
 export async function createPreGateRuntime(params: AppEnvironmentParams): Promise<PreGateRuntime> {
   const { env } = params;
-  const tradingConfig = createMultiMonitorTradingConfig({ env });
+  const tradingConfig = createTradingConfig({ env });
+  validateAllConfig({
+    env,
+    tradingConfig,
+  });
+  const monitorConfig = createStrategyRuntimeConfigFromTradingConfig(tradingConfig);
 
-  const symbolRegistry = createSymbolRegistry(tradingConfig.monitors);
+  const symbolRegistry = createSymbolRegistry([monitorConfig]);
   const warrantListCache = createWarrantListCache();
   const warrantListCacheConfig = {
     cache: warrantListCache,
     ttlMs: AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS,
     nowMs: () => Date.now(),
   };
-
-  await validateAllConfig({ env, tradingConfig });
 
   const config = await createSdkConfigFromAuth({
     env,
@@ -83,6 +87,7 @@ export async function createPreGateRuntime(params: AppEnvironmentParams): Promis
   return {
     config,
     tradingConfig,
+    monitorConfig,
     symbolRegistry,
     warrantListCache,
     warrantListCacheConfig,

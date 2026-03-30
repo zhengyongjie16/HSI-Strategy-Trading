@@ -10,7 +10,7 @@ import { logger } from '../../../utils/logger/index.js';
 import { LOG_COLORS } from '../../../constants/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import { isSeatVersionMatch } from '../../../utils/seat/guards.js';
-import type { MonitorConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { Signal } from '../../../types/signal.js';
 import type { OrderExecutor, OrderExecutorDeps } from '../types.js';
 import { createSubmitTargetOrder } from './submitFlow.js';
@@ -25,7 +25,7 @@ import {
 /**
  * 创建订单执行器（核心业务流程：信号执行与订单提交）。
  *
- * @param deps 依赖注入（ctxPromise、rateLimiter、cacheManager、orderMonitor、orderRecorder、tradingConfig、symbolRegistry、isExecutionAllowed）
+ * @param deps 依赖注入（ctxPromise、rateLimiter、cacheManager、orderMonitor、orderRecorder、globalConfig、monitorConfig、symbolRegistry、isExecutionAllowed）
  * @returns OrderExecutor 接口实例
  */
 export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
@@ -35,11 +35,11 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     cacheManager,
     orderMonitor,
     orderRecorder,
-    tradingConfig,
+    globalConfig,
+    monitorConfig,
     symbolRegistry,
     isExecutionAllowed,
   } = deps;
-  const { global, monitors } = tradingConfig;
 
   /**
    * 通过信号标的解析监控配置与方向，未找到时返回 null。
@@ -49,18 +49,10 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
    */
   function resolveMonitorConfigBySymbol(
     signalSymbol: string,
-  ): { monitorConfig: MonitorConfig; isShortSymbol: boolean; seatVersion: number } | null {
+  ): { monitorConfig: StrategyRuntimeConfig; isShortSymbol: boolean; seatVersion: number } | null {
     const resolvedSeat = symbolRegistry.resolveSeatBySymbol(signalSymbol);
     if (!resolvedSeat) {
       logger.warn(`[订单执行] 未找到席位标的，跳过信号: ${signalSymbol}`);
-      return null;
-    }
-
-    const monitorConfig = monitors.find(
-      (config) => config.monitorSymbol === resolvedSeat.monitorSymbol,
-    );
-    if (!monitorConfig) {
-      logger.warn(`[订单执行] 未找到监控配置，跳过信号: ${signalSymbol}`);
       return null;
     }
 
@@ -122,7 +114,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     cacheManager,
     orderMonitor,
     orderRecorder,
-    globalConfig: global,
+    globalConfig,
     canExecuteSignal,
     recordBuyAttempt: buyThrottle.recordBuyAttempt,
   });
@@ -186,7 +178,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         continue;
       }
 
-      const { monitorConfig, isShortSymbol, seatVersion } = resolved;
+      const { monitorConfig: resolvedMonitorConfig, isShortSymbol, seatVersion } = resolved;
       if (!validateSignalSeatVersionAtExecution(signal, seatVersion)) {
         continue;
       }
@@ -206,7 +198,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         signal,
         signal.symbol,
         isShortSymbol,
-        monitorConfig,
+        resolvedMonitorConfig,
       );
       if (submittedOrderId !== null) {
         submittedCount += 1;

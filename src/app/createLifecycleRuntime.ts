@@ -16,6 +16,7 @@ import { createSignalRuntimeDomain } from '../main/lifecycle/cacheDomains/signal
 import { executeTradingDayOpenRebuild } from './rebuild.js';
 import { logger } from '../utils/logger/index.js';
 import { signalObjectPool } from '../utils/objectPool/index.js';
+import { requireStrategyRuntime } from './singleRuntimeHelpers.js';
 import type { CacheDomain, DayLifecycleManager } from '../main/lifecycle/types.js';
 import type { LifecycleRuntimeFactories, LifecycleRuntimeFactoryDeps } from './types.js';
 
@@ -41,10 +42,10 @@ function createLifecycleCacheDomains(
   factories: LifecycleRuntimeFactories = DEFAULT_LIFECYCLE_RUNTIME_FACTORIES,
 ): ReadonlyArray<CacheDomain> {
   const { preGateRuntime, postGateRuntime, asyncRuntime, rebuildTradingDayState } = params;
-  const { tradingConfig, symbolRegistry, warrantListCache, marketDataClient } = preGateRuntime;
+  const { tradingConfig, monitorConfig, symbolRegistry, warrantListCache, marketDataClient } =
+    preGateRuntime;
+  const monitorContext = requireStrategyRuntime(postGateRuntime.monitorContext);
   const {
-    monitorContexts,
-    indicatorCache,
     buyTaskQueue,
     sellTaskQueue,
     monitorTaskQueue,
@@ -76,13 +77,12 @@ function createLifecycleCacheDomains(
 
   return [
     buildSignalRuntimeDomain({
-      monitorContexts,
+      monitorContext,
       buyProcessor,
       sellProcessor,
       monitorTaskProcessor,
       orderMonitorWorker,
       postTradeRefresher,
-      indicatorCache,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -96,8 +96,9 @@ function createLifecycleCacheDomains(
     }),
     buildSeatDomain({
       tradingConfig,
+      monitorConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       warrantListCache,
     }),
     buildOrderDomain({
@@ -107,7 +108,7 @@ function createLifecycleCacheDomains(
       signalProcessor,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
-      monitorContexts,
+      monitorContext,
       liquidationCooldownTracker,
     }),
     buildGlobalStateDomain({

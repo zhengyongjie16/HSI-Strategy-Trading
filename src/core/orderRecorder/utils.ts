@@ -158,13 +158,13 @@ export function classifyAndConvertOrders(orders: ReadonlyArray<RawOrderFromAPI>)
 }
 
 /**
- * 启动/重建阶段对单标的全量订单做统一分类与分流。
+ * 启动/重建阶段对当前执行标的的全量订单做统一分类与分流。
  * 默认行为：
  * - Filled 订单会转换为 OrderRecord 参与重建（无效价格/数量/时间会被跳过）
  * - Pending 订单保留原始结构，交由恢复阶段继续跟踪或撤单
  * - 其他关闭状态（Canceled/Rejected 等）直接忽略
  *
- * @param orders 单标的全量订单
+ * @param orders 当前执行标的的全量订单
  * @returns Filled/Pending 按买卖方向分流后的分类结果
  */
 export function classifyOrdersForRebuild(

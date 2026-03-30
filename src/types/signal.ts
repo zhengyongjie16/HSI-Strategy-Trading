@@ -22,7 +22,7 @@ export type OrderTypeConfig = 'LO' | 'ELO' | 'MO';
 /**
  * 交易信号。
  * 类型用途：单次交易操作的完整信息（标的、动作、原因、订单类型等），作为策略输出、executeSignals 入参及对象池复用的可写结构；不使用 readonly 以支持对象池修改。
- * 数据来源：策略模块生成，经延迟验证与风控后写入。
+ * 数据来源：策略模块生成，经风险检查与执行链路处理后写入。
  * 使用范围：策略、信号处理、Trader、对象池等；全项目可引用。
  */
 export type Signal = {
@@ -56,7 +56,6 @@ export type Signal = {
   /**
    * 信号触发时间
    * - 立即信号：信号生成时间
-   * - 延迟信号：延迟验证的基准时间（T0）
    * - 末日保护信号：信号生成时间
    */
   triggerTime?: Date | null;
@@ -64,15 +63,15 @@ export type Signal = {
   /** 信号对应的席位版本号（换标后用于丢弃旧信号） */
   seatVersion?: number | null;
 
-  /** 延迟验证：T0 时刻的指标快照 */
+  /** 历史遗留字段：T0 时刻指标快照（当前主链路不依赖） */
   indicators1?: Readonly<Record<string, number>> | null;
 
-  /** 延迟验证：历史验证记录 */
+  /** 历史遗留字段：验证记录（当前主链路不依赖） */
   verificationHistory?: ReadonlyArray<{
     timestamp: Date;
     indicators: Readonly<Record<string, number>>;
   }> | null;
 
-  /** 关联的买入订单ID列表（仅卖出订单使用，用于智能平仓防重） */
+  /** 关联的买入订单ID列表（仅卖出订单使用，用于全平卖出归因与防重） */
   relatedBuyOrderIds?: readonly string[] | null;
 };

@@ -2,7 +2,7 @@
  * 浮亏监控模块
  *
  * 功能：
- * - 实时监控单标的的浮亏
+ * - 实时监控执行标的的浮亏
  * - 浮亏超过阈值时触发保护性清仓
  * - 保护性清仓订单类型由全局配置 liquidationOrderType 决定
  *
@@ -53,7 +53,6 @@ export const createUnrealizedLossMonitor = (
     readonly symbol: string;
     readonly currentPrice: number;
     readonly isLong: boolean;
-    readonly monitorSymbol: string;
     readonly riskChecker: RiskChecker;
     readonly trader: Trader;
     readonly orderRecorder: OrderRecorder;
@@ -64,7 +63,6 @@ export const createUnrealizedLossMonitor = (
       symbol,
       currentPrice,
       isLong,
-      monitorSymbol,
       riskChecker,
       trader,
       orderRecorder,
@@ -128,7 +126,7 @@ export const createUnrealizedLossMonitor = (
         symbol,
         isLong,
         quote,
-        dailyLossTracker.getLossOffset(monitorSymbol, isLong),
+        dailyLossTracker.getLossOffset(isLong ? 'LONG' : 'SHORT'),
       );
       return true; // 清仓成功
     } catch (err) {
@@ -152,7 +150,6 @@ export const createUnrealizedLossMonitor = (
       shortQuote,
       longSymbol,
       shortSymbol,
-      monitorSymbol,
       riskChecker,
       trader,
       orderRecorder,
@@ -180,7 +177,6 @@ export const createUnrealizedLossMonitor = (
           symbol,
           currentPrice: price,
           isLong,
-          monitorSymbol,
           riskChecker,
           trader,
           orderRecorder,

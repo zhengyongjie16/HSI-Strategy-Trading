@@ -2,27 +2,32 @@
  * indicatorPipeline 业务测试
  *
  * 功能：
- * - 验证缓存 version 复用与每秒 indicatorCache push 语义
+ * - 验证当前 K 线缓存可构建 factor snapshot 时的状态更新语义
  * - 验证缓存缺失时返回 null
- * - 验证 version 变化时能推进增量 runtime 并更新状态
+ * - 验证 pipeline 不再走旧版增量指标 runtime 语义
  */
 import { describe, expect, it } from 'bun:test';
 import { Period } from 'longbridge';
 
 import type { CandleData } from '../../../src/types/data.js';
+import type { StrategyThresholdConfig } from '../../../src/types/factor.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import type { IndicatorPipelineParams } from '../../../src/main/processMonitor/types.js';
 import type { MonitorIndicatorChangesParams } from '../../../src/services/marketMonitor/types.js';
 import {
-  createIndicatorUsageProfileDouble,
-  createMonitorConfigDouble,
+  createIndicatorDisplayProfileDouble,
+  createStrategyRuntimeConfigDouble,
   createQuoteDouble,
 } from '../../helpers/testDoubles.js';
 
-function createCandles(length: number, start: number, step: number): ReadonlyArray<CandleData> {
+function createCandles(
+  length: number,
+  start: number,
+  step: number,
+  baseTimestamp: number = 1_708_000_000_000,
+): ReadonlyArray<CandleData> {
   const candles: CandleData[] = [];
-  const baseTimestamp = 1_708_000_000_000;
   for (let i = 0; i < length; i += 1) {
     const close = start + i * step;
     candles.push({
@@ -42,15 +47,107 @@ function createSnapshot(price: number): IndicatorSnapshot {
   return {
     price,
     changePercent: 0,
-    ema: { 7: price - 1 },
-    rsi: { 6: 55 },
-    psy: { 13: 52 },
-    mfi: 48,
-    kdj: { k: 50, d: 49, j: 52 },
-    macd: { macd: 1, dif: 0.5, dea: 0.4 },
-    adx: null,
+    factorSnapshot: null,
   };
 }
+
+function createHongKongSessionBaseTimestamp(hour: number, minute: number): number {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = formatter.formatToParts(new Date());
+  let year = '';
+  let month = '';
+  let day = '';
+  for (const part of parts) {
+    if (part.type === 'year') {
+      year = part.value;
+      continue;
+    }
+
+    if (part.type === 'month') {
+      month = part.value;
+      continue;
+    }
+
+    if (part.type === 'day') {
+      day = part.value;
+    }
+  }
+
+  return Date.parse(
+    `${year}-${month}-${day}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`,
+  );
+}
+
+const STRATEGY_THRESHOLD_CONFIG: StrategyThresholdConfig = {
+  regimeThresholds: {
+    atrShortPeriod: 5,
+    atrLongPeriod: 30,
+    rvQuantileWindowDays: 20,
+    trendOnVolExpansion: 1.2,
+    trendOffVolExpansion: 0.8,
+    extremeVolExpansion: 1.8,
+    trendOnVolQuantile: 0.6,
+    trendOffVolQuantile: 0.4,
+    extremeVolQuantile: 0.9,
+  },
+  trendScoreThresholds: {
+    w15: 0.2,
+    w30: 0.3,
+    w60: 0.5,
+    classificationThreshold: 0.6,
+    entryThreshold: 0.9,
+    exitThreshold: 0.35,
+    reverseInvalidationThreshold: 0.5,
+  },
+  erThresholds: {
+    er15EntryMin: 0.4,
+    er30EntryMin: 0.4,
+    er15ExitMax: 0.35,
+    er30ExitMax: 0.35,
+    strongTrendErFloor: 0.6,
+  },
+  vwapConfirmRules: {
+    distanceBandAtr: 0.1,
+    slopeWindowBars: 5,
+    maxCrossCountLast10m: 2,
+  },
+  openingStructureRules: {
+    openingRangeMinutes: 20,
+    breakoutScoreMin: 0.8,
+    outsidePersistenceWindowBars: 2,
+    outsidePersistenceMin: 0.5,
+    retestToleranceAtr: 0.15,
+    confirmBars: 2,
+    morningNoiseWindowMinutes: 20,
+    afternoonNoiseWindowMinutes: 15,
+  },
+  pmContinuationRules: {
+    amMoveZMin: 1,
+    middayHoldMin: 0.5,
+    pmReExpansionTrendScoreMin: 0.9,
+    pmReExpansionEr15Min: 0.4,
+    pmConfirmCutoffMinutes: 810,
+  },
+  instrumentAdaptationRules: {
+    bullBuyMinDistancePct: 0.35,
+    bearBuyMaxDistancePct: -0.35,
+    bullLiquidationDistancePct: 0.3,
+    bearLiquidationDistancePct: -0.3,
+    autoSearchOpenDelayMinutes: 15,
+    autoSearchPrimaryDistanceBull: 0.35,
+    autoSearchPrimaryDistanceBear: -0.35,
+    switchDistanceRangeBull: [0.31, 1.5],
+    switchDistanceRangeBear: [-1.5, -0.31],
+    autoSearchMinTurnoverPerMinuteBull: 1000000,
+    autoSearchMinTurnoverPerMinuteBear: 1000000,
+    autoSearchExpiryMinMonths: 3,
+  },
+};
 
 function createCacheSnapshot(params: {
   readonly symbol?: string;
@@ -76,26 +173,25 @@ function createCacheSnapshot(params: {
   };
 }
 
-function createMonitorContext(overrides: Partial<MonitorContext> = {}): MonitorContext {
-  const config = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
+function createStrategyRuntime(overrides: Partial<StrategyRuntime> = {}): StrategyRuntime {
+  const config = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol: 'HSI.HK' });
   return {
     config,
     state: {
-      monitorSymbol: config.monitorSymbol,
+      baseInstrumentSymbol: config.baseInstrumentSymbol,
       monitorPrice: null,
       longPrice: null,
       shortPrice: null,
       signal: null,
-      pendingDelayedSignals: [],
+      pendingSignals: [],
       monitorValues: null,
       lastMonitorSnapshot: null,
       lastCandlestickCacheVersion: null,
-      incrementalIndicatorRuntime: null,
     },
-    monitorSymbolName: config.monitorSymbol,
-    indicatorProfile: createIndicatorUsageProfileDouble(),
+    baseInstrumentName: config.baseInstrumentSymbol,
+    indicatorProfile: createIndicatorDisplayProfileDouble(),
     ...overrides,
-  } as unknown as MonitorContext;
+  } as unknown as StrategyRuntime;
 }
 
 type RunIndicatorPipelineFn = (
@@ -112,24 +208,17 @@ async function loadRunIndicatorPipeline(): Promise<RunIndicatorPipelineFn> {
 describe('processMonitor indicatorPipeline business flow', () => {
   it('returns null when local candlestick cache is missing or not initialized', async () => {
     const runIndicatorPipeline = await loadRunIndicatorPipeline();
-    let cachePushCount = 0;
+    const cachePushCount = 0;
     let monitorChangesCount = 0;
 
-    const monitorContext = createMonitorContext();
+    const monitorContext = createStrategyRuntime();
     const result = await runIndicatorPipeline({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorContext,
       monitorQuote: createQuoteDouble('HSI.HK', 20_000),
       mainContext: {
         marketDataClient: {
           getCandlestickSnapshot: () => null,
-        },
-        indicatorCache: {
-          push: () => {
-            cachePushCount += 1;
-          },
-          getAt: () => null,
-          clearAll: () => {},
         },
         marketMonitor: {
           monitorIndicatorChanges: () => {
@@ -145,89 +234,29 @@ describe('processMonitor indicatorPipeline business flow', () => {
     expect(monitorChangesCount).toBe(0);
   });
 
-  it('reuses last snapshot when cache version is unchanged and still pushes indicatorCache', async () => {
+  it('falls back to latest close when monitor quote price is invalid', async () => {
     const runIndicatorPipeline = await loadRunIndicatorPipeline();
-    const lastSnapshot = createSnapshot(111);
+    const sessionBaseTimestamp = createHongKongSessionBaseTimestamp(9, 30);
+    const candles = createCandles(120, 20_000, 1, sessionBaseTimestamp);
     const cacheSnapshot = createCacheSnapshot({
-      candles: createCandles(60, 100, 0.2),
-      version: 7,
+      candles,
+      version: 3,
     });
-
-    const monitorContext = createMonitorContext({
-      state: {
-        monitorSymbol: 'HSI.HK',
-        monitorPrice: null,
-        longPrice: null,
-        shortPrice: null,
-        signal: null,
-        pendingDelayedSignals: [],
-        monitorValues: null,
-        lastMonitorSnapshot: lastSnapshot,
-        lastCandlestickCacheVersion: 7,
-        incrementalIndicatorRuntime: null,
-      },
-    });
-
-    const pushed: IndicatorSnapshot[] = [];
-    const monitorChanges: IndicatorSnapshot[] = [];
-    const result = await runIndicatorPipeline({
-      monitorSymbol: 'HSI.HK',
-      monitorContext,
-      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
-      mainContext: {
-        marketDataClient: {
-          getCandlestickSnapshot: () => cacheSnapshot,
-        },
-        indicatorCache: {
-          push: (_symbol: string, snapshot: IndicatorSnapshot) => {
-            pushed.push(snapshot);
-          },
-          getAt: () => null,
-          clearAll: () => {},
-        },
-        marketMonitor: {
-          monitorIndicatorChanges: (params: MonitorIndicatorChangesParams) => {
-            const monitorSnapshot = params.monitorSnapshot;
-            if (monitorSnapshot === null) {
-              throw new Error('expected indicator snapshot');
-            }
-
-            monitorChanges.push(monitorSnapshot);
-            return false;
-          },
-        },
-      } as never,
-    });
-
-    expect(result).toBe(lastSnapshot);
-    expect(pushed).toEqual([lastSnapshot]);
-    expect(monitorChanges).toEqual([lastSnapshot]);
-  });
-
-  it('rebuilds snapshot from incremental runtime when cache version changes', async () => {
-    const runIndicatorPipeline = await loadRunIndicatorPipeline();
-    const cacheSnapshot = createCacheSnapshot({
-      candles: createCandles(80, 120, 0.3),
-      version: 11,
-    });
-    const monitorContext = createMonitorContext();
-
-    const pushed: IndicatorSnapshot[] = [];
+    const monitorContext = createStrategyRuntime();
     let monitorChangesCount = 0;
+
+    const invalidMonitorQuote = {
+      ...createQuoteDouble('HSI.HK', 20_000),
+      price: Number.NaN,
+      prevClose: 19_900,
+    };
     const result = await runIndicatorPipeline({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorContext,
-      monitorQuote: createQuoteDouble('HSI.HK', 20_100),
+      monitorQuote: invalidMonitorQuote,
       mainContext: {
         marketDataClient: {
           getCandlestickSnapshot: () => cacheSnapshot,
-        },
-        indicatorCache: {
-          push: (_symbol: string, snapshot: IndicatorSnapshot) => {
-            pushed.push(snapshot);
-          },
-          getAt: () => null,
-          clearAll: () => {},
         },
         marketMonitor: {
           monitorIndicatorChanges: () => {
@@ -243,11 +272,144 @@ describe('processMonitor indicatorPipeline business flow', () => {
       throw new Error('expected indicator snapshot');
     }
 
-    expect(pushed).toHaveLength(1);
-    expect(pushed[0]).toBe(result);
+    const latestClose = candles.at(-1)?.close;
+    if (typeof latestClose !== 'number') {
+      throw new TypeError('expected numeric latest close');
+    }
+
+    expect(result.price).toBe(latestClose);
+    expect(result.changePercent).toBeNull();
+    expect(monitorChangesCount).toBe(1);
+  });
+
+  it('rebuilds a fresh factor snapshot even when cache version is unchanged', async () => {
+    const runIndicatorPipeline = await loadRunIndicatorPipeline();
+    const lastSnapshot = createSnapshot(111);
+    const sessionBaseTimestamp = createHongKongSessionBaseTimestamp(9, 30);
+    const cacheSnapshot = createCacheSnapshot({
+      candles: createCandles(120, 20_000, 2, sessionBaseTimestamp),
+      version: 7,
+    });
+
+    const monitorContext = createStrategyRuntime({
+      state: {
+        baseInstrumentSymbol: 'HSI.HK',
+        monitorPrice: null,
+        longPrice: null,
+        shortPrice: null,
+        signal: null,
+        pendingSignals: [],
+        monitorValues: null,
+        lastMonitorSnapshot: lastSnapshot,
+        lastCandlestickCacheVersion: 7,
+      },
+    });
+
+    const monitorChanges: IndicatorSnapshot[] = [];
+    const result = await runIndicatorPipeline({
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorContext,
+      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
+      mainContext: {
+        marketDataClient: {
+          getCandlestickSnapshot: () => cacheSnapshot,
+        },
+        marketMonitor: {
+          monitorIndicatorChanges: (params: MonitorIndicatorChangesParams) => {
+            const monitorSnapshot = params.monitorSnapshot;
+            if (monitorSnapshot === null) {
+              throw new Error('expected indicator snapshot');
+            }
+
+            monitorChanges.push(monitorSnapshot);
+            return false;
+          },
+        },
+      } as never,
+    });
+
+    expect(result).not.toBeNull();
+    if (!result) {
+      throw new Error('expected indicator snapshot');
+    }
+
+    expect(result).not.toBe(lastSnapshot);
+    expect(monitorChanges).toHaveLength(1);
+    expect(monitorChanges[0]).toBe(result);
+    expect(monitorContext.state.lastMonitorSnapshot).toBe(result);
+    expect(monitorContext.state.lastCandlestickCacheVersion).toBe(7);
+  });
+
+  it('updates snapshot state when cache version changes without reviving legacy incremental runtime', async () => {
+    const runIndicatorPipeline = await loadRunIndicatorPipeline();
+    const sessionBaseTimestamp = createHongKongSessionBaseTimestamp(9, 30);
+    const cacheSnapshot = createCacheSnapshot({
+      candles: createCandles(120, 20_000, 3, sessionBaseTimestamp),
+      version: 11,
+    });
+    const monitorContext = createStrategyRuntime();
+
+    let monitorChangesCount = 0;
+    const result = await runIndicatorPipeline({
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorContext,
+      monitorQuote: createQuoteDouble('HSI.HK', 20_100),
+      mainContext: {
+        marketDataClient: {
+          getCandlestickSnapshot: () => cacheSnapshot,
+        },
+        marketMonitor: {
+          monitorIndicatorChanges: () => {
+            monitorChangesCount += 1;
+            return true;
+          },
+        },
+      } as never,
+    });
+
+    expect(result).not.toBeNull();
+    if (!result) {
+      throw new Error('expected indicator snapshot');
+    }
+
     expect(monitorContext.state.lastMonitorSnapshot).toBe(result);
     expect(monitorContext.state.lastCandlestickCacheVersion).toBe(11);
-    expect(monitorContext.state.incrementalIndicatorRuntime).not.toBeNull();
+    expect(monitorChangesCount).toBe(1);
+  });
+
+  it('builds factor snapshots on the single-index trend path', async () => {
+    const runIndicatorPipeline = await loadRunIndicatorPipeline();
+    const sessionBaseTimestamp = createHongKongSessionBaseTimestamp(9, 30);
+    const cacheSnapshot = createCacheSnapshot({
+      candles: createCandles(120, 20_000, 3, sessionBaseTimestamp),
+      version: 5,
+    });
+    const monitorContext = createStrategyRuntime({
+      config: createStrategyRuntimeConfigDouble({
+        baseInstrumentSymbol: 'HSI.HK',
+        strategyConfig: STRATEGY_THRESHOLD_CONFIG,
+      }),
+    });
+
+    let monitorChangesCount = 0;
+    const result = await runIndicatorPipeline({
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorContext,
+      monitorQuote: createQuoteDouble('HSI.HK', 20_360),
+      mainContext: {
+        marketDataClient: {
+          getCandlestickSnapshot: () => cacheSnapshot,
+        },
+        marketMonitor: {
+          monitorIndicatorChanges: () => {
+            monitorChangesCount += 1;
+            return true;
+          },
+        },
+      } as never,
+    });
+
+    expect(result).not.toBeNull();
     expect(monitorChangesCount).toBe(1);
   });
 });

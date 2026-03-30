@@ -6,13 +6,17 @@
  * - 按监控标的方向收集保护性清仓完成事件并模拟触发周期
  * - 恢复触发计数器与仍有效的清仓冷却缓存
  */
-import type { TradeLogHydrator, TradeLogHydratorDeps, RawRecord } from './types.js';
+import type {
+  ProtectiveLiquidationDirection,
+  TradeLogHydrator,
+  TradeLogHydratorDeps,
+  RawRecord,
+} from './types.js';
 import type { TradeRecord } from '../../types/trader.js';
 import { isRecord } from '../../utils/helpers/index.js';
 import { buildTradeLogPath } from '../../utils/trading/tradeLogPath.js';
 import {
-  buildCooldownKey,
-  collectLiquidationRecordsByMonitor,
+  collectLiquidationRecordsByDirection,
   resolveCooldownEndMs,
   resolveRemainingCooldownMs,
   simulateTriggerCycle,
@@ -36,7 +40,7 @@ function normalizeTradeRecord(raw: unknown): TradeRecord | null {
     orderId: toStringOrNull(rawRecord['orderId']),
     symbol: toStringOrNull(rawRecord['symbol']),
     symbolName: toStringOrNull(rawRecord['symbolName']),
-    monitorSymbol: toStringOrNull(rawRecord['monitorSymbol']),
+    baseInstrumentSymbol: toStringOrNull(rawRecord['baseInstrumentSymbol']),
     action: toStringOrNull(rawRecord['action']),
     side: toStringOrNull(rawRecord['side']),
     quantity: toStringOrNull(rawRecord['quantity']),
@@ -67,20 +71,16 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
     resolveLogRootDir,
     nowMs,
     logger,
-    tradingConfig,
+    monitorConfig,
     liquidationCooldownTracker,
   } = deps;
-
-  const monitorConfigMap = new Map(
-    tradingConfig.monitors.map((config) => [config.monitorSymbol, config]),
-  );
 
   /**
    * 读取当日成交日志，按监控标的方向模拟触发-冷却周期并恢复当前状态。
    * 启动时调用一次，用于跨进程重启后恢复触发计数器和未到期冷却。
    */
-  function hydrate(): ReadonlyMap<string, number> {
-    const latestCompletedBoundaryByDirection = new Map<string, number>();
+  function hydrate(): ReadonlyMap<ProtectiveLiquidationDirection, number> {
+    const latestCompletedBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
     const currentTimeMs = nowMs();
     const logFile = buildTradeLogPath(resolveLogRootDir(), new Date(currentTimeMs));
     if (!existsSync(logFile)) {
@@ -113,9 +113,8 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
     }
 
     let restoredCooldownCount = 0;
-    const monitorSymbols = new Set(tradingConfig.monitors.map((config) => config.monitorSymbol));
-    const groupedRecords = collectLiquidationRecordsByMonitor({
-      monitorSymbols,
+    const groupedRecords = collectLiquidationRecordsByDirection({
+      baseInstrument: monitorConfig.baseInstrumentSymbol,
       tradeRecords: records,
     });
 
@@ -127,19 +126,15 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
 
       const latestRecord = recordGroup.at(-1) ?? null;
       if (latestRecord) {
-        latestCompletedBoundaryByDirection.set(
-          buildCooldownKey(firstRecord.monitorSymbol, firstRecord.direction),
-          latestRecord.executedAtMs,
-        );
+        latestCompletedBoundaryByDirection.set(firstRecord.direction, latestRecord.executedAtMs);
       }
 
-      const monitorConfig = monitorConfigMap.get(firstRecord.monitorSymbol) ?? null;
-      const cooldownConfig = monitorConfig?.liquidationCooldown ?? null;
+      const cooldownConfig = monitorConfig.liquidationCooldown;
       if (!cooldownConfig) {
         continue;
       }
 
-      const triggerLimit = monitorConfig?.liquidationTriggerLimit ?? 1;
+      const triggerLimit = monitorConfig.liquidationTriggerLimit;
       const cycleResult = simulateTriggerCycle({
         records: recordGroup,
         triggerLimit,
@@ -149,7 +144,6 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
       if (cycleResult.cooldownExecutedTimeMs === null) {
         if (cycleResult.currentCount > 0) {
           liquidationCooldownTracker.restoreTriggerCount({
-            symbol: firstRecord.monitorSymbol,
             direction: firstRecord.direction,
             count: cycleResult.currentCount,
           });
@@ -166,20 +160,18 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
       if (remainingMs > 0) {
         if (cycleResult.currentCount > 0) {
           liquidationCooldownTracker.restoreTriggerCount({
-            symbol: firstRecord.monitorSymbol,
             direction: firstRecord.direction,
             count: cycleResult.currentCount,
           });
         }
 
         liquidationCooldownTracker.recordCooldown({
-          symbol: firstRecord.monitorSymbol,
           direction: firstRecord.direction,
           executedTimeMs: cycleResult.cooldownExecutedTimeMs,
         });
         restoredCooldownCount += 1;
         logger.info(
-          `[清仓冷却] 恢复 ${firstRecord.monitorSymbol}:${firstRecord.direction} 冷却，` +
+          `[清仓冷却] 恢复 ${monitorConfig.baseInstrumentSymbol}:${firstRecord.direction} 冷却，` +
             `当前周期触发 ${cycleResult.currentCount}/${triggerLimit}，` +
             `剩余 ${Math.ceil(remainingMs / 1000)} 秒`,
         );

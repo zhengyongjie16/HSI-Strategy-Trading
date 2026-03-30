@@ -28,17 +28,17 @@ import type {
 
 /**
  * 构建牛熊证列表缓存键，用于 TTL 与请求去重。
- * @param monitorSymbol - 监控标的代码
+ * @param baseInstrumentSymbol - 监控标的代码
  * @param warrantType - 牛熊证类型
  * @param expiryFilters - 到期日筛选条件数组
  * @returns 缓存键字符串
  */
 function buildCacheKey(
-  monitorSymbol: string,
+  baseInstrumentSymbol: string,
   warrantType: WarrantType,
   expiryFilters: ReadonlyArray<FilterWarrantExpiryDate>,
 ): string {
-  return `${monitorSymbol}:${String(warrantType)}:${expiryFilters.join(',')}`;
+  return `${baseInstrumentSymbol}:${String(warrantType)}:${expiryFilters.join(',')}`;
 }
 
 /**
@@ -66,7 +66,7 @@ function resolvePolicyDirectionLabel(policy: DirectionalAutoSearchPolicy): '牛'
  */
 function logSelectedCandidate(params: {
   readonly logger: FindBestWarrantInput['logger'];
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly tradingMinutes: number;
   readonly policy: DirectionalAutoSearchPolicy;
   readonly candidate: WarrantCandidate;
@@ -88,7 +88,7 @@ function logSelectedCandidate(params: {
   const callPriceText = formatDecimal(params.candidate.callPrice, DEFAULT_PRICE_DECIMALS);
   if (params.candidate.selectionStage === 'PRIMARY') {
     params.logger.info(
-      `[自动寻标] 主条件命中${directionLabel}证：${params.monitorSymbol} -> ${params.candidate.symbol} ` +
+      `[自动寻标] 主条件命中${directionLabel}证：${params.baseInstrumentSymbol} -> ${params.candidate.symbol} ` +
         `(selectionStage=PRIMARY, distancePct=${distanceText}%, delta=${distanceDeltaText}%, ` +
         `threshold=${thresholdText}%, turnoverPerMinute=${turnoverText}, callPrice=${callPriceText}, ` +
         `primaryCandidates=${params.primaryCandidateCount}, tradingMinutes=${params.tradingMinutes})`,
@@ -97,7 +97,7 @@ function logSelectedCandidate(params: {
   }
 
   params.logger.info(
-    `[自动寻标] 主条件无候选，降级区间命中${directionLabel}证：${params.monitorSymbol} -> ${params.candidate.symbol} ` +
+    `[自动寻标] 主条件无候选，降级区间命中${directionLabel}证：${params.baseInstrumentSymbol} -> ${params.candidate.symbol} ` +
       `(selectionStage=DEGRADED, distancePct=${distanceText}%, delta=${distanceDeltaText}%, ` +
       `threshold=${thresholdText}%, degradedRange=${degradedRangeText}, turnoverPerMinute=${turnoverText}, ` +
       `callPrice=${callPriceText}, degradedCandidates=${params.degradedCandidateCount}, tradingMinutes=${params.tradingMinutes})`,
@@ -111,7 +111,7 @@ function logSelectedCandidate(params: {
  */
 function logNoCandidateFound(params: {
   readonly logger: FindBestWarrantInput['logger'];
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly tradingMinutes: number;
   readonly warrants: ReadonlyArray<WarrantListItem>;
   readonly policy: DirectionalAutoSearchPolicy;
@@ -120,7 +120,7 @@ function logNoCandidateFound(params: {
 }): void {
   const directionLabel = resolvePolicyDirectionLabel(params.policy);
   params.logger.warn(
-    `[自动寻标] 主条件与降级条件均未命中${directionLabel}证：${params.monitorSymbol} ` +
+    `[自动寻标] 主条件与降级条件均未命中${directionLabel}证：${params.baseInstrumentSymbol} ` +
       `(列表条数=${params.warrants.length}, 交易分钟数=${params.tradingMinutes}, ` +
       `primaryThreshold=${formatDecimal(params.policy.primaryThreshold, DEFAULT_PERCENT_DECIMALS)}%, ` +
       `degradedRange=${formatDecimal(params.policy.degradedRange.min, DEFAULT_PERCENT_DECIMALS)}%,` +
@@ -131,17 +131,17 @@ function logNoCandidateFound(params: {
 
 /**
  * 调用 Longbridge warrantList API 请求牛熊证列表（按成交额降序）。
- * @param params - 请求参数（ctx、monitorSymbol、warrantType、expiryFilters）
+ * @param params - 请求参数（ctx、baseInstrumentSymbol、warrantType、expiryFilters）
  * @returns 牛熊证列表
  */
 function requestWarrantList({
   ctx,
-  monitorSymbol,
+  baseInstrumentSymbol,
   warrantType,
   expiryFilters,
 }: WarrantListRequestParams): Promise<ReadonlyArray<WarrantListItem>> {
   return ctx.warrantList(
-    monitorSymbol,
+    baseInstrumentSymbol,
     WarrantSortBy.Turnover,
     SortOrderType.Descending,
     [warrantType],
@@ -154,12 +154,12 @@ function requestWarrantList({
 
 /**
  * 带缓存的牛熊证列表获取：命中 TTL 内缓存直接返回，否则请求 API 并写入缓存，并发请求去重。
- * @param params - 含 ctx、monitorSymbol、warrantType、expiryFilters、cacheConfig
+ * @param params - 含 ctx、baseInstrumentSymbol、warrantType、expiryFilters、cacheConfig
  * @returns 牛熊证列表
  */
 async function fetchWarrantsWithCache({
   ctx,
-  monitorSymbol,
+  baseInstrumentSymbol,
   warrantType,
   expiryFilters,
   cacheConfig,
@@ -168,13 +168,13 @@ async function fetchWarrantsWithCache({
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
     return requestWarrantList({
       ctx,
-      monitorSymbol,
+      baseInstrumentSymbol,
       warrantType,
       expiryFilters,
     });
   }
 
-  const cacheKey = buildCacheKey(monitorSymbol, warrantType, expiryFilters);
+  const cacheKey = buildCacheKey(baseInstrumentSymbol, warrantType, expiryFilters);
   const nowMs = cacheConfig.nowMs();
   const cached = cacheConfig.cache.getEntry(cacheKey);
   if (cached && nowMs - cached.fetchedAt <= ttlMs) {
@@ -188,7 +188,7 @@ async function fetchWarrantsWithCache({
 
   const request = requestWarrantList({
     ctx,
-    monitorSymbol,
+    baseInstrumentSymbol,
     warrantType,
     expiryFilters,
   });
@@ -208,12 +208,12 @@ async function fetchWarrantsWithCache({
 /**
  * 获取并筛选最佳牛熊证标的：按方向请求牛熊证列表，按距回收价与分均成交额选优。
  * 用于自动寻标与换标预寻标，无符合条件时返回 null 并打日志。
- * @param input - 寻标入参（ctx、monitorSymbol、policy、tradingMinutes、cacheConfig 等）
+ * @param input - 寻标入参（ctx、baseInstrumentSymbol、policy、tradingMinutes、cacheConfig 等）
  * @returns 最佳候选标的（symbol、name、callPrice、内部百分比值口径的 distancePct、turnover 等），无则 null
  */
 export async function findBestWarrant({
   ctx,
-  monitorSymbol,
+  baseInstrumentSymbol,
   tradingMinutes,
   policy,
   expiryMinMonths,
@@ -226,14 +226,14 @@ export async function findBestWarrant({
     const warrants = cacheConfig
       ? await fetchWarrantsWithCache({
           ctx,
-          monitorSymbol,
+          baseInstrumentSymbol,
           warrantType,
           expiryFilters,
           cacheConfig,
         })
       : await requestWarrantList({
           ctx,
-          monitorSymbol,
+          baseInstrumentSymbol,
           warrantType,
           expiryFilters,
         });
@@ -245,7 +245,7 @@ export async function findBestWarrant({
     if (selectionResult.candidate === null) {
       logNoCandidateFound({
         logger,
-        monitorSymbol,
+        baseInstrumentSymbol,
         tradingMinutes,
         warrants,
         policy,
@@ -257,7 +257,7 @@ export async function findBestWarrant({
 
     logSelectedCandidate({
       logger,
-      monitorSymbol,
+      baseInstrumentSymbol,
       tradingMinutes,
       policy,
       candidate: selectionResult.candidate,
@@ -267,7 +267,7 @@ export async function findBestWarrant({
     return selectionResult.candidate;
   } catch (error) {
     logger.warn(
-      `[自动寻标] warrantList 获取失败：${monitorSymbol}(${resolvePolicyDirectionLabel(policy)})`,
+      `[自动寻标] warrantList 获取失败：${baseInstrumentSymbol}(${resolvePolicyDirectionLabel(policy)})`,
       formatError(error),
     );
     return null;

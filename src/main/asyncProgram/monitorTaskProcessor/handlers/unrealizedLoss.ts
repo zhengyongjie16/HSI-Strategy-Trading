@@ -22,7 +22,7 @@ import type {
   MonitorTaskStatus,
   UnrealizedLossCheckTaskData,
 } from '../types.js';
-import { evaluateMonitorContextAndSeatReadiness } from '../utils.js';
+import { evaluateStrategyRuntimeAndSeatReadiness } from '../utils.js';
 
 /**
  * 创建浮亏清仓检查任务处理器。
@@ -32,13 +32,15 @@ import { evaluateMonitorContextAndSeatReadiness } from '../utils.js';
  * @returns 处理 UNREALIZED_LOSS_CHECK 任务的异步函数
  */
 export function createUnrealizedLossHandler({
+  baseInstrumentSymbol,
   getContextOrSkip,
   refreshGate,
   trader,
   marketDataClient,
   getCanProcessTask,
 }: {
-  readonly getContextOrSkip: (monitorSymbol: string) => MonitorTaskContext | null;
+  readonly baseInstrumentSymbol: string;
+  readonly getContextOrSkip: () => MonitorTaskContext | null;
   readonly refreshGate: RefreshGate;
   readonly trader: Trader;
   readonly marketDataClient: MarketDataClient;
@@ -54,10 +56,10 @@ export function createUnrealizedLossHandler({
     readonly retryRequest: MonitorTaskRetryRequest<'UNREALIZED_LOSS_CHECK'> | null;
   }> {
     const data: UnrealizedLossCheckTaskData = task.data;
-    const evaluated = await evaluateMonitorContextAndSeatReadiness({
+    const evaluated = await evaluateStrategyRuntimeAndSeatReadiness({
       getContextOrSkip,
       refreshGate,
-      monitorSymbol: data.monitorSymbol,
+      baseInstrumentSymbol,
       longSnapshot: { seatVersion: data.long.seatVersion, symbol: data.long.symbol },
       shortSnapshot: { seatVersion: data.short.seatVersion, symbol: data.short.symbol },
     });
@@ -67,7 +69,7 @@ export function createUnrealizedLossHandler({
 
     const { context, seatReadiness } = evaluated;
     const { isLongReady, isShortReady, longSymbol, shortSymbol } = seatReadiness;
-    const retryKey = `${data.monitorSymbol}:UNREALIZED_LOSS_CHECK`;
+    const retryKey = 'UNREALIZED_LOSS_CHECK';
     const previousRetryAttempts =
       typeof data.retryAttempts === 'number' && Number.isFinite(data.retryAttempts)
         ? data.retryAttempts
@@ -113,7 +115,7 @@ export function createUnrealizedLossHandler({
         shortQuote: shortQuoteReady ? shortQuote : null,
         longSymbol: readyLongSymbol,
         shortSymbol: readyShortSymbol,
-        monitorSymbol: data.monitorSymbol,
+        baseInstrumentSymbol,
         riskChecker: context.riskChecker,
         trader,
         orderRecorder: context.orderRecorder,
@@ -130,7 +132,7 @@ export function createUnrealizedLossHandler({
       });
       if (nextRetry.exhausted) {
         logger.warn(
-          `[MonitorTaskProcessor] UNREALIZED_LOSS_CHECK 行情重试耗尽: ${data.monitorSymbol} symbols=${[...unresolvedSymbols].join(',')}`,
+          `[MonitorTaskProcessor] UNREALIZED_LOSS_CHECK 行情重试耗尽: ${baseInstrumentSymbol} symbols=${[...unresolvedSymbols].join(',')}`,
         );
         return { status: 'processed', retryRequest: null };
       }
@@ -144,7 +146,6 @@ export function createUnrealizedLossHandler({
           task: {
             type: task.type,
             dedupeKey: task.dedupeKey,
-            monitorSymbol: task.monitorSymbol,
             data: {
               ...task.data,
               retryAttempts: nextRetry.nextAttempts,

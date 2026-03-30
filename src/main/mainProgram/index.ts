@@ -45,10 +45,10 @@ export async function mainProgram({
   doomsdayProtection,
   signalProcessor,
   tradingConfig,
+  monitorConfig,
   dailyLossTracker,
-  monitorContexts,
+  monitorContext,
   symbolRegistry,
-  indicatorCache,
   buyTaskQueue,
   sellTaskQueue,
   monitorTaskQueue,
@@ -106,18 +106,6 @@ export async function mainProgram({
         logger.info(`进入连续交易时段${sessionType}，开始正常交易。`);
       } else if (isTradingDayToday) {
         logger.info('当前为竞价或非连续交易时段，暂停实时监控。');
-        let totalCancelled = 0;
-        for (const [monitorSymbol, monitorContext] of monitorContexts) {
-          const pendingCount = monitorContext.delayedSignalVerifier.getPendingCount();
-          if (pendingCount > 0) {
-            monitorContext.delayedSignalVerifier.cancelAllForSymbol(monitorSymbol);
-            totalCancelled += pendingCount;
-          }
-        }
-
-        if (totalCancelled > 0) {
-          logger.info(`[交易时段结束] 已清理 ${totalCancelled} 个待验证信号`);
-        }
       }
     }
 
@@ -191,7 +179,7 @@ export async function mainProgram({
   // 收集所有需要获取行情的标的，一次性批量获取（减少 API 调用次数）
   const orderHoldSymbols = trader.getOrderHoldSymbols();
   const desiredSymbols = collectRuntimeQuoteSymbols(
-    tradingConfig.monitors,
+    [monitorConfig],
     symbolRegistry,
     positions,
     orderHoldSymbols,
@@ -223,8 +211,8 @@ export async function mainProgram({
     const cancelResult = await doomsdayProtection.cancelPendingBuyOrders({
       currentTime,
       isHalfDay: isHalfDayToday,
-      monitorConfigs: tradingConfig.monitors,
-      monitorContexts,
+      monitorConfig,
+      monitorContext,
       trader,
     });
     if (cancelResult.executed && cancelResult.cancelRequestAcceptedCount > 0) {
@@ -238,8 +226,8 @@ export async function mainProgram({
       currentTime,
       isHalfDay: isHalfDayToday,
       positions,
-      monitorConfigs: tradingConfig.monitors,
-      monitorContexts,
+      monitorConfig,
+      monitorContext,
       trader,
       marketDataClient,
       lastState,
@@ -259,10 +247,10 @@ export async function mainProgram({
     doomsdayProtection,
     signalProcessor,
     tradingConfig,
+    monitorConfig,
     dailyLossTracker,
-    monitorContexts,
+    monitorContext,
     symbolRegistry,
-    indicatorCache,
     buyTaskQueue,
     sellTaskQueue,
     monitorTaskQueue,
@@ -273,32 +261,25 @@ export async function mainProgram({
   };
 
   // 并发处理所有监控标的（使用预先获取的行情数据）
-  const monitorTasks: Promise<void>[] = [];
-  for (const [monitorSymbol, monitorContext] of monitorContexts) {
-    monitorTasks.push(
-      processMonitor(
-        {
-          context: mainContext,
-          monitorContext,
-          runtimeFlags: {
-            currentTime,
-            isHalfDay: isHalfDayToday,
-            canTradeNow,
-            openProtectionActive,
-            isTradingEnabled: lastState.isTradingEnabled,
-          },
-        },
-        quotesMap,
-      ).catch((err: unknown) => {
-        logger.error(
-          `处理监控标的 ${formatSymbolDisplay(monitorSymbol, monitorContext.monitorSymbolName)} 失败`,
-          formatError(err),
-        );
-      }),
+  await processMonitor(
+    {
+      context: mainContext,
+      monitorContext,
+      runtimeFlags: {
+        currentTime,
+        isHalfDay: isHalfDayToday,
+        canTradeNow,
+        openProtectionActive,
+        isTradingEnabled: lastState.isTradingEnabled,
+      },
+    },
+    quotesMap,
+  ).catch((err: unknown) => {
+    logger.error(
+      `处理监控标的 ${formatSymbolDisplay(monitorConfig.baseInstrumentSymbol, monitorContext.baseInstrumentName)} 失败`,
+      formatError(err),
     );
-  }
-
-  await Promise.allSettled(monitorTasks);
+  });
 
   // 全局操作：订单监控（在所有监控标的处理完成后）
   // 使用已维护的 allTradingSymbols

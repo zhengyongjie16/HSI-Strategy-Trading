@@ -4,7 +4,7 @@
  * 职责：
  * - 收口 pre-gate / post-gate runtime 创建
  * - 保持启动快照失败回退与开盘重建语义不变
- * - 在唯一装配入口中创建 monitor contexts、async runtime、lifecycle 与 cleanup
+ * - 在唯一装配入口中创建 strategy runtimes、async runtime、lifecycle 与 cleanup
  */
 import { validateRuntimeSymbolsFromQuotesMap } from '../config/validator/index.js';
 import { createRebuildTradingDayState } from '../main/lifecycle/rebuildTradingDayState.js';
@@ -13,31 +13,27 @@ import { applyStartupSnapshotFailureState } from '../main/lifecycle/startupFailu
 import { sleep } from '../main/utils.js';
 import { displayAccountAndPositions } from '../services/accountDisplay/index.js';
 import { logger } from '../utils/logger/index.js';
-import { signalObjectPool } from '../utils/objectPool/index.js';
 import { formatError } from '../utils/error/index.js';
-import { getShushCow } from '../utils/asciiArt/shushCow.js';
 import { TRADING } from '../constants/index.js';
 import { createCleanup } from './createCleanup.js';
 import { createLifecycleRuntime } from './createLifecycleRuntime.js';
-import { createMonitorContexts } from './createMonitorContexts.js';
-import { registerDelayedSignalHandlers } from './registerDelayedSignalHandlers.js';
+import { buildStrategyRuntime } from './buildStrategyRuntime.js';
 import { loadStartupSnapshot } from './startupSnapshot.js';
 import { collectRuntimeValidationSymbols } from './runtimeValidation.js';
 import { createAsyncRuntime } from './runtime/createAsyncRuntime.js';
 import { createPostGateRuntime } from './runtime/createPostGateRuntime.js';
 import { createPreGateRuntime } from './runtime/createPreGateRuntime.js';
+import { requireStrategyRuntime } from './singleRuntimeHelpers.js';
 import type { AppEnvironmentParams, RunAppDeps } from './types.js';
 
 const DEFAULT_RUN_APP_DEPS: RunAppDeps = {
-  getShushCow,
   createPreGateRuntime,
   createPostGateRuntime,
   loadStartupSnapshot,
   collectRuntimeValidationSymbols,
-  createMonitorContexts,
+  buildStrategyRuntime,
   createRebuildTradingDayState,
   displayAccountAndPositions,
-  registerDelayedSignalHandlers,
   createAsyncRuntime,
   createLifecycleRuntime,
   createCleanup,
@@ -71,15 +67,13 @@ function buildAppRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  */
 export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promise<void> {
   const {
-    getShushCow: runShushCow,
     createPreGateRuntime: buildPreGateRuntime,
     createPostGateRuntime: buildPostGateRuntime,
     loadStartupSnapshot: loadStartupRuntimeSnapshot,
     collectRuntimeValidationSymbols: buildRuntimeValidationCollector,
-    createMonitorContexts: buildMonitorContexts,
+    buildStrategyRuntime: registerStrategyRuntime,
     createRebuildTradingDayState: buildRebuildTradingDayState,
     displayAccountAndPositions: renderAccountAndPositions,
-    registerDelayedSignalHandlers: bindDelayedSignalHandlers,
     createAsyncRuntime: buildAsyncRuntime,
     createLifecycleRuntime: buildLifecycleRuntime,
     createCleanup: buildCleanup,
@@ -93,7 +87,6 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
 
   return async function runApp(params: AppEnvironmentParams): Promise<void> {
     const runtimeEnv = buildAppRuntimeEnv(params.env);
-    runShushCow();
 
     const preGateRuntime = await buildPreGateRuntime({ env: runtimeEnv });
     const startupNow = new Date();
@@ -112,6 +105,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
     });
     const runtimeValidationCollector = buildRuntimeValidationCollector({
       tradingConfig: preGateRuntime.tradingConfig,
+      monitorConfig: preGateRuntime.monitorConfig,
       symbolRegistry: preGateRuntime.symbolRegistry,
       positions: postGateRuntime.lastState.cachedPositions,
     });
@@ -144,18 +138,18 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       }
     }
 
-    buildMonitorContexts({
+    registerStrategyRuntime({
       preGateRuntime,
       postGateRuntime,
       quotesMap: startupSnapshot.quotesMap,
     });
-
+    const monitorContext = requireStrategyRuntime(postGateRuntime.monitorContext);
     const rebuildTradingDayState = buildRebuildTradingDayState({
       marketDataClient: preGateRuntime.marketDataClient,
       trader: postGateRuntime.trader,
       lastState: postGateRuntime.lastState,
       symbolRegistry: preGateRuntime.symbolRegistry,
-      monitorContexts: postGateRuntime.monitorContexts,
+      monitorContext,
       dailyLossTracker: postGateRuntime.dailyLossTracker,
       displayAccountAndPositions: renderAccountAndPositions,
     });
@@ -171,24 +165,18 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       postGateRuntime.refreshGate.markFresh(postGateRuntime.refreshGate.getStatus().staleVersion);
     }
 
-    bindDelayedSignalHandlers({
-      monitorContexts: postGateRuntime.monitorContexts,
-      lastState: postGateRuntime.lastState,
-      buyTaskQueue: postGateRuntime.buyTaskQueue,
-      sellTaskQueue: postGateRuntime.sellTaskQueue,
-      logger: appLogger,
-      releaseSignal: (signal) => {
-        signalObjectPool.release(signal);
-      },
-    });
+    const registeredPostGateRuntime = {
+      ...postGateRuntime,
+      monitorContext,
+    };
 
     const asyncRuntime = buildAsyncRuntime({
       preGateRuntime,
-      postGateRuntime,
+      postGateRuntime: registeredPostGateRuntime,
     });
     const dayLifecycleManager = buildLifecycleRuntime({
       preGateRuntime,
-      postGateRuntime,
+      postGateRuntime: registeredPostGateRuntime,
       asyncRuntime,
       rebuildTradingDayState,
     });
@@ -206,8 +194,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       orderMonitorWorker: asyncRuntime.orderMonitorWorker,
       postTradeRefresher: asyncRuntime.postTradeRefresher,
       marketDataClient: preGateRuntime.marketDataClient,
-      monitorContexts: postGateRuntime.monitorContexts,
-      indicatorCache: postGateRuntime.indicatorCache,
+      monitorContext,
       lastState: postGateRuntime.lastState,
     });
     cleanup.registerExitHandlers();
@@ -224,10 +211,10 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
           doomsdayProtection: postGateRuntime.doomsdayProtection,
           signalProcessor: postGateRuntime.signalProcessor,
           tradingConfig: preGateRuntime.tradingConfig,
+          monitorConfig: preGateRuntime.monitorConfig,
           dailyLossTracker: postGateRuntime.dailyLossTracker,
-          monitorContexts: postGateRuntime.monitorContexts,
+          monitorContext,
           symbolRegistry: preGateRuntime.symbolRegistry,
-          indicatorCache: postGateRuntime.indicatorCache,
           buyTaskQueue: postGateRuntime.buyTaskQueue,
           sellTaskQueue: postGateRuntime.sellTaskQueue,
           monitorTaskQueue: postGateRuntime.monitorTaskQueue,

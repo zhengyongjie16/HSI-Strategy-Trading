@@ -20,16 +20,16 @@ import { resolveBoundSeatSymbol } from '../main/recovery/seatPreparation.js';
  * 解析指定监控标的的双向已绑定席位代码。
  * 默认行为：返回已绑定 seat 的 symbol；未绑定时返回 null。
  *
- * @param params 解析参数，包含 symbolRegistry 与 monitorSymbol
+ * @param params 解析参数，包含 symbolRegistry 与 baseInstrumentSymbol
  * @returns 当前监控标的的 longSeatSymbol/shortSeatSymbol
  */
 function resolveSeatSymbolsByMonitor(
   params: ResolveSeatSymbolsByMonitorParams,
 ): ResolvedSeatSymbols {
-  const { symbolRegistry, monitorSymbol } = params;
+  const { symbolRegistry, baseInstrumentSymbol } = params;
   return {
-    longSeatSymbol: resolveBoundSeatSymbol(symbolRegistry, monitorSymbol, 'LONG'),
-    shortSeatSymbol: resolveBoundSeatSymbol(symbolRegistry, monitorSymbol, 'SHORT'),
+    longSeatSymbol: resolveBoundSeatSymbol(symbolRegistry, baseInstrumentSymbol, 'LONG'),
+    shortSeatSymbol: resolveBoundSeatSymbol(symbolRegistry, baseInstrumentSymbol, 'SHORT'),
   };
 }
 
@@ -79,40 +79,37 @@ function createRuntimeValidationCollector(): MutableRuntimeValidationCollector {
 export function collectRuntimeValidationSymbols(
   params: RuntimeValidationCollectionParams,
 ): RuntimeValidationCollector {
-  const { tradingConfig, symbolRegistry, positions } = params;
+  const { tradingConfig, monitorConfig, symbolRegistry, positions } = params;
   const collector = createRuntimeValidationCollector();
 
-  for (const monitorConfig of tradingConfig.monitors) {
-    const index = monitorConfig.originalIndex;
-    pushRuntimeValidationSymbol({
-      symbol: monitorConfig.monitorSymbol,
-      label: `监控标的 ${index}`,
-      requireLotSize: false,
-      required: true,
-      collector,
-    });
+  pushRuntimeValidationSymbol({
+    symbol: tradingConfig.baseInstrument,
+    label: '基础对象',
+    requireLotSize: false,
+    required: true,
+    collector,
+  });
 
-    const { longSeatSymbol, shortSeatSymbol } = resolveSeatSymbolsByMonitor({
-      symbolRegistry,
-      monitorSymbol: monitorConfig.monitorSymbol,
-    });
-    const autoSearchEnabled = monitorConfig.autoSearchConfig.autoSearchEnabled;
-    pushRuntimeValidationSymbol({
-      symbol: longSeatSymbol,
-      label: `做多席位标的 ${index}`,
-      requireLotSize: true,
-      required: !autoSearchEnabled,
-      collector,
-    });
+  const { longSeatSymbol, shortSeatSymbol } = resolveSeatSymbolsByMonitor({
+    symbolRegistry,
+    baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+  });
+  const autoSearchEnabled = monitorConfig.autoSearchConfig.autoSearchEnabled;
+  pushRuntimeValidationSymbol({
+    symbol: longSeatSymbol,
+    label: '做多席位标的',
+    requireLotSize: true,
+    required: !autoSearchEnabled,
+    collector,
+  });
 
-    pushRuntimeValidationSymbol({
-      symbol: shortSeatSymbol,
-      label: `做空席位标的 ${index}`,
-      requireLotSize: true,
-      required: !autoSearchEnabled,
-      collector,
-    });
-  }
+  pushRuntimeValidationSymbol({
+    symbol: shortSeatSymbol,
+    label: '做空席位标的',
+    requireLotSize: true,
+    required: !autoSearchEnabled,
+    collector,
+  });
 
   for (const position of positions) {
     pushRuntimeValidationSymbol({

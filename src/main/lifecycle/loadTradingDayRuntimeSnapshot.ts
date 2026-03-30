@@ -32,9 +32,8 @@ import { collectRuntimeQuoteSymbols, refreshAccountAndPositions } from '../utils
 import type { RawOrderFromAPI } from '../../types/services.js';
 import { formatError } from '../../utils/error/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
-import { resolveOrderOwnership } from '../../core/orderRecorder/orderOwnershipParser.js';
+import { resolveOrderOwnershipForMonitor } from '../../core/orderRecorder/orderOwnershipParser.js';
 import { hasProtectiveLiquidationRemark } from '../../core/trader/utils.js';
-import { buildCooldownKey } from '../../services/liquidationCooldown/utils.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
@@ -43,33 +42,12 @@ import type {
 } from './types.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
 
-function resolveDirectionFromKey(
-  key: string,
-): { monitorSymbol: string; direction: ProtectiveLiquidationDirection } | null {
-  const separatorIndex = key.lastIndexOf(':');
-  if (separatorIndex <= 0 || separatorIndex >= key.length - 1) {
-    return null;
-  }
-
-  const monitorSymbol = key.slice(0, separatorIndex);
-  const directionText = key.slice(separatorIndex + 1);
-  if (directionText !== 'LONG' && directionText !== 'SHORT') {
-    return null;
-  }
-
-  return {
-    monitorSymbol,
-    direction: directionText,
-  };
-}
-
 function isDirectionFlatAtSnapshot(
   symbolRegistry: LoadTradingDayRuntimeSnapshotDeps['symbolRegistry'],
   lastState: LoadTradingDayRuntimeSnapshotDeps['lastState'],
-  monitorSymbol: string,
   direction: ProtectiveLiquidationDirection,
 ): boolean {
-  const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+  const seatState = symbolRegistry.getSeatState(direction);
   if (!hasSeatSymbol(seatState)) {
     return true;
   }
@@ -80,34 +58,29 @@ function isDirectionFlatAtSnapshot(
 
 function restoreCompletedBoundary(params: {
   readonly protectiveLiquidationEpisodeTracker: LoadTradingDayRuntimeSnapshotDeps['protectiveLiquidationEpisodeTracker'];
-  readonly restoredBoundaryByDirection: Map<string, number>;
-  readonly directionKey: string;
-  readonly monitorSymbol: string;
+  readonly restoredBoundaryByDirection: Map<ProtectiveLiquidationDirection, number>;
   readonly direction: ProtectiveLiquidationDirection;
   readonly boundaryExecutedTimeMs: number;
 }): void {
   const {
     protectiveLiquidationEpisodeTracker,
     restoredBoundaryByDirection,
-    directionKey,
-    monitorSymbol,
     direction,
     boundaryExecutedTimeMs,
   } = params;
 
   protectiveLiquidationEpisodeTracker.restoreCompletedBoundary({
-    monitorSymbol,
     direction,
     boundaryExecutedTimeMs,
   });
-  restoredBoundaryByDirection.set(directionKey, boundaryExecutedTimeMs);
+  restoredBoundaryByDirection.set(direction, boundaryExecutedTimeMs);
 }
 
 /**
  * 创建交易日运行时快照加载函数（工厂）。
  * 注入依赖后返回 loadTradingDayRuntimeSnapshot，用于启动初始化与开盘重建时加载账户、持仓、订单、席位与行情快照。
  *
- * @param deps 依赖注入（marketDataClient、trader、lastState、tradingConfig、symbolRegistry、dailyLossTracker、tradeLogHydrator、warrantListCacheConfig）
+ * @param deps 依赖注入（marketDataClient、trader、lastState、monitorConfig、symbolRegistry、dailyLossTracker、tradeLogHydrator、warrantListCacheConfig）
  * @returns 接收 LoadTradingDayRuntimeSnapshotParams 的异步函数，返回全量订单与行情快照供重建使用
  */
 export function createLoadTradingDayRuntimeSnapshot(
@@ -117,7 +90,7 @@ export function createLoadTradingDayRuntimeSnapshot(
     marketDataClient,
     trader,
     lastState,
-    tradingConfig,
+    monitorConfig,
     symbolRegistry,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
@@ -175,7 +148,7 @@ export function createLoadTradingDayRuntimeSnapshot(
 
     trader.seedOrderHoldSymbols(allOrders);
     await prepareSeatsForRuntime({
-      tradingConfig,
+      monitorConfig,
       symbolRegistry,
       positions: lastState.cachedPositions,
       orders: allOrders,
@@ -187,14 +160,18 @@ export function createLoadTradingDayRuntimeSnapshot(
       warrantListCacheConfig,
     });
     protectiveLiquidationEpisodeTracker.resetAll();
-    const completedBoundaryByDirection = hydrateCooldownFromTradeLog
-      ? tradeLogHydrator.hydrate()
-      : new Map<string, number>();
+    const completedBoundaryByDirection: ReadonlyMap<ProtectiveLiquidationDirection, number> =
+      hydrateCooldownFromTradeLog
+        ? tradeLogHydrator.hydrate()
+        : new Map<ProtectiveLiquidationDirection, number>();
 
     const currentDayKey = getHKDateKey(now);
-    const protectiveLatestFillByDirection = new Map<string, number>();
-    const pendingProtectiveLatestFillByDirection = new Map<string, number>();
-    const pendingProtectiveDirectionKeys = new Set<string>();
+    const protectiveLatestFillByDirection = new Map<ProtectiveLiquidationDirection, number>();
+    const pendingProtectiveLatestFillByDirection = new Map<
+      ProtectiveLiquidationDirection,
+      number
+    >();
+    const pendingProtectiveDirectionKeys = new Set<ProtectiveLiquidationDirection>();
     for (const order of allOrders) {
       if (!hasProtectiveLiquidationRemark(order.remark)) {
         continue;
@@ -208,12 +185,11 @@ export function createLoadTradingDayRuntimeSnapshot(
         continue;
       }
 
-      const ownership = resolveOrderOwnership(order, tradingConfig.monitors);
+      const ownership = resolveOrderOwnershipForMonitor(order, monitorConfig);
       if (!ownership) {
         continue;
       }
 
-      const directionKey = buildCooldownKey(ownership.monitorSymbol, ownership.direction);
       const executedTimeMs = order.updatedAt.getTime();
       const executedQuantity = decimalToNumber(order.executedQuantity);
       const hasProtectiveExecution =
@@ -221,59 +197,42 @@ export function createLoadTradingDayRuntimeSnapshot(
         isValidPositiveNumber(executedTimeMs) &&
         isValidPositiveNumber(executedQuantity);
       if (hasProtectiveExecution) {
-        const existing = protectiveLatestFillByDirection.get(directionKey);
+        const existing = protectiveLatestFillByDirection.get(ownership.direction);
         if (existing === undefined || executedTimeMs > existing) {
-          protectiveLatestFillByDirection.set(directionKey, executedTimeMs);
+          protectiveLatestFillByDirection.set(ownership.direction, executedTimeMs);
         }
       }
 
       if (PENDING_ORDER_STATUSES.has(order.status)) {
-        pendingProtectiveDirectionKeys.add(directionKey);
+        pendingProtectiveDirectionKeys.add(ownership.direction);
         if (hasProtectiveExecution) {
-          const existingPending = pendingProtectiveLatestFillByDirection.get(directionKey);
+          const existingPending = pendingProtectiveLatestFillByDirection.get(ownership.direction);
           if (existingPending === undefined || executedTimeMs > existingPending) {
-            pendingProtectiveLatestFillByDirection.set(directionKey, executedTimeMs);
+            pendingProtectiveLatestFillByDirection.set(ownership.direction, executedTimeMs);
           }
         }
       }
     }
 
-    const restoredBoundaryByDirection = new Map<string, number>();
-    for (const [directionKey, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
-      const parsed = resolveDirectionFromKey(directionKey);
-      if (!parsed) {
-        continue;
-      }
-
+    const restoredBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
+    for (const [direction, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
       restoreCompletedBoundary({
         protectiveLiquidationEpisodeTracker,
         restoredBoundaryByDirection,
-        directionKey,
-        monitorSymbol: parsed.monitorSymbol,
-        direction: parsed.direction,
+        direction,
         boundaryExecutedTimeMs,
       });
     }
 
-    for (const [directionKey, latestExecutedTimeMs] of protectiveLatestFillByDirection) {
+    for (const [direction, latestExecutedTimeMs] of protectiveLatestFillByDirection) {
       if (
-        restoredBoundaryByDirection.has(directionKey) ||
-        pendingProtectiveDirectionKeys.has(directionKey)
+        restoredBoundaryByDirection.has(direction) ||
+        pendingProtectiveDirectionKeys.has(direction)
       ) {
         continue;
       }
 
-      const parsed = resolveDirectionFromKey(directionKey);
-      if (!parsed) {
-        continue;
-      }
-
-      const isDirectionFlat = isDirectionFlatAtSnapshot(
-        symbolRegistry,
-        lastState,
-        parsed.monitorSymbol,
-        parsed.direction,
-      );
+      const isDirectionFlat = isDirectionFlatAtSnapshot(symbolRegistry, lastState, direction);
       if (!isDirectionFlat) {
         continue;
       }
@@ -281,32 +240,23 @@ export function createLoadTradingDayRuntimeSnapshot(
       restoreCompletedBoundary({
         protectiveLiquidationEpisodeTracker,
         restoredBoundaryByDirection,
-        directionKey,
-        monitorSymbol: parsed.monitorSymbol,
-        direction: parsed.direction,
+        direction,
         boundaryExecutedTimeMs: latestExecutedTimeMs,
       });
     }
 
-    for (const [directionKey, latestExecutedTimeMs] of protectiveLatestFillByDirection) {
-      const parsed = resolveDirectionFromKey(directionKey);
-      if (!parsed) {
-        continue;
-      }
-
-      const boundaryExecutedTimeMs = restoredBoundaryByDirection.get(directionKey);
-      const hasPendingProtective = pendingProtectiveDirectionKeys.has(directionKey);
+    for (const [direction, latestExecutedTimeMs] of protectiveLatestFillByDirection) {
+      const boundaryExecutedTimeMs = restoredBoundaryByDirection.get(direction);
+      const hasPendingProtective = pendingProtectiveDirectionKeys.has(direction);
       if (hasPendingProtective) {
-        const pendingLatestExecutedTimeMs =
-          pendingProtectiveLatestFillByDirection.get(directionKey);
+        const pendingLatestExecutedTimeMs = pendingProtectiveLatestFillByDirection.get(direction);
         if (
           pendingLatestExecutedTimeMs !== undefined &&
           (boundaryExecutedTimeMs === undefined ||
             pendingLatestExecutedTimeMs > boundaryExecutedTimeMs)
         ) {
           protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
-            monitorSymbol: parsed.monitorSymbol,
-            direction: parsed.direction,
+            direction,
             latestExecutedTimeMs: pendingLatestExecutedTimeMs,
           });
         }
@@ -318,27 +268,19 @@ export function createLoadTradingDayRuntimeSnapshot(
         continue;
       }
 
-      const isDirectionFlat = isDirectionFlatAtSnapshot(
-        symbolRegistry,
-        lastState,
-        parsed.monitorSymbol,
-        parsed.direction,
-      );
+      const isDirectionFlat = isDirectionFlatAtSnapshot(symbolRegistry, lastState, direction);
       if (isDirectionFlat) {
         restoreCompletedBoundary({
           protectiveLiquidationEpisodeTracker,
           restoredBoundaryByDirection,
-          directionKey,
-          monitorSymbol: parsed.monitorSymbol,
-          direction: parsed.direction,
+          direction,
           boundaryExecutedTimeMs: latestExecutedTimeMs,
         });
         continue;
       }
 
       protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
-        monitorSymbol: parsed.monitorSymbol,
-        direction: parsed.direction,
+        direction,
         latestExecutedTimeMs,
       });
     }
@@ -347,7 +289,7 @@ export function createLoadTradingDayRuntimeSnapshot(
       protectiveLiquidationEpisodeTracker.getLatestProtectionBoundaryByDirection();
     dailyLossTracker.recalculateFromAllOrders(
       allOrders,
-      tradingConfig.monitors,
+      monitorConfig,
       now,
       protectionBoundaryByDirection,
     );
@@ -358,7 +300,7 @@ export function createLoadTradingDayRuntimeSnapshot(
 
     const orderHoldSymbols = trader.getOrderHoldSymbols();
     const allTradingSymbols = collectRuntimeQuoteSymbols(
-      tradingConfig.monitors,
+      [monitorConfig],
       symbolRegistry,
       lastState.cachedPositions,
       orderHoldSymbols,
@@ -368,11 +310,8 @@ export function createLoadTradingDayRuntimeSnapshot(
       await marketDataClient.subscribeSymbols([...allTradingSymbols]);
     }
 
-    for (const monitorConfig of tradingConfig.monitors) {
-      await marketDataClient.subscribeCandlesticks(
-        monitorConfig.monitorSymbol,
-        TRADING.CANDLE_PERIOD,
-      );
+    for (const period of TRADING.CANDLE_PERIODS) {
+      await marketDataClient.subscribeCandlesticks(monitorConfig.baseInstrumentSymbol, period);
     }
 
     const quotesMap = await marketDataClient.getQuotes(allTradingSymbols);

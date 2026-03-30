@@ -16,7 +16,10 @@ import {
 } from 'longbridge';
 import { createOrderMonitor } from '../../../src/core/trader/orderMonitor/index.js';
 import type { OrderMonitorDeps } from '../../../src/core/trader/types.js';
-import { createTradingConfig } from '../../../mock/factories/configFactory.js';
+import {
+  createGlobalConfig,
+  createStrategyRuntimeConfig,
+} from '../../../mock/factories/configFactory.js';
 import { createPushOrderChanged } from '../../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
 import {
@@ -70,7 +73,7 @@ function createDeps(params?: {
   let quotesMap = new Map<string, Quote | null>([['BULL.HK', createQuoteDouble('BULL.HK', 1.02)]]);
   const pendingSellSnapshot = new Map<string, PendingSellInfo>();
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
+    baseInstrumentSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -186,35 +189,21 @@ function createDeps(params?: {
       getPendingSellSnapshot: () => [...pendingSellSnapshot.values()],
     });
 
-  const baseConfig = createTradingConfig();
-  const baseMonitor = baseConfig.monitors[0];
-  if (!baseMonitor) {
-    throw new Error('missing monitor config for orderMonitor test');
-  }
-
-  const tradingConfig = createTradingConfig({
-    monitors: [
-      {
-        ...baseMonitor,
-        orderOwnershipMapping: ['HSI'],
-        liquidationTriggerLimit: params?.liquidationTriggerLimit ?? 1,
-      },
-    ],
-    global: {
-      ...baseConfig.global,
-      buyOrderTimeout: {
-        enabled: true,
-        timeoutSeconds: params?.buyTimeoutSeconds ?? 180,
-      },
-      sellOrderTimeout: {
-        enabled: true,
-        timeoutSeconds: params?.sellTimeoutSeconds ?? 180,
-      },
-      orderMonitorPriceUpdateInterval: 0,
-      allowBuyOrderTrackingAboveInitialPrice:
-        params?.allowBuyOrderTrackingAboveInitialPrice ??
-        baseConfig.global.allowBuyOrderTrackingAboveInitialPrice,
+  const monitorConfig = createStrategyRuntimeConfig({
+    orderOwnershipMapping: ['HSI'],
+    liquidationTriggerLimit: params?.liquidationTriggerLimit ?? 1,
+  });
+  const globalConfig = createGlobalConfig({
+    buyOrderTimeout: {
+      enabled: true,
+      timeoutSeconds: params?.buyTimeoutSeconds ?? 180,
     },
+    sellOrderTimeout: {
+      enabled: true,
+      timeoutSeconds: params?.sellTimeoutSeconds ?? 180,
+    },
+    orderMonitorPriceUpdateInterval: 0,
+    allowBuyOrderTrackingAboveInitialPrice: params?.allowBuyOrderTrackingAboveInitialPrice ?? true,
   });
 
   const deps: OrderMonitorDeps = {
@@ -247,7 +236,8 @@ function createDeps(params?: {
     protectiveLiquidationEpisodeTracker:
       params?.protectiveLiquidationEpisodeTrackerOverride ??
       createProtectiveLiquidationEpisodeTrackerDouble(),
-    tradingConfig,
+    globalConfig,
+    monitorConfig,
     symbolRegistry,
     ...(params?.onHandleOrderChanged
       ? {
@@ -309,7 +299,7 @@ async function executeReplaceScenario(params: {
     initialSubmittedPrice: params.initialPrice,
     quantity: 100,
     isLongSymbol: true,
-    monitorSymbol: 'HSI.HK',
+    baseInstrumentSymbol: 'HSI.HK',
     isProtectiveLiquidation: false,
     orderType: OrderType.ELO,
   });
@@ -439,7 +429,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 0.5,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -468,7 +458,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 0.5,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -497,7 +487,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 0.5,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -524,7 +514,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 0.5,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -556,7 +546,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 0.5,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -616,7 +606,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -654,7 +644,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -702,7 +692,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -748,7 +738,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -796,7 +786,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -837,7 +827,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
       orderType: OrderType.ELO,
       liquidationTriggerLimit: 3,
@@ -875,7 +865,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -940,7 +930,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -999,7 +989,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -1078,7 +1068,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -1107,7 +1097,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -1143,7 +1133,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.MO,
     });
@@ -1275,7 +1265,6 @@ describe('orderMonitor business flow', () => {
       throw new Error('handleOrderChanged hook was not captured');
     };
     const progressCalls: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       executedTimeMs: number;
     }> = [];
@@ -1321,7 +1310,6 @@ describe('orderMonitor business flow', () => {
 
     expect(progressCalls).toHaveLength(1);
     expect(progressCalls[0]).toEqual({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs,
     });
@@ -1452,7 +1440,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -1498,7 +1486,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -1642,7 +1630,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 200,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -1810,7 +1798,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 200,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -1968,7 +1956,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 140,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -2045,7 +2033,7 @@ describe('orderMonitor business flow', () => {
         initialSubmittedPrice: 1,
         quantity: 100,
         isLongSymbol: true,
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         isProtectiveLiquidation: false,
         orderType: OrderType.ELO,
       });
@@ -2085,7 +2073,7 @@ describe('orderMonitor business flow', () => {
         initialSubmittedPrice: 1,
         quantity: 100,
         isLongSymbol: true,
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         isProtectiveLiquidation: false,
         orderType: OrderType.ELO,
       });
@@ -2131,7 +2119,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -2180,7 +2168,7 @@ describe('orderMonitor business flow', () => {
         initialSubmittedPrice: 1,
         quantity: 100,
         isLongSymbol: true,
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         isProtectiveLiquidation: false,
         orderType: OrderType.ELO,
       });
@@ -2263,7 +2251,7 @@ describe('orderMonitor business flow', () => {
         initialSubmittedPrice: 1,
         quantity: 100,
         isLongSymbol: true,
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         isProtectiveLiquidation: false,
         orderType: OrderType.ELO,
       });
@@ -2437,7 +2425,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 200,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -2536,7 +2524,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -2578,7 +2566,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -2638,7 +2626,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -2689,7 +2677,7 @@ describe('orderMonitor business flow', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });

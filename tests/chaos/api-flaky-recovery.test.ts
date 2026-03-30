@@ -11,16 +11,16 @@ import { API } from '../../src/constants/index.js';
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
 import { createPostTradeRefresher } from '../../src/main/asyncProgram/postTradeRefresher/index.js';
-import type { MonitorContext, LastState } from '../../src/types/state.js';
+import type { StrategyRuntime, LastState } from '../../src/types/state.js';
 import { createRefreshGate } from '../../src/utils/refreshGate/index.js';
 
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createGlobalConfig } from '../../mock/factories/configFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
   createAccountSnapshotDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
@@ -45,7 +45,17 @@ function createLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: {
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorPrice: null,
+      longPrice: null,
+      shortPrice: null,
+      signal: null,
+      pendingSignals: [],
+      monitorValues: null,
+      lastMonitorSnapshot: null,
+      lastCandlestickCacheVersion: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -55,6 +65,19 @@ function createOrderMonitorDeps(params?: {
   readonly orderRecorder?: ReturnType<typeof createOrderRecorderDouble>;
 }): { deps: OrderMonitorDeps; tradeCtx: ReturnType<typeof createTradeContextMock> } {
   const tradeCtx = createTradeContextMock();
+  const globalConfig = createGlobalConfig({
+    buyOrderTimeout: {
+      enabled: true,
+      timeoutSeconds: 999,
+    },
+    sellOrderTimeout: {
+      enabled: true,
+      timeoutSeconds: params?.sellTimeoutSeconds ?? 0,
+    },
+    orderMonitorPriceUpdateInterval: 0,
+  });
+  const monitorConfig = createStrategyRuntimeConfigDouble();
+
   const deps: OrderMonitorDeps = {
     ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
     rateLimiter: {
@@ -83,20 +106,8 @@ function createOrderMonitorDeps(params?: {
       clear: () => {},
     },
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    tradingConfig: createTradingConfig({
-      global: {
-        ...createTradingConfig().global,
-        buyOrderTimeout: {
-          enabled: true,
-          timeoutSeconds: 999,
-        },
-        sellOrderTimeout: {
-          enabled: true,
-          timeoutSeconds: params?.sellTimeoutSeconds ?? 0,
-        },
-        orderMonitorPriceUpdateInterval: 0,
-      },
-    }),
+    globalConfig,
+    monitorConfig,
     symbolRegistry: createSymbolRegistryDouble(),
     isExecutionAllowed: () => true,
   };
@@ -139,7 +150,7 @@ describe('chaos: api flaky recovery', () => {
       initialSubmittedPrice: 1,
       quantity: 100,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });
@@ -185,12 +196,12 @@ describe('chaos: api flaky recovery', () => {
     });
 
     const monitorContext = {
-      config: createMonitorConfigDouble({
-        monitorSymbol: 'HSI.HK',
+      config: createStrategyRuntimeConfigDouble({
+        baseInstrumentSymbol: 'HSI.HK',
         maxUnrealizedLossPerSymbol: 2_000,
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.HK',
           status: 'ACTIVE',
@@ -226,13 +237,13 @@ describe('chaos: api flaky recovery', () => {
           return { r1: 100, n1: 100 };
         },
       }),
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const refresher = createPostTradeRefresher({
       refreshGate,
       trader,
       lastState,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: {
         resetAll: () => {},
         startNewProtectionEpisode: () => {},

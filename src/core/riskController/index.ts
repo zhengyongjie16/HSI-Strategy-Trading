@@ -8,7 +8,7 @@
  *
  * 风险阈值（均为配置项，具体数值以 constants/index.ts 为准）：
  * - 牛熊证距离回收价：使用 BULL_WARRANT_MIN_DISTANCE_PERCENT / BEAR_WARRANT_MAX_DISTANCE_PERCENT 控制可买入距离（当前默认约为 +0.35% / -0.35%）
- * - 单标的市值上限：maxPositionNotional（由监控配置提供）
+ * - 执行标的市值上限：maxPositionNotional（由监控配置提供）
  * - 保护性清仓触发阈值：maxUnrealizedLossPerSymbol（浮亏低于阈值时触发保护性清仓）
  */
 import { isBuyAction, isValidPositiveNumber } from '../../utils/helpers/index.js';
@@ -168,7 +168,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
       }
     }
 
-    // 检查单标的最大持仓市值限制
+    // 检查执行标的最大持仓市值限制
     const positionCheckResult = positionLimitChecker.checkLimit(
       signal,
       positions,

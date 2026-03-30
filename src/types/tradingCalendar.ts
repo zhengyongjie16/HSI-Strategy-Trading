@@ -2,7 +2,7 @@
  * 交易日历快照中的单日信息。
  * 类型用途：表示某港股日期是否交易日及是否半日市。
  * 数据来源：生命周期阶段预热的交易日历快照。
- * 使用范围：交易时段累计、智能平仓、自动换标等依赖交易日历的模块。
+ * 使用范围：交易时段累计、自动换标等依赖交易日历的模块。
  */
 export type TradingCalendarDayInfo = {
   readonly isTradingDay: boolean;
@@ -32,7 +32,7 @@ export type TradingDurationBetweenParams = {
 /**
  * 持仓超时判定参数。
  * 类型用途：定义订单成交时间、当前时间、超时阈值与交易日历快照输入。
- * 数据来源：智能平仓调用方构建。
+ * 数据来源：依赖持仓超时判定的业务调用方构建。
  * 使用范围：time 超时判定逻辑及相关调用方。
  */
 export type OrderTimeoutCheckParams = {

@@ -392,7 +392,7 @@ export function createQuoteFlow(deps: QuoteFlowDeps): QuoteFlow {
           initialSubmittedPrice: 0,
           quantity: marketConversionQuantity,
           isLongSymbol: order.isLongSymbol,
-          monitorSymbol: order.monitorSymbol,
+          baseInstrumentSymbol: order.baseInstrumentSymbol,
           isProtectiveLiquidation: order.isProtectiveLiquidation,
           orderType: OrderType.MO,
           liquidationTriggerLimit: order.liquidationTriggerLimit,

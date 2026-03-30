@@ -13,7 +13,7 @@ import { VERIFICATION } from '../../constants/index.js';
 import { getSymbolName } from './utils.js';
 import type { Quote } from '../../types/quote.js';
 import type { Signal } from '../../types/signal.js';
-import type { LiquidationCooldownConfig, MultiMonitorTradingConfig } from '../../types/config.js';
+import type { GlobalConfig, LiquidationCooldownConfig } from '../../types/config.js';
 import type { RiskCheckContext } from '../../types/services.js';
 import type { LiquidationCooldownTracker } from '../../services/liquidationCooldown/types.js';
 import { formatError } from '../../utils/error/index.js';
@@ -29,19 +29,16 @@ function getRiskCheckCooldownKey(symbol: string, action: Signal['action']): stri
 
 function getMonitorCooldownRemainingMs(params: {
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
-  readonly monitorSymbol: string;
   readonly cooldownConfig: LiquidationCooldownConfig | null;
   readonly currentTimeMs: number;
 }): number {
-  const { liquidationCooldownTracker, monitorSymbol, cooldownConfig, currentTimeMs } = params;
+  const { liquidationCooldownTracker, cooldownConfig, currentTimeMs } = params;
   const longRemainingMs = liquidationCooldownTracker.getRemainingMs({
-    symbol: monitorSymbol,
     direction: 'LONG',
     cooldownConfig,
     currentTimeMs,
   });
   const shortRemainingMs = liquidationCooldownTracker.getRemainingMs({
-    symbol: monitorSymbol,
     direction: 'SHORT',
     cooldownConfig,
     currentTimeMs,
@@ -76,11 +73,11 @@ function getSignalQuote(params: {
  * 卖出路径直接使用上下文缓存账户/持仓执行基础风险检查。
  */
 export const createRiskCheckPipeline = ({
-  tradingConfig,
+  globalConfig,
   liquidationCooldownTracker,
   lastRiskCheckTime,
 }: {
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly globalConfig: GlobalConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
   readonly lastRiskCheckTime: Map<string, number>;
 }): ((signals: Signal[], context: RiskCheckContext) => Promise<Signal[]>) => {
@@ -185,7 +182,6 @@ export const createRiskCheckPipeline = ({
 
         const remainingMs = getMonitorCooldownRemainingMs({
           liquidationCooldownTracker,
-          monitorSymbol: context.config.monitorSymbol,
           cooldownConfig: context.config.liquidationCooldown,
           currentTimeMs,
         });
@@ -216,7 +212,7 @@ export const createRiskCheckPipeline = ({
         }
 
         if (
-          tradingConfig.global.doomsdayProtection &&
+          globalConfig.doomsdayProtection &&
           doomsdayProtection.shouldRejectBuy(currentTime, isHalfDay)
         ) {
           const closeTimeRange = isHalfDay ? '11:45-12:00' : '15:45-16:00';

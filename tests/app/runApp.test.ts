@@ -11,9 +11,13 @@ import { createWarrantListCache } from '../../src/services/autoSymbolFinder/util
 import { createRunApp } from '../../src/app/runApp.js';
 import type { AppEnvironmentParams, RunAppDeps } from '../../src/app/types.js';
 import type { LastState } from '../../src/types/state.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createStrategyRuntimeConfig,
+  createTradingConfigFixture,
+} from '../../mock/factories/configFactory.js';
 import {
   createMarketDataClientDouble,
+  createStrategyRuntimeDouble,
   createPositionCacheDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createSdkConfigDouble,
@@ -22,8 +26,12 @@ import {
 import type { AppTestTaskQueueDouble, MutableRunAppHarnessState } from './types.js';
 
 const STOP_AFTER_FIRST_LOOP = new Error('STOP_AFTER_FIRST_LOOP');
+const TEST_APP_ENV = {
+  APP_RUNTIME_PROFILE: 'test',
+} as const;
 
 function createLastState(): LastState {
+  const monitorConfig = createStrategyRuntimeConfig();
   return {
     canTrade: null,
     isHalfDay: null,
@@ -41,7 +49,17 @@ function createLastState(): LastState {
       isHalfDay: false,
     },
     tradingCalendarSnapshot: new Map(),
-    monitorStates: new Map(),
+    monitorState: {
+      baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+      monitorPrice: null,
+      longPrice: null,
+      shortPrice: null,
+      signal: null,
+      pendingSignals: [],
+      monitorValues: null,
+      lastMonitorSnapshot: null,
+      lastCandlestickCacheVersion: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -67,7 +85,6 @@ function createHarnessState(): MutableRunAppHarnessState {
     createPostGateRuntimeNow: null,
     loadStartupSnapshotNow: null,
     rebuildCalls: [],
-    registerDelayedCalls: 0,
     cleanupRegistered: 0,
     mainProgramCalls: 0,
     mainProgramRuntimeGateModes: [],
@@ -84,13 +101,12 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
   const warrantListCache = createWarrantListCache();
 
   return {
-    getShushCow: () => {},
     createPreGateRuntime: async (params: AppEnvironmentParams) => {
       harnessState.preGateRuntimeEnv = params.env;
+      const monitorConfig = createStrategyRuntimeConfig();
       return {
         config: createSdkConfigDouble(),
-        tradingConfig: createTradingConfig({
-          monitors: [],
+        tradingConfig: createTradingConfigFixture({
           global: {
             doomsdayProtection: true,
             debug: false,
@@ -112,6 +128,7 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
             },
           },
         }),
+        monitorConfig,
         symbolRegistry: createSymbolRegistryDouble(),
         warrantListCache,
         warrantListCacheConfig: {
@@ -166,7 +183,7 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
           startNewProtectionEpisode: () => {},
         },
         protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-        monitorContexts: new Map(),
+        monitorContext: null,
         refreshGate: {
           markStale: () => 0,
           markFresh: (version: number) => {
@@ -245,11 +262,6 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
           applyRiskChecks: async (signals) => signals,
           resetRiskCheckCooldown: () => {},
         },
-        indicatorCache: {
-          push: () => {},
-          getAt: () => null,
-          clearAll: () => {},
-        },
         buyTaskQueue: createTaskQueueDouble(),
         sellTaskQueue: createTaskQueueDouble(),
         monitorTaskQueue: {
@@ -276,8 +288,12 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
       requiredSymbols: new Set(),
       runtimeValidationInputs: [],
     }),
-    createMonitorContexts: (_params) => {
-      harnessState.events.push('createMonitorContexts');
+    buildStrategyRuntime: (params) => {
+      harnessState.events.push('buildStrategyRuntime');
+      params.postGateRuntime.monitorContext = createStrategyRuntimeDouble({
+        config: params.preGateRuntime.monitorConfig,
+        state: params.postGateRuntime.lastState.monitorState,
+      });
     },
     createRebuildTradingDayState: () => {
       harnessState.events.push('createRebuildTradingDayState');
@@ -287,10 +303,6 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
       };
     },
     displayAccountAndPositions: async () => {},
-    registerDelayedSignalHandlers: () => {
-      harnessState.registerDelayedCalls += 1;
-      harnessState.events.push('registerDelayedSignalHandlers');
-    },
     createAsyncRuntime: () => ({
       monitorTaskProcessor: {
         start: () => {
@@ -374,12 +386,12 @@ describe('app runApp assembly', () => {
     harnessState = createHarnessState();
   });
 
-  it('uses a shared startup time source and keeps rebuild before delayed-handler registration', async () => {
+  it('uses a shared startup time source and keeps rebuild before async runtime creation', async () => {
     const runApp = createRunApp(createRunAppDeps(harnessState));
     let caught: unknown = null;
 
     try {
-      await runApp({ env: {} });
+      await runApp({ env: TEST_APP_ENV });
     } catch (err) {
       caught = err;
     }
@@ -391,11 +403,10 @@ describe('app runApp assembly', () => {
     expect(harnessState.rebuildCalls).toHaveLength(1);
     expect(harnessState.events).toEqual([
       'loadStartupSnapshot',
-      'createMonitorContexts',
+      'buildStrategyRuntime',
       'createRebuildTradingDayState',
       'rebuildTradingDayState',
       'markFresh:7',
-      'registerDelayedSignalHandlers',
       'createLifecycleRuntime',
       'monitorTaskProcessor.start',
       'buyProcessor.start',
@@ -407,7 +418,6 @@ describe('app runApp assembly', () => {
       'sleep:1000',
     ]);
     expect(harnessState.sleepDurations).toEqual([1000]);
-    expect(harnessState.registerDelayedCalls).toBe(1);
     expect(harnessState.cleanupRegistered).toBe(1);
     expect(harnessState.mainProgramCalls).toBe(1);
     expect(harnessState.mainProgramRuntimeGateModes).toEqual(['strict']);
@@ -419,7 +429,7 @@ describe('app runApp assembly', () => {
     let caught: unknown = null;
 
     try {
-      await runApp({ env: {} });
+      await runApp({ env: TEST_APP_ENV });
     } catch (err) {
       caught = err;
     }
@@ -429,9 +439,8 @@ describe('app runApp assembly', () => {
     expect(harnessState.rebuildCalls).toHaveLength(0);
     expect(harnessState.events).toEqual([
       'loadStartupSnapshot',
-      'createMonitorContexts',
+      'buildStrategyRuntime',
       'createRebuildTradingDayState',
-      'registerDelayedSignalHandlers',
       'createLifecycleRuntime',
       'monitorTaskProcessor.start',
       'buyProcessor.start',
@@ -443,7 +452,6 @@ describe('app runApp assembly', () => {
       'sleep:1000',
     ]);
     expect(harnessState.sleepDurations).toEqual([1000]);
-    expect(harnessState.registerDelayedCalls).toBe(1);
     expect(harnessState.cleanupRegistered).toBe(1);
     expect(harnessState.mainProgramCalls).toBe(1);
     expect(harnessState.mainProgramRuntimeGateModes).toEqual(['strict']);
@@ -456,7 +464,7 @@ describe('app runApp assembly', () => {
     let caught: unknown = null;
 
     try {
-      await runApp({ env: {} });
+      await runApp({ env: TEST_APP_ENV });
     } catch (err) {
       caught = err;
     }
@@ -477,7 +485,7 @@ describe('app runApp assembly', () => {
     let caught: unknown = null;
 
     try {
-      await runApp({ env: {} });
+      await runApp({ env: TEST_APP_ENV });
     } catch (err) {
       caught = err;
     }
@@ -486,9 +494,8 @@ describe('app runApp assembly', () => {
     expect(harnessState.rebuildCalls).toHaveLength(0);
     expect(harnessState.events).toEqual([
       'loadStartupSnapshot',
-      'createMonitorContexts',
+      'buildStrategyRuntime',
       'createRebuildTradingDayState',
-      'registerDelayedSignalHandlers',
       'createLifecycleRuntime',
       'monitorTaskProcessor.start',
       'buyProcessor.start',
@@ -513,7 +520,7 @@ describe('app runApp assembly', () => {
     let caught: unknown = null;
 
     try {
-      await runApp({ env: {} });
+      await runApp({ env: TEST_APP_ENV });
     } catch (err) {
       caught = err;
     }
@@ -538,7 +545,7 @@ describe('app runApp assembly', () => {
     let caught: unknown = null;
 
     try {
-      await runApp({ env: {} });
+      await runApp({ env: TEST_APP_ENV });
     } catch (err) {
       caught = err;
     } finally {
@@ -561,7 +568,7 @@ describe('app runApp assembly', () => {
     let caught: unknown = null;
 
     try {
-      await runApp({ env: {} });
+      await runApp({ env: TEST_APP_ENV });
     } catch (err) {
       caught = err;
     } finally {

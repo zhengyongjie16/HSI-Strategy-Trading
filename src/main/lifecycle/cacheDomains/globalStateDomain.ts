@@ -6,7 +6,7 @@
  * - 重置半日标记、开盘保护、交易日信息缓存
  * - 清空账户/持仓缓存，确保开盘重建强制拉取当日实时快照
  * - 清空交易标的集合（allTradingSymbols 的权威清理位置）
- * - 重置各监控标的的运行状态（行情、信号、指标快照等）
+ * - 重置单实例监控状态（行情、信号、指标快照等）
  * - 释放对象池中的快照对象，防止内存泄漏
  *
  * 开盘重建：
@@ -15,31 +15,30 @@
  */
 import { logger } from '../../../utils/logger/index.js';
 import { releaseSnapshotObjects } from '../../../utils/helpers/index.js';
-import type { LastState, MonitorState } from '../../../types/state.js';
+import type { LastState, StrategyState } from '../../../types/state.js';
 import type { CacheDomain } from '../types.js';
 import type { GlobalStateDomainDeps } from './types.js';
 
 /**
- * 重置单个监控标的的运行状态，释放快照对象回对象池，防止跨日数据污染。
+ * 重置单实例监控状态，释放快照对象回对象池，防止跨日数据污染。
  *
- * @param monitorState 单个监控标的的运行时状态（lastMonitorSnapshot、monitorPrice 等）
+ * @param monitorState 单实例监控状态（lastMonitorSnapshot、monitorPrice 等）
  */
-function resetMonitorStateForNewDay(monitorState: MonitorState): void {
+function resetStrategyStateForNewDay(monitorState: StrategyState): void {
   releaseSnapshotObjects(monitorState.lastMonitorSnapshot, monitorState.monitorValues);
   monitorState.monitorPrice = null;
   monitorState.longPrice = null;
   monitorState.shortPrice = null;
   monitorState.signal = null;
-  monitorState.pendingDelayedSignals = [];
+  monitorState.pendingSignals = [];
   monitorState.monitorValues = null;
   monitorState.lastMonitorSnapshot = null;
   monitorState.lastCandlestickCacheVersion = null;
-  monitorState.incrementalIndicatorRuntime = null;
 }
 
 /**
  * 全局域午夜清理。
- * 清理 allTradingSymbols（权威位置）、交易日与门禁相关状态，并重置各监控标的运行状态。
+ * 清理 allTradingSymbols（权威位置）、交易日与门禁相关状态，并重置单实例监控状态。
  * currentDayKey 仅由 dayLifecycleManager 在全部 clear 成功后提交，此处不写入。
  *
  * @param lastState 主程序持有的全局可变状态
@@ -55,14 +54,12 @@ function runGlobalMidnightClear(lastState: LastState): void {
   lastState.tradingCalendarSnapshot = new Map();
   lastState.allTradingSymbols = new Set<string>();
 
-  for (const monitorState of lastState.monitorStates.values()) {
-    resetMonitorStateForNewDay(monitorState);
-  }
+  resetStrategyStateForNewDay(lastState.monitorState);
 }
 
 /**
  * 创建全局状态缓存域。
- * 午夜清理时重置交易门禁、交易日信息、allTradingSymbols 及各监控标的状态；开盘重建时调用 runTradingDayOpenRebuild 执行完整流水线。
+ * 午夜清理时重置交易门禁、交易日信息、allTradingSymbols 及单实例监控状态；开盘重建时调用 runTradingDayOpenRebuild 执行完整流水线。
  *
  * @param deps 依赖注入，包含 lastState、runTradingDayOpenRebuild
  * @returns 实现 CacheDomain 的全局状态域实例

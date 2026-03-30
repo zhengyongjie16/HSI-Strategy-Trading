@@ -5,9 +5,8 @@
  * - 验证双认证模式下的启动配置校验行为
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
-import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
 
 const oauthBuildCalls: Array<{ clientId: string; callbackPort?: number }> = [];
 const fromOAuthCalls: Array<{ oauth: unknown; extra: unknown }> = [];
@@ -74,37 +73,21 @@ mock.module('longbridge', () => ({
 
 import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
 
-function createSignalConfig() {
-  return {
-    conditionGroups: [
-      {
-        conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
-        requiredCount: 1,
-      },
-    ],
-  } as const;
-}
-
 function createTradingConfigForValidation() {
-  const signalConfig = createSignalConfig();
   return createTradingConfig({
-    monitors: [
-      createMonitorConfigDouble({
-        orderOwnershipMapping: ['HSI'],
-        signalConfig: {
-          buycall: signalConfig,
-          sellcall: signalConfig,
-          buyput: signalConfig,
-          sellput: signalConfig,
-        },
-      }),
-    ],
+    env: {
+      LONGBRIDGE_AUTH_MODE: 'oauth',
+      LONGBRIDGE_CLIENT_ID: 'client-id',
+      LONG_SYMBOL: 'BULL.HK',
+      SHORT_SYMBOL: 'BEAR.HK',
+      ORDER_OWNERSHIP_MAPPING: 'HSI',
+    },
   });
 }
 
 async function validateEnv(env: NodeJS.ProcessEnv): Promise<unknown> {
   try {
-    await validateAllConfig({
+    validateAllConfig({
       env,
       tradingConfig: createTradingConfigForValidation(),
     });

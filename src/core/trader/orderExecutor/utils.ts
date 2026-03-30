@@ -2,7 +2,7 @@ import { OrderSide, OrderType } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { SIGNAL_ACTION_DESCRIPTIONS } from '../../../constants/index.js';
 import type { OrderTypeConfig, Signal } from '../../../types/signal.js';
-import type { MonitorConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { OrderPayload } from '../types.js';
 import { identifyErrorType } from '../tradeLogger.js';
 import { formatError } from '../../../utils/error/index.js';
@@ -103,7 +103,7 @@ export function resolveOrderSide(action: Signal['action']): OrderSide | null {
 
 /**
  * 构造买入频率限制键。
- * 默认行为：缺少 monitorSymbol 时仅按方向键区分。
+ * 默认行为：缺少 baseInstrumentSymbol 时仅按方向键区分。
  *
  * @param signalAction 信号动作
  * @param monitorConfig 监控配置
@@ -111,11 +111,11 @@ export function resolveOrderSide(action: Signal['action']): OrderSide | null {
  */
 export function buildBuyTimeKey(
   signalAction: string,
-  monitorConfig?: MonitorConfig | null,
+  monitorConfig?: StrategyRuntimeConfig | null,
 ): string {
   const direction: 'LONG' | 'SHORT' = signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
-  const monitorSymbol = monitorConfig?.monitorSymbol ?? '';
-  return monitorSymbol ? `${monitorSymbol}:${direction}` : direction;
+  const baseInstrumentSymbol = monitorConfig?.baseInstrumentSymbol ?? '';
+  return baseInstrumentSymbol ? `${baseInstrumentSymbol}:${direction}` : direction;
 }
 
 /**

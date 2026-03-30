@@ -5,8 +5,8 @@ import type {
 } from '../config/types.js';
 import type { Position } from '../types/account.js';
 import type { GateMode, RunMode, SymbolRegistry } from '../types/seat.js';
-import type { LastState, MonitorContext, MonitorState } from '../types/state.js';
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../types/config.js';
+import type { LastState, StrategyRuntime, StrategyState } from '../types/state.js';
+import type { StrategyRuntimeConfig, TradingConfig } from '../types/config.js';
 import type { Quote } from '../types/quote.js';
 import type {
   MarketDataClient,
@@ -20,8 +20,8 @@ import type { DailyLossTracker, UnrealizedLossMonitor } from '../types/risk.js';
 import type {
   TradingSignalStrategy,
   TradingSignalStrategyFactory,
-} from '../core/strategy/ports.js';
-import type { AutoSymbolManagerPort } from '../types/monitorContextPorts.js';
+} from '../core/strategy/types.js';
+import type { AutoSymbolManagerPort } from '../types/strategyRuntimePorts.js';
 import type {
   WarrantListCache,
   WarrantListCacheConfig,
@@ -35,7 +35,6 @@ import type { RefreshGate } from '../utils/types.js';
 import type { MarketMonitor } from '../services/marketMonitor/types.js';
 import type { DoomsdayProtection } from '../core/doomsdayProtection/types.js';
 import type { SignalProcessor } from '../core/signalProcessor/types.js';
-import type { IndicatorCache } from '../main/asyncProgram/indicatorCache/types.js';
 import type {
   BuyTaskType,
   SellTaskType,
@@ -58,7 +57,6 @@ import type {
   DayLifecycleManager,
   DayLifecycleManagerDeps,
 } from '../main/lifecycle/types.js';
-import type { Signal } from '../types/signal.js';
 import type { Logger } from '../utils/logger/types.js';
 import type { StartupGate } from '../main/startup/types.js';
 import type {
@@ -160,7 +158,8 @@ export type RuntimeValidationCollector = Readonly<{
  * 使用范围：仅 app 运行时标的校验链路使用。
  */
 export type RuntimeValidationCollectionParams = Readonly<{
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
+  monitorConfig: StrategyRuntimeConfig;
   symbolRegistry: SymbolRegistry;
   positions: ReadonlyArray<Position>;
 }>;
@@ -181,18 +180,18 @@ export type PushRuntimeValidationSymbolParams = Readonly<{
 
 /**
  * 解析监控标的席位代码的参数。
- * 类型用途：为 resolveSeatSymbolsByMonitor 传入 symbolRegistry 和 monitorSymbol。
+ * 类型用途：为 resolveSeatSymbolsByMonitor 传入 symbolRegistry 和 baseInstrumentSymbol。
  * 数据来源：由 app 运行时校验收集流程传入。
  * 使用范围：仅 app 装配层使用。
  */
 export type ResolveSeatSymbolsByMonitorParams = Readonly<{
   symbolRegistry: SymbolRegistry;
-  monitorSymbol: string;
+  baseInstrumentSymbol: string;
 }>;
 
 /**
  * 单个监控标的的双向席位标的代码。
- * 类型用途：表达 monitorSymbol 对应的 long/short 就绪席位代码。
+ * 类型用途：表达 baseInstrumentSymbol 对应的 long/short 就绪席位代码。
  * 数据来源：由 symbolRegistry 查询并组合得到。
  * 使用范围：仅 app 运行时校验收集流程使用。
  */
@@ -217,13 +216,13 @@ export type RunTradingDayOpenRebuildParams = Readonly<{
 
 /**
  * 监控上下文工厂依赖注入参数。
- * 类型用途：供 createMonitorContext 工厂函数消费，用于构造 MonitorContext。
+ * 类型用途：供 createStrategyRuntime 工厂函数消费，用于构造 StrategyRuntime。
  * 数据来源：由 app 顶层装配链路在每个 monitor 上下文创建时传入。
- * 使用范围：仅 app createMonitorContext 使用。
+ * 使用范围：仅 app createStrategyRuntime 使用。
  */
-export type MonitorContextFactoryDeps = Readonly<{
-  config: MonitorConfig;
-  state: MonitorState;
+export type StrategyRuntimeFactoryDeps = Readonly<{
+  config: StrategyRuntimeConfig;
+  state: StrategyState;
   symbolRegistry: SymbolRegistry;
   quotesMap: ReadonlyMap<string, Quote | null>;
   strategy: TradingSignalStrategy;
@@ -231,7 +230,6 @@ export type MonitorContextFactoryDeps = Readonly<{
   dailyLossTracker: DailyLossTracker;
   riskChecker: RiskChecker;
   unrealizedLossMonitor: UnrealizedLossMonitor;
-  delayedSignalVerifier: MonitorContext['delayedSignalVerifier'];
   autoSymbolManager: AutoSymbolManagerPort;
 }>;
 
@@ -248,8 +246,7 @@ export type CleanupContext = Readonly<{
   orderMonitorWorker: OrderMonitorWorker;
   postTradeRefresher: PostTradeRefresher;
   marketDataClient: MarketDataClient;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
-  indicatorCache: IndicatorCache;
+  monitorContext: StrategyRuntime;
   lastState: LastState;
 }>;
 
@@ -306,29 +303,14 @@ export type LoadStartupSnapshotParams = Readonly<{
 }>;
 
 /**
- * 延迟验证通过后的分流注册参数。
- * 类型用途：封装注册 DelayedSignalVerifier 回调所需的共享状态与队列。
- * 数据来源：由 app 顶层装配在 monitor contexts 创建完成后传入。
- * 使用范围：仅 app 延迟验证接线使用。
- */
-export type RegisterDelayedSignalHandlersParams = Readonly<{
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
-  lastState: LastState;
-  buyTaskQueue: TaskQueue<BuyTaskType>;
-  sellTaskQueue: TaskQueue<SellTaskType>;
-  logger: Pick<Logger, 'debug' | 'warn'>;
-  releaseSignal: (signal: Signal) => void;
-}>;
-
-/**
  * 批量监控上下文装配参数。
- * 类型用途：封装 createMonitorContexts 所需的 pre/post gate 运行时对象与启动 quotesMap。
+ * 类型用途：封装 buildStrategyRuntime 所需的 pre/post gate 运行时对象与启动 quotesMap。
  * 数据来源：由 app 顶层装配在 startup snapshot 之后组装传入。
  * 使用范围：仅 monitor 批量装配链路使用。
  */
-export type CreateMonitorContextsParams = Readonly<{
+export type BuildStrategyRuntimeParams = Readonly<{
   preGateRuntime: PreGateRuntime;
-  postGateRuntime: MutableMonitorContextsPostGateRuntime;
+  postGateRuntime: MutableStrategyRuntimePostGateRuntime;
   quotesMap: ReadonlyMap<string, Quote | null>;
   strategyFactory?: TradingSignalStrategyFactory;
 }>;
@@ -341,7 +323,8 @@ export type CreateMonitorContextsParams = Readonly<{
  */
 export type PreGateRuntime = Readonly<{
   config: Config;
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
+  monitorConfig: StrategyRuntimeConfig;
   symbolRegistry: SymbolRegistry;
   warrantListCache: WarrantListCache;
   warrantListCacheConfig: WarrantListCacheConfig;
@@ -374,7 +357,7 @@ type PostGateRuntime = Readonly<{
   liquidationCooldownTracker: LiquidationCooldownTracker;
   dailyLossTracker: DailyLossTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: StrategyRuntime;
   refreshGate: RefreshGate;
   lastState: LastState;
   trader: Trader;
@@ -385,20 +368,19 @@ type PostGateRuntime = Readonly<{
   marketMonitor: MarketMonitor;
   doomsdayProtection: DoomsdayProtection;
   signalProcessor: SignalProcessor;
-  indicatorCache: IndicatorCache;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
 }>;
 
 /**
- * post-gate runtime 的可变监控上下文注册态。
- * 类型用途：仅在 app 装配阶段暴露 monitorContexts 的写能力，其余运行时消费方保持只读视图。
- * 数据来源：由 createPostGateRuntime 创建，并在 createMonitorContexts 阶段短暂使用。
+ * post-gate runtime 的可变单实例上下文注册态。
+ * 类型用途：仅在 app 装配阶段暴露 monitorContext 的写能力，其余运行时消费方保持单实例只读视图。
+ * 数据来源：由 createPostGateRuntime 创建，并在 buildStrategyRuntime 阶段短暂使用。
  * 使用范围：仅 app 顶层装配链路使用。
  */
-export type MutableMonitorContextsPostGateRuntime = Omit<PostGateRuntime, 'monitorContexts'> & {
-  readonly monitorContexts: Map<string, MonitorContext>;
+export type MutableStrategyRuntimePostGateRuntime = Omit<PostGateRuntime, 'monitorContext'> & {
+  monitorContext: StrategyRuntime | null;
 };
 
 /**
@@ -418,7 +400,7 @@ export type AsyncRuntime = Readonly<{
 /**
  * 异步运行时工厂依赖。
  * 类型用途：封装 createAsyncRuntime 所需的 pre/post gate runtime。
- * 数据来源：由 app 顶层装配在 monitor context 完成后传入。
+ * 数据来源：由 app 顶层装配在 strategy runtime 完成后传入。
  * 使用范围：仅异步运行时创建链路使用。
  */
 export type AsyncRuntimeFactoryDeps = Readonly<{
@@ -446,21 +428,19 @@ export type LifecycleRuntimeFactoryDeps = Readonly<{
  * 使用范围：仅 app 顶层入口装配与相关测试使用。
  */
 export type RunAppDeps = Readonly<{
-  getShushCow: () => void;
   createPreGateRuntime: (params: AppEnvironmentParams) => Promise<PreGateRuntime>;
   createPostGateRuntime: (
     params: CreatePostGateRuntimeParams,
-  ) => Promise<MutableMonitorContextsPostGateRuntime>;
+  ) => Promise<MutableStrategyRuntimePostGateRuntime>;
   loadStartupSnapshot: (params: LoadStartupSnapshotParams) => Promise<StartupSnapshotResult>;
   collectRuntimeValidationSymbols: (
     params: RuntimeValidationCollectionParams,
   ) => RuntimeValidationCollector;
-  createMonitorContexts: (params: CreateMonitorContextsParams) => void;
+  buildStrategyRuntime: (params: BuildStrategyRuntimeParams) => void;
   createRebuildTradingDayState: (
     deps: RebuildTradingDayStateDeps,
   ) => (params: RebuildTradingDayStateParams) => Promise<void>;
   displayAccountAndPositions: (params: DisplayAccountAndPositionsParams) => Promise<void>;
-  registerDelayedSignalHandlers: (params: RegisterDelayedSignalHandlersParams) => void;
   createAsyncRuntime: (params: AsyncRuntimeFactoryDeps) => AsyncRuntime;
   createLifecycleRuntime: (
     params: LifecycleRuntimeFactoryDeps,

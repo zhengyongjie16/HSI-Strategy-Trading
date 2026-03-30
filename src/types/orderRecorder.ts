@@ -7,7 +7,7 @@ import type { OrderRecord } from './services.js';
  * 使用范围：OrderRecorder、DailyLossTracker、订单恢复与诊断日志；全项目可引用。
  */
 export type OrderOwnership = {
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
 };
 

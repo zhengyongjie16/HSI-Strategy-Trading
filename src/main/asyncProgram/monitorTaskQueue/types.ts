@@ -10,7 +10,6 @@ type MonitorTaskByDataMap<
       id: string;
       type: TType;
       dedupeKey: string;
-      monitorSymbol: string;
       data: TDataMap[TType];
       createdAt: number;
     }>
@@ -23,14 +22,13 @@ type MonitorTaskInputByDataMap<
   ? Readonly<{
       type: TType;
       dedupeKey: string;
-      monitorSymbol: string;
       data: TDataMap[TType];
     }>
   : never;
 
 /**
  * 监控任务（队列元素）。
- * 类型用途：监控任务队列中的单项，携带 id、type、dedupeKey、monitorSymbol、data、createdAt；由 Processor 消费。
+ * 类型用途：监控任务队列中的单项，携带 id、type、dedupeKey、data、createdAt；由 Processor 消费。
  * 数据来源：由 scheduleLatest 写入（id、createdAt 由队列生成），MonitorTaskProcessor 出队消费。
  * 使用范围：仅 monitorTaskQueue、monitorTaskProcessor、mainProgram 等内部使用。
  */

@@ -6,12 +6,12 @@
 import dotenv from 'dotenv';
 import { AdjustType, Period, QuoteContext, TradeSessions } from 'longbridge';
 import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
-import { buildIndicatorSnapshot } from '../../src/services/indicators/runtime/index.js';
 import { sleep } from '../../src/main/utils.js';
 import { decimalToNumber } from '../../src/utils/helpers/index.js';
 import type { CandleData } from '../../src/types/data.js';
-import type { IndicatorUsageProfile } from '../../src/types/indicatorProfile.js';
+import type { IndicatorComputationProfile } from '../../src/types/indicatorProfile.js';
 import type { Quote } from '../../src/types/quote.js';
+import { buildIndicatorSnapshot } from '../indicatorRuntime.js';
 import type { ChangeDetectConfig, IndicatorPeriods, MonitorContext } from './types.js';
 import {
   convertToCandleData,
@@ -46,7 +46,7 @@ const INDICATOR_PERIODS: IndicatorPeriods = {
   rsiPeriods: RSI_PERIODS,
 };
 
-const INDICATOR_PROFILE: IndicatorUsageProfile = {
+const INDICATOR_PROFILE: IndicatorComputationProfile = {
   requiredFamilies: {
     mfi: false,
     kdj: false,
@@ -57,16 +57,6 @@ const INDICATOR_PROFILE: IndicatorUsageProfile = {
     rsi: [...RSI_PERIODS],
     ema: [...EMA_PERIODS],
     psy: [],
-  },
-  actionSignalIndicators: {
-    BUYCALL: [],
-    SELLCALL: [],
-    BUYPUT: [],
-    SELLPUT: [],
-  },
-  verificationIndicatorsBySide: {
-    buy: [],
-    sell: [],
   },
   displayPlan: [
     'price',
@@ -139,13 +129,13 @@ async function runMonitorCycle(
   detectConfig: ChangeDetectConfig,
 ): Promise<void> {
   const [dailyCandles, monitorQuote] = await Promise.all([
-    getDailyCandles(context.ctx, context.monitorSymbol),
-    getQuote(context.ctx, context.monitorSymbol),
+    getDailyCandles(context.ctx, context.baseInstrumentSymbol),
+    getQuote(context.ctx, context.baseInstrumentSymbol),
   ]);
 
   const snapshot =
     dailyCandles.length > 0
-      ? buildIndicatorSnapshot(context.monitorSymbol, dailyCandles, INDICATOR_PROFILE)
+      ? buildIndicatorSnapshot(context.baseInstrumentSymbol, dailyCandles, INDICATOR_PROFILE)
       : null;
   if (snapshot === null) {
     return;
@@ -159,7 +149,7 @@ async function runMonitorCycle(
   displayIndicators({
     snapshot,
     quote: monitorQuote,
-    monitorSymbol: context.monitorSymbol,
+    baseInstrumentSymbol: context.baseInstrumentSymbol,
     indicatorPeriods: detectConfig.indicatorPeriods,
   });
   updateState(snapshot, monitorQuote, context.state);
@@ -168,10 +158,10 @@ async function runMonitorCycle(
 /**
  * 创建监控上下文（初始化 Longbridge QuoteContext 与状态）。
  *
- * @param monitorSymbol 监控标的代码
+ * @param baseInstrumentSymbol 监控标的代码
  * @returns 监控上下文
  */
-async function createMonitorContext(monitorSymbol: string): Promise<MonitorContext> {
+async function createMonitorContext(baseInstrumentSymbol: string): Promise<MonitorContext> {
   const config = await createSdkConfigFromAuth({
     env: process.env,
     onOpenUrl: (url: string) => {
@@ -182,19 +172,20 @@ async function createMonitorContext(monitorSymbol: string): Promise<MonitorConte
 
   return {
     ctx,
-    monitorSymbol,
+    baseInstrumentSymbol,
     state: createInitialState(),
   };
 }
 
 async function main(): Promise<void> {
-  const monitorSymbol = process.argv[2] ?? process.env['DAILY_MONITOR_SYMBOL'] ?? DEFAULT_SYMBOL;
+  const baseInstrumentSymbol =
+    process.argv[2] ?? process.env['DAILY_BASE_INSTRUMENT_SYMBOL'] ?? DEFAULT_SYMBOL;
 
   console.log('正在初始化日级K线实时监控...');
-  console.log(`监控标的: ${monitorSymbol}`);
+  console.log(`监控标的: ${baseInstrumentSymbol}`);
   console.log('');
 
-  const context = await createMonitorContext(monitorSymbol);
+  const context = await createMonitorContext(baseInstrumentSymbol);
   console.log('初始化完成，开始监控（按 Ctrl+C 退出）...\n');
 
   const handleExit = (): void => {

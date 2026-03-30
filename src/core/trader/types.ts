@@ -10,7 +10,7 @@ import type {
 } from 'longbridge';
 import type { Signal, SignalType, OrderTypeConfig } from '../../types/signal.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../../types/config.js';
+import type { GlobalConfig, StrategyRuntimeConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type {
   PendingOrder,
@@ -72,7 +72,7 @@ export type TrackOrderParams = {
   /** 可选：恢复阶段保留快照中的 pending 状态，避免错误触发改单流程 */
   readonly initialStatus?: OrderStatus;
   readonly isLongSymbol: boolean;
-  readonly monitorSymbol: string | null;
+  readonly baseInstrumentSymbol: string | null;
   readonly isProtectiveLiquidation: boolean;
   readonly orderType: OrderType;
 
@@ -80,7 +80,7 @@ export type TrackOrderParams = {
   readonly liquidationTriggerLimit?: number;
 
   /** 保护性清仓冷却配置（用于触发计数分段与冷却激活计算） */
-  readonly liquidationCooldownConfig?: MonitorConfig['liquidationCooldown'];
+  readonly liquidationCooldownConfig?: StrategyRuntimeConfig['liquidationCooldown'];
 };
 
 /**
@@ -98,7 +98,7 @@ export type OrderMonitorRuntimeState = 'BOOTSTRAPPING' | 'ACTIVE';
  * 使用范围：仅 trader/orderMonitor 模块内部使用。
  */
 export type OrderSeatOwnership = {
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly isLongSymbol: boolean;
 };
@@ -133,7 +133,7 @@ export type SubmitOrderParams = {
   readonly overridePrice: number | undefined;
   readonly relatedBuyOrderIds?: ReadonlyArray<string> | null;
   readonly isShortSymbol: boolean;
-  readonly monitorConfig?: MonitorConfig | null;
+  readonly monitorConfig?: StrategyRuntimeConfig | null;
 };
 
 /**
@@ -228,7 +228,7 @@ export interface OrderMonitor {
 
   /** 是否存在指定监控标的方向的未完成保护性清仓卖单链路 */
   hasPendingProtectiveLiquidationOrders?: (
-    monitorSymbol: string,
+    baseInstrumentSymbol: string,
     direction: 'LONG' | 'SHORT',
   ) => boolean;
 
@@ -244,7 +244,10 @@ export interface OrderMonitor {
  * 使用范围：仅在当前模块及其直接依赖方使用。
  */
 export interface OrderExecutor {
-  canTradeNow: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => TradeCheckResult;
+  canTradeNow: (
+    signalAction: SignalType,
+    monitorConfig?: StrategyRuntimeConfig | null,
+  ) => TradeCheckResult;
   executeSignals: (
     signals: Signal[],
   ) => Promise<{ submittedCount: number; submittedOrderIds: ReadonlyArray<string> }>;
@@ -311,7 +314,7 @@ export type TrackedOrder = {
   readonly isLongSymbol: boolean;
 
   /** 监控标的代码（用于成交日志与冷却恢复） */
-  readonly monitorSymbol: string | null;
+  readonly baseInstrumentSymbol: string | null;
 
   /** 是否为保护性清仓订单（用于触发买入冷却） */
   readonly isProtectiveLiquidation: boolean;
@@ -320,7 +323,7 @@ export type TrackedOrder = {
   readonly liquidationTriggerLimit: number;
 
   /** 保护性清仓冷却配置（用于触发计数分段与冷却激活计算） */
-  readonly liquidationCooldownConfig: MonitorConfig['liquidationCooldown'];
+  readonly liquidationCooldownConfig: StrategyRuntimeConfig['liquidationCooldown'];
 
   /** 订单类型（用于合并和改单判断） */
   readonly orderType: OrderType;
@@ -493,6 +496,8 @@ export type OrderMonitorDeps = {
   readonly rateLimiter: RateLimiter;
   readonly cacheManager: OrderCacheManager;
   readonly marketDataClient: MarketDataClient;
+  readonly globalConfig: GlobalConfig;
+  readonly monitorConfig: StrategyRuntimeConfig;
 
   /** 订单记录器（用于成交后更新本地记录） */
   readonly orderRecorder: OrderRecorder;
@@ -513,9 +518,6 @@ export type OrderMonitorDeps = {
   readonly testHooks?: {
     readonly setHandleOrderChanged?: (handler: (event: PushOrderChanged) => void) => void;
   };
-
-  /** 全局交易配置 */
-  readonly tradingConfig: MultiMonitorTradingConfig;
 
   /** 刷新门禁（成交后标记 stale） */
   readonly refreshGate?: RefreshGate;
@@ -543,12 +545,11 @@ export type OrderExecutorDeps = {
   readonly rateLimiter: RateLimiter;
   readonly cacheManager: OrderCacheManager;
   readonly orderMonitor: OrderMonitor;
+  readonly globalConfig: GlobalConfig;
+  readonly monitorConfig: StrategyRuntimeConfig;
 
   /** 订单记录器（用于卖出订单防重追踪） */
   readonly orderRecorder: OrderRecorder;
-
-  /** 全局交易配置 */
-  readonly tradingConfig: MultiMonitorTradingConfig;
 
   /** 标的注册表（用于解析动态标的归属） */
   readonly symbolRegistry: SymbolRegistry;
@@ -565,7 +566,8 @@ export type OrderExecutorDeps = {
  */
 export type TraderDeps = {
   readonly config: Config;
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly globalConfig: GlobalConfig;
+  readonly monitorConfig: StrategyRuntimeConfig;
   readonly marketDataClient: MarketDataClient;
   readonly rateLimiterConfig?: RateLimiterConfig;
 

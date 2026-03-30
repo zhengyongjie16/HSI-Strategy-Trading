@@ -6,29 +6,26 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { createGlobalStateDomain } from '../../../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
-import type { LastState, MonitorState } from '../../../../src/types/state.js';
+import type { LastState, StrategyState } from '../../../../src/types/state.js';
 import { createAccountSnapshotDouble, createPositionDouble } from '../../../helpers/testDoubles.js';
 
-function createMockMonitorState(monitorSymbol: string): MonitorState {
+function createMockStrategyState(baseInstrumentSymbol: string): StrategyState {
   return {
-    monitorSymbol,
+    baseInstrumentSymbol,
     monitorPrice: 1,
     longPrice: null,
     shortPrice: null,
     signal: null,
-    pendingDelayedSignals: [],
+    pendingSignals: [],
     monitorValues: null,
     lastMonitorSnapshot: null,
     lastCandlestickCacheVersion: null,
-    incrementalIndicatorRuntime: null,
   };
 }
 
 describe('createGlobalStateDomain', () => {
   it('midnightClear 设置 canTrade 为 false 并清空 allTradingSymbols 与缓存字段', async () => {
-    const monitorStates = new Map<string, MonitorState>([
-      ['HSI.HK', createMockMonitorState('HSI.HK')],
-    ]);
+    const monitorState = createMockStrategyState('HSI.HK');
     const positionCacheUpdateSizes: number[] = [];
     const lastState: LastState = {
       canTrade: true,
@@ -54,7 +51,7 @@ describe('createGlobalStateDomain', () => {
         get: () => null,
       },
       cachedTradingDayInfo: null,
-      monitorStates,
+      monitorState,
       allTradingSymbols: new Set(['12345.HK']),
     };
 
@@ -79,16 +76,12 @@ describe('createGlobalStateDomain', () => {
     expect(lastState.cachedPositions).toHaveLength(0);
     expect(positionCacheUpdateSizes).toEqual([0]);
     expect(lastState.cachedTradingDayInfo).toBe(null);
-    const state = monitorStates.get('HSI.HK');
-    expect(state).toBeDefined();
-    if (state) {
-      expect(state.monitorPrice).toBe(null);
-      expect(state.longPrice).toBe(null);
-      expect(state.signal).toBe(null);
-      expect(state.pendingDelayedSignals).toHaveLength(0);
-      expect(state.monitorValues).toBe(null);
-      expect(state.lastMonitorSnapshot).toBe(null);
-    }
+    expect(monitorState.monitorPrice).toBe(null);
+    expect(monitorState.longPrice).toBe(null);
+    expect(monitorState.signal).toBe(null);
+    expect(monitorState.pendingSignals).toHaveLength(0);
+    expect(monitorState.monitorValues).toBe(null);
+    expect(monitorState.lastMonitorSnapshot).toBe(null);
 
     expect(runOpenRebuildCalled).toBe(false);
   });
@@ -107,7 +100,17 @@ describe('createGlobalStateDomain', () => {
       cachedPositions: [],
       positionCache: { update: () => {}, get: () => null },
       cachedTradingDayInfo: null,
-      monitorStates: new Map(),
+      monitorState: {
+        baseInstrumentSymbol: 'HSI.HK',
+        monitorPrice: null,
+        longPrice: null,
+        shortPrice: null,
+        signal: null,
+        pendingSignals: [],
+        monitorValues: null,
+        lastMonitorSnapshot: null,
+        lastCandlestickCacheVersion: null,
+      },
       allTradingSymbols: new Set(),
     };
     let capturedNow: Date | null = null as Date | null;

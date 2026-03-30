@@ -28,7 +28,7 @@ import type {
   PendingRefreshSymbol,
   RawOrderFromAPI,
 } from '../../types/services.js';
-import type { MonitorConfig } from '../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type { TraderDeps } from './types.js';
 
 // 导入子模块工厂函数
@@ -47,13 +47,14 @@ import { createOrderFilteringEngine } from '../orderRecorder/orderFilteringEngin
  * 按固定顺序创建 rateLimiter、accountService、orderCacheManager、orderRecorder、orderMonitor、orderExecutor 等子模块并组装为 Trader 接口。
  * createTrader 仅负责依赖装配，不执行运行期副作用（如 WebSocket 初始化、订单恢复），由上层显式调用。
  * 交易能力由多子模块协同完成，门面统一初始化顺序与依赖注入，保证 orderMonitor 依赖 orderRecorder、orderExecutor 依赖 orderMonitor 等约束。
- * @param deps 依赖（config、tradingConfig、liquidationCooldownTracker、symbolRegistry、dailyLossTracker、refreshGate、isExecutionAllowed 等）
+ * @param deps 依赖（config、globalConfig、monitorConfig、symbolRegistry、dailyLossTracker、refreshGate、isExecutionAllowed 等）
  * @returns 实现 Trader 接口的实例（含 canTradeNow、executeSignals、getPendingOrders 等）
  */
 export function createTrader(deps: TraderDeps): Promise<Trader> {
   const {
     config,
-    tradingConfig,
+    globalConfig,
+    monitorConfig,
     marketDataClient,
     symbolRegistry,
     dailyLossTracker,
@@ -96,7 +97,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
     dailyLossTracker,
     orderHoldRegistry,
     protectiveLiquidationEpisodeTracker,
-    tradingConfig,
+    globalConfig,
+    monitorConfig,
     symbolRegistry,
     isExecutionAllowed,
     ...(refreshGate ? { refreshGate } : {}),
@@ -109,7 +111,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
     cacheManager,
     orderMonitor,
     orderRecorder,
-    tradingConfig,
+    globalConfig,
+    monitorConfig,
     symbolRegistry,
     isExecutionAllowed,
   });
@@ -162,7 +165,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
     },
 
     hasPendingProtectiveLiquidationOrders(
-      monitorSymbol: string,
+      baseInstrumentSymbol: string,
       direction: 'LONG' | 'SHORT',
     ): boolean {
       const query = orderMonitor.hasPendingProtectiveLiquidationOrders;
@@ -170,7 +173,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
         return false;
       }
 
-      return query(monitorSymbol, direction);
+      return query(baseInstrumentSymbol, direction);
     },
 
     initializeOrderMonitor(): Promise<void> {
@@ -179,8 +182,11 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
     // ==================== 订单执行相关方法 ====================
 
-    canTradeNow(signalAction: SignalType, monitorConfig?: MonitorConfig | null): TradeCheckResult {
-      return orderExecutor.canTradeNow(signalAction, monitorConfig);
+    canTradeNow(
+      signalAction: SignalType,
+      currentMonitorConfig?: StrategyRuntimeConfig | null,
+    ): TradeCheckResult {
+      return orderExecutor.canTradeNow(signalAction, currentMonitorConfig);
     },
 
     fetchAllOrdersFromAPI(forceRefresh: boolean = false): Promise<ReadonlyArray<RawOrderFromAPI>> {

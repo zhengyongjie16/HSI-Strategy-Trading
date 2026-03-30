@@ -17,7 +17,7 @@ export const removeTasksFromQueue = <TDataMap extends Readonly<Record<string, un
 
   for (let i = queue.length - 1; i >= 0; i -= 1) {
     const task = queue[i];
-    if (!task) {
+    if (task === undefined) {
       continue;
     }
 

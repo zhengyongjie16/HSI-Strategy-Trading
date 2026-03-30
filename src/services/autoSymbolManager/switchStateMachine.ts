@@ -182,7 +182,7 @@ function resolveDistanceTriggerSide(params: {
 export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchStateMachine {
   const {
     autoSearchConfig,
-    monitorSymbol,
+    baseInstrumentSymbol,
     symbolRegistry,
     trader,
     orderRecorder,
@@ -301,7 +301,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     if (shouldFreeze) {
       logger.warn(
-        `[自动换标] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
+        `[自动换标] ${baseInstrumentSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
       );
     }
   }
@@ -313,9 +313,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   function clearSeatOnPeriodicNoCandidate(direction: 'LONG' | 'SHORT'): void {
     const nowDate = now();
     const nowMs = nowDate.getTime();
-    const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const currentSeat = symbolRegistry.getSeatState(direction);
 
-    symbolRegistry.bumpSeatVersion(monitorSymbol, direction);
+    symbolRegistry.bumpSeatVersion(direction);
     clearSeatWithSearchFailure({
       direction,
       currentSeat,
@@ -325,7 +325,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     clearPeriodicPending(direction);
 
     logger.info(
-      `[自动换标] ${monitorSymbol} ${direction} 周期换标无候选，清空席位 oldSymbol=${currentSeat.symbol ?? 'null'}`,
+      `[自动换标] ${baseInstrumentSymbol} ${direction} 周期换标无候选，清空席位 oldSymbol=${currentSeat.symbol ?? 'null'}`,
     );
   }
 
@@ -336,13 +336,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return false;
     }
 
-    const currentVersion = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const currentVersion = symbolRegistry.getSeatVersion(direction);
     if (currentVersion !== switchState.seatVersion) {
       switchStates.delete(direction);
       return false;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     const symbolMatches =
       seatState.symbol === switchState.oldSymbol || seatState.symbol === switchState.nextSymbol;
     if (seatState.status !== 'SWITCHING' || !symbolMatches) {
@@ -403,13 +403,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
       clearPeriodicPending(direction);
       return;
     }
 
-    const seatVersionAtStart = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const seatVersionAtStart = symbolRegistry.getSeatVersion(direction);
     const seatSymbol = seatState.symbol;
     if (
       suppressionTriggerKind !== null &&
@@ -419,8 +419,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     }
 
     const next = await findSwitchCandidate(direction);
-    const latestSeatState = symbolRegistry.getSeatState(monitorSymbol, direction);
-    const latestSeatVersion = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const latestSeatState = symbolRegistry.getSeatState(direction);
+    const latestSeatVersion = symbolRegistry.getSeatVersion(direction);
     if (!isSeatActive(latestSeatState)) {
       clearPeriodicPending(direction);
       return;
@@ -441,7 +441,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       if (periodicBlockSource !== 'EMPTY') {
         markPeriodicPending(direction, now().getTime(), periodicBlockSource);
         logger.warn(
-          `[自动换标] ${monitorSymbol} ${direction} 周期换标触发前复核发现本地占用，继续等待 blockedBy=${periodicBlockSource}`,
+          `[自动换标] ${baseInstrumentSymbol} ${direction} 周期换标触发前复核发现本地占用，继续等待 blockedBy=${periodicBlockSource}`,
         );
         return;
       }
@@ -450,7 +450,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     if (next?.symbol === latestSeatState.symbol) {
       if (suppressionTriggerKind !== null) {
         markSuppression(direction, latestSeatState.symbol, suppressionTriggerKind);
-        logger.info(`[自动换标] ${monitorSymbol} ${direction} 预寻标命中同标的，记录当日抑制`);
+        logger.info(
+          `[自动换标] ${baseInstrumentSymbol} ${direction} 预寻标命中同标的，记录当日抑制`,
+        );
       }
 
       return;
@@ -516,7 +518,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   ): Promise<void> {
     const { direction, positions } = params;
     const { sellAction, buyAction } = resolveDirectionSymbols(direction);
-    const seatVersion = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const seatVersion = symbolRegistry.getSeatVersion(direction);
     let cachedNextQuote: Quote | null | undefined;
 
     async function getNextQuote(): Promise<Quote | null> {
@@ -536,11 +538,11 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     function failAndClear(reason: string): void {
       logger.error(
         `[自动换标] 状态机失败并清席位 ` +
-          `monitorSymbol=${monitorSymbol} direction=${direction} oldSymbol=${state.oldSymbol} ` +
+          `baseInstrumentSymbol=${baseInstrumentSymbol} direction=${direction} oldSymbol=${state.oldSymbol} ` +
           `nextSymbol=${state.nextSymbol ?? 'null'} stage=${state.stage} reason=${reason}`,
       );
       state.stage = 'FAILED';
-      const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const currentSeat = symbolRegistry.getSeatState(direction);
       const nowDate = now();
       const nowMs = nowDate.getTime();
       if (state.nextSymbol === null) {
@@ -662,7 +664,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
         const executionResult = await executeSwitchSignal(
           signal,
-          `[自动换标] 移仓卖出未提交成功，等待重试: monitorSymbol=${monitorSymbol} direction=${direction} symbol=${state.oldSymbol}`,
+          `[自动换标] 移仓卖出未提交成功，等待重试: baseInstrumentSymbol=${baseInstrumentSymbol} direction=${direction} symbol=${state.oldSymbol}`,
         );
         if (executionResult === null) {
           return;
@@ -708,7 +710,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
 
       const bindNowMs = now().getTime();
-      const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const currentSeat = symbolRegistry.getSeatState(direction);
       updateSeatState(
         direction,
         buildSeatState({
@@ -799,7 +801,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
         const executionResult = await executeSwitchSignal(
           signal,
-          `[自动换标] 回补买入未提交成功，等待重试: monitorSymbol=${monitorSymbol} direction=${direction} symbol=${nextSymbol}`,
+          `[自动换标] 回补买入未提交成功，等待重试: baseInstrumentSymbol=${baseInstrumentSymbol} direction=${direction} symbol=${nextSymbol}`,
         );
         if (executionResult === null) {
           return;
@@ -857,7 +859,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
       clearPeriodicPending(direction);
       return;
@@ -889,7 +891,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       if (blockSource !== 'EMPTY') {
         if (pendingStateAfterReset.blockedBy !== blockSource) {
           logger.warn(
-            `[自动换标] ${monitorSymbol} ${direction} 周期换标继续等待，blockedBy=${blockSource}`,
+            `[自动换标] ${baseInstrumentSymbol} ${direction} 周期换标继续等待，blockedBy=${blockSource}`,
           );
         }
 
@@ -902,7 +904,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
 
       logger.info(
-        `[自动换标] ${monitorSymbol} ${direction} 周期换标等待结束，检测到本地空仓开始换标`,
+        `[自动换标] ${baseInstrumentSymbol} ${direction} 周期换标等待结束，检测到本地空仓开始换标`,
       );
       clearPeriodicPending(direction);
       await startSwitchFlow({
@@ -943,7 +945,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       if (!pendingState.pending || pendingState.blockedBy !== blockSource) {
         markPeriodicPending(direction, currentTime.getTime(), blockSource);
         logger.warn(
-          `[自动换标] ${monitorSymbol} ${direction} 周期换标到期但本地仍被占用，进入等待空仓状态 blockedBy=${blockSource}`,
+          `[自动换标] ${baseInstrumentSymbol} ${direction} 周期换标到期但本地仍被占用，进入等待空仓状态 blockedBy=${blockSource}`,
         );
       }
 
@@ -953,7 +955,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     const pendingState = resolvePeriodicPending(direction);
     if (pendingState.pending) {
       logger.info(
-        `[自动换标] ${monitorSymbol} ${direction} 周期换标等待结束，检测到本地空仓开始换标`,
+        `[自动换标] ${baseInstrumentSymbol} ${direction} 周期换标等待结束，检测到本地空仓开始换标`,
       );
     }
 
@@ -998,7 +1000,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
       clearPeriodicPending(direction);
       return;

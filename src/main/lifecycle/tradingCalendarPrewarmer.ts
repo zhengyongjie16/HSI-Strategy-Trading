@@ -12,7 +12,7 @@
  */
 import { LIFECYCLE, TIME } from '../../constants/index.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
-import type { MonitorContext } from '../../types/state.js';
+import type { StrategyRuntime } from '../../types/state.js';
 import type { MarketDataClient, OrderRecord, TradingDayInfo } from '../../types/services.js';
 import { listHKDateKeysBetween } from './utils.js';
 import { getHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
@@ -43,9 +43,9 @@ function createTradingCalendarPrewarmError(
 export async function prewarmTradingCalendarSnapshotForRebuild(
   params: PrewarmTradingCalendarSnapshotParams,
 ): Promise<void> {
-  const { marketDataClient, lastState, monitorContexts, now } = params;
+  const { marketDataClient, lastState, monitorContext, now } = params;
   const nowMs = now.getTime();
-  const earliestOpenOrderMs = resolveEarliestOpenOrderExecutedMs(monitorContexts);
+  const earliestOpenOrderMs = resolveEarliestOpenOrderExecutedMs(monitorContext);
   const fallbackStartMs =
     nowMs - LIFECYCLE.CALENDAR_PREWARM_FALLBACK_LOOKBACK_DAYS * TIME.MILLISECONDS_PER_DAY;
   const demandStartMs = earliestOpenOrderMs ?? fallbackStartMs;
@@ -83,29 +83,24 @@ export async function prewarmTradingCalendarSnapshotForRebuild(
 /**
  * 从已绑定席位提取当前仍持仓买单，返回最早成交时间。
  */
-function resolveEarliestOpenOrderExecutedMs(
-  monitorContexts: ReadonlyMap<string, MonitorContext>,
-): number | null {
+function resolveEarliestOpenOrderExecutedMs(monitorContext: StrategyRuntime): number | null {
   let earliestMs: number | null = null;
-  for (const monitorContext of monitorContexts.values()) {
-    const monitorSymbol = monitorContext.config.monitorSymbol;
-    const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-    const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
-    if (hasSeatSymbol(longSeatState)) {
-      const longOrders = monitorContext.orderRecorder.getBuyOrdersForSymbol(
-        longSeatState.symbol,
-        true,
-      );
-      earliestMs = resolveMinTimestamp(earliestMs, longOrders);
-    }
+  const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
+  const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
+  if (hasSeatSymbol(longSeatState)) {
+    const longOrders = monitorContext.orderRecorder.getBuyOrdersForSymbol(
+      longSeatState.symbol,
+      true,
+    );
+    earliestMs = resolveMinTimestamp(earliestMs, longOrders);
+  }
 
-    if (hasSeatSymbol(shortSeatState)) {
-      const shortOrders = monitorContext.orderRecorder.getBuyOrdersForSymbol(
-        shortSeatState.symbol,
-        false,
-      );
-      earliestMs = resolveMinTimestamp(earliestMs, shortOrders);
-    }
+  if (hasSeatSymbol(shortSeatState)) {
+    const shortOrders = monitorContext.orderRecorder.getBuyOrdersForSymbol(
+      shortSeatState.symbol,
+      false,
+    );
+    earliestMs = resolveMinTimestamp(earliestMs, shortOrders);
   }
 
   return earliestMs;

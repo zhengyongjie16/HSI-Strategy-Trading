@@ -1,5 +1,5 @@
 import type { Decimal, PushOrderChanged, TradeContext } from 'longbridge';
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { DailyLossTracker } from '../../../types/risk.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
 import type {
@@ -167,7 +167,7 @@ export type RecoveryFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderHoldRegistry: OrderHoldRegistry;
   readonly orderRecorder: OrderRecorder;
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly monitorConfig: StrategyRuntimeConfig;
   readonly symbolRegistry: SymbolRegistry;
   readonly trackOrder: (params: TrackOrderParams) => void;
   readonly cancelOrder: (orderId: string) => Promise<CancelOrderOutcome>;
@@ -312,11 +312,11 @@ export type FinalizeOrderSettlementParams = {
   readonly executedTimeMs?: number | null;
   readonly symbol?: string;
   readonly side?: 'BUY' | 'SELL';
-  readonly monitorSymbol?: string | null;
+  readonly baseInstrumentSymbol?: string | null;
   readonly isLongSymbol?: boolean;
   readonly isProtectiveLiquidation?: boolean;
   readonly liquidationTriggerLimit?: number;
-  readonly liquidationCooldownConfig?: MonitorConfig['liquidationCooldown'];
+  readonly liquidationCooldownConfig?: StrategyRuntimeConfig['liquidationCooldown'];
 };
 
 /**

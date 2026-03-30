@@ -35,7 +35,7 @@ export type BaseProcessorConfig<TType extends string> = {
   readonly taskQueue: TaskQueue<TType>;
 
   /** 处理单个任务的异步函数 */
-  readonly processTask: (task: Task<TType>) => Promise<boolean>;
+  readonly processTask: (task: Task<TType>) => Promise<void>;
 
   /** 任务完成后释放资源的回调（如释放信号到对象池） */
   readonly releaseAfterProcess: (signal: Signal) => void;

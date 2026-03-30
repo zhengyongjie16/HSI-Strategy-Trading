@@ -1,22 +1,23 @@
 import type { CleanupContext } from '../../src/app/types.js';
 import type { MonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { MarketDataClient } from '../../src/types/services.js';
-import type { LastState, MonitorState } from '../../src/types/state.js';
+import type { LastState, StrategyState } from '../../src/types/state.js';
+import { createStrategyRuntimeDouble } from '../helpers/testDoubles.js';
 
 /**
- * 构造单监控标的的 MonitorState，含默认指标快照，供 cleanup 测试使用。
+ * 构造单监控标的的 StrategyState，含默认指标快照，供 cleanup 测试使用。
  *
- * @param monitorSymbol 监控标的代码
- * @returns 用于测试的 MonitorState
+ * @param baseInstrumentSymbol 监控标的代码
+ * @returns 用于测试的 StrategyState
  */
-export function createMonitorState(monitorSymbol: string): MonitorState {
+export function createStrategyState(baseInstrumentSymbol: string): StrategyState {
   return {
-    monitorSymbol,
+    baseInstrumentSymbol,
     monitorPrice: null,
     longPrice: null,
     shortPrice: null,
     signal: null,
-    pendingDelayedSignals: [],
+    pendingSignals: [],
     monitorValues: {
       price: 20_000,
       changePercent: 0,
@@ -40,17 +41,16 @@ export function createMonitorState(monitorSymbol: string): MonitorState {
       adx: null,
     },
     lastCandlestickCacheVersion: null,
-    incrementalIndicatorRuntime: null,
   };
 }
 
 /**
- * 构造 LastState，仅填充 monitorStates 与基础字段，其余为测试用占位，供 cleanup 测试使用。
+ * 构造 LastState，仅填充 monitorState 与基础字段，其余为测试用占位，供 cleanup 测试使用。
  *
- * @param monitorStates 监控状态 Map
+ * @param monitorState 单实例监控状态
  * @returns 用于测试的 LastState
  */
-export function createLastState(monitorStates: ReadonlyMap<string, MonitorState>): LastState {
+export function createLastState(monitorState: StrategyState): LastState {
   return {
     canTrade: true,
     isHalfDay: false,
@@ -67,7 +67,7 @@ export function createLastState(monitorStates: ReadonlyMap<string, MonitorState>
       get: () => null,
     },
     cachedTradingDayInfo: null,
-    monitorStates,
+    monitorState,
     allTradingSymbols: new Set(),
   };
 }
@@ -137,20 +137,13 @@ function defaultDeps(steps: string[]): CleanupContext {
       clearPending: () => {},
     },
     marketDataClient,
-    monitorContexts: new Map(),
-    indicatorCache: {
-      push: () => {},
-      getAt: () => null,
-      clearAll: () => {
-        steps.push('clearIndicatorCache');
-      },
-    },
-    lastState: createLastState(new Map()),
+    monitorContext: createStrategyRuntimeDouble(),
+    lastState: createLastState(createStrategyState('HSI.HK')),
   };
 }
 
 /**
- * 构建 createCleanup 的入参，默认各步骤向 steps 数组 push 名称；可传 overrides 覆盖 monitorContexts、lastState 或任意处理器。
+ * 构建 createCleanup 的入参，默认各步骤向 steps 数组 push 名称；可传 overrides 覆盖 monitorContext、lastState 或任意处理器。
  *
  * @param steps 记录执行步骤顺序的数组
  * @param overrides 对默认依赖的覆盖项

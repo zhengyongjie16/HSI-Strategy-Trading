@@ -11,9 +11,9 @@
  * - 确保同类型任务只保留最新的一个，避免重复处理
  *
  * 使用场景：
- * - 自动换标任务（按 monitorSymbol + direction 去重）
- * - 浮亏检查任务（按 monitorSymbol 去重）
- * - 牛熊证距离检查任务（按 monitorSymbol 去重）
+ * - 自动换标任务（按 direction 去重）
+ * - 浮亏检查任务（单实例全局去重）
+ * - 牛熊证距离检查任务（单实例全局去重）
  */
 import { randomUUID } from 'node:crypto';
 
@@ -43,7 +43,6 @@ export function createMonitorTaskQueue<
       id: randomUUID(),
       type: task.type,
       dedupeKey: task.dedupeKey,
-      monitorSymbol: task.monitorSymbol,
       data: task.data,
       createdAt: Date.now(),
     } as MonitorTask<TDataMap, TType>;

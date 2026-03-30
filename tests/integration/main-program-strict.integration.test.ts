@@ -5,10 +5,10 @@
  * - 验证主程序严格模式端到端场景与业务期望。
  */
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createTradingConfigFixtureFromRuntimeConfig } from '../../mock/factories/configFactory.js';
 import {
   createDoomsdayProtectionDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createPositionCacheDouble,
   createQuoteDouble,
   createSymbolRegistryDouble,
@@ -17,13 +17,13 @@ import {
 
 import type { MainProgramContext } from '../../src/main/mainProgram/types.js';
 import type * as TimeModule from '../../src/utils/time/index.js';
-import type { LastState, MonitorContext } from '../../src/types/state.js';
+import type { LastState, StrategyRuntime } from '../../src/types/state.js';
 import type { Quote } from '../../src/types/quote.js';
 
 type MainProgramFn = (context: MainProgramContext) => Promise<void>;
 
 const processMonitorCalls: Array<{
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly openProtectionActive: boolean;
   readonly canTradeNow: boolean;
 }> = [];
@@ -90,14 +90,14 @@ async function loadMainProgram(): Promise<{ readonly mainProgram: MainProgramFn 
       monitorContext,
       runtimeFlags,
     }: {
-      readonly monitorContext: { readonly config: { readonly monitorSymbol: string } };
+      readonly monitorContext: { readonly config: { readonly baseInstrumentSymbol: string } };
       readonly runtimeFlags: {
         readonly openProtectionActive: boolean;
         readonly canTradeNow: boolean;
       };
     }) => {
       processMonitorCalls.push({
-        monitorSymbol: monitorContext.config.monitorSymbol,
+        baseInstrumentSymbol: monitorContext.config.baseInstrumentSymbol,
         openProtectionActive: runtimeFlags.openProtectionActive,
         canTradeNow: runtimeFlags.canTradeNow,
       });
@@ -137,40 +137,39 @@ function createLastState(overrides: Partial<LastState> = {}): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: {
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorPrice: null,
+      longPrice: null,
+      shortPrice: null,
+      signal: null,
+      pendingSignals: [],
+      monitorValues: null,
+      lastMonitorSnapshot: null,
+      lastCandlestickCacheVersion: null,
+    },
     allTradingSymbols: new Set(),
     ...overrides,
   };
 }
 
-function createMonitorContext(
-  monitorSymbol: string,
-  pendingCount: number,
-  onCancel: (symbol: string) => void,
-): MonitorContext {
-  const config = createMonitorConfigDouble({ monitorSymbol });
+function createStrategyRuntime(
+  baseInstrumentSymbol: string,
+  _pendingCount: number,
+  _onCancel: (symbol: string) => void,
+): StrategyRuntime {
+  const config = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol });
   return {
     config,
-    monitorSymbolName: monitorSymbol,
-    delayedSignalVerifier: {
-      getPendingCount: () => pendingCount,
-      cancelAllForSymbol: (symbol: string) => {
-        onCancel(symbol);
-      },
-    },
-  } as unknown as MonitorContext;
+    baseInstrumentName: baseInstrumentSymbol,
+  } as unknown as StrategyRuntime;
 }
 
 function createQueues(): Pick<
   MainProgramContext,
-  'buyTaskQueue' | 'sellTaskQueue' | 'monitorTaskQueue' | 'indicatorCache'
+  'buyTaskQueue' | 'sellTaskQueue' | 'monitorTaskQueue'
 > {
   return {
-    indicatorCache: {
-      push: () => {},
-      getAt: () => null,
-      clearAll: () => {},
-    },
     buyTaskQueue: {
       push: () => {},
       pop: () => null,
@@ -215,7 +214,7 @@ describe('mainProgram strict-mode integration', () => {
     mock.restore();
   });
 
-  it('clears pending delayed signals, enqueues pending refresh and exits early when leaving continuous session', async () => {
+  it('clears pending queued signals, enqueues pending refresh and exits early when leaving continuous session', async () => {
     tradingTimeOverrides.dayKey = '2026-02-16';
     tradingTimeOverrides.isInContinuousSession = false;
 
@@ -228,10 +227,10 @@ describe('mainProgram strict-mode integration', () => {
         refreshPositions: true,
       },
     ];
-    const monitorContext = createMonitorContext('HSI.HK', 2, (symbol) => {
+    const monitorContext = createStrategyRuntime('HSI.HK', 2, (symbol) => {
       cancelledSymbols.push(symbol);
     });
-    const monitorContexts = new Map<string, MonitorContext>([['HSI.HK', monitorContext]]);
+    const monitorConfig = monitorContext.config;
     const lastState = createLastState({
       canTrade: true,
       cachedTradingDayInfo: { isTradingDay: true, isHalfDay: false },
@@ -279,13 +278,13 @@ describe('mainProgram strict-mode integration', () => {
         applyRiskChecks: async (signals) => signals,
         resetRiskCheckCooldown: () => {},
       } as MainProgramContext['signalProcessor'],
-      tradingConfig: createTradingConfig({
-        monitors: [createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' })],
+      tradingConfig: createTradingConfigFixtureFromRuntimeConfig(monitorConfig, {
         global: {
-          ...createTradingConfig().global,
+          ...createTradingConfigFixtureFromRuntimeConfig(monitorConfig).global,
           doomsdayProtection: false,
         },
       }),
+      monitorConfig,
       dailyLossTracker: {
         resetAll: () => {},
         startNewProtectionEpisode: () => {},
@@ -293,8 +292,8 @@ describe('mainProgram strict-mode integration', () => {
         recordFilledOrder: () => {},
         getLossOffset: () => 0,
       },
-      monitorContexts,
-      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
+      monitorContext,
+      symbolRegistry: createSymbolRegistryDouble({ baseInstrumentSymbol: 'HSI.HK' }),
       ...createQueues(),
       orderMonitorWorker: {
         start: () => {},
@@ -320,7 +319,7 @@ describe('mainProgram strict-mode integration', () => {
       },
     });
 
-    expect(cancelledSymbols).toEqual(['HSI.HK']);
+    expect(cancelledSymbols).toEqual([]);
     expect(postTradeEnqueueCalls).toHaveLength(1);
     expect(postTradeEnqueueCalls[0]?.pending).toEqual(pendingRefresh);
     expect(postTradeEnqueueCalls[0]?.quotesMap.size).toBe(0);
@@ -338,8 +337,8 @@ describe('mainProgram strict-mode integration', () => {
     tradingTimeOverrides.dayKey = '2026-02-16';
     tradingTimeOverrides.isInContinuousSession = true;
 
-    const monitorContext = createMonitorContext('HSI.HK', 0, () => {});
-    const monitorContexts = new Map<string, MonitorContext>([['HSI.HK', monitorContext]]);
+    const monitorContext = createStrategyRuntime('HSI.HK', 0, () => {});
+    const monitorConfig = monitorContext.config;
     const lastState = createLastState({
       cachedTradingDayInfo: { isTradingDay: true, isHalfDay: false },
     });
@@ -397,13 +396,13 @@ describe('mainProgram strict-mode integration', () => {
         applyRiskChecks: async (signals) => signals,
         resetRiskCheckCooldown: () => {},
       } as MainProgramContext['signalProcessor'],
-      tradingConfig: createTradingConfig({
-        monitors: [createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' })],
+      tradingConfig: createTradingConfigFixtureFromRuntimeConfig(monitorConfig, {
         global: {
-          ...createTradingConfig().global,
+          ...createTradingConfigFixtureFromRuntimeConfig(monitorConfig).global,
           doomsdayProtection: true,
         },
       }),
+      monitorConfig,
       dailyLossTracker: {
         resetAll: () => {},
         startNewProtectionEpisode: () => {},
@@ -411,8 +410,8 @@ describe('mainProgram strict-mode integration', () => {
         recordFilledOrder: () => {},
         getLossOffset: () => 0,
       },
-      monitorContexts,
-      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
+      monitorContext,
+      symbolRegistry: createSymbolRegistryDouble({ baseInstrumentSymbol: 'HSI.HK' }),
       ...createQueues(),
       orderMonitorWorker: {
         start: () => {},
@@ -472,10 +471,9 @@ describe('mainProgram strict-mode integration', () => {
       allTradingSymbols: new Set(['OLD.HK']),
     });
 
-    const monitorSymbol = 'HSI.HK';
-    const monitorConfig = createMonitorConfigDouble({ monitorSymbol });
-    const monitorContext = createMonitorContext(monitorSymbol, 0, () => {});
-    const monitorContexts = new Map<string, MonitorContext>([[monitorSymbol, monitorContext]]);
+    const baseInstrumentSymbol = 'HSI.HK';
+    const monitorConfig = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol });
+    const monitorContext = createStrategyRuntime(baseInstrumentSymbol, 0, () => {});
 
     const subscribedBatches: string[][] = [];
     const unsubscribedBatches: string[][] = [];
@@ -523,10 +521,9 @@ describe('mainProgram strict-mode integration', () => {
         applyRiskChecks: async (signals) => signals,
         resetRiskCheckCooldown: () => {},
       } as MainProgramContext['signalProcessor'],
-      tradingConfig: createTradingConfig({
-        monitors: [monitorConfig],
+      tradingConfig: createTradingConfigFixtureFromRuntimeConfig(monitorConfig, {
         global: {
-          ...createTradingConfig().global,
+          ...createTradingConfigFixtureFromRuntimeConfig(monitorConfig).global,
           doomsdayProtection: false,
           openProtection: {
             morning: { enabled: true, minutes: 15 },
@@ -534,6 +531,7 @@ describe('mainProgram strict-mode integration', () => {
           },
         },
       }),
+      monitorConfig,
       dailyLossTracker: {
         resetAll: () => {},
         startNewProtectionEpisode: () => {},
@@ -541,8 +539,8 @@ describe('mainProgram strict-mode integration', () => {
         recordFilledOrder: () => {},
         getLossOffset: () => 0,
       },
-      monitorContexts,
-      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol }),
+      monitorContext,
+      symbolRegistry: createSymbolRegistryDouble({ baseInstrumentSymbol }),
       ...createQueues(),
       orderMonitorWorker: {
         start: () => {},

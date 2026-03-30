@@ -23,7 +23,7 @@ export type MonitorState = {
  */
 export type MonitorContext = {
   readonly ctx: QuoteContext;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly state: MonitorState;
 };
 
@@ -55,6 +55,6 @@ export type ChangeDetectConfig = {
 export type DisplayContext = {
   readonly snapshot: IndicatorSnapshot;
   readonly quote: Quote | null;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly indicatorPeriods: IndicatorPeriods;
 };

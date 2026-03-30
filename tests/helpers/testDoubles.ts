@@ -5,17 +5,16 @@
  * - 提供测试替身与工厂方法，供其他测试模块使用
  */
 import type { Position, AccountSnapshot } from '../../src/types/account.js';
-import type { MonitorConfig } from '../../src/types/config.js';
+import type { StrategyRuntimeConfig } from '../../src/types/config.js';
 import type { CandleData } from '../../src/types/data.js';
 import type { Quote } from '../../src/types/quote.js';
 import type { Signal, SignalType } from '../../src/types/signal.js';
 import type {
   DisplayIndicatorItem,
-  IndicatorUsageProfile,
-  SignalIndicator,
-  StrategyAction,
+  IndicatorDisplayProfile,
 } from '../../src/types/indicatorProfile.js';
-import type { MonitorContext, MonitorState } from '../../src/types/state.js';
+import type { FactorSnapshot } from '../../src/types/factor.js';
+import type { StrategyRuntime, StrategyState } from '../../src/types/state.js';
 import type {
   OrderRecorder,
   MarketDataClient,
@@ -32,7 +31,7 @@ import type {
 } from '../../src/types/services.js';
 import type { SymbolRegistry, SeatState } from '../../src/types/seat.js';
 import type { Candlestick, Config, Period, QuoteContext, TradeContext } from 'longbridge';
-import type { TradingSignalStrategy } from '../../src/core/strategy/ports.js';
+import type { TradingSignalStrategy } from '../../src/core/strategy/types.js';
 import type {
   DoomsdayProtection,
   DoomsdayClearanceContext,
@@ -41,7 +40,7 @@ import type {
   CancelPendingBuyOrdersResult,
 } from '../../src/core/doomsdayProtection/types.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
-import { createMonitorConfig } from '../../mock/factories/configFactory.js';
+import { createStrategyRuntimeConfig } from '../../mock/factories/configFactory.js';
 import type {
   GetRemainingMsParams,
   LiquidationCooldownTracker,
@@ -51,11 +50,11 @@ import type {
   RecordLiquidationTriggerResult,
   RestoreTriggerCountParams,
 } from '../../src/services/liquidationCooldown/types.js';
+import type { AutoSymbolManagerPort } from '../../src/types/strategyRuntimePorts.js';
 import type {
-  AutoSymbolManagerPort,
-  DelayedSignalVerifierPort,
-} from '../../src/types/monitorContextPorts.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
+  ProtectiveLiquidationDirection,
+  ProtectiveLiquidationEpisodeTracker,
+} from '../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import { toMockDecimal } from '../../mock/longbridge/decimal.js';
 import { createQuoteContextMock } from '../../mock/longbridge/quoteContextMock.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
@@ -303,10 +302,7 @@ export function createStrategyDouble(
   overrides: Partial<TradingSignalStrategy> = {},
 ): TradingSignalStrategy {
   const base: TradingSignalStrategy = {
-    generateSignals: () => ({
-      immediateSignals: [],
-      delayedSignals: [],
-    }),
+    generateSignals: () => [],
   };
 
   return {
@@ -325,30 +321,6 @@ export function createUnrealizedLossMonitorDouble(
 ): UnrealizedLossMonitor {
   const base: UnrealizedLossMonitor = {
     monitorUnrealizedLoss: async () => {},
-  };
-
-  return {
-    ...base,
-    ...overrides,
-  };
-}
-
-/**
- * 创建延迟验证器测试替身。
- *
- * 默认提供空实现，供 app 装配与 cleanup 测试复用。
- */
-export function createDelayedSignalVerifierDouble(
-  overrides: Partial<DelayedSignalVerifierPort> = {},
-): DelayedSignalVerifierPort {
-  const base: DelayedSignalVerifierPort = {
-    addSignal: () => {},
-    onVerified: () => {},
-    cancelAll: () => 0,
-    cancelAllForSymbol: () => {},
-    cancelAllForDirection: () => 0,
-    getPendingCount: () => 0,
-    destroy: () => {},
   };
 
   return {
@@ -597,7 +569,7 @@ export function createProtectiveLiquidationEpisodeTrackerDouble(
     completeIfEligible: () => null,
     restoreCompletedBoundary: () => {},
     restoreInProgressEpisode: () => {},
-    getLatestProtectionBoundaryByDirection: () => new Map<string, number>(),
+    getLatestProtectionBoundaryByDirection: () => new Map<ProtectiveLiquidationDirection, number>(),
     getInProgressEpisodes: () => [],
     resetAll: () => {},
   };
@@ -614,13 +586,12 @@ export function createProtectiveLiquidationEpisodeTrackerDouble(
  * 提供可变席位与版本号，支持换标流程与并发校验测试。
  */
 export function createSymbolRegistryDouble(params?: {
-  readonly monitorSymbol?: string;
+  readonly baseInstrumentSymbol?: string;
   readonly longSeat?: SeatState;
   readonly shortSeat?: SeatState;
   readonly longVersion?: number;
   readonly shortVersion?: number;
 }): SymbolRegistry {
-  const monitorSymbol = params?.monitorSymbol ?? 'HSI.HK';
   let longSeat = params?.longSeat ?? {
     symbol: 'BULL.HK',
     status: 'ACTIVE',
@@ -643,16 +614,15 @@ export function createSymbolRegistryDouble(params?: {
   let shortVersion = params?.shortVersion ?? 1;
 
   return {
-    getSeatState(_monitorSymbol: string, direction: 'LONG' | 'SHORT'): SeatState {
+    getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
       return direction === 'LONG' ? longSeat : shortSeat;
     },
-    getSeatVersion(_monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
+    getSeatVersion(direction: 'LONG' | 'SHORT'): number {
       return direction === 'LONG' ? longVersion : shortVersion;
     },
     resolveSeatBySymbol(symbol: string) {
       if (longSeat.symbol === symbol) {
         return {
-          monitorSymbol,
           direction: 'LONG' as const,
           seatState: longSeat,
           seatVersion: longVersion,
@@ -661,7 +631,6 @@ export function createSymbolRegistryDouble(params?: {
 
       if (shortSeat.symbol === symbol) {
         return {
-          monitorSymbol,
           direction: 'SHORT' as const,
           seatState: shortSeat,
           seatVersion: shortVersion,
@@ -670,11 +639,7 @@ export function createSymbolRegistryDouble(params?: {
 
       return null;
     },
-    updateSeatState(
-      _monitorSymbol: string,
-      direction: 'LONG' | 'SHORT',
-      nextState: SeatState,
-    ): SeatState {
+    updateSeatState(direction: 'LONG' | 'SHORT', nextState: SeatState): SeatState {
       const normalizedNextState = {
         symbol: nextState.symbol,
         status: nextState.status,
@@ -694,7 +659,7 @@ export function createSymbolRegistryDouble(params?: {
       shortSeat = normalizedNextState;
       return shortSeat;
     },
-    bumpSeatVersion(_monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
+    bumpSeatVersion(direction: 'LONG' | 'SHORT'): number {
       if (direction === 'LONG') {
         longVersion += 1;
         return longVersion;
@@ -771,128 +736,159 @@ export function createQuoteDouble(symbol: string, price: number, lotSize: number
 /**
  * 构造监控配置测试数据。
  *
- * 委托 mock/factories/configFactory.createMonitorConfig，测试需默认值时传空 overrides，需覆盖时传入部分字段。
+ * 委托 mock/factories/configFactory.createStrategyRuntimeConfig，测试需默认值时传空 overrides，需覆盖时传入部分字段。
  */
-export function createMonitorConfigDouble(overrides: Partial<MonitorConfig> = {}): MonitorConfig {
-  return createMonitorConfig(overrides);
+export function createStrategyRuntimeConfigDouble(
+  overrides: Partial<StrategyRuntimeConfig> = {},
+): StrategyRuntimeConfig {
+  return createStrategyRuntimeConfig(overrides);
 }
 
 /**
- * 构造指标画像测试数据。
+ * 构造展示画像测试数据。
  *
- * 默认覆盖常见指标集合，支持按用例覆盖族开关、周期、动作指标、验证指标和展示计划。
+ * 默认覆盖常见展示字段，支持按用例覆盖 displayPlan。
  */
-export function createIndicatorUsageProfileDouble(overrides?: {
-  readonly requiredFamilies?: Partial<IndicatorUsageProfile['requiredFamilies']>;
-  readonly requiredPeriods?: Partial<IndicatorUsageProfile['requiredPeriods']>;
-  readonly actionSignalIndicators?: Partial<Record<StrategyAction, ReadonlyArray<SignalIndicator>>>;
-  readonly verificationIndicatorsBySide?: Partial<
-    IndicatorUsageProfile['verificationIndicatorsBySide']
-  >;
+export function createIndicatorDisplayProfileDouble(overrides?: {
   readonly displayPlan?: ReadonlyArray<DisplayIndicatorItem>;
-}): IndicatorUsageProfile {
-  const requiredFamilies: IndicatorUsageProfile['requiredFamilies'] = {
-    mfi: overrides?.requiredFamilies?.mfi ?? true,
-    kdj: overrides?.requiredFamilies?.kdj ?? true,
-    macd: overrides?.requiredFamilies?.macd ?? true,
-    adx: overrides?.requiredFamilies?.adx ?? true,
-  };
-  const requiredPeriods: IndicatorUsageProfile['requiredPeriods'] = {
-    rsi: overrides?.requiredPeriods?.rsi ?? [6],
-    ema: overrides?.requiredPeriods?.ema ?? [7],
-    psy: overrides?.requiredPeriods?.psy ?? [13],
-  };
-
-  const defaultActionIndicators: Record<StrategyAction, ReadonlyArray<SignalIndicator>> = {
-    BUYCALL: ['RSI:6', 'MFI', 'K', 'D', 'J'],
-    SELLCALL: ['RSI:6', 'MFI', 'K', 'D', 'J'],
-    BUYPUT: ['RSI:6', 'MFI', 'K', 'D', 'J'],
-    SELLPUT: ['RSI:6', 'MFI', 'K', 'D', 'J'],
-  };
-
-  const actionSignalIndicators: Record<StrategyAction, ReadonlyArray<SignalIndicator>> = {
-    BUYCALL: overrides?.actionSignalIndicators?.BUYCALL ?? defaultActionIndicators.BUYCALL,
-    SELLCALL: overrides?.actionSignalIndicators?.SELLCALL ?? defaultActionIndicators.SELLCALL,
-    BUYPUT: overrides?.actionSignalIndicators?.BUYPUT ?? defaultActionIndicators.BUYPUT,
-    SELLPUT: overrides?.actionSignalIndicators?.SELLPUT ?? defaultActionIndicators.SELLPUT,
-  };
-
-  const verificationIndicatorsBySide: IndicatorUsageProfile['verificationIndicatorsBySide'] = {
-    buy: overrides?.verificationIndicatorsBySide?.buy ?? ['K', 'D', 'J'],
-    sell: overrides?.verificationIndicatorsBySide?.sell ?? ['K', 'D', 'J'],
-  };
-
-  const defaultDisplayPlan: ReadonlyArray<DisplayIndicatorItem> = [
-    'price',
-    'changePercent',
-    ...requiredPeriods.ema.map((period) => `EMA:${period}` as const),
-    ...requiredPeriods.rsi.map((period) => `RSI:${period}` as const),
-    ...(requiredFamilies.mfi ? (['MFI'] as const) : []),
-    ...requiredPeriods.psy.map((period) => `PSY:${period}` as const),
-    ...(requiredFamilies.kdj ? (['K', 'D', 'J'] as const) : []),
-    ...(requiredFamilies.adx ? (['ADX'] as const) : []),
-    ...(requiredFamilies.macd ? (['MACD', 'DIF', 'DEA'] as const) : []),
-  ];
+}): IndicatorDisplayProfile {
+  const defaultDisplayPlan: ReadonlyArray<DisplayIndicatorItem> = ['price', 'changePercent'];
 
   return {
-    requiredFamilies,
-    requiredPeriods,
-    actionSignalIndicators,
-    verificationIndicatorsBySide,
     displayPlan: overrides?.displayPlan ?? defaultDisplayPlan,
   };
 }
 
 /**
- * 构造单标的监控状态测试数据。
+ * 构造因子快照测试数据。
  *
- * 默认只提供最小运行时状态字段，便于组装层与 cleanup 测试复用。
+ * 默认值覆盖 factor runtime 常见的就绪路径，便于展示层和策略测试复用。
+ *
+ * @param overrides 因子快照覆盖项
+ * @returns 因子快照测试对象
  */
-function createMonitorStateDouble(monitorSymbol: string = 'HSI.HK'): MonitorState {
+export function createFactorSnapshotDouble(
+  overrides: Partial<FactorSnapshot> = {},
+): FactorSnapshot {
   return {
-    monitorSymbol,
-    monitorPrice: null,
-    longPrice: null,
-    shortPrice: null,
-    signal: null,
-    pendingDelayedSignals: [],
-    monitorValues: null,
-    lastMonitorSnapshot: null,
-    lastCandlestickCacheVersion: null,
-    incrementalIndicatorRuntime: null,
+    session: 'am',
+    timestamp: Date.UTC(2026, 2, 29, 2, 15, 0),
+    benchmarkPrice: 100,
+    readiness: {
+      regimeReady: true,
+      trendReady: true,
+      structureReady: true,
+      confirmationReady: true,
+      overallReady: true,
+      reasons: [],
+    },
+    volatilityRegime: 'expanding',
+    trendClassification: 'trend_up',
+    trendScore: 1.2,
+    reverseTrendScore: -1.2,
+    er15: 0.6,
+    er30: 0.55,
+    momentum: {
+      mom15: 1,
+      mom30: 1,
+      mom60: 1,
+      zMom15: 1,
+      zMom30: 1,
+      zMom60: 1,
+      sameSignCount: 3,
+    },
+    vwap: {
+      amVwap: 100,
+      pmVwap: null,
+      dayVwap: 100,
+      activeSessionVwap: 100,
+      activeSessionVwapSlope: 1,
+      crossCountLast10m: 0,
+      distanceFromActiveVwap: 1,
+    },
+    openingStructure: {
+      orHigh: 101,
+      orLow: 99,
+      breakoutUp: true,
+      breakoutDown: false,
+      outsidePersistenceUp: 1,
+      outsidePersistenceDown: null,
+      retestHoldUp: false,
+      retestHoldDown: false,
+      failedBreakout: false,
+    },
+    pmContinuation: {
+      amQualified: true,
+      middayHold: false,
+      pmConfirmed: false,
+    },
+    confirmation: {
+      longAllowed: true,
+      shortAllowed: false,
+      emaAlignedLong: true,
+      emaAlignedShort: false,
+      macdAlignedLong: true,
+      macdAlignedShort: false,
+      vwapAlignedLong: true,
+      vwapAlignedShort: false,
+    },
+    blockedByNoiseWindow: false,
+    ...overrides,
   };
 }
 
 /**
- * 创建 MonitorContext 测试替身。
+ * 构造运行时监控状态测试数据。
+ *
+ * 默认只提供最小运行时状态字段，便于组装层与 cleanup 测试复用。
+ */
+function createStrategyStateDouble(baseInstrumentSymbol: string = 'HSI.HK'): StrategyState {
+  return {
+    baseInstrumentSymbol,
+    monitorPrice: null,
+    longPrice: null,
+    shortPrice: null,
+    signal: null,
+    pendingSignals: [],
+    monitorValues: null,
+    lastMonitorSnapshot: null,
+    lastCandlestickCacheVersion: null,
+    lastDisplaySignature: null,
+    displayPlan: ['price', 'changePercent'],
+  };
+}
+
+/**
+ * 创建 StrategyRuntime 测试替身。
  *
  * 默认填充最小完整结构，允许调用方覆盖任意字段以聚焦特定断言。
  */
-export function createMonitorContextDouble(
-  overrides: Partial<MonitorContext> = {},
-): MonitorContext {
-  const config = overrides.config ?? createMonitorConfigDouble();
+export function createStrategyRuntimeDouble(
+  overrides: Partial<StrategyRuntime> = {},
+): StrategyRuntime {
+  const config = overrides.config ?? createStrategyRuntimeConfigDouble();
+  const state = overrides.state ?? createStrategyStateDouble(config.baseInstrumentSymbol);
+  state.displayPlan ??= createIndicatorDisplayProfileDouble().displayPlan;
+
   const symbolRegistry =
     overrides.symbolRegistry ??
     createSymbolRegistryDouble({
-      monitorSymbol: config.monitorSymbol,
+      baseInstrumentSymbol: config.baseInstrumentSymbol,
     });
-  const longSeatState =
-    overrides.seatState?.long ?? symbolRegistry.getSeatState(config.monitorSymbol, 'LONG');
-  const shortSeatState =
-    overrides.seatState?.short ?? symbolRegistry.getSeatState(config.monitorSymbol, 'SHORT');
+  const longSeatState = overrides.seatState?.long ?? symbolRegistry.getSeatState('LONG');
+  const shortSeatState = overrides.seatState?.short ?? symbolRegistry.getSeatState('SHORT');
 
   return {
     config,
-    state: overrides.state ?? createMonitorStateDouble(config.monitorSymbol),
+    state,
     symbolRegistry,
     seatState: overrides.seatState ?? {
       long: longSeatState,
       short: shortSeatState,
     },
     seatVersion: overrides.seatVersion ?? {
-      long: symbolRegistry.getSeatVersion(config.monitorSymbol, 'LONG'),
-      short: symbolRegistry.getSeatVersion(config.monitorSymbol, 'SHORT'),
+      long: symbolRegistry.getSeatVersion('LONG'),
+      short: symbolRegistry.getSeatVersion('SHORT'),
     },
     autoSymbolManager: overrides.autoSymbolManager ?? createAutoSymbolManagerDouble(),
     strategy: overrides.strategy ?? createStrategyDouble(),
@@ -900,12 +896,12 @@ export function createMonitorContextDouble(
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
     riskChecker: overrides.riskChecker ?? createRiskCheckerDouble(),
     unrealizedLossMonitor: overrides.unrealizedLossMonitor ?? createUnrealizedLossMonitorDouble(),
-    delayedSignalVerifier: overrides.delayedSignalVerifier ?? createDelayedSignalVerifierDouble(),
     longSymbolName: overrides.longSymbolName ?? '',
     shortSymbolName: overrides.shortSymbolName ?? '',
-    monitorSymbolName: overrides.monitorSymbolName ?? config.monitorSymbol,
-    normalizedMonitorSymbol: overrides.normalizedMonitorSymbol ?? config.monitorSymbol,
-    indicatorProfile: overrides.indicatorProfile ?? createIndicatorUsageProfileDouble(),
+    baseInstrumentName: overrides.baseInstrumentName ?? config.baseInstrumentSymbol,
+    normalizedBaseInstrumentSymbol:
+      overrides.normalizedBaseInstrumentSymbol ?? config.baseInstrumentSymbol,
+    indicatorProfile: overrides.indicatorProfile ?? createIndicatorDisplayProfileDouble(),
   };
 }
 

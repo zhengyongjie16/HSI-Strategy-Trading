@@ -44,10 +44,10 @@ export interface RefreshGate {
 /**
  * 监控上下文席位快照。
  * 类型用途：统一表达从 symbolRegistry 派生出的多空席位状态、版本与当前就绪标的代码。
- * 数据来源：由 resolveMonitorContextSeatSnapshot 基于 monitorSymbol 和 symbolRegistry 计算。
- * 使用范围：app/main 共享的 MonitorContext 运行时同步逻辑使用。
+ * 数据来源：由 resolveStrategyRuntimeSeatSnapshot 基于 baseInstrumentSymbol 和 symbolRegistry 计算。
+ * 使用范围：app/main 共享的 StrategyRuntime 运行时同步逻辑使用。
  */
-export type MonitorContextSeatSnapshot = Readonly<{
+export type StrategyRuntimeSeatSnapshot = Readonly<{
   seatState: {
     readonly long: SeatState;
     readonly short: SeatState;
@@ -62,16 +62,16 @@ export type MonitorContextSeatSnapshot = Readonly<{
 
 /**
  * 监控上下文运行时快照。
- * 类型用途：统一表达 MonitorContext 需要写回的席位、行情与名称派生结果。
- * 数据来源：由 resolveMonitorContextRuntimeSnapshot 基于 seat 快照和 quotesMap 计算。
- * 使用范围：createMonitorContext、seatSync、rebuildTradingDayState 等同步链路使用。
+ * 类型用途：统一表达 StrategyRuntime 需要写回的席位、行情与名称派生结果。
+ * 数据来源：由 resolveStrategyRuntimeSnapshot 基于 seat 快照和 quotesMap 计算。
+ * 使用范围：createStrategyRuntime、seatSync、rebuildTradingDayState 等同步链路使用。
  */
-export type MonitorContextRuntimeSnapshot = MonitorContextSeatSnapshot &
+export type StrategyRuntimeSnapshot = StrategyRuntimeSeatSnapshot &
   Readonly<{
     longQuote: Quote | null;
     shortQuote: Quote | null;
     monitorQuote: Quote | null;
     longSymbolName: string;
     shortSymbolName: string;
-    monitorSymbolName: string;
+    baseInstrumentName: string;
   }>;

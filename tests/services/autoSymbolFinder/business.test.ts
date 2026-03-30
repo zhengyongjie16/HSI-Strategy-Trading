@@ -520,7 +520,7 @@ describe('autoSymbolFinder business flow', () => {
         switchDistanceRangeBull: { min: 0.2, max: 1.5 },
         switchDistanceRangeBear: { min: -1.5, max: -0.2 },
       },
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       logPrefix: '[自动寻标] 非法策略',
       logger: {
         ...logger,
@@ -550,7 +550,7 @@ describe('autoSymbolFinder business flow', () => {
         switchDistanceRangeBull: { min: 0.2, max: 0.35 },
         switchDistanceRangeBear: { min: -1.5, max: -0.2 },
       },
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       logPrefix: '[自动寻标] 非法策略',
       logger: {
         ...logger,
@@ -573,7 +573,7 @@ describe('autoSymbolFinder business flow', () => {
         switchDistanceRangeBull: { min: 0.2, max: 1.5 },
         switchDistanceRangeBear: { min: -0.35, max: -0.2 },
       },
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       logPrefix: '[自动寻标] 非法策略',
       logger: {
         ...logger,
@@ -608,7 +608,7 @@ describe('autoSymbolFinder business flow', () => {
 
     const baseInput = {
       ctx: createQuoteContextDouble(quoteCtx),
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       tradingMinutes: 10,
       policy: createDirectionalPolicy('LONG'),
       expiryMinMonths: 3,
@@ -643,7 +643,7 @@ describe('autoSymbolFinder business flow', () => {
     const { logger, warns } = createLoggerRecorder();
     const result = await findBestWarrant({
       ctx: createQuoteContextDouble(quoteCtx),
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       tradingMinutes: 10,
       policy: createDirectionalPolicy('LONG'),
       expiryMinMonths: 3,
@@ -669,7 +669,7 @@ describe('autoSymbolFinder business flow', () => {
     const { logger, warns } = createLoggerRecorder();
     const result = await findBestWarrant({
       ctx: createQuoteContextDouble(quoteCtx),
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       tradingMinutes: 10,
       policy: createDirectionalPolicy('LONG'),
       expiryMinMonths: 3,

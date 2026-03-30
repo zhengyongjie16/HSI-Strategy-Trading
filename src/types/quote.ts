@@ -1,3 +1,5 @@
+import type { FactorSnapshot } from './factor.js';
+
 /**
  * 行情静态信息。
  * 类型用途：标的静态元数据（名称、每手股数、回收价、到期日、牛熊证类型等），作为 Quote.staticInfo 的类型。
@@ -19,7 +21,7 @@ export type QuoteStaticInfo = {
 
 /**
  * 行情数据。
- * 类型用途：单标的实时行情快照，作为 getQuotes 返回值、策略与风控的行情入参。
+ * 类型用途：实时行情快照，作为 getQuotes 返回值、策略与风控的行情入参。
  * 数据来源：Longbridge 行情推送或 getQuotes。
  * 使用范围：行情客户端、策略、风控、订单监控等；全项目可引用。
  */
@@ -50,44 +52,34 @@ export type Quote = {
 };
 
 /**
- * KDJ 随机指标。
- * 类型用途：超买超卖判断的指标值（K/D/J），作为 IndicatorSnapshot.kdj、MonitorValues.kdj 及策略输入的字段类型。
- * 数据来源：指标计算（indicators 服务或 quote 层）。
- * 使用范围：IndicatorSnapshot、策略、data.MonitorValues 等；全项目可引用。
+ * KDJ 指标。
+ * 类型用途：表示 K/D/J 三个分量，供展示层、工具脚本与测试消费。
+ * 数据来源：由指标计算逻辑生成。
+ * 使用范围：IndicatorSnapshot、tools 与相关测试；全项目可引用。
  */
 export type KDJIndicator = {
-  /** K 值（快速随机值） */
   readonly k: number;
-
-  /** D 值（K 的移动平均） */
   readonly d: number;
-
-  /** J 值（3K-2D） */
   readonly j: number;
 };
 
 /**
  * MACD 指标。
- * 类型用途：表示 macd/dif/dea，用于趋势判断，作为 IndicatorSnapshot.macd 及策略输入的字段类型。
- * 数据来源：指标计算（indicators 服务或 quote 层）。
- * 使用范围：IndicatorSnapshot、策略、data.MonitorValues 等；全项目可引用。
+ * 类型用途：表示 macd/dif/dea 三个分量，供展示层、工具脚本与测试消费。
+ * 数据来源：由指标计算逻辑生成。
+ * 使用范围：IndicatorSnapshot、tools 与相关测试；全项目可引用。
  */
 export type MACDIndicator = {
-  /** MACD 柱状图值 */
   readonly macd: number;
-
-  /** DIF 快线（短期EMA - 长期EMA） */
   readonly dif: number;
-
-  /** DEA 慢线（DIF 的移动平均） */
   readonly dea: number;
 };
 
 /**
- * 指标快照。
- * 类型用途：单次主循环的指标聚合结果，用于信号判断与延迟验证，作为策略与延迟验证器的入参。
- * 数据来源：由 K 线与指标计算得到（如 indicatorCache、marketMonitor）。
- * 使用范围：策略、DelayedSignalVerifier、RiskCheckContext 等；全项目可引用。
+ * 运行时快照。
+ * 类型用途：承载趋势因子主链路向展示层和策略层交付的最小运行时视图。
+ * 数据来源：由 factor runtime 与 processMonitor 组装得到。
+ * 使用范围：展示层、策略层与相关测试；全项目可引用。
  */
 export type IndicatorSnapshot = {
   /** 标的代码（可选，因为 Quote 已包含） */
@@ -99,24 +91,18 @@ export type IndicatorSnapshot = {
   /** 涨跌幅（百分比） */
   readonly changePercent: number | null;
 
-  /** EMA 指数移动平均（周期 -> 值） */
-  readonly ema: Readonly<Record<number, number>> | null;
+  /** 趋势策略的上层因子快照 */
+  readonly factorSnapshot?: FactorSnapshot | null;
 
-  /** RSI 相对强弱指标（周期 -> 值） */
-  readonly rsi: Readonly<Record<number, number>> | null;
-
-  /** PSY 心理线指标（周期 -> 值） */
-  readonly psy: Readonly<Record<number, number>> | null;
-
-  /** MFI 资金流量指标 */
-  readonly mfi: number | null;
-
-  /** KDJ 随机指标 */
-  readonly kdj: KDJIndicator | null;
-
-  /** MACD 指标 */
-  readonly macd: MACDIndicator | null;
-
-  /** ADX 趋势强度指标 */
-  readonly adx: number | null;
+  /**
+   * 旧指标字段保留为可选兼容字段，便于过渡期测试替身继续构造快照。
+   * 主运行时链路不再消费这些字段。
+   */
+  readonly ema?: Readonly<Record<number, number>> | null;
+  readonly rsi?: Readonly<Record<number, number>> | null;
+  readonly psy?: Readonly<Record<number, number>> | null;
+  readonly mfi?: number | null;
+  readonly kdj?: KDJIndicator | null;
+  readonly macd?: MACDIndicator | null;
+  readonly adx?: number | null;
 };

@@ -14,7 +14,10 @@ import {
 } from 'longbridge';
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createGlobalConfig,
+  createStrategyRuntimeConfig,
+} from '../../mock/factories/configFactory.js';
 import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
@@ -33,6 +36,8 @@ describe('protective-liquidation integration', () => {
     let markSellFilledCount = 0;
     let episodeProgressRecords = 0;
     let staleMarks = 0;
+
+    const monitorConfig = createStrategyRuntimeConfig();
 
     const tradeCtx = createTradeContextMock();
     const deps: OrderMonitorDeps = {
@@ -73,7 +78,8 @@ describe('protective-liquidation integration', () => {
           episodeProgressRecords += 1;
         },
       }),
-      tradingConfig: createTradingConfig(),
+      globalConfig: createGlobalConfig(),
+      monitorConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       refreshGate: {
         markStale: () => {
@@ -107,7 +113,7 @@ describe('protective-liquidation integration', () => {
       initialSubmittedPrice: 1,
       quantity: 200,
       isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
       orderType: OrderType.MO,
     });

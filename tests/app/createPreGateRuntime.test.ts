@@ -20,8 +20,10 @@ describe('app createPreGateRuntime config error contract', () => {
     const env: NodeJS.ProcessEnv = {
       LONGBRIDGE_AUTH_MODE: 'oauth',
       LONGBRIDGE_CLIENT_ID: 'client-id',
-      MONITOR_SYMBOL_1: 'HSI.HK',
-      TARGET_NOTIONAL_1: '0',
+      LONG_SYMBOL: 'BULL.HK',
+      SHORT_SYMBOL: 'BEAR.HK',
+      ORDER_OWNERSHIP_MAPPING: 'HSI',
+      TARGET_NOTIONAL: '0',
     };
 
     let caughtError: unknown = null;
@@ -38,7 +40,6 @@ describe('app createPreGateRuntime config error contract', () => {
     }
 
     expect(caughtError.name).toBe('ConfigValidationError');
-    expect(caughtError.message).toContain('TARGET_NOTIONAL_1');
-    expect(caughtError.missingFields).toContain('TARGET_NOTIONAL_1');
+    expect(caughtError.missingFields).toContain('TARGET_NOTIONAL');
   });
 });

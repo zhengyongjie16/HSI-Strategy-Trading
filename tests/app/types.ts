@@ -41,7 +41,6 @@ export type MutableRunAppHarnessState = {
   createPostGateRuntimeNow: Date | null;
   loadStartupSnapshotNow: Date | null;
   rebuildCalls: RunAppRebuildCall[];
-  registerDelayedCalls: number;
   cleanupRegistered: number;
   mainProgramCalls: number;
   mainProgramRuntimeGateModes: Array<'strict' | 'skip'>;

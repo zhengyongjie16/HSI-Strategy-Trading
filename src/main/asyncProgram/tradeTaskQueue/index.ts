@@ -30,7 +30,6 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
         id: randomUUID(),
         type: task.type,
         data: task.data,
-        monitorSymbol: task.monitorSymbol,
         createdAt: Date.now(),
       };
       queue.push(fullTask);
@@ -52,7 +51,7 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
       const originalLength = queue.length;
       for (let i = queue.length - 1; i >= 0; i -= 1) {
         const task = queue[i];
-        if (!task) {
+        if (task === undefined) {
           continue;
         }
 

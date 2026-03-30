@@ -10,7 +10,7 @@ import { OrderSide } from 'longbridge';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { toHongKongTimeIso } from '../../../utils/time/index.js';
 import { recordTrade } from '../tradeLogger.js';
-import type { MonitorConfig } from '../../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { OrderRecord, OrderRecorder } from '../../../types/services.js';
 import type { TrackedOrder } from '../types.js';
 import type {
@@ -162,11 +162,11 @@ function resolveCloseContext(params: {
 }): {
   readonly side: 'BUY' | 'SELL' | null;
   readonly symbol: string | null;
-  readonly monitorSymbol: string | null;
+  readonly baseInstrumentSymbol: string | null;
   readonly isLongSymbol: boolean | undefined;
   readonly isProtectiveLiquidation: boolean;
   readonly liquidationTriggerLimit: number;
-  readonly liquidationCooldownConfig: MonitorConfig['liquidationCooldown'];
+  readonly liquidationCooldownConfig: StrategyRuntimeConfig['liquidationCooldown'];
   readonly executedPrice: number | null;
   readonly executedQuantity: number | null;
   readonly executedTimeMs: number | null;
@@ -176,7 +176,8 @@ function resolveCloseContext(params: {
   return {
     side,
     symbol: trackedOrder?.symbol ?? closeParams.symbol ?? null,
-    monitorSymbol: trackedOrder?.monitorSymbol ?? closeParams.monitorSymbol ?? null,
+    baseInstrumentSymbol:
+      trackedOrder?.baseInstrumentSymbol ?? closeParams.baseInstrumentSymbol ?? null,
     isLongSymbol: trackedOrder?.isLongSymbol ?? closeParams.isLongSymbol,
     isProtectiveLiquidation:
       trackedOrder?.isProtectiveLiquidation ?? closeParams.isProtectiveLiquidation ?? false,
@@ -255,7 +256,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
   function recordDailyLossAndEpisodeProgress(params: {
     readonly orderId: string;
     readonly side: 'BUY' | 'SELL';
-    readonly monitorSymbol: string | null;
+    readonly baseInstrumentSymbol: string | null;
     readonly symbol: string | null;
     readonly isLongSymbol: boolean | undefined;
     readonly isProtectiveLiquidation: boolean;
@@ -266,7 +267,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     const {
       orderId,
       side,
-      monitorSymbol,
+      baseInstrumentSymbol,
       symbol,
       isLongSymbol,
       isProtectiveLiquidation,
@@ -275,7 +276,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       executedTimeMs,
     } = params;
     if (
-      !monitorSymbol ||
+      !baseInstrumentSymbol ||
       !symbol ||
       isLongSymbol === undefined ||
       !isValidPositiveNumber(executedPrice) ||
@@ -287,9 +288,8 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
 
     const orderSide = resolveOrderSideFromText(side);
     dailyLossTracker.recordFilledOrder({
-      monitorSymbol,
+      direction: isLongSymbol ? 'LONG' : 'SHORT',
       symbol,
-      isLongSymbol,
       side: orderSide,
       executedPrice,
       executedQuantity,
@@ -304,7 +304,6 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
 
       const direction = isLongSymbol ? 'LONG' : 'SHORT';
       protectiveLiquidationEpisodeTracker.recordProtectiveFillProgress({
-        monitorSymbol,
         direction,
         executedTimeMs,
       });
@@ -315,7 +314,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     readonly orderId: string;
     readonly side: 'BUY' | 'SELL';
     readonly symbol: string | null;
-    readonly monitorSymbol: string | null;
+    readonly baseInstrumentSymbol: string | null;
     readonly isLongSymbol: boolean | undefined;
     readonly isProtectiveLiquidation: boolean;
     readonly closedReason: FinalizeOrderSettlementParams['closedReason'];
@@ -327,7 +326,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       orderId,
       side,
       symbol,
-      monitorSymbol,
+      baseInstrumentSymbol,
       isLongSymbol,
       isProtectiveLiquidation,
       closedReason,
@@ -350,7 +349,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       orderId,
       symbol,
       symbolName: null,
-      monitorSymbol,
+      baseInstrumentSymbol,
       action: signalAction,
       side,
       quantity: String(executedQuantity),
@@ -448,7 +447,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       recordDailyLossAndEpisodeProgress({
         orderId,
         side,
-        monitorSymbol: context.monitorSymbol,
+        baseInstrumentSymbol: context.baseInstrumentSymbol,
         symbol,
         isLongSymbol,
         isProtectiveLiquidation: context.isProtectiveLiquidation,
@@ -461,7 +460,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         orderId,
         side,
         symbol,
-        monitorSymbol: context.monitorSymbol,
+        baseInstrumentSymbol: context.baseInstrumentSymbol,
         isLongSymbol,
         isProtectiveLiquidation: context.isProtectiveLiquidation,
         closedReason,
@@ -509,7 +508,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         recordDailyLossAndEpisodeProgress({
           orderId,
           side,
-          monitorSymbol: context.monitorSymbol,
+          baseInstrumentSymbol: context.baseInstrumentSymbol,
           symbol,
           isLongSymbol,
           isProtectiveLiquidation: context.isProtectiveLiquidation,
@@ -522,7 +521,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
           orderId,
           side,
           symbol,
-          monitorSymbol: context.monitorSymbol,
+          baseInstrumentSymbol: context.baseInstrumentSymbol,
           isLongSymbol,
           isProtectiveLiquidation: context.isProtectiveLiquidation,
           closedReason,

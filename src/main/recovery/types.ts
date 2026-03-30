@@ -1,5 +1,5 @@
 import type { Logger } from '../../utils/logger/types.js';
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { SeatSymbolSnapshotEntry, SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, RawOrderFromAPI } from '../../types/services.js';
@@ -7,16 +7,18 @@ import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/typ
 
 /**
  * resolveSeatSnapshot() 的输入参数。
- * 类型用途：构建席位快照的入参，包含监控配置、持仓、订单。
- * 数据来源：启动时从 API 获取的持仓与订单，以及配置中的 monitors。
+ * 类型用途：构建席位快照的入参，包含单实例监控配置、持仓、订单。
+ * 数据来源：启动时从 API 获取的持仓与订单，以及当前 monitorConfig。
  * 使用范围：仅席位恢复流程（prepareSeatsForRuntime 等）使用。
  */
 export type SeatSnapshotInput = {
-  readonly monitors: ReadonlyArray<
-    Pick<
-      MonitorConfig,
-      'monitorSymbol' | 'autoSearchConfig' | 'longSymbol' | 'shortSymbol' | 'orderOwnershipMapping'
-    >
+  readonly monitorConfig: Pick<
+    StrategyRuntimeConfig,
+    | 'baseInstrumentSymbol'
+    | 'autoSearchConfig'
+    | 'longSymbol'
+    | 'shortSymbol'
+    | 'orderOwnershipMapping'
   >;
   readonly positions: ReadonlyArray<Position>;
   readonly orders: ReadonlyArray<RawOrderFromAPI>;
@@ -39,7 +41,7 @@ export type SeatSnapshot = {
  * 使用范围：仅席位恢复流程使用。
  */
 export type PrepareSeatsForRuntimeDeps = {
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly monitorConfig: StrategyRuntimeConfig;
   readonly symbolRegistry: SymbolRegistry;
   readonly positions: ReadonlyArray<Position>;
   readonly orders: ReadonlyArray<RawOrderFromAPI>;
@@ -63,12 +65,12 @@ export type PreparedSeats = {
 
 /**
  * 收集就绪席位标的列表的入参。
- * 类型用途：统一 collectSeatSymbols 所需的 monitors 与 symbolRegistry。
+ * 类型用途：统一 collectSeatSymbols 所需的 monitorConfig 与 symbolRegistry。
  * 数据来源：由 prepareSeatsForRuntime 在恢复完成后组装传入。
  * 使用范围：仅运行时席位恢复流程内部使用。
  */
 export type CollectSeatSymbolsParams = Readonly<{
-  monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol'>>;
+  monitorConfig: Pick<StrategyRuntimeConfig, 'baseInstrumentSymbol'>;
   symbolRegistry: SymbolRegistry;
 }>;
 
@@ -79,8 +81,8 @@ export type CollectSeatSymbolsParams = Readonly<{
  * 使用范围：仅运行时席位恢复流程内部使用。
  */
 export type RuntimeRecoverySearchParams = Readonly<{
-  monitorSymbol: string;
+  baseInstrumentSymbol: string;
   direction: 'LONG' | 'SHORT';
-  autoSearchConfig: MonitorConfig['autoSearchConfig'];
+  autoSearchConfig: StrategyRuntimeConfig['autoSearchConfig'];
   currentTime: Date;
 }>;

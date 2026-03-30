@@ -19,7 +19,6 @@ import type { AutoSymbolTasksParams } from './types.js';
  */
 export function scheduleAutoSymbolTasks(params: AutoSymbolTasksParams): void {
   const {
-    monitorSymbol,
     monitorContext,
     mainContext,
     autoSearchEnabled,
@@ -37,17 +36,15 @@ export function scheduleAutoSymbolTasks(params: AutoSymbolTasksParams): void {
   const { autoSymbolManager, symbolRegistry } = monitorContext;
   const { monitorTaskQueue } = mainContext;
 
-  const longSeatSnapshot = symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-  const shortSeatSnapshot = symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+  const longSeatSnapshot = symbolRegistry.getSeatState('LONG');
+  const shortSeatSnapshot = symbolRegistry.getSeatState('SHORT');
 
   monitorTaskQueue.scheduleLatest({
     type: 'AUTO_SYMBOL_TICK',
-    dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:LONG`,
-    monitorSymbol,
+    dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
     data: {
-      monitorSymbol,
       direction: 'LONG',
-      seatVersion: symbolRegistry.getSeatVersion(monitorSymbol, 'LONG'),
+      seatVersion: symbolRegistry.getSeatVersion('LONG'),
       symbol: longSeatSnapshot.symbol ?? null,
       currentTimeMs,
       canTradeNow,
@@ -57,12 +54,10 @@ export function scheduleAutoSymbolTasks(params: AutoSymbolTasksParams): void {
 
   monitorTaskQueue.scheduleLatest({
     type: 'AUTO_SYMBOL_TICK',
-    dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:SHORT`,
-    monitorSymbol,
+    dedupeKey: 'AUTO_SYMBOL_TICK:SHORT',
     data: {
-      monitorSymbol,
       direction: 'SHORT',
-      seatVersion: symbolRegistry.getSeatVersion(monitorSymbol, 'SHORT'),
+      seatVersion: symbolRegistry.getSeatVersion('SHORT'),
       symbol: shortSeatSnapshot.symbol ?? null,
       currentTimeMs,
       canTradeNow,
@@ -76,18 +71,16 @@ export function scheduleAutoSymbolTasks(params: AutoSymbolTasksParams): void {
   if (monitorPriceChanged || hasPendingSwitch) {
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_SWITCH_DISTANCE',
-      dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_SWITCH_DISTANCE`,
-      monitorSymbol,
+      dedupeKey: 'AUTO_SYMBOL_SWITCH_DISTANCE',
       data: {
-        monitorSymbol,
         monitorPrice: resolvedMonitorPrice,
         seatSnapshots: {
           long: {
-            seatVersion: symbolRegistry.getSeatVersion(monitorSymbol, 'LONG'),
+            seatVersion: symbolRegistry.getSeatVersion('LONG'),
             symbol: longSeatSnapshot.symbol ?? null,
           },
           short: {
-            seatVersion: symbolRegistry.getSeatVersion(monitorSymbol, 'SHORT'),
+            seatVersion: symbolRegistry.getSeatVersion('SHORT'),
             symbol: shortSeatSnapshot.symbol ?? null,
           },
         },

@@ -27,7 +27,7 @@ import type {
 import {
   createWarrantDistanceInfoDouble,
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
@@ -73,14 +73,14 @@ function createPeriodicHarness(params: HarnessParams): {
 } {
   let currentNowMs = params.nowMs;
   const testLogger = params.logger ?? createLoggerStub();
-  const monitorConfig = createMonitorConfigDouble({
+  const monitorConfig = createStrategyRuntimeConfigDouble({
     autoSearchConfig: {
       ...getDefaultAutoSearchConfig(),
       switchIntervalMinutes: params.switchIntervalMinutes,
     },
   });
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
+    baseInstrumentSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'OLD_BULL.HK',
       status: 'ACTIVE',
@@ -96,7 +96,7 @@ function createPeriodicHarness(params: HarnessParams): {
   const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
   const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
   const seatStateManager = createSeatStateManager({
-    monitorSymbol: 'HSI.HK',
+    baseInstrumentSymbol: 'HSI.HK',
     symbolRegistry,
     switchStates,
     switchSuppressions,
@@ -133,7 +133,7 @@ function createPeriodicHarness(params: HarnessParams): {
   });
   const machine = createSwitchStateMachine({
     autoSearchConfig: monitorConfig.autoSearchConfig,
-    monitorSymbol: 'HSI.HK',
+    baseInstrumentSymbol: 'HSI.HK',
     symbolRegistry,
     trader,
     orderRecorder,
@@ -204,7 +204,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -225,7 +225,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
   });
@@ -244,7 +244,7 @@ describe('periodic auto-switch regression', () => {
       pendingSinceMs: nowMs - 5000,
       blockedBy: 'ORDER_RECORDER',
     });
-    const previousVersion = harness.symbolRegistry.getSeatVersion('HSI.HK', 'LONG');
+    const previousVersion = harness.symbolRegistry.getSeatVersion('LONG');
 
     await harness.machine.maybeSwitchOnInterval({
       direction: 'LONG',
@@ -253,8 +253,8 @@ describe('periodic auto-switch regression', () => {
       openProtectionActive: false,
     });
 
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
-    const currentVersion = harness.symbolRegistry.getSeatVersion('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
+    const currentVersion = harness.symbolRegistry.getSeatVersion('LONG');
     expect(seat.status).not.toBe('SWITCHING');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
     expect(seat.status).toBe('EMPTY');
@@ -275,8 +275,8 @@ describe('periodic auto-switch regression', () => {
       lastSeatActivatedAt: readyMs,
       findBestSymbol: null,
     });
-    harness.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...harness.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    harness.symbolRegistry.updateSeatState('LONG', {
+      ...harness.symbolRegistry.getSeatState('LONG'),
       searchFailCountToday: 2,
       frozenTradingDayKey: null,
     });
@@ -294,7 +294,7 @@ describe('periodic auto-switch regression', () => {
       openProtectionActive: false,
     });
 
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('EMPTY');
     expect(seat.symbol).toBeNull();
     expect(seat.searchFailCountToday).toBe(3);
@@ -321,7 +321,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
     buyOrdersCount = 0;
     await harness.machine.maybeSwitchOnInterval({
@@ -330,7 +330,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
   });
 
@@ -350,7 +350,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -385,7 +385,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -415,7 +415,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -439,7 +439,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(harness.periodicSwitchPending.get('LONG')?.blockedBy).toBe('LOCAL_PENDING_ORDER');
 
     holdSymbols = new Set<string>();
@@ -449,7 +449,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
   });
 
@@ -522,7 +522,7 @@ describe('periodic auto-switch regression', () => {
       openProtectionActive: false,
     });
 
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -546,7 +546,7 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     await harness.machine.maybeSwitchOnDistance({
       direction: 'LONG',
       monitorPrice: 20_000,
@@ -563,7 +563,7 @@ describe('periodic auto-switch regression', () => {
         },
       ],
     });
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(harness.periodicSwitchPending.has('LONG')).toBeFalse();
@@ -588,7 +588,7 @@ describe('periodic auto-switch regression', () => {
       openProtectionActive: false,
     });
     expect(harness.periodicSwitchPending.get('LONG')?.pending).toBeTrue();
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
 
     await harness.machine.maybeSwitchOnDistance({
       direction: 'LONG',
@@ -596,7 +596,7 @@ describe('periodic auto-switch regression', () => {
       positions: [],
     });
 
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(harness.periodicSwitchPending.get('LONG')?.pending).toBeTrue();
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
     expect(
@@ -626,7 +626,7 @@ describe('periodic auto-switch regression', () => {
       openProtectionActive: false,
     });
     expect(harness.periodicSwitchPending.get('LONG')?.pending).toBeTrue();
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
 
     await harness.machine.maybeSwitchOnDistance({
       direction: 'LONG',
@@ -634,7 +634,7 @@ describe('periodic auto-switch regression', () => {
       positions: [],
     });
 
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(harness.periodicSwitchPending.get('LONG')?.pending).toBeTrue();
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
     expect(
@@ -663,7 +663,7 @@ describe('periodic auto-switch regression', () => {
       'PERIODIC',
     );
     expect(suppression?.symbol).toBe('OLD_BULL.HK');
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
   });
 
@@ -682,14 +682,14 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: false,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     await harness.machine.maybeSwitchOnInterval({
       direction: 'LONG',
       currentTime: new Date(nowMs + 1000),
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
   });
 
   it('case7: trading-minute timer pauses at lunch break', async () => {
@@ -706,21 +706,21 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: false,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     await harness.machine.maybeSwitchOnInterval({
       direction: 'LONG',
       currentTime: new Date(Date.parse('2026-02-16T05:00:00.000Z')), // 13:00 HK
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     await harness.machine.maybeSwitchOnInterval({
       direction: 'LONG',
       currentTime: new Date(Date.parse('2026-02-16T05:01:00.000Z')), // 13:01 HK
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
   });
 
   it('case8: cross-day trigger uses accumulated trading minutes instead of wall-clock', async () => {
@@ -741,14 +741,14 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     await harness.machine.maybeSwitchOnInterval({
       direction: 'LONG',
       currentTime: new Date(Date.parse('2026-02-17T01:31:00.000Z')),
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
   });
 
   it('case9: open protection blocks periodic switch until protection ends', async () => {
@@ -766,14 +766,14 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
       openProtectionActive: true,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     await harness.machine.maybeSwitchOnInterval({
       direction: 'LONG',
       currentTime: new Date(nowMs + 1000),
       canTradeNow: true,
       openProtectionActive: false,
     });
-    expect(harness.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
   });
 
   it('case10: periodic switch never submits sell/rebuy orders', async () => {
@@ -812,7 +812,7 @@ describe('periodic auto-switch regression', () => {
         },
       ],
     });
-    const seat = harness.symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(executeCalls).toBe(0);
@@ -823,14 +823,14 @@ describe('periodic auto-switch regression', () => {
     const readyMs = Date.parse('2026-02-16T01:00:00.000Z');
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
     const canceledOrderIds: string[] = [];
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createStrategyRuntimeConfigDouble({
       autoSearchConfig: {
         ...getDefaultAutoSearchConfig(),
         switchIntervalMinutes: 1,
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -846,7 +846,7 @@ describe('periodic auto-switch regression', () => {
     const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
     const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -895,7 +895,7 @@ describe('periodic auto-switch regression', () => {
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       symbolRegistry,
       trader,
       orderRecorder: createOrderRecorderDouble({

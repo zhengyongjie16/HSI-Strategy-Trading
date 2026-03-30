@@ -3,19 +3,19 @@
  *
  * 功能：
  * - 同步席位状态到监控上下文（席位状态、版本、标的代码、行情数据）
- * - 当席位状态从 ACTIVE 变为非 ACTIVE 时，清理相关队列和延迟验证信号
+ * - 当席位状态从 ACTIVE 变为非 ACTIVE 时，清理相关队列
  * - 当席位进入 ACTIVATING 时，调度 SEAT_REFRESH 任务执行 admission 与缓存初始化，成功后才进入 ACTIVE
  *
  * 清理触发条件：
  * - 席位状态从 ACTIVE 变为其他状态（EMPTY、SEARCHING、SWITCHING、ACTIVATING）
- * - 清理内容包括：延迟验证信号、待执行买入/卖出任务、监控任务、牛熊证信息
+ * - 清理内容包括：待执行买入/卖出任务、监控任务、牛熊证信息
  *
  * 调度触发条件：
  * - 席位进入 ACTIVATING 且标的发生变化
  * - 席位从非 ACTIVATING 进入 ACTIVATING
  */
 import { logger } from '../../utils/logger/index.js';
-import { resolveMonitorContextRuntimeSnapshot } from '../../utils/utils.js';
+import { resolveStrategyRuntimeSnapshot } from '../../utils/utils.js';
 import { clearMonitorDirectionQueues } from './utils.js';
 import type { SeatSyncParams, SeatSyncResult } from './types.js';
 
@@ -26,16 +26,17 @@ import type { SeatSyncParams, SeatSyncResult } from './types.js';
  * 当席位进入 ACTIVATING 时调度 SEAT_REFRESH 任务执行激活屏障；任务仅传递席位快照与标的信息，行情在执行时获取。
  */
 export function syncSeatState(params: SeatSyncParams): SeatSyncResult {
-  const { monitorSymbol, monitorContext, mainContext, quotesMap, releaseSignal } = params;
-  const { riskChecker, delayedSignalVerifier, symbolRegistry } = monitorContext;
+  const { monitorContext, mainContext, quotesMap, releaseSignal } = params;
+  const { riskChecker, symbolRegistry } = monitorContext;
   const { buyTaskQueue, sellTaskQueue, monitorTaskQueue } = mainContext;
+  const baseInstrumentSymbol = monitorContext.config.baseInstrumentSymbol;
 
   const previousSeatState = monitorContext.seatState;
   const previousLongSeatState = previousSeatState.long;
   const previousShortSeatState = previousSeatState.short;
 
-  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
-    monitorSymbol,
+  const runtimeSnapshot = resolveStrategyRuntimeSnapshot(
+    baseInstrumentSymbol,
     symbolRegistry,
     quotesMap,
   );
@@ -54,7 +55,7 @@ export function syncSeatState(params: SeatSyncParams): SeatSyncResult {
   monitorContext.seatVersion = runtimeSnapshot.seatVersion;
   monitorContext.longSymbolName = runtimeSnapshot.longSymbolName;
   monitorContext.shortSymbolName = runtimeSnapshot.shortSymbolName;
-  monitorContext.monitorSymbolName = runtimeSnapshot.monitorSymbolName;
+  monitorContext.baseInstrumentName = runtimeSnapshot.baseInstrumentName;
 
   /**
    * 清理指定方向的延迟验证与各类任务队列，并同步清空牛熊证距离缓存。
@@ -65,9 +66,7 @@ export function syncSeatState(params: SeatSyncParams): SeatSyncResult {
    */
   function clearDirectionQueues(direction: 'LONG' | 'SHORT'): void {
     const result = clearMonitorDirectionQueues({
-      monitorSymbol,
       direction,
-      delayedSignalVerifier,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -77,7 +76,7 @@ export function syncSeatState(params: SeatSyncParams): SeatSyncResult {
       result.removedDelayed + result.removedBuy + result.removedSell + result.removedMonitorTasks;
     if (totalRemoved > 0) {
       logger.debug(
-        `[自动换标] ${monitorSymbol} ${direction} 清理待执行信号：延迟=${result.removedDelayed} 买入=${result.removedBuy} 卖出=${result.removedSell} 监控任务=${result.removedMonitorTasks}`,
+        `[自动换标] ${baseInstrumentSymbol} ${direction} 清理待执行信号：延迟=${result.removedDelayed} 买入=${result.removedBuy} 卖出=${result.removedSell} 监控任务=${result.removedMonitorTasks}`,
       );
     }
   }
@@ -107,10 +106,8 @@ export function syncSeatState(params: SeatSyncParams): SeatSyncResult {
   ) {
     monitorTaskQueue.scheduleLatest({
       type: 'SEAT_REFRESH',
-      dedupeKey: `${monitorSymbol}:SEAT_REFRESH:LONG`,
-      monitorSymbol,
+      dedupeKey: 'SEAT_REFRESH:LONG',
       data: {
-        monitorSymbol,
         direction: 'LONG',
         seatVersion: longSeatVersion,
         previousSymbol: previousLongSeatState.symbol ?? null,
@@ -128,10 +125,8 @@ export function syncSeatState(params: SeatSyncParams): SeatSyncResult {
   ) {
     monitorTaskQueue.scheduleLatest({
       type: 'SEAT_REFRESH',
-      dedupeKey: `${monitorSymbol}:SEAT_REFRESH:SHORT`,
-      monitorSymbol,
+      dedupeKey: 'SEAT_REFRESH:SHORT',
       data: {
-        monitorSymbol,
         direction: 'SHORT',
         seatVersion: shortSeatVersion,
         previousSymbol: previousShortSeatState.symbol ?? null,

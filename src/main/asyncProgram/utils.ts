@@ -6,13 +6,12 @@ import type { Signal } from '../../types/signal.js';
 import { formatError } from '../../utils/error/index.js';
 
 /**
- * 在生命周期门禁通过时执行信号并记录成功日志；门禁关闭时仅打日志并返回 true（视为跳过）。
- * 调用方负责 catch 异常并打错误日志、返回 false。
+ * 在生命周期门禁通过时执行信号并记录成功日志；门禁关闭时仅打日志并返回（视为跳过）。
+ * 调用方负责 catch 异常并记录错误日志。
  *
  * @param params 参数（getCanProcessTask、trader、signal、symbolDisplay、loggerPrefix、successMessage）
- * @returns 门禁关闭或执行成功时返回 true；trader.executeSignals 抛错时由调用方捕获
+ * @returns 无返回值
  */
-/* eslint-disable sonarjs/no-invariant-returns -- 门禁跳过与执行成功均返回 true，仅异常时由调用方返回 false */
 export async function executeSignalsWithLifecycleGate(params: {
   readonly getCanProcessTask?: (() => boolean) | undefined;
   readonly trader: Trader;
@@ -20,16 +19,15 @@ export async function executeSignalsWithLifecycleGate(params: {
   readonly symbolDisplay: string;
   readonly loggerPrefix: string;
   readonly successMessage: string;
-}): Promise<boolean> {
+}): Promise<void> {
   const { getCanProcessTask, trader, signal, symbolDisplay, loggerPrefix, successMessage } = params;
   if (getCanProcessTask !== undefined && !getCanProcessTask()) {
     logger.debug(`[${loggerPrefix}] 生命周期门禁关闭，放弃执行: ${symbolDisplay} ${signal.action}`);
-    return true;
+    return;
   }
 
   await trader.executeSignals([signal]);
   logger.debug(`[${loggerPrefix}] ${successMessage}: ${symbolDisplay} ${signal.action}`);
-  return true; // 门禁跳过与执行成功均返回 true，仅抛错时由调用方 catch 返回 false
 }
 
 /**

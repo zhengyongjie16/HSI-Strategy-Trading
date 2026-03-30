@@ -10,12 +10,12 @@ import { OrderSide } from 'longbridge';
 import { createDoomsdayProtection } from '../../src/core/doomsdayProtection/index.js';
 import { signalObjectPool } from '../../src/utils/objectPool/index.js';
 
-import type { LastState, MonitorContext } from '../../src/types/state.js';
+import type { LastState, StrategyRuntime } from '../../src/types/state.js';
 
 import {
   createAccountSnapshotDouble,
-  createIndicatorUsageProfileDouble,
-  createMonitorConfigDouble,
+  createIndicatorDisplayProfileDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
@@ -44,17 +44,27 @@ function createLastState(): LastState {
       createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 }),
     ]),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: {
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorPrice: null,
+      longPrice: null,
+      shortPrice: null,
+      signal: null,
+      pendingSignals: [],
+      monitorValues: null,
+      lastMonitorSnapshot: null,
+      lastCandlestickCacheVersion: null,
+    },
     allTradingSymbols: new Set(['BULL.HK', 'BEAR.HK']),
   };
 }
 
-function createMonitorContext(
-  config = createMonitorConfigDouble(),
+function createStrategyRuntime(
+  config = createStrategyRuntimeConfigDouble(),
   orderRecorder = createOrderRecorderDouble(),
-): MonitorContext {
+): StrategyRuntime {
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: config.monitorSymbol,
+    baseInstrumentSymbol: config.baseInstrumentSymbol,
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -78,25 +88,24 @@ function createMonitorContext(
   return {
     config,
     state: {
-      monitorSymbol: config.monitorSymbol,
+      baseInstrumentSymbol: config.baseInstrumentSymbol,
       monitorPrice: null,
       longPrice: null,
       shortPrice: null,
       signal: null,
-      pendingDelayedSignals: [],
+      pendingSignals: [],
       monitorValues: null,
       lastMonitorSnapshot: null,
       lastCandlestickCacheVersion: null,
-      incrementalIndicatorRuntime: null,
     },
     symbolRegistry,
     seatState: {
-      long: symbolRegistry.getSeatState(config.monitorSymbol, 'LONG'),
-      short: symbolRegistry.getSeatState(config.monitorSymbol, 'SHORT'),
+      long: symbolRegistry.getSeatState('LONG'),
+      short: symbolRegistry.getSeatState('SHORT'),
     },
     seatVersion: {
-      long: symbolRegistry.getSeatVersion(config.monitorSymbol, 'LONG'),
-      short: symbolRegistry.getSeatVersion(config.monitorSymbol, 'SHORT'),
+      long: symbolRegistry.getSeatVersion('LONG'),
+      short: symbolRegistry.getSeatVersion('SHORT'),
     },
     autoSymbolManager: {
       maybeSearchOnTick: async () => {},
@@ -106,7 +115,7 @@ function createMonitorContext(
       resetAllState: () => {},
     },
     strategy: {
-      generateSignals: () => ({ immediateSignals: [], delayedSignals: [] }),
+      generateSignals: () => [],
     },
     orderRecorder,
     dailyLossTracker: {
@@ -131,30 +140,21 @@ function createMonitorContext(
     unrealizedLossMonitor: {
       monitorUnrealizedLoss: async () => {},
     },
-    delayedSignalVerifier: {
-      addSignal: () => {},
-      cancelAllForSymbol: () => {},
-      cancelAllForDirection: () => 0,
-      cancelAll: () => 0,
-      getPendingCount: () => 0,
-      onVerified: () => {},
-      destroy: () => {},
-    },
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
-    monitorSymbolName: config.monitorSymbol,
-    normalizedMonitorSymbol: config.monitorSymbol,
-    indicatorProfile: createIndicatorUsageProfileDouble(),
+    baseInstrumentName: config.baseInstrumentSymbol,
+    normalizedBaseInstrumentSymbol: config.baseInstrumentSymbol,
+    indicatorProfile: createIndicatorDisplayProfileDouble(),
     longQuote: createQuoteDouble('BULL.HK', 1.1, 100),
     shortQuote: createQuoteDouble('BEAR.HK', 0.9, 100),
-    monitorQuote: createQuoteDouble(config.monitorSymbol, 20_000),
-  } as unknown as MonitorContext;
+    monitorQuote: createQuoteDouble(config.baseInstrumentSymbol, 20_000),
+  } as unknown as StrategyRuntime;
 }
 
 describe('doomsday integration', () => {
   it('cancels pending buy orders once per trading day within close-15 window', async () => {
     const doomsday = createDoomsdayProtection();
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     const trader = createTraderDouble({
       getPendingOrders: async () => [
@@ -190,20 +190,16 @@ describe('doomsday integration', () => {
     const result1 = await doomsday.cancelPendingBuyOrders({
       currentTime: new Date('2026-02-16T07:50:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig),
       trader,
     });
 
     const result2 = await doomsday.cancelPendingBuyOrders({
       currentTime: new Date('2026-02-16T07:51:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig),
       trader,
     });
 
@@ -216,7 +212,7 @@ describe('doomsday integration', () => {
 
   it('does not count already-filled buy orders as cancelled in close-15 window', async () => {
     const doomsday = createDoomsdayProtection();
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     const trader = createTraderDouble({
       getPendingOrders: async () => [
@@ -242,10 +238,8 @@ describe('doomsday integration', () => {
     const result = await doomsday.cancelPendingBuyOrders({
       currentTime: new Date('2026-02-16T07:50:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig),
       trader,
     });
 
@@ -255,7 +249,7 @@ describe('doomsday integration', () => {
 
   it('executes close-5 liquidation, clears caches and order records for both sides', async () => {
     const doomsday = createDoomsdayProtection();
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     let executedSignals = 0;
     const trader = createTraderDouble({
@@ -273,7 +267,7 @@ describe('doomsday integration', () => {
       },
     });
 
-    const monitorContext = createMonitorContext(monitorConfig, orderRecorder);
+    const monitorContext = createStrategyRuntime(monitorConfig, orderRecorder);
 
     const lastState = createLastState();
 
@@ -281,8 +275,8 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorConfig,
+      monitorContext,
       trader,
       marketDataClient: {
         getQuoteContext: async () => ({}) as never,
@@ -316,7 +310,7 @@ describe('doomsday integration', () => {
 
   it('keeps caches and order records when close-5 liquidation signals are not actually submitted', async () => {
     const doomsday = createDoomsdayProtection();
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     const trader = createTraderDouble({
       executeSignals: async () => ({ submittedCount: 0, submittedOrderIds: [] }),
@@ -334,10 +328,8 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig, orderRecorder),
       trader,
       marketDataClient: {
         getQuoteContext: async () => ({}) as never,
@@ -379,7 +371,7 @@ describe('doomsday integration', () => {
       quoteRetryIntervalMs: 2_000,
       quoteRetryMaxAttempts: 2,
     });
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     let quoteReady = false;
     let executedSignals = 0;
@@ -422,10 +414,8 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -463,7 +453,7 @@ describe('doomsday integration', () => {
       quoteRetryIntervalMs: 2_000,
       quoteRetryMaxAttempts: 2,
     });
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     let quoteReady = false;
     let executedSignals = 0;
@@ -506,10 +496,8 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -548,7 +536,7 @@ describe('doomsday integration', () => {
       quoteRetryIntervalMs: 2_000,
       quoteRetryMaxAttempts: 2,
     });
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     let shortQuoteReady = false;
     const submittedSymbols: string[] = [];
@@ -583,10 +571,8 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -620,7 +606,7 @@ describe('doomsday integration', () => {
       quoteRetryIntervalMs: 2_000,
       quoteRetryMaxAttempts: 1,
     });
-    const monitorConfig = createMonitorConfigDouble();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
 
     let shortQuoteReady = false;
     const submittedSymbols: string[] = [];
@@ -655,10 +641,8 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -675,10 +659,8 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:05.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorConfig,
+      monitorContext: createStrategyRuntime(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -687,10 +669,9 @@ describe('doomsday integration', () => {
     expect(submittedSymbols).toEqual(['BULL.HK']);
   });
 
-  it('releases duplicate and unique clearance signals even when execution throws', async () => {
+  it('releases clearance signals even when execution throws', async () => {
     const doomsday = createDoomsdayProtection();
-    const primaryMonitor = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-    const secondaryMonitor = createMonitorConfigDouble({ monitorSymbol: 'HSCEI.HK' });
+    const monitorConfig = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol: 'HSI.HK' });
 
     const originalRelease = signalObjectPool.release;
     const originalReleaseAll = signalObjectPool.releaseAll;
@@ -719,11 +700,8 @@ describe('doomsday integration', () => {
           currentTime: new Date('2026-02-16T07:56:00.000Z'),
           isHalfDay: false,
           positions: createLastState().cachedPositions,
-          monitorConfigs: [primaryMonitor, secondaryMonitor],
-          monitorContexts: new Map([
-            [primaryMonitor.monitorSymbol, createMonitorContext(primaryMonitor)],
-            [secondaryMonitor.monitorSymbol, createMonitorContext(secondaryMonitor)],
-          ]),
+          monitorConfig,
+          monitorContext: createStrategyRuntime(monitorConfig),
           trader,
           marketDataClient: {
             getQuoteContext: async () => ({}) as never,
@@ -750,7 +728,7 @@ describe('doomsday integration', () => {
         message: 'submit failed',
       });
 
-      expect(releasedSignals).toBe(4);
+      expect(releasedSignals).toBe(2);
     } finally {
       signalObjectPool.release = originalRelease;
       signalObjectPool.releaseAll = originalReleaseAll;

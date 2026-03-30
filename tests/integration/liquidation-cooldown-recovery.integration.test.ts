@@ -10,7 +10,10 @@ import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createLiquidationCooldownTracker } from '../../src/services/liquidationCooldown/index.js';
 import { createTradeLogHydrator } from '../../src/services/liquidationCooldown/tradeLogHydrator.js';
 import type { RiskCheckContext } from '../../src/types/services.js';
-import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
+import {
+  createGlobalConfig,
+  createStrategyRuntimeConfig,
+} from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import {
   createAccountSnapshotDouble,
@@ -31,7 +34,7 @@ function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
 }
 
 function createCompletedRecord(params: {
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly action: 'SELLCALL' | 'SELLPUT';
   readonly executedAtMs: number;
 }): Record<string, unknown> {
@@ -39,7 +42,7 @@ function createCompletedRecord(params: {
     orderId: null,
     symbol: null,
     symbolName: null,
-    monitorSymbol: params.monitorSymbol,
+    baseInstrumentSymbol: params.baseInstrumentSymbol,
     action: params.action,
     side: 'SELL',
     quantity: null,
@@ -60,7 +63,7 @@ function createRiskContext(params: {
   readonly trader: ReturnType<typeof createTraderDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
-  readonly monitorConfig: ReturnType<typeof createMonitorConfig>;
+  readonly monitorConfig: ReturnType<typeof createStrategyRuntimeConfig>;
 }): RiskCheckContext {
   const cachedAccount = createAccountSnapshotDouble(100_000);
   return {
@@ -69,7 +72,7 @@ function createRiskContext(params: {
     orderRecorder: params.orderRecorder,
     longQuote: createQuoteDouble(params.monitorConfig.longSymbol, 5, 100),
     shortQuote: createQuoteDouble(params.monitorConfig.shortSymbol, 5, 100),
-    monitorQuote: createQuoteDouble(params.monitorConfig.monitorSymbol, 20_000),
+    monitorQuote: createQuoteDouble(params.monitorConfig.baseInstrumentSymbol, 20_000),
     monitorSnapshot: {
       price: 20_000,
       changePercent: 0,
@@ -102,15 +105,12 @@ function createRiskContext(params: {
 async function assertDualDirectionBuyBlockedAfterHydration(params: {
   readonly nowMs: number;
   readonly recordAction: 'SELLCALL' | 'SELLPUT';
-  readonly expectedBoundaryKey: 'HSI.HK:LONG' | 'HSI.HK:SHORT';
+  readonly expectedBoundaryKey: 'LONG' | 'SHORT';
 }): Promise<void> {
-  const monitorConfig = createMonitorConfig({
-    monitorSymbol: 'HSI.HK',
+  const monitorConfig = createStrategyRuntimeConfig({
+    baseInstrumentSymbol: 'HSI.HK',
     liquidationTriggerLimit: 1,
     liquidationCooldown: { mode: 'minutes', minutes: 5 },
-  });
-  const tradingConfig = createTradingConfig({
-    monitors: [monitorConfig],
   });
   const tracker = createLiquidationCooldownTracker({
     nowMs: () => params.nowMs,
@@ -120,7 +120,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     readFileSync: () =>
       JSON.stringify([
         createCompletedRecord({
-          monitorSymbol: 'HSI.HK',
+          baseInstrumentSymbol: 'HSI.HK',
           action: params.recordAction,
           executedAtMs,
         }),
@@ -134,7 +134,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
       error: () => {},
       debug: () => {},
     },
-    tradingConfig,
+    monitorConfig,
     liquidationCooldownTracker: tracker,
   });
 
@@ -147,7 +147,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     canTradeNow: () => ({ canTrade: true }),
   });
   const signalProcessor = createSignalProcessor({
-    tradingConfig,
+    globalConfig: createGlobalConfig(),
     liquidationCooldownTracker: tracker,
   });
   const context = createRiskContext({
@@ -187,26 +187,14 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
 }
 
 describe('liquidation-cooldown-recovery integration', () => {
-  it('isolates cooldown by monitor symbol and only blocks the affected monitor in both buy directions', async () => {
+  it('ignores cooldown records for unrelated monitor symbols', async () => {
     const nowMs = Date.parse('2026-03-13T10:00:00+08:00');
-    const monitorA = createMonitorConfig({
-      originalIndex: 1,
-      monitorSymbol: 'HSI.HK',
+    const monitorA = createStrategyRuntimeConfig({
+      baseInstrumentSymbol: 'HSI.HK',
       longSymbol: 'A-BULL.HK',
       shortSymbol: 'A-BEAR.HK',
       liquidationTriggerLimit: 1,
       liquidationCooldown: { mode: 'minutes', minutes: 5 },
-    });
-    const monitorB = createMonitorConfig({
-      originalIndex: 2,
-      monitorSymbol: 'HSCEI.HK',
-      longSymbol: 'B-BULL.HK',
-      shortSymbol: 'B-BEAR.HK',
-      liquidationTriggerLimit: 1,
-      liquidationCooldown: { mode: 'minutes', minutes: 5 },
-    });
-    const tradingConfig = createTradingConfig({
-      monitors: [monitorA, monitorB],
     });
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => nowMs,
@@ -215,7 +203,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       readFileSync: () =>
         JSON.stringify([
           createCompletedRecord({
-            monitorSymbol: monitorA.monitorSymbol,
+            baseInstrumentSymbol: 'HSCEI.HK',
             action: 'SELLCALL',
             executedAtMs: nowMs - 30_000,
           }),
@@ -229,97 +217,58 @@ describe('liquidation-cooldown-recovery integration', () => {
         error: () => {},
         debug: () => {},
       },
-      tradingConfig,
+      monitorConfig: monitorA,
       liquidationCooldownTracker: tracker,
     });
 
     const boundaries = hydrator.hydrate();
-    expect(boundaries.get('HSI.HK:LONG')).toBe(nowMs - 30_000);
-    expect(boundaries.get('HSCEI.HK:LONG')).toBeUndefined();
-    expect(boundaries.get('HSCEI.HK:SHORT')).toBeUndefined();
+    expect(boundaries.get('LONG')).toBeUndefined();
+    expect(boundaries.get('SHORT')).toBeUndefined();
 
-    const traderA = createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
-      getStockPositions: async () => [],
-      canTradeNow: () => ({ canTrade: true }),
-    });
-    const traderB = createTraderDouble({
+    const trader = createTraderDouble({
       getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
       getStockPositions: async () => [],
       canTradeNow: () => ({ canTrade: true }),
     });
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: tracker,
     });
-    const contextA = createRiskContext({
-      trader: traderA,
+    const context = createRiskContext({
+      trader,
       riskChecker: createRiskCheckerDouble(),
       orderRecorder: createOrderRecorderDouble(),
       monitorConfig: monitorA,
     });
-    const contextB = createRiskContext({
-      trader: traderB,
-      riskChecker: createRiskCheckerDouble(),
-      orderRecorder: createOrderRecorderDouble(),
-      monitorConfig: monitorB,
-    });
 
-    const monitorABuyCallSignal = createSignal({
+    const buyCallSignal = createSignal({
       symbol: monitorA.longSymbol,
       action: 'BUYCALL',
       triggerTimeMs: nowMs,
       price: 5,
       lotSize: 100,
-      reason: 'monitorA-buycall',
+      reason: 'unrelated-monitor-buycall',
     });
-    const monitorABuyPutSignal = createSignal({
+    const buyPutSignal = createSignal({
       symbol: monitorA.shortSymbol,
       action: 'BUYPUT',
       triggerTimeMs: nowMs,
       price: 5,
       lotSize: 100,
-      reason: 'monitorA-buyput',
-    });
-    const monitorBBuyCallSignal = createSignal({
-      symbol: monitorB.longSymbol,
-      action: 'BUYCALL',
-      triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
-      reason: 'monitorB-buycall',
-    });
-    const monitorBBuyPutSignal = createSignal({
-      symbol: monitorB.shortSymbol,
-      action: 'BUYPUT',
-      triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
-      reason: 'monitorB-buyput',
+      reason: 'unrelated-monitor-buyput',
     });
 
-    const monitorABuyCallResult = await withMockedNow(nowMs, async () =>
-      signalProcessor.applyRiskChecks([monitorABuyCallSignal], contextA),
+    const buyCallResult = await withMockedNow(nowMs, async () =>
+      signalProcessor.applyRiskChecks([buyCallSignal], context),
     );
-    const monitorABuyPutResult = await withMockedNow(nowMs + 10, async () =>
-      signalProcessor.applyRiskChecks([monitorABuyPutSignal], contextA),
-    );
-    const monitorBBuyCallResult = await withMockedNow(nowMs + 20, async () =>
-      signalProcessor.applyRiskChecks([monitorBBuyCallSignal], contextB),
-    );
-    const monitorBBuyPutResult = await withMockedNow(nowMs + 30, async () =>
-      signalProcessor.applyRiskChecks([monitorBBuyPutSignal], contextB),
+    const buyPutResult = await withMockedNow(nowMs + 10, async () =>
+      signalProcessor.applyRiskChecks([buyPutSignal], context),
     );
 
-    expect(monitorABuyCallResult).toHaveLength(0);
-    expect(monitorABuyPutResult).toHaveLength(0);
-    expect(monitorABuyCallSignal.reason).toContain('清仓冷却期内');
-    expect(monitorABuyPutSignal.reason).toContain('清仓冷却期内');
-
-    expect(monitorBBuyCallResult).toHaveLength(1);
-    expect(monitorBBuyPutResult).toHaveLength(1);
-    expect(monitorBBuyCallSignal.reason).not.toContain('清仓冷却期内');
-    expect(monitorBBuyPutSignal.reason).not.toContain('清仓冷却期内');
+    expect(buyCallResult).toHaveLength(1);
+    expect(buyPutResult).toHaveLength(1);
+    expect(buyCallSignal.reason).not.toContain('清仓冷却期内');
+    expect(buyPutSignal.reason).not.toContain('清仓冷却期内');
   });
 
   it('blocks BUYCALL and BUYPUT after hydrating only LONG cooldown records', async () => {
@@ -327,7 +276,7 @@ describe('liquidation-cooldown-recovery integration', () => {
     await assertDualDirectionBuyBlockedAfterHydration({
       nowMs,
       recordAction: 'SELLCALL',
-      expectedBoundaryKey: 'HSI.HK:LONG',
+      expectedBoundaryKey: 'LONG',
     });
   });
 
@@ -336,19 +285,16 @@ describe('liquidation-cooldown-recovery integration', () => {
     await assertDualDirectionBuyBlockedAfterHydration({
       nowMs,
       recordAction: 'SELLPUT',
-      expectedBoundaryKey: 'HSI.HK:SHORT',
+      expectedBoundaryKey: 'SHORT',
     });
   });
 
   it('does not block BUYCALL and BUYPUT when hydrated cooldown record is already expired', async () => {
     const nowMs = Date.parse('2026-03-13T10:00:00+08:00');
-    const monitorConfig = createMonitorConfig({
-      monitorSymbol: 'HSI.HK',
+    const monitorConfig = createStrategyRuntimeConfig({
+      baseInstrumentSymbol: 'HSI.HK',
       liquidationTriggerLimit: 1,
       liquidationCooldown: { mode: 'minutes', minutes: 5 },
-    });
-    const tradingConfig = createTradingConfig({
-      monitors: [monitorConfig],
     });
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => nowMs,
@@ -358,7 +304,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       readFileSync: () =>
         JSON.stringify([
           createCompletedRecord({
-            monitorSymbol: 'HSI.HK',
+            baseInstrumentSymbol: 'HSI.HK',
             action: 'SELLCALL',
             executedAtMs,
           }),
@@ -372,7 +318,7 @@ describe('liquidation-cooldown-recovery integration', () => {
         error: () => {},
         debug: () => {},
       },
-      tradingConfig,
+      monitorConfig,
       liquidationCooldownTracker: tracker,
     });
 
@@ -384,7 +330,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       canTradeNow: () => ({ canTrade: true }),
     });
     const signalProcessor = createSignalProcessor({
-      tradingConfig,
+      globalConfig: createGlobalConfig(),
       liquidationCooldownTracker: tracker,
     });
     const context = createRiskContext({

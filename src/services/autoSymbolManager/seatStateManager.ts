@@ -43,12 +43,12 @@ const buildSeatState: SeatStateBuilder = ({
 
 /**
  * 创建席位状态管理器，封装席位状态构建、更新、日内抑制记录与换标启动准备。
- * @param deps - 依赖（monitorSymbol、symbolRegistry、switchStates、switchSuppressions、now、logger、getHKDateKey）
+ * @param deps - 依赖（baseInstrumentSymbol、symbolRegistry、switchStates、switchSuppressions、now、logger、getHKDateKey）
  * @returns SeatStateManager 实例（buildSeatState、updateSeatState、resolveSuppression、markSuppression、enterSwitchingSeat）
  */
 export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateManager {
   const {
-    monitorSymbol,
+    baseInstrumentSymbol,
     symbolRegistry,
     switchStates,
     switchSuppressions,
@@ -65,12 +65,12 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     nextState,
     bumpOnSymbolChange,
   ): void => {
-    const current = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const current = symbolRegistry.getSeatState(direction);
     if (bumpOnSymbolChange && current.symbol !== nextState.symbol) {
-      symbolRegistry.bumpSeatVersion(monitorSymbol, direction);
+      symbolRegistry.bumpSeatVersion(direction);
     }
 
-    symbolRegistry.updateSeatState(monitorSymbol, direction, nextState);
+    symbolRegistry.updateSeatState(direction, nextState);
   };
 
   /**
@@ -141,9 +141,9 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     reason: string;
   }): number {
     const timestamp = now().getTime();
-    const currentState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const currentState = symbolRegistry.getSeatState(direction);
     const currentSymbol = currentState.symbol;
-    const nextVersion = symbolRegistry.bumpSeatVersion(monitorSymbol, direction);
+    const nextVersion = symbolRegistry.bumpSeatVersion(direction);
     const nextState = buildSeatState({
       symbol: currentState.symbol ?? null,
       status: 'SWITCHING',
@@ -154,7 +154,7 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
       searchFailCountToday: currentState.searchFailCountToday,
       frozenTradingDayKey: currentState.frozenTradingDayKey,
     });
-    symbolRegistry.updateSeatState(monitorSymbol, direction, nextState);
+    symbolRegistry.updateSeatState(direction, nextState);
     if (currentSymbol) {
       switchStates.set(direction, {
         direction,
@@ -178,7 +178,7 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     }
 
     logger.info(
-      `${LOG_COLORS.green}[自动换标] ${monitorSymbol} ${direction} 进入换标中状态: ${reason}${LOG_COLORS.reset}`,
+      `${LOG_COLORS.green}[自动换标] ${baseInstrumentSymbol} ${direction} 进入换标中状态: ${reason}${LOG_COLORS.reset}`,
     );
     return nextVersion;
   }

@@ -36,7 +36,7 @@ export type OrderStatistics = {
 
 /**
  * 订单重建分类结果。
- * 类型用途：启动/开盘重建阶段在单标的维度将全量订单按成交状态与买卖方向分流。
+ * 类型用途：启动/开盘重建阶段按执行标的将全量订单按成交状态与买卖方向分流。
  * 数据来源：由 classifyOrdersForRebuild 从 RawOrderFromAPI 转换得到。
  * 使用范围：orderRecorder 重建链路内部使用。
  */

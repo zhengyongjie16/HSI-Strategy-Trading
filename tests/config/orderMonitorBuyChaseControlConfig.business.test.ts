@@ -5,30 +5,31 @@
  * - 验证 ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE 的解析行为。
  */
 import { describe, expect, it } from 'bun:test';
-import { createMultiMonitorTradingConfig } from '../../src/config/trading/index.js';
+import { createTradingConfig } from '../../src/config/trading/index.js';
 
 function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
   return {
-    MONITOR_SYMBOL_1: 'HSI.HK',
+    LONG_SYMBOL: 'BULL.HK',
+    SHORT_SYMBOL: 'BEAR.HK',
     ...overrides,
   };
 }
 
 describe('order monitor buy chase control config', () => {
   it('parses ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE with expected defaults', () => {
-    const defaultConfig = createMultiMonitorTradingConfig({
+    const defaultConfig = createTradingConfig({
       env: createBaseEnv(),
     });
     expect(defaultConfig.global.allowBuyOrderTrackingAboveInitialPrice).toBe(true);
 
-    const enabledConfig = createMultiMonitorTradingConfig({
+    const enabledConfig = createTradingConfig({
       env: createBaseEnv({
         ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'true',
       }),
     });
     expect(enabledConfig.global.allowBuyOrderTrackingAboveInitialPrice).toBe(true);
 
-    const disabledConfig = createMultiMonitorTradingConfig({
+    const disabledConfig = createTradingConfig({
       env: createBaseEnv({
         ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'false',
       }),

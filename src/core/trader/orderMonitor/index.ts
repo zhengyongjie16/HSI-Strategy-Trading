@@ -29,7 +29,7 @@ import type { CancelOrderOutcome } from '../../../types/trader.js';
 /**
  * 创建订单监控器。
  *
- * @param deps 依赖（ctxPromise、rateLimiter、cacheManager、orderRecorder、dailyLossTracker、orderHoldRegistry、tradingConfig 等）
+ * @param deps 依赖（ctxPromise、rateLimiter、cacheManager、orderRecorder、dailyLossTracker、orderHoldRegistry、globalConfig、monitorConfig 等）
  * @returns 实现 OrderMonitor 接口的实例
  */
 export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
@@ -43,12 +43,13 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     orderHoldRegistry,
     protectiveLiquidationEpisodeTracker,
     testHooks,
-    tradingConfig,
+    globalConfig,
+    monitorConfig,
     symbolRegistry,
     refreshGate,
     isExecutionAllowed,
   } = deps;
-  const config = buildOrderMonitorConfig(tradingConfig.global);
+  const config = buildOrderMonitorConfig(globalConfig);
   const thresholdDecimal = toDecimal(config.priceDiffThreshold);
   const runtime: OrderMonitorRuntimeStore = {
     trackedOrders: new Map<string, OrderMonitorTrackedOrder>(),
@@ -90,7 +91,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     runtime,
     orderHoldRegistry,
     orderRecorder,
-    tradingConfig,
+    monitorConfig,
     symbolRegistry,
     trackOrder: orderOps.trackOrder,
     cancelOrder: orderOps.cancelOrder,
@@ -232,7 +233,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   }
 
   function hasPendingProtectiveLiquidationOrders(
-    monitorSymbol: string,
+    baseInstrumentSymbol: string,
     direction: 'LONG' | 'SHORT',
   ): boolean {
     for (const trackedOrder of runtime.trackedOrders.values()) {
@@ -248,7 +249,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         continue;
       }
 
-      if (trackedOrder.monitorSymbol !== monitorSymbol) {
+      if (trackedOrder.baseInstrumentSymbol !== baseInstrumentSymbol) {
         continue;
       }
 

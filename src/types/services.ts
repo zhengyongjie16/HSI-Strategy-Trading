@@ -13,7 +13,7 @@ import type { SignalType, Signal } from './signal.js';
 import type { Quote, IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { DecimalLikeValue } from './common.js';
-import type { MonitorConfig } from './config.js';
+import type { StrategyRuntimeConfig } from './config.js';
 import type { TradingCalendarSnapshot } from './tradingCalendar.js';
 import type { CancelOrderOutcome } from './trader.js';
 import type { CandleData } from './data.js';
@@ -182,7 +182,7 @@ export type RawOrderFromAPI = {
  * 已成交订单记录。
  * 类型用途：表示单笔已成交订单，用于订单记录器内部存储、成本均价计算、可卖订单列表等。
  * 数据来源：本地记录或由 RawOrderFromAPI 转换/同步得到。
- * 使用范围：OrderRecorder、RiskChecker、卖出计算、智能平仓等；全项目可引用。
+ * 使用范围：OrderRecorder、RiskChecker、卖出计算等；全项目可引用。
  */
 export type OrderRecord = {
   /** 订单 ID */
@@ -209,7 +209,7 @@ export type OrderRecord = {
 
 /**
  * 待成交卖出订单信息。
- * 类型用途：智能平仓防重追踪，记录已提交但未成交的卖出订单及关联买单。
+ * 类型用途：卖出防重追踪，记录已提交但未成交的卖出订单及关联买单。
  * 数据来源：提交卖单时添加，成交/撤单时更新状态。
  * 使用范围：OrderRecorder、OrderStorage、订单监控等；全项目可引用。
  */
@@ -432,7 +432,7 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
  * 交易器接口。
  * 类型用途：依赖注入用接口，封装 Longbridge 交易 API，提供账户/持仓、订单执行、订单监控与信号执行等。
  * 数据来源：实现层对接 Longbridge TradeContext；账户与订单数据来自 API。
- * 使用范围：主循环、MonitorContext、信号处理、门禁等；全项目可引用。
+ * 使用范围：主循环、StrategyRuntime、信号处理、门禁等；全项目可引用。
  */
 export interface Trader {
   /** 订单记录器实例 */
@@ -473,7 +473,7 @@ export interface Trader {
 
   /** 是否存在指定监控标的方向的未完成保护性清仓卖单链路 */
   hasPendingProtectiveLiquidationOrders: (
-    monitorSymbol: string,
+    baseInstrumentSymbol: string,
     direction: 'LONG' | 'SHORT',
   ) => boolean;
 
@@ -483,7 +483,10 @@ export interface Trader {
   // ========== 订单执行 ==========
 
   /** 检查当前是否可交易 */
-  canTradeNow: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => TradeCheckResult;
+  canTradeNow: (
+    signalAction: SignalType,
+    monitorConfig?: StrategyRuntimeConfig | null,
+  ) => TradeCheckResult;
 
   /** 从 API 获取全量订单 */
   fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
@@ -602,7 +605,7 @@ export type RiskCheckResult = {
 
 /**
  * 浮亏数据。
- * 类型用途：存储单标的累计买入金额/数量等，用于计算浮动亏损与强平判定。
+ * 类型用途：存储执行标的累计买入金额/数量等，用于计算浮动亏损与强平判定。
  * 数据来源：OrderRecorder 订单记录 + RiskChecker 刷新与计算。
  * 使用范围：RiskChecker、UnrealizedLossMonitor 等；全项目可引用。
  */
@@ -645,7 +648,7 @@ export type UnrealizedLossMetrics = {
 
 /**
  * 浮亏检查结果。
- * 类型用途：单标的浮亏检查返回值，表示是否应强制平仓、原因及建议平仓数量。
+ * 类型用途：执行标的浮亏检查返回值，表示是否应强制平仓、原因及建议平仓数量。
  * 数据来源：RiskChecker.checkUnrealizedLoss。
  * 使用范围：信号处理、卖出逻辑；全项目可引用。
  */
@@ -688,7 +691,7 @@ interface DoomsdayBuyGuard {
 /**
  * 风险检查上下文。
  * 类型用途：执行信号处理与风控时的完整上下文（交易器、风控器、行情、账户、配置等），作为 processSignal、风控检查的入参。
- * 数据来源：由主循环/processMonitor 根据 MonitorContext 与 LastState 组装传入。
+ * 数据来源：由主循环/processMonitor 根据 StrategyRuntime 与 LastState 组装传入。
  * 使用范围：信号处理、风控检查等；全项目可引用。
  */
 export type RiskCheckContext = {
@@ -748,14 +751,14 @@ export type RiskCheckContext = {
   readonly doomsdayProtection: DoomsdayBuyGuard;
 
   /** 监控配置 */
-  readonly config: MonitorConfig;
+  readonly config: StrategyRuntimeConfig;
 };
 
 /**
  * 风险检查器接口。
  * 类型用途：依赖注入用接口，门面模式协调牛熊证风险、持仓限制与浮亏检查，供信号处理与买卖流程调用。
  * 数据来源：实现层对接行情与订单记录；牛熊证/浮亏数据由内部缓存与 API 维护。
- * 使用范围：MonitorContext、信号处理、主循环等；全项目可引用。
+ * 使用范围：StrategyRuntime、信号处理、主循环等；全项目可引用。
  */
 export interface RiskChecker {
   /** 从透传的回收价设置牛熊证信息（不调用 API） */

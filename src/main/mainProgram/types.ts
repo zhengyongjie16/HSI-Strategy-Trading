@@ -1,11 +1,10 @@
-import type { IndicatorCache } from '../asyncProgram/indicatorCache/types.js';
 import type { TaskQueue, BuyTaskType, SellTaskType } from '../asyncProgram/tradeTaskQueue/types.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { OrderMonitorWorker } from '../asyncProgram/orderMonitorWorker/types.js';
 import type { PostTradeRefresher } from '../asyncProgram/postTradeRefresher/types.js';
-import type { LastState, MonitorContext } from '../../types/state.js';
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { LastState, StrategyRuntime } from '../../types/state.js';
+import type { StrategyRuntimeConfig, TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry, GateMode } from '../../types/seat.js';
 import type { MarketDataClient, Trader } from '../../types/services.js';
 import type { MarketMonitor } from '../../services/marketMonitor/types.js';
@@ -27,11 +26,11 @@ export type MainProgramContext = {
   readonly marketMonitor: MarketMonitor;
   readonly doomsdayProtection: DoomsdayProtection;
   readonly signalProcessor: SignalProcessor;
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
+  readonly monitorConfig: StrategyRuntimeConfig;
   readonly dailyLossTracker: DailyLossTracker;
-  readonly monitorContexts: ReadonlyMap<string, MonitorContext>;
+  readonly monitorContext: StrategyRuntime;
   readonly symbolRegistry: SymbolRegistry;
-  readonly indicatorCache: IndicatorCache;
   readonly buyTaskQueue: TaskQueue<BuyTaskType>;
   readonly sellTaskQueue: TaskQueue<SellTaskType>;
   readonly monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;

@@ -5,7 +5,7 @@
  * - 提供席位冻结失败计数、信号席位校验与失败原因格式化能力
  * - 提供席位启动恢复与 SymbolRegistry 构建能力
  */
-import type { MonitorConfig } from '../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { SeatState, SeatStatus, SymbolRegistry } from '../../types/seat.js';
 import { isSeatActive, isSeatVersionMatch } from '../../utils/seat/guards.js';
@@ -136,14 +136,14 @@ function resolveSignalDirection(
  * 校验信号是否仍绑定到当前席位。
  * 默认行为：按 action 推导方向后，依次校验席位 ACTIVE、席位版本匹配与席位标的一致性。
  *
- * @param params 校验所需的 monitorSymbol、signal 与 symbolRegistry
+ * @param params 校验所需的 signal 与 symbolRegistry
  * @returns 校验结果；成功时返回收窄后的就绪 seatState，失败时返回失败原因
  */
 export function validateSignalSeat(params: ValidateSignalSeatParams): SignalSeatValidationResult {
   const direction = resolveSignalDirection(params.signal.action);
   if (direction === null) {
-    const seatState = params.symbolRegistry.getSeatState(params.monitorSymbol, 'LONG');
-    const seatVersion = params.symbolRegistry.getSeatVersion(params.monitorSymbol, 'LONG');
+    const seatState = params.symbolRegistry.getSeatState('LONG');
+    const seatVersion = params.symbolRegistry.getSeatVersion('LONG');
     return {
       valid: false,
       direction: 'LONG',
@@ -153,8 +153,8 @@ export function validateSignalSeat(params: ValidateSignalSeatParams): SignalSeat
     };
   }
 
-  const seatState = params.symbolRegistry.getSeatState(params.monitorSymbol, direction);
-  const seatVersion = params.symbolRegistry.getSeatVersion(params.monitorSymbol, direction);
+  const seatState = params.symbolRegistry.getSeatState(direction);
+  const seatVersion = params.symbolRegistry.getSeatVersion(direction);
   if (!isSeatActive(seatState)) {
     return {
       valid: false,
@@ -292,55 +292,42 @@ function createSeatEntry(symbol: string | null, status: SeatStatus): SeatEntry {
 }
 
 /**
- * 从注册表中解析指定监控标的与方向的席位条目（内部辅助函数）
- * @param registry 席位注册表
- * @param monitorSymbol 监控标的代码
- * @param direction 方向（LONG 或 SHORT）
- * @returns 对应方向的席位条目
- * @throws 当监控标的不存在于注册表时抛出错误
- */
-function resolveSeatEntry(
-  registry: Map<string, SymbolSeatEntry>,
-  monitorSymbol: string,
-  direction: 'LONG' | 'SHORT',
-): SeatEntry {
-  const entry = registry.get(monitorSymbol);
-  if (!entry) {
-    throw new Error(`SymbolRegistry 未找到监控标的: ${monitorSymbol}`);
-  }
-
-  return direction === 'LONG' ? entry.long : entry.short;
-}
-
-/**
  * 创建席位注册表并初始化多/空席位状态。
- * @param monitors 所有监控标的配置列表
+ * @param monitors 单实例监控配置列表（只允许 1 项）
  * @returns 实现了 SymbolRegistry 接口的注册表对象
  */
-export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): SymbolRegistry {
-  const registry = new Map<string, SymbolSeatEntry>();
-
-  for (const monitor of monitors) {
-    const autoSearchEnabled = monitor.autoSearchConfig.autoSearchEnabled;
-    registry.set(monitor.monitorSymbol, {
-      long: autoSearchEnabled
-        ? createSeatEntry(null, 'EMPTY')
-        : createSeatEntry(monitor.longSymbol, 'ACTIVE'),
-      short: autoSearchEnabled
-        ? createSeatEntry(null, 'EMPTY')
-        : createSeatEntry(monitor.shortSymbol, 'ACTIVE'),
-    });
+export function createSymbolRegistry(
+  monitors: ReadonlyArray<StrategyRuntimeConfig>,
+): SymbolRegistry {
+  if (monitors.length !== 1) {
+    throw new Error(`SymbolRegistry 仅支持单实例配置，当前数量=${monitors.length}`);
   }
 
+  const monitor = monitors[0];
+  if (!monitor) {
+    throw new Error('SymbolRegistry 初始化失败：缺少监控配置');
+  }
+
+  const autoSearchEnabled = monitor.autoSearchConfig.autoSearchEnabled;
+  const registry: SymbolSeatEntry = {
+    long: autoSearchEnabled
+      ? createSeatEntry(null, 'EMPTY')
+      : createSeatEntry(monitor.longSymbol, 'ACTIVE'),
+    short: autoSearchEnabled
+      ? createSeatEntry(null, 'EMPTY')
+      : createSeatEntry(monitor.shortSymbol, 'ACTIVE'),
+  };
+
   return {
-    getSeatState(monitorSymbol: string, direction: 'LONG' | 'SHORT'): SeatState {
-      return resolveSeatEntry(registry, monitorSymbol, direction).state;
+    getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
+      const seatEntry = direction === 'LONG' ? registry.long : registry.short;
+      return seatEntry.state;
     },
-    getSeatVersion(monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      return resolveSeatEntry(registry, monitorSymbol, direction).version;
+    getSeatVersion(direction: 'LONG' | 'SHORT'): number {
+      const seatEntry = direction === 'LONG' ? registry.long : registry.short;
+      return seatEntry.version;
     },
     resolveSeatBySymbol(symbol: string): {
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       seatState: SeatState;
       seatVersion: number;
@@ -349,34 +336,26 @@ export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): Sy
         return null;
       }
 
-      for (const [monitorSymbol, entry] of registry) {
-        if (entry.long.state.symbol === symbol) {
-          return {
-            monitorSymbol,
-            direction: 'LONG',
-            seatState: entry.long.state,
-            seatVersion: entry.long.version,
-          };
-        }
+      if (registry.long.state.symbol === symbol) {
+        return {
+          direction: 'LONG',
+          seatState: registry.long.state,
+          seatVersion: registry.long.version,
+        };
+      }
 
-        if (entry.short.state.symbol === symbol) {
-          return {
-            monitorSymbol,
-            direction: 'SHORT',
-            seatState: entry.short.state,
-            seatVersion: entry.short.version,
-          };
-        }
+      if (registry.short.state.symbol === symbol) {
+        return {
+          direction: 'SHORT',
+          seatState: registry.short.state,
+          seatVersion: registry.short.version,
+        };
       }
 
       return null;
     },
-    updateSeatState(
-      monitorSymbol: string,
-      direction: 'LONG' | 'SHORT',
-      nextState: SeatState,
-    ): SeatState {
-      const seatEntry = resolveSeatEntry(registry, monitorSymbol, direction);
+    updateSeatState(direction: 'LONG' | 'SHORT', nextState: SeatState): SeatState {
+      const seatEntry = direction === 'LONG' ? registry.long : registry.short;
       seatEntry.state = {
         symbol: nextState.symbol,
         status: nextState.status,
@@ -389,8 +368,8 @@ export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): Sy
       };
       return seatEntry.state;
     },
-    bumpSeatVersion(monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      const seatEntry = resolveSeatEntry(registry, monitorSymbol, direction);
+    bumpSeatVersion(direction: 'LONG' | 'SHORT'): number {
+      const seatEntry = direction === 'LONG' ? registry.long : registry.short;
       seatEntry.version += 1;
       return seatEntry.version;
     },

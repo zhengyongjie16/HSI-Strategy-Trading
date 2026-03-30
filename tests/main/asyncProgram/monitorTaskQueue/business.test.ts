@@ -17,9 +17,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
         symbol: 'BULL.HK',
@@ -32,9 +30,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 2,
         symbol: 'BULL.HK',
@@ -61,9 +57,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
       dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         long: { seatVersion: 1, symbol: 'BULL.HK' },
         short: { seatVersion: 1, symbol: 'BEAR.HK' },
       },
@@ -74,9 +68,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
       dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK:2',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         long: { seatVersion: 1, symbol: 'BULL.HK' },
         short: { seatVersion: 1, symbol: 'BEAR.HK' },
       },
@@ -91,9 +83,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'A',
-      monitorSymbol: 'A',
       data: {
-        monitorSymbol: 'A',
         direction: 'LONG',
         seatVersion: 1,
         symbol: 'BULL.HK',
@@ -106,9 +96,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'B',
-      monitorSymbol: 'B',
       data: {
-        monitorSymbol: 'B',
         direction: 'SHORT',
         seatVersion: 2,
         symbol: 'BEAR.HK',
@@ -118,24 +106,24 @@ describe('monitorTaskQueue business behavior', () => {
       },
     });
 
-    const removedSymbols: string[] = [];
+    const removedKeys: string[] = [];
     const removed = queue.removeTasks(
-      (task) => task.monitorSymbol === 'A',
+      (task) => task.dedupeKey === 'A',
       (task) => {
-        removedSymbols.push(task.monitorSymbol);
+        removedKeys.push(task.dedupeKey);
       },
     );
 
     expect(removed).toBe(1);
-    expect(removedSymbols).toEqual(['A']);
+    expect(removedKeys).toEqual(['A']);
 
-    const clearedSymbols: string[] = [];
+    const clearedKeys: string[] = [];
     const cleared = queue.clearAll((task) => {
-      clearedSymbols.push(task.monitorSymbol);
+      clearedKeys.push(task.dedupeKey);
     });
 
     expect(cleared).toBe(1);
-    expect(clearedSymbols).toEqual(['B']);
+    expect(clearedKeys).toEqual(['B']);
     expect(queue.isEmpty()).toBeTrue();
   });
 });

@@ -2,16 +2,13 @@
  * createCleanup 业务测试
  *
  * 功能：
- * - 验证退出时排空处理器、销毁延迟验证器与释放资源的流程与边界。
+ * - 验证退出时排空处理器并释放运行时资源的流程与边界。
  */
 import { describe, expect, it } from 'bun:test';
 
 import { createCleanup } from '../../src/app/createCleanup.js';
-import {
-  createDelayedSignalVerifierDouble,
-  createMonitorContextDouble,
-} from '../helpers/testDoubles.js';
-import { createCleanupDeps, createLastState, createMonitorState } from './utils.js';
+import { createStrategyRuntimeDouble } from '../helpers/testDoubles.js';
+import { createCleanupDeps, createLastState, createStrategyState } from './utils.js';
 
 describe('cleanup business flow', () => {
   function createOnceMock(handlers: Map<string, () => void>): typeof process.once {
@@ -43,24 +40,13 @@ describe('cleanup business flow', () => {
     });
   }
 
-  it('drains processors, destroys delayed verifiers and releases monitor snapshots', async () => {
+  it('drains processors and releases monitor snapshots', async () => {
     const steps: string[] = [];
-    const monitorState = createMonitorState('HSI.HK');
-    const monitorContexts = new Map([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          delayedSignalVerifier: createDelayedSignalVerifierDouble({
-            destroy: () => {
-              steps.push('destroyVerifier');
-            },
-          }),
-        }),
-      ],
-    ]);
-    const lastState = createLastState(new Map([['HSI.HK', monitorState]]));
+    const monitorState = createStrategyState('HSI.HK');
+    const monitorContext = createStrategyRuntimeDouble();
+    const lastState = createLastState(monitorState);
 
-    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContexts, lastState }));
+    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContext, lastState }));
 
     await cleanup.execute();
 
@@ -70,8 +56,6 @@ describe('cleanup business flow', () => {
       'monitorTask',
       'orderMonitorWorker',
       'postTradeRefresher',
-      'destroyVerifier',
-      'clearIndicatorCache',
       'resetMarketData',
     ]);
     expect(monitorState.lastMonitorSnapshot).toBeNull();
@@ -89,7 +73,6 @@ describe('cleanup business flow', () => {
       'monitorTask',
       'orderMonitorWorker',
       'postTradeRefresher',
-      'clearIndicatorCache',
       'resetMarketData',
     ]);
   });
@@ -123,7 +106,6 @@ describe('cleanup business flow', () => {
         'monitorTask',
         'orderMonitorWorker',
         'postTradeRefresher',
-        'clearIndicatorCache',
         'resetMarketData',
       ]);
     } finally {
@@ -134,24 +116,13 @@ describe('cleanup business flow', () => {
 
   it('continues remaining cleanup steps and throws aggregate error when one step fails', async () => {
     const steps: string[] = [];
-    const monitorState = createMonitorState('HSI.HK');
-    const monitorContexts = new Map([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          delayedSignalVerifier: createDelayedSignalVerifierDouble({
-            destroy: () => {
-              steps.push('destroyVerifier');
-            },
-          }),
-        }),
-      ],
-    ]);
-    const lastState = createLastState(new Map([['HSI.HK', monitorState]]));
+    const monitorState = createStrategyState('HSI.HK');
+    const monitorContext = createStrategyRuntimeDouble();
+    const lastState = createLastState(monitorState);
 
     const cleanup = createCleanup(
       createCleanupDeps(steps, {
-        monitorContexts,
+        monitorContext,
         lastState,
         buyProcessor: {
           start: () => {},
@@ -179,8 +150,6 @@ describe('cleanup business flow', () => {
       'monitorTask',
       'orderMonitorWorker',
       'postTradeRefresher',
-      'destroyVerifier',
-      'clearIndicatorCache',
       'resetMarketData',
     ]);
     expect(monitorState.lastMonitorSnapshot).toBeNull();
@@ -224,7 +193,6 @@ describe('cleanup business flow', () => {
         'monitorTask',
         'orderMonitorWorker',
         'postTradeRefresher',
-        'clearIndicatorCache',
         'resetMarketData',
       ]);
     } finally {

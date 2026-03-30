@@ -32,12 +32,14 @@ import { hasSeatSymbol } from '../../../../utils/seat/guards.js';
  * @returns handleAutoSymbolTick 与 handleAutoSymbolSwitchDistance 两个处理函数
  */
 export function createAutoSymbolHandlers({
+  baseInstrumentSymbol,
   getContextOrSkip,
   refreshGate,
   lastState,
   getCanProcessTask,
 }: {
-  readonly getContextOrSkip: (monitorSymbol: string) => MonitorTaskContext | null;
+  readonly baseInstrumentSymbol: string;
+  readonly getContextOrSkip: () => MonitorTaskContext | null;
   readonly refreshGate: RefreshGate;
   readonly lastState: LastState;
   readonly getCanProcessTask?: () => boolean;
@@ -53,27 +55,27 @@ export function createAutoSymbolHandlers({
     task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
   ): Promise<MonitorTaskStatus> {
     const data: AutoSymbolTickTaskData = task.data;
-    const context = getContextOrSkip(data.monitorSymbol);
+    const context = getContextOrSkip();
     if (!context) {
       return 'skipped';
     }
 
     const isSnapshotValid = isSeatSnapshotValid(
-      data.monitorSymbol,
+      baseInstrumentSymbol,
       data.direction,
       { seatVersion: data.seatVersion, symbol: data.symbol },
       context,
     );
     if (!isSnapshotValid) {
       logger.debug(
-        `[MonitorTaskProcessor] AUTO_SYMBOL_TICK 快照失效，跳过 type=${task.type} monitor=${task.monitorSymbol} direction=${data.direction} dedupe=${task.dedupeKey}`,
+        `[MonitorTaskProcessor] AUTO_SYMBOL_TICK 快照失效，跳过 type=${task.type} monitor=${baseInstrumentSymbol} direction=${data.direction} dedupe=${task.dedupeKey}`,
       );
       return 'skipped';
     }
 
     if (getCanProcessTask && !getCanProcessTask()) {
       logger.debug(
-        `[MonitorTaskProcessor] AUTO_SYMBOL_TICK 门禁关闭，跳过 type=${task.type} monitor=${task.monitorSymbol} direction=${data.direction} dedupe=${task.dedupeKey}`,
+        `[MonitorTaskProcessor] AUTO_SYMBOL_TICK 门禁关闭，跳过 type=${task.type} monitor=${baseInstrumentSymbol} direction=${data.direction} dedupe=${task.dedupeKey}`,
       );
       return 'skipped';
     }
@@ -98,13 +100,13 @@ export function createAutoSymbolHandlers({
     task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_SWITCH_DISTANCE'>,
   ): Promise<MonitorTaskStatus> {
     const data: AutoSymbolSwitchDistanceTaskData = task.data;
-    const context = getContextOrSkip(data.monitorSymbol);
+    const context = getContextOrSkip();
     if (!context) {
       return 'skipped';
     }
 
     const snapshotValidity = await validateSeatSnapshotsAfterRefresh({
-      monitorSymbol: data.monitorSymbol,
+      baseInstrumentSymbol,
       context,
       longSnapshot: data.seatSnapshots.long,
       shortSnapshot: data.seatSnapshots.short,
@@ -112,20 +114,20 @@ export function createAutoSymbolHandlers({
     });
     if (!snapshotValidity) {
       logger.debug(
-        `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE 快照失效，跳过 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+        `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE 快照失效，跳过 type=${task.type} monitor=${baseInstrumentSymbol} dedupe=${task.dedupeKey}`,
       );
       return 'skipped';
     }
 
     if (getCanProcessTask && !getCanProcessTask()) {
       logger.debug(
-        `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE 门禁关闭，跳过 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+        `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE 门禁关闭，跳过 type=${task.type} monitor=${baseInstrumentSymbol} dedupe=${task.dedupeKey}`,
       );
       return 'skipped';
     }
 
     const seatReadiness = resolveSeatSnapshotReadiness({
-      monitorSymbol: data.monitorSymbol,
+      baseInstrumentSymbol,
       context,
       snapshotValidity,
       isSeatUsable: hasSeatSymbol,
@@ -134,7 +136,7 @@ export function createAutoSymbolHandlers({
     if (seatReadiness.isLongReady) {
       if (getCanProcessTask && !getCanProcessTask()) {
         logger.debug(
-          `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE LONG 门禁关闭，跳过 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+          `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE LONG 门禁关闭，跳过 type=${task.type} monitor=${baseInstrumentSymbol} dedupe=${task.dedupeKey}`,
         );
         return 'skipped';
       }
@@ -149,7 +151,7 @@ export function createAutoSymbolHandlers({
     if (seatReadiness.isShortReady) {
       if (getCanProcessTask && !getCanProcessTask()) {
         logger.debug(
-          `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE SHORT 门禁关闭，跳过 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+          `[MonitorTaskProcessor] AUTO_SYMBOL_SWITCH_DISTANCE SHORT 门禁关闭，跳过 type=${task.type} monitor=${baseInstrumentSymbol} dedupe=${task.dedupeKey}`,
         );
         return 'skipped';
       }

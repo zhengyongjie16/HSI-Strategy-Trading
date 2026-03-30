@@ -1,8 +1,8 @@
 /**
- * 单标的处理模块
+ * 监控处理模块
  *
  * 核心职责：
- * - 处理单个监控标的的完整交易循环
+ * - 处理当前监控对象的完整交易循环
  * - 实时监控价格变化和浮亏状态
  * - 获取 K 线数据，计算技术指标
  * - 生成交易信号并分发到对应队列
@@ -18,7 +18,6 @@
  * 信号分流规则（交易时段内）：
  * - 立即卖出信号 → SellTaskQueue
  * - 立即买入信号 → BuyTaskQueue
- * - 延迟验证信号 → DelayedSignalVerifier
  */
 import { MONITOR } from '../../constants/index.js';
 import { positionObjectPool, signalObjectPool } from '../../utils/objectPool/index.js';
@@ -32,10 +31,10 @@ import type { Quote } from '../../types/quote.js';
 import type { ProcessMonitorParams } from './types.js';
 
 /**
- * 处理单个监控标的
+ * 处理当前监控对象
  *
  * @param context 处理上下文，包含所有必要的依赖和状态
- * @param quotesMap 预先批量获取的行情数据 Map（提升性能，避免每个监控标的单独获取行情）
+ * @param quotesMap 预先批量获取的行情数据 Map（提升性能，避免重复获取行情）
  */
 export async function processMonitor(
   context: ProcessMonitorParams,
@@ -45,11 +44,11 @@ export async function processMonitor(
   const { canTradeNow } = runtimeFlags;
   const { config, state } = monitorContext;
 
-  const MONITOR_SYMBOL = config.monitorSymbol;
+  const BASE_INSTRUMENT_SYMBOL = config.baseInstrumentSymbol;
   const autoSearchEnabled = config.autoSearchConfig.autoSearchEnabled;
 
   // 1. 从预先获取的行情 Map 中提取监控标的行情（无需单独 API 调用）
-  const monitorQuote = quotesMap.get(MONITOR_SYMBOL) ?? null;
+  const monitorQuote = quotesMap.get(BASE_INSTRUMENT_SYMBOL) ?? null;
 
   const monitorCurrentPrice = monitorQuote?.price ?? null;
   const resolvedMonitorPrice = Number.isFinite(monitorCurrentPrice) ? monitorCurrentPrice : null;
@@ -65,7 +64,6 @@ export async function processMonitor(
   const currentTimeMs = runtimeFlags.currentTime.getTime();
 
   scheduleAutoSymbolTasks({
-    monitorSymbol: MONITOR_SYMBOL,
     monitorContext,
     mainContext,
     autoSearchEnabled,
@@ -77,7 +75,6 @@ export async function processMonitor(
   });
 
   const seatInfo = syncSeatState({
-    monitorSymbol: MONITOR_SYMBOL,
     monitorContext,
     mainContext,
     quotesMap,
@@ -87,7 +84,6 @@ export async function processMonitor(
   });
 
   scheduleRiskTasks({
-    monitorSymbol: MONITOR_SYMBOL,
     monitorContext,
     mainContext,
     seatInfo,
@@ -99,7 +95,6 @@ export async function processMonitor(
 
   const monitorSnapshot = await Promise.resolve(
     runIndicatorPipeline({
-      monitorSymbol: MONITOR_SYMBOL,
       monitorContext,
       mainContext,
       monitorQuote,
@@ -111,7 +106,6 @@ export async function processMonitor(
   }
 
   runSignalPipeline({
-    monitorSymbol: MONITOR_SYMBOL,
     monitorContext,
     mainContext,
     runtimeFlags,

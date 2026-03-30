@@ -4,7 +4,7 @@
  * 统一管理项目中使用的所有常量，包括：
  * - 时间相关：毫秒换算、时区偏移
  * - 交易相关：目标金额、K线配置、主循环间隔
- * - 验证相关：延迟信号验证的时间窗口配置
+ * - 验证相关：信号去抖与冷却配置
  * - 日志相关：流超时配置
  * - API相关：重试策略、缓存TTL、频率限制
  * - 监控相关：价格/指标变化检测阈值
@@ -13,7 +13,6 @@
  */
 import { FilterWarrantExpiryDate, OrderStatus, OrderType, Period } from 'longbridge';
 import type { OrderTypeConfig, SignalType } from '../types/signal.js';
-import type { StrategyAction } from '../types/indicatorProfile.js';
 
 /** 时间相关常量 */
 export const TIME = {
@@ -54,19 +53,37 @@ export const HK_DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 /** 交易相关常量 */
 export const TRADING = {
   /** 默认目标金额（港币），单次开仓的目标市值 */
-  DEFAULT_TARGET_NOTIONAL: 5000,
+  DEFAULT_TARGET_NOTIONAL: 10000,
 
-  /** K线周期，用于订阅和获取实时K线数据 */
-  CANDLE_PERIOD: Period.Min_1,
+  /** 默认单实例最大持仓市值（港币） */
+  DEFAULT_MAX_POSITION_NOTIONAL: 100000,
 
-  /** K线数量，获取的实时K线条数 */
-  CANDLE_COUNT: 200,
+  /** 默认单实例最大浮亏（港币，0 表示关闭） */
+  DEFAULT_MAX_UNREALIZED_LOSS: 0,
+
+  /** 默认买入间隔（秒） */
+  DEFAULT_BUY_INTERVAL_SECONDS: 60,
+
+  /** 默认保护性清仓触发次数上限 */
+  DEFAULT_LIQUIDATION_TRIGGER_LIMIT: 1,
+
+  /** 默认订单价格修改最小间隔（秒） */
+  DEFAULT_ORDER_MONITOR_PRICE_UPDATE_INTERVAL: 5,
+
+  /** 默认订单超时时间（秒） */
+  DEFAULT_ORDER_TIMEOUT_SECONDS: 180,
+
+  /** 基础对象直连订阅周期（阶段 2 固定：1m/5m/15m） */
+  CANDLE_PERIODS: [Period.Min_1, Period.Min_5, Period.Min_15] as const,
+
+  /** 因子运行主周期（TrendFactorRuntime 当前按 1m 样本计算） */
+  FACTOR_CANDLE_PERIOD: Period.Min_1,
+
+  /** K线缓存上限（1m）：覆盖约 20 个交易日同 session 波动率分位基线 */
+  CANDLE_COUNT: 7_000,
 
   /** 主循环执行间隔（毫秒），mainProgram 的执行频率 */
   INTERVAL_MS: 1000,
-
-  /** 监控标的最大扫描范围（从 _1 扫描到 _100） */
-  MAX_MONITOR_SCAN_RANGE: 100,
 
   /** 默认订单备注（提交订单时写入，便于排查） */
   DEFAULT_ORDER_REMARK: 'QuantDemo',
@@ -76,6 +93,103 @@ export const TRADING = {
 
   /** 保护性清仓业务事件完成日志原因（用于冷却恢复） */
   PROTECTIVE_LIQUIDATION_COMPLETED_REASON: 'PROTECTIVE_LIQUIDATION_COMPLETED',
+} as const;
+
+/** 单实例趋势延续策略默认值与固定 preset。 */
+export const STRATEGY = {
+  /** 固定基础对象 preset */
+  BASE_INSTRUMENT_SYMBOL: 'HSI.HK',
+
+  /** 默认席位模式 */
+  DEFAULT_SEAT_MODE: 'static',
+
+  /** 自动寻标默认值 */
+  AUTO_SEARCH: {
+    minDistancePctBull: 0.8,
+    minDistancePctBear: -0.8,
+    minTurnoverPerMinuteBull: 300_000,
+    minTurnoverPerMinuteBear: 300_000,
+    expiryMinMonths: 6,
+    openDelayMinutes: 5,
+    switchIntervalMinutes: 0,
+    switchDistanceRangeBull: {
+      min: 0.6,
+      max: 1.5,
+    },
+    switchDistanceRangeBear: {
+      min: -1.5,
+      max: -0.6,
+    },
+  } as const,
+
+  /** 波动率状态默认值 */
+  REGIME_THRESHOLDS: {
+    atrShortPeriod: 5,
+    atrLongPeriod: 30,
+    rvQuantileWindowDays: 20,
+    trendOnVolExpansion: 1.2,
+    trendOffVolExpansion: 0.9,
+    extremeVolExpansion: 1.8,
+    trendOnVolQuantile: 0.7,
+    trendOffVolQuantile: 0.4,
+    extremeVolQuantile: 0.95,
+  } as const,
+
+  /** 趋势评分默认值 */
+  TREND_SCORE_THRESHOLDS: {
+    w15: 0.25,
+    w30: 0.35,
+    w60: 0.4,
+    classificationThreshold: 0.8,
+    entryThreshold: 0.9,
+    exitThreshold: 0.35,
+    reverseInvalidationThreshold: 0.5,
+  } as const,
+
+  /** ER 默认值 */
+  ER_THRESHOLDS: {
+    er15EntryMin: 0.4,
+    er30EntryMin: 0.35,
+    er15ExitMax: 0.25,
+    er30ExitMax: 0.2,
+    strongTrendErFloor: 0.45,
+  } as const,
+
+  /** VWAP 确认默认值 */
+  VWAP_CONFIRM_RULES: {
+    distanceBandAtr: 0.1,
+    slopeWindowBars: 5,
+    maxCrossCountLast10m: 2,
+  } as const,
+
+  /** 开盘结构默认值 */
+  OPENING_STRUCTURE_RULES: {
+    openingRangeMinutes: 20,
+    breakoutScoreMin: 0.8,
+    outsidePersistenceWindowBars: 5,
+    outsidePersistenceMin: 0.6,
+    retestToleranceAtr: 0.2,
+    confirmBars: 2,
+    morningNoiseWindowMinutes: 20,
+    afternoonNoiseWindowMinutes: 15,
+  } as const,
+
+  /** 午后延续默认值 */
+  PM_CONTINUATION_RULES: {
+    amMoveZMin: 0.8,
+    middayHoldMin: 0.6,
+    pmReExpansionTrendScoreMin: 0.9,
+    pmReExpansionEr15Min: 0.35,
+    pmConfirmCutoffTime: '13:30',
+  } as const,
+
+  /** 交易标的适配默认值 */
+  INSTRUMENT_ADAPTATION_RULES: {
+    bullBuyMinDistancePct: 0.35,
+    bearBuyMaxDistancePct: -0.35,
+    bullLiquidationDistancePct: 0.3,
+    bearLiquidationDistancePct: -0.3,
+  } as const,
 } as const;
 
 /** 自动寻标相关常量 */
@@ -103,32 +217,11 @@ export const LIFECYCLE = {
   CALENDAR_API_MAX_LOOKBACK_DAYS: 365,
 } as const;
 
-/**
- * 延迟信号验证相关常量
- * 用于 DelayedSignalVerifier 模块，验证开仓信号的趋势持续性
- */
+/** 信号去抖与冷却相关常量。 */
 export const VERIFICATION = {
-  /** 验证时间点1偏移量（秒），信号触发后首次验证 */
-  TIME_OFFSET_1_SECONDS: 5,
-
-  /** 验证时间点2偏移量（秒），信号触发后二次验证 */
-  TIME_OFFSET_2_SECONDS: 10,
-
-  /** 验证时间点误差容忍度（毫秒） */
-  TIME_TOLERANCE_MS: 5 * 1000,
-
-  /** 验证就绪延迟时间（秒），信号注册后等待验证的时间 */
-  READY_DELAY_SECONDS: 10,
-
   /** 验证通过信号冷却时间（秒），同标的同方向在此时间内只允许一个信号进入风险检查 */
   VERIFIED_SIGNAL_COOLDOWN_SECONDS: 10,
 } as const;
-
-/** 延迟验证中允许无周期的固定指标集合 */
-export const VERIFICATION_FIXED_INDICATORS = new Set(['K', 'D', 'J', 'MACD', 'DIF', 'DEA', 'ADX']);
-
-/** 信号条件解析中允许无周期的固定指标集合（不含 RSI/PSY，ADX 仅用于延迟验证） */
-export const SIGNAL_CONFIG_SUPPORTED_INDICATORS = ['MFI', 'K', 'D', 'J'] as const;
 
 /** 日志相关常量，用于 pino 日志系统 */
 export const LOGGING = {
@@ -359,7 +452,7 @@ export const ACCOUNT_CHANNEL_MAP: Record<string, string> = {
 };
 
 /** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
-export const STRATEGY_ACTIONS: ReadonlyArray<StrategyAction> = [
+export const STRATEGY_ACTIONS: ReadonlyArray<Exclude<SignalType, 'HOLD'>> = [
   'BUYCALL',
   'SELLCALL',
   'BUYPUT',

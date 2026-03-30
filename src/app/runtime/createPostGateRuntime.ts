@@ -15,7 +15,6 @@ import { createDailyLossTracker } from '../../core/riskController/dailyLossTrack
 import { createDoomsdayProtection } from '../../core/doomsdayProtection/index.js';
 import { createSignalProcessor } from '../../core/signalProcessor/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createIndicatorCache } from '../../main/asyncProgram/indicatorCache/index.js';
 import { createMonitorTaskQueue } from '../../main/asyncProgram/monitorTaskQueue/index.js';
 import {
   createBuyTaskQueue,
@@ -27,15 +26,15 @@ import { createLiquidationCooldownTracker } from '../../services/liquidationCool
 import { createTradeLogHydrator } from '../../services/liquidationCooldown/tradeLogHydrator.js';
 import { createPositionCache } from '../../utils/positionCache/index.js';
 import { createRefreshGate } from '../../utils/refreshGate/index.js';
-import { initMonitorState } from '../../utils/helpers/index.js';
+import { createStrategyState } from '../../utils/helpers/index.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
 import { getHKDateKey, toHongKongTimeIso } from '../../utils/time/index.js';
 import { logger } from '../../utils/logger/index.js';
-import type { LastState, MonitorContext } from '../../types/state.js';
+import type { LastState } from '../../types/state.js';
 import type { MonitorTaskDataMap } from '../../main/asyncProgram/monitorTaskProcessor/types.js';
 import type {
   CreatePostGateRuntimeParams,
-  MutableMonitorContextsPostGateRuntime,
+  MutableStrategyRuntimePostGateRuntime,
 } from '../types.js';
 
 /**
@@ -46,11 +45,12 @@ import type {
  */
 export async function createPostGateRuntime(
   params: CreatePostGateRuntimeParams,
-): Promise<MutableMonitorContextsPostGateRuntime> {
+): Promise<MutableStrategyRuntimePostGateRuntime> {
   const { env, preGateRuntime, now } = params;
   const {
     config,
     tradingConfig,
+    monitorConfig,
     symbolRegistry,
     marketDataClient,
     startupTradingDayInfo,
@@ -64,7 +64,6 @@ export async function createPostGateRuntime(
     toHongKongTimeIso,
   });
   const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
-  const monitorContexts = new Map<string, MonitorContext>();
   const refreshGate = createRefreshGate();
   const initialDayKey = getHKDateKey(now);
   const lastState: LastState = {
@@ -81,17 +80,13 @@ export async function createPostGateRuntime(
     positionCache: createPositionCache(),
     cachedTradingDayInfo: startupTradingDayInfo,
     tradingCalendarSnapshot: new Map([[initialDayKey, startupTradingDayInfo]]),
-    monitorStates: new Map(
-      tradingConfig.monitors.map((monitorConfig) => [
-        monitorConfig.monitorSymbol,
-        initMonitorState(monitorConfig),
-      ]),
-    ),
+    monitorState: createStrategyState(monitorConfig),
     allTradingSymbols: new Set(),
   };
   const trader = await createTrader({
     config,
-    tradingConfig,
+    globalConfig: tradingConfig.global,
+    monitorConfig,
     marketDataClient,
     symbolRegistry,
     dailyLossTracker,
@@ -105,14 +100,14 @@ export async function createPostGateRuntime(
     resolveLogRootDir: () => resolveLogRootDir(env),
     nowMs: () => Date.now(),
     logger,
-    tradingConfig,
+    monitorConfig,
     liquidationCooldownTracker,
   });
   const loadTradingDayRuntimeSnapshot = createLoadTradingDayRuntimeSnapshot({
     marketDataClient,
     trader,
     lastState,
-    tradingConfig,
+    monitorConfig,
     symbolRegistry,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
@@ -122,19 +117,8 @@ export async function createPostGateRuntime(
   const marketMonitor = createMarketMonitor();
   const doomsdayProtection = createDoomsdayProtection();
   const signalProcessor = createSignalProcessor({
-    tradingConfig,
+    globalConfig: tradingConfig.global,
     liquidationCooldownTracker,
-  });
-  const maxDelaySeconds = Math.max(
-    ...tradingConfig.monitors.map((monitorConfig) =>
-      Math.max(
-        monitorConfig.verificationConfig.buy.delaySeconds,
-        monitorConfig.verificationConfig.sell.delaySeconds,
-      ),
-    ),
-  );
-  const indicatorCache = createIndicatorCache({
-    maxEntries: maxDelaySeconds + 15 + 10,
   });
   const buyTaskQueue = createBuyTaskQueue();
   const sellTaskQueue = createSellTaskQueue();
@@ -144,7 +128,7 @@ export async function createPostGateRuntime(
     liquidationCooldownTracker,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
-    monitorContexts,
+    monitorContext: null,
     refreshGate,
     lastState,
     trader,
@@ -153,7 +137,6 @@ export async function createPostGateRuntime(
     marketMonitor,
     doomsdayProtection,
     signalProcessor,
-    indicatorCache,
     buyTaskQueue,
     sellTaskQueue,
     monitorTaskQueue,

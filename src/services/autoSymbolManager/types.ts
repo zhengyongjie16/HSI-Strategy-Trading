@@ -1,4 +1,4 @@
-import type { AutoSearchConfig, MonitorConfig } from '../../types/config.js';
+import type { AutoSearchConfig, StrategyRuntimeConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { Signal } from '../../types/signal.js';
@@ -49,7 +49,7 @@ export type SymbolSeatEntry = {
  * 使用范围：autoSymbolManager 模块及其调用方使用。
  */
 export type AutoSymbolManagerDeps = {
-  readonly monitorConfig: MonitorConfig;
+  readonly monitorConfig: StrategyRuntimeConfig;
   readonly symbolRegistry: SymbolRegistry;
   readonly marketDataClient: MarketDataClient;
   readonly trader: Trader;
@@ -265,7 +265,7 @@ type MorningOpenProtectionChecker = (date: Date | null | undefined, minutes: num
  * 使用范围：仅 autoSymbolManager 模块内部使用。
  */
 export type BuildFindBestWarrantInputParams = {
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly currentTime: Date;
   readonly marketDataClient: MarketDataClient;
   readonly warrantListCacheConfig?: WarrantListCacheConfig;
@@ -304,7 +304,7 @@ export type BuildFindBestWarrantInput = (
  */
 export type ThresholdResolverDeps = {
   readonly autoSearchConfig: AutoSearchConfig;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly marketDataClient: MarketDataClient;
   readonly warrantListCacheConfig?: WarrantListCacheConfig;
   readonly logger: Logger;
@@ -359,7 +359,7 @@ export type SeatUnavailableReason =
 
 /**
  * 信号席位绑定校验失败原因。
- * 类型用途：统一表达交易信号与当前席位状态不一致的失败类型，供延迟验证与买卖处理器共享。
+ * 类型用途：统一表达交易信号与当前席位状态不一致的失败类型，供信号流水线与买卖处理器共享。
  * 使用范围：autoSymbolManager/utils 与相关调用方使用。
  */
 type SignalSeatValidationFailureReason =
@@ -370,11 +370,10 @@ type SignalSeatValidationFailureReason =
 
 /**
  * 信号席位绑定校验入参。
- * 类型用途：封装按 monitorSymbol 校验 signal 与当前 seat 绑定关系所需的最小依赖。
+ * 类型用途：封装校验 signal 与当前 seat 绑定关系所需的最小依赖。
  * 使用范围：autoSymbolManager/utils 与相关调用方使用。
  */
 export type ValidateSignalSeatParams = Readonly<{
-  monitorSymbol: string;
   signal: Pick<Signal, 'action' | 'seatVersion' | 'symbol'>;
   symbolRegistry: SymbolRegistry;
 }>;
@@ -382,7 +381,7 @@ export type ValidateSignalSeatParams = Readonly<{
 /**
  * 信号席位绑定校验结果。
  * 类型用途：表达 signal 与当前席位是否一致；成功时暴露收窄后的就绪 seatState，失败时暴露原因与当前 seatState。
- * 使用范围：延迟验证接线、买卖处理器等需要统一过滤旧席位信号的调用方。
+ * 使用范围：信号流水线、买卖处理器等需要统一过滤旧席位信号的调用方。
  */
 export type SignalSeatValidationResult =
   | Readonly<{
@@ -439,7 +438,7 @@ export type SeatStateUpdater = (
  * 使用范围：autoSymbolManager 模块及其调用方使用。
  */
 export type SeatStateManagerDeps = {
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly symbolRegistry: SymbolRegistry;
   readonly switchStates: SwitchStateMap;
   readonly switchSuppressions: SwitchSuppressionMap;
@@ -485,7 +484,7 @@ type FindBestWarrant = (input: FindBestWarrantInput) => Promise<WarrantCandidate
  */
 export type AutoSearchDeps = {
   readonly autoSearchConfig: AutoSearchConfig;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly symbolRegistry: SymbolRegistry;
   readonly buildSeatState: SeatStateBuilder;
   readonly updateSeatState: SeatStateUpdater;
@@ -537,7 +536,7 @@ export type StartSwitchFlowParams =
  */
 export type SwitchStateMachineDeps = {
   readonly autoSearchConfig: AutoSearchConfig;
-  readonly monitorSymbol: string;
+  readonly baseInstrumentSymbol: string;
   readonly symbolRegistry: SymbolRegistry;
   readonly trader: Trader;
   readonly orderRecorder: OrderRecorder;

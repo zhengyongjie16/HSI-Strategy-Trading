@@ -10,7 +10,7 @@ import { scheduleAutoSymbolTasks } from '../../../src/main/processMonitor/autoSy
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 
 import type { MainProgramContext } from '../../../src/main/mainProgram/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { StrategyRuntime } from '../../../src/types/state.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 
 import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
@@ -19,7 +19,7 @@ describe('autoSymbolTasks business scheduling', () => {
   it('always schedules LONG/SHORT AUTO_SYMBOL_TICK when auto-search is enabled', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       longVersion: 5,
       shortVersion: 8,
     });
@@ -29,14 +29,14 @@ describe('autoSymbolTasks business scheduling', () => {
       autoSymbolManager: {
         hasPendingSwitch: () => false,
       },
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
 
     scheduleAutoSymbolTasks({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorContext,
       mainContext,
       autoSearchEnabled: true,
@@ -51,14 +51,14 @@ describe('autoSymbolTasks business scheduling', () => {
     const second = monitorTaskQueue.pop();
 
     expect(first?.type).toBe('AUTO_SYMBOL_TICK');
-    expect(first?.dedupeKey).toBe('HSI.HK:AUTO_SYMBOL_TICK:LONG');
+    expect(first?.dedupeKey).toBe('AUTO_SYMBOL_TICK:LONG');
     expect((first?.data as { seatVersion: number }).seatVersion).toBe(5);
     expect((first?.data as { currentTimeMs: number }).currentTimeMs).toBe(123_456);
     expect((first?.data as { openProtectionActive: boolean }).openProtectionActive).toBeFalse();
     expect((first?.data as { symbol: string | null }).symbol).toBe('BULL.HK');
 
     expect(second?.type).toBe('AUTO_SYMBOL_TICK');
-    expect(second?.dedupeKey).toBe('HSI.HK:AUTO_SYMBOL_TICK:SHORT');
+    expect(second?.dedupeKey).toBe('AUTO_SYMBOL_TICK:SHORT');
     expect((second?.data as { seatVersion: number }).seatVersion).toBe(8);
     expect((second?.data as { currentTimeMs: number }).currentTimeMs).toBe(123_456);
     expect((second?.data as { openProtectionActive: boolean }).openProtectionActive).toBeFalse();
@@ -68,7 +68,7 @@ describe('autoSymbolTasks business scheduling', () => {
   it('schedules AUTO_SYMBOL_SWITCH_DISTANCE without quotesMap when pending switch exists even without price change', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
     });
 
     const monitorContext = {
@@ -76,14 +76,14 @@ describe('autoSymbolTasks business scheduling', () => {
       autoSymbolManager: {
         hasPendingSwitch: () => true,
       },
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const mainContext = {
       monitorTaskQueue,
     } as unknown as MainProgramContext;
 
     scheduleAutoSymbolTasks({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorContext,
       mainContext,
       autoSearchEnabled: true,
@@ -109,13 +109,13 @@ describe('autoSymbolTasks business scheduling', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
 
     scheduleAutoSymbolTasks({
-      monitorSymbol: 'HSI.HK',
+      baseInstrumentSymbol: 'HSI.HK',
       monitorContext: {
         symbolRegistry: createSymbolRegistryDouble(),
         autoSymbolManager: {
           hasPendingSwitch: () => true,
         },
-      } as unknown as MonitorContext,
+      } as unknown as StrategyRuntime,
       mainContext: {
         monitorTaskQueue,
       } as unknown as MainProgramContext,

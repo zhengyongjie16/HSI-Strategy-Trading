@@ -1,4 +1,4 @@
-import type { MonitorContext, LastState } from '../../../types/state.js';
+import type { StrategyRuntime, LastState } from '../../../types/state.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { RefreshGate } from '../../../utils/types.js';
 import type { TaskQueue, SellTaskType } from '../tradeTaskQueue/types.js';
@@ -14,8 +14,8 @@ export type SellProcessorDeps = {
   /** 卖出任务队列 */
   readonly taskQueue: TaskQueue<SellTaskType>;
 
-  /** 获取监控上下文的函数 */
-  readonly getMonitorContext: (monitorSymbol: string) => MonitorContext | undefined;
+  /** 单实例监控上下文 */
+  readonly monitorContext: StrategyRuntime;
 
   /** 信号处理器（计算卖出数量） */
   readonly signalProcessor: SignalProcessor;

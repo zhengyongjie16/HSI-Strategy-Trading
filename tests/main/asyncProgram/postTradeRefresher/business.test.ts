@@ -10,13 +10,13 @@ import { createPostTradeRefresher } from '../../../../src/main/asyncProgram/post
 import { createRefreshGate } from '../../../../src/utils/refreshGate/index.js';
 import { API } from '../../../../src/constants/index.js';
 
-import type { LastState, MonitorContext } from '../../../../src/types/state.js';
+import type { LastState, StrategyRuntime } from '../../../../src/types/state.js';
 
 import {
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
   createPositionDouble,
@@ -40,7 +40,17 @@ function createLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: {
+      baseInstrumentSymbol: 'HSI.HK',
+      monitorPrice: null,
+      longPrice: null,
+      shortPrice: null,
+      signal: null,
+      pendingSignals: [],
+      monitorValues: null,
+      lastMonitorSnapshot: null,
+      lastCandlestickCacheVersion: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -54,12 +64,12 @@ describe('postTradeRefresher business flow', () => {
     const riskRefreshCalls: Array<{ symbol: string; isLongSymbol: boolean }> = [];
 
     const monitorContext = {
-      config: createMonitorConfigDouble({
-        monitorSymbol: 'HSI.HK',
+      config: createStrategyRuntimeConfigDouble({
+        baseInstrumentSymbol: 'HSI.HK',
         maxUnrealizedLossPerSymbol: 2_000,
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.HK',
           status: 'ACTIVE',
@@ -94,7 +104,7 @@ describe('postTradeRefresher business flow', () => {
           return { r1: 100, n1: 10 };
         },
       }),
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const trader = createTraderDouble({
       getAccountSnapshot: async () => createAccountSnapshotDouble(80_000),
@@ -113,7 +123,7 @@ describe('postTradeRefresher business flow', () => {
       refreshGate,
       trader,
       lastState,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -175,7 +185,19 @@ describe('postTradeRefresher business flow', () => {
       refreshGate,
       trader,
       lastState,
-      monitorContexts: new Map(),
+      monitorContext: {
+        config: createStrategyRuntimeConfigDouble({
+          baseInstrumentSymbol: 'HSI.HK',
+        }),
+        symbolRegistry: createSymbolRegistryDouble({
+          baseInstrumentSymbol: 'HSI.HK',
+        }),
+        longSymbolName: '',
+        shortSymbolName: '',
+        orderRecorder: createOrderRecorderDouble(),
+        dailyLossTracker: createDailyLossTrackerDouble(),
+        riskChecker: createRiskCheckerDouble(),
+      } as unknown as StrategyRuntime,
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -216,11 +238,11 @@ describe('postTradeRefresher business flow', () => {
     let startNewEpisodeCalls = 0;
 
     const monitorContext = {
-      config: createMonitorConfigDouble({
-        monitorSymbol: 'HSI.HK',
+      config: createStrategyRuntimeConfigDouble({
+        baseInstrumentSymbol: 'HSI.HK',
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
+        baseInstrumentSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.HK',
           status: 'ACTIVE',
@@ -245,7 +267,7 @@ describe('postTradeRefresher business flow', () => {
       orderRecorder: createOrderRecorderDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
       riskChecker: createRiskCheckerDouble(),
-    } as unknown as MonitorContext;
+    } as unknown as StrategyRuntime;
 
     const trader = createTraderDouble({
       getAccountSnapshot: async () => {
@@ -258,7 +280,7 @@ describe('postTradeRefresher business flow', () => {
       refreshGate,
       trader,
       lastState,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble({
         startNewProtectionEpisode: () => {
           startNewEpisodeCalls += 1;
@@ -268,7 +290,7 @@ describe('postTradeRefresher business flow', () => {
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
         getInProgressEpisodes: () => [
           {
-            monitorSymbol: 'HSI.HK',
+            baseInstrumentSymbol: 'HSI.HK',
             direction: 'LONG',
             latestExecutedTimeMs: Date.parse('2026-02-16T02:00:00.000Z'),
           },
@@ -276,7 +298,7 @@ describe('postTradeRefresher business flow', () => {
         completeIfEligible: () => {
           completeIfEligibleCalls += 1;
           return {
-            monitorSymbol: 'HSI.HK',
+            baseInstrumentSymbol: 'HSI.HK',
             direction: 'LONG',
             boundaryExecutedTimeMs: Date.parse('2026-02-16T02:00:00.000Z'),
           };

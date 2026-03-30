@@ -98,25 +98,19 @@ cp .env.example .env.local
 ```env
 # 认证（二选一）
 LONGBRIDGE_AUTH_MODE=oauth
-LONGBRIDGE_CLIENT_ID=your_longbridge_client_id
+LONGBRIDGE_CLIENT_ID=demo_client_id
 LONGBRIDGE_CALLBACK_PORT=60355
 
-# 监控标的 1
-MONITOR_SYMBOL_1=9988.HK
-LONG_SYMBOL_1=55131.HK
-SHORT_SYMBOL_1=56614.HK
-ORDER_OWNERSHIP_MAPPING_1=ALIBA
+# 席位模式（二选一）
+SEAT_MODE=static
+LONG_SYMBOL=55131.HK
+SHORT_SYMBOL=56614.HK
+ORDER_OWNERSHIP_MAPPING=HSI
 
 # 交易与风控
-TARGET_NOTIONAL_1=10000
-MAX_POSITION_NOTIONAL_1=100000
-MAX_UNREALIZED_LOSS_PER_SYMBOL_1=3000
-
-# 信号示例
-SIGNAL_BUYCALL_1=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-20)
-SIGNAL_SELLCALL_1=(RSI:6>75,MFI>80,D>75,J>100)/3|(J>110)
-SIGNAL_BUYPUT_1=(RSI:6>75,MFI>80,D>75,J>100)/3|(J>120)
-SIGNAL_SELLPUT_1=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
+TARGET_NOTIONAL=10000
+MAX_POSITION_NOTIONAL=100000
+MAX_UNREALIZED_LOSS=3000
 ```
 
 > 如果使用 `oauth` 模式且本地没有有效 token cache，程序启动后会在终端输出授权 URL。授权完成后，SDK 会复用并自动刷新用户目录下的 token cache，后续无需重复授权。
@@ -164,21 +158,23 @@ README 只保留最关键的配置规则，完整参数请直接阅读 [`./.env.
 
 单次运行只能选择其中一种。
 
-### 多标的配置规则
+### 单实例配置规则
 
-- 每个监控标的必须使用连续后缀：`_1`、`_2`、`_3`...
-- 监控标的索引必须连续；如果中间出现断档，程序会直接报配置错误并终止启动。
-- `MONITOR_SYMBOL_N` 表示监控标的；`LONG_SYMBOL_N` / `SHORT_SYMBOL_N` 表示对应方向的交易标的。
+- 基础对象固定为 preset：`HSI.HK`，不再通过 `MONITOR_SYMBOL` 配置。
+- 运行时只有一个 `StrategyRuntime` 实例；不再支持 `_1`、`_2` 这类 indexed 配置。
+- `SEAT_MODE=static` 时必须提供 `LONG_SYMBOL` / `SHORT_SYMBOL`；`SEAT_MODE=auto` 时二者必须留空。
 
 ### 自动寻标说明
 
 如果启用：
 
 ```env
-AUTO_SEARCH_ENABLED_1=true
+SEAT_MODE=auto
+AUTO_SEARCH_MIN_DISTANCE_PCT_BULL=0.8
+AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR=-0.8
 ```
 
-系统会忽略 `LONG_SYMBOL_1` 与 `SHORT_SYMBOL_1` 的静态配置，改为通过席位机制动态寻标与换标。
+系统会忽略静态 `LONG_SYMBOL` 与 `SHORT_SYMBOL`，改为通过席位机制动态寻标与换标。
 
 ### 推荐的阅读顺序
 

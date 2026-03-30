@@ -18,7 +18,7 @@
 import { logger } from '../../../utils/logger/index.js';
 import { API, TRADING } from '../../../constants/index.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
-import type { MonitorContext } from '../../../types/state.js';
+import type { StrategyRuntime } from '../../../types/state.js';
 import type { Quote } from '../../../types/quote.js';
 import type { PendingRefreshSymbol } from '../../../types/services.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
@@ -43,13 +43,10 @@ function resolveProtectiveAction(
 }
 
 function resolveDirectionSeatSymbol(
-  monitorContext: MonitorContext,
+  monitorContext: StrategyRuntime,
   direction: ProtectiveLiquidationDirection,
 ): string | null {
-  const seatState = monitorContext.symbolRegistry.getSeatState(
-    monitorContext.config.monitorSymbol,
-    direction,
-  );
+  const seatState = monitorContext.symbolRegistry.getSeatState(direction);
   if (!isSeatActive(seatState)) {
     return null;
   }
@@ -58,7 +55,7 @@ function resolveDirectionSeatSymbol(
 }
 
 function isDirectionFlatByPositionCache(
-  monitorContext: MonitorContext,
+  monitorContext: StrategyRuntime,
   direction: ProtectiveLiquidationDirection,
   getPositionBySymbol: (symbol: string) => { quantity: number } | null,
 ): boolean {
@@ -86,7 +83,7 @@ function isDirectionFlatByPositionCache(
  * - 刷新失败时不调用 markFresh，而是保留合并后的 pendingSymbols/pendingVersion，并按 API.DEFAULT_RETRY_DELAY_MS 间隔重试
  * - 因为失败重试在统一入口进行，其他依赖刷新结果的处理器只需等待 waitForFresh 即可，不需要关心重试细节
  *
- * @param deps 依赖注入，包含 refreshGate、trader、lastState、monitorContexts、displayAccountAndPositions
+ * @param deps 依赖注入，包含 refreshGate、trader、lastState、monitorContext、displayAccountAndPositions
  * @returns PostTradeRefresher 实例（start、enqueue、stopAndDrain、clearPending）
  */
 export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTradeRefresher {
@@ -94,7 +91,7 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
     refreshGate,
     trader,
     lastState,
-    monitorContexts,
+    monitorContext,
     dailyLossTracker,
     liquidationCooldownTracker,
     protectiveLiquidationEpisodeTracker,
@@ -150,11 +147,6 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
     if (refreshOk) {
       const inProgressEpisodes = protectiveLiquidationEpisodeTracker.getInProgressEpisodes();
       for (const episode of inProgressEpisodes) {
-        const monitorContext = monitorContexts.get(episode.monitorSymbol);
-        if (!monitorContext) {
-          continue;
-        }
-
         const direction = episode.direction;
         const isDirectionFlat = isDirectionFlatByPositionCache(
           monitorContext,
@@ -162,11 +154,10 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
           (symbol) => lastState.positionCache.get(symbol),
         );
         const hasPendingProtectiveOrders = trader.hasPendingProtectiveLiquidationOrders(
-          episode.monitorSymbol,
+          monitorContext.config.baseInstrumentSymbol,
           direction,
         );
         const completedEvent = protectiveLiquidationEpisodeTracker.completeIfEligible({
-          monitorSymbol: episode.monitorSymbol,
           direction,
           isDirectionFlat,
           hasPendingProtectiveOrders,
@@ -176,12 +167,10 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
         }
 
         dailyLossTracker.startNewProtectionEpisode({
-          monitorSymbol: completedEvent.monitorSymbol,
           direction: completedEvent.direction,
           boundaryExecutedTimeMs: completedEvent.boundaryExecutedTimeMs,
         });
         const cooldownResult = liquidationCooldownTracker.recordLiquidationTrigger({
-          symbol: completedEvent.monitorSymbol,
           direction: completedEvent.direction,
           executedTimeMs: completedEvent.boundaryExecutedTimeMs,
           triggerLimit: monitorContext.config.liquidationTriggerLimit,
@@ -192,7 +181,7 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
           orderId: null,
           symbol: seatSymbol,
           symbolName: null,
-          monitorSymbol: completedEvent.monitorSymbol,
+          baseInstrumentSymbol: monitorContext.config.baseInstrumentSymbol,
           action: resolveProtectiveAction(completedEvent.direction),
           side: 'SELL',
           quantity: null,
@@ -209,36 +198,25 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
         });
 
         logger.info(
-          `[保护性清仓] ${completedEvent.monitorSymbol}:${completedEvent.direction} 已确认完成，` +
+          `[保护性清仓] ${monitorContext.config.baseInstrumentSymbol}:${completedEvent.direction} 已确认完成，` +
             `切换新偏移周期边界=${completedEvent.boundaryExecutedTimeMs}`,
         );
 
         if (cooldownResult.cooldownActivated) {
           logger.warn(
-            `[保护性清仓] ${completedEvent.monitorSymbol}:${completedEvent.direction} ` +
+            `[保护性清仓] ${monitorContext.config.baseInstrumentSymbol}:${completedEvent.direction} ` +
               `触发次数达到上限（${cooldownResult.currentCount}/${monitorContext.config.liquidationTriggerLimit}），进入买入冷却`,
           );
         }
       }
     }
 
-    const monitorContextBySymbol = new Map<string, MonitorContext>();
-    for (const ctx of monitorContexts.values()) {
-      const monitorSymbol = ctx.config.monitorSymbol;
-      const seats = [
-        ctx.symbolRegistry.getSeatState(monitorSymbol, 'LONG'),
-        ctx.symbolRegistry.getSeatState(monitorSymbol, 'SHORT'),
-      ];
-      for (const seat of seats) {
-        if (isSeatActive(seat) && !monitorContextBySymbol.has(seat.symbol)) {
-          monitorContextBySymbol.set(seat.symbol, ctx);
-        }
-      }
-    }
-
     for (const { symbol, isLongSymbol } of pending) {
-      const monitorContext = monitorContextBySymbol.get(symbol);
-      if (!monitorContext) {
+      const longSeat = monitorContext.symbolRegistry.getSeatState('LONG');
+      const shortSeat = monitorContext.symbolRegistry.getSeatState('SHORT');
+      const symbolMatchesLong = isSeatActive(longSeat) && longSeat.symbol === symbol;
+      const symbolMatchesShort = isSeatActive(shortSeat) && shortSeat.symbol === symbol;
+      if (!symbolMatchesLong && !symbolMatchesShort) {
         continue;
       }
 
@@ -247,8 +225,7 @@ export function createPostTradeRefresher(deps: PostTradeRefresherDeps): PostTrad
         ? monitorContext.longSymbolName
         : monitorContext.shortSymbolName;
       const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(
-        monitorContext.config.monitorSymbol,
-        isLongSymbol,
+        isLongSymbol ? 'LONG' : 'SHORT',
       );
       try {
         await monitorContext.riskChecker.refreshUnrealizedLossData(

@@ -34,7 +34,8 @@ function isValidTradeRecord(record: unknown): record is TradeRecord {
     (record['orderId'] === null || typeof record['orderId'] === 'string') &&
     (record['symbol'] === null || typeof record['symbol'] === 'string') &&
     (record['symbolName'] === null || typeof record['symbolName'] === 'string') &&
-    (record['monitorSymbol'] === null || typeof record['monitorSymbol'] === 'string') &&
+    (record['baseInstrumentSymbol'] === null ||
+      typeof record['baseInstrumentSymbol'] === 'string') &&
     (record['action'] === null || typeof record['action'] === 'string') &&
     (record['side'] === null || typeof record['side'] === 'string') &&
     (record['quantity'] === null || typeof record['quantity'] === 'string') &&
@@ -139,7 +140,7 @@ export function recordTrade(tradeRecord: TradeRecord): void {
       orderId: tradeRecord.orderId ?? null,
       symbol: tradeRecord.symbol ?? null,
       symbolName: tradeRecord.symbolName ?? null,
-      monitorSymbol: tradeRecord.monitorSymbol ?? null,
+      baseInstrumentSymbol: tradeRecord.baseInstrumentSymbol ?? null,
       action: tradeRecord.action ?? null,
       side: tradeRecord.side ?? null,
       quantity: tradeRecord.quantity ?? null,

@@ -2,15 +2,15 @@
  * 订单归属解析模块
  *
  * 职责：
- * - 根据订单 stockName 中的 RC/RP（牛证/熊证）与配置 orderOwnershipMapping 缩写，判断订单属于哪一监控标的及多/空方向
+ * - 根据订单 stockName 中的 RC/RP（牛证/熊证）与配置 orderOwnershipMapping 缩写，判断订单属于哪个基础对象及多/空方向
  * - 供 DailyLossTracker、OrderRecorder 等做订单归属与当日亏损分组
  *
  * 执行流程：
- * - 标准化 stockName（大写、去除非字母数字）→ 匹配多空标记（RC/BULL/CALL/牛 vs RP/BEAR/PUT/熊）→ 匹配监控缩写 → 返回 monitorSymbol + direction
+ * - 标准化 stockName（大写、去除非字母数字）→ 先解析 direction（RC/BULL/CALL/牛 vs RP/BEAR/PUT/熊）→ 再匹配归属缩写 → 返回 baseInstrumentSymbol + direction
  */
 import { OrderStatus } from 'longbridge';
 import { ORDER_OWNERSHIP } from '../../constants/index.js';
-import type { MonitorConfig } from '../../types/config.js';
+import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type { OrderOwnership } from '../../types/orderRecorder.js';
 import type { RawOrderFromAPI } from '../../types/services.js';
 
@@ -75,27 +75,53 @@ function parseOrderOwnership(
 }
 
 /**
- * 在多监控标的场景下解析订单归属
- * 根据订单 stockName 与各监控的 orderOwnershipMapping 匹配，判断属于哪一监控标的及多空方向。
+ * 在多监控标的场景下解析订单归属。
+ * 先根据 direction 语义完成订单方向解析，再根据 orderOwnershipMapping 匹配基础对象。
+ *
  * @param order 原始 API 订单（含 stockName）
- * @param monitors 监控配置列表，每项含 monitorSymbol 与 orderOwnershipMapping
- * @returns 归属结果（monitorSymbol + direction），无法匹配时返回 null
+ * @param monitors 监控配置列表，每项含 baseInstrumentSymbol 与 orderOwnershipMapping
+ * @returns 归属结果（baseInstrumentSymbol + direction），无法匹配时返回 null
  */
 export function resolveOrderOwnership(
   order: RawOrderFromAPI,
-  monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+  monitors: ReadonlyArray<
+    Pick<StrategyRuntimeConfig, 'baseInstrumentSymbol' | 'orderOwnershipMapping'>
+  >,
 ): OrderOwnership | null {
   for (const monitor of monitors) {
     const direction = parseOrderOwnership(order.stockName, monitor.orderOwnershipMapping);
     if (direction) {
       return {
-        monitorSymbol: monitor.monitorSymbol,
+        baseInstrumentSymbol: monitor.baseInstrumentSymbol,
         direction,
       };
     }
   }
 
   return null;
+}
+
+/**
+ * 在单实例场景下解析订单归属。
+ * 该路径优先完成 direction 解析，再补充 baseInstrumentSymbol。
+ *
+ * @param order 原始 API 订单（含 stockName）
+ * @param monitor 单实例 monitor 配置
+ * @returns 归属结果（baseInstrumentSymbol + direction），无法匹配时返回 null
+ */
+export function resolveOrderOwnershipForMonitor(
+  order: RawOrderFromAPI,
+  monitor: Pick<StrategyRuntimeConfig, 'baseInstrumentSymbol' | 'orderOwnershipMapping'>,
+): OrderOwnership | null {
+  const direction = parseOrderOwnership(order.stockName, monitor.orderOwnershipMapping);
+  if (!direction) {
+    return null;
+  }
+
+  return {
+    baseInstrumentSymbol: monitor.baseInstrumentSymbol,
+    direction,
+  };
 }
 
 /**

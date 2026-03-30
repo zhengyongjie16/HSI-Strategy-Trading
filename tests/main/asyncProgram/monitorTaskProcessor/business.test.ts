@@ -15,15 +15,12 @@ import type {
 } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTask } from '../../../../src/main/asyncProgram/monitorTaskQueue/types.js';
-import type { MultiMonitorTradingConfig } from '../../../../src/types/config.js';
 import { createRefreshGate } from '../../../../src/utils/refreshGate/index.js';
-
-import { createTradingConfig as createTradingConfigFactory } from '../../../../mock/factories/configFactory.js';
 
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
+  createStrategyRuntimeConfigDouble,
   createOrderRecorderDouble,
   createPositionDouble,
   createQuoteDouble,
@@ -42,6 +39,7 @@ type MonitorTaskQueueForTest = MonitorTaskProcessorDeps['monitorTaskQueue'];
 type CreateBusinessProcessorParams = Readonly<{
   queue: MonitorTaskQueueForTest;
   context: ReturnType<typeof createMonitorTaskContext>;
+  monitorConfig?: ReturnType<typeof createStrategyRuntimeConfigDouble>;
   lastState?: ReturnType<typeof createLastState>;
   trader?: ReturnType<typeof createTraderDouble>;
   marketDataClient?: MonitorTaskProcessorDeps['marketDataClient'];
@@ -56,12 +54,6 @@ type CreateTriggeredLongOnlyLiquidationContextParams = Readonly<{
   onGetLossOffset?: (isLongSymbol: boolean) => void;
   onRefreshUnrealizedLoss?: (isLongSymbol: boolean) => void;
 }>;
-
-function createTradingConfig(): MultiMonitorTradingConfig {
-  return createTradingConfigFactory({
-    monitors: [createMonitorConfigDouble()],
-  });
-}
 
 function createStatusCollector(
   statuses: MonitorTaskStatus[],
@@ -80,6 +72,7 @@ function createBusinessProcessor(
   const {
     queue,
     context,
+    monitorConfig = createStrategyRuntimeConfigDouble(),
     lastState = createLastState(),
     trader = createTraderDouble(),
     marketDataClient = createMarketDataClientDouble(),
@@ -92,12 +85,12 @@ function createBusinessProcessor(
   return createMonitorTaskProcessor({
     monitorTaskQueue: queue,
     refreshGate: createRefreshGate(),
-    getMonitorContext: () => context,
+    monitorContext: context,
     clearMonitorDirectionQueues: () => {},
     trader,
     marketDataClient,
     lastState,
-    tradingConfig: createTradingConfig(),
+    monitorConfig,
     ...(scheduleRetry ? { scheduleRetry } : {}),
     ...(clearRetry ? { clearRetry } : {}),
     ...(onProcessed ? { onProcessed } : {}),
@@ -109,9 +102,7 @@ function scheduleSeatRefreshTask(queue: MonitorTaskQueueForTest, dedupeKey: stri
   queue.scheduleLatest({
     type: 'SEAT_REFRESH',
     dedupeKey,
-    monitorSymbol: 'HSI.HK',
     data: {
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       seatVersion: 2,
       previousSymbol: 'OLD_BULL.HK',
@@ -129,9 +120,7 @@ function scheduleLiquidationDistanceCheckTask(
   queue.scheduleLatest({
     type: 'LIQUIDATION_DISTANCE_CHECK',
     dedupeKey,
-    monitorSymbol: 'HSI.HK',
     data: {
-      monitorSymbol: 'HSI.HK',
       monitorPrice: 20_000,
       long: {
         seatVersion: 2,
@@ -154,9 +143,7 @@ function scheduleShortOnlyLiquidationDistanceCheckTask(
   queue.scheduleLatest({
     type: 'LIQUIDATION_DISTANCE_CHECK',
     dedupeKey,
-    monitorSymbol: 'HSI.HK',
     data: {
-      monitorSymbol: 'HSI.HK',
       monitorPrice: 20_000,
       long: {
         seatVersion: 1,
@@ -214,8 +201,8 @@ function createTriggeredLongOnlyLiquidationContext(
       resetAll: () => {},
       recalculateFromAllOrders: () => {},
       recordFilledOrder: () => {},
-      getLossOffset: (_monitorSymbol, isLongSymbol) => {
-        onGetLossOffset?.(isLongSymbol);
+      getLossOffset: (direction) => {
+        onGetLossOffset?.(direction === 'LONG');
         return 0;
       },
       startNewProtectionEpisode: () => {},
@@ -277,9 +264,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -331,9 +316,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 1,
             symbol: 'BULL.HK',
@@ -383,9 +366,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'UNREALIZED_LOSS_CHECK',
           dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             long: { seatVersion: 2, symbol: 'BULL.HK' },
             short: { seatVersion: 3, symbol: 'BEAR.HK' },
           },
@@ -427,9 +408,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_SWITCH_DISTANCE',
           dedupeKey: 'HSI.HK:AUTO_SYMBOL_SWITCH_DISTANCE',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             monitorPrice: 20_000,
             seatSnapshots: {
               long: { seatVersion: 2, symbol: 'BULL.HK' },
@@ -490,8 +469,8 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -546,7 +525,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(stockPositionCalls).toBe(1);
     expect(refreshUnrealizedCalls).toBe(1);
     expect(getQuotesCalls).toBe(1);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(lastState.cachedAccount?.totalCash).toBe(200_000);
     expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(100);
   });
@@ -564,8 +543,8 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -594,30 +573,30 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(statuses).toEqual(['processed']);
     expect(getQuotesCalls).toBe(1);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG')).toMatchObject({
+    expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: null,
       status: 'EMPTY',
       lastSeatActivatedAt: null,
       callPrice: null,
     });
-    expect(context.symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(3);
+    expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(3);
   });
 
   it('skips SEAT_REFRESH final activation when seat snapshot changes during refresh', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
     const context = createMonitorTaskContext();
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
     } as never);
 
     context.riskChecker.refreshUnrealizedLossData = async () => {
-      const latestSeat = context.symbolRegistry.getSeatState('HSI.HK', 'LONG');
-      context.symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-      context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+      const latestSeat = context.symbolRegistry.getSeatState('LONG');
+      context.symbolRegistry.bumpSeatVersion('LONG');
+      context.symbolRegistry.updateSeatState('LONG', {
         ...latestSeat,
         symbol: 'NEXT_BULL.HK',
         status: 'SWITCHING',
@@ -650,8 +629,8 @@ describe('monitorTaskProcessor business flow', () => {
     });
 
     expect(statuses).toEqual(['skipped']);
-    expect(context.symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(3);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG')).toMatchObject({
+    expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(3);
+    expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'NEXT_BULL.HK',
       status: 'SWITCHING',
     });
@@ -675,7 +654,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
     const statuses: MonitorTaskStatus[] = [];
-    context.symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+    context.symbolRegistry.updateSeatState('SHORT', {
       symbol: null,
       status: 'EMPTY',
       lastSwitchAt: null,
@@ -760,9 +739,9 @@ describe('monitorTaskProcessor business flow', () => {
       getCanProcessTask: () => {
         gateCalls += 1;
         if (gateCalls === 2) {
-          const currentSeat = context.symbolRegistry.getSeatState('HSI.HK', 'LONG');
-          context.symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-          context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+          const currentSeat = context.symbolRegistry.getSeatState('LONG');
+          context.symbolRegistry.bumpSeatVersion('LONG');
+          context.symbolRegistry.updateSeatState('LONG', {
             symbol: currentSeat.symbol,
             status: 'SWITCHING',
             lastSwitchAt: Date.now(),
@@ -812,7 +791,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
     const statuses: MonitorTaskStatus[] = [];
-    context.symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+    context.symbolRegistry.updateSeatState('SHORT', {
       symbol: null,
       status: 'EMPTY',
       lastSwitchAt: null,
@@ -908,9 +887,7 @@ describe('monitorTaskProcessor business flow', () => {
     queue.scheduleLatest({
       type: 'LIQUIDATION_DISTANCE_CHECK',
       dedupeKey: 'HSI.HK:LIQUIDATION_DISTANCE_CHECK:RETRY',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         monitorPrice: 20_000,
         long: {
           seatVersion: 2,
@@ -980,9 +957,7 @@ describe('monitorTaskProcessor business flow', () => {
     queue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
       dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK:RETRY',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         long: { seatVersion: 2, symbol: 'BULL.HK' },
         short: { seatVersion: 3, symbol: null },
       },
@@ -1045,9 +1020,7 @@ describe('monitorTaskProcessor business flow', () => {
     queue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
       dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK:REQUEUE',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         long: { seatVersion: 2, symbol: 'BULL.HK' },
         short: { seatVersion: 3, symbol: null },
       },
@@ -1110,9 +1083,7 @@ describe('monitorTaskProcessor business flow', () => {
     queue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
       dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK:STOP_AND_DRAIN',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         long: { seatVersion: 2, symbol: 'BULL.HK' },
         short: { seatVersion: 3, symbol: null },
       },
@@ -1171,9 +1142,7 @@ describe('monitorTaskProcessor business flow', () => {
     queue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
       dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK:IN_FLIGHT_STOP',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         long: { seatVersion: 2, symbol: 'BULL.HK' },
         short: { seatVersion: 3, symbol: null },
       },
@@ -1253,9 +1222,7 @@ describe('monitorTaskProcessor business flow', () => {
     queue.scheduleLatest({
       type: 'LIQUIDATION_DISTANCE_CHECK',
       dedupeKey: 'HSI.HK:LIQUIDATION_DISTANCE_CHECK:READY_SUBSET',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         monitorPrice: 19_500,
         long: {
           seatVersion: 2,
@@ -1335,9 +1302,7 @@ describe('monitorTaskProcessor business flow', () => {
     queue.scheduleLatest({
       type: 'UNREALIZED_LOSS_CHECK',
       dedupeKey: 'HSI.HK:UNREALIZED_LOSS_CHECK:READY_SUBSET',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         long: { seatVersion: 2, symbol: 'BULL.HK' },
         short: { seatVersion: 3, symbol: 'BEAR.HK' },
       },
@@ -1390,8 +1355,8 @@ describe('monitorTaskProcessor business flow', () => {
         resetAll: () => {},
         recalculateFromAllOrders: () => {},
         recordFilledOrder: () => {},
-        getLossOffset: (_monitorSymbol, isLongSymbol) => {
-          pushLiquidationTaskDirection(lossOffsetDirections, isLongSymbol ? 'LONG' : 'SHORT');
+        getLossOffset: (direction) => {
+          pushLiquidationTaskDirection(lossOffsetDirections, direction);
           return 0;
         },
         startNewProtectionEpisode: () => {},
