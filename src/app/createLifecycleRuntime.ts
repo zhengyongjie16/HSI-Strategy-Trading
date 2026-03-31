@@ -16,7 +16,7 @@ import { createSignalRuntimeDomain } from '../main/lifecycle/cacheDomains/signal
 import { executeTradingDayOpenRebuild } from './rebuild.js';
 import { logger } from '../utils/logger/index.js';
 import { signalObjectPool } from '../utils/objectPool/index.js';
-import { requireStrategyRuntime } from './singleRuntimeHelpers.js';
+import { requireStrategyRuntime } from './utils.js';
 import type { CacheDomain, DayLifecycleManager } from '../main/lifecycle/types.js';
 import type { LifecycleRuntimeFactories, LifecycleRuntimeFactoryDeps } from './types.js';
 

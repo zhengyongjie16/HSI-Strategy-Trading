@@ -6,26 +6,15 @@
  * - 管理全量订单缓存（history + today 合并去重）
  * - 在信任边界将 SDK Order 转换为 RawOrderFromAPI
  */
-import type { Order, TradeContext } from 'longbridge';
+import type { Order } from 'longbridge';
 import { decimalToNumber } from '../../utils/helpers/index.js';
-import type { RateLimiter, RawOrderFromAPI } from '../../types/services.js';
-
-type OrderSnapshotSource = 'history' | 'today';
-
-type MergedOrderEntry = {
-  readonly source: OrderSnapshotSource;
-  readonly order: RawOrderFromAPI;
-};
-
-type OrderApiManagerDeps = {
-  readonly ctxPromise: Promise<TradeContext>;
-  readonly rateLimiter: RateLimiter;
-};
-
-type OrderApiManager = {
-  fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
-  clearCache: () => void;
-};
+import type { RawOrderFromAPI } from '../../types/services.js';
+import type {
+  MergedOrderEntry,
+  OrderApiManager,
+  OrderApiManagerDeps,
+  OrderSnapshotSource,
+} from './types.js';
 
 /** 将 Longbridge SDK Order 实例转换为内部 RawOrderFromAPI。 */
 function orderToRawOrderFromAPI(order: Order): RawOrderFromAPI {

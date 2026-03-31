@@ -148,6 +148,16 @@ export type MonitorTaskRetryRequest<
 }>;
 
 /**
+ * 重试注册表条目。
+ * 类型用途：记录单个 monitor 任务重试的 timeout 句柄，供停止或覆盖时统一清理。
+ * 数据来源：MonitorTaskProcessor.scheduleTaskRetry 内创建并写入 retryRegistry。
+ * 使用范围：仅 monitorTaskProcessor/index.ts 使用。
+ */
+export type RetryRegistryEntry = Readonly<{
+  handle: ReturnType<typeof setTimeout>;
+}>;
+
+/**
  * 清仓执行项。
  * 类型用途：LIQUIDATION_DISTANCE_CHECK 处理中用于串联下单、清理与浮亏刷新的单边任务载体。
  * 数据来源：由 liquidationDistance handler 在风控通过后创建。

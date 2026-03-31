@@ -1,6 +1,7 @@
 import type { StrategyRuntime } from '../../types/state.js';
 import type { IndicatorSnapshot, Quote } from '../../types/quote.js';
 import type { Position } from '../../types/account.js';
+import type { CandleData } from '../../types/data.js';
 import type { SeatState } from '../../types/seat.js';
 import type { Signal } from '../../types/signal.js';
 import type { Logger } from '../../utils/logger/types.js';
@@ -108,6 +109,18 @@ export type IndicatorPipelineParams = Readonly<{
   monitorContext: StrategyRuntime;
   mainContext: MainProgramContext;
   monitorQuote: Quote | null;
+}>;
+
+/**
+ * 趋势因子多周期 K 线集合。
+ * 类型用途：统一表达趋势因子计算依赖的 1m/5m/15m K 线序列。
+ * 数据来源：indicatorPipeline 从 marketDataClient 的本地缓存快照读取并组装。
+ * 使用范围：仅 main/processMonitor/indicatorPipeline.ts 使用。
+ */
+export type TrendFactorCandlesByPeriod = Readonly<{
+  min1: ReadonlyArray<CandleData>;
+  min5: ReadonlyArray<CandleData>;
+  min15: ReadonlyArray<CandleData>;
 }>;
 
 /**

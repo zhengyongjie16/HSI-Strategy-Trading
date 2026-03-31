@@ -18,8 +18,6 @@ import {
   computePercentileRank,
   computeRealizedVolatility,
   computeReturns,
-} from './math.js';
-import {
   collectRecentTradingDayKeys,
   filterBarsByDayKey,
   filterBarsBySession,
@@ -27,7 +25,7 @@ import {
   getSessionPhase,
   isBlockedByNoiseWindow,
   sliceSessionBarsForDay,
-} from './session.js';
+} from './utils';
 import { classifyRegime } from './volatilityRegime.js';
 import {
   computeMomentumSnapshot,

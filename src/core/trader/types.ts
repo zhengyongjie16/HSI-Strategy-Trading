@@ -305,6 +305,47 @@ export type OrderCacheManagerDeps = {
 };
 
 /**
+ * 订单快照来源标记。
+ * 类型用途：区分历史订单与当日订单来源，用于合并去重时的覆盖优先级判断。
+ * 数据来源：orderApiManager 拉取 historyOrders/todayOrders 后在合并流程内赋值。
+ * 使用范围：仅 core/trader/orderApiManager 使用。
+ */
+export type OrderSnapshotSource = 'history' | 'today';
+
+/**
+ * 合并订单映射项。
+ * 类型用途：封装同一 orderId 的来源与订单实体，支撑按版本与来源替换策略。
+ * 数据来源：orderApiManager 合并 history/today 订单时写入 Map。
+ * 使用范围：仅 core/trader/orderApiManager 使用。
+ */
+export type MergedOrderEntry = Readonly<{
+  source: OrderSnapshotSource;
+  order: RawOrderFromAPI;
+}>;
+
+/**
+ * 订单 API 管理器依赖。
+ * 类型用途：创建 OrderApiManager 时注入交易上下文与限频器。
+ * 数据来源：createTrader 组装依赖后传入 createOrderAPIManager。
+ * 使用范围：仅 core/trader/orderApiManager 使用。
+ */
+export type OrderApiManagerDeps = Readonly<{
+  ctxPromise: Promise<TradeContext>;
+  rateLimiter: RateLimiter;
+}>;
+
+/**
+ * 订单 API 管理器能力契约。
+ * 类型用途：抽象全量订单查询与缓存清理能力，供 trader 组装期依赖。
+ * 数据来源：createOrderAPIManager 返回对象。
+ * 使用范围：仅 core/trader 内部使用。
+ */
+export type OrderApiManager = Readonly<{
+  fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
+  clearCache: () => void;
+}>;
+
+/**
  * 追踪中的订单信息。
  * 类型用途：OrderMonitor 内部存储，用于 WebSocket 监控订单状态变化，跟踪委托价和成交情况。
  * 数据来源：由 trackOrder 入参初始化，状态由 WebSocket 推送更新。

@@ -32,3 +32,14 @@ export type MultiPeriodCandles = {
   readonly min5: ReadonlyArray<CandleData>;
   readonly min15: ReadonlyArray<CandleData>;
 };
+
+/**
+ * 香港时间拆分结果。
+ * 类型用途：承载交易日键与日内分钟，供 session 分段与时间窗口过滤使用。
+ * 数据来源：session 工具通过 Intl.DateTimeFormat('Asia/Hong_Kong') 解析得到。
+ * 使用范围：factor runtime session 工具模块内部与其调用方。
+ */
+export type HongKongParts = Readonly<{
+  dayKey: string;
+  minuteOfDay: number;
+}>;

@@ -7,8 +7,7 @@
  */
 import type { VwapSnapshot } from '../../../types/factor.js';
 import type { NormalizedBar } from './types.js';
-import { computeCumulativeVwapSeries, computeSlope } from './math.js';
-import { filterBarsBySession } from './session.js';
+import { computeCumulativeVwapSeries, computeSlope, filterBarsBySession } from './utils';
 
 /**
  * 计算 session-aware VWAP 快照。

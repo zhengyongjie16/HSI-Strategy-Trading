@@ -12,14 +12,16 @@ import type {
   PmContinuationSnapshot,
 } from '../../../types/factor.js';
 import type { NormalizedBar } from './types.js';
-import { sliceBarsFromEnd, computeReturns, computeRealizedVolatility } from './math.js';
 import {
   AFTERNOON_SESSION_END,
   AFTERNOON_SESSION_START,
   getHongKongParts,
   MORNING_SESSION_END,
   MORNING_SESSION_START,
-} from './session.js';
+  sliceBarsFromEnd,
+  computeReturns,
+  computeRealizedVolatility,
+} from './utils';
 
 /**
  * 计算开盘结构。

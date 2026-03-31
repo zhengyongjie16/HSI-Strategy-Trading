@@ -16,7 +16,7 @@ import {
   computeRealizedVolatility,
   computeReturns,
   sliceBarsFromEnd,
-} from './math.js';
+} from './utils';
 
 /**
  * 计算 bar 级趋势动量与评分。

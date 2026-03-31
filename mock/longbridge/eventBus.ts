@@ -4,31 +4,15 @@
  * 功能：
  * - 提供延迟投递、顺序控制与批量刷新能力
  */
-import type { PushCandlestickEvent, PushOrderChanged, PushQuoteEvent } from 'longbridge';
-
-type LongportEventTopic = 'quote' | 'candlestick' | 'orderChanged';
-
-type LongportEventPayloadMap = {
-  readonly quote: PushQuoteEvent;
-  readonly candlestick: PushCandlestickEvent;
-  readonly orderChanged: PushOrderChanged;
-};
-
-type Subscriber<TTopic extends LongportEventTopic> = (
-  payload: LongportEventPayloadMap[TTopic],
-) => void;
-
-type QueueEvent<TTopic extends LongportEventTopic> = {
-  readonly topic: TTopic;
-  readonly payload: LongportEventPayloadMap[TTopic];
-  readonly deliverAtMs: number;
-  readonly sequence: number;
-  readonly insertedAt: number;
-};
-
-type QueueEventUnion = {
-  [K in LongportEventTopic]: QueueEvent<K>;
-}[LongportEventTopic];
+import type {
+  EventPublishOptions,
+  LongportEventBus,
+  LongportEventPayloadMap,
+  LongportEventTopic,
+  QueueEvent,
+  QueueEventUnion,
+  Subscriber,
+} from './types.js';
 
 /**
  * 构造统一队列事件结构，封装投递时间与排序字段。
@@ -49,26 +33,6 @@ function createQueueEvent<TTopic extends LongportEventTopic>(
     sequence,
     insertedAt,
   };
-}
-
-export type EventPublishOptions = {
-  readonly deliverAtMs?: number;
-  readonly sequence?: number;
-};
-
-export interface LongportEventBus {
-  subscribe: <TTopic extends LongportEventTopic>(
-    topic: TTopic,
-    subscriber: Subscriber<TTopic>,
-  ) => () => void;
-  publish: <TTopic extends LongportEventTopic>(
-    topic: TTopic,
-    payload: LongportEventPayloadMap[TTopic],
-    options?: EventPublishOptions,
-  ) => void;
-  flushDue: (nowMs?: number) => number;
-  flushAll: () => number;
-  getQueueSize: () => number;
 }
 
 /**

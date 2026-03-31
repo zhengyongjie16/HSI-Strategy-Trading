@@ -10,7 +10,7 @@ import type {
   StrategyThresholdConfig,
   VwapSnapshot,
 } from '../../../types/factor.js';
-import { computeEmaSeries, computeMacd } from './math.js';
+import { computeEmaSeries, computeMacd } from './utils';
 
 /**
  * 计算趋势确认层。

@@ -23,7 +23,7 @@ import { collectRuntimeValidationSymbols } from './runtimeValidation.js';
 import { createAsyncRuntime } from './runtime/createAsyncRuntime.js';
 import { createPostGateRuntime } from './runtime/createPostGateRuntime.js';
 import { createPreGateRuntime } from './runtime/createPreGateRuntime.js';
-import { requireStrategyRuntime } from './singleRuntimeHelpers.js';
+import { requireStrategyRuntime } from './utils.js';
 import type { AppEnvironmentParams, RunAppDeps } from './types.js';
 
 const DEFAULT_RUN_APP_DEPS: RunAppDeps = {

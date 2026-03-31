@@ -17,17 +17,15 @@ import {
   type WarrantSortBy,
   WarrantType,
 } from 'longbridge';
-import {
-  createLongportEventBus,
-  type EventPublishOptions,
-  type LongportEventBus,
-} from './eventBus.js';
+import { createLongportEventBus } from './eventBus.js';
 import type {
+  EventPublishOptions,
   MockWarrantListItem,
   MockCallRecord,
   MockFailureRule,
   MockMethodName,
-  QuoteContextContract,
+  QuoteContextMock,
+  QuoteContextMockOptions,
 } from './types.js';
 import {
   applyMockFailureRule,
@@ -51,11 +49,6 @@ const QUOTE_METHODS: ReadonlySet<MockMethodName> = new Set([
   'warrantQuote',
   'warrantList',
 ]);
-
-type QuoteContextMockOptions = {
-  readonly eventBus?: LongportEventBus;
-  readonly now?: () => number;
-};
 
 /**
  * 生成 K 线订阅缓存键。
@@ -81,32 +74,6 @@ function normalizeWarrantType(value: unknown): 'BULL' | 'BEAR' | null {
   }
 
   return null;
-}
-
-interface QuoteContextMock extends QuoteContextContract {
-  seedQuotes: (quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>) => void;
-  seedRealtimeQuotes: (
-    quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>,
-  ) => void;
-  seedStaticInfo: (
-    staticInfos: ReadonlyArray<{ readonly symbol: string; readonly info: unknown }>,
-  ) => void;
-  seedCandlesticks: (symbol: string, period: Period, candles: ReadonlyArray<unknown>) => void;
-  seedTradingDays: (
-    key: string,
-    value: {
-      readonly tradingDays: ReadonlyArray<unknown>;
-      readonly halfTradingDays: ReadonlyArray<unknown>;
-    },
-  ) => void;
-  seedWarrantQuotes: (quotes: ReadonlyArray<WarrantQuote>) => void;
-  seedWarrantList: (symbol: string, list: ReadonlyArray<MockWarrantListItem>) => void;
-  emitQuote: (event: PushQuoteEvent, options?: EventPublishOptions) => void;
-  emitCandlestick: (event: PushCandlestickEvent, options?: EventPublishOptions) => void;
-  flushEvents: (nowMs?: number) => number;
-  flushAllEvents: () => number;
-  getSubscribedSymbols: () => ReadonlySet<string>;
-  getSubscribedCandlestickKeys: () => ReadonlySet<string>;
 }
 
 /**

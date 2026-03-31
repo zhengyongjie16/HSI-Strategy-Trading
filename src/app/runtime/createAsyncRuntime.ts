@@ -14,7 +14,7 @@ import { clearMonitorDirectionQueuesWithLog } from '../../main/processMonitor/qu
 import { logger } from '../../utils/logger/index.js';
 import { displayAccountAndPositions } from '../../services/accountDisplay/index.js';
 import { signalObjectPool } from '../../utils/objectPool/index.js';
-import { requireStrategyRuntime } from '../singleRuntimeHelpers.js';
+import { requireStrategyRuntime } from '../utils.js';
 import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
 
 /**

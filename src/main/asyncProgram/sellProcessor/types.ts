@@ -3,6 +3,7 @@ import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { RefreshGate } from '../../../utils/types.js';
 import type { TaskQueue, SellTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
+import type { Signal } from '../../../types/signal.js';
 
 /**
  * 卖出处理器依赖类型（创建 SellProcessor 时的参数）。
@@ -40,4 +41,16 @@ export type SellProcessorDeps = {
 
   /** 生命周期门禁：false 时跳过任务执行 */
   readonly getCanProcessTask?: () => boolean;
+};
+
+/**
+ * 卖出重试状态。
+ * 类型用途：保存单个卖出信号的重试句柄、待重入队信号和重试次数。
+ * 数据来源：sellProcessor 在 quote 缺失时创建并维护。
+ * 使用范围：仅 main/asyncProgram/sellProcessor/index.ts 使用。
+ */
+export type SellRetryState = {
+  handle: ReturnType<typeof setTimeout> | null;
+  retrySignal: Signal | null;
+  attempts: number;
 };

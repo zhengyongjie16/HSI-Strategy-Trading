@@ -1,4 +1,5 @@
 import type { Candlestick, Config, Market, Period, TradeSessions } from 'longbridge';
+import type { CandlestickCacheSnapshot } from '../../types/services.js';
 
 /**
  * withRetry 重试配置。
@@ -93,3 +94,49 @@ export type MarketDataClientDeps = {
   readonly config: Config;
   readonly quoteContextFactory?: (config: Config) => Promise<QuoteContextLike>;
 };
+
+/**
+ * K 线缓存存储结构。
+ * 类型用途：维护 symbol+period 维度的本地快照映射与每个 key 的最大保留根数。
+ * 数据来源：createCandlestickCacheStore 创建。
+ * 使用范围：quoteClient/candlestickCache.ts。
+ */
+export type CandlestickCacheStore = Readonly<{
+  maxCandles: number;
+  snapshots: Map<string, CandlestickCacheSnapshot>;
+}>;
+
+/**
+ * seed K 线序列参数。
+ * 类型用途：订阅成功后写入初始 K 线序列到本地缓存。
+ * 数据来源：QuoteContext.subscribeCandlesticks 返回值。
+ * 使用范围：quoteClient/candlestickCache.ts。
+ */
+export type SeedCandlestickSeriesParams = Readonly<{
+  store: CandlestickCacheStore;
+  symbol: string;
+  period: Period;
+  candles: ReadonlyArray<unknown>;
+}>;
+
+/**
+ * push 增量更新参数。
+ * 类型用途：描述单条 candlestick push 更新所需输入。
+ * 数据来源：QuoteContext.setOnCandlestick 推送事件。
+ * 使用范围：quoteClient/candlestickCache.ts。
+ */
+export type ApplyCandlestickPushParams = Readonly<{
+  store: CandlestickCacheStore;
+  symbol: string;
+  period: Period;
+  candlestick: unknown;
+  isConfirmed: boolean;
+}>;
+
+/**
+ * K 线字段可接受的归一化值。
+ * 类型用途：约束 candle 数值字段在规范化后的允许取值。
+ * 数据来源：normalizeCandleValue 对 SDK 数据进行兼容收敛后的结果。
+ * 使用范围：quoteClient/candlestickCache.ts。
+ */
+export type NormalizedCandleValue = number | string | null | undefined;

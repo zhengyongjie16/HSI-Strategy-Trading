@@ -9,17 +9,10 @@
 import { buildTrendFactorSnapshot } from '../../services/factors/runtime/index.js';
 import { logger } from '../../utils/logger/index.js';
 import { Period } from 'longbridge';
-import type { CandleData } from '../../types/data.js';
 import type { StrategyThresholdConfig } from '../../types/factor.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
-import type { IndicatorPipelineParams } from './types.js';
+import type { IndicatorPipelineParams, TrendFactorCandlesByPeriod } from './types.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
-
-type TrendFactorCandlesByPeriod = {
-  readonly min1: ReadonlyArray<CandleData>;
-  readonly min5: ReadonlyArray<CandleData>;
-  readonly min15: ReadonlyArray<CandleData>;
-};
 
 function buildTrendIndicatorSnapshot(params: {
   readonly cacheSnapshot: NonNullable<
