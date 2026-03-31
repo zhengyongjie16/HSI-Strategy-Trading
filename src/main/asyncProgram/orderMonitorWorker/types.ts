@@ -6,6 +6,7 @@
  */
 export type OrderMonitorWorkerDeps = Readonly<{
   monitorAndManageOrders: () => Promise<void>;
+  onError?: (error: unknown) => void;
 }>;
 
 /**

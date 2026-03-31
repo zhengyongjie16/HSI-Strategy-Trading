@@ -244,6 +244,21 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(load(createLoadParams())).rejects.toThrow('无法获取账户信息');
   });
 
+  it('持仓拉取异常时直接抛错，不再按空持仓继续初始化', async () => {
+    const deps = createBaseDeps({
+      trader: createTraderDouble({
+        getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+        getStockPositions: async () => {
+          throw new Error('positions api failed');
+        },
+      }),
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+
+    expect(load(createLoadParams())).rejects.toThrow('positions api failed');
+  });
+
   it('failOnOrderFetchError 为 true 且订单拉取失败时抛出带"全量订单获取失败"的错误', async () => {
     const deps = createBaseDeps({
       trader: createReadyTrader({

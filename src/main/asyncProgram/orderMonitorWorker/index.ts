@@ -25,7 +25,7 @@ import { formatError } from '../../../utils/error/index.js';
  * @returns OrderMonitorWorker 实例（start、schedule、stopAndDrain）
  */
 export function createOrderMonitorWorker(deps: OrderMonitorWorkerDeps): OrderMonitorWorker {
-  const { monitorAndManageOrders } = deps;
+  const { monitorAndManageOrders, onError } = deps;
   let running = true;
   let inFlight = false;
   let queued = false;
@@ -46,6 +46,7 @@ export function createOrderMonitorWorker(deps: OrderMonitorWorkerDeps): OrderMon
       await monitorAndManageOrders();
     } catch (err) {
       logger.warn('[OrderMonitorWorker] 订单监控失败', formatError(err));
+      onError?.(new Error('[OrderMonitorWorker] 订单监控失败，等待下一轮重试', { cause: err }));
     } finally {
       inFlight = false;
       if (drainResolve) {

@@ -16,7 +16,6 @@ import { logger } from '../../utils/logger/index.js';
 import { collectRuntimeQuoteSymbols, diffQuoteSymbols } from '../utils.js';
 import { processMonitor } from '../processMonitor/index.js';
 import type { MainProgramContext } from './types.js';
-import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatError } from '../../utils/error/index.js';
 import {
   getHKDateKey,
@@ -274,12 +273,7 @@ export async function mainProgram({
       },
     },
     quotesMap,
-  ).catch((err: unknown) => {
-    logger.error(
-      `处理监控标的 ${formatSymbolDisplay(monitorConfig.baseInstrumentSymbol, monitorContext.baseInstrumentName)} 失败`,
-      formatError(err),
-    );
-  });
+  );
 
   // 全局操作：订单监控（在所有监控标的处理完成后）
   // 使用已维护的 allTradingSymbols

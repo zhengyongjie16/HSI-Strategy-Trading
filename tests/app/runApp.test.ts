@@ -532,4 +532,54 @@ describe('app runApp assembly', () => {
     expect(harnessState.sleepDurations).toEqual([0]);
     expect(harnessState.events.at(-1)).toBe('sleep:0');
   });
+
+  it('logs a mainProgram error and continues into the next loop iteration', async () => {
+    const loggedErrors: string[] = [];
+    let sleepCallCount = 0;
+    const deps: RunAppDeps = {
+      ...createRunAppDeps(harnessState),
+      mainProgram: async (params) => {
+        harnessState.mainProgramCalls += 1;
+        harnessState.mainProgramRuntimeGateModes.push(params.runtimeGateMode);
+        harnessState.events.push(`mainProgram:${harnessState.mainProgramCalls}`);
+        if (harnessState.mainProgramCalls === 1) {
+          throw new Error('loop failed');
+        }
+      },
+      sleep: async (ms) => {
+        sleepCallCount += 1;
+        harnessState.sleepDurations.push(ms);
+        harnessState.events.push(`sleep:${sleepCallCount}:${ms}`);
+        if (sleepCallCount === 2) {
+          throw STOP_AFTER_FIRST_LOOP;
+        }
+      },
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: (message) => {
+          loggedErrors.push(message);
+        },
+      },
+    };
+    const runApp = createRunApp(deps);
+    let caught: unknown = null;
+
+    try {
+      await runApp({ env: TEST_APP_ENV });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
+    expect(harnessState.mainProgramCalls).toBe(2);
+    expect(harnessState.events).toContain('mainProgram:2');
+    expect(harnessState.sleepDurations).toHaveLength(2);
+    expect(harnessState.sleepDurations[0]).toBeGreaterThanOrEqual(0);
+    expect(harnessState.sleepDurations[0]).toBeLessThanOrEqual(1000);
+    expect(harnessState.sleepDurations[1]).toBeGreaterThanOrEqual(0);
+    expect(harnessState.sleepDurations[1]).toBeLessThanOrEqual(1000);
+    expect(loggedErrors).toContain('[runApp] 主循环执行失败，下一轮继续重试');
+  });
 });

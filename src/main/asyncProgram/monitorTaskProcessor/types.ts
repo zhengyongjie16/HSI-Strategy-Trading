@@ -257,6 +257,7 @@ export type MonitorTaskProcessorDeps = Readonly<{
   /** 生命周期门禁：false 时任务直接跳过 */
   getCanProcessTask?: () => boolean;
   onProcessed?: (task: MonitorTask<MonitorTaskDataMap>, status: MonitorTaskStatus) => void;
+  onError?: (error: unknown) => void;
 }>;
 
 /**

@@ -577,4 +577,105 @@ describe('mainProgram strict-mode integration', () => {
     expect(postTradeEnqueueCalls).toBe(1);
     expect(lastState.allTradingSymbols.has('OLD.HK')).toBeTrue();
   });
+
+  it('propagates processMonitor failure instead of swallowing it', async () => {
+    const actualTimeModulePath = '../../src/utils/time/index.js?actual-main-program-strict-fail';
+    const actualTimeModuleUnknown: unknown = await import(actualTimeModulePath);
+    const actualTimeModule = actualTimeModuleUnknown as typeof TimeModule;
+
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises -- bun:test mock.module 在导入 mainProgram 前同步注册
+    mock.module('../../src/main/processMonitor/index.js', () => ({
+      processMonitor: async () => {
+        throw new Error('process monitor failed');
+      },
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises -- bun:test mock.module 在导入 mainProgram 前同步注册
+    mock.module('../../src/utils/time/index.js', () => ({
+      ...actualTimeModule,
+      getHKDateKey: (now: Date) => tradingTimeOverrides.dayKey ?? getHKDateKeyFallback(now),
+      isInContinuousHKSession: (now: Date, isHalfDay: boolean) =>
+        tradingTimeOverrides.isInContinuousSession ??
+        isInContinuousHKSessionFallback(now, isHalfDay),
+      isWithinMorningOpenProtection: (now: Date, minutes: number) =>
+        tradingTimeOverrides.morningOpenProtection ??
+        isWithinMorningOpenProtectionFallback(now, minutes),
+      isWithinAfternoonOpenProtection: (now: Date, minutes: number) =>
+        tradingTimeOverrides.afternoonOpenProtection ??
+        isWithinAfternoonOpenProtectionFallback(now, minutes),
+    }));
+
+    tradingTimeOverrides.dayKey = '2026-02-16';
+    tradingTimeOverrides.isInContinuousSession = true;
+
+    const monitorContext = createStrategyRuntime('HSI.HK', 0, () => {});
+    const monitorConfig = monitorContext.config;
+    const lastState = createLastState({
+      cachedTradingDayInfo: { isTradingDay: true, isHalfDay: false },
+    });
+    const mainProgramModulePath =
+      '../../src/main/mainProgram/index.js?mocked-main-program-strict-fail';
+    const loadedModuleUnknown: unknown = await import(mainProgramModulePath);
+    const { mainProgram } = loadedModuleUnknown as { readonly mainProgram: MainProgramFn };
+
+    expect(
+      mainProgram({
+        marketDataClient: {
+          getQuoteContext: async () => ({}) as never,
+          getQuotes: async () => new Map<string, Quote | null>(),
+          subscribeSymbols: async () => {},
+          unsubscribeSymbols: async () => {},
+          subscribeCandlesticks: async () => [],
+          getRealtimeCandlesticks: async () => [],
+          getCandlestickSnapshot: () => null,
+          isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
+          resetRuntimeSubscriptionsAndCaches: async () => {},
+        },
+        trader: createTraderDouble(),
+        lastState,
+        marketMonitor: {
+          monitorPriceChanges: () => false,
+          monitorIndicatorChanges: () => false,
+        },
+        doomsdayProtection: createDoomsdayProtectionDouble(),
+        signalProcessor: {
+          processSellSignals: (params) => params.signals,
+          applyRiskChecks: async (signals) => signals,
+          resetRiskCheckCooldown: () => {},
+        } as MainProgramContext['signalProcessor'],
+        tradingConfig: createTradingConfigFixtureFromRuntimeConfig(monitorConfig, {
+          global: {
+            ...createTradingConfigFixtureFromRuntimeConfig(monitorConfig).global,
+            doomsdayProtection: false,
+          },
+        }),
+        monitorConfig,
+        dailyLossTracker: {
+          resetAll: () => {},
+          startNewProtectionEpisode: () => {},
+          recalculateFromAllOrders: () => {},
+          recordFilledOrder: () => {},
+          getLossOffset: () => 0,
+        },
+        monitorContext,
+        symbolRegistry: createSymbolRegistryDouble({ baseInstrumentSymbol: 'HSI.HK' }),
+        ...createQueues(),
+        orderMonitorWorker: {
+          start: () => {},
+          schedule: () => {},
+          stopAndDrain: async () => {},
+        },
+        postTradeRefresher: {
+          start: () => {},
+          enqueue: () => {},
+          stopAndDrain: async () => {},
+          clearPending: () => {},
+        },
+        runtimeGateMode: 'strict',
+        dayLifecycleManager: {
+          tick: async () => {},
+        },
+      }),
+    ).rejects.toThrow('process monitor failed');
+  });
 });

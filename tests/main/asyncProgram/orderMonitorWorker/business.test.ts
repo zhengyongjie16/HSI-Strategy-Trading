@@ -121,4 +121,30 @@ describe('orderMonitorWorker business flow', () => {
 
     expect(runCount).toBe(1);
   });
+
+  it('reports error and allows later schedules to retry when monitor execution throws', async () => {
+    const reportedErrors: unknown[] = [];
+    let runCount = 0;
+
+    const worker = createOrderMonitorWorker({
+      monitorAndManageOrders: async () => {
+        runCount += 1;
+        throw new Error('monitor failed');
+      },
+      onError: (error) => {
+        reportedErrors.push(error);
+      },
+    });
+
+    worker.schedule();
+    await waitUntil(() => reportedErrors.length === 1);
+    worker.schedule();
+    await waitUntil(() => runCount === 2);
+    await waitUntil(() => reportedErrors.length === 2);
+    await worker.stopAndDrain();
+
+    expect(runCount).toBe(2);
+    expect(reportedErrors[0]).toBeInstanceOf(Error);
+    expect((reportedErrors[0] as Error).message).toContain('等待下一轮重试');
+  });
 });

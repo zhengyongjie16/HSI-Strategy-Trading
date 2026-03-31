@@ -69,6 +69,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     clearRetry,
     getCanProcessTask,
     onProcessed,
+    onError,
   } = deps;
 
   const schedule =
@@ -206,6 +207,9 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
 
       const result = await processTask(task, helpers).catch((err: unknown) => {
         logger.error('[MonitorTaskProcessor] 处理任务失败', formatError(err));
+        onError?.(
+          new Error('[MonitorTaskProcessor] 监控任务处理失败，等待下一轮重试', { cause: err }),
+        );
         return {
           status: 'failed' as const,
           retryRequest: null,
@@ -228,6 +232,9 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     processQueue,
     onQueueError: (err) => {
       logger.error('[MonitorTaskProcessor] 处理队列时发生错误', formatError(err));
+      onError?.(
+        new Error('[MonitorTaskProcessor] 监控任务队列失败，等待下一轮重试', { cause: err }),
+      );
     },
     onAlreadyRunning: () => {
       logger.warn('[MonitorTaskProcessor] 处理器已在运行中');

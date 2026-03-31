@@ -224,7 +224,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
           dayLifecycleManager,
         });
       } catch (err) {
-        appLogger.error('本次执行失败', formatAppError(err));
+        appLogger.error('[runApp] 主循环执行失败，下一轮继续重试', formatAppError(err));
       }
 
       const elapsedMs = Date.now() - loopStartTimeMs;

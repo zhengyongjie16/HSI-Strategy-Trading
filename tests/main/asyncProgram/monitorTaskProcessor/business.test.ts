@@ -179,4 +179,54 @@ describe('monitorTaskProcessor business flow', () => {
       },
     ]);
   });
+
+  it('reports error when task processing throws unexpectedly', async () => {
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const reportedErrors: unknown[] = [];
+
+    const processor = createMonitorTaskProcessor({
+      monitorTaskQueue: queue,
+      refreshGate: createRefreshGate(),
+      monitorContext: createMonitorTaskContext(),
+      clearMonitorDirectionQueues: () => {},
+      trader: createTraderDouble(),
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          throw new Error('quotes failed');
+        },
+      }),
+      lastState: createLastState(),
+      monitorConfig: createMonitorTaskContext().config,
+      onError: (error) => {
+        reportedErrors.push(error);
+      },
+    });
+
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.scheduleLatest({
+          type: 'LIQUIDATION_DISTANCE_CHECK',
+          dedupeKey: 'LIQUIDATION_DISTANCE_CHECK',
+          data: {
+            monitorPrice: 20_000,
+            long: {
+              seatVersion: 2,
+              symbol: 'BULL.HK',
+              symbolName: 'BULL.HK',
+            },
+            short: {
+              seatVersion: 3,
+              symbol: null,
+              symbolName: null,
+            },
+          },
+        });
+      },
+      waitCondition: () => reportedErrors.length === 1,
+    });
+
+    expect(reportedErrors[0]).toBeInstanceOf(Error);
+    expect((reportedErrors[0] as Error).message).toContain('等待下一轮重试');
+  });
 });

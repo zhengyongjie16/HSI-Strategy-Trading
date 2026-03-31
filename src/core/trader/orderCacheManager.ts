@@ -125,8 +125,7 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
       await rateLimiter.throttle();
       const todayOrdersRaw = await ctx.todayOrders();
       if (!Array.isArray(todayOrdersRaw)) {
-        logger.error('[订单缓存] todayOrders 返回结果不是数组，无法解析未成交订单');
-        return [];
+        throw new TypeError('[订单缓存] todayOrders 返回结果不是数组，无法解析未成交订单');
       }
 
       // 信任边界：仅保留结构符合预期的订单
@@ -168,7 +167,7 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
       return [...result];
     } catch (err) {
       logger.error('获取未成交订单失败', formatError(err));
-      return [];
+      throw err;
     }
   };
 

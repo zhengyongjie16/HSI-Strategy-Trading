@@ -12,6 +12,7 @@ import { createPostTradeRefresher } from '../../main/asyncProgram/postTradeRefre
 import { createSellProcessor } from '../../main/asyncProgram/sellProcessor/index.js';
 import { clearMonitorDirectionQueuesWithLog } from '../../main/processMonitor/queueCleanup.js';
 import { logger } from '../../utils/logger/index.js';
+import { formatError } from '../../utils/error/index.js';
 import { displayAccountAndPositions } from '../../services/accountDisplay/index.js';
 import { signalObjectPool } from '../../utils/objectPool/index.js';
 import { requireStrategyRuntime } from '../utils.js';
@@ -40,8 +41,14 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     sellTaskQueue,
     monitorTaskQueue,
   } = postGateRuntime;
+
+  function reportAsyncRuntimeError(error: unknown): void {
+    logger.error('[AsyncRuntime] 关键后台处理失败，主循环继续并等待下一轮重试', formatError(error));
+  }
+
   const orderMonitorWorker = createOrderMonitorWorker({
     monitorAndManageOrders: () => trader.monitorAndManageOrders(),
+    onError: reportAsyncRuntimeError,
   });
   const postTradeRefresher = createPostTradeRefresher({
     refreshGate,
@@ -75,6 +82,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     lastState,
     monitorConfig,
     getCanProcessTask: () => lastState.isTradingEnabled,
+    onError: reportAsyncRuntimeError,
   });
   const buyProcessor = createBuyProcessor({
     taskQueue: buyTaskQueue,
