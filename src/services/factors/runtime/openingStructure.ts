@@ -15,7 +15,6 @@ import type { NormalizedBar } from './types.js';
 import {
   AFTERNOON_SESSION_END,
   AFTERNOON_SESSION_START,
-  getHongKongParts,
   MORNING_SESSION_END,
   MORNING_SESSION_START,
   sliceBarsFromEnd,
@@ -36,15 +35,13 @@ export function computeOpeningStructure(params: {
   readonly rules: OpeningStructureRules;
 }): OpeningStructureSnapshot {
   const openingBars = params.bars.filter((bar) => {
-    const { minuteOfDay } = getHongKongParts(bar.timestamp);
     return (
-      minuteOfDay >= MORNING_SESSION_START &&
-      minuteOfDay < MORNING_SESSION_START + params.rules.openingRangeMinutes
+      bar.minuteOfDay >= MORNING_SESSION_START &&
+      bar.minuteOfDay < MORNING_SESSION_START + params.rules.openingRangeMinutes
     );
   });
   const afterOpeningBars = params.bars.filter((bar) => {
-    const { minuteOfDay } = getHongKongParts(bar.timestamp);
-    return minuteOfDay >= MORNING_SESSION_START + params.rules.openingRangeMinutes;
+    return bar.minuteOfDay >= MORNING_SESSION_START + params.rules.openingRangeMinutes;
   });
   const highs = openingBars.map((bar) => bar.high);
   const lows = openingBars.map((bar) => bar.low);
@@ -162,8 +159,7 @@ export function computePmContinuation(params: {
   readonly rules: PmContinuationRules;
 }): PmContinuationSnapshot {
   const amBars = params.bars.filter((bar) => {
-    const { minuteOfDay } = getHongKongParts(bar.timestamp);
-    return minuteOfDay >= MORNING_SESSION_START + 20 && minuteOfDay <= MORNING_SESSION_END;
+    return bar.minuteOfDay >= MORNING_SESSION_START + 20 && bar.minuteOfDay <= MORNING_SESSION_END;
   });
   if (amBars.length === 0) {
     return {
@@ -187,18 +183,15 @@ export function computePmContinuation(params: {
     amRv > 0 &&
     Math.abs(amMove) / (amRv + Number.EPSILON) >= params.rules.amMoveZMin;
   const pmBars = params.bars.filter((bar) => {
-    const { minuteOfDay } = getHongKongParts(bar.timestamp);
-    return minuteOfDay >= AFTERNOON_SESSION_START && minuteOfDay <= AFTERNOON_SESSION_END;
+    return bar.minuteOfDay >= AFTERNOON_SESSION_START && bar.minuteOfDay <= AFTERNOON_SESSION_END;
   });
   const latestBar = params.bars.at(-1) ?? null;
-  const latestMinuteOfDay =
-    latestBar === null ? null : getHongKongParts(latestBar.timestamp).minuteOfDay;
+  const latestMinuteOfDay = latestBar?.minuteOfDay ?? null;
   const reachedPmCutoff =
     latestMinuteOfDay !== null && latestMinuteOfDay >= params.rules.pmConfirmCutoffMinutes;
   const holdBar =
     pmBars.find((bar) => {
-      const { minuteOfDay } = getHongKongParts(bar.timestamp);
-      return minuteOfDay >= AFTERNOON_SESSION_START + 15;
+      return bar.minuteOfDay >= AFTERNOON_SESSION_START + 15;
     }) ?? null;
   const amMoveDenominator =
     firstAmBar === undefined || lastAmBar === undefined ? 0 : lastAmBar.close - firstAmBar.close;

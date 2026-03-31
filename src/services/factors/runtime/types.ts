@@ -9,8 +9,8 @@ import type { CandleData } from '../../../types/data.js';
 
 /**
  * 运行时归一化后的 K 线条目。
- * 类型用途：承载 session / momentum / structure 计算所需的最小 OHLCV 数据。
- * 数据来源：由 runtime 的 candle normalization 逻辑从 CandleData 规整得到。
+ * 类型用途：承载 session / momentum / structure 计算所需的 OHLCV 与香港时间拆分结果。
+ * 数据来源：由 runtime 的 candle normalization 逻辑从 CandleData 规整并预计算香港时区信息得到。
  * 使用范围：factor runtime 内部 helper。
  */
 export type NormalizedBar = {
@@ -19,6 +19,8 @@ export type NormalizedBar = {
   readonly low: number;
   readonly volume: number;
   readonly timestamp: number;
+  readonly dayKey: string;
+  readonly minuteOfDay: number;
 };
 
 /**

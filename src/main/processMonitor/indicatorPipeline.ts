@@ -26,15 +26,20 @@ function buildTrendIndicatorSnapshot(params: {
   const quotePrice = monitorQuote?.price ?? null;
   const resolvedQuotePrice =
     quotePrice !== null && Number.isFinite(quotePrice) && quotePrice > 0 ? quotePrice : null;
+  if (resolvedQuotePrice === null) {
+    logger.warn(
+      `[${formatSymbolDisplay(cacheSnapshot.symbol)}] 监控标的实时价格无效，跳过本轮因子快照构建`,
+    );
+    return null;
+  }
 
   const changePercent =
-    resolvedQuotePrice !== null && monitorQuote !== null && monitorQuote.prevClose > 0
+    monitorQuote !== null && monitorQuote.prevClose > 0
       ? ((resolvedQuotePrice - monitorQuote.prevClose) / monitorQuote.prevClose) * 100
       : null;
   const factorSnapshot = buildTrendFactorSnapshot({
     candlesByPeriod,
-    // monitorQuote 价格异常时传 0，让因子 runtime 统一回退到最新有效 close。
-    currentPrice: resolvedQuotePrice ?? 0,
+    currentPrice: resolvedQuotePrice,
     strategyConfig,
   });
   if (!factorSnapshot) {
@@ -43,7 +48,7 @@ function buildTrendIndicatorSnapshot(params: {
 
   return {
     symbol: cacheSnapshot.symbol,
-    price: resolvedQuotePrice ?? factorSnapshot.benchmarkPrice,
+    price: resolvedQuotePrice,
     changePercent,
     factorSnapshot,
   };

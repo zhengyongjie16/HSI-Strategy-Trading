@@ -233,7 +233,7 @@ describe('processMonitor indicatorPipeline business flow', () => {
     expect(monitorChangesCount).toBe(0);
   });
 
-  it('falls back to latest close when monitor quote price is invalid', async () => {
+  it('returns null when monitor quote price is invalid', async () => {
     const runIndicatorPipeline = await loadRunIndicatorPipeline();
     const sessionBaseTimestamp = createHongKongSessionBaseTimestamp(9, 30);
     const candles = createCandles(120, 20_000, 1, sessionBaseTimestamp);
@@ -266,19 +266,8 @@ describe('processMonitor indicatorPipeline business flow', () => {
       } as never,
     });
 
-    expect(result).not.toBeNull();
-    if (!result) {
-      throw new Error('expected indicator snapshot');
-    }
-
-    const latestClose = candles.at(-1)?.close;
-    if (typeof latestClose !== 'number') {
-      throw new TypeError('expected numeric latest close');
-    }
-
-    expect(result.price).toBe(latestClose);
-    expect(result.changePercent).toBeNull();
-    expect(monitorChangesCount).toBe(1);
+    expect(result).toBeNull();
+    expect(monitorChangesCount).toBe(0);
   });
 
   it('rebuilds a fresh factor snapshot even when cache version is unchanged', async () => {

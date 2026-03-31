@@ -75,11 +75,38 @@ function normalizeBars(params: {
       low,
       volume,
       timestamp,
+      dayKey,
+      minuteOfDay,
     });
   }
 
-  normalized.sort((left, right) => left.timestamp - right.timestamp);
+  if (!isSortedByTimestamp(normalized)) {
+    normalized.sort((left, right) => left.timestamp - right.timestamp);
+  }
+
   return normalized;
+}
+
+/**
+ * 判断归一化后的 bars 是否已经按时间升序排列。
+ *
+ * @param bars 归一化后的 K 线集合
+ * @returns 是否已升序排列
+ */
+function isSortedByTimestamp(bars: ReadonlyArray<NormalizedBar>): boolean {
+  for (let index = 1; index < bars.length; index += 1) {
+    const previousBar = bars[index - 1];
+    const currentBar = bars[index];
+    if (!previousBar || !currentBar) {
+      continue;
+    }
+
+    if (previousBar.timestamp > currentBar.timestamp) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -212,7 +239,7 @@ export function buildTrendFactorSnapshot(params: {
     return null;
   }
 
-  const currentDayKey = getHongKongParts(latestKnownBar.timestamp).dayKey;
+  const currentDayKey = latestKnownBar.dayKey;
   const dayBars = filterBarsByDayKey(allSessionBars, currentDayKey);
   if (dayBars.length === 0) {
     return null;
@@ -223,8 +250,7 @@ export function buildTrendFactorSnapshot(params: {
     return null;
   }
 
-  const { minuteOfDay } = getHongKongParts(latestBar.timestamp);
-  const session = getSessionPhase(minuteOfDay);
+  const session = getSessionPhase(latestBar.minuteOfDay);
   if (session === 'closed') {
     return null;
   }
@@ -277,7 +303,7 @@ export function buildTrendFactorSnapshot(params: {
     bars: allSessionBars,
     currentDayKey,
     session,
-    cutoffMinuteOfDay: minuteOfDay,
+    cutoffMinuteOfDay: latestBar.minuteOfDay,
     rvQuantileWindowDays: params.strategyConfig.regimeThresholds.rvQuantileWindowDays,
   });
   const volQuantile = rvQuantile.volQuantile;

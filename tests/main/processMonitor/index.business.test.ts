@@ -246,4 +246,65 @@ describe('processMonitor end-to-end orchestration', () => {
     expect(buyTaskQueue.isEmpty()).toBeTrue();
     expect(sellTaskQueue.isEmpty()).toBeTrue();
   });
+
+  it('returns early when monitor quote price is invalid even if candles are available', async () => {
+    const processMonitor = await loadProcessMonitor();
+    let strategyCalls = 0;
+    const monitorContext = createStrategyRuntime({
+      autoSearchEnabled: false,
+      strategyGenerate: () => {
+        strategyCalls += 1;
+        return [];
+      },
+    });
+
+    const buyTaskQueue = createBuyTaskQueue();
+    const sellTaskQueue = createSellTaskQueue();
+    const monitorTaskQueue = createMonitorTaskQueue();
+    const sessionBaseTimestamp = createHongKongSessionBaseTimestamp(9, 30);
+    const candles = createCandles(120, 20_000, 2);
+    const sessionCandles = candles.map((candle, index) => ({
+      ...candle,
+      timestamp: sessionBaseTimestamp + index * 60_000,
+    }));
+
+    const params: ProcessMonitorParams = {
+      context: {
+        marketDataClient: {
+          getCandlestickSnapshot: () => createCacheSnapshot(sessionCandles, 1),
+        },
+        marketMonitor: {
+          monitorPriceChanges: () => false,
+          monitorIndicatorChanges: () => false,
+        },
+        buyTaskQueue,
+        sellTaskQueue,
+        monitorTaskQueue,
+        lastState: {
+          positionCache: createPositionCacheDouble(),
+        },
+      } as never,
+      monitorContext,
+      runtimeFlags: {
+        currentTime: new Date('2026-02-16T01:00:01.000Z'),
+        isHalfDay: false,
+        canTradeNow: true,
+        openProtectionActive: false,
+        isTradingEnabled: true,
+      },
+    };
+
+    await processMonitor(
+      params,
+      new Map([
+        ['HSI.HK', { ...createQuoteDouble('HSI.HK', 20_050), price: Number.NaN }],
+        ['BULL.HK', createQuoteDouble('BULL.HK', 1.1)],
+        ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9)],
+      ]),
+    );
+
+    expect(strategyCalls).toBe(0);
+    expect(buyTaskQueue.isEmpty()).toBeTrue();
+    expect(sellTaskQueue.isEmpty()).toBeTrue();
+  });
 });

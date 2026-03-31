@@ -10,6 +10,15 @@ import type { TradingSessionPhase } from '../../../types/factor';
 import type { HongKongParts, NormalizedBar } from './types';
 
 const HONG_KONG_TIMEZONE = 'Asia/Hong_Kong';
+const HONG_KONG_PARTS_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: HONG_KONG_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
 export const MORNING_SESSION_START = 9 * 60 + 30;
 export const MORNING_SESSION_END = 12 * 60;
 export const AFTERNOON_SESSION_START = 13 * 60;
@@ -266,6 +275,48 @@ export function computeEmaSeries(values: ReadonlyArray<number>, period: number):
 }
 
 /**
+ * 计算完整 EMA 有效序列。
+ *
+ * @param values 输入序列
+ * @param period EMA 周期
+ * @returns 从首个有效 EMA 开始的连续 EMA 序列
+ */
+function computeEmaValueSeries(
+  values: ReadonlyArray<number>,
+  period: number,
+): ReadonlyArray<number> {
+  if (values.length < period) {
+    return [];
+  }
+
+  const smoothing = 2 / (period + 1);
+  const series: number[] = [];
+  let seedSum = 0;
+  let ema: number | null = null;
+  for (const [index, value] of values.entries()) {
+    if (index < period - 1) {
+      seedSum += value;
+      continue;
+    }
+
+    if (index === period - 1) {
+      ema = (seedSum + value) / period;
+      series.push(ema);
+      continue;
+    }
+
+    if (ema === null) {
+      continue;
+    }
+
+    ema = value * smoothing + ema * (1 - smoothing);
+    series.push(ema);
+  }
+
+  return series;
+}
+
+/**
  * 计算 MACD。
  *
  * @param values 输入序列
@@ -276,9 +327,9 @@ export function computeMacd(values: ReadonlyArray<number>): {
   readonly dea: number | null;
   readonly macd: number | null;
 } {
-  const fast = computeEmaSeries(values, 12);
-  const slow = computeEmaSeries(values, 26);
-  if (fast === null || slow === null) {
+  const fastSeries = computeEmaValueSeries(values, 12);
+  const slowSeries = computeEmaValueSeries(values, 26);
+  if (fastSeries.length === 0 || slowSeries.length === 0) {
     return {
       dif: null,
       dea: null,
@@ -286,21 +337,25 @@ export function computeMacd(values: ReadonlyArray<number>): {
     };
   }
 
-  const dif = fast - slow;
+  const fastOffset = 12 - 1;
+  const slowOffset = 26 - 1;
+  const fastStartIndex = slowOffset - fastOffset;
   const macdBaseSeries: number[] = [];
-  for (let index = 0; index < values.length; index += 1) {
-    const seriesFast = computeEmaSeries(values.slice(0, index + 1), 12);
-    const seriesSlow = computeEmaSeries(values.slice(0, index + 1), 26);
-    if (seriesFast !== null && seriesSlow !== null) {
-      macdBaseSeries.push(seriesFast - seriesSlow);
+  for (const [index, slowValue] of slowSeries.entries()) {
+    const fastValue = fastSeries[index + fastStartIndex];
+    if (fastValue === undefined) {
+      continue;
     }
+
+    macdBaseSeries.push(fastValue - slowValue);
   }
 
+  const dif = macdBaseSeries.at(-1) ?? null;
   const dea = computeEmaSeries(macdBaseSeries, 9);
   return {
     dif,
     dea,
-    macd: dea === null ? null : (dif - dea) * 2,
+    macd: dif === null || dea === null ? null : (dif - dea) * 2,
   };
 }
 
@@ -371,16 +426,7 @@ export function computeSlope(values: ReadonlyArray<number>): number | null {
  * @returns 香港日期键与日内分钟数
  */
 export function getHongKongParts(timestamp: number): HongKongParts {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: HONG_KONG_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  const parts = formatter.formatToParts(new Date(timestamp));
+  const parts = HONG_KONG_PARTS_FORMATTER.formatToParts(new Date(timestamp));
   let year = '';
   let month = '';
   let day = '';
@@ -447,7 +493,7 @@ export function filterBarsByDayKey(
   bars: ReadonlyArray<NormalizedBar>,
   dayKey: string,
 ): ReadonlyArray<NormalizedBar> {
-  return bars.filter((bar) => getHongKongParts(bar.timestamp).dayKey === dayKey);
+  return bars.filter((bar) => bar.dayKey === dayKey);
 }
 
 /**
@@ -461,10 +507,7 @@ export function filterBarsBySession(
   bars: ReadonlyArray<NormalizedBar>,
   session: Exclude<TradingSessionPhase, 'closed'>,
 ): ReadonlyArray<NormalizedBar> {
-  return bars.filter((bar) => {
-    const { minuteOfDay } = getHongKongParts(bar.timestamp);
-    return getSessionPhase(minuteOfDay) === session;
-  });
+  return bars.filter((bar) => getSessionPhase(bar.minuteOfDay) === session);
 }
 
 /**
@@ -491,7 +534,7 @@ export function collectRecentTradingDayKeys(params: {
       continue;
     }
 
-    const { dayKey } = getHongKongParts(bar.timestamp);
+    const { dayKey } = bar;
     if (dayKey === params.currentDayKey || seen.has(dayKey)) {
       continue;
     }
@@ -519,16 +562,19 @@ export function sliceSessionBarsForDay(params: {
   readonly cutoffMinuteOfDay: number;
 }): ReadonlyArray<NormalizedBar> {
   return params.bars.filter((bar) => {
-    const { dayKey, minuteOfDay } = getHongKongParts(bar.timestamp);
-    if (dayKey !== params.dayKey) {
+    if (bar.dayKey !== params.dayKey) {
       return false;
     }
 
     if (params.session === 'am') {
-      return minuteOfDay >= MORNING_SESSION_START && minuteOfDay <= params.cutoffMinuteOfDay;
+      return (
+        bar.minuteOfDay >= MORNING_SESSION_START && bar.minuteOfDay <= params.cutoffMinuteOfDay
+      );
     }
 
-    return minuteOfDay >= AFTERNOON_SESSION_START && minuteOfDay <= params.cutoffMinuteOfDay;
+    return (
+      bar.minuteOfDay >= AFTERNOON_SESSION_START && bar.minuteOfDay <= params.cutoffMinuteOfDay
+    );
   });
 }
 

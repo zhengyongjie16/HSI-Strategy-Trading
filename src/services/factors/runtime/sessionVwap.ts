@@ -24,6 +24,9 @@ export function computeVwapSnapshot(params: {
   const amBars = filterBarsBySession(params.bars, 'am');
   const pmBars = filterBarsBySession(params.bars, 'pm');
   const slopeWindowBars = Math.max(1, Math.floor(params.slopeWindowBars));
+  const amVwapSeries = computeCumulativeVwapSeries(amBars);
+  const pmVwapSeries = computeCumulativeVwapSeries(pmBars);
+  const dayVwapSeries = computeCumulativeVwapSeries(params.bars);
   const activeSessionVwapSeries = computeCumulativeVwapSeries(params.activeSessionBars);
   const activeSessionVwap = activeSessionVwapSeries.at(-1) ?? null;
   const activeSessionVwapSlope = computeSlope(activeSessionVwapSeries.slice(-slopeWindowBars));
@@ -59,16 +62,9 @@ export function computeVwapSnapshot(params: {
   }
 
   return {
-    amVwap:
-      params.activeSessionBars.length === 0
-        ? null
-        : (computeCumulativeVwapSeries(amBars).at(-1) ?? null),
-    pmVwap:
-      params.activeSessionBars.length === 0
-        ? null
-        : (computeCumulativeVwapSeries(pmBars).at(-1) ?? null),
-    dayVwap:
-      params.bars.length === 0 ? null : (computeCumulativeVwapSeries(params.bars).at(-1) ?? null),
+    amVwap: params.activeSessionBars.length === 0 ? null : (amVwapSeries.at(-1) ?? null),
+    pmVwap: params.activeSessionBars.length === 0 ? null : (pmVwapSeries.at(-1) ?? null),
+    dayVwap: params.bars.length === 0 ? null : (dayVwapSeries.at(-1) ?? null),
     activeSessionVwap,
     activeSessionVwapSlope,
     crossCountLast10m,
