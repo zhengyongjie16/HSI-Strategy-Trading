@@ -8,7 +8,6 @@
  */
 import { Decimal } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
-import { TRADING } from '../../../constants/index.js';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { isDefined } from '../../utils.js';
 import type { Signal } from '../../../types/signal.js';
@@ -97,9 +96,14 @@ function calculateBuyQuantity(
     return Decimal.ZERO();
   }
 
-  const notional = isValidPositiveNumber(targetNotional)
-    ? targetNotional
-    : TRADING.DEFAULT_TARGET_NOTIONAL;
+  if (!isValidPositiveNumber(targetNotional)) {
+    logger.error(
+      `[跳过订单] targetNotional 无效(${String(targetNotional)})，拒绝使用非配置化默认金额下单`,
+    );
+    return Decimal.ZERO();
+  }
+
+  const notional = targetNotional;
   const lotSize: number = signal.lotSize ?? 0;
   if (!Number.isFinite(lotSize) || lotSize <= 0) {
     logger.error(`[跳过订单] lotSize 无效(${lotSize})，这不应该发生，请检查配置验证逻辑`);

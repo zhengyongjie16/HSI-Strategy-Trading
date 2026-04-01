@@ -1,4 +1,3 @@
-import type { OrderType } from 'longbridge';
 import type {
   AutoSearchConfig,
   ErThresholdConfig,
@@ -14,15 +13,12 @@ import type {
   VwapConfirmRulesConfig,
 } from '../../types/config.js';
 import type { OrderTypeConfig } from '../../types/signal.js';
-import { OPEN_API_ORDER_TYPE_TO_CONFIG, STRATEGY, TRADING } from '../../constants/index.js';
 import {
   createConfigValidationError,
-  getBooleanConfig,
   getStringConfig,
   parseLiquidationCooldownConfig,
   parseNumberRangeConfig,
   parseOrderOwnershipMapping,
-  parseOrderTypeConfig,
 } from '../utils.js';
 import type { BoundedNumberConfig, MinimumNumberConfig } from './types.js';
 
@@ -30,7 +26,7 @@ import type { BoundedNumberConfig, MinimumNumberConfig } from './types.js';
  * 解析数值配置的通用内部实现。
  *
  * @param options 解析参数
- * @returns 合法数值，或在配置缺失时返回 defaultValue / null
+ * @returns 合法数值；配置缺失且未提供 defaultValue 时返回 null
  */
 function parseNumericConfig({
   env,
@@ -44,7 +40,7 @@ function parseNumericConfig({
 }: {
   readonly env: NodeJS.ProcessEnv;
   readonly envKey: string;
-  readonly defaultValue: number;
+  readonly defaultValue?: number;
   readonly min: number;
   readonly max: number;
   readonly integer?: boolean;
@@ -57,7 +53,11 @@ function parseNumericConfig({
       throw createConfigValidationError(`[配置错误] ${envKey} 未配置`, [envKey]);
     }
 
-    return nullable ? null : defaultValue;
+    if (nullable || defaultValue === undefined) {
+      return null;
+    }
+
+    return defaultValue;
   }
 
   const value = Number(raw);
@@ -86,7 +86,6 @@ function parseNumericConfig({
 function parseRequiredNumericConfig(options: {
   readonly env: NodeJS.ProcessEnv;
   readonly envKey: string;
-  readonly defaultValue: number;
   readonly min: number;
   readonly max: number;
   readonly integer?: boolean;
@@ -97,6 +96,88 @@ function parseRequiredNumericConfig(options: {
   }
 
   return value;
+}
+
+/**
+ * 解析 HH:MM 形式的必填时间配置。
+ *
+ * @param env 进程环境变量对象
+ * @param envKey 环境变量键名
+ * @returns 合法的 HH:MM 时间字符串
+ */
+function parseRequiredTimeOfDayConfig(env: NodeJS.ProcessEnv, envKey: string): string {
+  const value = getStringConfig(env, envKey);
+  if (!value) {
+    throw createConfigValidationError(`[配置错误] ${envKey} 未配置`, [envKey]);
+  }
+
+  const timePattern = /^(\d{2}):(\d{2})$/;
+  const match = timePattern.exec(value);
+  if (!match) {
+    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为 HH:MM 格式）`, [envKey]);
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours > 23 || minutes > 59) {
+    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为合法的 24 小时制时间）`, [
+      envKey,
+    ]);
+  }
+
+  return `${match[1]}:${match[2]}`;
+}
+
+/**
+ * 解析布尔配置的必填版本。
+ *
+ * @param env 进程环境变量对象
+ * @param envKey 环境变量键名
+ * @returns 合法布尔值
+ */
+function parseRequiredBooleanConfig(env: NodeJS.ProcessEnv, envKey: string): boolean {
+  const value = getStringConfig(env, envKey);
+  if (!value) {
+    throw createConfigValidationError(`[配置错误] ${envKey} 未配置`, [envKey]);
+  }
+
+  const normalizedValue = value.toLowerCase();
+  if (normalizedValue === 'true') {
+    return true;
+  }
+
+  if (normalizedValue === 'false') {
+    return false;
+  }
+
+  throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为 true 或 false）`, [envKey]);
+}
+
+/**
+ * 解析可选清仓冷却配置：缺失时允许为空，显式非法时立即失败。
+ *
+ * @param env 进程环境变量对象
+ * @param envKey 环境变量键名
+ * @returns 合法冷却配置；缺失时返回 null
+ */
+function parseOptionalLiquidationCooldownConfig(
+  env: NodeJS.ProcessEnv,
+  envKey: string,
+): StrategyConfig['liquidationCooldown'] {
+  const rawValue = getStringConfig(env, envKey);
+  if (rawValue === null) {
+    return null;
+  }
+
+  const cooldown = parseLiquidationCooldownConfig(env, envKey);
+  if (cooldown !== null) {
+    return cooldown;
+  }
+
+  throw createConfigValidationError(
+    `[配置错误] ${envKey} 无效（必须为 1-120 分钟、half-day 或 one-day）`,
+    [envKey],
+  );
 }
 
 /**
@@ -118,49 +199,6 @@ function parseRequiredNumberRangeConfig(env: NodeJS.ProcessEnv, envKey: string):
 }
 
 /**
- * 解析 HH:MM 形式的时间配置。
- *
- * @param options 解析参数
- * @returns 合法的 HH:MM 时间字符串
- */
-function parseTimeOfDayConfig({
-  env,
-  envKey,
-  defaultValue,
-  required = false,
-}: {
-  readonly env: NodeJS.ProcessEnv;
-  readonly envKey: string;
-  readonly defaultValue: string;
-  readonly required?: boolean;
-}): string {
-  const value = getStringConfig(env, envKey);
-  if (!value) {
-    if (required) {
-      throw createConfigValidationError(`[配置错误] ${envKey} 未配置`, [envKey]);
-    }
-
-    return defaultValue;
-  }
-
-  const timePattern = /^(\d{2}):(\d{2})$/;
-  const match = timePattern.exec(value);
-  if (!match) {
-    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为 HH:MM 格式）`, [envKey]);
-  }
-
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours > 23 || minutes > 59) {
-    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为合法的 24 小时制时间）`, [
-      envKey,
-    ]);
-  }
-
-  return `${match[1]}:${match[2]}`;
-}
-
-/**
  * 解析席位模式。
  *
  * @param env 进程环境变量对象
@@ -169,7 +207,7 @@ function parseTimeOfDayConfig({
 function parseSeatModeConfig(env: NodeJS.ProcessEnv): SeatMode {
   const value = getStringConfig(env, 'SEAT_MODE');
   if (!value) {
-    return STRATEGY.DEFAULT_SEAT_MODE;
+    throw createConfigValidationError('[配置错误] SEAT_MODE 未配置', ['SEAT_MODE']);
   }
 
   if (value === 'static' || value === 'auto') {
@@ -182,44 +220,35 @@ function parseSeatModeConfig(env: NodeJS.ProcessEnv): SeatMode {
 }
 
 /**
- * 解析关键数值配置：未配置时使用默认值，显式配置非法或越界时立即失败。
+ * 解析关键数值配置：缺失或显式非法时立即失败。
  *
- * @param options 包含 env、envKey、defaultValue、min、max 的配置对象
+ * @param options 包含 env、envKey、min、max 的配置对象
  * @returns 合法范围内的数值
  */
-function parseFailFastBoundedNumberConfig({
-  env,
-  envKey,
-  defaultValue,
-  min,
-  max,
-}: BoundedNumberConfig): number {
+function parseFailFastBoundedNumberConfig({ env, envKey, min, max }: BoundedNumberConfig): number {
   return parseRequiredNumericConfig({
     env,
     envKey,
-    defaultValue,
     min,
     max,
   });
 }
 
 /**
- * 解析关键整数配置：未配置时使用默认值，显式配置非法、非整数或越界时立即失败。
+ * 解析关键整数配置：缺失或显式非法、非整数、越界时立即失败。
  *
- * @param options 包含 env、envKey、defaultValue、min、max 的配置对象
+ * @param options 包含 env、envKey、min、max 的配置对象
  * @returns 合法范围内的整数
  */
 function parseFailFastIntegerBoundedNumberConfig({
   env,
   envKey,
-  defaultValue,
   min,
   max,
 }: BoundedNumberConfig): number {
   return parseRequiredNumericConfig({
     env,
     envKey,
-    defaultValue,
     min,
     max,
     integer: true,
@@ -227,34 +256,18 @@ function parseFailFastIntegerBoundedNumberConfig({
 }
 
 /**
- * 解析关键数值配置：未配置时使用默认值，显式配置非法或小于下限时立即失败。
+ * 解析关键数值配置：缺失或显式非法、小于下限时立即失败。
  *
- * @param options 包含 env、envKey、defaultValue、min 的配置对象
+ * @param options 包含 env、envKey、min 的配置对象
  * @returns 大于等于 min 的合法数值
  */
-function parseFailFastMinimumNumberConfig({
-  env,
-  envKey,
-  defaultValue,
-  min,
-}: MinimumNumberConfig): number {
+function parseFailFastMinimumNumberConfig({ env, envKey, min }: MinimumNumberConfig): number {
   return parseRequiredNumericConfig({
     env,
     envKey,
-    defaultValue,
     min,
     max: Number.POSITIVE_INFINITY,
   });
-}
-
-/**
- * 将 OpenAPI 订单类型映射为内部订单类型配置。
- *
- * @param orderType OpenAPI 订单类型
- * @returns 内部订单类型配置
- */
-function mapOrderTypeConfig(orderType: OrderType): OrderTypeConfig {
-  return OPEN_API_ORDER_TYPE_TO_CONFIG[orderType] ?? 'ELO';
 }
 
 /**
@@ -262,15 +275,19 @@ function mapOrderTypeConfig(orderType: OrderType): OrderTypeConfig {
  *
  * @param env 进程环境变量对象
  * @param envKey 环境变量键名
- * @param defaultType 默认订单类型
  * @returns 内部订单类型配置
  */
-function parseTradingOrderType(
-  env: NodeJS.ProcessEnv,
-  envKey: string,
-  defaultType: OrderTypeConfig,
-): OrderTypeConfig {
-  return mapOrderTypeConfig(parseOrderTypeConfig(env, envKey, defaultType));
+function parseRequiredTradingOrderType(env: NodeJS.ProcessEnv, envKey: string): OrderTypeConfig {
+  const value = getStringConfig(env, envKey);
+  if (!value) {
+    throw createConfigValidationError(`[配置错误] ${envKey} 未配置`, [envKey]);
+  }
+
+  if (value === 'LO' || value === 'ELO' || value === 'MO') {
+    return value;
+  }
+
+  throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为 LO、ELO 或 MO）`, [envKey]);
 }
 
 /**
@@ -285,86 +302,65 @@ function parseAutoSearchConfig(env: NodeJS.ProcessEnv, seatMode: SeatMode): Auto
   if (!autoSearchEnabled) {
     return {
       autoSearchEnabled,
-      autoSearchMinDistancePctBull: STRATEGY.AUTO_SEARCH.minDistancePctBull,
-      autoSearchMinDistancePctBear: STRATEGY.AUTO_SEARCH.minDistancePctBear,
-      autoSearchMinTurnoverPerMinuteBull: STRATEGY.AUTO_SEARCH.minTurnoverPerMinuteBull,
-      autoSearchMinTurnoverPerMinuteBear: STRATEGY.AUTO_SEARCH.minTurnoverPerMinuteBear,
-      autoSearchExpiryMinMonths: STRATEGY.AUTO_SEARCH.expiryMinMonths,
-      autoSearchOpenDelayMinutes: STRATEGY.AUTO_SEARCH.openDelayMinutes,
-      switchIntervalMinutes: STRATEGY.AUTO_SEARCH.switchIntervalMinutes,
-      switchDistanceRangeBull: STRATEGY.AUTO_SEARCH.switchDistanceRangeBull,
-      switchDistanceRangeBear: STRATEGY.AUTO_SEARCH.switchDistanceRangeBear,
+      autoSearchMinDistancePctBull: null,
+      autoSearchMinDistancePctBear: null,
+      autoSearchMinTurnoverPerMinuteBull: null,
+      autoSearchMinTurnoverPerMinuteBear: null,
+      autoSearchExpiryMinMonths: 0,
+      autoSearchOpenDelayMinutes: 0,
+      switchIntervalMinutes: 0,
+      switchDistanceRangeBull: null,
+      switchDistanceRangeBear: null,
     };
   }
 
   return {
     autoSearchEnabled,
-    autoSearchMinDistancePctBull:
-      parseNumericConfig({
-        env,
-        envKey: 'AUTO_SEARCH_MIN_DISTANCE_PCT_BULL',
-        defaultValue: STRATEGY.AUTO_SEARCH.minDistancePctBull,
-        min: 0,
-        max: 10,
-        required: true,
-      }) ?? STRATEGY.AUTO_SEARCH.minDistancePctBull,
-    autoSearchMinDistancePctBear:
-      parseNumericConfig({
-        env,
-        envKey: 'AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR',
-        defaultValue: STRATEGY.AUTO_SEARCH.minDistancePctBear,
-        min: -10,
-        max: 0,
-        required: true,
-      }) ?? STRATEGY.AUTO_SEARCH.minDistancePctBear,
-    autoSearchMinTurnoverPerMinuteBull:
-      parseNumericConfig({
-        env,
-        envKey: 'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL',
-        defaultValue: STRATEGY.AUTO_SEARCH.minTurnoverPerMinuteBull,
-        min: 1,
-        max: Number.POSITIVE_INFINITY,
-        required: true,
-      }) ?? STRATEGY.AUTO_SEARCH.minTurnoverPerMinuteBull,
-    autoSearchMinTurnoverPerMinuteBear:
-      parseNumericConfig({
-        env,
-        envKey: 'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR',
-        defaultValue: STRATEGY.AUTO_SEARCH.minTurnoverPerMinuteBear,
-        min: 1,
-        max: Number.POSITIVE_INFINITY,
-        required: true,
-      }) ?? STRATEGY.AUTO_SEARCH.minTurnoverPerMinuteBear,
-    autoSearchExpiryMinMonths:
-      parseNumericConfig({
-        env,
-        envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
-        defaultValue: STRATEGY.AUTO_SEARCH.expiryMinMonths,
-        min: 1,
-        max: 120,
-        integer: true,
-        required: true,
-      }) ?? STRATEGY.AUTO_SEARCH.expiryMinMonths,
-    autoSearchOpenDelayMinutes:
-      parseNumericConfig({
-        env,
-        envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
-        defaultValue: STRATEGY.AUTO_SEARCH.openDelayMinutes,
-        min: 0,
-        max: 60,
-        integer: true,
-        required: true,
-      }) ?? STRATEGY.AUTO_SEARCH.openDelayMinutes,
-    switchIntervalMinutes:
-      parseNumericConfig({
-        env,
-        envKey: 'SWITCH_INTERVAL_MINUTES',
-        defaultValue: STRATEGY.AUTO_SEARCH.switchIntervalMinutes,
-        min: 0,
-        max: 120,
-        integer: true,
-        required: true,
-      }) ?? STRATEGY.AUTO_SEARCH.switchIntervalMinutes,
+    autoSearchMinDistancePctBull: parseRequiredNumericConfig({
+      env,
+      envKey: 'AUTO_SEARCH_MIN_DISTANCE_PCT_BULL',
+      min: 0,
+      max: 10,
+    }),
+    autoSearchMinDistancePctBear: parseRequiredNumericConfig({
+      env,
+      envKey: 'AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR',
+      min: -10,
+      max: 0,
+    }),
+    autoSearchMinTurnoverPerMinuteBull: parseRequiredNumericConfig({
+      env,
+      envKey: 'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL',
+      min: 1,
+      max: Number.POSITIVE_INFINITY,
+    }),
+    autoSearchMinTurnoverPerMinuteBear: parseRequiredNumericConfig({
+      env,
+      envKey: 'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR',
+      min: 1,
+      max: Number.POSITIVE_INFINITY,
+    }),
+    autoSearchExpiryMinMonths: parseRequiredNumericConfig({
+      env,
+      envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
+      min: 1,
+      max: 120,
+      integer: true,
+    }),
+    autoSearchOpenDelayMinutes: parseRequiredNumericConfig({
+      env,
+      envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
+      min: 0,
+      max: 60,
+      integer: true,
+    }),
+    switchIntervalMinutes: parseRequiredNumericConfig({
+      env,
+      envKey: 'SWITCH_INTERVAL_MINUTES',
+      min: 0,
+      max: 120,
+      integer: true,
+    }),
     switchDistanceRangeBull: parseRequiredNumberRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BULL'),
     switchDistanceRangeBear: parseRequiredNumberRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BEAR'),
   };
@@ -381,63 +377,54 @@ function parseRegimeThresholdConfig(env: NodeJS.ProcessEnv): RegimeThresholdConf
     atrShortPeriod: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_ATR_SHORT_PERIOD',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.atrShortPeriod,
       min: 1,
       max: 250,
     }),
     atrLongPeriod: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_ATR_LONG_PERIOD',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.atrLongPeriod,
       min: 1,
       max: 250,
     }),
     rvQuantileWindowDays: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_RV_QUANTILE_WINDOW_DAYS',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.rvQuantileWindowDays,
       min: 1,
       max: 250,
     }),
     trendOnVolExpansion: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_TREND_ON_VOL_EXPANSION',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.trendOnVolExpansion,
       min: 0,
       max: 10,
     }),
     trendOffVolExpansion: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_TREND_OFF_VOL_EXPANSION',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.trendOffVolExpansion,
       min: 0,
       max: 10,
     }),
     extremeVolExpansion: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_EXTREME_VOL_EXPANSION',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.extremeVolExpansion,
       min: 0,
       max: 10,
     }),
     trendOnVolQuantile: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_TREND_ON_VOL_QUANTILE',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.trendOnVolQuantile,
       min: 0,
       max: 1,
     }),
     trendOffVolQuantile: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_TREND_OFF_VOL_QUANTILE',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.trendOffVolQuantile,
       min: 0,
       max: 1,
     }),
     extremeVolQuantile: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'REGIME_THRESHOLDS_EXTREME_VOL_QUANTILE',
-      defaultValue: STRATEGY.REGIME_THRESHOLDS.extremeVolQuantile,
       min: 0,
       max: 1,
     }),
@@ -455,49 +442,42 @@ function parseTrendScoreThresholdConfig(env: NodeJS.ProcessEnv): TrendScoreThres
     w15: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'TREND_SCORE_THRESHOLDS_W15',
-      defaultValue: STRATEGY.TREND_SCORE_THRESHOLDS.w15,
       min: 0,
       max: 1,
     }),
     w30: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'TREND_SCORE_THRESHOLDS_W30',
-      defaultValue: STRATEGY.TREND_SCORE_THRESHOLDS.w30,
       min: 0,
       max: 1,
     }),
     w60: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'TREND_SCORE_THRESHOLDS_W60',
-      defaultValue: STRATEGY.TREND_SCORE_THRESHOLDS.w60,
       min: 0,
       max: 1,
     }),
     classificationThreshold: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'TREND_SCORE_THRESHOLDS_CLASSIFICATION_THRESHOLD',
-      defaultValue: STRATEGY.TREND_SCORE_THRESHOLDS.classificationThreshold,
       min: 0,
       max: 10,
     }),
     entryThreshold: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'TREND_SCORE_THRESHOLDS_ENTRY_THRESHOLD',
-      defaultValue: STRATEGY.TREND_SCORE_THRESHOLDS.entryThreshold,
       min: 0,
       max: 10,
     }),
     exitThreshold: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'TREND_SCORE_THRESHOLDS_EXIT_THRESHOLD',
-      defaultValue: STRATEGY.TREND_SCORE_THRESHOLDS.exitThreshold,
       min: 0,
       max: 10,
     }),
     reverseInvalidationThreshold: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'TREND_SCORE_THRESHOLDS_REVERSE_INVALIDATION_THRESHOLD',
-      defaultValue: STRATEGY.TREND_SCORE_THRESHOLDS.reverseInvalidationThreshold,
       min: 0,
       max: 10,
     }),
@@ -515,35 +495,30 @@ function parseErThresholdConfig(env: NodeJS.ProcessEnv): ErThresholdConfig {
     er15EntryMin: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'ER_THRESHOLDS_ER15_ENTRY_MIN',
-      defaultValue: STRATEGY.ER_THRESHOLDS.er15EntryMin,
       min: 0,
       max: 10,
     }),
     er30EntryMin: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'ER_THRESHOLDS_ER30_ENTRY_MIN',
-      defaultValue: STRATEGY.ER_THRESHOLDS.er30EntryMin,
       min: 0,
       max: 10,
     }),
     er15ExitMax: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'ER_THRESHOLDS_ER15_EXIT_MAX',
-      defaultValue: STRATEGY.ER_THRESHOLDS.er15ExitMax,
       min: 0,
       max: 10,
     }),
     er30ExitMax: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'ER_THRESHOLDS_ER30_EXIT_MAX',
-      defaultValue: STRATEGY.ER_THRESHOLDS.er30ExitMax,
       min: 0,
       max: 10,
     }),
     strongTrendErFloor: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'ER_THRESHOLDS_STRONG_TREND_ER_FLOOR',
-      defaultValue: STRATEGY.ER_THRESHOLDS.strongTrendErFloor,
       min: 0,
       max: 10,
     }),
@@ -561,21 +536,18 @@ function parseVwapConfirmRulesConfig(env: NodeJS.ProcessEnv): VwapConfirmRulesCo
     distanceBandAtr: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'VWAP_CONFIRM_RULES_DISTANCE_BAND_ATR',
-      defaultValue: STRATEGY.VWAP_CONFIRM_RULES.distanceBandAtr,
       min: 0,
       max: 1,
     }),
     slopeWindowBars: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'VWAP_CONFIRM_RULES_SLOPE_WINDOW_BARS',
-      defaultValue: STRATEGY.VWAP_CONFIRM_RULES.slopeWindowBars,
-      min: 1,
+      min: 2,
       max: 120,
     }),
     maxCrossCountLast10m: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'VWAP_CONFIRM_RULES_MAX_CROSS_COUNT_LAST10M',
-      defaultValue: STRATEGY.VWAP_CONFIRM_RULES.maxCrossCountLast10m,
       min: 0,
       max: 20,
     }),
@@ -593,56 +565,48 @@ function parseOpeningStructureRulesConfig(env: NodeJS.ProcessEnv): OpeningStruct
     openingRangeMinutes: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_OR_WINDOW_MINUTES',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.openingRangeMinutes,
       min: 1,
       max: 120,
     }),
     morningNoiseWindowMinutes: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_MORNING_NOISE_WINDOW_MINUTES',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.morningNoiseWindowMinutes,
       min: 1,
       max: 120,
     }),
     afternoonNoiseWindowMinutes: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_AFTERNOON_NOISE_WINDOW_MINUTES',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.afternoonNoiseWindowMinutes,
       min: 1,
       max: 120,
     }),
     breakoutScoreMin: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_BREAKOUT_SCORE_MIN',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.breakoutScoreMin,
       min: 0,
       max: 10,
     }),
     outsidePersistenceWindowBars: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_OUTSIDE_PERSISTENCE_WINDOW_BARS',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.outsidePersistenceWindowBars,
       min: 1,
       max: 30,
     }),
     outsidePersistenceMin: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_OUTSIDE_PERSISTENCE_MIN',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.outsidePersistenceMin,
       min: 0,
       max: 1,
     }),
     retestToleranceAtr: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_RETEST_TOLERANCE_ATR',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.retestToleranceAtr,
       min: 0,
       max: 1,
     }),
     confirmBars: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'OPENING_STRUCTURE_RULES_CONFIRM_BARS',
-      defaultValue: STRATEGY.OPENING_STRUCTURE_RULES.confirmBars,
       min: 1,
       max: 10,
     }),
@@ -660,36 +624,31 @@ function parsePmContinuationRulesConfig(env: NodeJS.ProcessEnv): PmContinuationR
     amMoveZMin: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'PM_CONTINUATION_RULES_AM_MOVE_Z_MIN',
-      defaultValue: STRATEGY.PM_CONTINUATION_RULES.amMoveZMin,
       min: 0,
       max: 10,
     }),
     middayHoldMin: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'PM_CONTINUATION_RULES_MIDDAY_HOLD_MIN',
-      defaultValue: STRATEGY.PM_CONTINUATION_RULES.middayHoldMin,
       min: 0,
       max: 1,
     }),
     pmReExpansionTrendScoreMin: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'PM_CONTINUATION_RULES_PM_RE_EXPANSION_TREND_SCORE_MIN',
-      defaultValue: STRATEGY.PM_CONTINUATION_RULES.pmReExpansionTrendScoreMin,
       min: 0,
       max: 10,
     }),
     pmReExpansionEr15Min: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'PM_CONTINUATION_RULES_PM_RE_EXPANSION_ER15_MIN',
-      defaultValue: STRATEGY.PM_CONTINUATION_RULES.pmReExpansionEr15Min,
       min: 0,
       max: 1,
     }),
-    pmConfirmCutoffTime: parseTimeOfDayConfig({
+    pmConfirmCutoffTime: parseRequiredTimeOfDayConfig(
       env,
-      envKey: 'PM_CONTINUATION_RULES_PM_CONFIRM_CUTOFF_TIME',
-      defaultValue: STRATEGY.PM_CONTINUATION_RULES.pmConfirmCutoffTime,
-    }),
+      'PM_CONTINUATION_RULES_PM_CONFIRM_CUTOFF_TIME',
+    ),
   };
 }
 
@@ -706,28 +665,24 @@ function parseInstrumentAdaptationRulesConfig(
     bullBuyMinDistancePct: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'INSTRUMENT_ADAPTATION_RULES_BULL_BUY_MIN_DISTANCE_PCT',
-      defaultValue: STRATEGY.INSTRUMENT_ADAPTATION_RULES.bullBuyMinDistancePct,
       min: 0,
       max: 10,
     }),
     bearBuyMaxDistancePct: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'INSTRUMENT_ADAPTATION_RULES_BEAR_BUY_MAX_DISTANCE_PCT',
-      defaultValue: STRATEGY.INSTRUMENT_ADAPTATION_RULES.bearBuyMaxDistancePct,
       min: -10,
       max: 0,
     }),
     bullLiquidationDistancePct: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'INSTRUMENT_ADAPTATION_RULES_BULL_LIQUIDATION_DISTANCE_PCT',
-      defaultValue: STRATEGY.INSTRUMENT_ADAPTATION_RULES.bullLiquidationDistancePct,
       min: 0,
       max: 10,
     }),
     bearLiquidationDistancePct: parseFailFastBoundedNumberConfig({
       env,
       envKey: 'INSTRUMENT_ADAPTATION_RULES_BEAR_LIQUIDATION_DISTANCE_PCT',
-      defaultValue: STRATEGY.INSTRUMENT_ADAPTATION_RULES.bearLiquidationDistancePct,
       min: -10,
       max: 0,
     }),
@@ -754,33 +709,28 @@ export function parseStrategyConfig(env: NodeJS.ProcessEnv): StrategyConfig {
     targetNotional: parseFailFastMinimumNumberConfig({
       env,
       envKey: 'TARGET_NOTIONAL',
-      defaultValue: TRADING.DEFAULT_TARGET_NOTIONAL,
       min: 1,
     }),
     maxPositionNotional: parseFailFastMinimumNumberConfig({
       env,
       envKey: 'MAX_POSITION_NOTIONAL',
-      defaultValue: TRADING.DEFAULT_MAX_POSITION_NOTIONAL,
       min: 1,
     }),
-    maxUnrealizedLoss: parseFailFastMinimumNumberConfig({
+    maxUnrealizedLossPerSymbol: parseFailFastMinimumNumberConfig({
       env,
-      envKey: 'MAX_UNREALIZED_LOSS',
-      defaultValue: TRADING.DEFAULT_MAX_UNREALIZED_LOSS,
+      envKey: 'MAX_UNREALIZED_LOSS_PER_SYMBOL',
       min: 0,
     }),
     buyIntervalSeconds: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'BUY_INTERVAL_SECONDS',
-      defaultValue: TRADING.DEFAULT_BUY_INTERVAL_SECONDS,
       min: 10,
       max: 600,
     }),
-    liquidationCooldown: parseLiquidationCooldownConfig(env, 'LIQUIDATION_COOLDOWN'),
+    liquidationCooldown: parseOptionalLiquidationCooldownConfig(env, 'LIQUIDATION_COOLDOWN'),
     liquidationTriggerLimit: parseFailFastIntegerBoundedNumberConfig({
       env,
       envKey: 'LIQUIDATION_TRIGGER_LIMIT',
-      defaultValue: TRADING.DEFAULT_LIQUIDATION_TRIGGER_LIMIT,
       min: 1,
       max: 10,
     }),
@@ -801,76 +751,66 @@ export function parseStrategyConfig(env: NodeJS.ProcessEnv): StrategyConfig {
  * @returns 全局配置
  */
 export function parseGlobalConfig(env: NodeJS.ProcessEnv): GlobalConfig {
-  const buyOrderTimeoutEnabled = getBooleanConfig(env, 'BUY_ORDER_TIMEOUT_ENABLED', true);
+  const buyOrderTimeoutEnabled = parseRequiredBooleanConfig(env, 'BUY_ORDER_TIMEOUT_ENABLED');
   const buyOrderTimeoutSeconds = buyOrderTimeoutEnabled
     ? parseFailFastIntegerBoundedNumberConfig({
         env,
         envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
-        defaultValue: TRADING.DEFAULT_ORDER_TIMEOUT_SECONDS,
         min: 30,
         max: 600,
       })
-    : TRADING.DEFAULT_ORDER_TIMEOUT_SECONDS;
-  const sellOrderTimeoutEnabled = getBooleanConfig(env, 'SELL_ORDER_TIMEOUT_ENABLED', true);
+    : 0;
+  const sellOrderTimeoutEnabled = parseRequiredBooleanConfig(env, 'SELL_ORDER_TIMEOUT_ENABLED');
   const sellOrderTimeoutSeconds = sellOrderTimeoutEnabled
     ? parseFailFastIntegerBoundedNumberConfig({
         env,
         envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
-        defaultValue: TRADING.DEFAULT_ORDER_TIMEOUT_SECONDS,
         min: 30,
         max: 600,
       })
-    : TRADING.DEFAULT_ORDER_TIMEOUT_SECONDS;
+    : 0;
   const orderMonitorPriceUpdateInterval = parseFailFastIntegerBoundedNumberConfig({
     env,
     envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
-    defaultValue: TRADING.DEFAULT_ORDER_MONITOR_PRICE_UPDATE_INTERVAL,
     min: 1,
     max: 60,
   });
-  const allowBuyOrderTrackingAboveInitialPrice = getBooleanConfig(
+  const allowBuyOrderTrackingAboveInitialPrice = parseRequiredBooleanConfig(
     env,
     'ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE',
-    true,
   );
-  const morningOpenProtectionEnabled = getBooleanConfig(
+  const morningOpenProtectionEnabled = parseRequiredBooleanConfig(
     env,
     'MORNING_OPENING_PROTECTION_ENABLED',
-    false,
   );
   const morningOpenProtectionMinutes = morningOpenProtectionEnabled
-    ? parseNumericConfig({
+    ? parseRequiredNumericConfig({
         env,
         envKey: 'MORNING_OPENING_PROTECTION_MINUTES',
-        defaultValue: 0,
         min: 1,
         max: 60,
         integer: true,
-        nullable: true,
       })
     : null;
-  const afternoonOpenProtectionEnabled = getBooleanConfig(
+  const afternoonOpenProtectionEnabled = parseRequiredBooleanConfig(
     env,
     'AFTERNOON_OPENING_PROTECTION_ENABLED',
-    false,
   );
   const afternoonOpenProtectionMinutes = afternoonOpenProtectionEnabled
-    ? parseNumericConfig({
+    ? parseRequiredNumericConfig({
         env,
         envKey: 'AFTERNOON_OPENING_PROTECTION_MINUTES',
-        defaultValue: 0,
         min: 1,
         max: 60,
         integer: true,
-        nullable: true,
       })
     : null;
-  const tradingOrderType = parseTradingOrderType(env, 'TRADING_ORDER_TYPE', 'ELO');
-  const liquidationOrderType = parseTradingOrderType(env, 'LIQUIDATION_ORDER_TYPE', 'MO');
+  const tradingOrderType = parseRequiredTradingOrderType(env, 'TRADING_ORDER_TYPE');
+  const liquidationOrderType = parseRequiredTradingOrderType(env, 'LIQUIDATION_ORDER_TYPE');
 
   return {
-    doomsdayProtection: getBooleanConfig(env, 'DOOMSDAY_PROTECTION', true),
-    debug: getBooleanConfig(env, 'DEBUG', false),
+    doomsdayProtection: parseRequiredBooleanConfig(env, 'DOOMSDAY_PROTECTION'),
+    debug: parseRequiredBooleanConfig(env, 'DEBUG'),
     openProtection: {
       morning: {
         enabled: morningOpenProtectionEnabled,

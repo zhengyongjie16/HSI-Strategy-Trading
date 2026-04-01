@@ -6,7 +6,7 @@ import type { LastState } from '../../../types/state.js';
 import type { Position } from '../../../types/account.js';
 import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { Quote } from '../../../types/quote.js';
-import type { Signal } from '../../../types/signal.js';
+import type { OrderTypeConfig, Signal } from '../../../types/signal.js';
 import type { SeatState, SymbolRegistry } from '../../../types/seat.js';
 import type {
   RawOrderFromAPI,
@@ -185,6 +185,7 @@ export type CreateLiquidationTaskParams = Readonly<{
   monitorPrice: number;
   riskChecker: RiskChecker;
   riskCheckerConfig: StrategyRuntimeConfig;
+  liquidationOrderType: OrderTypeConfig;
 }>;
 
 /**
@@ -249,6 +250,7 @@ export type MonitorTaskProcessorDeps = Readonly<{
   marketDataClient: MarketDataClient;
   lastState: LastState;
   monitorConfig: StrategyRuntimeConfig;
+  liquidationOrderType: OrderTypeConfig;
 
   /** 一次性路径 quote retry 调度器 */
   scheduleRetry?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;

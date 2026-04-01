@@ -29,11 +29,14 @@ function isDirectionAction(
 }
 
 /**
- * 判断监控任务是否属于指定方向（含共享任务）。
+ * 判断监控任务是否属于指定方向。
+ *
+ * 这里只清理明确绑定到单一方向的任务；共享任务保留在队列中，
+ * 后续由执行时的席位快照校验决定是否跳过，避免单边席位退化误删另一边仍需运行的保护任务。
  *
  * @param task 监控任务对象
  * @param direction 方向（LONG 或 SHORT）
- * @returns 方向匹配或为共享任务时返回 true
+ * @returns 仅在任务显式绑定该方向时返回 true
  */
 function isMonitorTaskForDirection(
   task: { readonly data: unknown },
@@ -43,11 +46,7 @@ function isMonitorTaskForDirection(
     return false;
   }
 
-  const isDirectionMatch = task.data['direction'] === direction;
-  const isSharedTask =
-    Object.hasOwn(task.data, 'seatSnapshots') ||
-    (Object.hasOwn(task.data, 'long') && Object.hasOwn(task.data, 'short'));
-  return isDirectionMatch || isSharedTask;
+  return task.data['direction'] === direction;
 }
 
 /**

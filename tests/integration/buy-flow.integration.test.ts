@@ -9,6 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { OrderSide, type TradeContext } from 'longbridge';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createOrderExecutor } from '../../src/core/trader/orderExecutor/index.js';
+import { isRuntimeExecutionAllowed } from '../../src/app/runtime/executionGate.js';
 import type { RiskCheckContext } from '../../src/types/services.js';
 import {
   createGlobalConfig,
@@ -140,5 +141,43 @@ describe('buy-flow integration', () => {
     );
 
     expect(blockedSignals).toHaveLength(0);
+  });
+
+  it('does not submit buy orders when lifecycle gate is open but continuous-session execution gate is closed', async () => {
+    const globalConfig = createGlobalConfig();
+    const monitorConfig = createStrategyRuntimeConfig();
+    const signal = createSignal({
+      symbol: 'BULL.HK',
+      action: 'BUYCALL',
+      triggerTimeMs: Date.now(),
+      reason: 'integration-buy-execution-gate',
+      price: 1.02,
+      lotSize: 100,
+    });
+    const tradeCtx = createTradeContextMock();
+    const orderExecutor = createOrderExecutor({
+      ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
+      rateLimiter: {
+        throttle: async () => {},
+      },
+      cacheManager: {
+        clearCache: () => {},
+        getPendingOrders: async () => [],
+      },
+      orderMonitor: createOrderMonitorDouble(),
+      globalConfig,
+      monitorConfig,
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () =>
+        isRuntimeExecutionAllowed({
+          isTradingEnabled: true,
+          canTrade: false,
+        }),
+    });
+
+    const result = await orderExecutor.executeSignals([signal]);
+
+    expect(result.submittedCount).toBe(0);
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
   });
 });

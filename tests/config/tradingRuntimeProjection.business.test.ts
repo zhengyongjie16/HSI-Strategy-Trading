@@ -34,4 +34,19 @@ describe('trading runtime projection', () => {
       afternoonNoiseWindowMinutes: 9,
     });
   });
+
+  it('projects unrealized loss as per-symbol runtime contract', () => {
+    const tradingConfig = createTradingConfigFixture({
+      strategy: {
+        ...createTradingConfigFixture().strategy,
+        maxUnrealizedLossPerSymbol: 1500,
+      },
+    });
+
+    const runtimeConfig = createStrategyRuntimeConfigFromTradingConfig(tradingConfig);
+
+    expect('maxUnrealizedLossPerSymbol' in runtimeConfig).toBeTrue();
+    expect('maxUnrealizedLoss' in runtimeConfig).toBeFalse();
+    expect(runtimeConfig.maxUnrealizedLossPerSymbol).toBe(1500);
+  });
 });

@@ -19,6 +19,7 @@ import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/s
 import {
   createDailyLossTrackerDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createStrategyRuntimeConfigDouble,
 } from '../../../helpers/testDoubles.js';
 
 const recordedTrades: TradeRecord[] = [];
@@ -29,6 +30,8 @@ mock.module('../../../../src/core/trader/tradeLogger.js', () => ({
     recordedTrades.push(tradeRecord);
   },
 }));
+
+const defaultMonitorConfig = createStrategyRuntimeConfigDouble();
 
 function createTrackedOrder(params: {
   readonly orderId: string;
@@ -42,6 +45,7 @@ function createTrackedOrder(params: {
   readonly lastExecutedTimeMs?: number | null;
   readonly baseInstrumentSymbol?: string | null;
   readonly isProtectiveLiquidation?: boolean;
+  readonly liquidationTriggerLimit?: number;
   readonly liquidationCooldownConfig?: StrategyRuntimeConfig['liquidationCooldown'];
 }): OrderMonitorTrackedOrder {
   return {
@@ -49,10 +53,12 @@ function createTrackedOrder(params: {
     symbol: params.symbol,
     side: params.side,
     isLongSymbol: params.isLongSymbol,
-    baseInstrumentSymbol: params.baseInstrumentSymbol ?? 'HSI.HK',
+    baseInstrumentSymbol: params.baseInstrumentSymbol ?? defaultMonitorConfig.baseInstrumentSymbol,
     isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
-    liquidationTriggerLimit: 1,
-    liquidationCooldownConfig: params.liquidationCooldownConfig ?? null,
+    liquidationTriggerLimit:
+      params.liquidationTriggerLimit ?? defaultMonitorConfig.liquidationTriggerLimit,
+    liquidationCooldownConfig:
+      params.liquidationCooldownConfig ?? defaultMonitorConfig.liquidationCooldown,
     orderType: OrderType.ELO,
     submittedPrice: 1,
     initialSubmittedPrice: 1,
@@ -100,6 +106,8 @@ describe('orderMonitor settlementFlow', () => {
     recordedTrades.length = 0;
   });
 
+  const monitorConfig = defaultMonitorConfig;
+
   it('records filled sell summary, refresh request and tracking cleanup', () => {
     const runtime = createRuntime();
     const closedOrderIds: string[] = [];
@@ -130,6 +138,7 @@ describe('orderMonitor settlementFlow', () => {
       },
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      monitorConfig,
       refreshGate: {
         markStale: () => 1,
         markFresh: () => {},
@@ -185,6 +194,7 @@ describe('orderMonitor settlementFlow', () => {
       },
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      monitorConfig,
     });
 
     const result = settlementFlow.settleOrder({
@@ -226,6 +236,7 @@ describe('orderMonitor settlementFlow', () => {
       },
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      monitorConfig,
     });
 
     const result = settlementFlow.settleOrder({

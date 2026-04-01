@@ -8,35 +8,14 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createTradingConfig } from '../../src/config/trading/index.js';
+import { createRequiredAutoEnv, createRequiredStaticEnv } from '../helpers/configEnvFactory.js';
 
 function createStaticEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
-  return {
-    LONGBRIDGE_AUTH_MODE: 'oauth',
-    LONGBRIDGE_CLIENT_ID: 'client-id',
-    LONG_SYMBOL: 'BULL.HK',
-    SHORT_SYMBOL: 'BEAR.HK',
-    ORDER_OWNERSHIP_MAPPING: 'HSI',
-    ...overrides,
-  };
+  return createRequiredStaticEnv(overrides);
 }
 
 function createAutoEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
-  return {
-    LONGBRIDGE_AUTH_MODE: 'oauth',
-    LONGBRIDGE_CLIENT_ID: 'client-id',
-    ORDER_OWNERSHIP_MAPPING: 'HSI',
-    SEAT_MODE: 'auto',
-    AUTO_SEARCH_MIN_DISTANCE_PCT_BULL: '0.8',
-    AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR: '-0.8',
-    AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL: '300000',
-    AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR: '300000',
-    AUTO_SEARCH_EXPIRY_MIN_MONTHS: '6',
-    AUTO_SEARCH_OPEN_DELAY_MINUTES: '5',
-    SWITCH_INTERVAL_MINUTES: '0',
-    SWITCH_DISTANCE_RANGE_BULL: '0.4,1.5',
-    SWITCH_DISTANCE_RANGE_BEAR: '-1.5,-0.4',
-    ...overrides,
-  };
+  return createRequiredAutoEnv(overrides);
 }
 
 describe('periodic switch config business flow', () => {

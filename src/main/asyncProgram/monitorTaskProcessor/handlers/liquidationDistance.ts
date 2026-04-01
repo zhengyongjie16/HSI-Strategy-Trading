@@ -6,9 +6,10 @@
  * - 执行清仓信号与风险数据刷新
  * - 保持对象池释放与异常处理顺序
  */
-import { ORDER_QUOTE_RETRY, WARRANT_LIQUIDATION_ORDER_TYPE } from '../../../../constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../../../../constants/index.js';
 import type { LastState } from '../../../../types/state.js';
 import type { Trader, MarketDataClient } from '../../../../types/services.js';
+import type { OrderTypeConfig } from '../../../../types/signal.js';
 import {
   isQuoteReadyForRequirement,
   resolveNextQuoteRetry,
@@ -53,6 +54,7 @@ function createLiquidationTask(params: CreateLiquidationTaskParams): Liquidation
     monitorPrice,
     riskChecker,
     riskCheckerConfig,
+    liquidationOrderType,
   } = params;
   const isLongDirection = direction === 'LONG';
 
@@ -84,7 +86,7 @@ function createLiquidationTask(params: CreateLiquidationTaskParams): Liquidation
   signal.lotSize = quote?.lotSize ?? null;
   signal.quantity = availableQuantity;
   signal.triggerTime = new Date();
-  signal.orderTypeOverride = WARRANT_LIQUIDATION_ORDER_TYPE;
+  signal.orderTypeOverride = liquidationOrderType;
   signal.isProtectiveLiquidation = false;
   signal.seatVersion = seatVersion;
 
@@ -155,6 +157,7 @@ export function createLiquidationDistanceHandler({
   lastState,
   trader,
   marketDataClient,
+  liquidationOrderType,
   getCanProcessTask,
 }: {
   readonly baseInstrumentSymbol: string;
@@ -163,6 +166,7 @@ export function createLiquidationDistanceHandler({
   readonly lastState: LastState;
   readonly trader: Trader;
   readonly marketDataClient: MarketDataClient;
+  readonly liquidationOrderType: OrderTypeConfig;
   readonly getCanProcessTask?: () => boolean;
 }): (task: MonitorTask<MonitorTaskDataMap, 'LIQUIDATION_DISTANCE_CHECK'>) => Promise<{
   readonly status: MonitorTaskStatus;
@@ -247,6 +251,7 @@ export function createLiquidationDistanceHandler({
           monitorPrice: executionMonitorPrice,
           riskChecker: context.riskChecker,
           riskCheckerConfig: context.config,
+          liquidationOrderType,
         });
         if (longTask) {
           liquidationTasks.push(longTask);
@@ -264,6 +269,7 @@ export function createLiquidationDistanceHandler({
           monitorPrice: executionMonitorPrice,
           riskChecker: context.riskChecker,
           riskCheckerConfig: context.config,
+          liquidationOrderType,
         });
         if (shortTask) {
           liquidationTasks.push(shortTask);

@@ -247,6 +247,7 @@ export type OrderOpsDeps = {
   readonly cacheManager: OrderCacheManager;
   readonly orderHoldRegistry: OrderHoldRegistry;
   readonly orderStatusQuery: OrderStatusQuery;
+  readonly monitorConfig: StrategyRuntimeConfig;
 };
 
 /**
@@ -340,6 +341,7 @@ export type SettlementFlowDeps = {
   readonly orderHoldRegistry: OrderHoldRegistry;
   readonly dailyLossTracker: DailyLossTracker;
   readonly protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
+  readonly monitorConfig: StrategyRuntimeConfig;
   readonly refreshGate?: RefreshGate;
 };
 

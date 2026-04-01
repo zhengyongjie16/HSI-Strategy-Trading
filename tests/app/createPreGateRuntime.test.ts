@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createPreGateRuntime } from '../../src/app/runtime/createPreGateRuntime.js';
+import { createRequiredStaticEnv } from '../helpers/configEnvFactory.js';
 
 function isConfigValidationError(error: unknown): error is {
   readonly name?: string;
@@ -18,11 +19,7 @@ function isConfigValidationError(error: unknown): error is {
 describe('app createPreGateRuntime config error contract', () => {
   it('propagates parse-stage fail-fast config errors as ConfigValidationError', async () => {
     const env: NodeJS.ProcessEnv = {
-      LONGBRIDGE_AUTH_MODE: 'oauth',
-      LONGBRIDGE_CLIENT_ID: 'client-id',
-      LONG_SYMBOL: 'BULL.HK',
-      SHORT_SYMBOL: 'BEAR.HK',
-      ORDER_OWNERSHIP_MAPPING: 'HSI',
+      ...createRequiredStaticEnv(),
       TARGET_NOTIONAL: '0',
     };
 

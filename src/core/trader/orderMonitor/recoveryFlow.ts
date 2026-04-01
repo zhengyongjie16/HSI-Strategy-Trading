@@ -6,11 +6,10 @@
  * - 执行快照恢复、席位一致性校验与失败回滚
  * - 消费权威终态快照并恢复未完成订单追踪
  */
-import { OrderSide, type PushOrderChanged } from 'longbridge';
+import { OrderSide, OrderType, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { PENDING_ORDER_STATUSES } from '../../../constants/index.js';
-import type { StrategyRuntimeConfig } from '../../../types/config.js';
 import type { RawOrderFromAPI } from '../../../types/services.js';
 import { resolveOrderOwnershipForMonitor } from '../../riskController/orderOwnership.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
@@ -23,6 +22,28 @@ import type { RecoveryFlow, RecoveryFlowDeps } from './types.js';
 import { consumeQueriedTerminalState, resetOrderReplaceRuntimeState } from './orderOps.js';
 import { resolveSubmittedAtMs, resolveUpdatedAtMs } from './utils.js';
 import { hasProtectiveLiquidationRemark } from '../utils.js';
+
+/**
+ * 解析恢复快照中的委托价。
+ *
+ * 对市价单，Longbridge 快照价格可能为空，恢复时允许使用 0 作为“无价格”语义；
+ * 对需要价格语义的挂单，缺少有效委托价会破坏后续追价与边界判断，必须直接阻断恢复。
+ *
+ * @param order 快照订单
+ * @returns 恢复后写入 tracked order 的委托价
+ */
+function resolveRecoveredTrackedPrice(order: RawOrderFromAPI): number {
+  if (order.orderType === OrderType.MO) {
+    return 0;
+  }
+
+  const trackedPrice = decimalToNumber(order.price);
+  if (isValidPositiveNumber(trackedPrice)) {
+    return trackedPrice;
+  }
+
+  throw new Error(`[订单监控] 订单 ${order.orderId} 委托价格无效，无法恢复追踪`);
+}
 
 /**
  * 创建恢复流程处理器。
@@ -53,28 +74,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       direction: resolved.direction,
       isLongSymbol: resolved.direction === 'LONG',
     };
-  }
-
-  function resolveLiquidationTriggerLimit(baseInstrumentSymbol: string | null): number {
-    if (!baseInstrumentSymbol) {
-      return 1;
-    }
-
-    return baseInstrumentSymbol === monitorConfig.baseInstrumentSymbol
-      ? monitorConfig.liquidationTriggerLimit
-      : 1;
-  }
-
-  function resolveLiquidationCooldownConfig(
-    baseInstrumentSymbol: string | null,
-  ): StrategyRuntimeConfig['liquidationCooldown'] {
-    if (!baseInstrumentSymbol) {
-      return null;
-    }
-
-    return baseInstrumentSymbol === monitorConfig.baseInstrumentSymbol
-      ? monitorConfig.liquidationCooldown
-      : null;
   }
 
   function isSeatMatchedForOrder(order: RawOrderFromAPI, ownership: OrderSeatOwnership): boolean {
@@ -214,15 +213,10 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       throw new Error(`[订单监控] 订单 ${order.orderId} 委托数量无效，无法恢复追踪`);
     }
 
-    const trackedPriceRaw = decimalToNumber(order.price);
-    const trackedPrice = isValidPositiveNumber(trackedPriceRaw) ? trackedPriceRaw : 0;
+    const trackedPrice = resolveRecoveredTrackedPrice(order);
     const submittedAtMs = resolveSubmittedAtMs(order.submittedAt);
     const executedQuantity = decimalToNumber(order.executedQuantity);
     const isProtectiveLiquidation = hasProtectiveLiquidationRemark(order.remark);
-    const liquidationTriggerLimit = resolveLiquidationTriggerLimit(ownership.baseInstrumentSymbol);
-    const liquidationCooldownConfig = resolveLiquidationCooldownConfig(
-      ownership.baseInstrumentSymbol,
-    );
     const trackOrderParams: TrackOrderParams = {
       orderId: order.orderId,
       symbol: order.symbol,
@@ -236,8 +230,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       baseInstrumentSymbol: ownership.baseInstrumentSymbol,
       isProtectiveLiquidation,
       orderType: order.orderType,
-      liquidationTriggerLimit,
-      liquidationCooldownConfig,
     };
     trackOrder(trackOrderParams);
     const trackedOrder = runtime.trackedOrders.get(order.orderId);
@@ -310,12 +302,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               side: 'BUY',
               baseInstrumentSymbol: ownership?.baseInstrumentSymbol ?? null,
               isProtectiveLiquidation: hasProtectiveLiquidationRemark(order.remark),
-              liquidationTriggerLimit: resolveLiquidationTriggerLimit(
-                ownership?.baseInstrumentSymbol ?? null,
-              ),
-              liquidationCooldownConfig: resolveLiquidationCooldownConfig(
-                ownership?.baseInstrumentSymbol ?? null,
-              ),
               ...(ownership?.isLongSymbol === undefined
                 ? {}
                 : { isLongSymbol: ownership.isLongSymbol }),

@@ -28,6 +28,7 @@ import { createPositionCache } from '../../utils/positionCache/index.js';
 import { createRefreshGate } from '../../utils/refreshGate/index.js';
 import { createStrategyState } from '../../utils/helpers/index.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
+import { isRuntimeExecutionAllowed } from './executionGate.js';
 import { getHKDateKey, toHongKongTimeIso } from '../../utils/time/index.js';
 import { logger } from '../../utils/logger/index.js';
 import type { LastState } from '../../types/state.js';
@@ -92,7 +93,11 @@ export async function createPostGateRuntime(
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
     refreshGate,
-    isExecutionAllowed: () => lastState.isTradingEnabled,
+    isExecutionAllowed: () =>
+      isRuntimeExecutionAllowed({
+        isTradingEnabled: lastState.isTradingEnabled,
+        canTrade: lastState.canTrade,
+      }),
   });
   const tradeLogHydrator = createTradeLogHydrator({
     readFileSync: fs.readFileSync,

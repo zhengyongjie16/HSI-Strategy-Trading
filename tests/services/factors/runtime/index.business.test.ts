@@ -5,6 +5,7 @@ import {
   createSignalFromFactorDecision,
   planFactorSignals,
 } from '../../../../src/services/factors/runtime/index.js';
+import { computeTrendClassification } from '../../../../src/services/factors/runtime/trendClassifier.js';
 import type { CandleData } from '../../../../src/types/data.js';
 import type { FactorSnapshot, StrategyThresholdConfig } from '../../../../src/types/factor.js';
 import { createStrategyRuntimeConfig } from '../../../../mock/factories/configFactory.js';
@@ -257,6 +258,24 @@ describe('factor runtime', () => {
     expect(factorSnapshot.trendClassification).toBe('trend_up');
     expect(factorSnapshot.confirmation.longAllowed).toBeTrue();
     expect(factorSnapshot.volatilityRegime).toBe('expanding');
+  });
+
+  it('classifies ready but non-trending momentum as range instead of null', () => {
+    const result = computeTrendClassification({
+      momentum: {
+        mom15: 1,
+        mom30: -1,
+        mom60: 0.2,
+        zMom15: 1,
+        zMom30: -1,
+        zMom60: 0.5,
+        sameSignCount: 1,
+      },
+      trendScore: 1.2,
+      threshold: 0.8,
+    });
+
+    expect(result).toBe('range');
   });
 
   it('plans a buycall for aligned bullish factors', () => {

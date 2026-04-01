@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { OrderSide } from 'longbridge';
+import type { OrderTypeConfig } from '../../../src/types/signal.js';
 import { createSeatStateManager } from '../../../src/services/autoSymbolManager/seatStateManager.js';
 import {
   calculateBuyQuantityByNotional,
@@ -208,6 +209,7 @@ describe('autoSymbolManager switchStateMachine', () => {
       readonly action: string;
       readonly symbol: string;
       readonly quantity: number | null;
+      readonly orderTypeOverride: OrderTypeConfig | null | undefined;
     }> = [];
     const trader = createTraderDouble({
       getPendingOrders: async () => [],
@@ -228,6 +230,7 @@ describe('autoSymbolManager switchStateMachine', () => {
             action: signal.action,
             symbol: signal.symbol,
             quantity: signal.quantity ?? null,
+            orderTypeOverride: signal.orderTypeOverride,
           });
         }
 
@@ -280,11 +283,13 @@ describe('autoSymbolManager switchStateMachine', () => {
         action: 'SELLCALL',
         symbol: 'OLD_BULL.HK',
         quantity: 100,
+        orderTypeOverride: null,
       },
       {
         action: 'BUYCALL',
         symbol: 'NEXT_BULL.HK',
         quantity: 100,
+        orderTypeOverride: null,
       },
     ]);
     expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEXT_BULL.HK');

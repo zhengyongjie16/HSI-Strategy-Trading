@@ -106,7 +106,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     return false;
   }
 
-  const buyThrottle = createBuyThrottle();
+  const buyThrottle = createBuyThrottle(monitorConfig);
 
   const submitTargetOrder = createSubmitTargetOrder({
     rateLimiter,

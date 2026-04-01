@@ -8,7 +8,6 @@
  */
 import { OrderSide, OrderType, TimeInForceType, type TradeContext } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
-import { TRADING } from '../../../constants/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import type { StrategyRuntimeConfig } from '../../../types/config.js';
@@ -91,6 +90,11 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       monitorConfig = null,
     } = params;
 
+    if (monitorConfig === null) {
+      logger.error(`[订单提交] ${symbol} 缺少监控配置，拒绝提交订单`);
+      return null;
+    }
+
     if (!canExecuteSignal(signal, 'submitOrder')) {
       return null;
     }
@@ -153,11 +157,11 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           initialSubmittedPrice: resolvedPrice ?? 0,
           quantity: submittedQuantityNum,
           isLongSymbol,
-          baseInstrumentSymbol: monitorConfig?.baseInstrumentSymbol ?? null,
+          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
           isProtectiveLiquidation,
           orderType: orderTypeParam,
-          liquidationTriggerLimit: monitorConfig?.liquidationTriggerLimit ?? 1,
-          liquidationCooldownConfig: monitorConfig?.liquidationCooldown ?? null,
+          liquidationTriggerLimit: monitorConfig.liquidationTriggerLimit,
+          liquidationCooldownConfig: monitorConfig.liquidationCooldown,
         });
       } catch (error) {
         throw new Error(`order submitted but local sync failed: ${orderId}`, {
@@ -213,7 +217,12 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       return null;
     }
 
-    const targetNotional = monitorConfig?.targetNotional ?? TRADING.DEFAULT_TARGET_NOTIONAL;
+    if (monitorConfig === null) {
+      logger.error(`[订单提交] ${targetSymbol} 缺少监控配置，拒绝执行交易信号`);
+      return null;
+    }
+
+    const targetNotional = monitorConfig.targetNotional;
     const orderType = resolveOrderType(signal);
     const timeInForce = TimeInForceType.Day;
     const isProtectiveLiquidation = isLiquidationSignal(signal);

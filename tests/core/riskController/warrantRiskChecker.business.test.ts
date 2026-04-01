@@ -5,13 +5,7 @@
  * - 验证牛熊证距离阈值、回收价与清算边界的场景意图与业务期望。
  */
 import { describe, expect, it } from 'bun:test';
-import {
-  BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT,
-  BEAR_WARRANT_MAX_DISTANCE_PERCENT,
-  BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT,
-  BULL_WARRANT_MIN_DISTANCE_PERCENT,
-  MIN_MONITOR_PRICE_THRESHOLD,
-} from '../../../src/constants/index.js';
+import { MIN_MONITOR_PRICE_THRESHOLD } from '../../../src/constants/index.js';
 import { createWarrantRiskChecker } from '../../../src/core/riskController/warrantRiskChecker.js';
 import type { StrategyRuntimeConfig } from '../../../src/types/config.js';
 import { createStrategyRuntimeConfigDouble } from '../../helpers/testDoubles.js';
@@ -20,9 +14,11 @@ describe('warrantRiskChecker business boundaries', () => {
   it('accepts and rejects bull distance exactly at threshold boundaries', () => {
     const checker = createWarrantRiskChecker();
     const config = createStrategyRuntimeConfigDouble();
+    const bullBuyMinDistancePct =
+      config.strategyConfig.instrumentAdaptationRules.bullBuyMinDistancePct;
     checker.setWarrantInfoFromCallPrice('BULL.HK', 20000, true, 'BULL.HK');
 
-    const passMonitorPrice = 20000 * (1 + BULL_WARRANT_MIN_DISTANCE_PERCENT / 100);
+    const passMonitorPrice = 20000 * (1 + bullBuyMinDistancePct / 100);
     const failMonitorPrice = passMonitorPrice - 0.01;
 
     const pass = checker.checkRisk('BULL.HK', 'BUYCALL', passMonitorPrice, config);
@@ -36,9 +32,11 @@ describe('warrantRiskChecker business boundaries', () => {
   it('accepts and rejects bear distance exactly at threshold boundaries', () => {
     const checker = createWarrantRiskChecker();
     const config = createStrategyRuntimeConfigDouble();
+    const bearBuyMaxDistancePct =
+      config.strategyConfig.instrumentAdaptationRules.bearBuyMaxDistancePct;
     checker.setWarrantInfoFromCallPrice('BEAR.HK', 20000, false, 'BEAR.HK');
 
-    const passMonitorPrice = 20000 * (1 + BEAR_WARRANT_MAX_DISTANCE_PERCENT / 100);
+    const passMonitorPrice = 20000 * (1 + bearBuyMaxDistancePct / 100);
     const failMonitorPrice = passMonitorPrice + 0.01;
 
     const pass = checker.checkRisk('BEAR.HK', 'BUYPUT', passMonitorPrice, config);
@@ -68,11 +66,13 @@ describe('warrantRiskChecker business boundaries', () => {
   it('triggers liquidation around bull/bear liquidation thresholds', () => {
     const checker = createWarrantRiskChecker();
     const config = createStrategyRuntimeConfigDouble();
+    const { bullLiquidationDistancePct, bearLiquidationDistancePct } =
+      config.strategyConfig.instrumentAdaptationRules;
     checker.setWarrantInfoFromCallPrice('BULL.HK', 20000, true, 'BULL.HK');
     checker.setWarrantInfoFromCallPrice('BEAR.HK', 20000, false, 'BEAR.HK');
 
-    const bullTriggerPrice = 20000 * (1 + BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT / 100);
-    const bearTriggerPrice = 20000 * (1 + BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT / 100);
+    const bullTriggerPrice = 20000 * (1 + bullLiquidationDistancePct / 100);
+    const bearTriggerPrice = 20000 * (1 + bearLiquidationDistancePct / 100);
 
     const bullResult = checker.checkWarrantDistanceLiquidation(
       'BULL.HK',

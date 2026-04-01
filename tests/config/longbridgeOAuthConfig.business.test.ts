@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { createTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
+import { createRequiredStaticEnv } from '../helpers/configEnvFactory.js';
 
 const oauthBuildCalls: Array<{ clientId: string; callbackPort?: number }> = [];
 const fromOAuthCalls: Array<{ oauth: unknown; extra: unknown }> = [];
@@ -75,20 +76,25 @@ import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
 
 function createTradingConfigForValidation() {
   return createTradingConfig({
-    env: {
-      LONGBRIDGE_AUTH_MODE: 'oauth',
-      LONGBRIDGE_CLIENT_ID: 'client-id',
-      LONG_SYMBOL: 'BULL.HK',
-      SHORT_SYMBOL: 'BEAR.HK',
-      ORDER_OWNERSHIP_MAPPING: 'HSI',
-    },
+    env: createRequiredStaticEnv(),
   });
 }
 
 async function validateEnv(env: NodeJS.ProcessEnv): Promise<unknown> {
+  const validationEnv = createRequiredStaticEnv();
+  delete validationEnv['LONGBRIDGE_AUTH_MODE'];
+  delete validationEnv['LONGBRIDGE_CLIENT_ID'];
+  delete validationEnv['LONGBRIDGE_CALLBACK_PORT'];
+  delete validationEnv['LONGBRIDGE_APP_KEY'];
+  delete validationEnv['LONGBRIDGE_APP_SECRET'];
+  delete validationEnv['LONGBRIDGE_ACCESS_TOKEN'];
+
   try {
     validateAllConfig({
-      env,
+      env: {
+        ...validationEnv,
+        ...env,
+      },
       tradingConfig: createTradingConfigForValidation(),
     });
     return null;

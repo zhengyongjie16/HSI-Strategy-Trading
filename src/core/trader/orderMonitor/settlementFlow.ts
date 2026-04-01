@@ -32,6 +32,7 @@ function resolveOrderSideFromText(side: 'BUY' | 'SELL'): OrderSide {
 function resolveCloseContext(params: {
   readonly trackedOrder: TrackedOrder | undefined;
   readonly closeParams: FinalizeOrderSettlementParams;
+  readonly monitorConfig: StrategyRuntimeConfig;
 }): {
   readonly side: 'BUY' | 'SELL' | null;
   readonly symbol: string | null;
@@ -44,7 +45,7 @@ function resolveCloseContext(params: {
   readonly executedQuantity: number | null;
   readonly executedTimeMs: number | null;
 } {
-  const { trackedOrder, closeParams } = params;
+  const { trackedOrder, closeParams, monitorConfig } = params;
   const side = closeParams.side ?? (trackedOrder ? resolveOrderSideText(trackedOrder.side) : null);
   return {
     side,
@@ -55,9 +56,13 @@ function resolveCloseContext(params: {
     isProtectiveLiquidation:
       trackedOrder?.isProtectiveLiquidation ?? closeParams.isProtectiveLiquidation ?? false,
     liquidationTriggerLimit:
-      trackedOrder?.liquidationTriggerLimit ?? closeParams.liquidationTriggerLimit ?? 1,
+      trackedOrder?.liquidationTriggerLimit ??
+      closeParams.liquidationTriggerLimit ??
+      monitorConfig.liquidationTriggerLimit,
     liquidationCooldownConfig:
-      trackedOrder?.liquidationCooldownConfig ?? closeParams.liquidationCooldownConfig ?? null,
+      trackedOrder?.liquidationCooldownConfig ??
+      closeParams.liquidationCooldownConfig ??
+      monitorConfig.liquidationCooldown,
     executedPrice: closeParams.executedPrice ?? trackedOrder?.executedPrice ?? null,
     executedQuantity: closeParams.executedQuantity ?? trackedOrder?.executedQuantity ?? null,
     executedTimeMs: closeParams.executedTimeMs ?? trackedOrder?.lastExecutedTimeMs ?? null,
@@ -103,6 +108,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     orderHoldRegistry,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
+    monitorConfig,
     refreshGate,
   } = deps;
 
@@ -247,6 +253,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     const context = resolveCloseContext({
       trackedOrder,
       closeParams: params,
+      monitorConfig,
     });
     const side = context.side;
     const symbol = context.symbol;

@@ -404,6 +404,39 @@ describe('orderMonitor business flow', () => {
     ]);
   });
 
+  it('fails recovery when a non-market pending snapshot has no valid submitted price', async () => {
+    const { deps } = createDeps();
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+    let caughtError: unknown = null;
+
+    try {
+      await monitor.recoverOrderTrackingFromSnapshot([
+        {
+          orderId: 'SELL-RECOVERY-INVALID-PRICE-001',
+          symbol: 'BULL.HK',
+          stockName: 'HSI RC',
+          side: OrderSide.Sell,
+          status: OrderStatus.New,
+          orderType: OrderType.ELO,
+          remark: '',
+          price: '',
+          quantity: '250',
+          executedPrice: '0',
+          executedQuantity: '0',
+          submittedAt: new Date('2026-02-16T01:00:00.000Z'),
+          updatedAt: new Date('2026-02-16T01:01:00.000Z'),
+        },
+      ]);
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeInstanceOf(Error);
+    expect((caughtError as Error).message).toMatch(/委托价格无效/);
+  });
+
   it('converts timed-out sell to market order using tracked remaining quantity only', async () => {
     const { deps, tradeCtx } = createDeps({
       sellTimeoutSeconds: 0,

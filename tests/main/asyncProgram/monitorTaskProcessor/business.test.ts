@@ -10,11 +10,14 @@ import { createMonitorTaskProcessor } from '../../../../src/main/asyncProgram/mo
 import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createRefreshGate } from '../../../../src/utils/refreshGate/index.js';
+import { isRuntimeExecutionAllowed } from '../../../../src/app/runtime/executionGate.js';
+import type { OrderTypeConfig } from '../../../../src/types/signal.js';
 import {
   createMarketDataClientDouble,
   createPositionDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
+  createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
 import { createLastState, createMonitorTaskContext, runProcessorFlow } from '../utils.js';
@@ -35,7 +38,9 @@ describe('monitorTaskProcessor business flow', () => {
       readonly action: string;
       readonly symbol: string;
       readonly quantity: number | null | undefined;
+      readonly orderTypeOverride: OrderTypeConfig | null | undefined;
     }> = [];
+    const liquidationOrderType: OrderTypeConfig = 'LO';
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue: queue,
       refreshGate: createRefreshGate(),
@@ -56,6 +61,7 @@ describe('monitorTaskProcessor business flow', () => {
               action: signal.action,
               symbol: signal.symbol,
               quantity: signal.quantity,
+              orderTypeOverride: signal.orderTypeOverride,
             });
           }
 
@@ -76,6 +82,7 @@ describe('monitorTaskProcessor business flow', () => {
       }),
       lastState,
       monitorConfig: createMonitorTaskContext().config,
+      liquidationOrderType,
     });
 
     await runProcessorFlow({
@@ -107,6 +114,7 @@ describe('monitorTaskProcessor business flow', () => {
         action: 'SELLCALL',
         symbol: 'BULL.HK',
         quantity: 200,
+        orderTypeOverride: liquidationOrderType,
       },
     ]);
   });
@@ -148,6 +156,7 @@ describe('monitorTaskProcessor business flow', () => {
       }),
       lastState: createLastState(),
       monitorConfig: createMonitorTaskContext().config,
+      liquidationOrderType: 'ELO',
     });
 
     await runProcessorFlow({
@@ -197,6 +206,7 @@ describe('monitorTaskProcessor business flow', () => {
       }),
       lastState: createLastState(),
       monitorConfig: createMonitorTaskContext().config,
+      liquidationOrderType: 'ELO',
       onError: (error) => {
         reportedErrors.push(error);
       },
@@ -228,5 +238,130 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(reportedErrors[0]).toBeInstanceOf(Error);
     expect((reportedErrors[0] as Error).message).toContain('等待下一轮重试');
+  });
+
+  it('skips AUTO_SYMBOL_TICK when lifecycle gate is open but continuous-session execution gate is closed', async () => {
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    let autoSymbolTickCalls = 0;
+    const lastState = createLastState({
+      isTradingEnabled: true,
+      canTrade: false,
+    });
+    const processor = createMonitorTaskProcessor({
+      monitorTaskQueue: queue,
+      refreshGate: createRefreshGate(),
+      monitorContext: createMonitorTaskContext({
+        autoSymbolManager: {
+          maybeSearchOnTick: async () => {
+            autoSymbolTickCalls += 1;
+          },
+          maybeSwitchOnInterval: async () => {
+            autoSymbolTickCalls += 1;
+          },
+          maybeSwitchOnDistance: async () => {},
+          hasPendingSwitch: () => false,
+          resetAllState: () => {},
+        },
+      }),
+      clearMonitorDirectionQueues: () => {},
+      trader: createTraderDouble(),
+      marketDataClient: createMarketDataClientDouble(),
+      lastState,
+      monitorConfig: createMonitorTaskContext().config,
+      liquidationOrderType: 'ELO',
+      getCanProcessTask: () =>
+        isRuntimeExecutionAllowed({
+          isTradingEnabled: lastState.isTradingEnabled,
+          canTrade: lastState.canTrade,
+        }),
+    });
+
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.scheduleLatest({
+          type: 'AUTO_SYMBOL_TICK',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
+          data: {
+            direction: 'LONG',
+            seatVersion: 2,
+            symbol: 'BULL.HK',
+            currentTimeMs: Date.now(),
+            canTradeNow: true,
+            openProtectionActive: false,
+          },
+        });
+      },
+      waitCondition: () => queue.isEmpty(),
+    });
+
+    expect(autoSymbolTickCalls).toBe(0);
+  });
+
+  it('processes SEAT_REFRESH even when continuous-session execution gate is closed', async () => {
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const lastState = createLastState({
+      isTradingEnabled: true,
+      canTrade: false,
+    });
+    const monitorContext = createMonitorTaskContext({
+      symbolRegistry: createSymbolRegistryDouble({
+        longSeat: {
+          symbol: 'BULL.HK',
+          status: 'ACTIVATING',
+          callPrice: 21000,
+          lastSwitchAt: null,
+          lastSearchAt: null,
+          lastSeatActivatedAt: null,
+          searchFailCountToday: 0,
+          frozenTradingDayKey: null,
+        },
+        longVersion: 2,
+      }),
+    });
+    const processor = createMonitorTaskProcessor({
+      monitorTaskQueue: queue,
+      refreshGate: createRefreshGate(),
+      monitorContext,
+      clearMonitorDirectionQueues: () => {},
+      trader: createTraderDouble({
+        getAccountSnapshot: async () => null,
+        getStockPositions: async () => [],
+      }),
+      marketDataClient: createMarketDataClientDouble({
+        subscribeSymbols: async () => {},
+        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]),
+      }),
+      lastState,
+      monitorConfig: createMonitorTaskContext().config,
+      liquidationOrderType: 'ELO',
+      getCanProcessTask: () =>
+        isRuntimeExecutionAllowed({
+          isTradingEnabled: lastState.isTradingEnabled,
+          canTrade: lastState.canTrade,
+        }),
+    });
+
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.scheduleLatest({
+          type: 'SEAT_REFRESH',
+          dedupeKey: 'SEAT_REFRESH:LONG',
+          data: {
+            direction: 'LONG',
+            seatVersion: 2,
+            previousSymbol: 'OLD_BULL.HK',
+            nextSymbol: 'BULL.HK',
+            callPrice: 21000,
+            symbolName: 'BULL.HK',
+          },
+        });
+      },
+      waitCondition: () => monitorContext.symbolRegistry.getSeatState('LONG').status === 'ACTIVE',
+    });
+
+    expect(queue.isEmpty()).toBeTrue();
+    expect(monitorContext.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
   });
 });

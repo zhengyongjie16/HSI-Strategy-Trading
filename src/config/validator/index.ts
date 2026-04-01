@@ -57,6 +57,7 @@ const LEGACY_INDEXED_ENV_PREFIXES = [
 
 const DEPRECATED_SINGLE_INSTANCE_ENV_KEYS = [
   'BASE_INSTRUMENT_SYMBOL',
+  'MAX_UNREALIZED_LOSS',
   'SIGNAL_BUYCALL',
   'SIGNAL_SELLCALL',
   'SIGNAL_BUYPUT',
@@ -67,6 +68,70 @@ const DEPRECATED_SINGLE_INSTANCE_ENV_KEYS = [
   'VERIFICATION_INDICATORS_SELL',
   'SMART_CLOSE_ENABLED',
   'SMART_CLOSE_TIMEOUT_MINUTES',
+] as const;
+
+const REQUIRED_STRATEGY_ENV_KEYS = [
+  'SEAT_MODE',
+  'ORDER_OWNERSHIP_MAPPING',
+  'TARGET_NOTIONAL',
+  'MAX_POSITION_NOTIONAL',
+  'MAX_UNREALIZED_LOSS_PER_SYMBOL',
+  'BUY_INTERVAL_SECONDS',
+  'LIQUIDATION_TRIGGER_LIMIT',
+  'REGIME_THRESHOLDS_ATR_SHORT_PERIOD',
+  'REGIME_THRESHOLDS_ATR_LONG_PERIOD',
+  'REGIME_THRESHOLDS_RV_QUANTILE_WINDOW_DAYS',
+  'REGIME_THRESHOLDS_TREND_ON_VOL_EXPANSION',
+  'REGIME_THRESHOLDS_TREND_OFF_VOL_EXPANSION',
+  'REGIME_THRESHOLDS_EXTREME_VOL_EXPANSION',
+  'REGIME_THRESHOLDS_TREND_ON_VOL_QUANTILE',
+  'REGIME_THRESHOLDS_TREND_OFF_VOL_QUANTILE',
+  'REGIME_THRESHOLDS_EXTREME_VOL_QUANTILE',
+  'TREND_SCORE_THRESHOLDS_W15',
+  'TREND_SCORE_THRESHOLDS_W30',
+  'TREND_SCORE_THRESHOLDS_W60',
+  'TREND_SCORE_THRESHOLDS_CLASSIFICATION_THRESHOLD',
+  'TREND_SCORE_THRESHOLDS_ENTRY_THRESHOLD',
+  'TREND_SCORE_THRESHOLDS_EXIT_THRESHOLD',
+  'TREND_SCORE_THRESHOLDS_REVERSE_INVALIDATION_THRESHOLD',
+  'ER_THRESHOLDS_ER15_ENTRY_MIN',
+  'ER_THRESHOLDS_ER30_ENTRY_MIN',
+  'ER_THRESHOLDS_ER15_EXIT_MAX',
+  'ER_THRESHOLDS_ER30_EXIT_MAX',
+  'ER_THRESHOLDS_STRONG_TREND_ER_FLOOR',
+  'VWAP_CONFIRM_RULES_DISTANCE_BAND_ATR',
+  'VWAP_CONFIRM_RULES_SLOPE_WINDOW_BARS',
+  'VWAP_CONFIRM_RULES_MAX_CROSS_COUNT_LAST10M',
+  'OPENING_STRUCTURE_RULES_OR_WINDOW_MINUTES',
+  'OPENING_STRUCTURE_RULES_MORNING_NOISE_WINDOW_MINUTES',
+  'OPENING_STRUCTURE_RULES_AFTERNOON_NOISE_WINDOW_MINUTES',
+  'OPENING_STRUCTURE_RULES_BREAKOUT_SCORE_MIN',
+  'OPENING_STRUCTURE_RULES_OUTSIDE_PERSISTENCE_WINDOW_BARS',
+  'OPENING_STRUCTURE_RULES_OUTSIDE_PERSISTENCE_MIN',
+  'OPENING_STRUCTURE_RULES_RETEST_TOLERANCE_ATR',
+  'OPENING_STRUCTURE_RULES_CONFIRM_BARS',
+  'PM_CONTINUATION_RULES_AM_MOVE_Z_MIN',
+  'PM_CONTINUATION_RULES_MIDDAY_HOLD_MIN',
+  'PM_CONTINUATION_RULES_PM_RE_EXPANSION_TREND_SCORE_MIN',
+  'PM_CONTINUATION_RULES_PM_RE_EXPANSION_ER15_MIN',
+  'PM_CONTINUATION_RULES_PM_CONFIRM_CUTOFF_TIME',
+  'INSTRUMENT_ADAPTATION_RULES_BULL_BUY_MIN_DISTANCE_PCT',
+  'INSTRUMENT_ADAPTATION_RULES_BEAR_BUY_MAX_DISTANCE_PCT',
+  'INSTRUMENT_ADAPTATION_RULES_BULL_LIQUIDATION_DISTANCE_PCT',
+  'INSTRUMENT_ADAPTATION_RULES_BEAR_LIQUIDATION_DISTANCE_PCT',
+] as const;
+
+const REQUIRED_GLOBAL_ENV_KEYS = [
+  'DEBUG',
+  'DOOMSDAY_PROTECTION',
+  'MORNING_OPENING_PROTECTION_ENABLED',
+  'AFTERNOON_OPENING_PROTECTION_ENABLED',
+  'BUY_ORDER_TIMEOUT_ENABLED',
+  'SELL_ORDER_TIMEOUT_ENABLED',
+  'ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE',
+  'TRADING_ORDER_TYPE',
+  'LIQUIDATION_ORDER_TYPE',
+  'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
 ] as const;
 
 /**
@@ -89,6 +154,65 @@ function mergeValidationResults(...results: ReadonlyArray<ValidationResult>): Va
     errors,
     missingFields,
   };
+}
+
+function appendMissingEnvKey(
+  env: NodeJS.ProcessEnv,
+  envKey: string,
+  errors: string[],
+  missingFields: string[],
+): void {
+  if (getStringConfig(env, envKey) !== null) {
+    return;
+  }
+
+  errors.push(`${envKey} 未配置`);
+  missingFields.push(envKey);
+}
+
+function appendMissingEnvKeys(
+  env: NodeJS.ProcessEnv,
+  envKeys: ReadonlyArray<string>,
+  errors: string[],
+  missingFields: string[],
+): void {
+  for (const envKey of envKeys) {
+    appendMissingEnvKey(env, envKey, errors, missingFields);
+  }
+}
+
+function readNormalizedBooleanEnvValue(env: NodeJS.ProcessEnv, envKey: string): string | null {
+  const rawValue = getStringConfig(env, envKey);
+  if (rawValue === null) {
+    return null;
+  }
+
+  return rawValue.toLowerCase();
+}
+
+function validateRequiredBooleanEnvKey(params: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly envKey: string;
+  readonly expectedValue: boolean;
+  readonly errors: string[];
+  readonly missingFields: string[];
+}): void {
+  const normalizedValue = readNormalizedBooleanEnvValue(params.env, params.envKey);
+  if (normalizedValue === null) {
+    return;
+  }
+
+  if (normalizedValue !== 'true' && normalizedValue !== 'false') {
+    params.errors.push(`${params.envKey} 无效（必须为 true 或 false）`);
+    params.missingFields.push(params.envKey);
+    return;
+  }
+
+  const parsedValue = normalizedValue === 'true';
+  if (parsedValue !== params.expectedValue) {
+    params.errors.push(`${params.envKey} 与 tradingConfig.global 不一致`);
+    params.missingFields.push(params.envKey);
+  }
 }
 
 /**
@@ -162,7 +286,65 @@ function validateGlobalConfig(
   const missingFields: string[] = [];
   const globalConfig = tradingConfig.global;
 
+  appendMissingEnvKeys(env, REQUIRED_GLOBAL_ENV_KEYS, errors, missingFields);
+  validateRequiredBooleanEnvKey({
+    env,
+    envKey: 'DEBUG',
+    expectedValue: globalConfig.debug,
+    errors,
+    missingFields,
+  });
+
+  validateRequiredBooleanEnvKey({
+    env,
+    envKey: 'DOOMSDAY_PROTECTION',
+    expectedValue: globalConfig.doomsdayProtection,
+    errors,
+    missingFields,
+  });
+
+  validateRequiredBooleanEnvKey({
+    env,
+    envKey: 'MORNING_OPENING_PROTECTION_ENABLED',
+    expectedValue: globalConfig.openProtection.morning.enabled,
+    errors,
+    missingFields,
+  });
+
+  validateRequiredBooleanEnvKey({
+    env,
+    envKey: 'AFTERNOON_OPENING_PROTECTION_ENABLED',
+    expectedValue: globalConfig.openProtection.afternoon.enabled,
+    errors,
+    missingFields,
+  });
+
+  validateRequiredBooleanEnvKey({
+    env,
+    envKey: 'BUY_ORDER_TIMEOUT_ENABLED',
+    expectedValue: globalConfig.buyOrderTimeout.enabled,
+    errors,
+    missingFields,
+  });
+
+  validateRequiredBooleanEnvKey({
+    env,
+    envKey: 'SELL_ORDER_TIMEOUT_ENABLED',
+    expectedValue: globalConfig.sellOrderTimeout.enabled,
+    errors,
+    missingFields,
+  });
+
+  validateRequiredBooleanEnvKey({
+    env,
+    envKey: 'ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE',
+    expectedValue: globalConfig.allowBuyOrderTrackingAboveInitialPrice,
+    errors,
+    missingFields,
+  });
+
   if (globalConfig.buyOrderTimeout.enabled) {
+    appendMissingEnvKey(env, 'BUY_ORDER_TIMEOUT_SECONDS', errors, missingFields);
     const timeoutValidationError = validateCriticalBoundedNumberConfig({
       env,
       envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
@@ -186,6 +368,7 @@ function validateGlobalConfig(
   }
 
   if (globalConfig.sellOrderTimeout.enabled) {
+    appendMissingEnvKey(env, 'SELL_ORDER_TIMEOUT_SECONDS', errors, missingFields);
     const timeoutValidationError = validateCriticalBoundedNumberConfig({
       env,
       envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
@@ -208,25 +391,62 @@ function validateGlobalConfig(
     }
   }
 
-  const orderMonitorIntervalValidationError = validateCriticalBoundedNumberConfig({
-    env,
-    envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
-    min: 1,
-    max: 60,
-  });
-  if (orderMonitorIntervalValidationError !== null) {
-    errors.push(orderMonitorIntervalValidationError);
-    missingFields.push('ORDER_MONITOR_PRICE_UPDATE_INTERVAL');
+  const tradingOrderTypeRaw = getStringConfig(env, 'TRADING_ORDER_TYPE');
+  if (
+    tradingOrderTypeRaw !== null &&
+    tradingOrderTypeRaw !== 'LO' &&
+    tradingOrderTypeRaw !== 'ELO' &&
+    tradingOrderTypeRaw !== 'MO'
+  ) {
+    errors.push('TRADING_ORDER_TYPE 无效（必须为 LO、ELO 或 MO）');
+    missingFields.push('TRADING_ORDER_TYPE');
+  }
+
+  const liquidationOrderTypeRaw = getStringConfig(env, 'LIQUIDATION_ORDER_TYPE');
+  if (
+    liquidationOrderTypeRaw !== null &&
+    liquidationOrderTypeRaw !== 'LO' &&
+    liquidationOrderTypeRaw !== 'ELO' &&
+    liquidationOrderTypeRaw !== 'MO'
+  ) {
+    errors.push('LIQUIDATION_ORDER_TYPE 无效（必须为 LO、ELO 或 MO）');
+    missingFields.push('LIQUIDATION_ORDER_TYPE');
+  }
+
+  if (tradingOrderTypeRaw !== null && tradingOrderTypeRaw !== globalConfig.tradingOrderType) {
+    errors.push('TRADING_ORDER_TYPE 与 tradingConfig.global.tradingOrderType 不一致');
+    missingFields.push('TRADING_ORDER_TYPE');
   }
 
   if (
-    !Number.isInteger(globalConfig.orderMonitorPriceUpdateInterval) ||
-    !Number.isFinite(globalConfig.orderMonitorPriceUpdateInterval) ||
-    globalConfig.orderMonitorPriceUpdateInterval < 1 ||
-    globalConfig.orderMonitorPriceUpdateInterval > 60
+    liquidationOrderTypeRaw !== null &&
+    liquidationOrderTypeRaw !== globalConfig.liquidationOrderType
   ) {
-    errors.push('ORDER_MONITOR_PRICE_UPDATE_INTERVAL 无效（范围 1-60）');
-    missingFields.push('ORDER_MONITOR_PRICE_UPDATE_INTERVAL');
+    errors.push('LIQUIDATION_ORDER_TYPE 与 tradingConfig.global.liquidationOrderType 不一致');
+    missingFields.push('LIQUIDATION_ORDER_TYPE');
+  }
+
+  if (getStringConfig(env, 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL') !== null) {
+    const orderMonitorIntervalValidationError = validateCriticalBoundedNumberConfig({
+      env,
+      envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
+      min: 1,
+      max: 60,
+    });
+    if (orderMonitorIntervalValidationError !== null) {
+      errors.push(orderMonitorIntervalValidationError);
+      missingFields.push('ORDER_MONITOR_PRICE_UPDATE_INTERVAL');
+    }
+
+    if (
+      !Number.isInteger(globalConfig.orderMonitorPriceUpdateInterval) ||
+      !Number.isFinite(globalConfig.orderMonitorPriceUpdateInterval) ||
+      globalConfig.orderMonitorPriceUpdateInterval < 1 ||
+      globalConfig.orderMonitorPriceUpdateInterval > 60
+    ) {
+      errors.push('ORDER_MONITOR_PRICE_UPDATE_INTERVAL 无效（范围 1-60）');
+      missingFields.push('ORDER_MONITOR_PRICE_UPDATE_INTERVAL');
+    }
   }
 
   const { morning, afternoon } = globalConfig.openProtection;
@@ -420,11 +640,8 @@ function validateVwapConfirmRules(tradingConfig: TradingConfig): ValidationResul
     errors.push('VWAP_CONFIRM_RULES_DISTANCE_BAND_ATR 必须大于 0');
   }
 
-  if (
-    !Number.isInteger(vwapConfirmRules.slopeWindowBars) ||
-    vwapConfirmRules.slopeWindowBars <= 0
-  ) {
-    errors.push('VWAP_CONFIRM_RULES_SLOPE_WINDOW_BARS 必须为正整数');
+  if (!Number.isInteger(vwapConfirmRules.slopeWindowBars) || vwapConfirmRules.slopeWindowBars < 2) {
+    errors.push('VWAP_CONFIRM_RULES_SLOPE_WINDOW_BARS 必须为大于等于 2 的整数');
     missingFields.push('VWAP_CONFIRM_RULES_SLOPE_WINDOW_BARS');
   }
 
@@ -682,6 +899,7 @@ function validateStrategyConfig(
   const errors: string[] = [];
   const missingFields: string[] = [];
   const { strategy } = tradingConfig;
+  appendMissingEnvKeys(env, REQUIRED_STRATEGY_ENV_KEYS, errors, missingFields);
   const seatMode = strategy.seatMode;
   const longSymbolProvided = getStringConfig(env, 'LONG_SYMBOL') !== null;
   const shortSymbolProvided = getStringConfig(env, 'SHORT_SYMBOL') !== null;
@@ -772,8 +990,8 @@ function validateStrategyConfig(
     errors.push('MAX_POSITION_NOTIONAL 必须大于 0');
   }
 
-  if (strategy.maxUnrealizedLoss < 0) {
-    errors.push('MAX_UNREALIZED_LOSS 不能小于 0');
+  if (strategy.maxUnrealizedLossPerSymbol < 0) {
+    errors.push('MAX_UNREALIZED_LOSS_PER_SYMBOL 不能小于 0');
   }
 
   if (
@@ -790,6 +1008,12 @@ function validateStrategyConfig(
     strategy.liquidationTriggerLimit > 10
   ) {
     errors.push('LIQUIDATION_TRIGGER_LIMIT 必须在 1-10 之间');
+  }
+
+  const liquidationCooldownRaw = getStringConfig(env, 'LIQUIDATION_COOLDOWN');
+  if (liquidationCooldownRaw !== null && strategy.liquidationCooldown === null) {
+    errors.push('LIQUIDATION_COOLDOWN 无效（必须为 1-120 分钟、half-day 或 one-day）');
+    missingFields.push('LIQUIDATION_COOLDOWN');
   }
 
   if (
@@ -935,7 +1159,7 @@ export function validateAllConfig({
   logger.info(`订单归属映射: ${tradingConfig.strategy.orderOwnershipMapping.join(', ')}`);
   logger.info(`目标买入金额: ${tradingConfig.strategy.targetNotional} HKD`);
   logger.info(`最大持仓市值: ${tradingConfig.strategy.maxPositionNotional} HKD`);
-  logger.info(`单实例最大浮亏: ${tradingConfig.strategy.maxUnrealizedLoss} HKD`);
+  logger.info(`每个执行标的独立最大浮亏: ${tradingConfig.strategy.maxUnrealizedLossPerSymbol} HKD`);
   logger.info(`同方向买入时间间隔: ${tradingConfig.strategy.buyIntervalSeconds} 秒`);
   logger.info(
     `保护性清仓后买入冷却: ${formatLiquidationCooldownConfig(tradingConfig.strategy.liquidationCooldown)}`,

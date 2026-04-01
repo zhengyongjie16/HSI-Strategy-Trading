@@ -16,6 +16,7 @@ import { formatError } from '../../utils/error/index.js';
 import { displayAccountAndPositions } from '../../services/accountDisplay/index.js';
 import { signalObjectPool } from '../../utils/objectPool/index.js';
 import { requireStrategyRuntime } from '../utils.js';
+import { isRuntimeExecutionAllowed } from './executionGate.js';
 import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
 
 /**
@@ -44,6 +45,13 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
 
   function reportAsyncRuntimeError(error: unknown): void {
     logger.error('[AsyncRuntime] 关键后台处理失败，主循环继续并等待下一轮重试', formatError(error));
+  }
+
+  function getRuntimeExecutionGate(): boolean {
+    return isRuntimeExecutionAllowed({
+      isTradingEnabled: lastState.isTradingEnabled,
+      canTrade: lastState.canTrade,
+    });
   }
 
   const orderMonitorWorker = createOrderMonitorWorker({
@@ -81,7 +89,8 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     marketDataClient: preGateRuntime.marketDataClient,
     lastState,
     monitorConfig,
-    getCanProcessTask: () => lastState.isTradingEnabled,
+    liquidationOrderType: preGateRuntime.tradingConfig.global.liquidationOrderType,
+    getCanProcessTask: getRuntimeExecutionGate,
     onError: reportAsyncRuntimeError,
   });
   const buyProcessor = createBuyProcessor({
@@ -93,7 +102,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     doomsdayProtection,
     getLastState: () => lastState,
     getIsHalfDay: () => lastState.isHalfDay ?? false,
-    getCanProcessTask: () => lastState.isTradingEnabled,
+    getCanProcessTask: getRuntimeExecutionGate,
   });
   const sellProcessor = createSellProcessor({
     taskQueue: sellTaskQueue,
@@ -109,7 +118,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     clearRetry: (handle) => {
       clearTimeout(handle);
     },
-    getCanProcessTask: () => lastState.isTradingEnabled,
+    getCanProcessTask: getRuntimeExecutionGate,
   });
 
   return {

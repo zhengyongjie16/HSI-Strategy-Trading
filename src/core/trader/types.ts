@@ -77,10 +77,10 @@ export type TrackOrderParams = {
   readonly isProtectiveLiquidation: boolean;
   readonly orderType: OrderType;
 
-  /** 触发买入冷却所需的保护性清仓次数（可选，默认 1） */
+  /** 触发买入冷却所需的保护性清仓次数（可选，未提供时继承当前 monitorConfig） */
   readonly liquidationTriggerLimit?: number;
 
-  /** 保护性清仓冷却配置（用于触发计数分段与冷却激活计算） */
+  /** 保护性清仓冷却配置（用于触发计数分段与冷却激活计算；未提供时继承当前 monitorConfig） */
   readonly liquidationCooldownConfig?: StrategyRuntimeConfig['liquidationCooldown'];
 };
 

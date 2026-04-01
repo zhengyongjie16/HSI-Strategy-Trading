@@ -17,9 +17,10 @@ import { buildBuyTimeKey } from './utils.js';
 /**
  * 创建买入节流器。
  *
+ * @param defaultMonitorConfig 默认监控配置（唯一真相来源）
  * @returns 买入节流器实例
  */
-export function createBuyThrottle(): BuyThrottle {
+export function createBuyThrottle(defaultMonitorConfig: StrategyRuntimeConfig): BuyThrottle {
   const lastBuyTime = new Map<string, number>();
 
   /**
@@ -35,8 +36,9 @@ export function createBuyThrottle(): BuyThrottle {
     }
 
     const direction: 'LONG' | 'SHORT' = signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
-    const buyIntervalSeconds = monitorConfig?.buyIntervalSeconds ?? 60;
-    const timeKey = buildBuyTimeKey(signalAction, monitorConfig);
+    const resolvedMonitorConfig = monitorConfig ?? defaultMonitorConfig;
+    const buyIntervalSeconds = resolvedMonitorConfig.buyIntervalSeconds;
+    const timeKey = buildBuyTimeKey(signalAction, resolvedMonitorConfig);
     const lastTime = lastBuyTime.get(timeKey);
     if (!lastTime) {
       return { canTrade: true };
@@ -70,7 +72,10 @@ export function createBuyThrottle(): BuyThrottle {
     monitorConfig?: StrategyRuntimeConfig | null,
   ): void {
     if (isBuyAction(signalAction)) {
-      lastBuyTime.set(buildBuyTimeKey(signalAction, monitorConfig), Date.now());
+      lastBuyTime.set(
+        buildBuyTimeKey(signalAction, monitorConfig ?? defaultMonitorConfig),
+        Date.now(),
+      );
     }
   }
 

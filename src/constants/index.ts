@@ -3,7 +3,7 @@
  *
  * 统一管理项目中使用的所有常量，包括：
  * - 时间相关：毫秒换算、时区偏移
- * - 交易相关：目标金额、K线配置、主循环间隔
+ * - 交易相关：K 线配置、主循环间隔、订单语义标记
  * - 验证相关：信号去抖与冷却配置
  * - 日志相关：流超时配置
  * - API相关：重试策略、缓存TTL、频率限制
@@ -52,27 +52,6 @@ export const HK_DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** 交易相关常量 */
 export const TRADING = {
-  /** 默认目标金额（港币），单次开仓的目标市值 */
-  DEFAULT_TARGET_NOTIONAL: 10000,
-
-  /** 默认单实例最大持仓市值（港币） */
-  DEFAULT_MAX_POSITION_NOTIONAL: 100000,
-
-  /** 默认单实例最大浮亏（港币，0 表示关闭） */
-  DEFAULT_MAX_UNREALIZED_LOSS: 0,
-
-  /** 默认买入间隔（秒） */
-  DEFAULT_BUY_INTERVAL_SECONDS: 60,
-
-  /** 默认保护性清仓触发次数上限 */
-  DEFAULT_LIQUIDATION_TRIGGER_LIMIT: 1,
-
-  /** 默认订单价格修改最小间隔（秒） */
-  DEFAULT_ORDER_MONITOR_PRICE_UPDATE_INTERVAL: 5,
-
-  /** 默认订单超时时间（秒） */
-  DEFAULT_ORDER_TIMEOUT_SECONDS: 180,
-
   /** 基础对象直连订阅周期（阶段 2 固定：1m/5m/15m） */
   CANDLE_PERIODS: [Period.Min_1, Period.Min_5, Period.Min_15] as const,
 
@@ -95,101 +74,10 @@ export const TRADING = {
   PROTECTIVE_LIQUIDATION_COMPLETED_REASON: 'PROTECTIVE_LIQUIDATION_COMPLETED',
 } as const;
 
-/** 单实例趋势延续策略默认值与固定 preset。 */
+/** 单实例趋势延续策略固定 preset。 */
 export const STRATEGY = {
   /** 固定基础对象 preset */
   BASE_INSTRUMENT_SYMBOL: 'HSI.HK',
-
-  /** 默认席位模式 */
-  DEFAULT_SEAT_MODE: 'static',
-
-  /** 自动寻标默认值 */
-  AUTO_SEARCH: {
-    minDistancePctBull: 0.8,
-    minDistancePctBear: -0.8,
-    minTurnoverPerMinuteBull: 300_000,
-    minTurnoverPerMinuteBear: 300_000,
-    expiryMinMonths: 6,
-    openDelayMinutes: 5,
-    switchIntervalMinutes: 0,
-    switchDistanceRangeBull: {
-      min: 0.6,
-      max: 1.5,
-    },
-    switchDistanceRangeBear: {
-      min: -1.5,
-      max: -0.6,
-    },
-  } as const,
-
-  /** 波动率状态默认值 */
-  REGIME_THRESHOLDS: {
-    atrShortPeriod: 5,
-    atrLongPeriod: 30,
-    rvQuantileWindowDays: 20,
-    trendOnVolExpansion: 1.2,
-    trendOffVolExpansion: 0.9,
-    extremeVolExpansion: 1.8,
-    trendOnVolQuantile: 0.7,
-    trendOffVolQuantile: 0.4,
-    extremeVolQuantile: 0.95,
-  } as const,
-
-  /** 趋势评分默认值 */
-  TREND_SCORE_THRESHOLDS: {
-    w15: 0.25,
-    w30: 0.35,
-    w60: 0.4,
-    classificationThreshold: 0.8,
-    entryThreshold: 0.9,
-    exitThreshold: 0.35,
-    reverseInvalidationThreshold: 0.5,
-  } as const,
-
-  /** ER 默认值 */
-  ER_THRESHOLDS: {
-    er15EntryMin: 0.4,
-    er30EntryMin: 0.35,
-    er15ExitMax: 0.25,
-    er30ExitMax: 0.2,
-    strongTrendErFloor: 0.45,
-  } as const,
-
-  /** VWAP 确认默认值 */
-  VWAP_CONFIRM_RULES: {
-    distanceBandAtr: 0.1,
-    slopeWindowBars: 5,
-    maxCrossCountLast10m: 2,
-  } as const,
-
-  /** 开盘结构默认值 */
-  OPENING_STRUCTURE_RULES: {
-    openingRangeMinutes: 20,
-    breakoutScoreMin: 0.8,
-    outsidePersistenceWindowBars: 5,
-    outsidePersistenceMin: 0.6,
-    retestToleranceAtr: 0.2,
-    confirmBars: 2,
-    morningNoiseWindowMinutes: 20,
-    afternoonNoiseWindowMinutes: 15,
-  } as const,
-
-  /** 午后延续默认值 */
-  PM_CONTINUATION_RULES: {
-    amMoveZMin: 0.8,
-    middayHoldMin: 0.6,
-    pmReExpansionTrendScoreMin: 0.9,
-    pmReExpansionEr15Min: 0.35,
-    pmConfirmCutoffTime: '13:30',
-  } as const,
-
-  /** 交易标的适配默认值 */
-  INSTRUMENT_ADAPTATION_RULES: {
-    bullBuyMinDistancePct: 0.35,
-    bearBuyMaxDistancePct: -0.35,
-    bullLiquidationDistancePct: 0.3,
-    bearLiquidationDistancePct: -0.3,
-  } as const,
 } as const;
 
 /** 自动寻标相关常量 */
@@ -359,19 +247,6 @@ export const NON_REPLACEABLE_ORDER_TYPES = new Set<OrderType>([
   OrderType.MO,
 ]) as ReadonlySet<OrderType>;
 
-/** 风险检查相关常量（牛熊证） */
-/** 牛证最低距离回收价百分比（低于此值拒绝买入） */
-export const BULL_WARRANT_MIN_DISTANCE_PERCENT = 0.35;
-
-/** 熊证最高距离回收价百分比（高于此值拒绝买入） */
-export const BEAR_WARRANT_MAX_DISTANCE_PERCENT = -0.35;
-
-/** 牛证触发清仓的距离回收价百分比（低于此值触发保护清仓） */
-export const BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT = 0.3;
-
-/** 熊证触发清仓的距离回收价百分比（高于此值触发保护清仓） */
-export const BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT = -0.3;
-
 /** 监控标的价格最小有效值（低于此值视为异常） */
 export const MIN_MONITOR_PRICE_THRESHOLD = 1;
 
@@ -415,9 +290,6 @@ export const REPLACE_TEMP_BLOCKED_BY_STATUS_ERROR_CODE_SET = new Set(['602013'])
 
 /** 百分比格式化小数位数 */
 export const DEFAULT_PERCENT_DECIMALS = 2;
-
-/** 牛熊证距离回收价清仓订单类型 */
-export const WARRANT_LIQUIDATION_ORDER_TYPE: OrderTypeConfig = 'ELO';
 
 /** 标的代码格式正则（ticker.region） */
 export const SYMBOL_WITH_REGION_REGEX = /^[A-Z0-9]+\.[A-Z]{2,5}$/;

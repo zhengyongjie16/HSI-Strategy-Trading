@@ -161,6 +161,128 @@ describe('seatSync business flow', () => {
     expect(monitorTaskQueue.isEmpty()).toBeTrue();
   });
 
+  it('preserves shared monitor tasks when LONG seat leaves ACTIVE', () => {
+    const baseInstrumentSymbol = 'HSI.HK';
+    const symbolRegistry = createSymbolRegistryDouble({
+      baseInstrumentSymbol,
+      longSeat: {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+      shortSeat: {
+        symbol: 'BEAR.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+    });
+
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    monitorTaskQueue.scheduleLatest({
+      type: 'UNREALIZED_LOSS_CHECK',
+      dedupeKey: 'UNREALIZED_LOSS_CHECK',
+      data: {
+        long: {
+          seatVersion: 1,
+          symbol: 'BULL.HK',
+        },
+        short: {
+          seatVersion: 1,
+          symbol: 'BEAR.HK',
+        },
+      },
+    });
+
+    monitorTaskQueue.scheduleLatest({
+      type: 'AUTO_SYMBOL_SWITCH_DISTANCE',
+      dedupeKey: 'AUTO_SYMBOL_SWITCH_DISTANCE',
+      data: {
+        monitorPrice: 20_000,
+        seatSnapshots: {
+          long: {
+            seatVersion: 1,
+            symbol: 'BULL.HK',
+          },
+          short: {
+            seatVersion: 1,
+            symbol: 'BEAR.HK',
+          },
+        },
+      },
+    });
+
+    monitorTaskQueue.scheduleLatest({
+      type: 'AUTO_SYMBOL_TICK',
+      dedupeKey: `${baseInstrumentSymbol}:AUTO_SYMBOL_TICK:SHORT`,
+      data: {
+        direction: 'SHORT',
+        seatVersion: 1,
+        symbol: 'BEAR.HK',
+        currentTimeMs: Date.now(),
+        canTradeNow: true,
+        openProtectionActive: false,
+      },
+    });
+
+    const monitorContext = {
+      config: createStrategyRuntimeConfigDouble({ baseInstrumentSymbol }),
+      riskChecker: createRiskCheckerDouble(),
+      symbolRegistry,
+      seatState: {
+        long: {
+          symbol: 'BULL.HK',
+          status: 'ACTIVE',
+          lastSwitchAt: null,
+          lastSearchAt: null,
+          lastSeatActivatedAt: null,
+          searchFailCountToday: 0,
+          frozenTradingDayKey: null,
+        },
+        short: {
+          symbol: 'BEAR.HK',
+          status: 'ACTIVE',
+          lastSwitchAt: null,
+          lastSearchAt: null,
+          lastSeatActivatedAt: null,
+          searchFailCountToday: 0,
+          frozenTradingDayKey: null,
+        },
+      },
+      seatVersion: { long: 1, short: 1 },
+      longSymbolName: 'BULL.HK',
+      shortSymbolName: 'BEAR.HK',
+    } as unknown as StrategyRuntime;
+
+    const mainContext = {
+      buyTaskQueue: createBuyTaskQueue(),
+      sellTaskQueue: createSellTaskQueue(),
+      monitorTaskQueue,
+    } as unknown as MainProgramContext;
+
+    syncSeatState({
+      baseInstrumentSymbol,
+      monitorContext,
+      mainContext,
+      quotesMap: new Map<string, ReturnType<typeof createQuoteDouble>>([
+        ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9)],
+      ]),
+      releaseSignal: () => {},
+    });
+
+    expect(monitorTaskQueue.pop()?.type).toBe('UNREALIZED_LOSS_CHECK');
+    expect(monitorTaskQueue.pop()?.type).toBe('AUTO_SYMBOL_SWITCH_DISTANCE');
+    expect(monitorTaskQueue.pop()?.type).toBe('AUTO_SYMBOL_TICK');
+    expect(monitorTaskQueue.isEmpty()).toBeTrue();
+  });
+
   it('schedules SEAT_REFRESH when registry updates seat from ACTIVE to ACTIVATING after snapshot capture', () => {
     const baseInstrumentSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({

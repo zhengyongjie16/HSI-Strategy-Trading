@@ -109,7 +109,7 @@ export function createStrategyRuntimeConfigFromTradingConfig(
     orderOwnershipMapping: config.strategy.orderOwnershipMapping,
     targetNotional: config.strategy.targetNotional,
     maxPositionNotional: config.strategy.maxPositionNotional,
-    maxUnrealizedLossPerSymbol: config.strategy.maxUnrealizedLoss,
+    maxUnrealizedLossPerSymbol: config.strategy.maxUnrealizedLossPerSymbol,
     buyIntervalSeconds: config.strategy.buyIntervalSeconds,
     liquidationCooldown: config.strategy.liquidationCooldown,
     liquidationTriggerLimit: config.strategy.liquidationTriggerLimit,

@@ -72,7 +72,8 @@ function createContext(params: {
 describe('risk pipeline regression', () => {
   it('does not consume same-direction buy throttle during risk check stage', async () => {
     const lastRiskCheckTime = new Map<string, number>();
-    const buyThrottle = createBuyThrottle();
+    const monitorConfig = createStrategyRuntimeConfigDouble();
+    const buyThrottle = createBuyThrottle(monitorConfig);
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
       getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),

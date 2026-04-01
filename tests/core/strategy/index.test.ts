@@ -158,7 +158,7 @@ describe('createTrendContinuationStrategy', () => {
     expect(result).toHaveLength(0);
   });
 
-  it('returns no signals for a neutral snapshot', () => {
+  it('returns no signals for a neutral snapshot and leaves observability to outer pipeline', () => {
     const strategy = createTrendContinuationStrategy(createStrategyRuntimeConfig().strategyConfig);
     const result = strategy.generateSignals(
       createFactorSnapshot({

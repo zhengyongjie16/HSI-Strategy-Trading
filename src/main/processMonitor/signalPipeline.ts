@@ -19,6 +19,7 @@
 import { logger } from '../../utils/logger/index.js';
 import { isBuyAction } from '../../utils/helpers/index.js';
 import { VALID_SIGNAL_ACTIONS } from '../../constants/index.js';
+import { planFactorSignals } from '../../services/factors/runtime/index.js';
 import { isSeatActive } from '../../utils/seat/guards.js';
 import { describeSeatUnavailable } from '../../services/autoSymbolManager/utils.js';
 import { formatSignalLog, getPositions } from './utils.js';
@@ -176,12 +177,28 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
       return;
     }
 
+    const factorSnapshot = monitorSnapshot.factorSnapshot ?? null;
     const signals = strategy.generateSignals(
-      monitorSnapshot.factorSnapshot ?? null,
+      factorSnapshot,
       longSymbol,
       shortSymbol,
       lastState.positionCache,
     );
+    if (factorSnapshot !== null && signals.length === 0) {
+      const decisionSnapshot = planFactorSignals({
+        factorSnapshot,
+        strategyConfig: monitorContext.config.strategyConfig,
+        longSymbol,
+        shortSymbol,
+        positionCache: lastState.positionCache,
+      });
+      const holdReasonText = decisionSnapshot.holdReasons.join(' | ').trim();
+      if (holdReasonText !== '') {
+        logger.debug(
+          `[策略观察] ${formatSymbolDisplay(baseInstrumentSymbol, monitorContext.baseInstrumentName)} 无可执行信号: ${holdReasonText}`,
+        );
+      }
+    }
 
     /**
      * 丰富信号：名称、价格、lotSize。

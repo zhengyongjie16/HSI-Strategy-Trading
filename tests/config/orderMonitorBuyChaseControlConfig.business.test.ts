@@ -6,21 +6,18 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../src/config/trading/index.js';
+import { createRequiredStaticEnv } from '../helpers/configEnvFactory.js';
 
 function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
-  return {
-    LONG_SYMBOL: 'BULL.HK',
-    SHORT_SYMBOL: 'BEAR.HK',
-    ...overrides,
-  };
+  return createRequiredStaticEnv(overrides);
 }
 
 describe('order monitor buy chase control config', () => {
-  it('parses ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE with expected defaults', () => {
-    const defaultConfig = createTradingConfig({
+  it('parses explicit ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE values', () => {
+    const disabledByConfig = createTradingConfig({
       env: createBaseEnv(),
     });
-    expect(defaultConfig.global.allowBuyOrderTrackingAboveInitialPrice).toBe(true);
+    expect(disabledByConfig.global.allowBuyOrderTrackingAboveInitialPrice).toBe(false);
 
     const enabledConfig = createTradingConfig({
       env: createBaseEnv({

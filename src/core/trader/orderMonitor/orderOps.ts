@@ -164,8 +164,15 @@ function clearReplaceState(
  * @returns 订单操作接口
  */
 export function createOrderOps(deps: OrderOpsDeps): OrderOps {
-  const { runtime, ctxPromise, rateLimiter, cacheManager, orderHoldRegistry, orderStatusQuery } =
-    deps;
+  const {
+    runtime,
+    ctxPromise,
+    rateLimiter,
+    cacheManager,
+    orderHoldRegistry,
+    orderStatusQuery,
+    monitorConfig,
+  } = deps;
 
   /**
    * 开始追踪订单（订单提交后调用）。
@@ -204,8 +211,8 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       isLongSymbol,
       baseInstrumentSymbol,
       isProtectiveLiquidation,
-      liquidationTriggerLimit: liquidationTriggerLimit ?? 1,
-      liquidationCooldownConfig: liquidationCooldownConfig ?? null,
+      liquidationTriggerLimit: liquidationTriggerLimit ?? monitorConfig.liquidationTriggerLimit,
+      liquidationCooldownConfig: liquidationCooldownConfig ?? monitorConfig.liquidationCooldown,
       orderType,
       submittedPrice: price,
       initialSubmittedPrice,

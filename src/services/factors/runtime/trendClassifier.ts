@@ -113,11 +113,11 @@ export function computeTrendClassification(params: {
   readonly threshold: number;
 }): TrendClassification | null {
   const { momentum, trendScore, threshold } = params;
-  if (trendScore === null || momentum.sameSignCount < 2) {
+  if (trendScore === null) {
     return null;
   }
 
-  if (Math.abs(trendScore) < threshold) {
+  if (momentum.sameSignCount < 2 || Math.abs(trendScore) < threshold) {
     return 'range';
   }
 

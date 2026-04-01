@@ -4,9 +4,10 @@
  * 功能：
  * - 验证信号管道相关场景意图、边界条件与业务期望。
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 
 import { runSignalPipeline } from '../../../src/main/processMonitor/signalPipeline.js';
+import { logger } from '../../../src/utils/logger/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
@@ -155,6 +156,16 @@ function createPipelineHarness(params: {
 }
 
 describe('signalPipeline business flow', () => {
+  let debugSpy: { readonly mockRestore: () => void; readonly mock: unknown };
+
+  beforeEach(() => {
+    debugSpy = spyOn(logger, 'debug').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    debugSpy.mockRestore();
+  });
+
   it('routes ready signals to correct queues and enriches seatVersion/symbolName', () => {
     const buySignal = createSignalDouble('BUYCALL', 'BULL.HK');
     buySignal.symbolName = null;
@@ -211,6 +222,17 @@ describe('signalPipeline business flow', () => {
     expect(harness.buyTaskQueue.isEmpty()).toBeTrue();
     expect(harness.sellTaskQueue.isEmpty()).toBeTrue();
     expect(harness.releasedSignals).toEqual([immediateBuy, immediateShortBuy]);
+  });
+
+  it('logs factor holdReasons when strategy produces no actionable signals', () => {
+    createPipelineHarness({
+      signals: [],
+    });
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[策略观察] HSI.HK 无可执行信号:'),
+    );
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('[long]'));
   });
 
   it('returns early during opening protection and still releases pooled positions', () => {

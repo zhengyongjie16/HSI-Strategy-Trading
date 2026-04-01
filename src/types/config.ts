@@ -283,8 +283,8 @@ export type StrategyConfig = {
   /** 执行标的最大持仓市值 */
   readonly maxPositionNotional: number;
 
-  /** 单实例最大浮亏 */
-  readonly maxUnrealizedLoss: number;
+  /** 每个执行标的独立最大浮亏 */
+  readonly maxUnrealizedLossPerSymbol: number;
 
   /** 买入间隔时间（秒） */
   readonly buyIntervalSeconds: number;

@@ -68,6 +68,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     orderHoldRegistry,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
+    monitorConfig,
     ...(refreshGate ? { refreshGate } : {}),
   });
 
@@ -83,6 +84,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     cacheManager,
     orderHoldRegistry,
     orderStatusQuery,
+    monitorConfig,
   });
 
   let activeHandler: ((event: PushOrderChanged) => void) | null = null;

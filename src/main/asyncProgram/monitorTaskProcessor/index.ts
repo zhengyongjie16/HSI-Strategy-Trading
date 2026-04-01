@@ -49,6 +49,14 @@ function assertNeverTask(_task: never): never {
 }
 
 /**
+ * 判断监控任务是否需要连续交易时段执行门禁。
+ * SEAT_REFRESH 属于席位激活屏障，不应在盘外被直接丢弃，否则会导致 ACTIVATING 卡死。
+ */
+function requiresExecutionGate(task: MonitorTask<MonitorTaskDataMap>): boolean {
+  return task.type !== 'SEAT_REFRESH';
+}
+
+/**
  * 创建监控任务处理器。
  * 消费 MonitorTaskQueue 中的任务，使用 setImmediate 异步执行；依赖 monitorContext、refreshGate 等完成席位校验与刷新。
  *
@@ -65,6 +73,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     marketDataClient,
     lastState,
     monitorConfig,
+    liquidationOrderType,
     scheduleRetry,
     clearRetry,
     getCanProcessTask,
@@ -144,6 +153,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     marketDataClient,
     lastState,
     trader,
+    liquidationOrderType,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
   });
   const handleUnrealizedLossCheck = createUnrealizedLossHandler({
@@ -197,7 +207,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
         break;
       }
 
-      if (getCanProcessTask && !getCanProcessTask()) {
+      if (requiresExecutionGate(task) && getCanProcessTask && !getCanProcessTask()) {
         logger.debug(
           `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${baseInstrumentSymbol} dedupe=${task.dedupeKey}`,
         );

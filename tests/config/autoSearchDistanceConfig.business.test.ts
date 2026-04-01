@@ -9,13 +9,10 @@ import { describe, expect, it } from 'bun:test';
 
 import { createTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
+import { createRequiredAutoEnv } from '../helpers/configEnvFactory.js';
 
 function createAutoEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
-  return {
-    LONGBRIDGE_AUTH_MODE: 'oauth',
-    LONGBRIDGE_CLIENT_ID: 'client-id',
-    ORDER_OWNERSHIP_MAPPING: 'HSI',
-    SEAT_MODE: 'auto',
+  return createRequiredAutoEnv({
     AUTO_SEARCH_MIN_DISTANCE_PCT_BULL: '0.35',
     AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR: '-0.35',
     AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL: '100000',
@@ -26,7 +23,7 @@ function createAutoEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
     SWITCH_DISTANCE_RANGE_BULL: '0.31,1.5',
     SWITCH_DISTANCE_RANGE_BEAR: '-1.5,-0.31',
     ...overrides,
-  };
+  });
 }
 
 async function validateConfig(env: NodeJS.ProcessEnv): Promise<boolean> {

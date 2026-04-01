@@ -652,7 +652,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           symbol: state.oldSymbol,
           quote,
           reason: '自动换标-移仓卖出',
-          orderTypeOverride: 'ELO',
+          orderTypeOverride: null,
           quantity: availableQuantity,
           seatVersion,
         });
@@ -788,7 +788,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           symbol: nextSymbol,
           quote,
           reason: '自动换标-移仓买入',
-          orderTypeOverride: 'ELO',
+          orderTypeOverride: null,
           quantity: buyQuantity,
           seatVersion,
         });

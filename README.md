@@ -110,7 +110,7 @@ ORDER_OWNERSHIP_MAPPING=HSI
 # 交易与风控
 TARGET_NOTIONAL=10000
 MAX_POSITION_NOTIONAL=100000
-MAX_UNREALIZED_LOSS=3000
+MAX_UNREALIZED_LOSS_PER_SYMBOL=3000
 ```
 
 > 如果使用 `oauth` 模式且本地没有有效 token cache，程序启动后会在终端输出授权 URL。授权完成后，SDK 会复用并自动刷新用户目录下的 token cache，后续无需重复授权。
