@@ -24,7 +24,7 @@ import {
 } from '../../../utils/quoteRetry/index.js';
 import type { CancelOrderOutcome } from '../../../types/trader.js';
 import { extractOrderId, toDecimal } from '../utils.js';
-import type { PendingSellOrderSnapshot, TrackedOrder } from '../types.js';
+import type { PendingBuyOrderSnapshot, PendingSellOrderSnapshot, TrackedOrder } from '../types.js';
 import type {
   OrderMonitorTrackedOrder,
   QuoteFlow,
@@ -135,6 +135,60 @@ function resetQuoteRetryState(order: OrderMonitorTrackedOrder): void {
   order.quoteRetryAttempts = 0;
   order.quoteRetryNextAt = null;
   order.quoteRetryExhausted = false;
+}
+
+function buildPendingOrderSnapshot(order: TrackedOrder): {
+  readonly orderId: string;
+  readonly symbol: string;
+  readonly side: OrderSide;
+  readonly status: OrderStatus;
+  readonly orderType: OrderType;
+  readonly submittedPrice: number;
+  readonly submittedQuantity: number;
+  readonly executedQuantity: number;
+  readonly submittedAt: number;
+} {
+  return {
+    orderId: order.orderId,
+    symbol: order.symbol,
+    side: order.side,
+    status: order.status,
+    orderType: order.orderType,
+    submittedPrice: order.submittedPrice,
+    submittedQuantity: order.submittedQuantity,
+    executedQuantity: order.executedQuantity,
+    submittedAt: order.submittedAt,
+  };
+}
+
+function collectPendingOrders(
+  runtime: QuoteFlowDeps['runtime'],
+  symbol: string,
+  side: OrderSide,
+): ReadonlyArray<TrackedOrder> {
+  const pendingOrders: TrackedOrder[] = [];
+  for (const order of runtime.trackedOrders.values()) {
+    if (order.symbol !== symbol || order.side !== side) {
+      continue;
+    }
+
+    if (!PENDING_ORDER_STATUSES.has(order.status)) {
+      continue;
+    }
+
+    if (order.status === OrderStatus.PartialWithdrawal) {
+      continue;
+    }
+
+    const remaining = order.submittedQuantity - order.executedQuantity;
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      continue;
+    }
+
+    pendingOrders.push(order);
+  }
+
+  return pendingOrders.sort((left, right) => left.submittedAt - right.submittedAt);
 }
 
 /**
@@ -542,43 +596,26 @@ export function createQuoteFlow(deps: QuoteFlowDeps): QuoteFlow {
    * @returns 卖单快照列表（按 submittedAt 升序）
    */
   function getPendingSellOrders(symbol: string): ReadonlyArray<PendingSellOrderSnapshot> {
-    const pendingOrders: PendingSellOrderSnapshot[] = [];
-    for (const order of runtime.trackedOrders.values()) {
-      if (order.symbol !== symbol || order.side !== OrderSide.Sell) {
-        continue;
-      }
+    return collectPendingOrders(runtime, symbol, OrderSide.Sell).map((order) =>
+      buildPendingOrderSnapshot(order),
+    );
+  }
 
-      if (!PENDING_ORDER_STATUSES.has(order.status)) {
-        continue;
-      }
-
-      if (order.status === OrderStatus.PartialWithdrawal) {
-        continue;
-      }
-
-      const remaining = order.submittedQuantity - order.executedQuantity;
-      if (!Number.isFinite(remaining) || remaining <= 0) {
-        continue;
-      }
-
-      pendingOrders.push({
-        orderId: order.orderId,
-        symbol: order.symbol,
-        side: order.side,
-        status: order.status,
-        orderType: order.orderType,
-        submittedPrice: order.submittedPrice,
-        submittedQuantity: order.submittedQuantity,
-        executedQuantity: order.executedQuantity,
-        submittedAt: order.submittedAt,
-      });
-    }
-
-    return [...pendingOrders].sort((a, b) => a.submittedAt - b.submittedAt);
+  /**
+   * 获取指定标的的未成交买单快照。
+   *
+   * @param symbol 标的代码
+   * @returns 买单快照列表（按 submittedAt 升序）
+   */
+  function getPendingBuyOrders(symbol: string): ReadonlyArray<PendingBuyOrderSnapshot> {
+    return collectPendingOrders(runtime, symbol, OrderSide.Buy).map((order) =>
+      buildPendingOrderSnapshot(order),
+    );
   }
 
   return {
     processWithLatestQuotes,
     getPendingSellOrders,
+    getPendingBuyOrders,
   };
 }

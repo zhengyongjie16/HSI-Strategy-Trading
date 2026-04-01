@@ -21,6 +21,7 @@ import type {
   OrderMonitorConfig,
   OrderHoldRegistry,
   OrderMonitorRuntimeState,
+  PendingBuyOrderSnapshot,
   PendingSellOrderSnapshot,
   TrackOrderParams,
   TrackedOrder,
@@ -286,13 +287,14 @@ export type QuoteFlowDeps = {
 
 /**
  * 行情驱动流接口。
- * 类型用途：封装超时处理、行情驱动改单与 pendingSell 快照读取。
+ * 类型用途：封装超时处理、行情驱动改单与 pending buy / sell 快照读取。
  * 数据来源：createQuoteFlow 工厂返回。
  * 使用范围：orderMonitor/index.ts 调用。
  */
 export interface QuoteFlow {
   processWithLatestQuotes: () => Promise<void>;
   getPendingSellOrders: (symbol: string) => ReadonlyArray<PendingSellOrderSnapshot>;
+  getPendingBuyOrders: (symbol: string) => ReadonlyArray<PendingBuyOrderSnapshot>;
 }
 
 /**

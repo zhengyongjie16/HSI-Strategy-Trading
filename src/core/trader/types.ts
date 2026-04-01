@@ -22,9 +22,10 @@ import type {
   RecentFilledOrderSummary,
 } from '../../types/services.js';
 import type { DailyLossTracker } from '../../types/risk.js';
-import type { CancelOrderOutcome } from '../../types/trader.js';
+import type { CancelOrderOutcome, TradeRecord } from '../../types/trader.js';
 import type { ProtectiveLiquidationEpisodeTracker } from './protectiveLiquidationEpisodeTracker/types.js';
 import type { RefreshGate } from '../../utils/types.js';
+import type { Logger, LoggerFileSystem } from '../../utils/logger/types.js';
 
 /**
  * 订单提交 API 可能返回的响应形状。
@@ -160,6 +161,57 @@ export type ErrorTypeIdentifier = {
   readonly isRateLimited: boolean;
 };
 
+/**
+ * 交易记录文件系统边界。
+ * 类型用途：屏蔽 tradeLogger 模块对 node:fs 的直接依赖，只允许通过注入的文件系统接口读写交易日志。
+ * 数据来源：由入口组合根组装并传入。
+ * 使用范围：仅 tradeLogger 运行时工厂与入口装配层使用。
+ */
+export interface TradeLoggerFileSystem {
+  existsSync: LoggerFileSystem['existsSync'];
+  mkdirSync: LoggerFileSystem['mkdirSync'];
+  readdirSync: LoggerFileSystem['readdirSync'];
+  statSync: LoggerFileSystem['statSync'];
+  unlinkSync: LoggerFileSystem['unlinkSync'];
+  createWriteStream: LoggerFileSystem['createWriteStream'];
+  readFileSync: (path: string, encoding: BufferEncoding) => string;
+  writeFileSync: (path: string, data: string, encoding: BufferEncoding) => void;
+}
+
+/**
+ * 交易记录运行时依赖集合。
+ * 类型用途：统一收口 tradeLogger 运行时所需的环境、日志与文件系统边界。
+ * 数据来源：由 src/index.ts 组装并注入。
+ * 使用范围：仅 tradeLogger 模块与入口装配层使用。
+ */
+export interface TradeLoggerRuntimeDeps {
+  readonly env: NodeJS.ProcessEnv;
+  readonly fs: TradeLoggerFileSystem;
+  readonly joinPath: (...parts: ReadonlyArray<string>) => string;
+  readonly logger: Logger;
+  readonly stderr: NodeJS.WriteStream;
+}
+
+/**
+ * 交易记录运行时工厂参数。
+ * 类型用途：显式传递 tradeLogger 创建所需的所有注入边界。
+ * 数据来源：由组合根在入口处显式传入。
+ * 使用范围：仅 tradeLogger 模块与 app 入口边界使用。
+ */
+export type TradeLoggerRuntimeFactoryParams = Readonly<{
+  readonly deps: TradeLoggerRuntimeDeps;
+}>;
+
+/**
+ * 交易记录运行时对象。
+ * 类型用途：封装 tradeLogger 的可安装记录函数，供入口装配层显式管理生命周期。
+ * 数据来源：由 createTradeLoggerRuntime 创建。
+ * 使用范围：仅 tradeLogger 模块与入口装配层使用。
+ */
+export interface TradeLoggerRuntime {
+  readonly recordTrade: (tradeRecord: TradeRecord) => void;
+}
+
 // ==================== 服务接口定义 ====================
 
 /**
@@ -219,6 +271,12 @@ export interface OrderMonitor {
 
   /** 是否存在指定标的的未完成卖单链路 */
   hasPendingSellOrders: (symbol: string) => boolean;
+
+  /** 获取指定标的的未成交买单快照 */
+  getPendingBuyOrders: (symbol: string) => ReadonlyArray<PendingBuyOrderSnapshot>;
+
+  /** 是否存在指定标的的未完成买单链路 */
+  hasPendingBuyOrders: (symbol: string) => boolean;
 
   /** 按订单 ID 读取最近成交摘要 */
   getRecentFilledOrder: (orderId: string) => RecentFilledOrderSummary | null;
@@ -424,6 +482,24 @@ export type TrackedOrder = {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type PendingSellOrderSnapshot = {
+  readonly orderId: string;
+  readonly symbol: string;
+  readonly side: OrderSide;
+  readonly status: OrderStatus;
+  readonly orderType: OrderType;
+  readonly submittedPrice: number;
+  readonly submittedQuantity: number;
+  readonly executedQuantity: number;
+  readonly submittedAt: number;
+};
+
+/**
+ * 未成交买单快照（用于买入占用判断）。
+ * 类型用途：提供买入占用判断所需的订单状态信息。
+ * 数据来源：OrderMonitor.getPendingBuyOrders 返回。
+ * 使用范围：仅在 trader 模块内部使用。
+ */
+export type PendingBuyOrderSnapshot = {
   readonly orderId: string;
   readonly symbol: string;
   readonly side: OrderSide;

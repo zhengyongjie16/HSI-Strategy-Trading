@@ -4,7 +4,7 @@
  * 职责：
  * - 组装恢复流、事件流、订单操作流、单订单状态查询与终态结算流程
  * - 初始化 WebSocket 私有主题订阅并分发订单推送
- * - 对外暴露 OrderMonitor 接口，保持原有签名不变
+ * - 对外暴露 OrderMonitor 接口，包含 pending buy / sell 快照查询
  */
 import { OrderSide, TopicType, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
@@ -265,6 +265,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     recoverOrderTrackingFromSnapshot: recoveryFlow.recoverOrderTrackingFromSnapshot,
     getPendingSellOrders: quoteFlow.getPendingSellOrders,
     hasPendingSellOrders: (symbol) => quoteFlow.getPendingSellOrders(symbol).length > 0,
+    getPendingBuyOrders: quoteFlow.getPendingBuyOrders,
+    hasPendingBuyOrders: (symbol) => quoteFlow.getPendingBuyOrders(symbol).length > 0,
     getRecentFilledOrder: (orderId) => runtime.recentFilledOrders.get(orderId) ?? null,
     getAndClearPendingRefreshSymbols,
     hasPendingProtectiveLiquidationOrders,

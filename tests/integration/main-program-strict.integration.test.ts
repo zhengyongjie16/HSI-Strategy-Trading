@@ -259,6 +259,10 @@ describe('mainProgram strict-mode integration', () => {
         unsubscribeSymbols: async () => {},
         subscribeCandlesticks: async () => [],
         getRealtimeCandlesticks: async () => [],
+        fetchHistoricalCandlesticksByOffset: async () => [],
+        backfillCandlesticks: () => {
+          throw new Error('mainProgram strict test should not backfill candlesticks');
+        },
         getCandlestickSnapshot: () => null,
         isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
         resetRuntimeSubscriptionsAndCaches: async () => {},
@@ -368,6 +372,10 @@ describe('mainProgram strict-mode integration', () => {
         },
         subscribeCandlesticks: async () => [],
         getRealtimeCandlesticks: async () => [],
+        fetchHistoricalCandlesticksByOffset: async () => [],
+        backfillCandlesticks: () => {
+          throw new Error('mainProgram strict test should not backfill candlesticks');
+        },
         getCandlestickSnapshot: () => null,
         isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
         resetRuntimeSubscriptionsAndCaches: async () => {},
@@ -502,6 +510,10 @@ describe('mainProgram strict-mode integration', () => {
         },
         subscribeCandlesticks: async () => [],
         getRealtimeCandlesticks: async () => [],
+        fetchHistoricalCandlesticksByOffset: async () => [],
+        backfillCandlesticks: () => {
+          throw new Error('mainProgram strict test should not backfill candlesticks');
+        },
         getCandlestickSnapshot: () => null,
         isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
         resetRuntimeSubscriptionsAndCaches: async () => {},
@@ -627,6 +639,10 @@ describe('mainProgram strict-mode integration', () => {
           unsubscribeSymbols: async () => {},
           subscribeCandlesticks: async () => [],
           getRealtimeCandlesticks: async () => [],
+          fetchHistoricalCandlesticksByOffset: async () => [],
+          backfillCandlesticks: () => {
+            throw new Error('mainProgram strict test should not backfill candlesticks');
+          },
           getCandlestickSnapshot: () => null,
           isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
           resetRuntimeSubscriptionsAndCaches: async () => {},

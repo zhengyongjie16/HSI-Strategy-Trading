@@ -78,6 +78,10 @@ function defaultDeps(steps: string[]): CleanupContext {
     unsubscribeSymbols: async () => {},
     subscribeCandlesticks: async () => [],
     getRealtimeCandlesticks: async () => [],
+    fetchHistoricalCandlesticksByOffset: async () => [],
+    backfillCandlesticks: () => {
+      throw new Error('cleanup test should not backfill candlesticks');
+    },
     getCandlestickSnapshot: () => null,
     isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
     resetRuntimeSubscriptionsAndCaches: async () => {

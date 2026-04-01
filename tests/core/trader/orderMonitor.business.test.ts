@@ -2,7 +2,7 @@
  * orderMonitor 业务测试
  *
  * 覆盖当前核心职责：
- * - pending sell 快照与 recent filled 摘要
+ * - pending buy / sell 快照与 recent filled 摘要
  * - filled / rejected 终态处理
  * - 启动恢复后重建 pending sell 追踪
  * - 卖单超时后基于剩余数量转市价
@@ -116,6 +116,121 @@ describe('orderMonitor business flow', () => {
         submittedPrice: 1,
         submittedQuantity: 200,
         executedQuantity: 0,
+        submittedAt: expect.any(Number),
+      },
+    ]);
+  });
+
+  it('tracks pending buy orders and exposes pending-buy lookup helpers', async () => {
+    let handleOrderChanged: (event: PushOrderChanged) => void = () => {};
+    const { deps } = createDeps({
+      onHandleOrderChanged: (handler) => {
+        handleOrderChanged = handler;
+      },
+    });
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+
+    monitor.trackOrder({
+      orderId: 'BUY-PENDING-001',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      price: 1,
+      initialSubmittedPrice: 1,
+      quantity: 150,
+      isLongSymbol: true,
+      baseInstrumentSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    expect(monitor.hasPendingBuyOrders('BULL.HK')).toBeTrue();
+    expect(monitor.getPendingBuyOrders('BULL.HK')).toEqual([
+      {
+        orderId: 'BUY-PENDING-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.New,
+        orderType: OrderType.ELO,
+        submittedPrice: 1,
+        submittedQuantity: 150,
+        executedQuantity: 0,
+        submittedAt: expect.any(Number),
+      },
+    ]);
+
+    handleOrderChanged(
+      createPushOrderChanged({
+        orderId: 'BUY-PENDING-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.Filled,
+        submittedQuantity: 150,
+        executedQuantity: 150,
+        executedPrice: 1.02,
+        submittedPrice: 1,
+        orderType: OrderType.ELO,
+        updatedAtMs: Date.parse('2026-02-16T01:25:00.000Z'),
+      }),
+    );
+
+    expect(monitor.hasPendingBuyOrders('BULL.HK')).toBeFalse();
+    expect(monitor.getPendingBuyOrders('BULL.HK')).toEqual([]);
+  });
+
+  it('keeps partially filled buy orders occupied until the remaining quantity is settled', async () => {
+    let handleOrderChanged: (event: PushOrderChanged) => void = () => {};
+    const { deps } = createDeps({
+      onHandleOrderChanged: (handler) => {
+        handleOrderChanged = handler;
+      },
+    });
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+
+    monitor.trackOrder({
+      orderId: 'BUY-PARTIAL-001',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      price: 1,
+      initialSubmittedPrice: 1,
+      quantity: 150,
+      isLongSymbol: true,
+      baseInstrumentSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    handleOrderChanged(
+      createPushOrderChanged({
+        orderId: 'BUY-PARTIAL-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.PartialFilled,
+        submittedQuantity: 150,
+        executedQuantity: 60,
+        executedPrice: 1.01,
+        submittedPrice: 1,
+        orderType: OrderType.ELO,
+        updatedAtMs: Date.parse('2026-02-16T01:26:00.000Z'),
+      }),
+    );
+
+    expect(monitor.hasPendingBuyOrders('BULL.HK')).toBeTrue();
+    expect(monitor.getPendingBuyOrders('BULL.HK')).toEqual([
+      {
+        orderId: 'BUY-PARTIAL-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.PartialFilled,
+        orderType: OrderType.ELO,
+        submittedPrice: 1,
+        submittedQuantity: 150,
+        executedQuantity: 60,
         submittedAt: expect.any(Number),
       },
     ]);
@@ -248,6 +363,45 @@ describe('orderMonitor business flow', () => {
 
     expect(monitor.hasPendingSellOrders('BULL.HK')).toBeTrue();
     expect(monitor.getPendingSellOrders('BULL.HK')[0]?.orderId).toBe('SELL-RECOVERY-001');
+  });
+
+  it('rebuilds partially filled buy tracking from startup snapshot', async () => {
+    const { deps } = createDeps();
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([
+      {
+        orderId: 'BUY-RECOVERY-PARTIAL-001',
+        symbol: 'BULL.HK',
+        stockName: 'HSI RC',
+        side: OrderSide.Buy,
+        status: OrderStatus.PartialFilled,
+        orderType: OrderType.ELO,
+        remark: '',
+        price: '1',
+        quantity: '150',
+        executedPrice: '1.01',
+        executedQuantity: '60',
+        submittedAt: new Date('2026-02-16T01:00:00.000Z'),
+        updatedAt: new Date('2026-02-16T01:01:00.000Z'),
+      },
+    ]);
+
+    expect(monitor.hasPendingBuyOrders('BULL.HK')).toBeTrue();
+    expect(monitor.getPendingBuyOrders('BULL.HK')).toEqual([
+      {
+        orderId: 'BUY-RECOVERY-PARTIAL-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.PartialFilled,
+        orderType: OrderType.ELO,
+        submittedPrice: 1,
+        submittedQuantity: 150,
+        executedQuantity: 60,
+        submittedAt: expect.any(Number),
+      },
+    ]);
   });
 
   it('converts timed-out sell to market order using tracked remaining quantity only', async () => {

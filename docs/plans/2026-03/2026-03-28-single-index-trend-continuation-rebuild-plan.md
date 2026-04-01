@@ -308,10 +308,43 @@ TradingConfig
 
 1. `FactorRuntime` 每个处理时点都必须输出 `FactorSnapshot`，但 snapshot 必须显式携带 readiness；`not-ready` 是合法状态，不允许隐式补齐。
 2. 任一强制因子未就绪时，`Signal Planner` 不得生成策略性开平仓信号；只能输出 `HOLD / no-op`，不能临时降级窗口。
-3. `MOM_15 / MOM_30 / MOM_60` 与 `ER_15 / ER_30` 只使用当前交易日连续交易时段数据，不拼接上一交易日，也不跨午休把非交易时间当成可用样本。
+3. `MOM_15 / MOM_30 / MOM_60` 与 `ER_15 / ER_30` 只使用当前交易日的实际交易 bars，不拼接上一交易日；午休时段本身不补虚拟样本，PM 计算可继续沿用同一交易日 AM + PM 的实际 trading bars。
 4. 因 `MOM_60` 是趋势分类的强制窗口，早盘趋势开仓最早从 `10:30` 开始；`09:50-10:29` 只更新结构、确认与 readiness，不做新的趋势开仓。
-5. 启动与开盘重建必须预热两类数据：当前交易日的分时样本，用于恢复 `MOM / ER / ATR / VWAP / OR` 状态；过去 `20` 个交易日的同 session 波动率基线，用于 `VolQuantile`。
+5. 启动与开盘重建必须预热两类数据：当前交易日的分时样本，用于恢复 `MOM / ER / ATR / VWAP / OR` 状态；过去 `20` 个交易日的同 session 波动率基线，用于 `VolQuantile`。该预热在实现上固定为：**完整 `20` 个交易日的完整盘中 `1m` K 线历史预热**，不走“只拉当前 session 最小样本”的变体。
 6. 若预热不完整，程序不得通过“借前一日数据”或“临时降级为 15m/30m 模式”来伪造 readiness；策略运行时保持 not-ready，直到必需数据恢复完成。
+
+### 6.1.3 历史 `1m` K 线预热实现约束
+
+针对 `rvQuantileWindowDays=20`，预热实现必须固定为以下口径：
+
+1. 完整交易日按当前 session 定义计算为 `330` 根 `1m` bars：AM `150` 根，PM `180` 根。
+2. 过去 `20` 个**历史**完整交易日的基线窗口上限约为 `6600` 根 `1m` bars。
+3. 启动/开盘重建时，除了上述 `20` 个历史交易日，还必须同时保留**当前交易日**分时样本，用于恢复 `MOM / ER / ATR / VWAP / OR`；因此 `min1` 本地缓存的实际覆盖上限约为 `6600 + 330 = 6930` 根。
+4. 当前 `TRADING.CANDLE_COUNT = 7000` 的容量上限与该需求正好闭合：`7000` 足以容纳“`20` 个历史完整交易日 + 当前交易日”的 `1m` 样本，并保留少量余量。
+5. Longbridge 历史 K 线接口存在单次返回上限，因此完整预热必须按批次分批拉取；在当前单次上限与 `TRADING.CANDLE_COUNT = 7000` 的参数下，工程实现可推导为约 `7` 批、总预算约 `7000` 根，但这是**当前实现推导值**，不是额外的业务不变量。
+6. 该历史预热只在**启动初始化**与**开盘重建**两个缓存生命周期入口执行一次；盘中正常运行不重复拉历史，后续由实时订阅与 push 增量续接。
+7. 当前 `subscribeCandlesticks()` / `getRealtimeCandlesticks()` 返回的实时缓存不具备覆盖“`20` 个历史交易日 + 当前交易日”总窗口的正式契约，因此不得再作为该预热的唯一来源。
+8. 历史预热完成后，应用层 `min1` 本地缓存必须已能直接支撑：
+   - 当前交易日 `MOM / ER / ATR / VWAP / OR`
+   - 过去 `20` 个交易日同 session、同 cutoff 的 `RV30 -> VolQuantile`
+9. 若历史拉取失败、去重后样本不足，或最终仍无法同时覆盖“当前交易日样本 + `20` 个历史交易日基线”，则启动/开盘重建保持 fail-closed，不得放行伪造 readiness 的策略运行。
+
+推荐接线方式：
+
+1. 在 `MarketDataClient` 显式新增历史 `1m` K 线拉取接口，主路径使用 Longbridge `historyCandlesticksByOffset` 做向历史方向的分页拉取；`historyCandlesticksByDate` 不作为本场景的主分页方案，因为单次日期区间查询同样受 `1000` 根上限约束。
+2. 在 `MarketDataClient` / `quoteClient` 新增**历史 K 线回填到本地缓存**的正式能力，语义必须是 `merge/backfill`，不能复用当前会整体替换快照的 `seedCandlestickSeries()` 直接覆盖已有缓存。
+3. 预热写缓存与实时订阅 seed 必须共享**去重 + 按 timestamp 升序合并**语义；后续 `subscribeCandlesticks()` 不得把已回填的 `20` 日历史缓存重新覆盖成较短 seed。
+4. 在 `loadTradingDayRuntimeSnapshot()` 中，正确顺序应为：
+   - `resetRuntimeSubscriptionsAndCaches()`
+   - 订阅 `1m / 5m / 15m`
+   - 将历史 `1m` 数据按需分批以 `merge/backfill` 方式补回本地缓存
+   - 再进入后续主循环消费
+5. `5m / 15m` 不需要补 `20` 日历史，但必须显式保证**当前交易日样本**在第一次指标流水线运行前已可用；可以直接订阅 seed，或由当前交易日 `1m` 样本聚合得到，二者必须明确二选一，不能留成隐式假设。
+6. 预热数据落地后必须执行统一校验：
+   - `min1` 缓存去重后按 timestamp 升序排列
+   - 缓存同时覆盖当前交易日与至少 `20` 个历史交易日键
+   - `historicalSampleCount` 在所需 session / cutoff 下具备达到 `rvQuantileWindowDays=20` 的前提
+7. 若上述任一校验不成立，则启动/开盘重建失败，不得继续运行为“看起来已初始化”的半状态。
 
 ## 6.2 波动率 Regime
 
@@ -955,7 +988,7 @@ OR 只保留为结构层。
 完成：
 
 1. `1m / 5m / 15m` 基础对象直连订阅
-2. 当前交易日分时样本预热 + 过去 `20` 个交易日同 session 波动率基线预热
+2. 当前交易日分时样本预热 + 过去 `20` 个交易日完整盘中 `1m` 历史预热（历史基线约 `6600` 根，连同当前交易日样本总窗口上限约 `6930` 根；在当前接口分页与缓存容量下可实现为约 `7` 批拉取），用于同 session 波动率基线
 3. `Regime + TrendScore + ER + Session VWAP + OR + PM Continuation`
 4. readiness-aware `Signal Planner`
 5. `Instrument Adaptation Gate`

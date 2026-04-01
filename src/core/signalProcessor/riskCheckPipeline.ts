@@ -158,6 +158,12 @@ export const createRiskCheckPipeline = ({
       if (isBuyAction(sig.action)) {
         const isLongBuyAction = sig.action === 'BUYCALL';
         const directionDesc = isLongBuyAction ? '做多标的' : '做空标的';
+        if (trader.hasPendingBuyOrders(sig.symbol)) {
+          const reason = `存在未完成买单占用，拒绝新的${directionDesc}买入`;
+          sig.reason = reason;
+          logger.warn(`[买单占用] ${signalLabel} ${reason}`);
+          continue;
+        }
 
         /**
          * 买入风险检查流水线顺序（固定）：
@@ -207,6 +213,7 @@ export const createRiskCheckPipeline = ({
           sig.symbol,
           sig.action,
           monitorCurrentPrice ?? 0,
+          context.config,
         );
         if (warrantRiskResult.allowed) {
           if (warrantRiskResult.warrantInfo?.isWarrant) {

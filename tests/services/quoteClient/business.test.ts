@@ -5,6 +5,7 @@
  * - 验证行情客户端相关场景意图、边界条件与业务期望。
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { Market as RealMarket, Period as RealPeriod } from 'longbridge';
 
 class TestDecimal {
   private readonly value: number;
@@ -71,9 +72,10 @@ class TestNaiveDate {
   }
 }
 
-import { Market as RealMarket, Period as RealPeriod } from 'longbridge';
-
-import { createPushCandlestickEvent } from '../../../mock/factories/quoteFactory.js';
+import {
+  createCandlestick,
+  createPushCandlestickEvent,
+} from '../../../mock/factories/quoteFactory.js';
 import { createQuoteContextMock } from '../../../mock/longbridge/quoteContextMock.js';
 import { createMarketDataClient } from '../../../src/services/quoteClient/index.js';
 import { createSdkConfigDouble } from '../../helpers/testDoubles.js';
@@ -244,6 +246,64 @@ describe('quoteClient business flow', () => {
     expect(snapshot?.initialized).toBe(true);
     expect(snapshot?.version).toBe(1);
     expect(snapshot?.candles.length).toBe(200);
+  });
+
+  it('fetches historical candlesticks by offset and preserves newer cache entries during backfill', async () => {
+    quoteMock.seedCandlesticks('BULL.HK', RealPeriod.Min_1, [
+      makeCandlestick(100, '2026-02-16T01:00:00.000Z'),
+      makeCandlestick(101, '2026-02-16T01:01:00.000Z'),
+      makeCandlestick(102, '2026-02-16T01:02:00.000Z'),
+      makeCandlestick(103, '2026-02-16T01:03:00.000Z'),
+    ]);
+
+    const client = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: async () => quoteMock,
+    });
+
+    const latestTwo = await client.fetchHistoricalCandlesticksByOffset(
+      'BULL.HK',
+      RealPeriod.Min_1,
+      null,
+      2,
+    );
+    const anchoredTwo = await client.fetchHistoricalCandlesticksByOffset(
+      'BULL.HK',
+      RealPeriod.Min_1,
+      new Date('2026-02-16T01:03:00.000Z'),
+      2,
+    );
+
+    const readClose = (candle: unknown): number => {
+      const close = (candle as { readonly close: unknown }).close;
+      if (typeof close === 'number') {
+        return close;
+      }
+
+      if (close !== null && typeof close === 'object' && 'toNumber' in close) {
+        return (close as { readonly toNumber: () => number }).toNumber();
+      }
+
+      return Number.parseFloat(String(close));
+    };
+
+    expect(latestTwo.map(readClose)).toEqual([102, 103]);
+    expect(anchoredTwo.map(readClose)).toEqual([101, 102]);
+    expect(quoteMock.getCalls('historyCandlesticksByOffset')).toHaveLength(2);
+
+    await client.subscribeCandlesticks('BULL.HK', RealPeriod.Min_1);
+    const backfilled = client.backfillCandlesticks('BULL.HK', RealPeriod.Min_1, [
+      createCandlestick({ close: 104, timestampMs: Date.parse('2026-02-16T01:04:00.000Z') }),
+      createCandlestick({ close: 999, timestampMs: Date.parse('2026-02-16T01:02:00.000Z') }),
+      createCandlestick({ close: 103, timestampMs: Date.parse('2026-02-16T01:03:00.000Z') }),
+    ]);
+
+    expect(backfilled.initialized).toBe(true);
+    expect(backfilled.candles.length).toBe(5);
+    expect(backfilled.candles.map(readClose)).toEqual([100, 101, 102, 103, 104]);
+    expect(client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1)?.version).toBe(
+      backfilled.version,
+    );
   });
 
   it('replaces active bar when push timestamp matches current last bar', async () => {

@@ -26,6 +26,7 @@
  * - isTradingDay()：检查是否为交易日
  */
 import {
+  AdjustType,
   QuoteContext,
   TradeSessions,
   Market,
@@ -42,9 +43,16 @@ import type { TradingDayInfo, MarketDataClient, TradingDaysResult } from '../../
 import type { RetryConfig, MarketDataClientDeps, QuoteContextLike } from './types.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { getHKDateKey } from '../../utils/time/index.js';
-import { extractLotSize, extractName, formatPeriodForLog, resolveHKNaiveDate } from './utils.js';
+import {
+  extractLotSize,
+  extractName,
+  formatPeriodForLog,
+  resolveHKNaiveDate,
+  resolveHKNaiveDatetime,
+} from './utils.js';
 import {
   applyCandlestickPush,
+  backfillCandlestickSeries,
   clearCandlestickSnapshots,
   createCandlestickCacheStore,
   getCandlestickSnapshot,
@@ -644,11 +652,63 @@ export async function createMarketDataClient(
     return realtimeCandles.filter(isCandlestickLike);
   }
 
+  /**
+   * 按时间偏移向历史方向分页拉取 K 线。
+   *
+   * @param symbol 标的代码
+   * @param period K 线周期
+   * @param beforeTime 历史分页锚点；为空时拉取最近一批
+   * @param count 目标根数
+   * @param tradeSessions 交易时段，默认 All
+   * @returns 历史 K 线数组
+   */
+  async function fetchHistoricalCandlesticksByOffset(
+    symbol: string,
+    period: Period,
+    beforeTime: Date | null,
+    count: number,
+    tradeSessions: TradeSessions = TradeSessions.All,
+  ): Promise<ReadonlyArray<Candlestick>> {
+    const historicalCandles = await withRetry(() =>
+      ctx.historyCandlesticksByOffset(
+        symbol,
+        period,
+        AdjustType.NoAdjust,
+        false,
+        beforeTime === null ? null : resolveHKNaiveDatetime(beforeTime),
+        count,
+        tradeSessions,
+      ),
+    );
+    return historicalCandles.filter(isCandlestickLike);
+  }
+
   function readLocalCandlestickSnapshot(symbol: string, period: Period) {
     return getCandlestickSnapshot({
       store: candlestickCacheStore,
       symbol,
       period,
+    });
+  }
+
+  /**
+   * 以 merge/backfill 语义将历史 K 线写入本地缓存。
+   *
+   * @param symbol 标的代码
+   * @param period K 线周期
+   * @param candles 历史 K 线数组
+   * @returns 回填后的本地缓存快照
+   */
+  function backfillCandlesticks(
+    symbol: string,
+    period: Period,
+    candles: ReadonlyArray<Candlestick>,
+  ) {
+    return backfillCandlestickSeries({
+      store: candlestickCacheStore,
+      symbol,
+      period,
+      candles,
     });
   }
 
@@ -790,6 +850,8 @@ export async function createMarketDataClient(
     unsubscribeSymbols,
     subscribeCandlesticks,
     getRealtimeCandlesticks,
+    fetchHistoricalCandlesticksByOffset,
+    backfillCandlesticks,
     getCandlestickSnapshot: readLocalCandlestickSnapshot,
     isTradingDay,
     getTradingDays,

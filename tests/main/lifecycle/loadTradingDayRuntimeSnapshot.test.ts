@@ -5,10 +5,11 @@
  * failOnOrderFetchError 且订单拉取失败时抛错、正常返回 allOrders 与 quotesMap
  */
 import { describe, it, expect } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
+import { OrderSide, OrderStatus, OrderType, Period } from 'longbridge';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import { TRADING } from '../../../src/constants/index.js';
+import { buildTrendFactorSnapshot } from '../../../src/services/factors/runtime/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
@@ -26,6 +27,8 @@ import {
   createProtectiveLiquidationEpisodeTrackerDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
+
+const DEFAULT_LOAD_NOW = new Date('2026-02-25T03:00:00.000Z');
 
 function getEntry(_key: string): undefined {
   return;
@@ -78,13 +81,80 @@ function createWarrantListCacheConfig(): LoadTradingDayRuntimeSnapshotDeps['warr
   };
 }
 
+function createFixtureCandlestick(timestampMs: number, basePrice: number) {
+  return {
+    open: basePrice,
+    high: basePrice + 1,
+    low: basePrice - 1,
+    close: basePrice,
+    volume: 1000,
+    timestamp: new Date(timestampMs),
+  };
+}
+
+function createMin1BarsForTradingDay(params: {
+  readonly dayStartUtcMs: number;
+  readonly basePrice: number;
+  readonly count: number;
+}): ReadonlyArray<ReturnType<typeof createFixtureCandlestick>> {
+  return Array.from({ length: params.count }, (_value, index) =>
+    createFixtureCandlestick(
+      params.dayStartUtcMs + index * 60_000,
+      params.basePrice + index * 0.01,
+    ),
+  );
+}
+
+function createHistoryReadyMarketDataClient(
+  currentDayUtcIso: string = '2026-02-25T01:30:00.000Z',
+  historicalMin1CandlesOverride?: ReadonlyArray<ReturnType<typeof createFixtureCandlestick>>,
+): LoadTradingDayRuntimeSnapshotDeps['marketDataClient'] {
+  const currentDayStartUtcMs = Date.parse(currentDayUtcIso);
+  const currentDayMin1Candles = createMin1BarsForTradingDay({
+    dayStartUtcMs: currentDayStartUtcMs,
+    basePrice: 20_000,
+    count: 60,
+  });
+  const historicalMin1Candles =
+    historicalMin1CandlesOverride ??
+    Array.from({ length: 20 }, (_value, index) =>
+      createMin1BarsForTradingDay({
+        dayStartUtcMs: currentDayStartUtcMs - (20 - index) * 24 * 60 * 60 * 1000,
+        basePrice: 19_500 + index * 10,
+        count: 330,
+      }),
+    ).flat();
+  const currentDayHigherPeriodCandles = [createFixtureCandlestick(currentDayStartUtcMs, 20_000)];
+
+  return createMarketDataClientDouble({
+    subscribeCandlesticks: async (_symbol, period) => {
+      if (period === Period.Min_1) {
+        return currentDayMin1Candles as never;
+      }
+
+      return currentDayHigherPeriodCandles as never;
+    },
+    fetchHistoricalCandlesticksByOffset: async (_symbol, period, beforeTime, count) => {
+      if (period !== Period.Min_1) {
+        return [];
+      }
+
+      const beforeTimestamp = beforeTime?.getTime() ?? Number.POSITIVE_INFINITY;
+      const eligible = historicalMin1Candles.filter(
+        (candle) => candle.timestamp.getTime() < beforeTimestamp,
+      );
+      return eligible.slice(Math.max(eligible.length - count, 0)) as never;
+    },
+  });
+}
+
 function createBaseDeps(
   overrides: Partial<LoadTradingDayRuntimeSnapshotDeps> = {},
 ): LoadTradingDayRuntimeSnapshotDeps {
   const monitorConfig = overrides.monitorConfig ?? createStrategyRuntimeConfig();
 
   return {
-    marketDataClient: overrides.marketDataClient ?? createMarketDataClientDouble(),
+    marketDataClient: overrides.marketDataClient ?? createHistoryReadyMarketDataClient(),
     trader: overrides.trader ?? createTraderDouble(),
     lastState: overrides.lastState ?? createMinimalLastState(),
     monitorConfig,
@@ -98,6 +168,26 @@ function createBaseDeps(
     },
     warrantListCacheConfig: overrides.warrantListCacheConfig ?? createWarrantListCacheConfig(),
   };
+}
+
+function buildLoadedFactorSnapshot(params: {
+  readonly marketDataClient: LoadTradingDayRuntimeSnapshotDeps['marketDataClient'];
+  readonly monitorConfig: LoadTradingDayRuntimeSnapshotDeps['monitorConfig'];
+}): ReturnType<typeof buildTrendFactorSnapshot> {
+  const min1Snapshot = params.marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
+  const min5Snapshot = params.marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_5);
+  const min15Snapshot = params.marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_15);
+  const latestClose = Number(min1Snapshot?.candles.at(-1)?.close ?? 0);
+
+  return buildTrendFactorSnapshot({
+    candlesByPeriod: {
+      min1: min1Snapshot?.candles ?? [],
+      min5: min5Snapshot?.candles ?? [],
+      min15: min15Snapshot?.candles ?? [],
+    },
+    currentPrice: latestClose,
+    strategyConfig: params.monitorConfig.strategyConfig,
+  });
 }
 
 function createReadyTrader(
@@ -121,7 +211,7 @@ function createLoadParams(
     hydrateCooldownFromTradeLog: false,
     forceOrderRefresh: false,
     ...overrides,
-    now: overrides.now ?? new Date(),
+    now: overrides.now ?? DEFAULT_LOAD_NOW,
   };
 }
 
@@ -279,18 +369,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const now = new Date('2026-02-25T03:00:00.000Z');
     let getTradingDaysCalls = 0;
     const lastState = createMinimalLastState();
+    const marketDataClient = createHistoryReadyMarketDataClient('2026-02-25T01:30:00.000Z');
+    marketDataClient.getTradingDays = async () => {
+      getTradingDaysCalls += 1;
+      return {
+        tradingDays: [],
+        halfTradingDays: [],
+      };
+    };
 
     const deps = createBaseDeps({
       lastState,
-      marketDataClient: createMarketDataClientDouble({
-        getTradingDays: async () => {
-          getTradingDaysCalls += 1;
-          return {
-            tradingDays: [],
-            halfTradingDays: [],
-          };
-        },
-      }),
+      marketDataClient,
       trader: createReadyTrader(),
     });
 
@@ -310,47 +400,12 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
   it('subscribes candlesticks and leaves seeded local cache snapshots observable', async () => {
     const monitorConfig = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol: 'HSI.HK' });
     const subscribedSymbols: string[] = [];
-    const seededBySymbol = new Set<string>();
-    const marketDataClient = createMarketDataClientDouble({
-      subscribeCandlesticks: async (symbol) => {
-        subscribedSymbols.push(symbol);
-        seededBySymbol.add(symbol);
-        return [
-          {
-            open: 100,
-            high: 101,
-            low: 99,
-            close: 100,
-            volume: 1000,
-            timestamp: new Date('2026-02-25T01:00:00.000Z'),
-          },
-        ] as never;
-      },
-      getCandlestickSnapshot: (symbol, period) => {
-        if (!seededBySymbol.has(symbol)) {
-          return null;
-        }
-
-        return {
-          symbol,
-          period,
-          version: 1,
-          candles: [
-            {
-              open: 100,
-              high: 101,
-              low: 99,
-              close: 100,
-              volume: 1000,
-              timestamp: Date.parse('2026-02-25T01:00:00.000Z'),
-            },
-          ],
-          lastBarTimestamp: Date.parse('2026-02-25T01:00:00.000Z'),
-          lastBarConfirmed: null,
-          initialized: true,
-        };
-      },
-    });
+    const marketDataClient = createHistoryReadyMarketDataClient('2026-02-25T01:30:00.000Z');
+    const originalSubscribe = marketDataClient.subscribeCandlesticks;
+    marketDataClient.subscribeCandlesticks = async (symbol, period, tradeSessions) => {
+      subscribedSymbols.push(symbol);
+      return originalSubscribe(symbol, period, tradeSessions);
+    };
     const deps = createBaseDeps({
       monitorConfig,
       marketDataClient,
@@ -365,6 +420,173 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(
       marketDataClient.getCandlestickSnapshot('HSI.HK', TRADING.FACTOR_CANDLE_PERIOD)?.initialized,
     ).toBe(true);
+  });
+
+  it('prewarms paged historical 1m baseline before completing load', async () => {
+    let historicalFetchCalls = 0;
+    const marketDataClient = createHistoryReadyMarketDataClient();
+    const originalFetch = marketDataClient.fetchHistoricalCandlesticksByOffset;
+    marketDataClient.fetchHistoricalCandlesticksByOffset = async (
+      symbol,
+      period,
+      beforeTime,
+      count,
+      tradeSessions,
+    ) => {
+      historicalFetchCalls += 1;
+      return originalFetch(symbol, period, beforeTime, count, tradeSessions);
+    };
+
+    const deps = createBaseDeps({
+      marketDataClient,
+      trader: createReadyTrader(),
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+    await load(createLoadParams({ requireTradingDay: true }));
+
+    const snapshot = marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
+    expect(historicalFetchCalls).toBeGreaterThan(0);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.candles.length).toBeGreaterThanOrEqual(6_660);
+  });
+
+  it('uses non-default rvQuantileWindowDays as the historical readiness source', async () => {
+    const currentDayUtcIso = '2026-02-25T05:00:00.000Z';
+    const currentDayStartUtcMs = Date.parse(currentDayUtcIso);
+    const now = new Date('2026-02-25T06:00:00.000Z');
+    const historicalMin1Candles = Array.from({ length: 18 }, (_value, index) =>
+      createMin1BarsForTradingDay({
+        dayStartUtcMs: currentDayStartUtcMs - (18 - index) * 24 * 60 * 60 * 1000,
+        basePrice: 19_500 + index * 10,
+        count: 60,
+      }),
+    ).flat();
+    const marketDataClient = createHistoryReadyMarketDataClient(
+      currentDayUtcIso,
+      historicalMin1Candles,
+    );
+    const baseMonitorConfig = createStrategyRuntimeConfigDouble();
+    const monitorConfig = {
+      ...baseMonitorConfig,
+      strategyConfig: {
+        ...baseMonitorConfig.strategyConfig,
+        regimeThresholds: {
+          ...baseMonitorConfig.strategyConfig.regimeThresholds,
+          rvQuantileWindowDays: 18,
+        },
+      },
+    };
+    const deps = createBaseDeps({
+      marketDataClient,
+      monitorConfig,
+      trader: createReadyTrader(),
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+    await load(createLoadParams({ requireTradingDay: true, now }));
+
+    const snapshot = buildLoadedFactorSnapshot({
+      marketDataClient,
+      monitorConfig,
+    });
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.readiness.regimeReady).toBeTrue();
+    expect(snapshot?.readiness.reasons).not.toContain('波动率基线未就绪');
+  });
+
+  it('keeps PM regime readiness aligned when a half-day enters the recent historical window', async () => {
+    const currentDayUtcIso = '2026-02-25T05:00:00.000Z';
+    const currentDayStartUtcMs = Date.parse(currentDayUtcIso);
+    const now = new Date('2026-02-25T06:00:00.000Z');
+    const historicalMin1Candles = [
+      ...Array.from({ length: 20 }, (_value, index) =>
+        createMin1BarsForTradingDay({
+          dayStartUtcMs: currentDayStartUtcMs - (21 - index) * 24 * 60 * 60 * 1000,
+          basePrice: 19_200 + index * 10,
+          count: 60,
+        }),
+      ).flat(),
+      ...createMin1BarsForTradingDay({
+        dayStartUtcMs: currentDayStartUtcMs - 24 * 60 * 60 * 1000,
+        basePrice: 19_500,
+        count: 150,
+      }),
+    ].sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
+    let historicalFetchCalls = 0;
+    const marketDataClient = createHistoryReadyMarketDataClient(
+      currentDayUtcIso,
+      historicalMin1Candles,
+    );
+    const originalFetch = marketDataClient.fetchHistoricalCandlesticksByOffset;
+    marketDataClient.fetchHistoricalCandlesticksByOffset = async (
+      symbol,
+      period,
+      beforeTime,
+      count,
+      tradeSessions,
+    ) => {
+      historicalFetchCalls += 1;
+      return originalFetch(symbol, period, beforeTime, count, tradeSessions);
+    };
+    const deps = createBaseDeps({
+      marketDataClient,
+      trader: createReadyTrader(),
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+    await load(createLoadParams({ requireTradingDay: true, now }));
+
+    const snapshot = buildLoadedFactorSnapshot({
+      marketDataClient,
+      monitorConfig: deps.monitorConfig,
+    });
+    expect(historicalFetchCalls).toBeGreaterThan(1);
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.session).toBe('pm');
+    expect(snapshot?.readiness.regimeReady).toBeTrue();
+    expect(snapshot?.readiness.reasons).not.toContain('波动率基线未就绪');
+  });
+
+  it('throws when higher-period current-day seed is missing during trading session', async () => {
+    const marketDataClient = createMarketDataClientDouble({
+      subscribeCandlesticks: async (_symbol, period) => {
+        if (period === Period.Min_1) {
+          return createMin1BarsForTradingDay({
+            dayStartUtcMs: Date.parse('2026-02-25T01:30:00.000Z'),
+            basePrice: 20_000,
+            count: 60,
+          }) as never;
+        }
+
+        return [createFixtureCandlestick(Date.parse('2026-02-24T01:30:00.000Z'), 20_000)] as never;
+      },
+      fetchHistoricalCandlesticksByOffset: async (_symbol, period, beforeTime, count) => {
+        if (period !== Period.Min_1) {
+          return [];
+        }
+
+        const history = Array.from({ length: 20 }, (_value, index) =>
+          createMin1BarsForTradingDay({
+            dayStartUtcMs: Date.parse('2026-02-05T01:30:00.000Z') + index * 24 * 60 * 60 * 1000,
+            basePrice: 19_500 + index * 10,
+            count: 330,
+          }),
+        ).flat();
+        const beforeTimestamp = beforeTime?.getTime() ?? Number.POSITIVE_INFINITY;
+        const eligible = history.filter((candle) => candle.timestamp.getTime() < beforeTimestamp);
+        return eligible.slice(Math.max(eligible.length - count, 0)) as never;
+      },
+    });
+    const deps = createBaseDeps({
+      marketDataClient,
+      trader: createReadyTrader(),
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+    expect(load(createLoadParams({ requireTradingDay: true }))).rejects.toThrow(
+      '缺少当前交易日样本',
+    );
   });
 
   it('hydrateCooldownFromTradeLog=true 时先 hydrate 再 recalculate', async () => {
@@ -423,6 +645,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
+      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
       monitorConfig: monitor,
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [protectiveOrder],
@@ -467,6 +690,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
+      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
       monitorConfig: monitor,
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [protectiveOrder],
@@ -521,6 +745,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
+      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
       monitorConfig: monitor,
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [completedOrder, pendingOrder],
@@ -579,6 +804,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
+      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
       monitorConfig: monitor,
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [completedOrder],

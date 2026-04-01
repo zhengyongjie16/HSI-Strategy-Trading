@@ -90,6 +90,7 @@ function createPipelineHarness(params: {
   canTradeNow?: boolean;
   openProtectionActive?: boolean;
   isTradingEnabled?: boolean;
+  config?: ReturnType<typeof createStrategyRuntimeConfigDouble>;
 }): {
   buyTaskQueue: ReturnType<typeof createBuyTaskQueue>;
   sellTaskQueue: ReturnType<typeof createSellTaskQueue>;
@@ -102,8 +103,9 @@ function createPipelineHarness(params: {
   const releasedSignals: Signal[] = [];
   const releasedPositions: Array<string> = [];
 
+  const config = params.config ?? createStrategyRuntimeConfigDouble();
   const monitorContext = {
-    config: createStrategyRuntimeConfigDouble(),
+    config,
     strategy: {
       generateSignals: () => params.signals,
     },
@@ -221,5 +223,46 @@ describe('signalPipeline business flow', () => {
     expect(harness.sellTaskQueue.isEmpty()).toBeTrue();
     expect(harness.releasedSignals).toHaveLength(0);
     expect(harness.releasedPositions).toEqual(['BULL.HK', 'BEAR.HK']);
+  });
+
+  it('accepts buy signals exactly at configured instrument adaptation thresholds', () => {
+    const bullSignal = createSignalDouble('BUYCALL', 'BULL.HK');
+    const bearSignal = createSignalDouble('BUYPUT', 'BEAR.HK');
+    const baseConfig = createStrategyRuntimeConfigDouble();
+    const config = createStrategyRuntimeConfigDouble({
+      strategyConfig: {
+        ...baseConfig.strategyConfig,
+        instrumentAdaptationRules: {
+          ...baseConfig.strategyConfig.instrumentAdaptationRules,
+          bullBuyMinDistancePct: 100,
+          bearBuyMaxDistancePct: -50,
+        },
+      },
+    });
+
+    const harness = createPipelineHarness({
+      signals: [bullSignal, bearSignal],
+      config,
+      seatInfo: createSeatInfo({
+        longQuote: {
+          ...createQuoteDouble('BULL.HK', 1.2),
+          staticInfo: {
+            callPrice: 50,
+            warrantType: 'BULL',
+          },
+        },
+        shortQuote: {
+          ...createQuoteDouble('BEAR.HK', 0.9),
+          staticInfo: {
+            callPrice: 200,
+            warrantType: 'BEAR',
+          },
+        },
+      }),
+    });
+
+    expect(harness.releasedSignals).toHaveLength(0);
+    expect(harness.buyTaskQueue.pop()?.data.action).toBe('BUYCALL');
+    expect(harness.buyTaskQueue.pop()?.data.action).toBe('BUYPUT');
   });
 });

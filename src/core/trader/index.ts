@@ -27,7 +27,7 @@ import type {
   RawOrderFromAPI,
 } from '../../types/services.js';
 import type { StrategyRuntimeConfig } from '../../types/config.js';
-import type { TraderDeps } from './types.js';
+import type { PendingBuyOrderSnapshot, TraderDeps } from './types.js';
 
 // 导入子模块工厂函数
 import { createRateLimiter } from './rateLimiter.js';
@@ -38,13 +38,18 @@ import { createOrderExecutor } from './orderExecutor/index.js';
 import { createOrderHoldRegistry } from './orderHoldRegistry.js';
 import { createOrderAPIManager } from './orderApiManager.js';
 
+type TraderWithPendingBuyLookup = Trader & {
+  readonly getPendingBuyOrders: (symbol: string) => ReadonlyArray<PendingBuyOrderSnapshot>;
+  readonly hasPendingBuyOrders: (symbol: string) => boolean;
+};
+
 /**
  * 创建交易执行模块（门面模式）。
  * 按固定顺序创建 rateLimiter、accountService、orderCacheManager、orderApiManager、orderMonitor、orderExecutor 等子模块并组装为 Trader 接口。
  * createTrader 仅负责依赖装配，不执行运行期副作用（如 WebSocket 初始化、订单恢复），由上层显式调用。
  * 交易能力由多子模块协同完成，门面统一初始化顺序与依赖注入，保证 orderMonitor、orderExecutor 共用同一组运行态约束。
  * @param deps 依赖（config、globalConfig、monitorConfig、symbolRegistry、dailyLossTracker、refreshGate、isExecutionAllowed 等）
- * @returns 实现 Trader 接口的实例（含 canTradeNow、executeSignals、getPendingOrders 等）
+ * @returns 实现 Trader 接口的实例（含 canTradeNow、executeSignals、pending buy / sell 查询等）
  */
 export function createTrader(deps: TraderDeps): Promise<Trader> {
   const {
@@ -105,7 +110,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
   });
 
   // 创建 Trader 实例
-  const trader: Trader = {
+  const trader: TraderWithPendingBuyLookup = {
     // ==================== 账户相关方法 ====================
 
     getAccountSnapshot(): Promise<AccountSnapshot | null> {
@@ -137,6 +142,14 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
     hasPendingSellOrders(symbol: string): boolean {
       return orderMonitor.hasPendingSellOrders(symbol);
+    },
+
+    getPendingBuyOrders(symbol: string): ReadonlyArray<PendingBuyOrderSnapshot> {
+      return orderMonitor.getPendingBuyOrders(symbol);
+    },
+
+    hasPendingBuyOrders(symbol: string): boolean {
+      return orderMonitor.hasPendingBuyOrders(symbol);
     },
 
     // ==================== 订单监控相关方法 ====================

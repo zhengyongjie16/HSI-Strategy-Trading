@@ -123,6 +123,13 @@ function normalizeCandlestickData(
       };
     }
 
+    if (candle.timestamp instanceof Date) {
+      return {
+        ...normalized,
+        timestamp: candle.timestamp.getTime(),
+      };
+    }
+
     return normalized;
   });
 }
@@ -179,6 +186,8 @@ export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}):
     recoverOrderTrackingFromSnapshot: async () => {},
     getPendingSellOrders: () => [],
     hasPendingSellOrders: () => false,
+    getPendingBuyOrders: () => [],
+    hasPendingBuyOrders: () => false,
     getRecentFilledOrder: () => null,
     getAndClearPendingRefreshSymbols: () => [],
     hasPendingProtectiveLiquidationOrders: () => false,
@@ -203,6 +212,7 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
     getPendingOrders: async (): Promise<PendingOrder[]> => [],
     seedOrderHoldSymbols: () => {},
     getOrderHoldSymbols: () => new Set<string>(),
+    hasPendingBuyOrders: () => false,
     hasPendingSellOrders: () => false,
     cancelOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
@@ -389,6 +399,43 @@ export function createMarketDataClientDouble(
     );
   }
 
+  function backfillCandlestickCache(
+    symbol: string,
+    period: Period,
+    candles: ReadonlyArray<Candlestick>,
+  ): CandlestickCacheSnapshot {
+    const key = makeCandlestickKey(symbol, period);
+    const existingCandles = candlestickCache.get(key) ?? [];
+    const mergedByTimestamp = new Map<number, CandleData>();
+    for (const candle of normalizeCandlestickData(candles)) {
+      if (typeof candle.timestamp === 'number') {
+        mergedByTimestamp.set(candle.timestamp, candle);
+      }
+    }
+
+    for (const candle of existingCandles) {
+      if (typeof candle.timestamp === 'number') {
+        mergedByTimestamp.set(candle.timestamp, candle);
+      }
+    }
+
+    const mergedCandles = [...mergedByTimestamp.values()].sort(
+      (left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0),
+    );
+    const latest = mergedCandles.at(-1) ?? null;
+    candlestickCache.set(key, mergedCandles);
+    candlestickVersions.set(key, (candlestickVersions.get(key) ?? 0) + 1);
+    return {
+      symbol,
+      period,
+      version: candlestickVersions.get(key) ?? 1,
+      candles: mergedCandles,
+      lastBarTimestamp: latest?.timestamp ?? null,
+      lastBarConfirmed: false,
+      initialized: true,
+    };
+  }
+
   async function seedCandlestickCacheFromOverride(
     symbol: string,
     period: Period,
@@ -421,6 +468,9 @@ export function createMarketDataClientDouble(
       const startIndex = Math.max(candles.length - count, 0);
       return normalizeCandlestickData(candles.slice(startIndex)) as unknown as Candlestick[];
     },
+    fetchHistoricalCandlesticksByOffset: async () => [],
+    backfillCandlesticks: (symbol, period, candles) =>
+      backfillCandlestickCache(symbol, period, candles),
     getCandlestickSnapshot: (symbol, period) => getCandlestickCacheSnapshot(symbol, period),
     isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
     resetRuntimeSubscriptionsAndCaches: async () => {},
@@ -434,6 +484,9 @@ export function createMarketDataClientDouble(
     subscribeCandlesticks: async (symbol, period, tradeSessions) =>
       seedCandlestickCacheFromOverride(symbol, period, tradeSessions),
     getRealtimeCandlesticks: overrides.getRealtimeCandlesticks ?? base.getRealtimeCandlesticks,
+    fetchHistoricalCandlesticksByOffset:
+      overrides.fetchHistoricalCandlesticksByOffset ?? base.fetchHistoricalCandlesticksByOffset,
+    backfillCandlesticks: overrides.backfillCandlesticks ?? base.backfillCandlesticks,
     getCandlestickSnapshot: overrides.getCandlestickSnapshot ?? base.getCandlestickSnapshot,
     isTradingDay: overrides.isTradingDay ?? base.isTradingDay,
     ...((overrides.getTradingDays ?? base.getTradingDays) === undefined

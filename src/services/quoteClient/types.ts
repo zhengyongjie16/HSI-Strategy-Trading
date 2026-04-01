@@ -1,4 +1,4 @@
-import type { Candlestick, Config, Market, Period, TradeSessions } from 'longbridge';
+import type { Candlestick, Config, Market, NaiveDatetime, Period, TradeSessions } from 'longbridge';
 import type { CandlestickCacheSnapshot } from '../../types/services.js';
 
 /**
@@ -71,6 +71,15 @@ export interface QuoteContextLike {
     period: Period,
     count: number,
   ) => Promise<ReadonlyArray<unknown>>;
+  readonly historyCandlesticksByOffset: (
+    symbol: string,
+    period: Period,
+    adjustType: number,
+    forward: boolean,
+    datetime: NaiveDatetime | undefined | null,
+    count: number,
+    tradeSessions: TradeSessions,
+  ) => Promise<ReadonlyArray<unknown>>;
   readonly setOnCandlestick: (
     callback: (err: null | Error, event: PushCandlestickEventLike) => void,
   ) => void;
@@ -131,6 +140,19 @@ export type ApplyCandlestickPushParams = Readonly<{
   period: Period;
   candlestick: unknown;
   isConfirmed: boolean;
+}>;
+
+/**
+ * 历史 K 线回填参数。
+ * 类型用途：描述历史拉取结果写入本地缓存所需输入。
+ * 数据来源：显式历史 K 线拉取结果。
+ * 使用范围：quoteClient/candlestickCache.ts。
+ */
+export type BackfillCandlestickSeriesParams = Readonly<{
+  store: CandlestickCacheStore;
+  symbol: string;
+  period: Period;
+  candles: ReadonlyArray<unknown>;
 }>;
 
 /**

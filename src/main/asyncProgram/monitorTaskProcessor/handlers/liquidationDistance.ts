@@ -43,8 +43,17 @@ import type {
  * @returns 成功时返回清仓执行项，否则返回 null
  */
 function createLiquidationTask(params: CreateLiquidationTaskParams): LiquidationTask | null {
-  const { symbol, symbolName, direction, position, quote, seatVersion, monitorPrice, riskChecker } =
-    params;
+  const {
+    symbol,
+    symbolName,
+    direction,
+    position,
+    quote,
+    seatVersion,
+    monitorPrice,
+    riskChecker,
+    riskCheckerConfig,
+  } = params;
   const isLongDirection = direction === 'LONG';
 
   if (!symbol) {
@@ -60,6 +69,7 @@ function createLiquidationTask(params: CreateLiquidationTaskParams): Liquidation
     symbol,
     isLongDirection,
     monitorPrice,
+    riskCheckerConfig,
   );
   if (!liquidationResult.shouldLiquidate) {
     return null;
@@ -236,6 +246,7 @@ export function createLiquidationDistanceHandler({
           seatVersion: data.long.seatVersion,
           monitorPrice: executionMonitorPrice,
           riskChecker: context.riskChecker,
+          riskCheckerConfig: context.config,
         });
         if (longTask) {
           liquidationTasks.push(longTask);
@@ -252,6 +263,7 @@ export function createLiquidationDistanceHandler({
           seatVersion: data.short.seatVersion,
           monitorPrice: executionMonitorPrice,
           riskChecker: context.riskChecker,
+          riskCheckerConfig: context.config,
         });
         if (shortTask) {
           liquidationTasks.push(shortTask);

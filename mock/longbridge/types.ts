@@ -1,11 +1,13 @@
 import type {
   AccountBalance,
+  AdjustType,
   Decimal,
   Execution,
   GetHistoryOrdersOptions,
   GetTodayExecutionsOptions,
   GetTodayOrdersOptions,
   Market,
+  NaiveDatetime,
   Order,
   OrderDetail,
   OrderSide,
@@ -43,6 +45,7 @@ export type MockMethodName =
   | 'unsubscribe'
   | 'realtimeQuote'
   | 'subscribeCandlesticks'
+  | 'historyCandlesticksByOffset'
   | 'unsubscribeCandlesticks'
   | 'realtimeCandlesticks'
   | 'tradingDays'
@@ -166,6 +169,17 @@ export interface QuoteContextContract extends MockInvocationLog, MockFailureCont
     symbol: string,
     period: Period,
     tradeSessions?: TradeSessions,
+  ) => Promise<ReadonlyArray<unknown>>;
+
+  /** 历史 K 线按偏移分页查询 */
+  historyCandlesticksByOffset: (
+    symbol: string,
+    period: Period,
+    adjustType: AdjustType,
+    forward: boolean,
+    datetime: NaiveDatetime | undefined | null,
+    count: number,
+    tradeSessions: TradeSessions,
   ) => Promise<ReadonlyArray<unknown>>;
   unsubscribeCandlesticks: (symbol: string, period: Period) => Promise<void>;
   realtimeCandlesticks: (

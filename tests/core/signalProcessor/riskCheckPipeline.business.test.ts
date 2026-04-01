@@ -179,6 +179,56 @@ describe('riskCheckPipeline business flow', () => {
     expect(positionFetchCount).toBe(1);
   });
 
+  it('rejects buy signals immediately when pending buy occupation exists', async () => {
+    let canTradeNowCount = 0;
+    let warrantRiskCheckCount = 0;
+    let baseRiskCheckCount = 0;
+
+    const trader = createTraderDouble({
+      hasPendingBuyOrders: () => true,
+      canTradeNow: () => {
+        canTradeNowCount += 1;
+        return { canTrade: true };
+      },
+      getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+      getStockPositions: async () => [],
+    });
+
+    const pipeline = createRiskCheckPipeline({
+      globalConfig: createGlobalConfig(),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
+        getRemainingMs: () => 0,
+      }),
+      lastRiskCheckTime,
+    });
+
+    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
+    const result = await withMockedNow(25_000, async () =>
+      pipeline(
+        [signal],
+        createContext({
+          trader,
+          riskChecker: createRiskCheckerDouble({
+            checkWarrantRisk: () => {
+              warrantRiskCheckCount += 1;
+              return { allowed: true };
+            },
+            checkBeforeOrder: () => {
+              baseRiskCheckCount += 1;
+              return { allowed: true };
+            },
+          }),
+        }),
+      ),
+    );
+
+    expect(result).toHaveLength(0);
+    expect(signal.reason).toContain('未完成买单占用');
+    expect(canTradeNowCount).toBe(0);
+    expect(warrantRiskCheckCount).toBe(0);
+    expect(baseRiskCheckCount).toBe(0);
+  });
+
   it('keeps sell path on cached account and positions', async () => {
     const cachedAccount = createAccountSnapshotDouble(88_888);
     const cachedPositions = [

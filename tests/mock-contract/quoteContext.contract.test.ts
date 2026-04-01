@@ -6,9 +6,13 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  AdjustType,
   Market,
+  NaiveDate,
+  NaiveDatetime,
   Period,
   SortOrderType,
+  Time,
   SubType,
   TradeSessions,
   WarrantSortBy,
@@ -36,8 +40,8 @@ describe('QuoteContext mock contract', () => {
     ]);
 
     quoteCtx.seedCandlesticks('700.HK', Period.Min_1, [
-      createCandlestick({ close: 320 }),
-      createCandlestick({ close: 321 }),
+      createCandlestick({ close: 320, timestampMs: Date.parse('2026-02-16T01:00:00.000Z') }),
+      createCandlestick({ close: 321, timestampMs: Date.parse('2026-02-16T01:01:00.000Z') }),
     ]);
 
     quoteCtx.seedWarrantQuotes([
@@ -62,6 +66,15 @@ describe('QuoteContext mock contract', () => {
     const staticInfos = await quoteCtx.staticInfo(['700.HK']);
     const candles = await quoteCtx.subscribeCandlesticks('700.HK', Period.Min_1, TradeSessions.All);
     const latestCandle = await quoteCtx.realtimeCandlesticks('700.HK', Period.Min_1, 1);
+    const historyCandles = await quoteCtx.historyCandlesticksByOffset(
+      '700.HK',
+      Period.Min_1,
+      AdjustType.NoAdjust,
+      false,
+      new NaiveDatetime(new NaiveDate(2026, 2, 16), new Time(9, 3, 0)),
+      2,
+      TradeSessions.All,
+    );
     const tradingDays = await quoteCtx.tradingDays(Market.HK, '2026-02-16', '2026-02-16');
     const warrantQuotes = await quoteCtx.warrantQuote(['12345.HK']);
     const warrantBullList = await quoteCtx.warrantList(
@@ -75,10 +88,12 @@ describe('QuoteContext mock contract', () => {
     expect(staticInfos).toHaveLength(1);
     expect(candles).toHaveLength(2);
     expect(latestCandle).toHaveLength(1);
+    expect(historyCandles).toHaveLength(2);
     expect(tradingDays.tradingDays.map(String)).toEqual(['2026-02-16']);
     expect(warrantQuotes).toHaveLength(1);
     expect(warrantBullList).toHaveLength(1);
     expect(quoteCtx.getSubscribedSymbols().has('700.HK')).toBe(true);
+    expect(quoteCtx.getCalls('historyCandlesticksByOffset')).toHaveLength(1);
 
     await quoteCtx.unsubscribe(['700.HK'], [SubType.Quote]);
     expect(quoteCtx.getSubscribedSymbols().has('700.HK')).toBe(false);
@@ -138,5 +153,78 @@ describe('QuoteContext mock contract', () => {
     expect(logs).toHaveLength(2);
     expect(logs[0]?.error).toBeNull();
     expect(logs[1]?.error?.message).toContain('quote call failed by rule');
+  });
+
+  it('supports history candlestick pagination and failure injection', async () => {
+    const quoteCtx = createQuoteContextMock();
+    quoteCtx.seedCandlesticks('700.HK', Period.Min_1, [
+      createCandlestick({ close: 100, timestampMs: Date.parse('2026-02-16T01:00:00.000Z') }),
+      createCandlestick({ close: 101, timestampMs: Date.parse('2026-02-16T01:01:00.000Z') }),
+      createCandlestick({ close: 102, timestampMs: Date.parse('2026-02-16T01:02:00.000Z') }),
+      createCandlestick({ close: 103, timestampMs: Date.parse('2026-02-16T01:03:00.000Z') }),
+    ]);
+
+    const latestTwo = await quoteCtx.historyCandlesticksByOffset(
+      '700.HK',
+      Period.Min_1,
+      AdjustType.NoAdjust,
+      false,
+      null,
+      2,
+      TradeSessions.All,
+    );
+    const olderTwo = await quoteCtx.historyCandlesticksByOffset(
+      '700.HK',
+      Period.Min_1,
+      AdjustType.NoAdjust,
+      false,
+      new NaiveDatetime(new NaiveDate(2026, 2, 16), new Time(9, 3, 0)),
+      2,
+      TradeSessions.All,
+    );
+
+    const readClose = (candle: unknown): number => {
+      const close = (candle as { readonly close: unknown }).close;
+      if (typeof close === 'number') {
+        return close;
+      }
+
+      if (close !== null && typeof close === 'object' && 'toNumber' in close) {
+        return (close as { readonly toNumber: () => number }).toNumber();
+      }
+
+      return Number.parseFloat(String(close));
+    };
+
+    expect(latestTwo.map(readClose)).toEqual([102, 103]);
+    expect(olderTwo.map(readClose)).toEqual([101, 102]);
+    expect(quoteCtx.getCalls('historyCandlesticksByOffset')).toHaveLength(2);
+
+    quoteCtx.setFailureRule('historyCandlesticksByOffset', {
+      failAtCalls: [4],
+      errorMessage: 'history candlestick call failed by rule',
+    });
+
+    await quoteCtx.historyCandlesticksByOffset(
+      '700.HK',
+      Period.Min_1,
+      AdjustType.NoAdjust,
+      false,
+      null,
+      1,
+      TradeSessions.All,
+    );
+
+    expect(async () => {
+      await quoteCtx.historyCandlesticksByOffset(
+        '700.HK',
+        Period.Min_1,
+        AdjustType.NoAdjust,
+        false,
+        null,
+        1,
+        TradeSessions.All,
+      );
+    }).toThrow('history candlestick call failed by rule');
   });
 });

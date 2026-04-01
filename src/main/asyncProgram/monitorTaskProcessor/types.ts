@@ -184,6 +184,7 @@ export type CreateLiquidationTaskParams = Readonly<{
   seatVersion: number;
   monitorPrice: number;
   riskChecker: RiskChecker;
+  riskCheckerConfig: StrategyRuntimeConfig;
 }>;
 
 /**
@@ -193,6 +194,7 @@ export type CreateLiquidationTaskParams = Readonly<{
  * 使用范围：仅 monitorTaskProcessor 内部使用。
  */
 export type MonitorTaskContext = Readonly<{
+  config: StrategyRuntimeConfig;
   symbolRegistry: SymbolRegistry;
   autoSymbolManager: AutoSymbolManagerPort;
   dailyLossTracker: DailyLossTracker;

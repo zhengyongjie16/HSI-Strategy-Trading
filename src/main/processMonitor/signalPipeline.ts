@@ -101,14 +101,14 @@ function applyInstrumentAdaptationGate(params: {
 
     const threshold =
       seatMode === 'auto' ? rules.autoSearchPrimaryDistanceBull : rules.bullBuyMinDistancePct;
-    return distancePercent > threshold
+    return distancePercent >= threshold
       ? {
           passed: true,
-          reason: `bull distance ${distancePercent.toFixed(3)}% > ${threshold.toFixed(3)}%`,
+          reason: `bull distance ${distancePercent.toFixed(3)}% >= ${threshold.toFixed(3)}%`,
         }
       : {
           passed: false,
-          reason: `bull distance ${distancePercent.toFixed(3)}% <= ${threshold.toFixed(3)}%`,
+          reason: `bull distance ${distancePercent.toFixed(3)}% < ${threshold.toFixed(3)}%`,
         };
   }
 
@@ -121,14 +121,14 @@ function applyInstrumentAdaptationGate(params: {
 
   const threshold =
     seatMode === 'auto' ? rules.autoSearchPrimaryDistanceBear : rules.bearBuyMaxDistancePct;
-  return distancePercent < threshold
+  return distancePercent <= threshold
     ? {
         passed: true,
-        reason: `bear distance ${distancePercent.toFixed(3)}% < ${threshold.toFixed(3)}%`,
+        reason: `bear distance ${distancePercent.toFixed(3)}% <= ${threshold.toFixed(3)}%`,
       }
     : {
         passed: false,
-        reason: `bear distance ${distancePercent.toFixed(3)}% >= ${threshold.toFixed(3)}%`,
+        reason: `bear distance ${distancePercent.toFixed(3)}% > ${threshold.toFixed(3)}%`,
       };
 }
 

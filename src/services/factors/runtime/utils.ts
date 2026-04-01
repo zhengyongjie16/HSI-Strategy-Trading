@@ -6,6 +6,7 @@
  * - 将与业务决策无关的数学细节从主编排模块中拆出
  */
 
+import type { CandleData } from '../../../types/data.js';
 import type { TradingSessionPhase } from '../../../types/factor';
 import type { HongKongParts, NormalizedBar } from './types';
 
@@ -23,6 +24,22 @@ export const MORNING_SESSION_START = 9 * 60 + 30;
 export const MORNING_SESSION_END = 12 * 60;
 export const AFTERNOON_SESSION_START = 13 * 60;
 export const AFTERNOON_SESSION_END = 16 * 60;
+
+function isSortedByTimestamp(bars: ReadonlyArray<NormalizedBar>): boolean {
+  for (let index = 1; index < bars.length; index += 1) {
+    const previousBar = bars[index - 1];
+    const currentBar = bars[index];
+    if (!previousBar || !currentBar) {
+      continue;
+    }
+
+    if (previousBar.timestamp > currentBar.timestamp) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 /**
  * 从数组尾部截取指定数量的数据。
@@ -547,6 +564,88 @@ export function collectRecentTradingDayKeys(params: {
   }
 
   return dayKeys;
+}
+
+/**
+ * 将原始 K 线规整为 factor runtime 所需的 bar 视图。
+ *
+ * @param params candles 与当前交易日键
+ * @returns 归一化后的 bars
+ */
+export function normalizeFactorRuntimeBars(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey?: string;
+}): ReadonlyArray<NormalizedBar> {
+  const normalized: NormalizedBar[] = [];
+  for (const candle of params.candles) {
+    const close =
+      typeof candle.close === 'number' && Number.isFinite(candle.close) ? candle.close : null;
+    const high =
+      typeof candle.high === 'number' && Number.isFinite(candle.high) ? candle.high : null;
+    const low = typeof candle.low === 'number' && Number.isFinite(candle.low) ? candle.low : null;
+    const volume =
+      typeof candle.volume === 'number' && Number.isFinite(candle.volume) ? candle.volume : 0;
+    const timestamp = typeof candle.timestamp === 'number' ? candle.timestamp : null;
+    if (close === null || high === null || low === null || timestamp === null) {
+      continue;
+    }
+
+    const { dayKey, minuteOfDay } = getHongKongParts(timestamp);
+    if (params.currentDayKey && dayKey !== params.currentDayKey) {
+      continue;
+    }
+
+    if (getSessionPhase(minuteOfDay) === 'closed') {
+      continue;
+    }
+
+    normalized.push({
+      close,
+      high,
+      low,
+      volume,
+      timestamp,
+      dayKey,
+      minuteOfDay,
+    });
+  }
+
+  if (!isSortedByTimestamp(normalized)) {
+    normalized.sort((left, right) => left.timestamp - right.timestamp);
+  }
+
+  return normalized;
+}
+
+/**
+ * 收集同 session 的历史 RV30 样本序列。
+ *
+ * @param params bars、交易日键、session 与观察窗口
+ * @returns 同 session 的历史 RV30 序列
+ */
+export function collectHistoricalSessionRv30Series(params: {
+  readonly bars: ReadonlyArray<NormalizedBar>;
+  readonly currentDayKey: string;
+  readonly session: Exclude<TradingSessionPhase, 'closed'>;
+  readonly cutoffMinuteOfDay: number;
+  readonly rvQuantileWindowDays: number;
+}): ReadonlyArray<number> {
+  const historicalDayKeys = collectRecentTradingDayKeys({
+    bars: params.bars,
+    currentDayKey: params.currentDayKey,
+    lookbackDays: params.rvQuantileWindowDays,
+  });
+  return historicalDayKeys
+    .map((dayKey) => {
+      const sessionBars = sliceSessionBarsForDay({
+        bars: params.bars,
+        dayKey,
+        session: params.session,
+        cutoffMinuteOfDay: params.cutoffMinuteOfDay,
+      });
+      return computeRealizedVolatility(computeReturns(sessionBars.slice(-31)));
+    })
+    .filter((rv): rv is number => rv !== null);
 }
 
 /**

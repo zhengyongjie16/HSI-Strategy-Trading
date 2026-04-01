@@ -117,6 +117,38 @@ export interface MarketDataClient {
   ) => Promise<ReadonlyArray<Candlestick>>;
 
   /**
+   * 按时间偏移向历史方向分页拉取 K 线（显式历史预热路径）。
+   *
+   * @param symbol 标的代码
+   * @param period K 线周期
+   * @param beforeTime 分页锚点；为空时由服务端返回最近一批
+   * @param count 返回根数上限
+   * @param tradeSessions 交易时段（默认 All）
+   * @returns 历史 K 线数组
+   */
+  fetchHistoricalCandlesticksByOffset: (
+    symbol: string,
+    period: Period,
+    beforeTime: Date | null,
+    count: number,
+    tradeSessions?: TradeSessions,
+  ) => Promise<ReadonlyArray<Candlestick>>;
+
+  /**
+   * 将历史 K 线以 merge/backfill 语义回填到应用层本地缓存。
+   *
+   * @param symbol 标的代码
+   * @param period K 线周期
+   * @param candles 待回填的历史 K 线数组
+   * @returns 回填后的本地缓存快照
+   */
+  backfillCandlesticks: (
+    symbol: string,
+    period: Period,
+    candles: ReadonlyArray<Candlestick>,
+  ) => CandlestickCacheSnapshot;
+
+  /**
    * 获取应用层本地 K 线缓存快照（由 subscribe seed + push 更新维护）。
    *
    * @param symbol 标的代码
@@ -294,6 +326,9 @@ export interface Trader {
 
   /** 是否存在指定标的的未完成卖单链路 */
   hasPendingSellOrders: (symbol: string) => boolean;
+
+  /** 是否存在指定标的的未完成买单链路 */
+  hasPendingBuyOrders: (symbol: string) => boolean;
 
   // ========== 订单监控 ==========
 
@@ -626,6 +661,7 @@ export interface RiskChecker {
     symbol: string,
     signalType: SignalType,
     monitorCurrentPrice: number,
+    monitorConfig: StrategyRuntimeConfig,
   ) => RiskCheckResult;
 
   /** 牛熊证距回收价清仓检查 */
@@ -633,6 +669,7 @@ export interface RiskChecker {
     symbol: string,
     isLongSymbol: boolean,
     monitorCurrentPrice: number,
+    monitorConfig: StrategyRuntimeConfig,
   ) => WarrantDistanceLiquidationResult;
 
   /** 获取牛熊证距离回收价信息（实时展示用） */

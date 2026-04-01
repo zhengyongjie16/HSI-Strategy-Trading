@@ -5,7 +5,6 @@
  * - 将 1m / 5m / 15m K 线规整为 trend factor 所需的 bar 视图
  * - 组合动量、波动率、VWAP、结构与确认层，生成因子快照
  */
-import type { CandleData } from '../../../types/data.js';
 import type {
   FactorReadiness,
   FactorSnapshot,
@@ -18,12 +17,12 @@ import {
   computePercentileRank,
   computeRealizedVolatility,
   computeReturns,
-  collectRecentTradingDayKeys,
+  collectHistoricalSessionRv30Series,
   filterBarsByDayKey,
   filterBarsBySession,
-  getHongKongParts,
   getSessionPhase,
   isBlockedByNoiseWindow,
+  normalizeFactorRuntimeBars,
   sliceSessionBarsForDay,
 } from './utils';
 import { classifyRegime } from './volatilityRegime.js';
@@ -35,79 +34,6 @@ import {
 import { computeVwapSnapshot } from './sessionVwap.js';
 import { computeOpeningStructure, computePmContinuation } from './openingStructure.js';
 import { computeConfirmation } from './confirmation.js';
-
-/**
- * 将原始 CandleData 规整为趋势计算所需的 bar。
- *
- * @param params candles 与当前交易日键
- * @returns 归一化后的 bars
- */
-function normalizeBars(params: {
-  readonly candles: ReadonlyArray<CandleData>;
-  readonly currentDayKey?: string;
-}): ReadonlyArray<NormalizedBar> {
-  const normalized: NormalizedBar[] = [];
-  for (const candle of params.candles) {
-    const close =
-      typeof candle.close === 'number' && Number.isFinite(candle.close) ? candle.close : null;
-    const high =
-      typeof candle.high === 'number' && Number.isFinite(candle.high) ? candle.high : null;
-    const low = typeof candle.low === 'number' && Number.isFinite(candle.low) ? candle.low : null;
-    const volume =
-      typeof candle.volume === 'number' && Number.isFinite(candle.volume) ? candle.volume : 0;
-    const timestamp = typeof candle.timestamp === 'number' ? candle.timestamp : null;
-    if (close === null || high === null || low === null || timestamp === null) {
-      continue;
-    }
-
-    const { dayKey, minuteOfDay } = getHongKongParts(timestamp);
-    if (params.currentDayKey && dayKey !== params.currentDayKey) {
-      continue;
-    }
-
-    if (getSessionPhase(minuteOfDay) === 'closed') {
-      continue;
-    }
-
-    normalized.push({
-      close,
-      high,
-      low,
-      volume,
-      timestamp,
-      dayKey,
-      minuteOfDay,
-    });
-  }
-
-  if (!isSortedByTimestamp(normalized)) {
-    normalized.sort((left, right) => left.timestamp - right.timestamp);
-  }
-
-  return normalized;
-}
-
-/**
- * 判断归一化后的 bars 是否已经按时间升序排列。
- *
- * @param bars 归一化后的 K 线集合
- * @returns 是否已升序排列
- */
-function isSortedByTimestamp(bars: ReadonlyArray<NormalizedBar>): boolean {
-  for (let index = 1; index < bars.length; index += 1) {
-    const previousBar = bars[index - 1];
-    const currentBar = bars[index];
-    if (!previousBar || !currentBar) {
-      continue;
-    }
-
-    if (previousBar.timestamp > currentBar.timestamp) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 /**
  * 计算同 session 历史波动率分位。
@@ -133,23 +59,13 @@ function computeSessionRv30Quantile(params: {
     cutoffMinuteOfDay: params.cutoffMinuteOfDay,
   });
   const currentRv30 = computeRealizedVolatility(computeReturns(currentSessionBars.slice(-31)));
-
-  const historicalDayKeys = collectRecentTradingDayKeys({
+  const historicalRv30Series = collectHistoricalSessionRv30Series({
     bars: params.bars,
     currentDayKey: params.currentDayKey,
-    lookbackDays: params.rvQuantileWindowDays,
+    session: params.session,
+    cutoffMinuteOfDay: params.cutoffMinuteOfDay,
+    rvQuantileWindowDays: params.rvQuantileWindowDays,
   });
-  const historicalRv30Series = historicalDayKeys
-    .map((dayKey) => {
-      const sessionBars = sliceSessionBarsForDay({
-        bars: params.bars,
-        dayKey,
-        session: params.session,
-        cutoffMinuteOfDay: params.cutoffMinuteOfDay,
-      });
-      return computeRealizedVolatility(computeReturns(sessionBars.slice(-31)));
-    })
-    .filter((rv): rv is number => rv !== null);
   const volQuantile = computePercentileRank(historicalRv30Series, currentRv30);
 
   return {
@@ -227,7 +143,7 @@ export function buildTrendFactorSnapshot(params: {
   readonly currentPrice: number;
   readonly strategyConfig: StrategyThresholdConfig;
 }): FactorSnapshot | null {
-  const allSessionBars = normalizeBars({
+  const allSessionBars = normalizeFactorRuntimeBars({
     candles: params.candlesByPeriod.min1,
   });
   if (allSessionBars.length === 0) {
@@ -260,35 +176,34 @@ export function buildTrendFactorSnapshot(params: {
     return null;
   }
 
-  const intradayTradingBars = dayBars;
-  const intradayTradingBars5m = normalizeBars({
+  const dayBars5m = normalizeFactorRuntimeBars({
     candles: params.candlesByPeriod.min5,
     currentDayKey,
   });
-  const intradayTradingBars15m = normalizeBars({
+  const dayBars15m = normalizeFactorRuntimeBars({
     candles: params.candlesByPeriod.min15,
     currentDayKey,
   });
 
   const currentPrice = params.currentPrice > 0 ? params.currentPrice : latestBar.close;
   const momentumResult = computeMomentumSnapshot({
-    bars: intradayTradingBars,
+    bars: dayBars,
     strategyConfig: params.strategyConfig,
     barMinutes: 1,
   });
   const momentumResult5m = computeMomentumSnapshot({
-    bars: intradayTradingBars5m,
+    bars: dayBars5m,
     strategyConfig: params.strategyConfig,
     barMinutes: 5,
   });
   const momentumResult15m = computeMomentumSnapshot({
-    bars: intradayTradingBars15m,
+    bars: dayBars15m,
     strategyConfig: params.strategyConfig,
     barMinutes: 15,
   });
-  const er15 = computeEr(intradayTradingBars, 15);
-  const er30 = computeEr(intradayTradingBars, 30);
-  const atr15 = computeAtr(intradayTradingBars, 15);
+  const er15 = computeEr(dayBars, 15);
+  const er30 = computeEr(dayBars, 30);
+  const atr15 = computeAtr(dayBars, 15);
   const atrShort = computeAtr(
     activeSessionBars,
     params.strategyConfig.regimeThresholds.atrShortPeriod,
@@ -328,7 +243,7 @@ export function buildTrendFactorSnapshot(params: {
     rules: params.strategyConfig.openingStructureRules,
   });
   const confirmation = computeConfirmation({
-    closes: intradayTradingBars.map((bar) => bar.close),
+    closes: dayBars.map((bar) => bar.close),
     latestPrice: currentPrice,
     vwap,
     atr15,
@@ -338,14 +253,14 @@ export function buildTrendFactorSnapshot(params: {
     bars: dayBars,
     latestPrice: currentPrice,
     trendScore: momentumResult.trendScore,
-    er15: er15,
+    er15,
     vwap,
     rules: params.strategyConfig.pmContinuationRules,
   });
   const effectiveTrendScore = momentumResult.trendScore;
   const readiness = computeReadiness({
     regimeReady,
-    trendBars: intradayTradingBars,
+    trendBars: dayBars,
     activeSessionBars,
     trendScore: effectiveTrendScore,
     trendScore5m: momentumResult5m.trendScore,

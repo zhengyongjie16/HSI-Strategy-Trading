@@ -313,6 +313,11 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       return null;
     }
 
+    if (orderMonitor.hasPendingBuyOrders(targetSymbol)) {
+      logger.info(`[订单提交] ${targetSymbol} 存在未完成买单，占用生效，跳过新的买入提交`);
+      return null;
+    }
+
     const submittedQtyDecimal = quantityResolver.resolveBuyQuantity(
       signal,
       isShortSymbol,

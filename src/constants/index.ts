@@ -259,9 +259,6 @@ const LOG_ANSI_ESC = String.fromCodePoint(27);
 /** ANSI 颜色代码正则（ESC[...m） */
 export const LOG_ANSI_CODE_REGEX = new RegExp(LOG_ANSI_ESC + String.raw`\[[0-9;]*m`, 'g');
 
-/** 是否为调试模式（环境变量 DEBUG=true 时启用） */
-export const IS_DEBUG = process.env['DEBUG'] === 'true';
-
 /** API 相关常量，用于 Longbridge API 调用 */
 export const API = {
   /** 默认重试次数，API 调用失败时的重试上限 */
@@ -437,15 +434,12 @@ export const ACCOUNT_CHANNEL_MAP: Record<string, string> = {
 };
 
 /** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
-const STRATEGY_ACTIONS: ReadonlyArray<Exclude<SignalType, 'HOLD'>> = [
+export const VALID_SIGNAL_ACTIONS = new Set<SignalType>([
   'BUYCALL',
   'SELLCALL',
   'BUYPUT',
   'SELLPUT',
-] as const;
-
-/** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
-export const VALID_SIGNAL_ACTIONS = new Set<SignalType>(STRATEGY_ACTIONS);
+]);
 
 /** 信号操作详细描述映射，用于执行链路日志 */
 export const SIGNAL_ACTION_DESCRIPTIONS: Record<SignalType, string> = {

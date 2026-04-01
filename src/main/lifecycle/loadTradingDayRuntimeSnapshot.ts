@@ -35,12 +35,326 @@ import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/inde
 import { resolveOrderOwnershipForMonitor } from '../../core/riskController/orderOwnership.js';
 import { hasProtectiveLiquidationRemark } from '../../core/trader/utils.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
+import type { CandleData } from '../../types/data.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
   LoadTradingDayRuntimeSnapshotResult,
 } from './types.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
+import {
+  collectHistoricalSessionRv30Series,
+  getHongKongParts,
+  getSessionPhase,
+  normalizeFactorRuntimeBars,
+} from '../../services/factors/runtime/utils.js';
+
+const FULL_TRADING_DAY_MIN1_BAR_COUNT = 330;
+
+function getRequiredHistoricalBaselineDays(rvQuantileWindowDays: number): number {
+  return Math.max(1, Math.floor(rvQuantileWindowDays));
+}
+
+function isAscendingAndDeduplicatedCandles(candles: ReadonlyArray<CandleData>): boolean {
+  for (let index = 1; index < candles.length; index += 1) {
+    const previousTimestamp = candles[index - 1]?.timestamp;
+    const currentTimestamp = candles[index]?.timestamp;
+    if (
+      typeof previousTimestamp !== 'number' ||
+      !Number.isFinite(previousTimestamp) ||
+      typeof currentTimestamp !== 'number' ||
+      !Number.isFinite(currentTimestamp)
+    ) {
+      return false;
+    }
+
+    if (previousTimestamp >= currentTimestamp) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function collectTradingDayKeysFromCandles(
+  candles: ReadonlyArray<CandleData>,
+): ReadonlyArray<string> {
+  const dayKeys = new Set<string>();
+  for (const candle of candles) {
+    const timestamp = candle.timestamp;
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      continue;
+    }
+
+    dayKeys.add(getHKDateKey(new Date(timestamp)));
+  }
+
+  return [...dayKeys];
+}
+
+function hasCurrentDayBars(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey: string;
+}): boolean {
+  return params.candles.some((candle) => {
+    const timestamp = candle.timestamp;
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      return false;
+    }
+
+    return getHKDateKey(new Date(timestamp)) === params.currentDayKey;
+  });
+}
+
+function countHistoricalMin1Bars(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey: string;
+}): number {
+  let count = 0;
+  for (const candle of params.candles) {
+    const timestamp = candle.timestamp;
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      continue;
+    }
+
+    if (getHKDateKey(new Date(timestamp)) !== params.currentDayKey) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function countHistoricalTradingDays(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey: string;
+}): number {
+  return collectTradingDayKeysFromCandles(params.candles).filter(
+    (dayKey) => dayKey !== params.currentDayKey,
+  ).length;
+}
+
+function hasRequiredHistoricalSeedCoverage(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey: string;
+  readonly requiredHistoricalBaselineDays: number;
+}): boolean {
+  const historicalDayCount = countHistoricalTradingDays(params);
+  if (historicalDayCount < params.requiredHistoricalBaselineDays) {
+    return false;
+  }
+
+  return (
+    countHistoricalMin1Bars({
+      candles: params.candles,
+      currentDayKey: params.currentDayKey,
+    }) >=
+    params.requiredHistoricalBaselineDays * FULL_TRADING_DAY_MIN1_BAR_COUNT
+  );
+}
+
+function getLatestCurrentDayBarTimestamp(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey: string;
+}): number | null {
+  for (let index = params.candles.length - 1; index >= 0; index -= 1) {
+    const candle = params.candles[index];
+    const timestamp = candle?.timestamp;
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      continue;
+    }
+
+    if (getHKDateKey(new Date(timestamp)) === params.currentDayKey) {
+      return timestamp;
+    }
+  }
+
+  return null;
+}
+
+function hasRequiredHistoricalSessionBaseline(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey: string;
+  readonly requiredHistoricalBaselineDays: number;
+}): boolean {
+  return countHistoricalSessionBaselineSamples(params) >= params.requiredHistoricalBaselineDays;
+}
+
+function countHistoricalSessionBaselineSamples(params: {
+  readonly candles: ReadonlyArray<CandleData>;
+  readonly currentDayKey: string;
+  readonly requiredHistoricalBaselineDays: number;
+}): number {
+  const latestCurrentDayTimestamp = getLatestCurrentDayBarTimestamp(params);
+  if (latestCurrentDayTimestamp === null) {
+    return 0;
+  }
+
+  const { minuteOfDay } = getHongKongParts(latestCurrentDayTimestamp);
+  const session = getSessionPhase(minuteOfDay);
+  if (session === 'closed') {
+    return 0;
+  }
+
+  const bars = normalizeFactorRuntimeBars({
+    candles: params.candles,
+  });
+  return collectHistoricalSessionRv30Series({
+    bars,
+    currentDayKey: params.currentDayKey,
+    session,
+    cutoffMinuteOfDay: minuteOfDay,
+    rvQuantileWindowDays: params.requiredHistoricalBaselineDays,
+  }).length;
+}
+
+function assertCurrentDaySnapshotReady(params: {
+  readonly marketDataClient: LoadTradingDayRuntimeSnapshotDeps['marketDataClient'];
+  readonly symbol: string;
+  readonly period: (typeof TRADING.CANDLE_PERIODS)[number];
+  readonly currentDayKey: string;
+}): void {
+  const snapshot = params.marketDataClient.getCandlestickSnapshot(params.symbol, params.period);
+  if (snapshot === null || !snapshot.initialized || snapshot.candles.length === 0) {
+    throw new Error(`[K线预热] ${params.symbol} 周期 ${String(params.period)} 本地缓存未初始化`);
+  }
+
+  if (
+    !hasCurrentDayBars({
+      candles: snapshot.candles,
+      currentDayKey: params.currentDayKey,
+    })
+  ) {
+    throw new Error(
+      `[K线预热] ${params.symbol} 周期 ${String(params.period)} 缺少当前交易日样本，禁止进入指标流水线`,
+    );
+  }
+}
+
+async function prewarmHistoricalMin1Candles(params: {
+  readonly marketDataClient: LoadTradingDayRuntimeSnapshotDeps['marketDataClient'];
+  readonly symbol: string;
+  readonly currentDayKey: string;
+  readonly requireCurrentDayBars: boolean;
+  readonly requiredHistoricalBaselineDays: number;
+}): Promise<void> {
+  const batchSize = 1_000;
+  let fetchedCount = 0;
+  let beforeTime: Date | null = null;
+
+  while (fetchedCount < TRADING.CANDLE_COUNT) {
+    const historyBatch = await params.marketDataClient.fetchHistoricalCandlesticksByOffset(
+      params.symbol,
+      TRADING.FACTOR_CANDLE_PERIOD,
+      beforeTime,
+      Math.min(batchSize, TRADING.CANDLE_COUNT - fetchedCount),
+    );
+    if (historyBatch.length === 0) {
+      break;
+    }
+
+    fetchedCount += historyBatch.length;
+    const snapshot = params.marketDataClient.backfillCandlesticks(
+      params.symbol,
+      TRADING.FACTOR_CANDLE_PERIOD,
+      historyBatch,
+    );
+    if (!isAscendingAndDeduplicatedCandles(snapshot.candles)) {
+      throw new Error(`[K线预热] ${params.symbol} 1m 历史回填后未保持升序去重`);
+    }
+
+    const currentDayReady = hasCurrentDayBars({
+      candles: snapshot.candles,
+      currentDayKey: params.currentDayKey,
+    });
+    const prewarmReady = params.requireCurrentDayBars
+      ? currentDayReady &&
+        hasRequiredHistoricalSessionBaseline({
+          candles: snapshot.candles,
+          currentDayKey: params.currentDayKey,
+          requiredHistoricalBaselineDays: params.requiredHistoricalBaselineDays,
+        })
+      : hasRequiredHistoricalSeedCoverage({
+          candles: snapshot.candles,
+          currentDayKey: params.currentDayKey,
+          requiredHistoricalBaselineDays: params.requiredHistoricalBaselineDays,
+        });
+    if (prewarmReady) {
+      return;
+    }
+
+    const earliestTimestamp = snapshot.candles[0]?.timestamp;
+    if (typeof earliestTimestamp !== 'number' || !Number.isFinite(earliestTimestamp)) {
+      break;
+    }
+
+    beforeTime = new Date(earliestTimestamp - 1);
+  }
+
+  const finalSnapshot = params.marketDataClient.getCandlestickSnapshot(
+    params.symbol,
+    TRADING.FACTOR_CANDLE_PERIOD,
+  );
+  if (finalSnapshot === null || !finalSnapshot.initialized || finalSnapshot.candles.length === 0) {
+    throw new Error(`[K线预热] ${params.symbol} 1m 历史预热失败，未获得可用缓存`);
+  }
+
+  if (!isAscendingAndDeduplicatedCandles(finalSnapshot.candles)) {
+    throw new Error(`[K线预热] ${params.symbol} 1m 历史预热后未保持升序去重`);
+  }
+
+  const finalHistoricalDayCount = countHistoricalTradingDays({
+    candles: finalSnapshot.candles,
+    currentDayKey: params.currentDayKey,
+  });
+  if (
+    !params.requireCurrentDayBars &&
+    finalHistoricalDayCount < params.requiredHistoricalBaselineDays
+  ) {
+    throw new Error(
+      `[K线预热] ${params.symbol} 1m 历史交易日覆盖不足：${finalHistoricalDayCount}/${params.requiredHistoricalBaselineDays}`,
+    );
+  }
+
+  const finalHistoricalBarCount = countHistoricalMin1Bars({
+    candles: finalSnapshot.candles,
+    currentDayKey: params.currentDayKey,
+  });
+  if (
+    !params.requireCurrentDayBars &&
+    finalHistoricalBarCount <
+      params.requiredHistoricalBaselineDays * FULL_TRADING_DAY_MIN1_BAR_COUNT
+  ) {
+    throw new Error(
+      `[K线预热] ${params.symbol} 1m 历史样本不足：${finalHistoricalBarCount}/${params.requiredHistoricalBaselineDays * FULL_TRADING_DAY_MIN1_BAR_COUNT}`,
+    );
+  }
+
+  if (
+    params.requireCurrentDayBars &&
+    !hasCurrentDayBars({ candles: finalSnapshot.candles, currentDayKey: params.currentDayKey })
+  ) {
+    throw new Error(`[K线预热] ${params.symbol} 1m 缺少当前交易日样本，禁止进入指标流水线`);
+  }
+
+  if (
+    params.requireCurrentDayBars &&
+    !hasRequiredHistoricalSessionBaseline({
+      candles: finalSnapshot.candles,
+      currentDayKey: params.currentDayKey,
+      requiredHistoricalBaselineDays: params.requiredHistoricalBaselineDays,
+    })
+  ) {
+    const historicalSessionSampleCount = countHistoricalSessionBaselineSamples({
+      candles: finalSnapshot.candles,
+      currentDayKey: params.currentDayKey,
+      requiredHistoricalBaselineDays: params.requiredHistoricalBaselineDays,
+    });
+    throw new Error(
+      `[K线预热] ${params.symbol} 1m 同 session 历史样本不足：${historicalSessionSampleCount}/${params.requiredHistoricalBaselineDays}`,
+    );
+  }
+}
 
 function isDirectionFlatAtSnapshot(
   symbolRegistry: LoadTradingDayRuntimeSnapshotDeps['symbolRegistry'],
@@ -312,6 +626,31 @@ export function createLoadTradingDayRuntimeSnapshot(
 
     for (const period of TRADING.CANDLE_PERIODS) {
       await marketDataClient.subscribeCandlesticks(monitorConfig.baseInstrumentSymbol, period);
+    }
+
+    const requiredHistoricalBaselineDays = getRequiredHistoricalBaselineDays(
+      monitorConfig.strategyConfig.regimeThresholds.rvQuantileWindowDays,
+    );
+    const requireCurrentDayBars = getTradingMinutesSinceOpen(now) > 0;
+    await prewarmHistoricalMin1Candles({
+      marketDataClient,
+      symbol: monitorConfig.baseInstrumentSymbol,
+      currentDayKey,
+      requireCurrentDayBars,
+      requiredHistoricalBaselineDays,
+    });
+
+    if (requireCurrentDayBars) {
+      for (const period of TRADING.CANDLE_PERIODS.filter(
+        (candlePeriod) => candlePeriod !== TRADING.FACTOR_CANDLE_PERIOD,
+      )) {
+        assertCurrentDaySnapshotReady({
+          marketDataClient,
+          symbol: monitorConfig.baseInstrumentSymbol,
+          period,
+          currentDayKey,
+        });
+      }
     }
 
     const quotesMap = await marketDataClient.getQuotes(allTradingSymbols);

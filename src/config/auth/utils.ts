@@ -23,6 +23,13 @@ const PUSH_CANDLESTICK_MODE_CONFIG_MAP: Readonly<Record<string, PushCandlestickM
   confirmed: PushCandlestickMode.Confirmed,
 };
 
+/**
+ * 解析布尔型环境变量值。
+ * 默认行为：仅接受 `true` / `false`；其他值返回 `undefined`，由上层校验处理。
+ *
+ * @param value 待解析的字符串环境变量值
+ * @returns 解析后的布尔值，无法解析时返回 `undefined`
+ */
 function parseBooleanEnvValue(value: string | null): boolean | undefined {
   if (value === null) {
     return undefined;
@@ -39,6 +46,13 @@ function parseBooleanEnvValue(value: string | null): boolean | undefined {
   return undefined;
 }
 
+/**
+ * 解析 OAuth 回调端口。
+ * 默认行为：仅接受 1-65535 的整数端口；非法值返回 `null`。
+ *
+ * @param env 进程环境变量
+ * @returns 有效端口号，未配置或非法时返回 `null`
+ */
 function parseCallbackPort(env: NodeJS.ProcessEnv): number | null {
   const callbackPortValue = getStringConfig(env, 'LONGBRIDGE_CALLBACK_PORT');
   if (callbackPortValue === null) {
@@ -53,10 +67,23 @@ function parseCallbackPort(env: NodeJS.ProcessEnv): number | null {
   return callbackPort;
 }
 
+/**
+ * 判断字符串是否为支持的认证模式。
+ *
+ * @param value 待判断的认证模式字符串
+ * @returns 当值为 oauth 或 apikey 时返回 true
+ */
 function isAuthMode(value: string): value is AuthMode {
   return value === 'oauth' || value === 'apikey';
 }
 
+/**
+ * 读取可选的 Longbridge 语言配置。
+ * 默认行为：仅映射项目支持的语言值，未配置时返回 `undefined`。
+ *
+ * @param env 进程环境变量
+ * @returns Longbridge 语言枚举值，未配置时返回 `undefined`
+ */
 function readOptionalLanguage(env: NodeJS.ProcessEnv): Language | undefined {
   const languageValue = getStringConfig(env, 'LONGBRIDGE_LANGUAGE');
   if (languageValue === null) {
@@ -66,6 +93,13 @@ function readOptionalLanguage(env: NodeJS.ProcessEnv): Language | undefined {
   return LANGUAGE_CONFIG_MAP[languageValue];
 }
 
+/**
+ * 读取可选的 K 线推送模式配置。
+ * 默认行为：仅映射 realtime / confirmed，未配置或非法值返回 `undefined`。
+ *
+ * @param env 进程环境变量
+ * @returns Longbridge K 线推送模式，未配置时返回 `undefined`
+ */
 function readOptionalPushCandlestickMode(env: NodeJS.ProcessEnv): PushCandlestickMode | undefined {
   const pushCandlestickModeValue = getStringConfig(env, 'LONGBRIDGE_PUSH_CANDLESTICK_MODE');
   if (pushCandlestickModeValue === null) {

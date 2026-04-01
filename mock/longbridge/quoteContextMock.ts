@@ -5,7 +5,9 @@
  * - 模拟 QuoteContext 的订阅、查询、失败注入与事件回放行为
  */
 import {
+  type AdjustType,
   type Market,
+  type NaiveDatetime,
   type Period,
   type PushCandlestickEvent,
   type PushQuoteEvent,
@@ -43,6 +45,7 @@ const QUOTE_METHODS: ReadonlySet<MockMethodName> = new Set([
   'unsubscribe',
   'realtimeQuote',
   'subscribeCandlesticks',
+  'historyCandlesticksByOffset',
   'unsubscribeCandlesticks',
   'realtimeCandlesticks',
   'tradingDays',
@@ -57,6 +60,82 @@ const QUOTE_METHODS: ReadonlySet<MockMethodName> = new Set([
  */
 function createCandleKey(symbol: string, period: Period): string {
   return `${symbol}:${String(period)}`;
+}
+
+/**
+ * 提取 K 线时间戳毫秒值。
+ *
+ * 允许 Date、number 与可转字符串对象，方便 mock 兼容不同测试输入来源。
+ *
+ * @param candle 待解析的 K 线对象
+ * @returns 有效时间戳毫秒值；无法解析时返回 null
+ */
+function extractCandleTimestampMs(candle: unknown): number | null {
+  if (candle === null || typeof candle !== 'object') {
+    return null;
+  }
+
+  const timestamp = Reflect.get(candle, 'timestamp') as unknown;
+  if (timestamp instanceof Date) {
+    const timestampMs = timestamp.getTime();
+    return Number.isFinite(timestampMs) ? timestampMs : null;
+  }
+
+  if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
+    return timestamp;
+  }
+
+  if (typeof timestamp === 'string') {
+    const timestampMs = Date.parse(timestamp);
+    return Number.isFinite(timestampMs) ? timestampMs : null;
+  }
+
+  return null;
+}
+
+/**
+ * 将 NaiveDatetime 转换为香港时间对应的时间戳。
+ *
+ * @param datetime 待转换的 NaiveDatetime
+ * @returns 有效时间戳毫秒值；无法解析时返回 null
+ */
+function extractNaiveDatetimeMs(datetime: NaiveDatetime | undefined | null): number | null {
+  if (datetime === null || datetime === undefined) {
+    return null;
+  }
+
+  const raw = datetime.toString();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const parsed = Date.parse(
+    normalized.includes('+') || normalized.endsWith('Z') ? normalized : `${normalized}+08:00`,
+  );
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * 按时间戳对 K 线数组排序。
+ *
+ * @param candles 原始 K 线数组
+ * @returns 按 timestamp 升序排列后的新数组
+ */
+function sortCandlesByTimestamp(candles: ReadonlyArray<unknown>): ReadonlyArray<unknown> {
+  return [...candles].sort((left, right) => {
+    const leftTimestamp = extractCandleTimestampMs(left);
+    const rightTimestamp = extractCandleTimestampMs(right);
+    if (leftTimestamp === null && rightTimestamp === null) {
+      return 0;
+    }
+
+    if (leftTimestamp === null) {
+      return 1;
+    }
+
+    if (rightTimestamp === null) {
+      return -1;
+    }
+
+    return leftTimestamp - rightTimestamp;
+  });
 }
 
 /**
@@ -237,6 +316,48 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
 
       return data.slice(data.length - count);
     });
+  }
+
+  function historyCandlesticksByOffset(
+    symbol: string,
+    period: Period,
+    adjustType: AdjustType,
+    forward: boolean,
+    datetime: NaiveDatetime | undefined | null,
+    count: number,
+    tradeSessions: TradeSessions,
+  ): Promise<ReadonlyArray<unknown>> {
+    return withCall(
+      'historyCandlesticksByOffset',
+      [symbol, period, adjustType, forward, datetime, count, tradeSessions],
+      () => {
+        const key = createCandleKey(symbol, period);
+        const candles = sortCandlesByTimestamp(candlesticksByKey.get(key) ?? []);
+        if (count <= 0 || candles.length === 0) {
+          return [];
+        }
+
+        const anchorMs = extractNaiveDatetimeMs(datetime);
+        if (anchorMs === null) {
+          return forward
+            ? candles.slice(0, count)
+            : candles.slice(Math.max(candles.length - count, 0));
+        }
+
+        const filtered = candles.filter((candle) => {
+          const timestampMs = extractCandleTimestampMs(candle);
+          if (timestampMs === null) {
+            return false;
+          }
+
+          return forward ? timestampMs > anchorMs : timestampMs < anchorMs;
+        });
+
+        return forward
+          ? filtered.slice(0, count)
+          : filtered.slice(Math.max(filtered.length - count, 0));
+      },
+    );
   }
 
   function tradingDays(
@@ -424,6 +545,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     unsubscribe,
     realtimeQuote,
     subscribeCandlesticks,
+    historyCandlesticksByOffset,
     unsubscribeCandlesticks,
     realtimeCandlesticks,
     tradingDays,

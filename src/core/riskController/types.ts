@@ -1,6 +1,7 @@
 import type { Position } from '../../types/account.js';
 import type { Signal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
+import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type {
   MarketDataClient,
   OrderRecord,
@@ -55,11 +56,13 @@ export interface WarrantRiskChecker {
     symbol: string,
     signalType: SignalType,
     monitorCurrentPrice: number,
+    monitorConfig: StrategyRuntimeConfig,
   ) => RiskCheckResult;
   checkWarrantDistanceLiquidation: (
     symbol: string,
     isLongSymbol: boolean,
     monitorCurrentPrice: number,
+    monitorConfig: StrategyRuntimeConfig,
   ) => WarrantDistanceLiquidationResult;
   getWarrantDistanceInfo: (
     isLongSymbol: boolean,

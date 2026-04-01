@@ -1,4 +1,4 @@
-import { NaiveDate, Period } from 'longbridge';
+import { NaiveDate, NaiveDatetime, Period, Time } from 'longbridge';
 import { isRecord, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import type { StaticInfo } from './types.js';
 import { getHKDateKey } from '../../utils/time/index.js';
@@ -117,4 +117,25 @@ export function resolveHKNaiveDate(date: Date): NaiveDate {
   const month = Number(parts[1]);
   const day = Number(parts[2]);
   return new NaiveDate(year, month, day);
+}
+
+/**
+ * 将时间对象转换为港股时区口径的 NaiveDatetime。
+ *
+ * @param date 时间对象
+ * @returns NaiveDatetime 实例
+ */
+export function resolveHKNaiveDatetime(date: Date): NaiveDatetime {
+  const shiftedTime = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const naiveDate = new NaiveDate(
+    shiftedTime.getUTCFullYear(),
+    shiftedTime.getUTCMonth() + 1,
+    shiftedTime.getUTCDate(),
+  );
+  const naiveTime = new Time(
+    shiftedTime.getUTCHours(),
+    shiftedTime.getUTCMinutes(),
+    shiftedTime.getUTCSeconds(),
+  );
+  return new NaiveDatetime(naiveDate, naiveTime);
 }

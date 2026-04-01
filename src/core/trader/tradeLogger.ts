@@ -7,16 +7,18 @@
  *
  * 记录内容：订单ID、标的、方向、数量、价格、状态、原因、时间戳
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import { LOGGING } from '../../constants/index.js';
-import { logger, retainLatestLogFiles } from '../../utils/logger/index.js';
+import { retainLatestLogFiles } from '../../utils/logger/index.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
-import { toHongKongTimeIso } from '../../utils/time/index.js';
+import { getHKDateKey, toHongKongTimeIso } from '../../utils/time/index.js';
 import { isRecord } from '../../utils/helpers/index.js';
-import { buildTradeLogPath } from '../../utils/trading/tradeLogPath.js';
 import type { TradeRecord } from '../../types/trader.js';
-import type { ErrorTypeIdentifier } from './types.js';
+import type {
+  ErrorTypeIdentifier,
+  TradeLoggerRuntime,
+  TradeLoggerRuntimeDeps,
+  TradeLoggerRuntimeFactoryParams,
+} from './types.js';
 
 /**
  * 类型守卫：校验 unknown 是否为符合 TradeRecord 结构的对象。
@@ -94,70 +96,164 @@ export function identifyErrorType(errorMessage: string): ErrorTypeIdentifier {
 }
 
 /**
- * 记录交易到 JSON 文件（按日期分文件存储）
- * 写入 <logRootDir>/trades/YYYY-MM-DD.json，缺失字段补 null，并执行日志文件保留策略。
- * @param tradeRecord 单笔交易记录，字段可为 null
- * @returns 无返回值；写入失败时仅记录错误日志
+ * 创建 tradeLogger 运行时。
+ * 默认行为：按注入的 env 解析日志目录，按香港日期分文件写入交易记录，并执行保留策略。
+ *
+ * @param params tradeLogger 运行时工厂参数
+ * @returns tradeLogger 运行时对象
+ */
+export function createTradeLoggerRuntime(
+  params: TradeLoggerRuntimeFactoryParams,
+): TradeLoggerRuntime {
+  const { deps } = params;
+  const logRootDir = resolveLogRootDir(deps.env);
+  const tradeLogDir = deps.joinPath(logRootDir, 'trades');
+
+  /**
+   * 写入单条交易记录。
+   * 默认行为：确保日志目录存在、按香港日期读取旧文件、追加新记录并刷新到磁盘。
+   *
+   * @param tradeRecord 单笔交易记录，字段可为 null
+   * @returns 无返回值；写入失败时仅记录错误日志
+   */
+  function writeTradeRecord(tradeRecord: TradeRecord): void {
+    try {
+      ensureTradeLogDir(deps, tradeLogDir);
+
+      const dayKey = getHKDateKey(new Date());
+      const logFileName = `${dayKey}.json`;
+      const logFile = deps.joinPath(tradeLogDir, logFileName);
+      retainLatestLogFiles(
+        {
+          fs: deps.fs,
+          joinPath: deps.joinPath,
+          stderr: deps.stderr,
+        },
+        tradeLogDir,
+        LOGGING.MAX_RETAINED_LOG_FILES,
+        'json',
+        logFileName,
+      );
+
+      const trades = readTradeRecords(deps, logFile);
+      trades.push(normalizeTradeRecord(tradeRecord));
+      deps.fs.writeFileSync(logFile, JSON.stringify(trades, null, 2), 'utf8');
+    } catch (err: unknown) {
+      deps.logger.error('写入交易记录失败', err);
+    }
+  }
+
+  return {
+    recordTrade: writeTradeRecord,
+  };
+}
+
+const noopRecordTrade: TradeLoggerRuntime['recordTrade'] = () => void 0;
+
+let currentRecordTrade: TradeLoggerRuntime['recordTrade'] = noopRecordTrade;
+
+/**
+ * 运行时 tradeLogger facade。
+ * 默认行为：在未安装 tradeLogger 运行时时使用空实现，避免模块顶层副作用。
+ *
+ * @param tradeRecord 单笔交易记录
+ * @returns 无返回值
  */
 export function recordTrade(tradeRecord: TradeRecord): void {
-  try {
-    const logRootDir = resolveLogRootDir(process.env);
-    const logDir = path.join(logRootDir, 'trades');
-    if (!fs.existsSync(logDir)) {
-      fs.mkdirSync(logDir, { recursive: true });
-    }
+  currentRecordTrade(tradeRecord);
+}
 
-    const logFile = buildTradeLogPath(logRootDir, new Date());
-    retainLatestLogFiles(logDir, LOGGING.MAX_RETAINED_LOG_FILES, 'json', path.basename(logFile));
-    let trades: TradeRecord[] = [];
-    if (fs.existsSync(logFile)) {
-      const content = fs.readFileSync(logFile, 'utf8');
-      try {
-        const parsed: unknown = JSON.parse(content);
+/**
+ * 安装当前进程内生效的 tradeLogger 记录目标。
+ * 默认行为：将 `recordTrade` facade 转发到传入的记录实现。
+ *
+ * @param nextRecordTrade 新的记录实现
+ * @returns 无返回值
+ */
+export function installTradeLogger(nextRecordTrade: TradeLoggerRuntime['recordTrade']): void {
+  currentRecordTrade = nextRecordTrade;
+}
 
-        // 信任边界：校验 JSON 解析结果
-        if (isValidTradeRecordArray(parsed)) {
-          trades = parsed;
-        } else {
-          logger.warn(`交易记录文件格式错误，重置为空数组: ${logFile}`);
-          trades = [];
-        }
-      } catch (e) {
-        const parseErrorMessage = e instanceof Error ? e.message : String(e);
-        logger.warn(`解析交易记录文件失败，重置为空数组: ${logFile}`, parseErrorMessage);
-        trades = [];
-      }
-    }
+/**
+ * 重置 tradeLogger facade 的目标回空实现。
+ * 默认行为：用于测试清理，避免跨用例泄漏 tradeLogger 安装状态。
+ *
+ * @returns 无返回值
+ */
+export function resetTradeLogger(): void {
+  currentRecordTrade = noopRecordTrade;
+}
 
-    const executedAtMs = Number.isFinite(tradeRecord.executedAtMs)
-      ? tradeRecord.executedAtMs
-      : null;
-    const signalTriggerTime = tradeRecord.signalTriggerTime ?? null;
-    const executedAt = tradeRecord.executedAt ?? null;
-
-    // 构建记录对象（缺失字段写入 null）
-    const record: TradeRecord = {
-      orderId: tradeRecord.orderId ?? null,
-      symbol: tradeRecord.symbol ?? null,
-      symbolName: tradeRecord.symbolName ?? null,
-      baseInstrumentSymbol: tradeRecord.baseInstrumentSymbol ?? null,
-      action: tradeRecord.action ?? null,
-      side: tradeRecord.side ?? null,
-      quantity: tradeRecord.quantity ?? null,
-      price: tradeRecord.price ?? null,
-      orderType: tradeRecord.orderType ?? null,
-      status: tradeRecord.status ?? null,
-      error: tradeRecord.error ?? null,
-      reason: tradeRecord.reason ?? null,
-      signalTriggerTime,
-      executedAt,
-      executedAtMs,
-      timestamp: toHongKongTimeIso(),
-      isProtectiveClearance: tradeRecord.isProtectiveClearance ?? null,
-    };
-    trades.push(record);
-    fs.writeFileSync(logFile, JSON.stringify(trades, null, 2), 'utf8');
-  } catch (err) {
-    logger.error('写入交易记录失败', err);
+/**
+ * 确保交易日志目录存在。
+ *
+ * @param deps tradeLogger 运行时依赖
+ * @param tradeLogDir 交易日志目录
+ * @returns 无返回值
+ */
+function ensureTradeLogDir(deps: TradeLoggerRuntimeDeps, tradeLogDir: string): void {
+  if (deps.fs.existsSync(tradeLogDir)) {
+    return;
   }
+
+  deps.fs.mkdirSync(tradeLogDir, { recursive: true });
+}
+
+/**
+ * 读取并校验已有交易记录文件。
+ *
+ * @param deps tradeLogger 运行时依赖
+ * @param logFile 交易记录文件路径
+ * @returns 已有交易记录数组，异常或格式不符时返回空数组
+ */
+function readTradeRecords(deps: TradeLoggerRuntimeDeps, logFile: string): TradeRecord[] {
+  if (!deps.fs.existsSync(logFile)) {
+    return [];
+  }
+
+  const content = deps.fs.readFileSync(logFile, 'utf8');
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (isValidTradeRecordArray(parsed)) {
+      return parsed;
+    }
+
+    deps.logger.warn(`交易记录文件格式错误，重置为空数组: ${logFile}`);
+    return [];
+  } catch (error: unknown) {
+    const parseErrorMessage = error instanceof Error ? error.message : String(error);
+    deps.logger.warn(`解析交易记录文件失败，重置为空数组: ${logFile}`, parseErrorMessage);
+    return [];
+  }
+}
+
+/**
+ * 规范化单条交易记录。
+ * 默认行为：将可空字段统一填充为 null，确保落盘 JSON 结构稳定。
+ *
+ * @param tradeRecord 原始交易记录
+ * @returns 规范化后的交易记录
+ */
+function normalizeTradeRecord(tradeRecord: TradeRecord): TradeRecord {
+  const executedAtMs = Number.isFinite(tradeRecord.executedAtMs) ? tradeRecord.executedAtMs : null;
+
+  return {
+    orderId: tradeRecord.orderId ?? null,
+    symbol: tradeRecord.symbol ?? null,
+    symbolName: tradeRecord.symbolName ?? null,
+    baseInstrumentSymbol: tradeRecord.baseInstrumentSymbol ?? null,
+    action: tradeRecord.action ?? null,
+    side: tradeRecord.side ?? null,
+    quantity: tradeRecord.quantity ?? null,
+    price: tradeRecord.price ?? null,
+    orderType: tradeRecord.orderType ?? null,
+    status: tradeRecord.status ?? null,
+    error: tradeRecord.error ?? null,
+    reason: tradeRecord.reason ?? null,
+    signalTriggerTime: tradeRecord.signalTriggerTime ?? null,
+    executedAt: tradeRecord.executedAt ?? null,
+    executedAtMs,
+    timestamp: toHongKongTimeIso(),
+    isProtectiveClearance: tradeRecord.isProtectiveClearance ?? null,
+  };
 }
