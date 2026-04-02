@@ -181,7 +181,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   const realtimeQuoteBySymbol = new Map<string, unknown>();
   const staticInfoBySymbol = new Map<string, unknown>();
   const candlesticksByKey = new Map<string, ReadonlyArray<unknown>>();
-  const warrantQuoteBySymbol = new Map<string, WarrantQuote>();
+  const warrantQuoteBySymbol = new Map<string, WarrantQuote>([]);
   const warrantListBySymbol = new Map<string, ReadonlyArray<MockWarrantListItem>>();
   const tradingDaysByKey = new Map<
     string,
@@ -191,9 +191,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     }
   >();
 
-  const subscribedSymbols = new Set<string>();
   const subscribedByType = new Map<string, Set<SubType>>();
-  const subscribedCandlestickKeys = new Set<string>();
 
   let quoteSubscriptionDisposer: (() => void) | null = null;
   let candlestickSubscriptionDisposer: (() => void) | null = null;
@@ -238,7 +236,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   ): Promise<void> {
     return withCall('subscribe', [symbols, subTypes], () => {
       for (const symbol of symbols) {
-        subscribedSymbols.add(symbol);
         const current = subscribedByType.get(symbol) ?? new Set<SubType>();
         for (const subType of subTypes) {
           current.add(subType);
@@ -266,7 +263,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
 
         if (current.size === 0) {
           subscribedByType.delete(symbol);
-          subscribedSymbols.delete(symbol);
           quoteBySymbol.delete(symbol);
           staticInfoBySymbol.delete(symbol);
         }
@@ -289,7 +285,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   ): Promise<ReadonlyArray<unknown>> {
     return withCall('subscribeCandlesticks', [symbol, period], () => {
       const key = createCandleKey(symbol, period);
-      subscribedCandlestickKeys.add(key);
       return candlesticksByKey.get(key) ?? [];
     });
   }
@@ -297,7 +292,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   function unsubscribeCandlesticks(symbol: string, period: Period): Promise<void> {
     return withCall('unsubscribeCandlesticks', [symbol, period], () => {
       const key = createCandleKey(symbol, period);
-      subscribedCandlestickKeys.delete(key);
       candlesticksByKey.delete(key);
     });
   }
@@ -501,12 +495,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     tradingDaysByKey.set(key, value);
   }
 
-  function seedWarrantQuotes(quotes: ReadonlyArray<WarrantQuote>): void {
-    for (const quoteItem of quotes) {
-      warrantQuoteBySymbol.set(quoteItem.symbol, quoteItem);
-    }
-  }
-
   function seedWarrantList(symbol: string, list: ReadonlyArray<MockWarrantListItem>): void {
     warrantListBySymbol.set(symbol, [...list]);
   }
@@ -528,14 +516,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
 
   function flushAllEvents(): number {
     return bus.flushAll();
-  }
-
-  function getSubscribedSymbols(): ReadonlySet<string> {
-    return new Set(subscribedSymbols);
-  }
-
-  function getSubscribedCandlestickKeys(): ReadonlySet<string> {
-    return new Set(subscribedCandlestickKeys);
   }
 
   return {
@@ -562,13 +542,10 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     seedStaticInfo,
     seedCandlesticks,
     seedTradingDays,
-    seedWarrantQuotes,
     seedWarrantList,
     emitQuote,
     emitCandlestick,
     flushEvents,
     flushAllEvents,
-    getSubscribedSymbols,
-    getSubscribedCandlestickKeys,
   };
 }

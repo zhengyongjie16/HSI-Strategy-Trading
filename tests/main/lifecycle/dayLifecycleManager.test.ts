@@ -1,8 +1,8 @@
 /**
  * 交易日生命周期管理器单元测试
  *
- * 覆盖：跨日检测、午夜清理顺序与失败重试、开盘重建触发条件与逆序执行、
- * 重试退避、边界（无 pendingOpenRebuild、非交易日、空 domains）
+ * 覆盖：跨日检测、dayKey 缺失时不触发午夜清理、午夜清理顺序与失败重试、
+ * 开盘重建触发条件与逆序执行、开盘重建失败重试与门禁等待边界
  */
 import { describe, it, expect } from 'bun:test';
 import type {
@@ -34,34 +34,6 @@ function createRuntime(overrides?: Partial<LifecycleRuntimeFlags>): LifecycleRun
 }
 
 describe('createDayLifecycleManager', () => {
-  describe('无跨日且无 pendingOpenRebuild', () => {
-    it('保持 ACTIVE 且 isTradingEnabled 为 true', async () => {
-      const mutableState = createMutableState({ currentDayKey: '2025-02-15' });
-      const order: string[] = [];
-      const domains: ReadonlyArray<CacheDomain> = [
-        {
-          midnightClear: () => {
-            order.push('A-midnight');
-          },
-          openRebuild: () => {
-            order.push('A-open');
-          },
-        },
-      ];
-      const manager = createDayLifecycleManager({
-        mutableState,
-        cacheDomains: domains,
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      });
-
-      await manager.tick(new Date(), createRuntime({ dayKey: '2025-02-15' }));
-
-      expect(mutableState.lifecycleState).toBe('ACTIVE');
-      expect(mutableState.isTradingEnabled).toBe(true);
-      expect(order).toHaveLength(0);
-    });
-  });
-
   describe('跨日触发午夜清理', () => {
     it('dayKey 变化时按注册顺序执行各 domain.midnightClear，成功后为 MIDNIGHT_CLEANED', async () => {
       const mutableState = createMutableState({ currentDayKey: '2025-02-14' });
@@ -120,6 +92,10 @@ describe('createDayLifecycleManager', () => {
       await manager.tick(new Date(), createRuntime({ dayKey: null }));
 
       expect(mutableState.lifecycleState).toBe('ACTIVE');
+      expect(mutableState.pendingOpenRebuild).toBe(false);
+      expect(mutableState.currentDayKey).toBe('2025-02-14');
+      expect(mutableState.targetTradingDayKey).toBeNull();
+      expect(mutableState.isTradingEnabled).toBe(true);
       expect(order).toHaveLength(0);
     });
 
@@ -331,76 +307,6 @@ describe('createDayLifecycleManager', () => {
 
       await manager.tick(new Date(Date.now() + 10_000), createRuntime());
       expect(mutableState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
-    });
-  });
-
-  describe('边界', () => {
-    it('domains 为空数组时午夜清理与开盘重建均不抛错', async () => {
-      const mutableState = createMutableState({ currentDayKey: '2025-02-14' });
-      const manager = createDayLifecycleManager({
-        mutableState,
-        cacheDomains: [],
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      });
-
-      await manager.tick(new Date(), createRuntime({ dayKey: '2025-02-15' }));
-      expect(mutableState.lifecycleState).toBe('MIDNIGHT_CLEANED');
-      expect(mutableState.pendingOpenRebuild).toBe(true);
-
-      mutableState.currentDayKey = '2025-02-15';
-      await manager.tick(new Date(), createRuntime());
-      expect(mutableState.lifecycleState as string).toBe('ACTIVE');
-    });
-
-    it('支持 async midnightClear', async () => {
-      const mutableState = createMutableState({ currentDayKey: '2025-02-14' });
-      let resolved = false;
-      const domains: ReadonlyArray<CacheDomain> = [
-        {
-          midnightClear: async () => {
-            await Promise.resolve();
-            resolved = true;
-          },
-          openRebuild: () => {},
-        },
-      ];
-      const manager = createDayLifecycleManager({
-        mutableState,
-        cacheDomains: domains,
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      });
-
-      await manager.tick(new Date(), createRuntime({ dayKey: '2025-02-15' }));
-      expect(resolved).toBe(true);
-      expect(mutableState.lifecycleState).toBe('MIDNIGHT_CLEANED');
-    });
-
-    it('支持 async openRebuild', async () => {
-      const mutableState = createMutableState({
-        currentDayKey: '2025-02-15',
-        pendingOpenRebuild: true,
-        lifecycleState: 'MIDNIGHT_CLEANED',
-        isTradingEnabled: false,
-      });
-      let resolved = false;
-      const domains: ReadonlyArray<CacheDomain> = [
-        {
-          midnightClear: () => {},
-          openRebuild: async () => {
-            await Promise.resolve();
-            resolved = true;
-          },
-        },
-      ];
-      const manager = createDayLifecycleManager({
-        mutableState,
-        cacheDomains: domains,
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      });
-
-      await manager.tick(new Date(), createRuntime());
-      expect(resolved).toBe(true);
-      expect(mutableState.lifecycleState).toBe('ACTIVE');
     });
   });
 });

@@ -2,15 +2,13 @@
  * 交易数据 Mock 工厂
  *
  * 功能：
- * - 构造订单、成交、资产与持仓等交易侧测试数据
+ * - 构造订单、订单推送与持仓等交易侧测试数据
  */
 import {
   Decimal,
   OrderSide,
   OrderStatus,
   OrderType,
-  type AccountBalance,
-  type Execution,
   type Order,
   type PushOrderChanged,
   type StockPositionsResponse,
@@ -96,56 +94,6 @@ export function createPushOrderChanged(params: PushOrderChangedParams): PushOrde
   };
 
   return event as unknown as PushOrderChanged;
-}
-
-/**
- * 构造成交记录，供今日成交查询等 Mock 使用。
- */
-export function createExecution(
-  orderId: string,
-  symbol: string,
-  quantity: number,
-  price: number,
-): Execution {
-  const execution = {
-    orderId,
-    tradeId: `${orderId}-E`,
-    symbol,
-    tradeDoneAt: new Date(),
-    quantity: toMockDecimal(quantity),
-    price: toMockDecimal(price),
-  };
-  return execution as unknown as Execution;
-}
-
-/**
- * 构造账户余额对象，供 accountBalance 等 Mock 使用。
- */
-export function createAccountBalance(availableCash: number): AccountBalance {
-  const balance = {
-    totalCash: toMockDecimal(availableCash),
-    maxFinanceAmount: Decimal.ZERO(),
-    remainingFinanceAmount: Decimal.ZERO(),
-    riskLevel: 0,
-    marginCall: Decimal.ZERO(),
-    currency: 'HKD',
-    cashInfos: [
-      {
-        withdrawCash: toMockDecimal(availableCash),
-        availableCash: toMockDecimal(availableCash),
-        frozenCash: Decimal.ZERO(),
-        settlingCash: Decimal.ZERO(),
-        currency: 'HKD',
-      },
-    ],
-    netAssets: toMockDecimal(availableCash),
-    initMargin: Decimal.ZERO(),
-    maintenanceMargin: Decimal.ZERO(),
-    buyPower: toMockDecimal(availableCash),
-    frozenTransactionFees: [],
-  };
-
-  return balance as unknown as AccountBalance;
 }
 
 /**

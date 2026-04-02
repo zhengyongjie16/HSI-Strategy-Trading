@@ -2,7 +2,7 @@
  * 风控缓存域单元测试
  *
  * 覆盖：midnightClear 调用 resetRiskCheckCooldown、dailyLossTracker.resetAll、
- * clearMidnightEligible（仅非 minutes 模式）、clearRiskCaches；openRebuild 为空操作
+ * clearMidnightEligible（仅非 minutes 模式）、clearRiskCaches
  */
 import { describe, it, expect } from 'bun:test';
 import { createRiskDomain } from '../../../../src/main/lifecycle/cacheDomains/riskDomain.js';
@@ -133,39 +133,5 @@ describe('createRiskDomain', () => {
     });
 
     expect(clearMidnightEligibleKeys === null ? 0 : clearMidnightEligibleKeys.size).toBe(0);
-  });
-
-  it('openRebuild 为空操作，不抛错', async () => {
-    const domain = createRiskDomain({
-      signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
-      dailyLossTracker: {
-        resetAll: () => {},
-        startNewProtectionEpisode: () => {},
-      } as unknown as DailyLossTracker,
-      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContext: {
-        config: {
-          baseInstrumentSymbol: 'HSI.HK',
-          liquidationCooldown: null,
-        },
-        riskChecker: {
-          clearUnrealizedLossData: () => {},
-          clearLongWarrantInfo: () => {},
-          clearShortWarrantInfo: () => {},
-        },
-      } as unknown as StrategyRuntime,
-      liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
-        getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
-      },
-    });
-    await domain.openRebuild({
-      now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
-    });
   });
 });

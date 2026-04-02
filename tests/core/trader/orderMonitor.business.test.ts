@@ -5,7 +5,9 @@
  * - pending buy / sell 快照与 recent filled 摘要
  * - filled / rejected 终态处理
  * - 启动恢复后重建 pending sell 追踪
- * - 卖单超时后基于剩余数量转市价
+ * - BOOTSTRAPPING 阶段旧事件不得回退终态
+ * - 浮点阈值边界与禁追高边界
+ * - 卖单超时撤单的等待 WS / backoff 重试 / 剩余数量转市价
  */
 import { describe, expect, it } from 'bun:test';
 import {
@@ -32,15 +34,42 @@ import {
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 
+async function waitUntil(
+  predicate: () => boolean,
+  params: {
+    readonly timeoutMs?: number;
+    readonly intervalMs?: number;
+    readonly tick?: () => Promise<void>;
+  } = {},
+): Promise<void> {
+  const { timeoutMs = 800, intervalMs = 20, tick } = params;
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error('waitUntil timeout');
+    }
+
+    await Bun.sleep(intervalMs);
+    if (tick) {
+      await tick();
+    }
+  }
+}
+
 function createDeps(params?: {
   readonly sellTimeoutSeconds?: number;
   readonly buyTimeoutSeconds?: number;
+  readonly allowBuyOrderTrackingAboveInitialPrice?: boolean;
   readonly onHandleOrderChanged?: (handler: (event: PushOrderChanged) => void) => void;
 }): {
   readonly deps: OrderMonitorDeps;
   readonly tradeCtx: ReturnType<typeof createTradeContextMock>;
+  readonly setQuote: (price: number) => void;
 } {
   const tradeCtx = createTradeContextMock();
+  let quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>([
+    ['BULL.HK', createQuoteDouble('BULL.HK', 1.02, 100)],
+  ]);
   const deps: OrderMonitorDeps = {
     ctxPromise: Promise.resolve(tradeCtx as unknown as TradeContext),
     rateLimiter: {
@@ -51,7 +80,7 @@ function createDeps(params?: {
       getPendingOrders: async () => [],
     },
     marketDataClient: createMarketDataClientDouble({
-      getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.02, 100)]]),
+      getQuotes: async () => new Map(quotes),
     }),
     globalConfig: createGlobalConfig({
       buyOrderTimeout: {
@@ -63,6 +92,8 @@ function createDeps(params?: {
         timeoutSeconds: params?.sellTimeoutSeconds ?? 999,
       },
       orderMonitorPriceUpdateInterval: 0,
+      allowBuyOrderTrackingAboveInitialPrice:
+        params?.allowBuyOrderTrackingAboveInitialPrice ?? true,
     }),
     monitorConfig: createStrategyRuntimeConfig({
       orderOwnershipMapping: ['HSI'],
@@ -81,7 +112,13 @@ function createDeps(params?: {
       : {}),
   };
 
-  return { deps, tradeCtx };
+  return {
+    deps,
+    tradeCtx,
+    setQuote(price: number) {
+      quotes = new Map([['BULL.HK', createQuoteDouble('BULL.HK', price)]]);
+    },
+  };
 }
 
 describe('orderMonitor business flow', () => {
@@ -365,6 +402,76 @@ describe('orderMonitor business flow', () => {
     expect(monitor.getPendingSellOrders('BULL.HK')[0]?.orderId).toBe('SELL-RECOVERY-001');
   });
 
+  it('keeps latest terminal websocket event during bootstrapping replay', async () => {
+    let handleOrderChanged: (event: PushOrderChanged) => void = () => {};
+    const { deps } = createDeps({
+      onHandleOrderChanged: (handler) => {
+        handleOrderChanged = handler;
+      },
+    });
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+
+    handleOrderChanged(
+      createPushOrderChanged({
+        orderId: 'SELL-BOOT-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        status: OrderStatus.Filled,
+        submittedQuantity: 100,
+        executedQuantity: 100,
+        executedPrice: 1.04,
+        submittedPrice: 1,
+        orderType: OrderType.ELO,
+        updatedAtMs: Date.parse('2026-02-16T01:31:00.000Z'),
+      }),
+    );
+
+    handleOrderChanged(
+      createPushOrderChanged({
+        orderId: 'SELL-BOOT-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        status: OrderStatus.PartialFilled,
+        submittedQuantity: 100,
+        executedQuantity: 30,
+        executedPrice: 1.02,
+        submittedPrice: 1,
+        orderType: OrderType.ELO,
+        updatedAtMs: Date.parse('2026-02-16T01:30:00.000Z'),
+      }),
+    );
+
+    await monitor.recoverOrderTrackingFromSnapshot([
+      {
+        orderId: 'SELL-BOOT-001',
+        symbol: 'BULL.HK',
+        stockName: 'HSI RC',
+        side: OrderSide.Sell,
+        status: OrderStatus.New,
+        orderType: OrderType.ELO,
+        remark: '',
+        price: '1',
+        quantity: '100',
+        executedPrice: '0',
+        executedQuantity: '0',
+        submittedAt: new Date('2026-02-16T01:00:00.000Z'),
+        updatedAt: new Date('2026-02-16T01:00:00.000Z'),
+      },
+    ]);
+
+    expect(monitor.hasPendingSellOrders('BULL.HK')).toBeFalse();
+    expect(monitor.getRecentFilledOrder('SELL-BOOT-001')).toEqual({
+      orderId: 'SELL-BOOT-001',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      executedPrice: 1.04,
+      executedQuantity: 100,
+      executedTimeMs: Date.parse('2026-02-16T01:31:00.000Z'),
+    });
+  });
+
   it('rebuilds partially filled buy tracking from startup snapshot', async () => {
     const { deps } = createDeps();
     const monitor = createOrderMonitor(deps);
@@ -437,6 +544,145 @@ describe('orderMonitor business flow', () => {
     expect((caughtError as Error).message).toMatch(/委托价格无效/);
   });
 
+  it('keeps replace threshold stable on floating boundary', async () => {
+    const { deps, tradeCtx, setQuote } = createDeps();
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+
+    setQuote(0.05 + 0.008);
+    monitor.trackOrder({
+      orderId: 'SELL-BOUNDARY-EQUAL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 0.059,
+      initialSubmittedPrice: 0.059,
+      quantity: 100,
+      isLongSymbol: true,
+      baseInstrumentSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+    await monitor.processWithLatestQuotes();
+    expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(1);
+
+    setQuote(0.0581);
+    monitor.trackOrder({
+      orderId: 'SELL-BOUNDARY-LESS',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 0.059,
+      initialSubmittedPrice: 0.059,
+      quantity: 100,
+      isLongSymbol: true,
+      baseInstrumentSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+    await monitor.processWithLatestQuotes();
+
+    expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(1);
+  });
+
+  it('blocks buy replace above initial submitted price when configured off', async () => {
+    const { deps, tradeCtx, setQuote } = createDeps({
+      allowBuyOrderTrackingAboveInitialPrice: false,
+    });
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+    setQuote(0.51);
+    monitor.trackOrder({
+      orderId: 'BUY-CHASE-BLOCK',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      price: 0.5,
+      initialSubmittedPrice: 0.5,
+      quantity: 100,
+      isLongSymbol: true,
+      baseInstrumentSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    await monitor.processWithLatestQuotes();
+
+    expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(0);
+  });
+
+  it('does not repeatedly cancel timed-out sell after cancel request succeeds', async () => {
+    const { deps, tradeCtx } = createDeps({
+      sellTimeoutSeconds: 0,
+    });
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+    monitor.trackOrder({
+      orderId: 'SELL-TIMEOUT-WAIT-WS',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 1,
+      initialSubmittedPrice: 1,
+      quantity: 100,
+      isLongSymbol: true,
+      baseInstrumentSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    await monitor.processWithLatestQuotes();
+    await monitor.processWithLatestQuotes();
+
+    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(monitor.hasPendingSellOrders('BULL.HK')).toBeTrue();
+  });
+
+  it('retries timed-out sell cancel after backoff and still waits for websocket terminal state', async () => {
+    const { deps, tradeCtx } = createDeps({
+      sellTimeoutSeconds: 0,
+    });
+    tradeCtx.setFailureRule('cancelOrder', {
+      failAtCalls: [1],
+      maxFailures: 1,
+      errorMessage: 'transient cancelOrder failure',
+    });
+
+    const monitor = createOrderMonitor(deps);
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+    monitor.trackOrder({
+      orderId: 'SELL-CHAOS-001',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 1,
+      initialSubmittedPrice: 1,
+      quantity: 100,
+      isLongSymbol: true,
+      baseInstrumentSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    await monitor.processWithLatestQuotes();
+    await monitor.processWithLatestQuotes();
+    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+
+    await waitUntil(() => tradeCtx.getCalls('cancelOrder').length >= 2, {
+      timeoutMs: 1400,
+      intervalMs: 20,
+      tick: () => monitor.processWithLatestQuotes(),
+    });
+
+    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(2);
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(monitor.hasPendingSellOrders('BULL.HK')).toBeTrue();
+  });
+
   it('converts timed-out sell to market order using tracked remaining quantity only', async () => {
     const { deps, tradeCtx } = createDeps({
       sellTimeoutSeconds: 0,
@@ -479,7 +725,12 @@ describe('orderMonitor business flow', () => {
     await monitor.processWithLatestQuotes();
 
     const submitCall = tradeCtx.getCalls('submitOrder')[0];
-    const submitPayload = submitCall?.args[0] as {
+    const submitArgs = submitCall?.args[0];
+    if (submitArgs === undefined) {
+      throw new Error('expected market conversion submitOrder payload');
+    }
+
+    const submitPayload = submitArgs as {
       readonly orderType: OrderType;
       readonly submittedQuantity: { readonly toString: () => string };
     };

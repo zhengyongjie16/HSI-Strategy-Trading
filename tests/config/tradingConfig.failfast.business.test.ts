@@ -73,14 +73,41 @@ describe('trading config fail-fast parsing', () => {
     }
   });
 
-  it('accepts SWITCH_INTERVAL_MINUTES=0 as a valid business value in auto mode', () => {
-    const config = createTradingConfig({
-      env: createAutoEnv({
-        SWITCH_INTERVAL_MINUTES: '0',
-      }),
-    });
+  it('parses SWITCH_INTERVAL_MINUTES with seat-mode-aware fail-fast rules', () => {
+    const passCases = [
+      {
+        description: 'ignores SWITCH_INTERVAL_MINUTES in static mode',
+        env: createStaticEnv({
+          SWITCH_INTERVAL_MINUTES: '999',
+        }),
+        expectedValue: 0,
+      },
+      {
+        description: 'accepts a valid SWITCH_INTERVAL_MINUTES in auto mode',
+        env: createAutoEnv({
+          SWITCH_INTERVAL_MINUTES: '15',
+        }),
+        expectedValue: 15,
+      },
+    ] as const;
 
-    expect(config.strategy.autoSearchConfig.switchIntervalMinutes).toBe(0);
+    for (const testCase of passCases) {
+      const config = createTradingConfig({
+        env: testCase.env,
+      });
+      expect(config.strategy.autoSearchConfig.switchIntervalMinutes).toBe(testCase.expectedValue);
+    }
+
+    const failFastCases = ['-5', '999', 'invalid-number'] as const;
+    for (const value of failFastCases) {
+      expect(() =>
+        createTradingConfig({
+          env: createAutoEnv({
+            SWITCH_INTERVAL_MINUTES: value,
+          }),
+        }),
+      ).toThrow(/SWITCH_INTERVAL_MINUTES/);
+    }
   });
 
   it('flags SWITCH_INTERVAL_MINUTES when auto seat mode is disabled', async () => {
@@ -100,6 +127,37 @@ describe('trading config fail-fast parsing', () => {
       }),
     );
     expect(missingFields).toContain('SWITCH_INTERVAL_MINUTES');
+  });
+
+  it('parses buy chase control with explicit boolean boundaries', () => {
+    const cases = [
+      {
+        description: 'uses default false when config is not overridden',
+        env: createStaticEnv(),
+        expected: false,
+      },
+      {
+        description: 'accepts explicit true',
+        env: createStaticEnv({
+          ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'true',
+        }),
+        expected: true,
+      },
+      {
+        description: 'accepts explicit false',
+        env: createStaticEnv({
+          ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'false',
+        }),
+        expected: false,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const config = createTradingConfig({
+        env: testCase.env,
+      });
+      expect(config.global.allowBuyOrderTrackingAboveInitialPrice).toBe(testCase.expected);
+    }
   });
 
   it('ignores invalid timeout seconds when the corresponding timeout is disabled', async () => {

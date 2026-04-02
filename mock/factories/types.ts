@@ -2,18 +2,6 @@ import type { OrderSide, OrderStatus, OrderType, Period } from 'longbridge';
 import type { SignalType } from '../../src/types/signal.js';
 
 /**
- * 行情推送事件构造参数。
- * 类型用途：为 createPushQuoteEvent 提供入参约束，定义 symbol/price/timestamp。
- * 数据来源：测试场景下手工构造的行情输入。
- * 使用范围：mock/factories/quoteFactory.ts。
- */
-export type PushQuoteEventParams = {
-  readonly symbol: string;
-  readonly price: number;
-  readonly timestampMs?: number;
-};
-
-/**
  * K 线构造参数。
  * 类型用途：为 createCandlestick 提供 close 与时间字段约束。
  * 数据来源：测试场景下手工构造的 K 线输入。
@@ -36,41 +24,6 @@ export type PushCandlestickEventParams = {
   readonly timestampMs?: number;
   readonly period?: Period;
   readonly isConfirmed?: boolean;
-};
-
-/**
- * 轮证报价构造参数。
- * 类型用途：为 createWarrantQuote 提供最小入参约束。
- * 数据来源：测试场景下手工构造的轮证报价输入。
- * 使用范围：mock/factories/quoteFactory.ts。
- */
-export type WarrantQuoteParams = {
-  readonly symbol: string;
-  readonly callPrice: number;
-  readonly category: number;
-};
-
-/**
- * 轮证列表项构造参数。
- * 类型用途：为 createWarrantInfo 提供 symbol/type/callPrice 入参约束。
- * 数据来源：测试场景下手工构造的轮证列表输入。
- * 使用范围：mock/factories/quoteFactory.ts。
- */
-export type WarrantInfoParams = {
-  readonly symbol: string;
-  readonly warrantType: string;
-  readonly callPrice: number;
-};
-
-/**
- * 交易日结果构造参数。
- * 类型用途：为 createTradingDaysResult 提供交易日与半日市字段约束。
- * 数据来源：测试场景下手工构造的交易日输入。
- * 使用范围：mock/factories/quoteFactory.ts。
- */
-export type TradingDaysResultParams = {
-  readonly tradingDays: ReadonlyArray<string>;
-  readonly halfTradingDays?: ReadonlyArray<string>;
 };
 
 /**

@@ -344,7 +344,7 @@ describe('quoteClient business flow', () => {
     expect(latestClose).toBe(105);
   });
 
-  it('marks last bar confirmed when same-timestamp confirmed push arrives', async () => {
+  it('ignores older-timestamp push and keeps same-timestamp confirmed replay idempotent', async () => {
     const seedCandles = [
       makeCandlestick(100, '2026-02-16T01:00:00.000Z'),
       makeCandlestick(101, '2026-02-16T01:01:00.000Z'),
@@ -357,6 +357,29 @@ describe('quoteClient business flow', () => {
     });
     await client.subscribeCandlesticks('BULL.HK', RealPeriod.Min_1);
 
+    const seededSnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
+    expect(seededSnapshot).not.toBeNull();
+    if (seededSnapshot === null) {
+      throw new Error('expected seeded candlestick snapshot');
+    }
+
+    quoteMock.emitCandlestick(
+      createPushCandlestickEvent({
+        symbol: 'BULL.HK',
+        close: 88,
+        timestampMs: Date.parse('2026-02-16T00:59:00.000Z'),
+        period: RealPeriod.Min_1,
+        isConfirmed: false,
+      }),
+    );
+    quoteMock.flushAllEvents();
+
+    const outOfOrderSnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
+    expect(outOfOrderSnapshot).not.toBeNull();
+    expect(outOfOrderSnapshot?.version).toBe(seededSnapshot.version);
+    expect(outOfOrderSnapshot?.candles).toEqual(seededSnapshot.candles);
+    expect(outOfOrderSnapshot?.lastBarTimestamp).toBe(seededSnapshot.lastBarTimestamp);
+
     quoteMock.emitCandlestick(
       createPushCandlestickEvent({
         symbol: 'BULL.HK',
@@ -368,11 +391,11 @@ describe('quoteClient business flow', () => {
     );
     quoteMock.flushAllEvents();
 
-    const snapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
-    expect(snapshot).not.toBeNull();
-    expect(snapshot?.lastBarConfirmed).toBe(true);
+    const confirmedSnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
+    expect(confirmedSnapshot).not.toBeNull();
+    expect(confirmedSnapshot?.lastBarConfirmed).toBe(true);
 
-    const firstVersion = snapshot?.version ?? 0;
+    const confirmedVersion = confirmedSnapshot?.version ?? 0;
     quoteMock.emitCandlestick(
       createPushCandlestickEvent({
         symbol: 'BULL.HK',
@@ -385,9 +408,8 @@ describe('quoteClient business flow', () => {
     quoteMock.flushAllEvents();
 
     const replaySnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
-    expect(replaySnapshot?.version).toBe(firstVersion);
+    expect(replaySnapshot?.version).toBe(confirmedVersion);
 
-    const replayVersion = replaySnapshot?.version ?? 0;
     quoteMock.emitCandlestick(
       createPushCandlestickEvent({
         symbol: 'BULL.HK',
@@ -400,7 +422,7 @@ describe('quoteClient business flow', () => {
     quoteMock.flushAllEvents();
 
     const rollbackSnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
-    expect(rollbackSnapshot?.version).toBe(replayVersion);
+    expect(rollbackSnapshot?.version).toBe(confirmedVersion);
     expect(rollbackSnapshot?.lastBarConfirmed).toBe(true);
     const rollbackClose = Number(rollbackSnapshot?.candles.at(-1)?.close?.toString() ?? Number.NaN);
     expect(rollbackClose).toBe(101);

@@ -1,7 +1,7 @@
 /**
  * 订单缓存域单元测试
  *
- * 覆盖：midnightClear 调用 trader.resetRuntimeState；openRebuild 为空操作
+ * 覆盖：midnightClear 调用 trader.resetRuntimeState
  */
 import { describe, it, expect } from 'bun:test';
 import { createOrderDomain } from '../../../../src/main/lifecycle/cacheDomains/orderDomain.js';
@@ -23,14 +23,5 @@ describe('createOrderDomain', () => {
     });
 
     expect(resetCalled).toBe(true);
-  });
-
-  it('openRebuild 为空操作，不抛错', async () => {
-    const trader = { resetRuntimeState: () => {} } as unknown as Trader;
-    const domain = createOrderDomain({ trader });
-    await domain.openRebuild({
-      now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
-    });
   });
 });

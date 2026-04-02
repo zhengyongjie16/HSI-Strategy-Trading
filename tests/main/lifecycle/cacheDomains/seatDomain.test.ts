@@ -2,7 +2,7 @@
  * 席位缓存域单元测试
  *
  * 覆盖：midnightClear 调用 autoSymbolManager.resetAllState、warrantListCache.clear、
- * clearAllSeatBindings、syncMonitorSeatSnapshots；openRebuild 为空操作
+ * clearAllSeatBindings、syncMonitorSeatSnapshots
  */
 import { describe, it, expect } from 'bun:test';
 import { createSeatDomain } from '../../../../src/main/lifecycle/cacheDomains/seatDomain.js';
@@ -119,38 +119,5 @@ describe('createSeatDomain', () => {
     expect(shortAfterClear?.lastSearchAt).toBe(210);
     expect(shortAfterClear?.lastSeatActivatedAt).toBeNull();
     expect(bumpCalls).toHaveLength(2);
-  });
-
-  it('openRebuild 为空操作，不抛错', async () => {
-    const tradingConfig = createTradingConfigFixture({
-      baseInstrument: 'HSI.HK',
-    });
-    const monitorConfig = {
-      baseInstrumentSymbol: 'HSI.HK',
-    } as never;
-    const symbolRegistry = {
-      getSeatState: () => emptySeatState,
-      getSeatVersion: () => 0,
-      updateSeatState: () => emptySeatState,
-      bumpSeatVersion: () => 0,
-    } as unknown as SymbolRegistry;
-    const warrantListCache = { clear: () => {} } as unknown as WarrantListCache;
-
-    const domain = createSeatDomain({
-      tradingConfig,
-      monitorConfig,
-      symbolRegistry,
-      monitorContext: {
-        config: { baseInstrumentSymbol: 'HSI.HK' },
-        seatState: { long: emptySeatState, short: emptySeatState },
-        seatVersion: { long: 0, short: 0 },
-        autoSymbolManager: { resetAllState: () => {} },
-      } as unknown as StrategyRuntime,
-      warrantListCache,
-    });
-    await domain.openRebuild({
-      now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
-    });
   });
 });

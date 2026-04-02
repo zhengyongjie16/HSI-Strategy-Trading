@@ -346,14 +346,11 @@ export interface QuoteContextMock extends QuoteContextContract {
       readonly halfTradingDays: ReadonlyArray<unknown>;
     },
   ) => void;
-  seedWarrantQuotes: (quotes: ReadonlyArray<WarrantQuote>) => void;
   seedWarrantList: (symbol: string, list: ReadonlyArray<MockWarrantListItem>) => void;
   emitQuote: (event: PushQuoteEvent, options?: EventPublishOptions) => void;
   emitCandlestick: (event: PushCandlestickEvent, options?: EventPublishOptions) => void;
   flushEvents: (nowMs?: number) => number;
   flushAllEvents: () => number;
-  getSubscribedSymbols: () => ReadonlySet<string>;
-  getSubscribedCandlestickKeys: () => ReadonlySet<string>;
 }
 
 /**
@@ -397,11 +394,8 @@ export type MinimalOrder = Readonly<{
 export interface TradeContextMock extends TradeContextContract {
   seedTodayOrders: (orders: ReadonlyArray<Order>) => void;
   seedHistoryOrders: (orders: ReadonlyArray<Order>) => void;
-  seedTodayExecutions: (executions: ReadonlyArray<Execution>) => void;
-  seedAccountBalances: (balances: ReadonlyArray<AccountBalance>) => void;
   seedStockPositions: (response: StockPositionsResponse) => void;
   emitOrderChanged: (event: PushOrderChanged | MinimalOrder, options?: EventPublishOptions) => void;
   flushEvents: (nowMs?: number) => number;
   flushAllEvents: () => number;
-  getSubscribedTopics: () => ReadonlySet<TopicType>;
 }

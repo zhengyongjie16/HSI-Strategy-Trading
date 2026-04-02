@@ -189,13 +189,13 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
 
   let todayOrdersStore: MinimalOrder[] = [];
   let historyOrdersStore: MinimalOrder[] = [];
-  let executionsStore: ReadonlyArray<Execution> = [];
-  let balancesStore: ReadonlyArray<AccountBalance> = [];
+  const executionsStore: ReadonlyArray<Execution> = [];
+  const balancesStore: ReadonlyArray<AccountBalance> = [];
   let stockPositionsStore: StockPositionsResponse = {
     channels: [],
   } as unknown as StockPositionsResponse;
 
-  const subscribedTopics = new Set<TopicType>();
+  const subscribedTopics = new Set<TopicType>([]);
   let orderChangedDisposer: (() => void) | null = null;
   let orderCounter = 1;
 
@@ -331,7 +331,9 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
   function subscribe(topics: ReadonlyArray<TopicType>): Promise<void> {
     return withCall('tradeSubscribe', [topics], () => {
       for (const topic of topics) {
-        subscribedTopics.add(topic);
+        if (!subscribedTopics.has(topic)) {
+          subscribedTopics.add(topic);
+        }
       }
     });
   }
@@ -339,7 +341,9 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
   function unsubscribe(topics: ReadonlyArray<TopicType>): Promise<void> {
     return withCall('tradeUnsubscribe', [topics], () => {
       for (const topic of topics) {
-        subscribedTopics.delete(topic);
+        if (subscribedTopics.has(topic)) {
+          subscribedTopics.delete(topic);
+        }
       }
     });
   }
@@ -379,14 +383,6 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
     });
   }
 
-  function seedTodayExecutions(executions: ReadonlyArray<Execution>): void {
-    executionsStore = [...executions];
-  }
-
-  function seedAccountBalances(balances: ReadonlyArray<AccountBalance>): void {
-    balancesStore = [...balances];
-  }
-
   function seedStockPositions(response: StockPositionsResponse): void {
     stockPositionsStore = response;
   }
@@ -404,10 +400,6 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
 
   function flushAllEvents(): number {
     return bus.flushAll();
-  }
-
-  function getSubscribedTopics(): ReadonlySet<TopicType> {
-    return new Set(subscribedTopics);
   }
 
   return {
@@ -429,12 +421,9 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
     clearCalls,
     seedTodayOrders,
     seedHistoryOrders,
-    seedTodayExecutions,
-    seedAccountBalances,
     seedStockPositions,
     emitOrderChanged,
     flushEvents,
     flushAllEvents,
-    getSubscribedTopics,
   };
 }
