@@ -413,9 +413,7 @@ export function createLoadTradingDayRuntimeSnapshot(
   } = deps;
 
   /**
-   * 加载交易日完整运行时快照：验证交易日 → 刷新账户持仓 → 获取全量订单
-   * → 解析席位 → 水合冷却状态并恢复保护性清仓边界 → 回算日内亏损追踪
-   * → 重置行情订阅 → 订阅标的行情和 K 线 → 返回快照。
+   * 加载交易日运行时快照，并返回重建所需的订单与行情数据。
    */
   return async function loadTradingDayRuntimeSnapshot(
     params: LoadTradingDayRuntimeSnapshotParams,
@@ -462,7 +460,7 @@ export function createLoadTradingDayRuntimeSnapshot(
 
     trader.seedOrderHoldSymbols(allOrders);
     await prepareSeatsForRuntime({
-      monitorConfig,
+      monitorConfig: monitorConfig,
       symbolRegistry,
       positions: lastState.cachedPositions,
       orders: allOrders,
@@ -614,7 +612,7 @@ export function createLoadTradingDayRuntimeSnapshot(
 
     const orderHoldSymbols = trader.getOrderHoldSymbols();
     const allTradingSymbols = collectRuntimeQuoteSymbols(
-      [monitorConfig],
+      monitorConfig,
       symbolRegistry,
       lastState.cachedPositions,
       orderHoldSymbols,

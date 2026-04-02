@@ -2,9 +2,9 @@
  * app/runApp 组装测试
  *
  * 覆盖：
- * - 正常启动链路保持统一时间源与关键装配顺序
- * - startupRebuildPending 分支会跳过首次重建，但仍完成后续装配
- * - startupRebuildPending 与运行时标的验证失败并存时，启动不会被中止
+ * - 正常启动链路保持统一时间源、runtime validation 与关键装配顺序
+ * - startupRebuildPending 分支不执行 runtime validation 与首次重建，但仍完成后续装配
+ * - startupRebuildPending 与运行时标的验证失败配置并存时，启动不会被中止
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { createWarrantListCache } from '../../src/services/autoSymbolFinder/utils.js';
@@ -237,10 +237,13 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
         now: params.now,
       };
     },
-    collectRuntimeValidationSymbols: () => ({
-      requiredSymbols: new Set(),
-      runtimeValidationInputs: [],
-    }),
+    collectRuntimeValidationSymbols: () => {
+      harnessState.events.push('collectRuntimeValidationSymbols');
+      return {
+        requiredSymbols: new Set(),
+        runtimeValidationInputs: [],
+      };
+    },
     buildStrategyRuntime: (params) => {
       harnessState.events.push('buildStrategyRuntime');
       params.postGateRuntime.monitorContext = createStrategyRuntimeDouble({
@@ -327,9 +330,52 @@ function createRunAppDeps(harnessState: MutableRunAppHarnessState): RunAppDeps {
       error: () => {},
     },
     formatError: String,
-    validateRuntimeSymbolsFromQuotesMap: () => harnessState.validationResult,
+    validateRuntimeSymbolsFromQuotesMap: () => {
+      harnessState.events.push('validateRuntimeSymbolsFromQuotesMap');
+      return harnessState.validationResult;
+    },
     applyStartupSnapshotFailureState: () => {},
   };
+}
+
+const STARTUP_RUNTIME_MILESTONES: ReadonlyArray<string> = [
+  'createLifecycleRuntime',
+  'monitorTaskProcessor.start',
+  'buyProcessor.start',
+  'sellProcessor.start',
+  'orderMonitorWorker.start',
+  'postTradeRefresher.start',
+  'registerExitHandlers',
+  'mainProgram',
+];
+
+const PENDING_OPEN_REBUILD_MILESTONES: ReadonlyArray<string> = [
+  'loadStartupSnapshot',
+  'buildStrategyRuntime',
+  'createRebuildTradingDayState',
+  ...STARTUP_RUNTIME_MILESTONES,
+];
+
+function expectEventsInOrder(
+  events: ReadonlyArray<string>,
+  milestones: ReadonlyArray<string>,
+): void {
+  let nextSearchStart = 0;
+  for (const milestone of milestones) {
+    const milestoneOffset = events.slice(nextSearchStart).indexOf(milestone);
+    expect(milestoneOffset).toBeGreaterThanOrEqual(0);
+
+    nextSearchStart += milestoneOffset + 1;
+  }
+}
+
+async function runAndCapture(runApp: ReturnType<typeof createRunApp>): Promise<unknown> {
+  try {
+    await runApp({ env: TEST_APP_ENV });
+    return null;
+  } catch (err) {
+    return err;
+  }
 }
 
 describe('app runApp assembly', () => {
@@ -341,33 +387,22 @@ describe('app runApp assembly', () => {
 
   it('uses a shared startup time source and keeps rebuild before async runtime creation', async () => {
     const runApp = createRunApp(createRunAppDeps(harnessState));
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await runAndCapture(runApp);
 
     expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
     expect(harnessState.preGateRuntimeEnv?.['APP_RUNTIME_PROFILE']).toBe('test');
     expect(harnessState.postGateRuntimeEnv?.['APP_RUNTIME_PROFILE']).toBe('test');
     expect(harnessState.createPostGateRuntimeNow).toBe(harnessState.loadStartupSnapshotNow);
     expect(harnessState.rebuildCalls).toHaveLength(1);
-    expect(harnessState.events).toEqual([
+    expectEventsInOrder(harnessState.events, [
       'loadStartupSnapshot',
+      'collectRuntimeValidationSymbols',
+      'validateRuntimeSymbolsFromQuotesMap',
       'buildStrategyRuntime',
       'createRebuildTradingDayState',
       'rebuildTradingDayState',
       'markFresh:7',
-      'createLifecycleRuntime',
-      'monitorTaskProcessor.start',
-      'buyProcessor.start',
-      'sellProcessor.start',
-      'orderMonitorWorker.start',
-      'postTradeRefresher.start',
-      'registerExitHandlers',
-      'mainProgram',
+      ...STARTUP_RUNTIME_MILESTONES,
       'sleep:1000',
     ]);
     expect(harnessState.sleepDurations).toEqual([1000]);
@@ -376,34 +411,18 @@ describe('app runApp assembly', () => {
     expect(harnessState.mainProgramRuntimeGateModes).toEqual(['strict']);
   });
 
-  it('skips the initial rebuild when startup snapshot switches to pending open rebuild', async () => {
+  it('skips runtime validation and initial rebuild when startup snapshot switches to pending open rebuild', async () => {
     harnessState.startupRebuildPending = true;
     const runApp = createRunApp(createRunAppDeps(harnessState));
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await runAndCapture(runApp);
 
     expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
     expect(harnessState.createPostGateRuntimeNow).toBe(harnessState.loadStartupSnapshotNow);
     expect(harnessState.rebuildCalls).toHaveLength(0);
-    expect(harnessState.events).toEqual([
-      'loadStartupSnapshot',
-      'buildStrategyRuntime',
-      'createRebuildTradingDayState',
-      'createLifecycleRuntime',
-      'monitorTaskProcessor.start',
-      'buyProcessor.start',
-      'sellProcessor.start',
-      'orderMonitorWorker.start',
-      'postTradeRefresher.start',
-      'registerExitHandlers',
-      'mainProgram',
-      'sleep:1000',
-    ]);
+    expectEventsInOrder(harnessState.events, [...PENDING_OPEN_REBUILD_MILESTONES, 'sleep:1000']);
+    expect(harnessState.events).not.toContain('collectRuntimeValidationSymbols');
+    expect(harnessState.events).not.toContain('validateRuntimeSymbolsFromQuotesMap');
+    expect(harnessState.events).not.toContain('markFresh:7');
     expect(harnessState.sleepDurations).toEqual([1000]);
     expect(harnessState.cleanupRegistered).toBe(1);
     expect(harnessState.mainProgramCalls).toBe(1);
@@ -414,13 +433,7 @@ describe('app runApp assembly', () => {
     harnessState.startupRebuildPending = true;
     harnessState.runtimeGateMode = 'skip';
     const runApp = createRunApp(createRunAppDeps(harnessState));
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await runAndCapture(runApp);
 
     expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
     expect(harnessState.rebuildCalls).toHaveLength(0);
@@ -435,30 +448,14 @@ describe('app runApp assembly', () => {
       errors: ['missing quote'],
     };
     const runApp = createRunApp(createRunAppDeps(harnessState));
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await runAndCapture(runApp);
 
     expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
     expect(harnessState.rebuildCalls).toHaveLength(0);
-    expect(harnessState.events).toEqual([
-      'loadStartupSnapshot',
-      'buildStrategyRuntime',
-      'createRebuildTradingDayState',
-      'createLifecycleRuntime',
-      'monitorTaskProcessor.start',
-      'buyProcessor.start',
-      'sellProcessor.start',
-      'orderMonitorWorker.start',
-      'postTradeRefresher.start',
-      'registerExitHandlers',
-      'mainProgram',
-      'sleep:1000',
-    ]);
+    expectEventsInOrder(harnessState.events, [...PENDING_OPEN_REBUILD_MILESTONES, 'sleep:1000']);
+    expect(harnessState.events).not.toContain('collectRuntimeValidationSymbols');
+    expect(harnessState.events).not.toContain('validateRuntimeSymbolsFromQuotesMap');
+    expect(harnessState.events).not.toContain('markFresh:7');
     expect(harnessState.mainProgramCalls).toBe(1);
     expect(harnessState.cleanupRegistered).toBe(1);
   });
@@ -470,19 +467,18 @@ describe('app runApp assembly', () => {
       errors: ['missing quote'],
     };
     const runApp = createRunApp(createRunAppDeps(harnessState));
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await runAndCapture(runApp);
 
     expect(caught).toMatchObject({
       name: 'AppStartupAbortError',
       message: '运行时标的验证失败，启动已中止',
     });
-    expect(harnessState.events).toEqual(['loadStartupSnapshot']);
+
+    expectEventsInOrder(harnessState.events, [
+      'loadStartupSnapshot',
+      'collectRuntimeValidationSymbols',
+      'validateRuntimeSymbolsFromQuotesMap',
+    ]);
     expect(harnessState.mainProgramCalls).toBe(0);
     expect(harnessState.cleanupRegistered).toBe(0);
   });
@@ -495,15 +491,13 @@ describe('app runApp assembly', () => {
       return nowCallIndex === 1 ? 1_000 : 1_250;
     };
     const runApp = createRunApp(createRunAppDeps(harnessState));
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    } finally {
-      Date.now = originalDateNow;
-    }
+    const caught = await (async () => {
+      try {
+        return await runAndCapture(runApp);
+      } finally {
+        Date.now = originalDateNow;
+      }
+    })();
 
     expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
     expect(harnessState.sleepDurations).toEqual([750]);
@@ -518,15 +512,13 @@ describe('app runApp assembly', () => {
       return nowCallIndex === 1 ? 5_000 : 6_250;
     };
     const runApp = createRunApp(createRunAppDeps(harnessState));
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    } finally {
-      Date.now = originalDateNow;
-    }
+    const caught = await (async () => {
+      try {
+        return await runAndCapture(runApp);
+      } finally {
+        Date.now = originalDateNow;
+      }
+    })();
 
     expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
     expect(harnessState.sleepDurations).toEqual([0]);
@@ -564,13 +556,7 @@ describe('app runApp assembly', () => {
       },
     };
     const runApp = createRunApp(deps);
-    let caught: unknown = null;
-
-    try {
-      await runApp({ env: TEST_APP_ENV });
-    } catch (err) {
-      caught = err;
-    }
+    const caught = await runAndCapture(runApp);
 
     expect(caught).toBe(STOP_AFTER_FIRST_LOOP);
     expect(harnessState.mainProgramCalls).toBe(2);

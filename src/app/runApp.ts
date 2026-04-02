@@ -103,20 +103,20 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       logger: appLogger,
       formatError: formatAppError,
     });
-    const runtimeValidationCollector = buildRuntimeValidationCollector({
-      tradingConfig: preGateRuntime.tradingConfig,
-      monitorConfig: preGateRuntime.monitorConfig,
-      symbolRegistry: preGateRuntime.symbolRegistry,
-      positions: postGateRuntime.lastState.cachedPositions,
-    });
-    const runtimeValidationResult = validateRuntimeSymbols({
-      inputs: runtimeValidationCollector.runtimeValidationInputs,
-      quotesMap: startupSnapshot.quotesMap,
-    });
-
     if (startupSnapshot.startupRebuildPending) {
       appLogger.warn('启动快照失败，跳过运行时标的验证，等待生命周期重建恢复');
     } else {
+      const runtimeValidationCollector = buildRuntimeValidationCollector({
+        tradingConfig: preGateRuntime.tradingConfig,
+        monitorConfig: preGateRuntime.monitorConfig,
+        symbolRegistry: preGateRuntime.symbolRegistry,
+        positions: postGateRuntime.lastState.cachedPositions,
+      });
+      const runtimeValidationResult = validateRuntimeSymbols({
+        inputs: runtimeValidationCollector.runtimeValidationInputs,
+        quotesMap: startupSnapshot.quotesMap,
+      });
+
       if (runtimeValidationResult.warnings.length > 0) {
         appLogger.warn('标的验证出现警告：');
         for (const [index, warning] of runtimeValidationResult.warnings.entries()) {

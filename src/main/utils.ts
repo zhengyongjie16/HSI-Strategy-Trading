@@ -12,8 +12,7 @@ import { logger } from '../utils/logger/index.js';
  * @returns Promise，延迟结束后 resolve
  */
 export async function sleep(ms: number): Promise<void> {
-  const delay = ms;
-  if (!Number.isFinite(delay) || delay < 0) {
+  if (!Number.isFinite(ms) || ms < 0) {
     logger.warn(`[sleep] 无效的延迟时间 ${ms}，使用默认值 ${TIME.MILLISECONDS_PER_SECOND}ms`);
     return new Promise<void>((resolve) => {
       setTimeout(resolve, TIME.MILLISECONDS_PER_SECOND);
@@ -21,7 +20,7 @@ export async function sleep(ms: number): Promise<void> {
   }
 
   return new Promise<void>((resolve) => {
-    setTimeout(resolve, delay);
+    setTimeout(resolve, ms);
   });
 }
 
@@ -52,25 +51,23 @@ export async function refreshAccountAndPositions(
 }
 
 /**
- * 收集运行时需要获取行情的标的代码集合（监控标的 + 席位占用标的 + 持仓标的 + 订单持有标的）。默认行为：合并去重后返回 Set。
+ * 收集运行时需要获取行情的标的代码集合（基础标的 + 席位占用标的 + 持仓标的 + 订单持有标的）。默认行为：合并去重后返回 Set。
  *
- * @param monitorConfigs 监控配置数组（baseInstrumentSymbol、longSymbol、shortSymbol）
+ * @param runtimeConfig 单实例策略运行时配置（baseInstrumentSymbol）
  * @param symbolRegistry 标的注册表，用于解析席位当前占用标的
  * @param positions 当前持仓数组
  * @param orderHoldSymbols 订单持有标的集合
  * @returns 需要拉取行情的标的代码集合
  */
 export function collectRuntimeQuoteSymbols(
-  monitorConfigs: ReadonlyArray<{
+  runtimeConfig: {
     readonly baseInstrumentSymbol: string;
-    readonly longSymbol: string;
-    readonly shortSymbol: string;
-  }>,
+  },
   symbolRegistry: SymbolRegistry,
   positions: ReadonlyArray<Position>,
   orderHoldSymbols: ReadonlySet<string>,
 ): Set<string> {
-  const symbols = collectAllQuoteSymbols(monitorConfigs, symbolRegistry);
+  const symbols = collectRuntimeBaseAndSeatQuoteSymbols(runtimeConfig, symbolRegistry);
   for (const position of positions) {
     if (position.symbol) {
       symbols.add(position.symbol);
@@ -115,36 +112,29 @@ export function diffQuoteSymbols(
 }
 
 /**
- * 收集所有需要获取行情的标的代码（监控标的 + 席位占用标的），用于主循环一次性批量拉取行情。
+ * 收集单实例运行时配置对应的行情标的（基础标的 + 席位占用标的）。
  *
- * @param monitorConfigs 监控配置数组（baseInstrumentSymbol、longSymbol、shortSymbol）
- * @param symbolRegistry 标的注册表，可选；传入时从席位状态解析做多/做空占用标的并加入集合
+ * @param runtimeConfig 单实例策略运行时配置（baseInstrumentSymbol）
+ * @param symbolRegistry 标的注册表；从席位状态解析做多/做空占用标的并加入集合
  * @returns 需要拉取行情的标的代码集合
  */
-function collectAllQuoteSymbols(
-  monitorConfigs: ReadonlyArray<{
+function collectRuntimeBaseAndSeatQuoteSymbols(
+  runtimeConfig: {
     readonly baseInstrumentSymbol: string;
-    readonly longSymbol: string;
-    readonly shortSymbol: string;
-  }>,
-  symbolRegistry?: SymbolRegistry | null,
+  },
+  symbolRegistry: SymbolRegistry,
 ): Set<string> {
   const symbols = new Set<string>();
-  for (const config of monitorConfigs) {
-    symbols.add(config.baseInstrumentSymbol);
-    if (!symbolRegistry) {
-      continue;
-    }
+  symbols.add(runtimeConfig.baseInstrumentSymbol);
 
-    const longSeat = symbolRegistry.getSeatState('LONG');
-    const shortSeat = symbolRegistry.getSeatState('SHORT');
-    if (longSeat.symbol) {
-      symbols.add(longSeat.symbol);
-    }
+  const longSeat = symbolRegistry.getSeatState('LONG');
+  const shortSeat = symbolRegistry.getSeatState('SHORT');
+  if (longSeat.symbol) {
+    symbols.add(longSeat.symbol);
+  }
 
-    if (shortSeat.symbol) {
-      symbols.add(shortSeat.symbol);
-    }
+  if (shortSeat.symbol) {
+    symbols.add(shortSeat.symbol);
   }
 
   return symbols;

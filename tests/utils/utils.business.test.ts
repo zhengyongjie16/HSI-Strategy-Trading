@@ -4,7 +4,12 @@ import {
   resolveStrategyRuntimeSnapshot,
   resolveStrategyRuntimeSeatSnapshot,
 } from '../../src/utils/utils.js';
-import { createQuoteDouble, createSymbolRegistryDouble } from '../helpers/testDoubles.js';
+import { collectRuntimeQuoteSymbols } from '../../src/main/utils.js';
+import {
+  createPositionDouble,
+  createQuoteDouble,
+  createSymbolRegistryDouble,
+} from '../helpers/testDoubles.js';
 
 describe('shared utils business flow', () => {
   it('resolves monitor runtime snapshot from ready seats and quotes', () => {
@@ -131,5 +136,59 @@ describe('shared utils business flow', () => {
     expect(runtimeSnapshot.longQuote).toBeNull();
     expect(runtimeSnapshot.longSymbolName).toBe('');
     expect(runtimeSnapshot.shortSymbolName).toBe('ShortActive');
+  });
+
+  it('collects runtime quote symbols from single monitor config with seat, position and order holds', () => {
+    const symbolRegistry = createSymbolRegistryDouble({
+      baseInstrumentSymbol: 'HSI.HK',
+      longSeat: {
+        symbol: 'LONG_ACTIVE.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+      shortSeat: {
+        symbol: 'SHORT_ACTIVE.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+    });
+
+    const symbols = collectRuntimeQuoteSymbols(
+      {
+        baseInstrumentSymbol: 'HSI.HK',
+      },
+      symbolRegistry,
+      [
+        createPositionDouble({
+          symbol: 'POSITION_ONLY.HK',
+          quantity: 1_200,
+          availableQuantity: 1_000,
+        }),
+        createPositionDouble({
+          symbol: 'LONG_ACTIVE.HK',
+          quantity: 800,
+          availableQuantity: 800,
+        }),
+      ],
+      new Set(['ORDER_HOLD_ONLY.HK', 'SHORT_ACTIVE.HK']),
+    );
+
+    expect(symbols).toEqual(
+      new Set([
+        'HSI.HK',
+        'LONG_ACTIVE.HK',
+        'SHORT_ACTIVE.HK',
+        'POSITION_ONLY.HK',
+        'ORDER_HOLD_ONLY.HK',
+      ]),
+    );
   });
 });

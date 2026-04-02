@@ -134,7 +134,7 @@ function resolveSignalDirection(
 
 /**
  * 校验信号是否仍绑定到当前席位。
- * 默认行为：按 action 推导方向后，依次校验席位 ACTIVE、席位版本匹配与席位标的一致性。
+ * HOLD（无方向动作）返回 INVALID_SIGNAL_ACTION，并使用 LONG 作为占位 direction。
  *
  * @param params 校验所需的 signal 与 symbolRegistry
  * @returns 校验结果；成功时返回收窄后的就绪 seatState，失败时返回失败原因
@@ -293,29 +293,18 @@ function createSeatEntry(symbol: string | null, status: SeatStatus): SeatEntry {
 
 /**
  * 创建席位注册表并初始化多/空席位状态。
- * @param monitors 单实例监控配置列表（只允许 1 项）
+ * @param runtimeConfig 单实例策略运行时配置
  * @returns 实现了 SymbolRegistry 接口的注册表对象
  */
-export function createSymbolRegistry(
-  monitors: ReadonlyArray<StrategyRuntimeConfig>,
-): SymbolRegistry {
-  if (monitors.length !== 1) {
-    throw new Error(`SymbolRegistry 仅支持单实例配置，当前数量=${monitors.length}`);
-  }
-
-  const monitor = monitors[0];
-  if (!monitor) {
-    throw new Error('SymbolRegistry 初始化失败：缺少监控配置');
-  }
-
-  const autoSearchEnabled = monitor.autoSearchConfig.autoSearchEnabled;
+export function createSymbolRegistry(runtimeConfig: StrategyRuntimeConfig): SymbolRegistry {
+  const autoSearchEnabled = runtimeConfig.autoSearchConfig.autoSearchEnabled;
   const registry: SymbolSeatEntry = {
     long: autoSearchEnabled
       ? createSeatEntry(null, 'EMPTY')
-      : createSeatEntry(monitor.longSymbol, 'ACTIVE'),
+      : createSeatEntry(runtimeConfig.longSymbol, 'ACTIVE'),
     short: autoSearchEnabled
       ? createSeatEntry(null, 'EMPTY')
-      : createSeatEntry(monitor.shortSymbol, 'ACTIVE'),
+      : createSeatEntry(runtimeConfig.shortSymbol, 'ACTIVE'),
   };
 
   return {

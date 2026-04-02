@@ -41,9 +41,9 @@ export async function createPreGateRuntime(params: AppEnvironmentParams): Promis
     env,
     tradingConfig,
   });
-  const monitorConfig = createStrategyRuntimeConfigFromTradingConfig(tradingConfig);
+  const runtimeConfig = createStrategyRuntimeConfigFromTradingConfig(tradingConfig);
 
-  const symbolRegistry = createSymbolRegistry([monitorConfig]);
+  const symbolRegistry = createSymbolRegistry(runtimeConfig);
   const warrantListCache = createWarrantListCache();
   const warrantListCacheConfig = {
     cache: warrantListCache,
@@ -87,7 +87,7 @@ export async function createPreGateRuntime(params: AppEnvironmentParams): Promis
   return {
     config,
     tradingConfig,
-    monitorConfig,
+    monitorConfig: runtimeConfig,
     symbolRegistry,
     warrantListCache,
     warrantListCacheConfig,

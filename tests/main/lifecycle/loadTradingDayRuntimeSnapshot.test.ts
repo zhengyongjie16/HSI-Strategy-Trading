@@ -158,7 +158,7 @@ function createBaseDeps(
     trader: overrides.trader ?? createTraderDouble(),
     lastState: overrides.lastState ?? createMinimalLastState(),
     monitorConfig,
-    symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry([monitorConfig]),
+    symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry(monitorConfig),
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
     protectiveLiquidationEpisodeTracker:
       overrides.protectiveLiquidationEpisodeTracker ??
@@ -213,6 +213,27 @@ function createLoadParams(
     ...overrides,
     now: overrides.now ?? DEFAULT_LOAD_NOW,
   };
+}
+
+async function expectPromiseToRejectWithMessage(
+  promise: Promise<unknown>,
+  expectedMessage: string | RegExp,
+): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    const actualMessage = error instanceof Error ? error.message : String(error);
+
+    if (expectedMessage instanceof RegExp) {
+      expect(actualMessage).toMatch(expectedMessage);
+      return;
+    }
+
+    expect(actualMessage).toContain(expectedMessage);
+    return;
+  }
+
+  throw new Error('预期 Promise 被拒绝，但实际已成功执行');
 }
 
 function createProtectiveMonitor(): LoadTradingDayRuntimeSnapshotDeps['monitorConfig'] {
@@ -316,7 +337,8 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    expect(load(createLoadParams({ requireTradingDay: true }))).rejects.toThrow(
+    await expectPromiseToRejectWithMessage(
+      load(createLoadParams({ requireTradingDay: true })),
       '重建触发时交易日信息无效',
     );
   });
@@ -331,7 +353,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    expect(load(createLoadParams())).rejects.toThrow('无法获取账户信息');
+    await expectPromiseToRejectWithMessage(load(createLoadParams()), '无法获取账户信息');
   });
 
   it('持仓拉取异常时直接抛错，不再按空持仓继续初始化', async () => {
@@ -346,7 +368,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    expect(load(createLoadParams())).rejects.toThrow('positions api failed');
+    await expectPromiseToRejectWithMessage(load(createLoadParams()), 'positions api failed');
   });
 
   it('failOnOrderFetchError 为 true 且订单拉取失败时抛出带"全量订单获取失败"的错误', async () => {
@@ -360,7 +382,8 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    expect(load(createLoadParams({ failOnOrderFetchError: true }))).rejects.toThrow(
+    await expectPromiseToRejectWithMessage(
+      load(createLoadParams({ failOnOrderFetchError: true })),
       /全量订单获取失败/,
     );
   });
@@ -584,7 +607,8 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    expect(load(createLoadParams({ requireTradingDay: true }))).rejects.toThrow(
+    await expectPromiseToRejectWithMessage(
+      load(createLoadParams({ requireTradingDay: true })),
       '缺少当前交易日样本',
     );
   });

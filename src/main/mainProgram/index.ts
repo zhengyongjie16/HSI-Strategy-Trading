@@ -178,7 +178,7 @@ export async function mainProgram({
   // 收集所有需要获取行情的标的，一次性批量获取（减少 API 调用次数）
   const orderHoldSymbols = trader.getOrderHoldSymbols();
   const desiredSymbols = collectRuntimeQuoteSymbols(
-    [monitorConfig],
+    monitorConfig,
     symbolRegistry,
     positions,
     orderHoldSymbols,
