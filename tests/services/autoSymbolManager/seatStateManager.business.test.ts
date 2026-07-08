@@ -23,9 +23,66 @@ function createSwitchSuppressionsMap(): Map<'LONG' | 'SHORT', SwitchSuppression>
 }
 
 describe('autoSymbolManager seatStateManager business flow', () => {
+  it('enterSwitchingSeat publishes listeners after SWITCHING state and version are both current', () => {
+    const symbolRegistry = createSymbolRegistryDouble({
+      monitorSymbol: 'HSI.HK',
+      longSeat: {
+        symbol: 'OLD_BULL.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+    });
+    const switchStates = createSwitchStatesMap();
+    const switchSuppressions = createSwitchSuppressionsMap();
+    const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
+    const observed: Array<{
+      readonly eventKind: 'version' | 'state';
+      readonly status: string;
+      readonly version: number;
+    }> = [];
+    symbolRegistry.onSeatVersionChanged(() => {
+      observed.push({
+        eventKind: 'version',
+        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
+        version: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
+      });
+    });
+
+    symbolRegistry.onSeatStateChanged(() => {
+      observed.push({
+        eventKind: 'state',
+        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
+        version: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
+      });
+    });
+    const manager = createSeatStateManager({
+      monitorSymbol: 'HSI.HK',
+      symbolRegistry,
+      switchStates,
+      switchSuppressions,
+      now: () => new Date(nowMs),
+      logger: createLoggerStub(),
+      getHKDateKey,
+    });
+
+    manager.enterSwitchingSeat({
+      direction: 'LONG',
+      reason: 'test-enter-switching-seat',
+    });
+
+    expect(observed).toEqual([
+      { eventKind: 'version', status: 'SWITCHING', version: 2 },
+      { eventKind: 'state', status: 'SWITCHING', version: 2 },
+    ]);
+  });
+
   it('enterSwitchingSeat bumps seat version and puts seat into SWITCHING with switch state snapshot', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -40,7 +97,7 @@ describe('autoSymbolManager seatStateManager business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -53,8 +110,8 @@ describe('autoSymbolManager seatStateManager business flow', () => {
       reason: 'test-enter-switching-seat',
     });
     expect(nextVersion).toBe(2);
-    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
-    const seat = symbolRegistry.getSeatState('LONG');
+    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     const switchState = switchStates.get('LONG');
@@ -70,13 +127,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('suppression is valid on same HK date and auto-clears on date rollover', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     let now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -95,13 +152,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('keeps PERIODIC and DISTANCE_SAFE_SIDE suppressions independent on same symbol and day', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -147,13 +204,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('keeps suppression independent when DISTANCE_SAFE_SIDE is recorded before PERIODIC', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -171,13 +228,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('keeps LONG and SHORT suppressions isolated on same symbol and day', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -194,13 +251,13 @@ describe('autoSymbolManager seatStateManager business flow', () => {
 
   it('auto-clears suppression when symbol changes on same day', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
     });
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const now = new Date('2026-02-16T01:00:00.000Z');
     const manager = createSeatStateManager({
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,

@@ -1,11 +1,10 @@
 import type { Position } from '../../types/account.js';
 import type { Signal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
-import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type {
   MarketDataClient,
+  OrderRecorder,
   OrderRecord,
-  RawOrderFromAPI,
   BullBearWarrantType,
   RiskCheckResult,
   WarrantDistanceInfo,
@@ -56,13 +55,11 @@ export interface WarrantRiskChecker {
     symbol: string,
     signalType: SignalType,
     monitorCurrentPrice: number,
-    monitorConfig: StrategyRuntimeConfig,
   ) => RiskCheckResult;
   checkWarrantDistanceLiquidation: (
     symbol: string,
     isLongSymbol: boolean,
     monitorCurrentPrice: number,
-    monitorConfig: StrategyRuntimeConfig,
   ) => WarrantDistanceLiquidationResult;
   getWarrantDistanceInfo: (
     isLongSymbol: boolean,
@@ -75,7 +72,7 @@ export interface WarrantRiskChecker {
 
 /**
  * 持仓限制检查器接口。
- * 类型用途：依赖注入，由 RiskChecker 门面聚合，提供执行标的最大持仓市值限制检查。
+ * 类型用途：依赖注入，由 RiskChecker 门面聚合，提供单标的最大持仓市值限制检查。
  * 数据来源：如适用（配置中的 maxPositionNotional）。
  * 使用范围：仅 riskController 模块实现；主程序通过 RiskChecker 使用。
  */
@@ -84,7 +81,6 @@ export interface PositionLimitChecker {
     signal: Signal,
     positions: ReadonlyArray<Position> | null,
     orderNotional: number,
-    currentPrice: number | null,
   ) => RiskCheckResult;
 }
 
@@ -100,8 +96,8 @@ export interface UnrealizedLossChecker {
   /** 清空浮亏数据，symbol 为空时清空全部 */
   clearUnrealizedLossData: (symbol?: string | null) => void;
   refresh: (
+    orderRecorder: OrderRecorder,
     symbol: string,
-    position: Position | null,
     isLongSymbol: boolean,
     quote?: Quote | null,
     dailyLossOffset?: number,
@@ -110,16 +106,6 @@ export interface UnrealizedLossChecker {
 }
 
 // ==================== 依赖类型定义 ====================
-
-/**
- * 牛熊证风险检查器依赖。
- * 类型用途：创建 WarrantRiskChecker 时的依赖注入（当前无外部依赖，空对象）。
- * 数据来源：如适用。
- * 使用范围：仅 riskController 模块内部使用。
- */
-export type WarrantRiskCheckerDeps = {
-  readonly [key: string]: never;
-};
 
 /**
  * 持仓限制检查器依赖。
@@ -143,25 +129,21 @@ export type UnrealizedLossCheckerDeps = {
 
 /**
  * 风险检查器依赖。
- * 类型用途：用于创建 RiskChecker 门面时的依赖注入。
- * 数据来源：如适用。
+ * 类型用途：用于创建 RiskChecker 门面时的依赖注入；阈值配置由各子检查器依赖持有。
+ * 数据来源：启动装配层创建的牛熊证、持仓限制与浮亏子检查器。
  * 使用范围：见调用方（如 riskDomain/启动层）。
  */
 export type RiskCheckerDeps = {
   readonly warrantRiskChecker: WarrantRiskChecker;
   readonly positionLimitChecker: PositionLimitChecker;
   readonly unrealizedLossChecker: UnrealizedLossChecker;
-  readonly options?: {
-    readonly maxPositionNotional?: number | null;
-    readonly maxUnrealizedLossPerSymbol?: number | null;
-  };
 };
 
 // ==================== 当日亏损追踪 ====================
 
 /**
  * 单监控标的单方向的当日亏损状态。
- * 类型用途：DailyLossTracker 内部状态，按方向分组存储。
+ * 类型用途：DailyLossTracker 内部状态，按 monitorSymbol + 方向分组存储。
  * 数据来源：由 DailyLossTracker 内部维护（买入/卖出订单与偏移）。
  * 使用范围：仅 riskController 模块内部使用。
  */
@@ -200,36 +182,12 @@ export type OrderOwnershipDiagnostics = {
 };
 
 /**
- * 订单重建分类结果。
- * 类型用途：启动/重建阶段按执行标的将全量订单按成交状态与买卖方向分流。
- * 数据来源：由 orderRecords.classifyOrdersForRebuild 从 RawOrderFromAPI 转换得到。
- * 使用范围：riskController 侧共享订单转换逻辑与相关测试。
- */
-export type OrderRebuildClassification = {
-  readonly filledBuyOrders: ReadonlyArray<OrderRecord>;
-  readonly filledSellOrders: ReadonlyArray<OrderRecord>;
-  readonly pendingBuyOrders: ReadonlyArray<RawOrderFromAPI>;
-  readonly pendingSellOrders: ReadonlyArray<RawOrderFromAPI>;
-};
-
-/**
- * 订单过滤算法中间状态。
- * 类型用途：过滤算法中的中间结构（m0Orders 保留，candidateOrders 待过滤）。
- * 数据来源：orderFilteringEngine 内部构造。
- * 使用范围：仅 riskController 侧订单过滤实现使用。
- */
-export type FilteringState = {
-  readonly m0Orders: ReadonlyArray<OrderRecord>;
-  readonly candidateOrders: ReadonlyArray<OrderRecord>;
-};
-
-/**
  * 浮亏监控器依赖。
  * 类型用途：用于创建 UnrealizedLossMonitor 时的依赖注入。
  * 数据来源：如适用（如配置中的 maxUnrealizedLossPerSymbol）。
  * 使用范围：仅 riskController 模块内部使用。
  */
 export type UnrealizedLossMonitorDeps = {
-  /** 执行标的最大浮亏阈值（港币），<=0 表示禁用浮亏监控 */
+  /** 单标的最大浮亏阈值（港币），<=0 表示禁用浮亏监控 */
   readonly maxUnrealizedLossPerSymbol: number;
 };

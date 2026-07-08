@@ -2,9 +2,8 @@ import { OrderSide, OrderType } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { SIGNAL_ACTION_DESCRIPTIONS } from '../../../constants/index.js';
 import type { OrderTypeConfig, Signal } from '../../../types/signal.js';
-import type { StrategyRuntimeConfig } from '../../../types/config.js';
-import type { OrderPayload } from '../types.js';
-import { identifyErrorType } from '../tradeLogger.js';
+import type { MonitorConfig } from '../../../types/config.js';
+import type { ErrorTypeIdentifier, OrderPayload } from '../types.js';
 import { formatError } from '../../../utils/error/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import { getHKDateKey } from '../../../utils/time/index.js';
@@ -103,7 +102,7 @@ export function resolveOrderSide(action: Signal['action']): OrderSide | null {
 
 /**
  * 构造买入频率限制键。
- * 默认行为：缺少 baseInstrumentSymbol 时仅按方向键区分。
+ * 默认行为：缺少 monitorSymbol 时仅按方向键区分。
  *
  * @param signalAction 信号动作
  * @param monitorConfig 监控配置
@@ -111,11 +110,41 @@ export function resolveOrderSide(action: Signal['action']): OrderSide | null {
  */
 export function buildBuyTimeKey(
   signalAction: string,
-  monitorConfig?: StrategyRuntimeConfig | null,
+  monitorConfig?: MonitorConfig | null,
 ): string {
   const direction: 'LONG' | 'SHORT' = signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
-  const baseInstrumentSymbol = monitorConfig?.baseInstrumentSymbol ?? '';
-  return baseInstrumentSymbol ? `${baseInstrumentSymbol}:${direction}` : direction;
+  const monitorSymbol = monitorConfig?.monitorSymbol ?? '';
+  return monitorSymbol ? `${monitorSymbol}:${direction}` : direction;
+}
+
+/**
+ * 识别错误类型（通过错误消息关键词匹配）。
+ *
+ * @param errorMessage 错误消息原文（将转为小写后匹配关键词）
+ * @returns 错误类型标识对象，各布尔字段表示是否匹配对应类型
+ */
+function identifyErrorType(errorMessage: string): ErrorTypeIdentifier {
+  const lowerMsg = errorMessage.toLowerCase();
+  return {
+    isShortSellingNotSupported:
+      lowerMsg.includes('does not support short selling') ||
+      lowerMsg.includes('不支持做空') ||
+      lowerMsg.includes('short selling') ||
+      lowerMsg.includes('做空'),
+    isInsufficientFunds:
+      lowerMsg.includes('insufficient') ||
+      lowerMsg.includes('资金不足') ||
+      lowerMsg.includes('余额不足'),
+    isOrderNotFound:
+      lowerMsg.includes('not found') || lowerMsg.includes('不存在') || lowerMsg.includes('找不到'),
+    isNetworkError:
+      lowerMsg.includes('network') ||
+      lowerMsg.includes('网络') ||
+      lowerMsg.includes('timeout') ||
+      lowerMsg.includes('超时'),
+    isRateLimited:
+      lowerMsg.includes('rate limit') || lowerMsg.includes('频率') || lowerMsg.includes('too many'),
+  };
 }
 
 /**

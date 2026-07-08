@@ -7,6 +7,7 @@
 export type BoundedNumberConfig = {
   readonly env: NodeJS.ProcessEnv;
   readonly envKey: string;
+  readonly defaultValue: number;
   readonly min: number;
   readonly max: number;
 };
@@ -20,5 +21,6 @@ export type BoundedNumberConfig = {
 export type MinimumNumberConfig = {
   readonly env: NodeJS.ProcessEnv;
   readonly envKey: string;
+  readonly defaultValue: number;
   readonly min: number;
 };

@@ -2,33 +2,38 @@
  * 交易日运行时快照加载单元测试
  *
  * 覆盖：requireTradingDay 且非交易日时抛错、账户信息缺失时抛错、
- * failOnOrderFetchError 且订单拉取失败时抛错、正常返回 allOrders 与 quotesMap
+ * 订单拉取失败时抛错、正常返回 allOrders 与 quotesMap
  */
 import { describe, it, expect } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType, Period } from 'longbridge';
+import { OrderSide, OrderStatus, OrderType, WarrantStatus, WarrantType } from 'longbridge';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
+import { createQuoteContextMock } from '../../../mock/longbridge/quoteContextMock.js';
+import { toMockDecimal } from '../../../mock/longbridge/decimal.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import { TRADING } from '../../../src/constants/index.js';
-import { buildTrendFactorSnapshot } from '../../../src/services/factors/runtime/index.js';
+import { createSeatActivationDispatcher } from '../../../src/main/seatActivationDispatcher/index.js';
+import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
 } from '../../../src/main/lifecycle/types.js';
-import type { LastState } from '../../../src/types/state.js';
+import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
+import type { LastState, MonitorState } from '../../../src/types/state.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
-import { createStrategyRuntimeConfig } from '../../../mock/factories/configFactory.js';
+import type { ProtectiveOrderParams } from './types.js';
+import { createTradingConfig as createTradingConfigFactory } from '../../../mock/factories/configFactory.js';
 import {
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
-  createStrategyRuntimeConfigDouble,
+  createMonitorConfigDouble,
   createPositionCacheDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createQuoteContextDouble,
+  createSeatActivationDispatcherDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
-
-const DEFAULT_LOAD_NOW = new Date('2026-02-25T03:00:00.000Z');
 
 function getEntry(_key: string): undefined {
   return;
@@ -52,18 +57,15 @@ function createMinimalLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorState: {
-      baseInstrumentSymbol: 'HSI.HK',
-      monitorPrice: null,
-      longPrice: null,
-      shortPrice: null,
-      signal: null,
-      pendingSignals: [],
-      lastMonitorSnapshot: null,
-      lastCandlestickCacheVersion: null,
-    },
+    monitorStates: new Map<string, MonitorState>(),
     allTradingSymbols: new Set<string>(),
   };
+}
+
+function createTradingConfig(
+  monitors: LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitors'] = [],
+): LoadTradingDayRuntimeSnapshotDeps['tradingConfig'] {
+  return createTradingConfigFactory({ monitors });
 }
 
 function createWarrantListCacheConfig(): LoadTradingDayRuntimeSnapshotDeps['warrantListCacheConfig'] {
@@ -81,113 +83,26 @@ function createWarrantListCacheConfig(): LoadTradingDayRuntimeSnapshotDeps['warr
   };
 }
 
-function createFixtureCandlestick(timestampMs: number, basePrice: number) {
-  return {
-    open: basePrice,
-    high: basePrice + 1,
-    low: basePrice - 1,
-    close: basePrice,
-    volume: 1000,
-    timestamp: new Date(timestampMs),
-  };
-}
-
-function createMin1BarsForTradingDay(params: {
-  readonly dayStartUtcMs: number;
-  readonly basePrice: number;
-  readonly count: number;
-}): ReadonlyArray<ReturnType<typeof createFixtureCandlestick>> {
-  return Array.from({ length: params.count }, (_value, index) =>
-    createFixtureCandlestick(
-      params.dayStartUtcMs + index * 60_000,
-      params.basePrice + index * 0.01,
-    ),
-  );
-}
-
-function createHistoryReadyMarketDataClient(
-  currentDayUtcIso: string = '2026-02-25T01:30:00.000Z',
-  historicalMin1CandlesOverride?: ReadonlyArray<ReturnType<typeof createFixtureCandlestick>>,
-): LoadTradingDayRuntimeSnapshotDeps['marketDataClient'] {
-  const currentDayStartUtcMs = Date.parse(currentDayUtcIso);
-  const currentDayMin1Candles = createMin1BarsForTradingDay({
-    dayStartUtcMs: currentDayStartUtcMs,
-    basePrice: 20_000,
-    count: 60,
-  });
-  const historicalMin1Candles =
-    historicalMin1CandlesOverride ??
-    Array.from({ length: 20 }, (_value, index) =>
-      createMin1BarsForTradingDay({
-        dayStartUtcMs: currentDayStartUtcMs - (20 - index) * 24 * 60 * 60 * 1000,
-        basePrice: 19_500 + index * 10,
-        count: 330,
-      }),
-    ).flat();
-  const currentDayHigherPeriodCandles = [createFixtureCandlestick(currentDayStartUtcMs, 20_000)];
-
-  return createMarketDataClientDouble({
-    subscribeCandlesticks: async (_symbol, period) => {
-      if (period === Period.Min_1) {
-        return currentDayMin1Candles as never;
-      }
-
-      return currentDayHigherPeriodCandles as never;
-    },
-    fetchHistoricalCandlesticksByOffset: async (_symbol, period, beforeTime, count) => {
-      if (period !== Period.Min_1) {
-        return [];
-      }
-
-      const beforeTimestamp = beforeTime?.getTime() ?? Number.POSITIVE_INFINITY;
-      const eligible = historicalMin1Candles.filter(
-        (candle) => candle.timestamp.getTime() < beforeTimestamp,
-      );
-      return eligible.slice(Math.max(eligible.length - count, 0)) as never;
-    },
-  });
-}
-
 function createBaseDeps(
   overrides: Partial<LoadTradingDayRuntimeSnapshotDeps> = {},
 ): LoadTradingDayRuntimeSnapshotDeps {
-  const monitorConfig = overrides.monitorConfig ?? createStrategyRuntimeConfig();
+  const tradingConfig = overrides.tradingConfig ?? createTradingConfig();
 
   return {
-    marketDataClient: overrides.marketDataClient ?? createHistoryReadyMarketDataClient(),
+    marketDataClient: overrides.marketDataClient ?? createMarketDataClientDouble(),
     trader: overrides.trader ?? createTraderDouble(),
     lastState: overrides.lastState ?? createMinimalLastState(),
-    monitorConfig,
-    symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry(monitorConfig),
+    tradingConfig,
+    symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry(tradingConfig.monitors),
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
     protectiveLiquidationEpisodeTracker:
       overrides.protectiveLiquidationEpisodeTracker ??
       createProtectiveLiquidationEpisodeTrackerDouble(),
-    tradeLogHydrator: overrides.tradeLogHydrator ?? {
-      hydrate: () => new Map<'LONG' | 'SHORT', number>(),
-    },
+    tradeLogHydrator: overrides.tradeLogHydrator ?? { hydrate: () => new Map<string, number>() },
     warrantListCacheConfig: overrides.warrantListCacheConfig ?? createWarrantListCacheConfig(),
+    seatActivationDispatcher:
+      overrides.seatActivationDispatcher ?? createSeatActivationDispatcherDouble(),
   };
-}
-
-function buildLoadedFactorSnapshot(params: {
-  readonly marketDataClient: LoadTradingDayRuntimeSnapshotDeps['marketDataClient'];
-  readonly monitorConfig: LoadTradingDayRuntimeSnapshotDeps['monitorConfig'];
-}): ReturnType<typeof buildTrendFactorSnapshot> {
-  const min1Snapshot = params.marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
-  const min5Snapshot = params.marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_5);
-  const min15Snapshot = params.marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_15);
-  const latestClose = Number(min1Snapshot?.candles.at(-1)?.close ?? 0);
-
-  return buildTrendFactorSnapshot({
-    candlesByPeriod: {
-      min1: min1Snapshot?.candles ?? [],
-      min5: min5Snapshot?.candles ?? [],
-      min15: min15Snapshot?.candles ?? [],
-    },
-    currentPrice: latestClose,
-    strategyConfig: params.monitorConfig.strategyConfig,
-  });
 }
 
 function createReadyTrader(
@@ -206,52 +121,62 @@ function createLoadParams(
 ): LoadTradingDayRuntimeSnapshotParams {
   return {
     requireTradingDay: false,
-    failOnOrderFetchError: false,
     resetRuntimeSubscriptions: false,
     hydrateCooldownFromTradeLog: false,
     forceOrderRefresh: false,
     ...overrides,
-    now: overrides.now ?? DEFAULT_LOAD_NOW,
+    now: overrides.now ?? new Date(),
   };
 }
 
-async function expectPromiseToRejectWithMessage(
-  promise: Promise<unknown>,
-  expectedMessage: string | RegExp,
-): Promise<void> {
-  try {
-    await promise;
-  } catch (error) {
-    const actualMessage = error instanceof Error ? error.message : String(error);
-
-    if (expectedMessage instanceof RegExp) {
-      expect(actualMessage).toMatch(expectedMessage);
-      return;
-    }
-
-    expect(actualMessage).toContain(expectedMessage);
-    return;
-  }
-
-  throw new Error('预期 Promise 被拒绝，但实际已成功执行');
-}
-
-function createProtectiveMonitor(): LoadTradingDayRuntimeSnapshotDeps['monitorConfig'] {
-  return createStrategyRuntimeConfigDouble({
-    baseInstrumentSymbol: 'HSI.HK',
+function createProtectiveMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitors'][number] {
+  return createMonitorConfigDouble({
+    monitorSymbol: 'HSI.HK',
     orderOwnershipMapping: ['HSI'],
   });
 }
 
-type ProtectiveOrderParams = Readonly<{
-  orderId: string;
-  status: RawOrderFromAPI['status'];
-  price: number;
-  quantity: number;
-  executedPrice: number;
-  executedQuantity: number;
-  updatedAtMs: number;
-}>;
+function createAutoSearchMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitors'][number] {
+  return createMonitorConfigDouble({
+    monitorSymbol: 'HSI.HK',
+    autoSearchConfig: {
+      autoSearchEnabled: true,
+      autoSearchMinDistancePctBull: 0.35,
+      autoSearchMinDistancePctBear: -0.35,
+      autoSearchMinTurnoverPerMinuteBull: 100_000,
+      autoSearchMinTurnoverPerMinuteBear: 100_000,
+      autoSearchExpiryMinMonths: 3,
+      autoSearchOpenDelayMinutes: 5,
+      switchIntervalMinutes: 0,
+      switchDistanceRangeBull: { min: 0.2, max: 1.5 },
+      switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+    },
+  });
+}
+
+function createWarrantInfo(params: {
+  readonly symbol: string;
+  readonly warrantType: WarrantType;
+  readonly apiDistanceRatio: number;
+  readonly turnover: number;
+  readonly callPrice: number;
+}): Parameters<ReturnType<typeof createQuoteContextMock>['seedWarrantList']>[1][number] {
+  const warrantType = params.warrantType === WarrantType.Bull ? 'Bull' : 'Bear';
+  return {
+    symbol: params.symbol,
+    name: params.symbol,
+    lastDone: toMockDecimal(0.1),
+    toCallPrice: toMockDecimal(params.apiDistanceRatio),
+    turnover: toMockDecimal(params.turnover),
+    callPrice: toMockDecimal(params.callPrice),
+    warrantType,
+    status: WarrantStatus.Normal,
+  };
+}
+
+function toApiDistanceRatio(percentValue: number): number {
+  return percentValue / 100;
+}
 
 function createProtectiveOrder(params: ProtectiveOrderParams): RawOrderFromAPI {
   return {
@@ -300,7 +225,7 @@ function createProtectiveTrackerRecorder(): {
     Parameters<ProtectiveLiquidationEpisodeTracker['restoreInProgressEpisode']>[0]
   >;
 } {
-  const boundaryByDirection = new Map<'LONG' | 'SHORT', number>();
+  const boundaryByDirection = new Map<string, number>();
   const restoreCompletedCalls: Array<
     Parameters<ProtectiveLiquidationEpisodeTracker['restoreCompletedBoundary']>[0]
   > = [];
@@ -312,7 +237,10 @@ function createProtectiveTrackerRecorder(): {
     tracker: createProtectiveLiquidationEpisodeTrackerDouble({
       restoreCompletedBoundary: (params) => {
         restoreCompletedCalls.push(params);
-        boundaryByDirection.set(params.direction, params.boundaryExecutedTimeMs);
+        boundaryByDirection.set(
+          `${params.monitorSymbol}:${params.direction}`,
+          params.boundaryExecutedTimeMs,
+        );
       },
       restoreInProgressEpisode: (params) => {
         restoreInProgressCalls.push(params);
@@ -327,6 +255,17 @@ function createProtectiveTrackerRecorder(): {
   };
 }
 
+function drainMonitorTasks(
+  monitorTaskQueue: ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>,
+): Array<ReturnType<typeof monitorTaskQueue.pop>> {
+  const tasks: Array<ReturnType<typeof monitorTaskQueue.pop>> = [];
+  while (!monitorTaskQueue.isEmpty()) {
+    tasks.push(monitorTaskQueue.pop());
+  }
+
+  return tasks;
+}
+
 describe('createLoadTradingDayRuntimeSnapshot', () => {
   it('requireTradingDay 为 true 且 isTradingDay 为 false 时抛出"重建触发时交易日信息无效"', async () => {
     const deps = createBaseDeps({
@@ -337,41 +276,65 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    await expectPromiseToRejectWithMessage(
-      load(createLoadParams({ requireTradingDay: true })),
+    expect(load(createLoadParams({ requireTradingDay: true }))).rejects.toThrow(
       '重建触发时交易日信息无效',
     );
   });
 
-  it('账户信息缺失（cachedAccount 为 null）时抛出"无法获取账户信息"', async () => {
+  it('账户快照契约失败时 fail-fast，不能按空账户继续重建', async () => {
     const deps = createBaseDeps({
       trader: createTraderDouble({
-        getAccountSnapshot: async () => null,
+        getAccountSnapshot: async () => {
+          throw new TypeError('TradeContext.accountBalance returned no primary account');
+        },
         getStockPositions: async () => [],
       }),
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    await expectPromiseToRejectWithMessage(load(createLoadParams()), '无法获取账户信息');
+    let caught: unknown = null;
+    try {
+      await load(createLoadParams());
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toBe(
+      'TradeContext.accountBalance returned no primary account',
+    );
   });
 
-  it('持仓拉取异常时直接抛错，不再按空持仓继续初始化', async () => {
+  it('持仓快照拉取失败时 fail-fast，不能按空持仓继续重建', async () => {
+    let fetchAllOrdersCalled = false;
     const deps = createBaseDeps({
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+      trader: createReadyTrader({
         getStockPositions: async () => {
-          throw new Error('positions api failed');
+          throw new Error('positions unavailable');
+        },
+        fetchAllOrdersFromAPI: async () => {
+          fetchAllOrdersCalled = true;
+          return [];
         },
       }),
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    await expectPromiseToRejectWithMessage(load(createLoadParams()), 'positions api failed');
+    let caughtError: unknown = null;
+    try {
+      await load(createLoadParams());
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(caughtError).toBeInstanceOf(Error);
+    expect((caughtError as Error).message).toMatch(/无法刷新账户和持仓信息/);
+    expect(fetchAllOrdersCalled).toBe(false);
   });
 
-  it('failOnOrderFetchError 为 true 且订单拉取失败时抛出带"全量订单获取失败"的错误', async () => {
+  it('订单拉取失败时直接抛出原始错误，不按空订单继续初始化', async () => {
     const deps = createBaseDeps({
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => {
@@ -382,9 +345,151 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
-    await expectPromiseToRejectWithMessage(
-      load(createLoadParams({ failOnOrderFetchError: true })),
-      /全量订单获取失败/,
+    expect(load(createLoadParams())).rejects.toThrow(/API 超时/);
+  });
+
+  it('only runs startup auto-search after continuous session and morning delay are both satisfied', async () => {
+    const monitor = createAutoSearchMonitor();
+    const tradingConfig = createTradingConfig([monitor]);
+    const quoteContext = createQuoteContextMock();
+    quoteContext.seedWarrantList('HSI.HK', [
+      createWarrantInfo({
+        symbol: 'AUTO_BULL.HK',
+        warrantType: WarrantType.Bull,
+        apiDistanceRatio: toApiDistanceRatio(0.55),
+        turnover: 30_000_000,
+        callPrice: 20_500,
+      }),
+      createWarrantInfo({
+        symbol: 'AUTO_BEAR.HK',
+        warrantType: WarrantType.Bear,
+        apiDistanceRatio: toApiDistanceRatio(-0.55),
+        turnover: 30_000_000,
+        callPrice: 19_500,
+      }),
+    ]);
+
+    let isTradingDayCalls = 0;
+    const marketDataClient = createMarketDataClientDouble({
+      getQuoteContext: async () => createQuoteContextDouble(quoteContext),
+      isTradingDay: async () => {
+        isTradingDayCalls += 1;
+        return { isTradingDay: true, isHalfDay: false };
+      },
+    });
+    const blockedLastState = createMinimalLastState();
+    blockedLastState.cachedTradingDayInfo = {
+      dateKey: '2026-02-16',
+      info: { isTradingDay: true, isHalfDay: false },
+    };
+    const blockedDeps = createBaseDeps({
+      lastState: blockedLastState,
+      tradingConfig,
+      marketDataClient,
+      trader: createReadyTrader(),
+      symbolRegistry: createSymbolRegistry(tradingConfig.monitors),
+    });
+    const blockedLoad = createLoadTradingDayRuntimeSnapshot(blockedDeps);
+    await blockedLoad(
+      createLoadParams({
+        now: new Date('2026-02-16T01:31:00.000Z'),
+        requireTradingDay: false,
+      }),
+    );
+
+    expect(isTradingDayCalls).toBe(0);
+    expect(quoteContext.getCalls('warrantList')).toHaveLength(0);
+
+    const allowedLastState = createMinimalLastState();
+    allowedLastState.cachedTradingDayInfo = {
+      dateKey: '2026-02-16',
+      info: { isTradingDay: true, isHalfDay: false },
+    };
+    const allowedDeps = createBaseDeps({
+      lastState: allowedLastState,
+      tradingConfig,
+      marketDataClient,
+      trader: createReadyTrader(),
+      symbolRegistry: createSymbolRegistry(tradingConfig.monitors),
+    });
+    const allowedLoad = createLoadTradingDayRuntimeSnapshot(allowedDeps);
+    await allowedLoad(
+      createLoadParams({
+        now: new Date('2026-02-16T01:35:00.000Z'),
+        requireTradingDay: false,
+      }),
+    );
+
+    expect(isTradingDayCalls).toBe(0);
+    expect(quoteContext.getCalls('warrantList')).toHaveLength(2);
+    expect(allowedDeps.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
+    expect(allowedDeps.symbolRegistry.getSeatState('HSI.HK', 'SHORT').status).toBe('ACTIVATING');
+  });
+
+  it('schedules SEAT_REFRESH for ACTIVATING seats restored during recovery', async () => {
+    const monitor = createAutoSearchMonitor();
+    const tradingConfig = createTradingConfig([monitor]);
+    const quoteContext = createQuoteContextMock();
+    quoteContext.seedWarrantList('HSI.HK', [
+      createWarrantInfo({
+        symbol: 'AUTO_BULL.HK',
+        warrantType: WarrantType.Bull,
+        apiDistanceRatio: toApiDistanceRatio(0.55),
+        turnover: 30_000_000,
+        callPrice: 20_500,
+      }),
+      createWarrantInfo({
+        symbol: 'AUTO_BEAR.HK',
+        warrantType: WarrantType.Bear,
+        apiDistanceRatio: toApiDistanceRatio(-0.55),
+        turnover: 30_000_000,
+        callPrice: 19_500,
+      }),
+    ]);
+
+    const marketDataClient = createMarketDataClientDouble({
+      getQuoteContext: async () => createQuoteContextDouble(quoteContext),
+    });
+    const lastState = createMinimalLastState();
+    lastState.cachedTradingDayInfo = {
+      dateKey: '2026-02-16',
+      info: { isTradingDay: true, isHalfDay: false },
+    };
+    const symbolRegistry = createSymbolRegistry(tradingConfig.monitors);
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const seatActivationDispatcher = createSeatActivationDispatcher({
+      tradingConfig,
+      symbolRegistry,
+      monitorTaskQueue,
+    });
+    const deps = createBaseDeps({
+      lastState,
+      tradingConfig,
+      marketDataClient,
+      trader: createReadyTrader(),
+      symbolRegistry,
+      seatActivationDispatcher,
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+    await load(
+      createLoadParams({
+        now: new Date('2026-02-16T01:35:00.000Z'),
+        requireTradingDay: false,
+      }),
+    );
+
+    const queueItems = drainMonitorTasks(monitorTaskQueue);
+    expect(queueItems).toContainEqual(
+      expect.objectContaining({
+        type: 'SEAT_REFRESH',
+        monitorSymbol: 'HSI.HK',
+        data: expect.objectContaining({
+          monitorSymbol: 'HSI.HK',
+          direction: 'LONG',
+          nextSymbol: 'AUTO_BULL.HK',
+        }),
+      }),
     );
   });
 
@@ -392,18 +497,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const now = new Date('2026-02-25T03:00:00.000Z');
     let getTradingDaysCalls = 0;
     const lastState = createMinimalLastState();
-    const marketDataClient = createHistoryReadyMarketDataClient('2026-02-25T01:30:00.000Z');
-    marketDataClient.getTradingDays = async () => {
-      getTradingDaysCalls += 1;
-      return {
-        tradingDays: [],
-        halfTradingDays: [],
-      };
-    };
 
     const deps = createBaseDeps({
       lastState,
-      marketDataClient,
+      marketDataClient: createMarketDataClientDouble({
+        getTradingDays: async () => {
+          getTradingDaysCalls += 1;
+          return {
+            tradingDays: [],
+            halfTradingDays: [],
+          };
+        },
+      }),
       trader: createReadyTrader(),
     });
 
@@ -421,196 +526,69 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
   });
 
   it('subscribes candlesticks and leaves seeded local cache snapshots observable', async () => {
-    const monitorConfig = createStrategyRuntimeConfigDouble({ baseInstrumentSymbol: 'HSI.HK' });
+    const monitors = [
+      createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
+      createMonitorConfigDouble({ monitorSymbol: 'HHI.HK' }),
+    ];
     const subscribedSymbols: string[] = [];
-    const marketDataClient = createHistoryReadyMarketDataClient('2026-02-25T01:30:00.000Z');
-    const originalSubscribe = marketDataClient.subscribeCandlesticks;
-    marketDataClient.subscribeCandlesticks = async (symbol, period, tradeSessions) => {
-      subscribedSymbols.push(symbol);
-      return originalSubscribe(symbol, period, tradeSessions);
-    };
-    const deps = createBaseDeps({
-      monitorConfig,
-      marketDataClient,
-      trader: createReadyTrader(),
-    });
-
-    const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(createLoadParams({ requireTradingDay: true }));
-
-    expect(subscribedSymbols).toHaveLength(TRADING.CANDLE_PERIODS.length);
-    expect(subscribedSymbols.every((symbol) => symbol === 'HSI.HK')).toBeTrue();
-    expect(
-      marketDataClient.getCandlestickSnapshot('HSI.HK', TRADING.FACTOR_CANDLE_PERIOD)?.initialized,
-    ).toBe(true);
-  });
-
-  it('prewarms paged historical 1m baseline before completing load', async () => {
-    let historicalFetchCalls = 0;
-    const marketDataClient = createHistoryReadyMarketDataClient();
-    const originalFetch = marketDataClient.fetchHistoricalCandlesticksByOffset;
-    marketDataClient.fetchHistoricalCandlesticksByOffset = async (
-      symbol,
-      period,
-      beforeTime,
-      count,
-      tradeSessions,
-    ) => {
-      historicalFetchCalls += 1;
-      return originalFetch(symbol, period, beforeTime, count, tradeSessions);
-    };
-
-    const deps = createBaseDeps({
-      marketDataClient,
-      trader: createReadyTrader(),
-    });
-
-    const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(createLoadParams({ requireTradingDay: true }));
-
-    const snapshot = marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
-    expect(historicalFetchCalls).toBeGreaterThan(0);
-    expect(snapshot).not.toBeNull();
-    expect(snapshot?.candles.length).toBeGreaterThanOrEqual(6_660);
-  });
-
-  it('uses non-default rvQuantileWindowDays as the historical readiness source', async () => {
-    const currentDayUtcIso = '2026-02-25T05:00:00.000Z';
-    const currentDayStartUtcMs = Date.parse(currentDayUtcIso);
-    const now = new Date('2026-02-25T06:00:00.000Z');
-    const historicalMin1Candles = Array.from({ length: 18 }, (_value, index) =>
-      createMin1BarsForTradingDay({
-        dayStartUtcMs: currentDayStartUtcMs - (18 - index) * 24 * 60 * 60 * 1000,
-        basePrice: 19_500 + index * 10,
-        count: 60,
-      }),
-    ).flat();
-    const marketDataClient = createHistoryReadyMarketDataClient(
-      currentDayUtcIso,
-      historicalMin1Candles,
-    );
-    const baseMonitorConfig = createStrategyRuntimeConfigDouble();
-    const monitorConfig = {
-      ...baseMonitorConfig,
-      strategyConfig: {
-        ...baseMonitorConfig.strategyConfig,
-        regimeThresholds: {
-          ...baseMonitorConfig.strategyConfig.regimeThresholds,
-          rvQuantileWindowDays: 18,
-        },
-      },
-    };
-    const deps = createBaseDeps({
-      marketDataClient,
-      monitorConfig,
-      trader: createReadyTrader(),
-    });
-
-    const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(createLoadParams({ requireTradingDay: true, now }));
-
-    const snapshot = buildLoadedFactorSnapshot({
-      marketDataClient,
-      monitorConfig,
-    });
-    expect(snapshot).not.toBeNull();
-    expect(snapshot?.readiness.regimeReady).toBeTrue();
-    expect(snapshot?.readiness.reasons).not.toContain('波动率基线未就绪');
-  });
-
-  it('keeps PM regime readiness aligned when a half-day enters the recent historical window', async () => {
-    const currentDayUtcIso = '2026-02-25T05:00:00.000Z';
-    const currentDayStartUtcMs = Date.parse(currentDayUtcIso);
-    const now = new Date('2026-02-25T06:00:00.000Z');
-    const historicalMin1Candles = [
-      ...Array.from({ length: 20 }, (_value, index) =>
-        createMin1BarsForTradingDay({
-          dayStartUtcMs: currentDayStartUtcMs - (21 - index) * 24 * 60 * 60 * 1000,
-          basePrice: 19_200 + index * 10,
-          count: 60,
-        }),
-      ).flat(),
-      ...createMin1BarsForTradingDay({
-        dayStartUtcMs: currentDayStartUtcMs - 24 * 60 * 60 * 1000,
-        basePrice: 19_500,
-        count: 150,
-      }),
-    ].sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
-    let historicalFetchCalls = 0;
-    const marketDataClient = createHistoryReadyMarketDataClient(
-      currentDayUtcIso,
-      historicalMin1Candles,
-    );
-    const originalFetch = marketDataClient.fetchHistoricalCandlesticksByOffset;
-    marketDataClient.fetchHistoricalCandlesticksByOffset = async (
-      symbol,
-      period,
-      beforeTime,
-      count,
-      tradeSessions,
-    ) => {
-      historicalFetchCalls += 1;
-      return originalFetch(symbol, period, beforeTime, count, tradeSessions);
-    };
-    const deps = createBaseDeps({
-      marketDataClient,
-      trader: createReadyTrader(),
-    });
-
-    const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(createLoadParams({ requireTradingDay: true, now }));
-
-    const snapshot = buildLoadedFactorSnapshot({
-      marketDataClient,
-      monitorConfig: deps.monitorConfig,
-    });
-    expect(historicalFetchCalls).toBeGreaterThan(1);
-    expect(snapshot).not.toBeNull();
-    expect(snapshot?.session).toBe('pm');
-    expect(snapshot?.readiness.regimeReady).toBeTrue();
-    expect(snapshot?.readiness.reasons).not.toContain('波动率基线未就绪');
-  });
-
-  it('throws when higher-period current-day seed is missing during trading session', async () => {
+    const seededBySymbol = new Set<string>();
     const marketDataClient = createMarketDataClientDouble({
-      subscribeCandlesticks: async (_symbol, period) => {
-        if (period === Period.Min_1) {
-          return createMin1BarsForTradingDay({
-            dayStartUtcMs: Date.parse('2026-02-25T01:30:00.000Z'),
-            basePrice: 20_000,
-            count: 60,
-          }) as never;
-        }
-
-        return [createFixtureCandlestick(Date.parse('2026-02-24T01:30:00.000Z'), 20_000)] as never;
+      subscribeCandlesticks: async (symbol) => {
+        subscribedSymbols.push(symbol);
+        seededBySymbol.add(symbol);
+        return [
+          {
+            open: 100,
+            high: 101,
+            low: 99,
+            close: 100,
+            volume: 1000,
+            timestamp: new Date('2026-02-25T01:00:00.000Z'),
+          },
+        ] as never;
       },
-      fetchHistoricalCandlesticksByOffset: async (_symbol, period, beforeTime, count) => {
-        if (period !== Period.Min_1) {
-          return [];
+      getCandlestickSnapshot: (symbol, period) => {
+        if (!seededBySymbol.has(symbol)) {
+          return null;
         }
 
-        const history = Array.from({ length: 20 }, (_value, index) =>
-          createMin1BarsForTradingDay({
-            dayStartUtcMs: Date.parse('2026-02-05T01:30:00.000Z') + index * 24 * 60 * 60 * 1000,
-            basePrice: 19_500 + index * 10,
-            count: 330,
-          }),
-        ).flat();
-        const beforeTimestamp = beforeTime?.getTime() ?? Number.POSITIVE_INFINITY;
-        const eligible = history.filter((candle) => candle.timestamp.getTime() < beforeTimestamp);
-        return eligible.slice(Math.max(eligible.length - count, 0)) as never;
+        return {
+          symbol,
+          period,
+          version: 1,
+          candles: [
+            {
+              open: 100,
+              high: 101,
+              low: 99,
+              close: 100,
+              volume: 1000,
+              timestamp: Date.parse('2026-02-25T01:00:00.000Z'),
+            },
+          ],
+          lastBarTimestamp: Date.parse('2026-02-25T01:00:00.000Z'),
+          lastBarConfirmed: null,
+          initialized: true,
+        };
       },
     });
     const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitors),
       marketDataClient,
       trader: createReadyTrader(),
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await expectPromiseToRejectWithMessage(
-      load(createLoadParams({ requireTradingDay: true })),
-      '缺少当前交易日样本',
-    );
+    await load(createLoadParams({ requireTradingDay: true }));
+
+    expect(subscribedSymbols).toEqual(['HSI.HK', 'HHI.HK']);
+    expect(
+      marketDataClient.getCandlestickSnapshot('HSI.HK', TRADING.CANDLE_PERIOD)?.initialized,
+    ).toBe(true);
+
+    expect(
+      marketDataClient.getCandlestickSnapshot('HHI.HK', TRADING.CANDLE_PERIOD)?.initialized,
+    ).toBe(true);
   });
 
   it('hydrateCooldownFromTradeLog=true 时先 hydrate 再 recalculate', async () => {
@@ -632,7 +610,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradeLogHydrator: {
         hydrate: () => {
           callOrder.push('hydrate');
-          return new Map<'LONG' | 'SHORT', number>();
+          return new Map();
         },
       },
     });
@@ -655,7 +633,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const lastState = createMinimalLastState();
     const { tracker, restoreCompletedCalls, restoreInProgressCalls } =
       createProtectiveTrackerRecorder();
-    let receivedBoundaryMap: ReadonlyMap<'LONG' | 'SHORT', number> | undefined;
+    let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
 
     const protectiveOrder = createProtectiveOrder({
       orderId: 'protective-canceled-1',
@@ -669,8 +647,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
-      monitorConfig: monitor,
+      tradingConfig: createTradingConfig([monitor]),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [protectiveOrder],
       }),
@@ -678,7 +655,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         receivedBoundaryMap = protectionBoundaryByDirection;
       }),
       protectiveLiquidationEpisodeTracker: tracker,
-      tradeLogHydrator: { hydrate: () => new Map<'LONG' | 'SHORT', number>() },
+      tradeLogHydrator: { hydrate: () => new Map() },
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
@@ -686,11 +663,12 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreCompletedCalls).toHaveLength(1);
     expect(restoreCompletedCalls[0]).toEqual({
+      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: executedAtMs,
     });
     expect(restoreInProgressCalls).toHaveLength(0);
-    expect(receivedBoundaryMap?.get('LONG')).toBe(executedAtMs);
+    expect(receivedBoundaryMap?.get('HSI.HK:LONG')).toBe(executedAtMs);
   });
 
   it('restores in-progress protective episode for partial-filled pending order', async () => {
@@ -700,7 +678,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const lastState = createMinimalLastState();
     const { tracker, restoreCompletedCalls, restoreInProgressCalls } =
       createProtectiveTrackerRecorder();
-    let receivedBoundaryMap: ReadonlyMap<'LONG' | 'SHORT', number> | undefined;
+    let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
 
     const protectiveOrder = createProtectiveOrder({
       orderId: 'protective-partial-1',
@@ -714,8 +692,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
-      monitorConfig: monitor,
+      tradingConfig: createTradingConfig([monitor]),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [protectiveOrder],
       }),
@@ -723,7 +700,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         receivedBoundaryMap = protectionBoundaryByDirection;
       }),
       protectiveLiquidationEpisodeTracker: tracker,
-      tradeLogHydrator: { hydrate: () => new Map<'LONG' | 'SHORT', number>() },
+      tradeLogHydrator: { hydrate: () => new Map() },
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
@@ -732,7 +709,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(restoreCompletedCalls).toHaveLength(0);
     expect(restoreInProgressCalls).toHaveLength(1);
     expect(restoreInProgressCalls[0]).toEqual({
+      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
+      symbol: 'BULL.HK',
       latestExecutedTimeMs: executedAtMs,
     });
     expect(receivedBoundaryMap?.size).toBe(0);
@@ -746,7 +725,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const lastState = createMinimalLastState();
     const { tracker, restoreCompletedCalls, restoreInProgressCalls } =
       createProtectiveTrackerRecorder();
-    let receivedBoundaryMap: ReadonlyMap<'LONG' | 'SHORT', number> | undefined;
+    let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
 
     const completedOrder = createProtectiveOrder({
       orderId: 'protective-completed-1',
@@ -769,8 +748,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
-      monitorConfig: monitor,
+      tradingConfig: createTradingConfig([monitor]),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [completedOrder, pendingOrder],
       }),
@@ -779,7 +757,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', completedBoundaryMs]]),
+        hydrate: () => new Map([['HSI.HK:LONG', completedBoundaryMs]]),
       },
     });
 
@@ -793,6 +771,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreCompletedCalls).toEqual([
       {
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         boundaryExecutedTimeMs: completedBoundaryMs,
       },
@@ -800,11 +779,13 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreInProgressCalls).toEqual([
       {
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
+        symbol: 'BULL.HK',
         latestExecutedTimeMs: pendingLatestExecutedMs,
       },
     ]);
-    expect(receivedBoundaryMap?.get('LONG')).toBe(completedBoundaryMs);
+    expect(receivedBoundaryMap?.get('HSI.HK:LONG')).toBe(completedBoundaryMs);
   });
 
   it('advances restored completed boundary when a newer completed protective fill exists and direction is flat', async () => {
@@ -814,7 +795,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const monitor = createProtectiveMonitor();
     const lastState = createMinimalLastState();
     const { tracker, restoreCompletedCalls } = createProtectiveTrackerRecorder();
-    let receivedBoundaryMap: ReadonlyMap<'LONG' | 'SHORT', number> | undefined;
+    let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
 
     const completedOrder = createProtectiveOrder({
       orderId: 'protective-completed-newer-1',
@@ -828,8 +809,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      marketDataClient: createHistoryReadyMarketDataClient('2026-03-13T01:30:00.000Z'),
-      monitorConfig: monitor,
+      tradingConfig: createTradingConfig([monitor]),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [completedOrder],
       }),
@@ -838,7 +818,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', hydratedBoundaryMs]]),
+        hydrate: () => new Map([['HSI.HK:LONG', hydratedBoundaryMs]]),
       },
     });
 
@@ -852,14 +832,16 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreCompletedCalls).toEqual([
       {
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         boundaryExecutedTimeMs: hydratedBoundaryMs,
       },
       {
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         boundaryExecutedTimeMs: newerCompletedFillMs,
       },
     ]);
-    expect(receivedBoundaryMap?.get('LONG')).toBe(newerCompletedFillMs);
+    expect(receivedBoundaryMap?.get('HSI.HK:LONG')).toBe(newerCompletedFillMs);
   });
 });

@@ -4,11 +4,13 @@
  * 职责：
  * - 解析买入数量来源（显式数量/按目标金额换算）
  * - 校验显式数量整手约束
- * - 解析卖出可提交数量（仅消费上游信号已计算的数量）
+ * - 计算卖出可提交数量（按可用持仓裁剪）
  */
-import { Decimal } from 'longbridge';
+import { Decimal, type TradeContext } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
-import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
+import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
+import { TRADING } from '../../../constants/index.js';
+import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { isDefined } from '../../utils.js';
 import type { Signal } from '../../../types/signal.js';
 import type { QuantityResolver } from './types.js';
@@ -18,6 +20,12 @@ import {
   isLotMultiple,
 } from '../../../utils/numeric/index.js';
 import { toDecimal } from '../utils.js';
+import type { RateLimiter } from '../../../types/services.js';
+
+const HIGH_FRESHNESS_API_RETRY_CONFIG = {
+  retries: 0,
+  delayMs: 0,
+} as const;
 
 /**
  * 解析买入数量来源并执行显式数量校验。
@@ -96,14 +104,9 @@ function calculateBuyQuantity(
     return Decimal.ZERO();
   }
 
-  if (!isValidPositiveNumber(targetNotional)) {
-    logger.error(
-      `[跳过订单] targetNotional 无效(${String(targetNotional)})，拒绝使用非配置化默认金额下单`,
-    );
-    return Decimal.ZERO();
-  }
-
-  const notional = targetNotional;
+  const notional = isValidPositiveNumber(targetNotional)
+    ? targetNotional
+    : TRADING.DEFAULT_TARGET_NOTIONAL;
   const lotSize: number = signal.lotSize ?? 0;
   if (!Number.isFinite(lotSize) || lotSize <= 0) {
     logger.error(`[跳过订单] lotSize 无效(${lotSize})，这不应该发生，请检查配置验证逻辑`);
@@ -165,30 +168,73 @@ function resolveBuyQuantity(
 /**
  * 创建数量解析器。
  *
+ * @param deps 数量解析依赖
  * @returns 数量解析器实例
  */
-export function createQuantityResolver(): QuantityResolver {
+export function createQuantityResolver(deps: {
+  readonly rateLimiter: RateLimiter;
+}): QuantityResolver {
+  const { rateLimiter } = deps;
+
   /**
-   * 解析卖出数量（仅消费上游信号已计算的 quantity）。
+   * 计算卖出数量（基于可用持仓并支持信号显式 quantity 限制）。
    *
+   * @param ctx TradeContext
+   * @param symbol 交易标的
    * @param signal 交易信号
    * @returns 卖出数量（Decimal）
    */
-  function calculateSellQuantity(signal: Signal): Decimal {
-    if (!isDefined(signal.quantity)) {
-      logger.warn(`[跳过订单] 卖出信号缺少数量，无法提交。symbol=${signal.symbol}`);
-      return Decimal.ZERO();
+  async function calculateSellQuantity(
+    ctx: TradeContext,
+    symbol: string,
+    signal: Signal,
+  ): Promise<Decimal> {
+    let targetQuantity: number | null = null;
+    if (isDefined(signal.quantity)) {
+      const signalQty = signal.quantity;
+      if (isValidPositiveNumber(signalQty)) {
+        targetQuantity = signalQty;
+      }
     }
 
-    const sellQuantity = signal.quantity;
-    if (!isValidPositiveNumber(sellQuantity)) {
+    await rateLimiter.throttle();
+    const resp = await wrapExternalApiRequest({
+      operation: 'TradeContext.stockPositions.quantityResolver',
+      request: () => ctx.stockPositions([symbol]),
+      retryConfig: HIGH_FRESHNESS_API_RETRY_CONFIG,
+    });
+    const channels = resp.channels;
+    let totalAvailable = 0;
+    for (const ch of channels) {
+      const positions = Array.isArray(ch.positions) ? ch.positions : [];
+      for (const pos of positions) {
+        if (pos.symbol !== symbol) {
+          continue;
+        }
+
+        const qty = decimalToNumber(pos.availableQuantity);
+        if (isValidPositiveNumber(qty)) {
+          totalAvailable += qty;
+        }
+      }
+    }
+
+    if (!Number.isFinite(totalAvailable) || totalAvailable <= 0) {
       logger.warn(
-        `[跳过订单] 卖出信号数量无效，无法提交。symbol=${signal.symbol}, quantity=${String(sellQuantity)}`,
+        `[跳过订单] 当前无可用持仓，无需平仓。symbol=${symbol}, available=${totalAvailable}`,
       );
       return Decimal.ZERO();
     }
 
-    return toDecimal(sellQuantity);
+    if (targetQuantity === null) {
+      return toDecimal(totalAvailable);
+    }
+
+    const actualQty = Math.min(targetQuantity, totalAvailable);
+    logger.debug(
+      `[部分卖出] 信号指定卖出数量=${targetQuantity}，可用数量=${totalAvailable}，实际卖出=${actualQty}`,
+    );
+    return toDecimal(actualQty);
   }
 
   return {

@@ -4,6 +4,7 @@
  * 覆盖：
  * - types 层不得依赖 services 层
  * - services 层不得依赖 core 层
+ * - services 层允许依赖定义好的策略类型路径
  */
 import path from 'node:path';
 import { describe, expect, it } from 'bun:test';
@@ -31,7 +32,7 @@ describe('architecture import boundaries', () => {
     ).toBe(true);
   });
 
-  it('rejects imports from src/services to src/core', async () => {
+  it('rejects imports from src/services to src/core except allowed ports', async () => {
     const messages = await lintText(
       'src/services/autoSymbolManager/utils.ts',
       "import { createRiskChecker } from '../core/riskController/index.js';\nvoid createRiskChecker;\n",
@@ -43,15 +44,12 @@ describe('architecture import boundaries', () => {
     ).toBe(true);
   });
 
-  it('rejects type-only imports from src/services to src/core', async () => {
+  it('allows services imports from the defined strategy type path', async () => {
     const messages = await lintText(
       'src/services/autoSymbolManager/utils.ts',
       "import type { TradingSignalStrategy } from '../core/strategy/types.js';\nexport type Probe = TradingSignalStrategy;\n",
     );
 
-    expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
-    expect(
-      messages.some((message) => message.message.includes('services 层不得依赖 core 层')),
-    ).toBe(true);
+    expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(false);
   });
 });

@@ -3,44 +3,40 @@
  *
  * 功能：
  * - 消费 MonitorTaskQueue 中的监控任务
- * - 使用 setImmediate 异步执行，不阻塞主循环
- * - 处理多种监控任务类型（自动换标、席位刷新、清仓检查等）
+ * - 使用 setImmediate 异步执行，不阻塞队列调度
+ * - 处理自动寻标与席位刷新任务
  *
  * 支持的任务类型：
- * - AUTO_SYMBOL_TICK：自动寻标（席位为空时触发）
- * - AUTO_SYMBOL_SWITCH_DISTANCE：距离触发换标检查
+ * - AUTO_SYMBOL_TICK：自动寻标与周期换标检查
  * - SEAT_REFRESH：席位刷新（换标后刷新订单记录、浮亏数据）
- * - LIQUIDATION_DISTANCE_CHECK：牛熊证距回收价清仓检查
- * - UNREALIZED_LOSS_CHECK：浮亏清仓检查
  *
  * 席位快照验证：
- * - 任务携带创建时的席位快照（版本号+标的）
+ * - 任务携带创建时的席位快照（版本号、标的和必要的激活基线）
  * - 处理前验证快照是否与当前席位一致
  * - 防止换标后执行旧席位的任务
  */
 import { logger } from '../../../utils/logger/index.js';
-import { ORDER_QUOTE_RETRY } from '../../../constants/index.js';
+import { API } from '../../../constants/index.js';
 import { createQueueRunner } from './queueRunner.js';
 import { createRefreshHelpers } from './helpers/refreshHelpers.js';
 import { createAutoSymbolHandlers } from './handlers/autoSymbol.js';
 import { createSeatRefreshHandler } from './handlers/seatRefresh.js';
-import { createLiquidationDistanceHandler } from './handlers/liquidationDistance.js';
-import { createUnrealizedLossHandler } from './handlers/unrealizedLoss.js';
 import type { MonitorTask } from '../monitorTaskQueue/types.js';
 import { formatError } from '../../../utils/error/index.js';
+import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
+import type { PeriodicSwitchRouteBaseline } from '../../periodicSwitchWakeupRuntime/types.js';
 import type {
   MonitorTaskContext,
   MonitorTaskDataMap,
   MonitorTaskProcessor,
   MonitorTaskProcessorDeps,
-  MonitorTaskRetryRequest,
-  RetryRegistryEntry,
   MonitorTaskStatus,
   RefreshHelpers,
+  SeatRefreshRetryTimer,
 } from './types.js';
 
 /**
- * 兜底的穷尽性断言，防止新增任务类型后遗漏分派逻辑。
+ * 穷尽性 fail-fast 断言，防止新增任务类型后遗漏分派逻辑。
  *
  * 一旦出现未覆盖类型，立即抛错并暴露实现缺口。
  */
@@ -48,148 +44,212 @@ function assertNeverTask(_task: never): never {
   throw new Error('[MonitorTaskProcessor] 存在未处理的任务分派分支');
 }
 
-/**
- * 判断监控任务是否需要连续交易时段执行门禁。
- * SEAT_REFRESH 属于席位激活屏障，不应在盘外被直接丢弃，否则会导致 ACTIVATING 卡死。
- */
-function requiresExecutionGate(task: MonitorTask<MonitorTaskDataMap>): boolean {
-  return task.type !== 'SEAT_REFRESH';
+function buildPeriodicBaseline(
+  task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
+): PeriodicSwitchRouteBaseline {
+  const data = task.data;
+  return {
+    monitorSymbol: data.monitorSymbol,
+    direction: data.direction,
+    symbol: data.symbol,
+    seatVersion: data.seatVersion,
+    lastSeatActivatedAt: data.lastSeatActivatedAt,
+  };
 }
 
 /**
  * 创建监控任务处理器。
- * 消费 MonitorTaskQueue 中的任务，使用 setImmediate 异步执行；依赖 monitorContext、refreshGate 等完成席位校验与刷新。
+ * 消费 MonitorTaskQueue 中的任务，使用 setImmediate 异步执行；依赖 getMonitorContext 与各 handler 完成席位校验与刷新。
  *
- * @param deps 依赖注入，包含 monitorTaskQueue、refreshGate、monitorContext、各 handler 依赖等
- * @returns 实现 start/stop/stopAndDrain/restart 的处理器实例
+ * @param deps 依赖注入，包含 monitorTaskQueue、getMonitorContext、各 handler 依赖等
+ * @returns 实现 start/stopAndDrain/restart 的处理器实例
  */
 export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): MonitorTaskProcessor {
   const {
     monitorTaskQueue,
-    refreshGate,
-    monitorContext,
-    clearMonitorDirectionQueues,
+    getMonitorContext,
     trader,
     marketDataClient,
+    quoteSubscriptionRuntime,
+    switchWakeupRuntime,
+    periodicSwitchWakeupRuntime,
     lastState,
-    monitorConfig,
-    liquidationOrderType,
-    scheduleRetry,
-    clearRetry,
+    tradingConfig,
     getCanProcessTask,
+    getCanTradeNow,
+    onFatalError,
     onProcessed,
-    onError,
   } = deps;
 
-  const schedule =
-    scheduleRetry ??
-    ((callback: () => void, delayMs: number) => {
-      return setTimeout(callback, delayMs);
-    });
-  const clear =
-    clearRetry ??
-    ((handle: ReturnType<typeof setTimeout>) => {
-      clearTimeout(handle);
-    });
-  const retryRegistry = new Map<string, RetryRegistryEntry>();
-  let lifecycleActive = true;
-  const baseInstrumentSymbol = monitorConfig.baseInstrumentSymbol;
+  /** 根据 monitorSymbol 获取监控上下文，未找到时打日志并返回 null */
+  function getContextOrSkip(monitorSymbol: string): MonitorTaskContext | null {
+    const context = getMonitorContext(monitorSymbol);
+    if (!context) {
+      logger.warn(`[MonitorTaskProcessor] 未找到监控上下文: ${monitorSymbol}`);
+      return null;
+    }
 
-  function clearRetryEntry(retryKey: string): void {
-    const retryEntry = retryRegistry.get(retryKey);
-    if (!retryEntry) {
+    return context;
+  }
+  const { handleAutoSymbolTick } = createAutoSymbolHandlers({
+    getContextOrSkip,
+    switchWakeupRuntime,
+    periodicSwitchWakeupRuntime,
+    getCanTradeNow,
+  });
+  const handleSeatRefresh = createSeatRefreshHandler({
+    getContextOrSkip,
+    tradingConfig,
+    marketDataClient,
+    quoteSubscriptionRuntime,
+  });
+  const seatRefreshRetryTimers = new Map<string, SeatRefreshRetryTimer>();
+
+  function handoffPeriodicTaskOutcome(
+    task: MonitorTask<MonitorTaskDataMap>,
+    status: MonitorTaskStatus,
+  ): void {
+    if (task.type !== 'AUTO_SYMBOL_TICK' || status === 'processed') {
       return;
     }
 
-    clear(retryEntry.handle);
-    retryRegistry.delete(retryKey);
+    const baseline = buildPeriodicBaseline(task);
+    periodicSwitchWakeupRuntime.replanRouteAfterTask({
+      ...baseline,
+      taskTimeMs: task.data.currentTimeMs,
+      status,
+    });
   }
 
-  function clearAllRetryEntries(): void {
-    for (const retryKey of retryRegistry.keys()) {
-      clearRetryEntry(retryKey);
-    }
-  }
-
-  function scheduleTaskRetry(retryRequest: MonitorTaskRetryRequest): void {
-    if (!lifecycleActive || retryRegistry.has(retryRequest.retryKey)) {
-      return;
+  /**
+   * 为 SEAT_REFRESH 外部 API 失败安排一次延迟重试。
+   * 为什么：席位刷新是任务性恢复链路，可由 owner 有界重试；但外部 API 故障不能在同一队列轮次内立即打回，避免瞬时故障被同步放大。
+   */
+  function retrySeatRefreshOnce(task: MonitorTask<MonitorTaskDataMap>): boolean {
+    if (task.type !== 'SEAT_REFRESH') {
+      return false;
     }
 
-    const handle = schedule(() => {
-      const retryEntry = retryRegistry.get(retryRequest.retryKey);
-      if (!retryEntry || !lifecycleActive) {
+    const apiRetryAttempt = task.data.apiRetryAttempt ?? 0;
+    if (apiRetryAttempt >= 1) {
+      return false;
+    }
+
+    const pendingTimer = seatRefreshRetryTimers.get(task.dedupeKey);
+    if (
+      pendingTimer?.direction === task.data.direction &&
+      pendingTimer.seatVersion === task.data.seatVersion &&
+      pendingTimer.nextSymbol === task.data.nextSymbol
+    ) {
+      return true;
+    }
+
+    if (pendingTimer !== undefined) {
+      clearTimeout(pendingTimer.handle);
+      seatRefreshRetryTimers.delete(task.dedupeKey);
+    }
+
+    const retryTimer = setTimeout(() => {
+      seatRefreshRetryTimers.delete(task.dedupeKey);
+      const context = getMonitorContext(task.monitorSymbol);
+      const currentSeat = context?.symbolRegistry.getSeatState(
+        task.data.monitorSymbol,
+        task.data.direction,
+      );
+      const currentSeatVersion = context?.symbolRegistry.getSeatVersion(
+        task.data.monitorSymbol,
+        task.data.direction,
+      );
+      if (
+        currentSeat === undefined ||
+        currentSeatVersion !== task.data.seatVersion ||
+        currentSeat.symbol !== task.data.nextSymbol ||
+        currentSeat.status !== 'ACTIVATING'
+      ) {
         return;
       }
 
-      retryRegistry.delete(retryRequest.retryKey);
-      monitorTaskQueue.scheduleLatest(retryRequest.task);
-    }, ORDER_QUOTE_RETRY.INTERVAL_MS);
-    retryRegistry.set(retryRequest.retryKey, { handle });
+      monitorTaskQueue.scheduleLatest({
+        type: 'SEAT_REFRESH',
+        dedupeKey: task.dedupeKey,
+        monitorSymbol: task.monitorSymbol,
+        data: {
+          ...task.data,
+          apiRetryAttempt: apiRetryAttempt + 1,
+        },
+      });
+    }, API.DEFAULT_RETRY_DELAY_MS);
+
+    seatRefreshRetryTimers.set(task.dedupeKey, {
+      handle: retryTimer,
+      direction: task.data.direction,
+      seatVersion: task.data.seatVersion,
+      nextSymbol: task.data.nextSymbol,
+    });
+    return true;
   }
 
-  /** 获取单实例监控上下文。 */
-  function getContextOrSkip(): MonitorTaskContext | null {
-    return monitorContext;
+  function finalizeExhaustedSeatRefresh(task: MonitorTask<MonitorTaskDataMap>): void {
+    if (task.type !== 'SEAT_REFRESH') {
+      return;
+    }
+
+    const context = getMonitorContext(task.monitorSymbol);
+    const currentSeat = context?.symbolRegistry.getSeatState(
+      task.data.monitorSymbol,
+      task.data.direction,
+    );
+    const currentSeatVersion = context?.symbolRegistry.getSeatVersion(
+      task.data.monitorSymbol,
+      task.data.direction,
+    );
+    if (
+      context === null ||
+      currentSeat === undefined ||
+      currentSeatVersion !== task.data.seatVersion ||
+      currentSeat.symbol !== task.data.nextSymbol ||
+      currentSeat.status !== 'ACTIVATING'
+    ) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    context.symbolRegistry.updateSeatStateWithVersionBump(
+      task.data.monitorSymbol,
+      task.data.direction,
+      {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: nowMs,
+        lastSearchAt: currentSeat.lastSearchAt ?? nowMs,
+        lastSeatActivatedAt: null,
+        callPrice: null,
+        searchFailCountToday: currentSeat.searchFailCountToday,
+        frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+      },
+    );
   }
-  const { handleAutoSymbolTick, handleAutoSymbolSwitchDistance } = createAutoSymbolHandlers({
-    baseInstrumentSymbol,
-    getContextOrSkip,
-    refreshGate,
-    lastState,
-    ...(getCanProcessTask ? { getCanProcessTask } : {}),
-  });
-  const handleSeatRefresh = createSeatRefreshHandler({
-    baseInstrumentSymbol,
-    getContextOrSkip,
-    clearMonitorDirectionQueues,
-    marketDataClient,
-    lastState,
-  });
-  const handleLiquidationDistanceCheck = createLiquidationDistanceHandler({
-    baseInstrumentSymbol,
-    getContextOrSkip,
-    refreshGate,
-    marketDataClient,
-    lastState,
-    trader,
-    liquidationOrderType,
-    ...(getCanProcessTask ? { getCanProcessTask } : {}),
-  });
-  const handleUnrealizedLossCheck = createUnrealizedLossHandler({
-    baseInstrumentSymbol,
-    getContextOrSkip,
-    refreshGate,
-    marketDataClient,
-    trader,
-    ...(getCanProcessTask ? { getCanProcessTask } : {}),
-  });
+
+  /** 清理尚未触发的 SEAT_REFRESH 延迟重试，保证 stop/restart 后没有隐藏 timer。 */
+  function clearSeatRefreshRetryTimers(): void {
+    for (const retryTimer of seatRefreshRetryTimers.values()) {
+      clearTimeout(retryTimer.handle);
+    }
+
+    seatRefreshRetryTimers.clear();
+  }
+
   async function processTask(
     task: MonitorTask<MonitorTaskDataMap>,
     helpers: RefreshHelpers,
-  ): Promise<{
-    readonly status: MonitorTaskStatus;
-    readonly retryRequest: MonitorTaskRetryRequest | null;
-  }> {
+  ): Promise<MonitorTaskStatus> {
     switch (task.type) {
       case 'AUTO_SYMBOL_TICK': {
-        return { status: await handleAutoSymbolTick(task), retryRequest: null };
-      }
-
-      case 'AUTO_SYMBOL_SWITCH_DISTANCE': {
-        return { status: await handleAutoSymbolSwitchDistance(task), retryRequest: null };
+        return handleAutoSymbolTick(task);
       }
 
       case 'SEAT_REFRESH': {
-        return { status: await handleSeatRefresh(task, helpers), retryRequest: null };
-      }
-
-      case 'LIQUIDATION_DISTANCE_CHECK': {
-        return handleLiquidationDistanceCheck(task);
-      }
-
-      case 'UNREALIZED_LOSS_CHECK': {
-        return handleUnrealizedLossCheck(task);
+        return handleSeatRefresh(task, helpers);
       }
 
       default: {
@@ -198,43 +258,51 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     }
   }
 
-  /** 循环消费监控任务队列直至为空，每项经 processTask 分派处理，门禁或上下文缺失时跳过并通知 onProcessed */
+  /** 循环消费监控任务队列直至为空；生命周期门禁关闭时跳过，处理结果按实际 status 通知 owner 与 onProcessed。 */
   async function processQueue(): Promise<void> {
-    const helpers = createRefreshHelpers({ trader, lastState });
+    const helpers = createRefreshHelpers({ trader, lastState, quoteSubscriptionRuntime });
     while (!monitorTaskQueue.isEmpty()) {
       const task = monitorTaskQueue.pop();
       if (!task) {
         break;
       }
 
-      if (requiresExecutionGate(task) && getCanProcessTask && !getCanProcessTask()) {
+      if (getCanProcessTask && !getCanProcessTask()) {
         logger.debug(
-          `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${baseInstrumentSymbol} dedupe=${task.dedupeKey}`,
+          `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
         );
+        handoffPeriodicTaskOutcome(task, 'skipped');
         onProcessed?.(task, 'skipped');
         continue;
       }
 
-      const result = await processTask(task, helpers).catch((err: unknown) => {
-        logger.error('[MonitorTaskProcessor] 处理任务失败', formatError(err));
-        onError?.(
-          new Error('[MonitorTaskProcessor] 监控任务处理失败，等待下一轮重试', { cause: err }),
+      const status = await processTask(task, helpers).catch((err: unknown) => {
+        if (!isExternalApiRequestError(err)) {
+          throw err;
+        }
+
+        logger.error(
+          `[MonitorTaskProcessor] 处理任务失败 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+          formatError(err),
         );
-        return {
-          status: 'failed' as const,
-          retryRequest: null,
-        };
+        const retryScheduled = retrySeatRefreshOnce(task);
+        if (!retryScheduled) {
+          finalizeExhaustedSeatRefresh(task);
+        }
+
+        return 'failed' as const;
       });
-      if (result.retryRequest) {
-        scheduleTaskRetry(result.retryRequest);
-      } else if (
-        task.type === 'LIQUIDATION_DISTANCE_CHECK' ||
-        task.type === 'UNREALIZED_LOSS_CHECK'
-      ) {
-        clearRetryEntry(task.type);
+
+      if (status === 'processed' || status === 'skipped') {
+        const retryTimer = seatRefreshRetryTimers.get(task.dedupeKey);
+        if (retryTimer !== undefined) {
+          clearTimeout(retryTimer.handle);
+          seatRefreshRetryTimers.delete(task.dedupeKey);
+        }
       }
 
-      onProcessed?.(task, result.status);
+      handoffPeriodicTaskOutcome(task, status);
+      onProcessed?.(task, status);
     }
   }
   const queueRunner = createQueueRunner({
@@ -242,9 +310,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     processQueue,
     onQueueError: (err) => {
       logger.error('[MonitorTaskProcessor] 处理队列时发生错误', formatError(err));
-      onError?.(
-        new Error('[MonitorTaskProcessor] 监控任务队列失败，等待下一轮重试', { cause: err }),
-      );
+      onFatalError?.(err);
     },
     onAlreadyRunning: () => {
       logger.warn('[MonitorTaskProcessor] 处理器已在运行中');
@@ -252,24 +318,16 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   });
   return {
     start: () => {
-      lifecycleActive = true;
       queueRunner.start();
     },
-    stop: () => {
-      lifecycleActive = false;
-      clearAllRetryEntries();
-      queueRunner.stop();
-    },
     stopAndDrain: async () => {
-      lifecycleActive = false;
-      clearAllRetryEntries();
+      clearSeatRefreshRetryTimers();
       await queueRunner.stopAndDrain();
+      clearSeatRefreshRetryTimers();
     },
     restart: () => {
-      lifecycleActive = false;
-      clearAllRetryEntries();
+      clearSeatRefreshRetryTimers();
       queueRunner.restart();
-      lifecycleActive = true;
     },
   };
 }

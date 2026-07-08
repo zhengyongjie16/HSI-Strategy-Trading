@@ -1,4 +1,4 @@
-import type { StrategyRuntime, LastState } from '../../../types/state.js';
+import type { MonitorContext, LastState } from '../../../types/state.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { TaskQueue, BuyTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
@@ -14,8 +14,8 @@ export type BuyProcessorDeps = {
   /** 买入任务队列 */
   readonly taskQueue: TaskQueue<BuyTaskType>;
 
-  /** 单实例监控上下文 */
-  readonly monitorContext: StrategyRuntime;
+  /** 获取监控上下文的函数 */
+  readonly getMonitorContext: (monitorSymbol: string) => MonitorContext | undefined;
 
   /** 信号处理器（风险检查） */
   readonly signalProcessor: SignalProcessor;
@@ -37,4 +37,7 @@ export type BuyProcessorDeps = {
 
   /** 生命周期门禁：false 时跳过任务执行 */
   readonly getCanProcessTask?: () => boolean;
+
+  /** 非 API 程序错误进入 fatal 通道 */
+  readonly onFatalError?: (error: unknown) => void;
 };

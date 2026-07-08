@@ -1,11 +1,10 @@
-import type { StrategyState } from '../../types/state.js';
-import type { StrategyRuntimeConfig } from '../../types/config.js';
-import type { SignalType } from '../../types/signal.js';
+import type { MonitorState } from '../../types/state.js';
+import type { MonitorConfig } from '../../types/config.js';
+import type { BuySignalAction, SignalType } from '../../types/signal.js';
 import type { DecimalLike } from './types.js';
 
 /**
  * 类型保护：判断 unknown 是否为可索引对象。
- * 默认行为：仅当 typeof value === 'object' 且 value !== null 时返回 true，否则返回 false。
  *
  * @param value 待判断值
  * @returns true 表示可按键读取字段，否则返回 false
@@ -15,7 +14,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 将 Decimal 类型转换为数字。默认行为：null/undefined 返回 NaN，便于调用方用 Number.isFinite() 判断。
+ * 将 Decimal 类型转换为数字。
  *
  * @param decimalLike Decimal 对象、数字、字符串或 null/undefined
  * @returns 转换后的数字，null/undefined 时返回 NaN
@@ -35,7 +34,7 @@ export function decimalToNumber(
 }
 
 /**
- * 检查值是否为有效的正数（有限且大于 0）。默认行为：非 number 或非正数返回 false。
+ * 检查值是否为有效的正数。
  *
  * @param value 待检查的值
  * @returns 为有限正数时返回 true，否则返回 false
@@ -45,30 +44,27 @@ export function isValidPositiveNumber(value: unknown): value is number {
 }
 
 /**
- * 判断是否为买入操作。默认行为：无。
+ * 判断是否为买入操作。
  *
  * @param action 信号类型
  * @returns 为 BUYCALL 或 BUYPUT 时返回 true
  */
-export function isBuyAction(action: SignalType): boolean {
+export function isBuyAction(action: SignalType): action is BuySignalAction {
   return action === 'BUYCALL' || action === 'BUYPUT';
 }
 
 /**
- * 根据单实例运行时配置初始化策略状态。默认行为：无；所有可更新字段初始为 null 或空。
+ * 根据监控配置初始化单标的监控状态。
  *
- * @param config 单实例运行时配置（baseInstrumentSymbol 等）
- * @returns 初始化的 StrategyState
+ * @param config 监控配置（monitorSymbol 等）
+ * @returns 初始化的 MonitorState
  */
-export function createStrategyState(config: StrategyRuntimeConfig): StrategyState {
+export function initMonitorState(config: MonitorConfig): MonitorState {
   return {
-    baseInstrumentSymbol: config.baseInstrumentSymbol,
-    monitorPrice: null,
-    longPrice: null,
-    shortPrice: null,
+    monitorSymbol: config.monitorSymbol,
     signal: null,
-    pendingSignals: [],
+    pendingDelayedSignals: [],
     lastMonitorSnapshot: null,
-    lastCandlestickCacheVersion: null,
+    incrementalIndicatorRuntime: null,
   };
 }

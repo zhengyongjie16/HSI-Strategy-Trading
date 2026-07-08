@@ -5,9 +5,9 @@
  * - 验证双认证模式下的启动配置校验行为
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { createTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
-import { createRequiredStaticEnv } from '../helpers/configEnvFactory.js';
+import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
 
 const oauthBuildCalls: Array<{ clientId: string; callbackPort?: number }> = [];
 const fromOAuthCalls: Array<{ oauth: unknown; extra: unknown }> = [];
@@ -64,7 +64,6 @@ const OAuth = {
   },
 };
 
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- bun:test mock.module 为同步注册
 mock.module('longbridge', () => ({
   Config,
   OAuth,
@@ -74,27 +73,38 @@ mock.module('longbridge', () => ({
 
 import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
 
+function createSignalConfig() {
+  return {
+    conditionGroups: [
+      {
+        conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
+        requiredCount: 1,
+      },
+    ],
+  } as const;
+}
+
 function createTradingConfigForValidation() {
+  const signalConfig = createSignalConfig();
   return createTradingConfig({
-    env: createRequiredStaticEnv(),
+    monitors: [
+      createMonitorConfigDouble({
+        orderOwnershipMapping: ['HSI'],
+        signalConfig: {
+          buycall: signalConfig,
+          sellcall: signalConfig,
+          buyput: signalConfig,
+          sellput: signalConfig,
+        },
+      }),
+    ],
   });
 }
 
 async function validateEnv(env: NodeJS.ProcessEnv): Promise<unknown> {
-  const validationEnv = createRequiredStaticEnv();
-  delete validationEnv['LONGBRIDGE_AUTH_MODE'];
-  delete validationEnv['LONGBRIDGE_CLIENT_ID'];
-  delete validationEnv['LONGBRIDGE_CALLBACK_PORT'];
-  delete validationEnv['LONGBRIDGE_APP_KEY'];
-  delete validationEnv['LONGBRIDGE_APP_SECRET'];
-  delete validationEnv['LONGBRIDGE_ACCESS_TOKEN'];
-
   try {
-    validateAllConfig({
-      env: {
-        ...validationEnv,
-        ...env,
-      },
+    await validateAllConfig({
+      env,
       tradingConfig: createTradingConfigForValidation(),
     });
     return null;

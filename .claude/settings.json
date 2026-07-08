@@ -7,11 +7,11 @@
       "WebFetch(*)",
       "Search(*)",
       "Bash(node *)",
+      "Bash(python *)",
       "Bash(bun *)",
       "Bash(ls *)",
       "Bash(cd *)",
-      "Bash(mkdir *)",
-      "Bash(cat *)"
+      "Bash(mkdir *)"
     ],
     "deny": [],
     "ask": [

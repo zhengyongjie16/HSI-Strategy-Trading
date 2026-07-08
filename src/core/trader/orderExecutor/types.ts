@@ -1,8 +1,8 @@
 import type { Decimal, TradeContext } from 'longbridge';
-import type { StrategyRuntimeConfig, GlobalConfig } from '../../../types/config.js';
+import type { MonitorConfig, GlobalConfig } from '../../../types/config.js';
 import type { Signal, SignalType } from '../../../types/signal.js';
 import type { OrderCacheManager, OrderMonitor } from '../types.js';
-import type { RateLimiter, TradeCheckResult } from '../../../types/services.js';
+import type { OrderRecorder, RateLimiter, TradeCheckResult } from '../../../types/services.js';
 
 /**
  * 提交目标订单函数签名。
@@ -15,7 +15,7 @@ export type SubmitTargetOrder = (
   signal: Signal,
   targetSymbol: string,
   isShortSymbol: boolean,
-  monitorConfig?: StrategyRuntimeConfig | null,
+  monitorConfig?: MonitorConfig | null,
 ) => Promise<string | null>;
 
 /**
@@ -28,11 +28,12 @@ export type SubmitTargetOrderDeps = {
   readonly rateLimiter: RateLimiter;
   readonly cacheManager: OrderCacheManager;
   readonly orderMonitor: OrderMonitor;
+  readonly orderRecorder: OrderRecorder;
   readonly globalConfig: GlobalConfig;
   readonly canExecuteSignal: (signal: Signal, stage: string) => boolean;
   readonly recordBuyAttempt: (
     signalAction: SignalType,
-    monitorConfig?: StrategyRuntimeConfig | null,
+    monitorConfig?: MonitorConfig | null,
   ) => void;
 };
 
@@ -43,15 +44,9 @@ export type SubmitTargetOrderDeps = {
  * 使用范围：仅 orderExecutor 目录内部使用。
  */
 export interface BuyThrottle {
-  canTradeNow: (
-    signalAction: SignalType,
-    monitorConfig?: StrategyRuntimeConfig | null,
-  ) => TradeCheckResult;
+  canTradeNow: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => TradeCheckResult;
   resetBuyThrottle: () => void;
-  recordBuyAttempt: (
-    signalAction: SignalType,
-    monitorConfig?: StrategyRuntimeConfig | null,
-  ) => void;
+  recordBuyAttempt: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => void;
 }
 
 /**
@@ -61,6 +56,6 @@ export interface BuyThrottle {
  * 使用范围：仅 orderExecutor 目录内部使用。
  */
 export interface QuantityResolver {
-  calculateSellQuantity: (signal: Signal) => Decimal;
+  calculateSellQuantity: (ctx: TradeContext, symbol: string, signal: Signal) => Promise<Decimal>;
   resolveBuyQuantity: (signal: Signal, isShortSymbol: boolean, targetNotional: number) => Decimal;
 }

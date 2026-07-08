@@ -1,258 +1,513 @@
 /**
  * orderMonitor/settlementFlow 业务测试
  *
- * 覆盖当前结算职责：
- * - 终态后清理 tracked order / hold
- * - 写 recent filled 摘要
- * - 推送 post-trade refresh
- * - 缺少归属上下文时拒绝结算
+ * 覆盖：
+ * - 买单与卖单终态结算的幂等、副作用与关联单语义
+ * - 缺少归属上下文时拒绝结算，避免错误记账
  */
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-import type { TradeRecord } from '../../../../src/types/trader.js';
-import type { StrategyRuntimeConfig } from '../../../../src/types/config.js';
+import {
+  createDailyLossTrackerDouble,
+  createOrderRecorderDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+} from '../../../helpers/testDoubles.js';
+import type { OrderRecord, OrderStateChangedEvent } from '../../../../src/types/services.js';
+import type { OrderHoldRegistry } from '../../../../src/core/trader/types.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
 } from '../../../../src/core/trader/orderMonitor/types.js';
-import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
-import {
-  createDailyLossTrackerDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createStrategyRuntimeConfigDouble,
-} from '../../../helpers/testDoubles.js';
 
-const recordedTrades: TradeRecord[] = [];
-
-// eslint-disable-next-line @typescript-eslint/no-floating-promises -- 导入前注册模块替身
-mock.module('../../../../src/core/trader/tradeLogger.js', () => ({
-  recordTrade: (tradeRecord: TradeRecord) => {
-    recordedTrades.push(tradeRecord);
+mock.module('../../../../src/utils/logger/index.js', () => ({
+  logger: {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
   },
 }));
 
-const defaultMonitorConfig = createStrategyRuntimeConfigDouble();
-
-function createTrackedOrder(params: {
-  readonly orderId: string;
-  readonly symbol: string;
-  readonly side: OrderSide;
-  readonly isLongSymbol: boolean;
-  readonly status?: OrderStatus;
-  readonly executedPrice?: number | null;
-  readonly executedQuantity?: number;
-  readonly submittedQuantity?: number;
-  readonly lastExecutedTimeMs?: number | null;
-  readonly baseInstrumentSymbol?: string | null;
-  readonly isProtectiveLiquidation?: boolean;
-  readonly liquidationTriggerLimit?: number;
-  readonly liquidationCooldownConfig?: StrategyRuntimeConfig['liquidationCooldown'];
-}): OrderMonitorTrackedOrder {
-  return {
-    orderId: params.orderId,
-    symbol: params.symbol,
-    side: params.side,
-    isLongSymbol: params.isLongSymbol,
-    baseInstrumentSymbol: params.baseInstrumentSymbol ?? defaultMonitorConfig.baseInstrumentSymbol,
-    isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
-    liquidationTriggerLimit:
-      params.liquidationTriggerLimit ?? defaultMonitorConfig.liquidationTriggerLimit,
-    liquidationCooldownConfig:
-      params.liquidationCooldownConfig ?? defaultMonitorConfig.liquidationCooldown,
-    orderType: OrderType.ELO,
-    submittedPrice: 1,
-    initialSubmittedPrice: 1,
-    submittedQuantity: params.submittedQuantity ?? 100,
-    executedQuantity: params.executedQuantity ?? 0,
-    executedPrice: params.executedPrice ?? null,
-    lastExecutedTimeMs: params.lastExecutedTimeMs ?? null,
-    status: params.status ?? OrderStatus.New,
-    submittedAt: Date.parse('2026-02-16T01:00:00.000Z'),
-    lastPriceUpdateAt: Date.parse('2026-02-16T01:00:00.000Z'),
-    convertedToMarket: false,
-    nextCancelAttemptAt: Date.parse('2026-02-16T01:00:00.000Z'),
-    cancelRetryCount: 0,
-    replaceCapability: 'SUPPORTED',
-    replaceBlockedUntilAt: null,
-    nextStateCheckAt: null,
-    stateCheckRetryCount: 0,
-    stateCheckBlockedUntilAt: null,
-    replaceTempBlockedCount: 0,
-    replaceResumeMode: 'TIME_BACKOFF',
-    quoteRetryAttempts: 0,
-    quoteRetryNextAt: null,
-    quoteRetryExhausted: false,
-    timeoutMarketConversionPending: false,
-    timeoutMarketConversionTerminalState: null,
-  };
-}
+import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
 
 function createRuntime(): OrderMonitorRuntimeStore {
   return {
     trackedOrders: new Map<string, OrderMonitorTrackedOrder>(),
     trackedOrderLifecycles: new Map(),
-    pendingRefreshSymbols: [],
-    recentFilledOrders: new Map(),
     bootstrappingOrderEvents: new Map(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
     latestReplaceOutcomeByOrderId: new Map(),
+    orderStateChangedListeners: new Set(),
+    trackedOrderIdsBySymbol: new Map(),
+    routeStatesBySymbol: new Map(),
+    latestRouteGenerationBySymbol: new Map(),
     runtimeState: 'ACTIVE',
+    running: false,
+    unsubscribeQuoteUpdated: null,
   };
 }
 
-describe('orderMonitor settlementFlow', () => {
-  beforeEach(() => {
-    recordedTrades.length = 0;
-  });
+function createOrderHoldRegistry(): OrderHoldRegistry {
+  return {
+    trackOrder: () => {},
+    markOrderClosed: () => {},
+    seedFromOrders: () => {},
+    getHoldSymbols: () => new Set<string>(),
+    onOrderHoldSymbolsChanged: () => () => {},
+    clear: () => {},
+  };
+}
 
-  const monitorConfig = defaultMonitorConfig;
-
-  it('records filled sell summary, refresh request and tracking cleanup', () => {
+describe('settlementFlow business flow', () => {
+  it('settles FILLED buy order once and records a post-trade refresh need plus order state event without closeSync runtime state', () => {
     const runtime = createRuntime();
-    const closedOrderIds: string[] = [];
-    runtime.trackedOrders.set(
-      'SELL-001',
-      createTrackedOrder({
-        orderId: 'SELL-001',
-        symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        isLongSymbol: true,
-        executedPrice: 1.08,
-        executedQuantity: 300,
-        submittedQuantity: 300,
-        lastExecutedTimeMs: Date.parse('2026-02-16T01:30:00.000Z'),
-      }),
-    );
-
+    let localBuyCalls = 0;
+    const refreshNeeds: Array<{
+      readonly refreshAccount: boolean;
+      readonly refreshPositions: boolean;
+    }> = [];
+    const orderStateEvents: OrderStateChangedEvent[] = [];
     const settlementFlow = createSettlementFlow({
       runtime,
-      orderHoldRegistry: {
-        trackOrder: () => {},
-        markOrderClosed: (orderId) => {
-          closedOrderIds.push(orderId);
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        recordLocalBuy: () => {
+          localBuyCalls += 1;
         },
-        seedFromOrders: () => {},
-        getHoldSymbols: () => new Set<string>(),
-        clear: () => {},
-      },
+      }),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorConfig,
-      refreshGate: {
-        markStale: () => 1,
-        markFresh: () => {},
-        waitForFresh: async () => {},
-        getStatus: () => ({
-          currentVersion: 0,
-          staleVersion: 1,
-        }),
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: (need) => {
+          refreshNeeds.push(need);
+        },
+      },
+      emitOrderStateChanged: (event) => {
+        orderStateEvents.push(event);
       },
     });
 
-    const result = settlementFlow.settleOrder({
-      orderId: 'SELL-001',
+    const settledResult = settlementFlow.settleOrder({
+      orderId: 'BUY-SETTLEMENT-IDEMPOTENT',
       closedReason: 'FILLED',
       source: 'WS',
-    });
-
-    expect(result).toEqual({ handled: true });
-    expect(runtime.trackedOrders.has('SELL-001')).toBeFalse();
-    expect(runtime.trackedOrderLifecycles.get('SELL-001')).toBe('CLOSED');
-    expect(runtime.recentFilledOrders.get('SELL-001')).toEqual({
-      orderId: 'SELL-001',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 1.08,
-      executedQuantity: 300,
-      executedTimeMs: Date.parse('2026-02-16T01:30:00.000Z'),
+      side: 'BUY',
+      monitorSymbol: 'HSI.HK',
+      isLongSymbol: true,
+      executedPrice: 1.02,
+      executedQuantity: 100,
+      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+    });
+    const duplicateResult = settlementFlow.settleOrder({
+      orderId: 'BUY-SETTLEMENT-IDEMPOTENT',
+      closedReason: 'FILLED',
+      source: 'WS',
+      symbol: 'BULL.HK',
+      side: 'BUY',
+      monitorSymbol: 'HSI.HK',
+      isLongSymbol: true,
+      executedPrice: 1.02,
+      executedQuantity: 100,
+      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
     });
 
-    expect(runtime.pendingRefreshSymbols).toEqual([
+    expect(settledResult.handled).toBe(true);
+    expect(duplicateResult.handled).toBe(false);
+    expect(localBuyCalls).toBe(1);
+    expect(refreshNeeds).toEqual([
       {
-        symbol: 'BULL.HK',
-        isLongSymbol: true,
         refreshAccount: true,
         refreshPositions: true,
       },
     ]);
-    expect(closedOrderIds).toEqual(['SELL-001']);
-    expect(recordedTrades).toHaveLength(1);
-    expect(recordedTrades[0]?.status).toBe('FILLED');
+
+    expect(orderStateEvents).toEqual([
+      {
+        orderId: 'BUY-SETTLEMENT-IDEMPOTENT',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        source: 'WS',
+        status: 'FILLED',
+        monitorSymbol: 'HSI.HK',
+        isLongSymbol: true,
+        isProtectiveLiquidation: false,
+        executedPrice: 1.02,
+        executedQuantity: 100,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      },
+    ]);
+    expect(runtime.closedOrderIds.has('BUY-SETTLEMENT-IDEMPOTENT')).toBe(true);
+    expect('closeSyncQueue' in runtime).toBe(false);
   });
 
-  it('records partial execution summary for canceled sell when attribution context is complete', () => {
+  it('settles partially-filled canceled sell with quantity fallback and records a post-trade refresh need', () => {
     const runtime = createRuntime();
+    const orderStateEvents: OrderStateChangedEvent[] = [];
+    const buyOrders: ReadonlyArray<OrderRecord> = [
+      {
+        orderId: 'BUY-A',
+        symbol: 'BULL.HK',
+        executedPrice: 1,
+        executedQuantity: 70,
+        executedTime: Date.parse('2026-02-25T03:00:00.000Z'),
+        submittedAt: undefined,
+        updatedAt: undefined,
+      },
+      {
+        orderId: 'BUY-B',
+        symbol: 'BULL.HK',
+        executedPrice: 1.2,
+        executedQuantity: 70,
+        executedTime: Date.parse('2026-02-25T03:05:00.000Z'),
+        submittedAt: undefined,
+        updatedAt: undefined,
+      },
+    ];
+    const localSellRelatedIds: Array<ReadonlyArray<string> | null> = [];
+    const refreshNeeds: Array<{
+      readonly refreshAccount: boolean;
+      readonly refreshPositions: boolean;
+    }> = [];
     const settlementFlow = createSettlementFlow({
       runtime,
-      orderHoldRegistry: {
-        trackOrder: () => {},
-        markOrderClosed: () => {},
-        seedFromOrders: () => {},
-        getHoldSymbols: () => new Set<string>(),
-        clear: () => {},
-      },
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        markSellCancelled: () => ({
+          orderId: 'SELL-PARTIAL-FALLBACK',
+          symbol: 'BULL.HK',
+          direction: 'LONG',
+          submittedQuantity: 140,
+          filledQuantity: 100,
+          relatedBuyOrderIds: ['BUY-A', 'BUY-B'],
+          status: 'cancelled',
+          submittedAt: Date.parse('2026-02-25T03:09:00.000Z'),
+        }),
+        getBuyOrdersForSymbol: () => buyOrders,
+        recordLocalSell: (
+          _symbol,
+          _executedPrice,
+          _executedQuantity,
+          _isLongSymbol,
+          _executedTimeMs,
+          _orderId,
+          relatedBuyOrderIds,
+        ) => {
+          localSellRelatedIds.push(relatedBuyOrderIds ?? null);
+        },
+      }),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorConfig,
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: (need) => {
+          refreshNeeds.push(need);
+        },
+      },
+      emitOrderStateChanged: (event) => {
+        orderStateEvents.push(event);
+      },
     });
 
-    const result = settlementFlow.settleOrder({
-      orderId: 'SELL-002',
+    const settledResult = settlementFlow.settleOrder({
+      orderId: 'SELL-PARTIAL-FALLBACK',
       closedReason: 'CANCELED',
-      source: 'STATE_CHECK',
+      source: 'WS',
       symbol: 'BULL.HK',
       side: 'SELL',
-      baseInstrumentSymbol: 'HSI.HK',
+      monitorSymbol: 'HSI.HK',
       isLongSymbol: true,
-      executedPrice: 1.03,
-      executedQuantity: 120,
-      executedTimeMs: Date.parse('2026-02-16T01:31:00.000Z'),
+      executedPrice: 1.05,
+      executedQuantity: 100,
+      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
     });
 
-    expect(result).toEqual({ handled: true });
-    expect(runtime.recentFilledOrders.get('SELL-002')).toEqual({
-      orderId: 'SELL-002',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 1.03,
-      executedQuantity: 120,
-      executedTimeMs: Date.parse('2026-02-16T01:31:00.000Z'),
-    });
-    expect(runtime.pendingRefreshSymbols).toHaveLength(1);
-    expect(recordedTrades.at(-1)?.reason).toBe('CANCELED');
+    expect(settledResult.handled).toBe(true);
+    expect(settledResult.relatedBuyOrderIds).toBeNull();
+    expect(localSellRelatedIds).toEqual([null]);
+    expect(refreshNeeds).toEqual([
+      {
+        refreshAccount: true,
+        refreshPositions: true,
+      },
+    ]);
+
+    expect(orderStateEvents).toEqual([
+      {
+        orderId: 'SELL-PARTIAL-FALLBACK',
+        symbol: 'BULL.HK',
+        side: 'SELL',
+        source: 'WS',
+        status: 'CANCELED',
+        monitorSymbol: 'HSI.HK',
+        isLongSymbol: true,
+        isProtectiveLiquidation: false,
+        executedPrice: 1.05,
+        executedQuantity: 100,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      },
+    ]);
   });
 
-  it('rejects settlement when execution exists but attribution context is incomplete', () => {
+  it('保留 timeout->market follow-up 占用时会在旧 orderId 下重建连续 placeholder', () => {
     const runtime = createRuntime();
+    const submittedFollowUpSells: Array<{
+      readonly orderId: string;
+      readonly quantity: number;
+      readonly relatedBuyOrderIds: ReadonlyArray<string>;
+    }> = [];
     const settlementFlow = createSettlementFlow({
       runtime,
-      orderHoldRegistry: {
-        trackOrder: () => {},
-        markOrderClosed: () => {},
-        seedFromOrders: () => {},
-        getHoldSymbols: () => new Set<string>(),
-        clear: () => {},
-      },
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        markSellCancelled: () => ({
+          orderId: 'SELL-HANDOFF-PLACEHOLDER',
+          symbol: 'BULL.HK',
+          direction: 'LONG',
+          submittedQuantity: 200,
+          filledQuantity: 0,
+          relatedBuyOrderIds: ['BUY-A', 'BUY-B'],
+          status: 'cancelled',
+          submittedAt: Date.parse('2026-02-25T03:09:00.000Z'),
+        }),
+        getBuyOrdersForSymbol: () => [
+          {
+            orderId: 'BUY-A',
+            symbol: 'BULL.HK',
+            executedPrice: 1,
+            executedQuantity: 100,
+            executedTime: Date.parse('2026-02-25T03:00:00.000Z'),
+            submittedAt: undefined,
+            updatedAt: undefined,
+          },
+          {
+            orderId: 'BUY-B',
+            symbol: 'BULL.HK',
+            executedPrice: 1.1,
+            executedQuantity: 100,
+            executedTime: Date.parse('2026-02-25T03:05:00.000Z'),
+            submittedAt: undefined,
+            updatedAt: undefined,
+          },
+        ],
+        submitSellOrder: (orderId, _symbol, _direction, quantity, relatedBuyOrderIds) => {
+          submittedFollowUpSells.push({
+            orderId,
+            quantity,
+            relatedBuyOrderIds,
+          });
+        },
+      }),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorConfig,
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: () => {},
+      },
+      emitOrderStateChanged: () => {},
     });
 
     const result = settlementFlow.settleOrder({
-      orderId: 'BUY-001',
+      orderId: 'SELL-HANDOFF-PLACEHOLDER',
+      closedReason: 'CANCELED',
+      source: 'WS',
+      symbol: 'BULL.HK',
+      side: 'SELL',
+      monitorSymbol: 'HSI.HK',
+      isLongSymbol: true,
+      executedPrice: null,
+      executedQuantity: null,
+      executedTimeMs: null,
+      pendingSellDisposition: {
+        kind: 'HANDOFF_TO_FOLLOW_UP_SELL',
+        followUpQuantity: 200,
+      },
+    });
+
+    expect(result.handled).toBe(true);
+    expect(result.relatedBuyOrderIds).toEqual(['BUY-A', 'BUY-B']);
+    expect(submittedFollowUpSells).toEqual([
+      {
+        orderId: 'SELL-HANDOFF-PLACEHOLDER',
+        quantity: 200,
+        relatedBuyOrderIds: ['BUY-A', 'BUY-B'],
+      },
+    ]);
+  });
+
+  it('rejects settlement when executed close lacks attribution context', () => {
+    const runtime = createRuntime();
+    const settlementFlow = createSettlementFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: () => {},
+      },
+      emitOrderStateChanged: () => {},
+    });
+
+    const result = settlementFlow.settleOrder({
+      orderId: 'BUY-PARTIAL-MISSING-ATTR',
       closedReason: 'CANCELED',
       source: 'RECOVERY',
       symbol: 'BULL.HK',
       side: 'BUY',
-      executedPrice: 1.01,
+      executedPrice: 1.02,
       executedQuantity: 20,
-      executedTimeMs: Date.parse('2026-02-16T01:32:00.000Z'),
+      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
     });
 
-    expect(result).toEqual({ handled: false });
-    expect(runtime.closedOrderIds.has('BUY-001')).toBeFalse();
-    expect(runtime.recentFilledOrders.has('BUY-001')).toBeFalse();
-    expect(runtime.pendingRefreshSymbols).toHaveLength(0);
+    expect(result.handled).toBe(false);
+    expect(runtime.closedOrderIds.has('BUY-PARTIAL-MISSING-ATTR')).toBe(false);
+  });
+
+  it('records original liquidation symbol when protective sell settlement updates episode progress', () => {
+    const runtime = createRuntime();
+    const orderStateEvents: OrderStateChangedEvent[] = [];
+    const recordedProgressPayloads: Array<{
+      monitorSymbol: string;
+      direction: 'LONG' | 'SHORT';
+      symbol: string;
+      executedTimeMs: number;
+    }> = [];
+    const settlementFlow = createSettlementFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        markSellFilled: () => null,
+      }),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
+        recordProtectiveFillProgress: (params) => {
+          recordedProgressPayloads.push(params);
+        },
+      }),
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: () => {},
+      },
+      emitOrderStateChanged: (event) => {
+        orderStateEvents.push(event);
+      },
+    });
+
+    const result = settlementFlow.settleOrder({
+      orderId: 'PL-SETTLEMENT-001',
+      closedReason: 'FILLED',
+      source: 'WS',
+      symbol: 'BULL.OLD.HK',
+      side: 'SELL',
+      monitorSymbol: 'HSI.HK',
+      isLongSymbol: true,
+      isProtectiveLiquidation: true,
+      executedPrice: 1.03,
+      executedQuantity: 100,
+      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+    });
+
+    expect(result.handled).toBe(true);
+    expect(recordedProgressPayloads).toEqual([
+      {
+        monitorSymbol: 'HSI.HK',
+        direction: 'LONG',
+        symbol: 'BULL.OLD.HK',
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      },
+    ]);
+
+    expect(orderStateEvents).toEqual([
+      {
+        orderId: 'PL-SETTLEMENT-001',
+        symbol: 'BULL.OLD.HK',
+        side: 'SELL',
+        source: 'WS',
+        status: 'FILLED',
+        monitorSymbol: 'HSI.HK',
+        isLongSymbol: true,
+        isProtectiveLiquidation: true,
+        executedPrice: 1.03,
+        executedQuantity: 100,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      },
+    ]);
+  });
+
+  it('settlement 在关闭最后一个订单时移除 symbol bucket 并销毁 route state', () => {
+    const runtime = createRuntime();
+    runtime.trackedOrders.set('SELL-ROUTE-CLOSE-1', {
+      orderId: 'SELL-ROUTE-CLOSE-1',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      liquidationTriggerLimit: 1,
+      liquidationCooldownConfig: null,
+      orderType: OrderType.ELO,
+      submittedPrice: 1,
+      initialSubmittedPrice: 1,
+      submittedQuantity: 100,
+      executedQuantity: 0,
+      executedPrice: null,
+      lastExecutedTimeMs: null,
+      status: OrderStatus.New,
+      submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
+      lastPriceUpdateAt: Date.parse('2026-02-25T03:00:00.000Z'),
+      convertedToMarket: false,
+      nextCancelAttemptAt: Date.parse('2026-02-25T03:00:00.000Z'),
+      cancelRetryCount: 0,
+      replaceCapability: 'SUPPORTED',
+      replaceBlockedUntilAt: null,
+      quoteRetryAttempts: 0,
+      quoteRetryNextAt: null,
+      quoteRetryExhausted: false,
+      replaceTempBlockedCount: 0,
+      replaceResumeMode: 'TIME_BACKOFF',
+      timeoutMarketConversionPending: false,
+      timeoutMarketConversionTerminalState: null,
+    });
+    runtime.trackedOrderIdsBySymbol.set('BULL.HK', new Set(['SELL-ROUTE-CLOSE-1']));
+    runtime.routeStatesBySymbol.set('BULL.HK', {
+      symbol: 'BULL.HK',
+      generation: 1,
+      inFlight: false,
+      dirty: false,
+      latestQuote: null,
+      pendingWakeupKind: null,
+      timerHandles: new Map(),
+    });
+    const settlementFlow = createSettlementFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        markSellCancelled: () => ({
+          orderId: 'SELL-ROUTE-CLOSE-1',
+          symbol: 'BULL.HK',
+          direction: 'LONG',
+          submittedQuantity: 100,
+          filledQuantity: 0,
+          relatedBuyOrderIds: [],
+          status: 'cancelled',
+          submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
+        }),
+      }),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: () => {},
+      },
+      emitOrderStateChanged: () => {},
+    });
+
+    const result = settlementFlow.settleOrder({
+      orderId: 'SELL-ROUTE-CLOSE-1',
+      closedReason: 'CANCELED',
+      source: 'WS',
+    });
+
+    expect(result.handled).toBe(true);
+    expect(runtime.trackedOrderIdsBySymbol.has('BULL.HK')).toBe(false);
+    expect(runtime.routeStatesBySymbol.has('BULL.HK')).toBe(false);
   });
 });

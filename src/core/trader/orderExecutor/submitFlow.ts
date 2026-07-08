@@ -8,9 +8,14 @@
  */
 import { OrderSide, OrderType, TimeInForceType, type TradeContext } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
+import { TRADING } from '../../../constants/index.js';
+import {
+  isExternalApiRequestError,
+  wrapExternalApiRequest,
+} from '../../../utils/apiFailure/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
-import type { StrategyRuntimeConfig } from '../../../types/config.js';
+import type { MonitorConfig } from '../../../types/config.js';
 import type { Signal } from '../../../types/signal.js';
 import type { CancelOrderOutcome } from '../../../types/trader.js';
 import type { OrderPayload, SubmitOrderParams } from '../types.js';
@@ -41,6 +46,26 @@ function isFilledCancelOutcome(outcome: CancelOrderOutcome): boolean {
   return outcome.kind === 'ALREADY_CLOSED' && outcome.closedReason === 'FILLED';
 }
 
+function mergeRelatedBuyOrderIds(
+  left: ReadonlyArray<string> | null | undefined,
+  right: ReadonlyArray<string> | null | undefined,
+): ReadonlyArray<string> | null {
+  const merged = [...(left ?? []), ...(right ?? [])];
+  if (merged.length === 0) {
+    return null;
+  }
+
+  return [...new Set(merged)];
+}
+
+function getOutcomeRelatedBuyOrderIds(outcome: CancelOrderOutcome): ReadonlyArray<string> {
+  if (outcome.kind === 'CANCEL_CONFIRMED' || outcome.kind === 'ALREADY_CLOSED') {
+    return outcome.relatedBuyOrderIds ?? [];
+  }
+
+  return [];
+}
+
 /**
  * 创建 submitTargetOrder 实现。
  *
@@ -52,11 +77,12 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     rateLimiter,
     cacheManager,
     orderMonitor,
+    orderRecorder,
     globalConfig,
     canExecuteSignal,
     recordBuyAttempt,
   } = deps;
-  const quantityResolver = createQuantityResolver();
+  const quantityResolver = createQuantityResolver({ rateLimiter });
 
   /**
    * 根据全局配置与信号属性解析最终订单类型。
@@ -74,6 +100,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
    *
    * @param params 提交参数
    * @returns 订单 ID，失败返回 null
+   * @throws 当远端下单成功但本地追踪登记失败时抛错，避免静默丢失订单状态
    */
   async function submitOrder(params: SubmitOrderParams): Promise<string | null> {
     const {
@@ -88,12 +115,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       overridePrice,
       isShortSymbol,
       monitorConfig = null,
+      relatedBuyOrderIds = null,
     } = params;
-
-    if (monitorConfig === null) {
-      logger.error(`[订单提交] ${symbol} 缺少监控配置，拒绝提交订单`);
-      return null;
-    }
 
     if (!canExecuteSignal(signal, 'submitOrder')) {
       return null;
@@ -137,7 +160,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       }
 
       recordBuyAttempt(signal.action, monitorConfig);
-      const resp = await ctx.submitOrder(orderPayload);
+      const resp = await wrapExternalApiRequest({
+        operation: 'TradeContext.submitOrder',
+        request: () => ctx.submitOrder(orderPayload),
+        retryConfig: {
+          retries: 0,
+          delayMs: 0,
+        },
+      });
       cacheManager.clearCache();
       const orderId = extractOrderId(resp);
       const actionDesc = getActionDescription(signal.action);
@@ -157,12 +187,24 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           initialSubmittedPrice: resolvedPrice ?? 0,
           quantity: submittedQuantityNum,
           isLongSymbol,
-          baseInstrumentSymbol: monitorConfig.baseInstrumentSymbol,
+          monitorSymbol: monitorConfig?.monitorSymbol ?? null,
           isProtectiveLiquidation,
           orderType: orderTypeParam,
-          liquidationTriggerLimit: monitorConfig.liquidationTriggerLimit,
-          liquidationCooldownConfig: monitorConfig.liquidationCooldown,
+          liquidationTriggerLimit: monitorConfig?.liquidationTriggerLimit ?? 1,
+          liquidationCooldownConfig: monitorConfig?.liquidationCooldown ?? null,
         });
+
+        const sellRelatedBuyOrderIds = relatedBuyOrderIds ?? signal.relatedBuyOrderIds ?? null;
+        if (side === OrderSide.Sell && sellRelatedBuyOrderIds) {
+          const direction: 'LONG' | 'SHORT' = isLongSymbol ? 'LONG' : 'SHORT';
+          orderRecorder.submitSellOrder(
+            orderId,
+            symbol,
+            direction,
+            submittedQuantityNum,
+            sellRelatedBuyOrderIds,
+          );
+        }
       } catch (error) {
         throw new Error(`order submitted but local sync failed: ${orderId}`, {
           cause: error,
@@ -174,6 +216,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       handleSubmitError(err, signal, orderPayload);
       const message = err instanceof Error ? err.message : '';
       if (
+        isExternalApiRequestError(err) ||
         message.includes('orderId') ||
         message.startsWith('order submitted but local sync failed:')
       ) {
@@ -200,7 +243,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     signal: Signal,
     targetSymbol: string,
     isShortSymbol: boolean,
-    monitorConfig: StrategyRuntimeConfig | null = null,
+    monitorConfig: MonitorConfig | null = null,
   ): Promise<string | null> {
     if (!signal.symbol || typeof signal.symbol !== 'string') {
       logger.error(`[订单提交] 信号缺少有效的标的代码: ${JSON.stringify(signal)}`);
@@ -217,19 +260,18 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       return null;
     }
 
-    if (monitorConfig === null) {
-      logger.error(`[订单提交] ${targetSymbol} 缺少监控配置，拒绝执行交易信号`);
-      return null;
-    }
-
-    const targetNotional = monitorConfig.targetNotional;
+    const targetNotional = monitorConfig?.targetNotional ?? TRADING.DEFAULT_TARGET_NOTIONAL;
     const orderType = resolveOrderType(signal);
     const timeInForce = TimeInForceType.Day;
     const isProtectiveLiquidation = isLiquidationSignal(signal);
     const remark = buildOrderRemark(isProtectiveLiquidation);
 
     if (side === OrderSide.Sell) {
-      const submittedQtyDecimal = quantityResolver.calculateSellQuantity(signal);
+      const submittedQtyDecimal = await quantityResolver.calculateSellQuantity(
+        ctx,
+        targetSymbol,
+        signal,
+      );
       if (submittedQtyDecimal.isZero()) {
         return null;
       }
@@ -269,15 +311,30 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           price,
           decision.mergedQuantity,
         );
+        const existingPendingSell = orderRecorder
+          .getPendingSellSnapshot()
+          .find((pendingSell) => pendingSell.orderId === decision.targetOrderId);
+        const mergedRelatedBuyOrderIds = mergeRelatedBuyOrderIds(
+          existingPendingSell?.relatedBuyOrderIds,
+          signal.relatedBuyOrderIds,
+        );
+        if (existingPendingSell) {
+          orderRecorder.updatePendingSell(decision.targetOrderId, {
+            submittedQuantity: decision.mergedQuantity,
+            relatedBuyOrderIds: mergedRelatedBuyOrderIds ?? [],
+          });
+        }
+
         return null;
       }
 
+      let cancelOutcomes: ReadonlyArray<CancelOrderOutcome> = [];
       if (decision.action === 'CANCEL_AND_SUBMIT') {
         if (!canExecuteSignal(signal, 'cancelAndSubmit')) {
           return null;
         }
 
-        const cancelOutcomes: ReadonlyArray<CancelOrderOutcome> = await Promise.all(
+        cancelOutcomes = await Promise.all(
           decision.pendingOrderIds.map((orderId) => orderMonitor.cancelOrder(orderId)),
         );
 
@@ -304,6 +361,13 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
       if (decision.action === 'SUBMIT' || decision.action === 'CANCEL_AND_SUBMIT') {
         const mergedQtyDecimal = toDecimal(decision.mergedQuantity);
+        const mergedRelatedBuyOrderIds =
+          decision.action === 'CANCEL_AND_SUBMIT'
+            ? mergeRelatedBuyOrderIds(
+                signal.relatedBuyOrderIds,
+                cancelOutcomes.flatMap(getOutcomeRelatedBuyOrderIds),
+              )
+            : (signal.relatedBuyOrderIds ?? null);
         return submitOrder({
           ctx,
           signal,
@@ -316,14 +380,10 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           overridePrice: decision.price ?? undefined,
           isShortSymbol,
           monitorConfig,
+          relatedBuyOrderIds: mergedRelatedBuyOrderIds,
         });
       }
 
-      return null;
-    }
-
-    if (orderMonitor.hasPendingBuyOrders(targetSymbol)) {
-      logger.info(`[订单提交] ${targetSymbol} 存在未完成买单，占用生效，跳过新的买入提交`);
       return null;
     }
 

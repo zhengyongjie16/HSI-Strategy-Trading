@@ -2,32 +2,60 @@
  * tradingConfig fail-fast 业务测试
  *
  * 功能：
- * - 验证单实例关键交易配置在显式非法/越界时立即失败
- * - 验证关键配置缺失时不会再回退到代码默认值
- * - 验证解析层与校验层对关键配置的非法值判定一致
+ * - 验证关键交易配置在显式非法/越界时立即失败。
+ * - 验证关键配置缺失时仅保留业务允许的默认值。
+ * - 验证解析层与校验层对关键配置的非法值判定一致。
  */
 import { describe, expect, it } from 'bun:test';
 
-import { createTradingConfig } from '../../src/config/trading/index.js';
+import { createMultiMonitorTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
-import { createRequiredAutoEnv, createRequiredStaticEnv } from '../helpers/configEnvFactory.js';
+import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
 
-function createStaticEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
-  return createRequiredStaticEnv(overrides);
+function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
+  return {
+    LONGBRIDGE_AUTH_MODE: 'oauth',
+    LONGBRIDGE_CLIENT_ID: 'client-id',
+    MONITOR_SYMBOL_1: 'HSI.HK',
+    ...overrides,
+  };
 }
 
-function createAutoEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
-  return createRequiredAutoEnv(overrides);
+function createSignalConfig() {
+  return {
+    conditionGroups: [
+      {
+        conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
+        requiredCount: 1,
+      },
+    ],
+  } as const;
+}
+
+function createValidTradingConfigForValidation() {
+  const signalConfig = createSignalConfig();
+  const monitorConfig = createMonitorConfigDouble({
+    orderOwnershipMapping: ['HSI'],
+    signalConfig: {
+      buycall: signalConfig,
+      sellcall: signalConfig,
+      buyput: signalConfig,
+      sellput: signalConfig,
+    },
+  });
+
+  return createTradingConfig({
+    monitors: [monitorConfig],
+  });
 }
 
 async function validateWithEnv(
   env: NodeJS.ProcessEnv,
-  tradingConfig = createTradingConfig({
-    env: createAutoEnv(),
-  }),
+  tradingConfig = createValidTradingConfigForValidation(),
 ): Promise<ReadonlyArray<string>> {
   try {
-    validateAllConfig({
+    await validateAllConfig({
       env,
       tradingConfig,
     });
@@ -39,130 +67,83 @@ async function validateWithEnv(
 }
 
 describe('trading config fail-fast parsing', () => {
-  it('requires explicit config instead of falling back to code defaults', () => {
-    const env = createStaticEnv();
-    delete env['TARGET_NOTIONAL'];
+  it('uses business defaults only when critical keys are missing', () => {
+    const config = createMultiMonitorTradingConfig({
+      env: createBaseEnv(),
+    });
 
-    expect(() =>
-      createTradingConfig({
-        env,
-      }),
-    ).toThrow(/TARGET_NOTIONAL/);
+    const monitor = config.monitors[0];
+    expect(monitor).toBeDefined();
+    expect(monitor?.targetNotional).toBe(10_000);
+    expect(monitor?.maxPositionNotional).toBe(100_000);
+    expect(monitor?.buyIntervalSeconds).toBe(60);
+    expect(monitor?.autoSearchConfig.switchIntervalMinutes).toBe(0);
+
+    expect(config.global.buyOrderTimeout.timeoutSeconds).toBe(180);
+    expect(config.global.sellOrderTimeout.timeoutSeconds).toBe(180);
+    expect(config.global.orderMonitorPriceUpdateInterval).toBe(5);
   });
 
-  it('requires explicit global boolean config instead of falling back to code defaults', () => {
-    const requiredBooleanKeys = [
-      'DEBUG',
-      'DOOMSDAY_PROTECTION',
-      'MORNING_OPENING_PROTECTION_ENABLED',
-      'AFTERNOON_OPENING_PROTECTION_ENABLED',
-      'BUY_ORDER_TIMEOUT_ENABLED',
-      'SELL_ORDER_TIMEOUT_ENABLED',
-      'ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE',
-    ] as const;
-
-    for (const envKey of requiredBooleanKeys) {
-      const envEntries = Object.entries(createStaticEnv()).filter(([key]) => key !== envKey);
-      const env = Object.fromEntries(envEntries) as NodeJS.ProcessEnv;
-
-      expect(() =>
-        createTradingConfig({
-          env,
-        }),
-      ).toThrow(new RegExp(envKey));
-    }
-  });
-
-  it('parses SWITCH_INTERVAL_MINUTES with seat-mode-aware fail-fast rules', () => {
-    const passCases = [
-      {
-        description: 'ignores SWITCH_INTERVAL_MINUTES in static mode',
-        env: createStaticEnv({
-          SWITCH_INTERVAL_MINUTES: '999',
-        }),
-        expectedValue: 0,
-      },
-      {
-        description: 'accepts a valid SWITCH_INTERVAL_MINUTES in auto mode',
-        env: createAutoEnv({
-          SWITCH_INTERVAL_MINUTES: '15',
-        }),
-        expectedValue: 15,
-      },
-    ] as const;
-
-    for (const testCase of passCases) {
-      const config = createTradingConfig({
-        env: testCase.env,
-      });
-      expect(config.strategy.autoSearchConfig.switchIntervalMinutes).toBe(testCase.expectedValue);
-    }
-
-    const failFastCases = ['-5', '999', 'invalid-number'] as const;
-    for (const value of failFastCases) {
-      expect(() =>
-        createTradingConfig({
-          env: createAutoEnv({
-            SWITCH_INTERVAL_MINUTES: value,
-          }),
-        }),
-      ).toThrow(/SWITCH_INTERVAL_MINUTES/);
-    }
-  });
-
-  it('flags SWITCH_INTERVAL_MINUTES when auto seat mode is disabled', async () => {
-    const config = createTradingConfig({
-      env: createStaticEnv({
-        SWITCH_INTERVAL_MINUTES: '121',
+  it('accepts switchIntervalMinutes=0 as a valid business value', () => {
+    const config = createMultiMonitorTradingConfig({
+      env: createBaseEnv({
+        AUTO_SEARCH_ENABLED_1: 'true',
+        SWITCH_INTERVAL_MINUTES_1: '0',
       }),
     });
-    expect(config.strategy.autoSearchConfig.switchIntervalMinutes).toBe(0);
 
-    const missingFields = await validateWithEnv(
-      createStaticEnv({
-        SWITCH_INTERVAL_MINUTES: '121',
-      }),
-      createTradingConfig({
-        env: createStaticEnv(),
-      }),
-    );
-    expect(missingFields).toContain('SWITCH_INTERVAL_MINUTES');
+    expect(config.monitors[0]?.autoSearchConfig.switchIntervalMinutes).toBe(0);
   });
 
-  it('parses buy chase control with explicit boolean boundaries', () => {
-    const cases = [
-      {
-        description: 'uses default false when config is not overridden',
-        env: createStaticEnv(),
-        expected: false,
-      },
-      {
-        description: 'accepts explicit true',
-        env: createStaticEnv({
-          ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'true',
-        }),
-        expected: true,
-      },
-      {
-        description: 'accepts explicit false',
-        env: createStaticEnv({
-          ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'false',
-        }),
-        expected: false,
-      },
-    ] as const;
+  it('ignores invalid switchIntervalMinutes when auto-search is disabled', async () => {
+    const config = createMultiMonitorTradingConfig({
+      env: createBaseEnv({
+        AUTO_SEARCH_ENABLED_1: 'false',
+        SWITCH_INTERVAL_MINUTES_1: '121',
+      }),
+    });
 
-    for (const testCase of cases) {
-      const config = createTradingConfig({
-        env: testCase.env,
-      });
-      expect(config.global.allowBuyOrderTrackingAboveInitialPrice).toBe(testCase.expected);
-    }
+    expect(config.monitors[0]?.autoSearchConfig.switchIntervalMinutes).toBe(0);
+
+    const disabledAutoSearchTradingConfig = createTradingConfig({
+      monitors: [
+        createMonitorConfigDouble({
+          autoSearchConfig: {
+            autoSearchEnabled: false,
+            autoSearchMinDistancePctBull: null,
+            autoSearchMinDistancePctBear: null,
+            autoSearchMinTurnoverPerMinuteBull: null,
+            autoSearchMinTurnoverPerMinuteBear: null,
+            autoSearchExpiryMinMonths: 3,
+            autoSearchOpenDelayMinutes: 5,
+            switchIntervalMinutes: 0,
+            switchDistanceRangeBull: null,
+            switchDistanceRangeBear: null,
+          },
+          orderOwnershipMapping: ['HSI'],
+          signalConfig: {
+            buycall: createSignalConfig(),
+            sellcall: createSignalConfig(),
+            buyput: createSignalConfig(),
+            sellput: createSignalConfig(),
+          },
+        }),
+      ],
+    });
+
+    const missingFields = await validateWithEnv(
+      createBaseEnv({
+        AUTO_SEARCH_ENABLED_1: 'false',
+        SWITCH_INTERVAL_MINUTES_1: '121',
+      }),
+      disabledAutoSearchTradingConfig,
+    );
+    expect(missingFields).not.toContain('SWITCH_INTERVAL_MINUTES_1');
   });
 
   it('ignores invalid timeout seconds when the corresponding timeout is disabled', async () => {
-    const config = createTradingConfig({
-      env: createStaticEnv({
+    const config = createMultiMonitorTradingConfig({
+      env: createBaseEnv({
         BUY_ORDER_TIMEOUT_ENABLED: 'false',
         BUY_ORDER_TIMEOUT_SECONDS: '601',
         SELL_ORDER_TIMEOUT_ENABLED: 'false',
@@ -170,29 +151,29 @@ describe('trading config fail-fast parsing', () => {
       }),
     });
 
-    expect(config.global.buyOrderTimeout.timeoutSeconds).toBe(0);
-    expect(config.global.sellOrderTimeout.timeoutSeconds).toBe(0);
+    expect(config.global.buyOrderTimeout.timeoutSeconds).toBe(180);
+    expect(config.global.sellOrderTimeout.timeoutSeconds).toBe(180);
 
-    const validTradingConfig = createTradingConfig({
-      env: createStaticEnv(),
-    });
+    const validTradingConfig = createValidTradingConfigForValidation();
     const disabledTimeoutTradingConfig = {
       ...validTradingConfig,
       global: {
         ...validTradingConfig.global,
         buyOrderTimeout: {
           enabled: false,
-          timeoutSeconds: 0,
+          timeoutSeconds: 180,
         },
         sellOrderTimeout: {
           enabled: false,
-          timeoutSeconds: 0,
+          timeoutSeconds: 180,
         },
       },
     };
+    expect(disabledTimeoutTradingConfig.global.buyOrderTimeout.enabled).toBe(false);
+    expect(disabledTimeoutTradingConfig.global.sellOrderTimeout.enabled).toBe(false);
 
     const missingFields = await validateWithEnv(
-      createStaticEnv({
+      createBaseEnv({
         BUY_ORDER_TIMEOUT_ENABLED: 'false',
         BUY_ORDER_TIMEOUT_SECONDS: '601',
         SELL_ORDER_TIMEOUT_ENABLED: 'false',
@@ -204,12 +185,12 @@ describe('trading config fail-fast parsing', () => {
     expect(missingFields).not.toContain('SELL_ORDER_TIMEOUT_SECONDS');
   });
 
-  it('throws ConfigValidationError directly from parser for critical strategy-level keys', () => {
+  it('throws ConfigValidationError directly from parser for critical monitor-level keys', () => {
     let caughtError: unknown = null;
     try {
-      createTradingConfig({
-        env: createStaticEnv({
-          TARGET_NOTIONAL: '0',
+      createMultiMonitorTradingConfig({
+        env: createBaseEnv({
+          TARGET_NOTIONAL_1: '0',
         }),
       });
     } catch (error) {
@@ -223,394 +204,536 @@ describe('trading config fail-fast parsing', () => {
       readonly message?: string;
     };
     expect(validationError.name).toBe('ConfigValidationError');
-    expect(validationError.missingFields).toContain('TARGET_NOTIONAL');
-    expect(validationError.message).toContain('TARGET_NOTIONAL');
+    expect(validationError.missingFields).toContain('TARGET_NOTIONAL_1');
+    expect(validationError.message).toContain('TARGET_NOTIONAL_1');
   });
 
-  it('parses MAX_UNREALIZED_LOSS_PER_SYMBOL as the per-symbol loss contract', () => {
-    const config = createTradingConfig({
-      env: createStaticEnv({
-        MAX_UNREALIZED_LOSS_PER_SYMBOL: '1500',
-      }),
-    });
+  it('throws ConfigValidationError directly for monitor index gaps', () => {
+    let caughtError: unknown = null;
+    try {
+      createMultiMonitorTradingConfig({
+        env: createBaseEnv({
+          MONITOR_SYMBOL_3: 'HSCEI.HK',
+        }),
+      });
+    } catch (error) {
+      caughtError = error;
+    }
 
-    expect(config.strategy.maxUnrealizedLossPerSymbol).toBe(1500);
-    expect('maxUnrealizedLoss' in config.strategy).toBeFalse();
+    expect(caughtError).not.toBeNull();
+    const validationError = caughtError as {
+      readonly name?: string;
+      readonly missingFields?: ReadonlyArray<string>;
+      readonly message?: string;
+    };
+    expect(validationError.name).toBe('ConfigValidationError');
+    expect(validationError.missingFields).toContain('MONITOR_SYMBOL_2');
+    expect(validationError.message).toContain('MONITOR_SYMBOL_2');
   });
 
-  it('fails validation when deprecated MAX_UNREALIZED_LOSS is still provided', async () => {
-    const env = createStaticEnv({
-      MAX_UNREALIZED_LOSS: '1500',
-    });
-    const missingFields = await validateWithEnv(
-      env,
-      createTradingConfig({
-        env: createStaticEnv(),
-      }),
-    );
-
-    expect(missingFields).toContain('MAX_UNREALIZED_LOSS');
-  });
-
-  it('reports missing static seat symbols during validation', async () => {
-    const env = createStaticEnv();
-    delete env['LONG_SYMBOL'];
-    delete env['SHORT_SYMBOL'];
-    const validTradingConfig = createTradingConfig({
-      env: createStaticEnv(),
-    });
-    const missingFields = await validateWithEnv(env, {
-      ...validTradingConfig,
-      strategy: {
-        ...validTradingConfig.strategy,
-        longSymbol: null,
-        shortSymbol: null,
-      },
-    });
-    expect(missingFields).toContain('LONG_SYMBOL');
-    expect(missingFields).toContain('SHORT_SYMBOL');
-  });
-
-  it('fails fast when critical strategy-level keys are explicitly invalid or out of range', () => {
+  it('fails fast when critical monitor-level keys are explicitly invalid or out of range', () => {
     const invalidCases = [
-      { envKey: 'TARGET_NOTIONAL', value: '0', envFactory: createStaticEnv },
-      { envKey: 'TARGET_NOTIONAL', value: 'abc', envFactory: createStaticEnv },
-      { envKey: 'MAX_POSITION_NOTIONAL', value: '-1', envFactory: createStaticEnv },
-      { envKey: 'MAX_POSITION_NOTIONAL', value: 'abc', envFactory: createStaticEnv },
-      { envKey: 'BUY_INTERVAL_SECONDS', value: '9', envFactory: createStaticEnv },
-      { envKey: 'BUY_INTERVAL_SECONDS', value: '601', envFactory: createStaticEnv },
-      { envKey: 'BUY_INTERVAL_SECONDS', value: 'abc', envFactory: createStaticEnv },
-      { envKey: 'LIQUIDATION_COOLDOWN', value: 'abc', envFactory: createStaticEnv },
-      { envKey: 'VWAP_CONFIRM_RULES_SLOPE_WINDOW_BARS', value: '1', envFactory: createStaticEnv },
-      { envKey: 'SWITCH_INTERVAL_MINUTES', value: '-1', envFactory: createAutoEnv },
-      { envKey: 'SWITCH_INTERVAL_MINUTES', value: '121', envFactory: createAutoEnv },
-      { envKey: 'SWITCH_INTERVAL_MINUTES', value: 'abc', envFactory: createAutoEnv },
+      {
+        envKey: 'TARGET_NOTIONAL_1',
+        value: '0',
+      },
+      {
+        envKey: 'TARGET_NOTIONAL_1',
+        value: 'abc',
+      },
+      {
+        envKey: 'MAX_POSITION_NOTIONAL_1',
+        value: '-1',
+      },
+      {
+        envKey: 'MAX_POSITION_NOTIONAL_1',
+        value: 'abc',
+      },
+      {
+        envKey: 'BUY_INTERVAL_SECONDS_1',
+        value: '9',
+      },
+      {
+        envKey: 'BUY_INTERVAL_SECONDS_1',
+        value: '601',
+      },
+      {
+        envKey: 'BUY_INTERVAL_SECONDS_1',
+        value: 'abc',
+      },
+      {
+        envKey: 'SWITCH_INTERVAL_MINUTES_1',
+        value: '-1',
+        extraEnv: {
+          AUTO_SEARCH_ENABLED_1: 'true',
+        },
+      },
+      {
+        envKey: 'SWITCH_INTERVAL_MINUTES_1',
+        value: '121',
+        extraEnv: {
+          AUTO_SEARCH_ENABLED_1: 'true',
+        },
+      },
+      {
+        envKey: 'SWITCH_INTERVAL_MINUTES_1',
+        value: 'abc',
+        extraEnv: {
+          AUTO_SEARCH_ENABLED_1: 'true',
+        },
+      },
     ] as const;
 
     for (const testCase of invalidCases) {
       expect(() =>
-        createTradingConfig({
-          env: testCase.envFactory({
+        createMultiMonitorTradingConfig({
+          env: createBaseEnv({
+            ...('extraEnv' in testCase ? testCase.extraEnv : {}),
             [testCase.envKey]: testCase.value,
           }),
         }),
       ).toThrow(new RegExp(testCase.envKey));
-    }
-  });
-
-  it('fails fast when open protection is enabled but required minutes are missing or invalid', () => {
-    const invalidCases = [
-      {
-        env: createStaticEnv({
-          MORNING_OPENING_PROTECTION_ENABLED: 'true',
-          MORNING_OPENING_PROTECTION_MINUTES: '',
-        }),
-        expectedKey: 'MORNING_OPENING_PROTECTION_MINUTES',
-      },
-      {
-        env: createStaticEnv({
-          MORNING_OPENING_PROTECTION_ENABLED: 'true',
-          MORNING_OPENING_PROTECTION_MINUTES: '61',
-        }),
-        expectedKey: 'MORNING_OPENING_PROTECTION_MINUTES',
-      },
-      {
-        env: createStaticEnv({
-          AFTERNOON_OPENING_PROTECTION_ENABLED: 'true',
-          AFTERNOON_OPENING_PROTECTION_MINUTES: '',
-        }),
-        expectedKey: 'AFTERNOON_OPENING_PROTECTION_MINUTES',
-      },
-      {
-        env: createStaticEnv({
-          AFTERNOON_OPENING_PROTECTION_ENABLED: 'true',
-          AFTERNOON_OPENING_PROTECTION_MINUTES: '0',
-        }),
-        expectedKey: 'AFTERNOON_OPENING_PROTECTION_MINUTES',
-      },
-    ] as const;
-
-    for (const testCase of invalidCases) {
-      expect(() =>
-        createTradingConfig({
-          env: testCase.env,
-        }),
-      ).toThrow(new RegExp(testCase.expectedKey));
     }
   });
 
   it('fails fast when critical global keys are explicitly invalid or out of range', () => {
     const invalidCases = [
-      { envKey: 'DEBUG', value: 'maybe', extraEnv: {} },
-      { envKey: 'DOOMSDAY_PROTECTION', value: 'maybe', extraEnv: {} },
-      { envKey: 'MORNING_OPENING_PROTECTION_ENABLED', value: 'maybe', extraEnv: {} },
-      { envKey: 'AFTERNOON_OPENING_PROTECTION_ENABLED', value: 'maybe', extraEnv: {} },
-      { envKey: 'BUY_ORDER_TIMEOUT_ENABLED', value: 'maybe', extraEnv: {} },
-      { envKey: 'SELL_ORDER_TIMEOUT_ENABLED', value: 'maybe', extraEnv: {} },
-      {
-        envKey: 'ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE',
-        value: 'maybe',
-        extraEnv: {},
-      },
       {
         envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
         value: '29',
-        extraEnv: { BUY_ORDER_TIMEOUT_ENABLED: 'true' },
+        extraEnv: {
+          BUY_ORDER_TIMEOUT_ENABLED: 'true',
+        },
       },
       {
         envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
         value: '601',
-        extraEnv: { BUY_ORDER_TIMEOUT_ENABLED: 'true' },
+        extraEnv: {
+          BUY_ORDER_TIMEOUT_ENABLED: 'true',
+        },
       },
       {
         envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
         value: 'abc',
-        extraEnv: { BUY_ORDER_TIMEOUT_ENABLED: 'true' },
+        extraEnv: {
+          BUY_ORDER_TIMEOUT_ENABLED: 'true',
+        },
       },
       {
         envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
         value: '29',
-        extraEnv: { SELL_ORDER_TIMEOUT_ENABLED: 'true' },
+        extraEnv: {
+          SELL_ORDER_TIMEOUT_ENABLED: 'true',
+        },
       },
       {
         envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
         value: '601',
-        extraEnv: { SELL_ORDER_TIMEOUT_ENABLED: 'true' },
+        extraEnv: {
+          SELL_ORDER_TIMEOUT_ENABLED: 'true',
+        },
       },
       {
         envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
         value: 'abc',
-        extraEnv: { SELL_ORDER_TIMEOUT_ENABLED: 'true' },
+        extraEnv: {
+          SELL_ORDER_TIMEOUT_ENABLED: 'true',
+        },
       },
-      { envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL', value: '0', extraEnv: {} },
-      { envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL', value: '61', extraEnv: {} },
-      { envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL', value: 'abc', extraEnv: {} },
+      {
+        envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
+        value: '0',
+      },
+      {
+        envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
+        value: '61',
+      },
+      {
+        envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
+        value: 'abc',
+      },
+      {
+        envKey: 'TRADING_ORDER_TYPE',
+        value: 'bad',
+      },
+      {
+        envKey: 'LIQUIDATION_ORDER_TYPE',
+        value: 'bad',
+      },
     ] as const;
 
     for (const testCase of invalidCases) {
       expect(() =>
-        createTradingConfig({
-          env: createStaticEnv({
-            ...testCase.extraEnv,
+        createMultiMonitorTradingConfig({
+          env: createBaseEnv({
+            ...('extraEnv' in testCase ? testCase.extraEnv : {}),
             [testCase.envKey]: testCase.value,
           }),
         }),
       ).toThrow(new RegExp(testCase.envKey));
     }
   });
+
+  it('fails fast when monitor index has a gap (_1 and _3 exist while _2 is missing)', () => {
+    expect(() =>
+      createMultiMonitorTradingConfig({
+        env: createBaseEnv({
+          MONITOR_SYMBOL_3: 'HSCEI.HK',
+        }),
+      }),
+    ).toThrow(/MONITOR_SYMBOL_2/);
+  });
 });
 
-describe('trading config single-instance validator rules', () => {
-  it('rejects legacy indexed environment keys', async () => {
-    const missingFields = await validateWithEnv(
-      createStaticEnv({
-        BASE_INSTRUMENT_SYMBOL_1: 'HSI.HK',
-      }),
-      createTradingConfig({
-        env: createStaticEnv(),
-      }),
-    );
-    expect(missingFields).toContain('BASE_INSTRUMENT_SYMBOL_1');
-  });
-
-  it('rejects deprecated BASE_INSTRUMENT_SYMBOL in single-instance mode', async () => {
-    const missingFields = await validateWithEnv(
-      createStaticEnv({
-        BASE_INSTRUMENT_SYMBOL: 'HSCEI.HK',
-      }),
-      createTradingConfig({
-        env: createStaticEnv(),
-      }),
-    );
-    expect(missingFields).toContain('BASE_INSTRUMENT_SYMBOL');
-  });
-
-  it('rejects deprecated plain legacy strategy keys', async () => {
-    const deprecatedKeys = [
-      'SIGNAL_BUYCALL',
-      'SIGNAL_SELLCALL',
-      'SIGNAL_BUYPUT',
-      'SIGNAL_SELLPUT',
-      'VERIFICATION_DELAY_SECONDS_BUY',
-      'VERIFICATION_DELAY_SECONDS_SELL',
-      'VERIFICATION_INDICATORS_BUY',
-      'VERIFICATION_INDICATORS_SELL',
-      'SMART_CLOSE_ENABLED',
-      'SMART_CLOSE_TIMEOUT_MINUTES',
-    ] as const;
-
-    for (const envKey of deprecatedKeys) {
-      const missingFields = await validateWithEnv(
-        createStaticEnv({
-          [envKey]: 'deprecated',
+describe('trading config cross-monitor validator rules', () => {
+  it('rejects ownership alias conflicts across monitors', async () => {
+    const signalConfig = createSignalConfig();
+    const tradingConfig = createTradingConfig({
+      monitors: [
+        createMonitorConfigDouble({
+          originalIndex: 1,
+          monitorSymbol: 'HSI.HK',
+          longSymbol: 'BULL1.HK',
+          shortSymbol: 'BEAR1.HK',
+          orderOwnershipMapping: ['HSI'],
+          signalConfig: {
+            buycall: signalConfig,
+            sellcall: signalConfig,
+            buyput: signalConfig,
+            sellput: signalConfig,
+          },
         }),
-        createTradingConfig({
-          env: createStaticEnv(),
+        createMonitorConfigDouble({
+          originalIndex: 2,
+          monitorSymbol: 'HSCEI.HK',
+          longSymbol: 'BULL2.HK',
+          shortSymbol: 'BEAR2.HK',
+          orderOwnershipMapping: ['HSI'],
+          signalConfig: {
+            buycall: signalConfig,
+            sellcall: signalConfig,
+            buyput: signalConfig,
+            sellput: signalConfig,
+          },
         }),
-      );
-      expect(missingFields).toContain(envKey);
+      ],
+    });
+
+    let caughtError: unknown = null;
+    try {
+      await validateAllConfig({
+        env: createBaseEnv(),
+        tradingConfig,
+      });
+    } catch (error) {
+      caughtError = error;
     }
+
+    expect(caughtError).not.toBeNull();
+    const validationError = caughtError as {
+      message?: string;
+      missingFields?: ReadonlyArray<string>;
+    };
+    expect(validationError.message).toContain('配置验证失败');
+    expect(validationError.missingFields).toEqual([]);
   });
 
-  it('rejects indexed legacy strategy keys', async () => {
-    const deprecatedKeys = [
-      'SIGNAL_BUYCALL_1',
-      'SIGNAL_SELLCALL_1',
-      'SIGNAL_BUYPUT_1',
-      'SIGNAL_SELLPUT_1',
-      'VERIFICATION_DELAY_SECONDS_BUY_1',
-      'VERIFICATION_DELAY_SECONDS_SELL_1',
-      'VERIFICATION_INDICATORS_BUY_1',
-      'VERIFICATION_INDICATORS_SELL_1',
-      'SMART_CLOSE_ENABLED_1',
-      'SMART_CLOSE_TIMEOUT_MINUTES_1',
-    ] as const;
+  it('rejects duplicated trading symbols across non-auto-search monitors', async () => {
+    const signalConfig = createSignalConfig();
+    const tradingConfig = createTradingConfig({
+      monitors: [
+        createMonitorConfigDouble({
+          originalIndex: 1,
+          monitorSymbol: 'HSI.HK',
+          longSymbol: 'BULL.HK',
+          shortSymbol: 'BEAR.HK',
+          autoSearchConfig: {
+            autoSearchEnabled: false,
+            autoSearchMinDistancePctBull: null,
+            autoSearchMinDistancePctBear: null,
+            autoSearchMinTurnoverPerMinuteBull: null,
+            autoSearchMinTurnoverPerMinuteBear: null,
+            autoSearchExpiryMinMonths: 3,
+            autoSearchOpenDelayMinutes: 5,
+            switchIntervalMinutes: 0,
+            switchDistanceRangeBull: null,
+            switchDistanceRangeBear: null,
+          },
+          orderOwnershipMapping: ['HSI'],
+          signalConfig: {
+            buycall: signalConfig,
+            sellcall: signalConfig,
+            buyput: signalConfig,
+            sellput: signalConfig,
+          },
+        }),
+        createMonitorConfigDouble({
+          originalIndex: 2,
+          monitorSymbol: 'HSCEI.HK',
+          longSymbol: 'BULL.HK',
+          shortSymbol: 'BEAR2.HK',
+          autoSearchConfig: {
+            autoSearchEnabled: false,
+            autoSearchMinDistancePctBull: null,
+            autoSearchMinDistancePctBear: null,
+            autoSearchMinTurnoverPerMinuteBull: null,
+            autoSearchMinTurnoverPerMinuteBear: null,
+            autoSearchExpiryMinMonths: 3,
+            autoSearchOpenDelayMinutes: 5,
+            switchIntervalMinutes: 0,
+            switchDistanceRangeBull: null,
+            switchDistanceRangeBear: null,
+          },
+          orderOwnershipMapping: ['HSCEI'],
+          signalConfig: {
+            buycall: signalConfig,
+            sellcall: signalConfig,
+            buyput: signalConfig,
+            sellput: signalConfig,
+          },
+        }),
+      ],
+    });
 
-    for (const envKey of deprecatedKeys) {
-      const missingFields = await validateWithEnv(
-        createStaticEnv({
-          [envKey]: 'deprecated',
-        }),
-        createTradingConfig({
-          env: createStaticEnv(),
-        }),
-      );
-      expect(missingFields).toContain(envKey);
+    let caughtError: unknown = null;
+    try {
+      await validateAllConfig({
+        env: createBaseEnv(),
+        tradingConfig,
+      });
+    } catch (error) {
+      caughtError = error;
     }
+
+    expect(caughtError).not.toBeNull();
+    const validationError = caughtError as {
+      message?: string;
+      missingFields?: ReadonlyArray<string>;
+    };
+    expect(validationError.message).toContain('配置验证失败');
+    expect(validationError.missingFields).toEqual([]);
+  });
+
+  it('skips duplicate trading-symbol checks for auto-search monitors', async () => {
+    const signalConfig = createSignalConfig();
+    const tradingConfig = createTradingConfig({
+      monitors: [
+        createMonitorConfigDouble({
+          originalIndex: 1,
+          monitorSymbol: 'HSI.HK',
+          longSymbol: 'BULL.HK',
+          shortSymbol: 'BEAR.HK',
+          autoSearchConfig: {
+            autoSearchEnabled: true,
+            autoSearchMinDistancePctBull: 0.35,
+            autoSearchMinDistancePctBear: -0.35,
+            autoSearchMinTurnoverPerMinuteBull: 100_000,
+            autoSearchMinTurnoverPerMinuteBear: 100_000,
+            autoSearchExpiryMinMonths: 3,
+            autoSearchOpenDelayMinutes: 5,
+            switchIntervalMinutes: 0,
+            switchDistanceRangeBull: { min: 0.2, max: 1.5 },
+            switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+          },
+          orderOwnershipMapping: ['HSI'],
+          signalConfig: {
+            buycall: signalConfig,
+            sellcall: signalConfig,
+            buyput: signalConfig,
+            sellput: signalConfig,
+          },
+        }),
+        createMonitorConfigDouble({
+          originalIndex: 2,
+          monitorSymbol: 'HSCEI.HK',
+          longSymbol: 'BULL.HK',
+          shortSymbol: 'BEAR.HK',
+          autoSearchConfig: {
+            autoSearchEnabled: true,
+            autoSearchMinDistancePctBull: 0.35,
+            autoSearchMinDistancePctBear: -0.35,
+            autoSearchMinTurnoverPerMinuteBull: 100_000,
+            autoSearchMinTurnoverPerMinuteBear: 100_000,
+            autoSearchExpiryMinMonths: 3,
+            autoSearchOpenDelayMinutes: 5,
+            switchIntervalMinutes: 0,
+            switchDistanceRangeBull: { min: 0.2, max: 1.5 },
+            switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+          },
+          orderOwnershipMapping: ['HSCEI'],
+          signalConfig: {
+            buycall: signalConfig,
+            sellcall: signalConfig,
+            buyput: signalConfig,
+            sellput: signalConfig,
+          },
+        }),
+      ],
+    });
+
+    const missingFields = await validateWithEnv(createBaseEnv(), tradingConfig);
+    expect(missingFields).toEqual([]);
   });
 });
 
 describe('trading config fail-fast validator consistency', () => {
-  it('matches parser semantics for critical global env keys', async () => {
+  it('matches parser semantics for critical monitor-level env keys', async () => {
+    const autoSearchEnabledTradingConfig = createTradingConfig({
+      monitors: [
+        createMonitorConfigDouble({
+          autoSearchConfig: {
+            autoSearchEnabled: true,
+            autoSearchMinDistancePctBull: 0.35,
+            autoSearchMinDistancePctBear: -0.35,
+            autoSearchMinTurnoverPerMinuteBull: 100_000,
+            autoSearchMinTurnoverPerMinuteBear: 100_000,
+            autoSearchExpiryMinMonths: 3,
+            autoSearchOpenDelayMinutes: 5,
+            switchIntervalMinutes: 0,
+            switchDistanceRangeBull: { min: 0.2, max: 1.5 },
+            switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+          },
+          orderOwnershipMapping: ['HSI'],
+          signalConfig: {
+            buycall: createSignalConfig(),
+            sellcall: createSignalConfig(),
+            buyput: createSignalConfig(),
+            sellput: createSignalConfig(),
+          },
+        }),
+      ],
+    });
+
     const invalidCases = [
-      { envKey: 'DEBUG', value: 'maybe', extraEnv: {} },
-      { envKey: 'DOOMSDAY_PROTECTION', value: 'maybe', extraEnv: {} },
-      { envKey: 'MORNING_OPENING_PROTECTION_ENABLED', value: 'maybe', extraEnv: {} },
-      { envKey: 'AFTERNOON_OPENING_PROTECTION_ENABLED', value: 'maybe', extraEnv: {} },
-      { envKey: 'BUY_ORDER_TIMEOUT_ENABLED', value: 'maybe', extraEnv: {} },
-      { envKey: 'SELL_ORDER_TIMEOUT_ENABLED', value: 'maybe', extraEnv: {} },
       {
-        envKey: 'ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE',
-        value: 'maybe',
-        extraEnv: {},
+        envKey: 'TARGET_NOTIONAL_1',
+        value: '0',
       },
       {
-        envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
-        value: '29',
-        extraEnv: { BUY_ORDER_TIMEOUT_ENABLED: 'true' },
-      },
-      {
-        envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
-        value: '601',
-        extraEnv: { BUY_ORDER_TIMEOUT_ENABLED: 'true' },
-      },
-      {
-        envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
+        envKey: 'TARGET_NOTIONAL_1',
         value: 'abc',
-        extraEnv: { BUY_ORDER_TIMEOUT_ENABLED: 'true' },
       },
       {
-        envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
-        value: '29',
-        extraEnv: { SELL_ORDER_TIMEOUT_ENABLED: 'true' },
+        envKey: 'MAX_POSITION_NOTIONAL_1',
+        value: '-1',
       },
       {
-        envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
-        value: '601',
-        extraEnv: { SELL_ORDER_TIMEOUT_ENABLED: 'true' },
-      },
-      {
-        envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
+        envKey: 'MAX_POSITION_NOTIONAL_1',
         value: 'abc',
-        extraEnv: { SELL_ORDER_TIMEOUT_ENABLED: 'true' },
       },
-      { envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL', value: '0', extraEnv: {} },
-      { envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL', value: '61', extraEnv: {} },
-      { envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL', value: 'abc', extraEnv: {} },
+      {
+        envKey: 'BUY_INTERVAL_SECONDS_1',
+        value: '9',
+      },
+      {
+        envKey: 'BUY_INTERVAL_SECONDS_1',
+        value: '601',
+      },
+      {
+        envKey: 'BUY_INTERVAL_SECONDS_1',
+        value: 'abc',
+      },
+      {
+        envKey: 'SWITCH_INTERVAL_MINUTES_1',
+        value: '-1',
+        extraEnv: {
+          AUTO_SEARCH_ENABLED_1: 'true',
+        },
+      },
+      {
+        envKey: 'SWITCH_INTERVAL_MINUTES_1',
+        value: '121',
+        extraEnv: {
+          AUTO_SEARCH_ENABLED_1: 'true',
+        },
+      },
+      {
+        envKey: 'SWITCH_INTERVAL_MINUTES_1',
+        value: 'abc',
+        extraEnv: {
+          AUTO_SEARCH_ENABLED_1: 'true',
+        },
+      },
     ] as const;
 
     for (const testCase of invalidCases) {
-      const baseEnv = createAutoEnv({
-        ...testCase.extraEnv,
-      });
-      const tradingConfig = createTradingConfig({
-        env: baseEnv,
-      });
       const missingFields = await validateWithEnv(
-        {
-          ...baseEnv,
+        createBaseEnv({
+          ...('extraEnv' in testCase ? testCase.extraEnv : {}),
           [testCase.envKey]: testCase.value,
-        },
-        tradingConfig,
+        }),
+        'extraEnv' in testCase ? autoSearchEnabledTradingConfig : undefined,
       );
       expect(missingFields).toContain(testCase.envKey);
     }
   });
 
-  it('matches validator semantics for enabled open protection minute requirements', async () => {
-    const baseTradingConfig = createTradingConfig({
-      env: createAutoEnv(),
-    });
+  it('matches parser semantics for critical global env keys', async () => {
     const invalidCases = [
       {
-        env: createAutoEnv({
-          MORNING_OPENING_PROTECTION_ENABLED: 'true',
-          MORNING_OPENING_PROTECTION_MINUTES: '',
-        }),
-        tradingConfig: {
-          ...baseTradingConfig,
-          global: {
-            ...baseTradingConfig.global,
-            openProtection: {
-              ...baseTradingConfig.global.openProtection,
-              morning: {
-                enabled: true,
-                minutes: null,
-              },
-            },
-          },
+        envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
+        value: '29',
+        extraEnv: {
+          BUY_ORDER_TIMEOUT_ENABLED: 'true',
         },
-        expectedKey: 'MORNING_OPENING_PROTECTION_MINUTES',
       },
       {
-        env: createAutoEnv({
-          AFTERNOON_OPENING_PROTECTION_ENABLED: 'true',
-          AFTERNOON_OPENING_PROTECTION_MINUTES: '',
-        }),
-        tradingConfig: {
-          ...baseTradingConfig,
-          global: {
-            ...baseTradingConfig.global,
-            openProtection: {
-              ...baseTradingConfig.global.openProtection,
-              afternoon: {
-                enabled: true,
-                minutes: null,
-              },
-            },
-          },
+        envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
+        value: '601',
+        extraEnv: {
+          BUY_ORDER_TIMEOUT_ENABLED: 'true',
         },
-        expectedKey: 'AFTERNOON_OPENING_PROTECTION_MINUTES',
+      },
+      {
+        envKey: 'BUY_ORDER_TIMEOUT_SECONDS',
+        value: 'abc',
+        extraEnv: {
+          BUY_ORDER_TIMEOUT_ENABLED: 'true',
+        },
+      },
+      {
+        envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
+        value: '29',
+        extraEnv: {
+          SELL_ORDER_TIMEOUT_ENABLED: 'true',
+        },
+      },
+      {
+        envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
+        value: '601',
+        extraEnv: {
+          SELL_ORDER_TIMEOUT_ENABLED: 'true',
+        },
+      },
+      {
+        envKey: 'SELL_ORDER_TIMEOUT_SECONDS',
+        value: 'abc',
+        extraEnv: {
+          SELL_ORDER_TIMEOUT_ENABLED: 'true',
+        },
+      },
+      {
+        envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
+        value: '0',
+      },
+      {
+        envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
+        value: '61',
+      },
+      {
+        envKey: 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL',
+        value: 'abc',
       },
     ] as const;
 
     for (const testCase of invalidCases) {
-      const missingFields = await validateWithEnv(testCase.env, testCase.tradingConfig);
-      expect(missingFields).toContain(testCase.expectedKey);
+      const missingFields = await validateWithEnv(
+        createBaseEnv({
+          ...('extraEnv' in testCase ? testCase.extraEnv : {}),
+          [testCase.envKey]: testCase.value,
+        }),
+      );
+      expect(missingFields).toContain(testCase.envKey);
     }
-  });
-
-  it('matches validator semantics for invalid liquidation cooldown raw env values', async () => {
-    const validTradingConfig = createTradingConfig({
-      env: createAutoEnv(),
-    });
-    const missingFields = await validateWithEnv(
-      createAutoEnv({
-        LIQUIDATION_COOLDOWN: 'abc',
-      }),
-      validTradingConfig,
-    );
-
-    expect(missingFields).toContain('LIQUIDATION_COOLDOWN');
   });
 });

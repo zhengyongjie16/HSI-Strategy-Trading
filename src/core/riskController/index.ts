@@ -6,9 +6,9 @@
  * 执行流程：依赖注入子检查器 → createRiskChecker 创建门面实例 → 调用方在订单前调用 checkBeforeOrder，
  * 买入前可选 checkWarrantRisk，浮亏监控侧调用 refreshUnrealizedLossData / checkUnrealizedLoss / checkWarrantDistanceLiquidation。
  *
- * 风险阈值（均为运行时配置项）：
- * - 牛熊证距离回收价：统一读取 StrategyRuntimeConfig.strategyConfig.instrumentAdaptationRules
- * - 执行标的市值上限：maxPositionNotional（由监控配置提供）
+ * 风险阈值（均为配置项，具体数值以 constants/index.ts 为准）：
+ * - 牛熊证距离回收价：使用 BULL_WARRANT_MIN_DISTANCE_PERCENT / BEAR_WARRANT_MAX_DISTANCE_PERCENT 控制可买入距离（当前默认约为 +0.35% / -0.35%）
+ * - 单标的市值上限：maxPositionNotional（由监控配置提供）
  * - 保护性清仓触发阈值：maxUnrealizedLossPerSymbol（浮亏低于阈值时触发保护性清仓）
  */
 import { isBuyAction, isValidPositiveNumber } from '../../utils/helpers/index.js';
@@ -25,6 +25,7 @@ import type { Signal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
 import type {
   MarketDataClient,
+  OrderRecorder,
   RiskCheckResult,
   UnrealizedLossMetrics,
   UnrealizedLossCheckResult,
@@ -110,9 +111,8 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     readonly positions: ReadonlyArray<Position> | null;
     readonly signal: Signal | null;
     readonly orderNotional: number;
-    readonly currentPrice?: number | null;
   }): RiskCheckResult {
-    const { account, positions, signal, orderNotional, currentPrice = null } = params;
+    const { account, positions, signal, orderNotional } = params;
 
     // HOLD 信号不需要检查
     if (!signal || signal.action === 'HOLD') {
@@ -167,13 +167,8 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
       }
     }
 
-    // 检查执行标的最大持仓市值限制
-    const positionCheckResult = positionLimitChecker.checkLimit(
-      signal,
-      positions,
-      orderNotional,
-      currentPrice,
-    );
+    // 检查单标的最大持仓市值限制
+    const positionCheckResult = positionLimitChecker.checkLimit(signal, positions, orderNotional);
     if (!positionCheckResult.allowed) {
       return positionCheckResult;
     }
@@ -216,22 +211,19 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
       symbol: string,
       signalType: SignalType,
       monitorCurrentPrice: number,
-      monitorConfig,
     ): RiskCheckResult {
-      return warrantRiskChecker.checkRisk(symbol, signalType, monitorCurrentPrice, monitorConfig);
+      return warrantRiskChecker.checkRisk(symbol, signalType, monitorCurrentPrice);
     },
 
     checkWarrantDistanceLiquidation(
       symbol: string,
       isLongSymbol: boolean,
       monitorCurrentPrice: number,
-      monitorConfig,
     ) {
       return warrantRiskChecker.checkWarrantDistanceLiquidation(
         symbol,
         isLongSymbol,
         monitorCurrentPrice,
-        monitorConfig,
       );
     },
 
@@ -254,13 +246,19 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     },
 
     async refreshUnrealizedLossData(
+      orderRecorder: OrderRecorder,
       symbol: string,
-      position: Position | null,
       isLongSymbol: boolean,
       quote?: Quote | null,
       dailyLossOffset?: number,
     ): Promise<{ r1: number; n1: number } | null> {
-      return unrealizedLossChecker.refresh(symbol, position, isLongSymbol, quote, dailyLossOffset);
+      return unrealizedLossChecker.refresh(
+        orderRecorder,
+        symbol,
+        isLongSymbol,
+        quote,
+        dailyLossOffset,
+      );
     },
 
     checkUnrealizedLoss(

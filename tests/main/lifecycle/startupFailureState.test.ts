@@ -25,16 +25,7 @@ function createMinimalLastState(): LastState {
       get: () => null,
     },
     cachedTradingDayInfo: null,
-    monitorState: {
-      baseInstrumentSymbol: 'HSI.HK',
-      monitorPrice: null,
-      longPrice: null,
-      shortPrice: null,
-      signal: null,
-      pendingSignals: [],
-      lastMonitorSnapshot: null,
-      lastCandlestickCacheVersion: null,
-    },
+    monitorStates: new Map(),
     allTradingSymbols: new Set(),
   };
 }

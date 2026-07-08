@@ -1,7 +1,7 @@
 /**
  * 行情缓存域单元测试
  *
- * 覆盖：midnightClear 调用 marketDataClient.resetRuntimeSubscriptionsAndCaches
+ * 覆盖：midnightClear 调用 marketDataClient.resetRuntimeSubscriptionsAndCaches；openRebuild 为空操作
  */
 import { describe, it, expect } from 'bun:test';
 import { createMarketDataDomain } from '../../../../src/main/lifecycle/cacheDomains/marketDataDomain.js';
@@ -23,5 +23,16 @@ describe('createMarketDataDomain', () => {
     });
 
     expect(resetCalled).toBe(true);
+  });
+
+  it('openRebuild 为空操作，不抛错', async () => {
+    const marketDataClient = {
+      resetRuntimeSubscriptionsAndCaches: async () => {},
+    } as unknown as MarketDataClient;
+    const domain = createMarketDataDomain({ marketDataClient });
+    await domain.openRebuild({
+      now: new Date(),
+      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
+    });
   });
 });

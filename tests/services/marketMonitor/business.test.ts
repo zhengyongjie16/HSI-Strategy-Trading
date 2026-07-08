@@ -2,9 +2,25 @@
  * marketMonitor 业务测试
  *
  * 功能：
- * - 验证市场监控相关场景意图、边界条件与业务期望。
+ * - 验证纯渲染器输出格式相关场景意图、边界条件与业务期望。
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
+
+const infoLogs: string[] = [];
+const warnLogs: string[] = [];
+
+mock.module('../../../src/utils/logger/index.js', () => ({
+  logger: {
+    debug: () => {},
+    info: (message: string) => {
+      infoLogs.push(message);
+    },
+    warn: (message: string) => {
+      warnLogs.push(message);
+    },
+    error: () => {},
+  },
+}));
 
 import { createMarketMonitor } from '../../../src/services/marketMonitor/index.js';
 import {
@@ -12,38 +28,28 @@ import {
   formatWarrantDistanceDisplay,
 } from '../../../src/services/marketMonitor/utils.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
-import type { StrategyState } from '../../../src/types/state.js';
 import {
-  createFactorSnapshotDouble,
+  createIndicatorUsageProfileDouble,
   createQuoteDouble,
   createWarrantDistanceInfoDouble,
 } from '../../helpers/testDoubles.js';
-
-function createStrategyState(baseInstrumentSymbol: string): StrategyState {
-  return {
-    baseInstrumentSymbol,
-    monitorPrice: null,
-    longPrice: null,
-    shortPrice: null,
-    signal: null,
-    pendingSignals: [],
-    lastMonitorSnapshot: null,
-    lastCandlestickCacheVersion: null,
-    lastDisplaySignature: null,
-    displayPlan: ['price', 'changePercent'],
-  };
-}
 
 function createSnapshot(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot {
   return {
     price: 20_000,
     changePercent: 0,
-    factorSnapshot: createFactorSnapshotDouble(),
+    ema: { 7: 19_980 },
+    rsi: { 6: 52 },
+    psy: { 13: 58 },
+    mfi: 45,
+    kdj: { k: 51, d: 49, j: 55 },
+    macd: { macd: 10, dif: 3, dea: 2 },
+    adx: null,
     ...overrides,
   };
 }
 
-describe('marketMonitor business flow', () => {
+describe('marketMonitor renderer', () => {
   it('formats warrant distance display with unified label', () => {
     expect(formatWarrantDistanceDisplay(null)).toBeNull();
 
@@ -82,107 +88,90 @@ describe('marketMonitor business flow', () => {
       },
       2,
     );
-    expect(display).toBe('持仓市值=110.00 持仓盈亏=+10.00 持仓数量=2');
+    expect(display).toBe('持仓市值=110.00 持仓盈亏=+10.00 订单数量=2');
 
     const emptyDisplay = formatPositionDisplay(null, null);
-    expect(emptyDisplay).toBe('持仓市值=- 持仓盈亏=- 持仓数量=-');
+    expect(emptyDisplay).toBe('持仓市值=- 持仓盈亏=- 订单数量=-');
   });
 
-  it('detects price change with configured threshold and updates state', () => {
+  it('renders monitor indicators directly without local change detection state', () => {
+    infoLogs.length = 0;
+    warnLogs.length = 0;
     const monitor = createMarketMonitor();
-    const state = createStrategyState('HSI.HK');
 
-    const firstChanged = monitor.monitorPriceChanges(
-      createQuoteDouble('LONG.HK', 1),
-      createQuoteDouble('SHORT.HK', 2),
-      'LONG.HK',
-      'SHORT.HK',
-      state,
-    );
-    expect(firstChanged).toBe(true);
-    expect(state.longPrice).toBe(1);
-    expect(state.shortPrice).toBe(2);
-
-    const belowThresholdChanged = monitor.monitorPriceChanges(
-      createQuoteDouble('LONG.HK', 1.0005),
-      createQuoteDouble('SHORT.HK', 2.0004),
-      'LONG.HK',
-      'SHORT.HK',
-      state,
-    );
-    expect(belowThresholdChanged).toBe(false);
-
-    const aboveThresholdChanged = monitor.monitorPriceChanges(
-      createQuoteDouble('LONG.HK', 1.01),
-      createQuoteDouble('SHORT.HK', 2),
-      'LONG.HK',
-      'SHORT.HK',
-      state,
-    );
-    expect(aboveThresholdChanged).toBe(true);
-    expect(state.longPrice).toBe(1.01);
-  });
-
-  it('detects factor snapshot changes and stores a display signature', () => {
-    const monitor = createMarketMonitor();
-    const state = createStrategyState('HSI.HK');
-    const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
-    const klineTimestamp = 1_708_000_000_000;
-
-    const first = monitor.monitorIndicatorChanges({
+    monitor.renderMonitorIndicators({
       monitorSnapshot: createSnapshot(),
-      monitorQuote,
-      baseInstrumentSymbol: 'HSI.HK',
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(first).toBe(true);
-    expect(state.lastDisplaySignature).toContain('SESSION=am');
-    expect(state.lastMonitorSnapshot?.factorSnapshot?.trendClassification).toBe('trend_up');
-
-    const unchanged = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot(),
-      monitorQuote,
-      baseInstrumentSymbol: 'HSI.HK',
-      klineTimestamp,
-      monitorState: state,
-    });
-    expect(unchanged).toBe(false);
-
-    const changed = monitor.monitorIndicatorChanges({
-      monitorSnapshot: createSnapshot({
-        factorSnapshot: createFactorSnapshotDouble({
-          trendScore: 1.5,
-          er15: 0.7,
-        }),
+      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
+      monitorSymbol: 'HSI.HK',
+      indicatorProfile: createIndicatorUsageProfileDouble({
+        displayPlan: ['price', 'changePercent', 'EMA:7', 'K', 'MACD'],
       }),
-      monitorQuote,
-      baseInstrumentSymbol: 'HSI.HK',
-      klineTimestamp,
-      monitorState: state,
+      klineTimestamp: 1_708_000_000_000,
     });
-    expect(changed).toBe(true);
-    expect(state.lastDisplaySignature).toContain('SCORE=1.500');
+
+    expect(infoLogs).toHaveLength(1);
+    expect(infoLogs[0]).toContain('[监控标的]');
+    expect(infoLogs[0]).toContain('HSI.HK');
+    expect(infoLogs[0]).toContain('价格=20000.000');
+    expect(infoLogs[0]).toContain('EMA7=19980.000');
+    expect(infoLogs[0]).toContain('K=51.000');
+    expect(infoLogs[0]).toContain('MACD=10.000');
   });
 
-  it('skips factor updates when snapshot does not carry factor runtime output', () => {
+  it('renders single trading quote directly without dual-side coupling', () => {
+    infoLogs.length = 0;
+    warnLogs.length = 0;
     const monitor = createMarketMonitor();
-    const state = createStrategyState('HSI.HK');
-    const monitorQuote = createQuoteDouble('HSI.HK', 20_000);
 
-    const changed = monitor.monitorIndicatorChanges({
-      monitorSnapshot: {
-        price: 20_000,
-        changePercent: 0,
-        factorSnapshot: null,
+    monitor.renderTradingQuote({
+      event: {
+        symbol: 'BULL.HK',
+        quote: createQuoteDouble('BULL.HK', 1.23),
       },
-      monitorQuote,
-      baseInstrumentSymbol: 'HSI.HK',
-      klineTimestamp: 1_708_000_000_000,
-      monitorState: state,
+      tradingSymbol: 'BULL.HK',
+      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
+      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
+      displayInfo: {
+        warrantDistanceInfo: createWarrantDistanceInfoDouble({
+          warrantType: 'BULL',
+          distanceToStrikePercent: 0.7,
+        }),
+        unrealizedLossMetrics: {
+          r1: 100,
+          n1: 100,
+          r2: 110,
+          unrealizedPnL: 10,
+        },
+        orderCount: 2,
+      },
     });
 
-    expect(changed).toBe(false);
-    expect(state.lastDisplaySignature).toBeNull();
+    expect(infoLogs).toHaveLength(1);
+    expect(infoLogs[0]).toContain('[做多标的]');
+    expect(infoLogs[0]).toContain('BULL.HK');
+    expect(infoLogs[0]).toContain('距回收价=+0.70%');
+    expect(infoLogs[0]).toContain('持仓市值=110.00 持仓盈亏=+10.00 订单数量=2');
+  });
+
+  it('warns when trading quote is unavailable', () => {
+    infoLogs.length = 0;
+    warnLogs.length = 0;
+    const monitor = createMarketMonitor();
+
+    monitor.renderTradingQuote({
+      event: {
+        symbol: 'BULL.HK',
+        quote: createQuoteDouble('BULL.HK', 1.23),
+      },
+      tradingSymbol: 'OTHER.HK',
+      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
+      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
+      displayInfo: null,
+    });
+
+    expect(infoLogs).toEqual([]);
+    expect(warnLogs).toEqual(['未获取到做多标的行情。']);
   });
 });

@@ -3,8 +3,8 @@
  *
  * 统一管理项目中使用的所有常量，包括：
  * - 时间相关：毫秒换算、时区偏移
- * - 交易相关：K 线配置、主循环间隔、订单语义标记
- * - 验证相关：信号去抖与冷却配置
+ * - 交易相关：目标金额、K线配置、时间唤醒恢复间隔
+ * - 验证相关：延迟信号验证的时间窗口配置
  * - 日志相关：流超时配置
  * - API相关：重试策略、缓存TTL、频率限制
  * - 监控相关：价格/指标变化检测阈值
@@ -13,6 +13,7 @@
  */
 import { FilterWarrantExpiryDate, OrderStatus, OrderType, Period } from 'longbridge';
 import type { OrderTypeConfig, SignalType } from '../types/signal.js';
+import type { StrategyAction } from '../types/indicatorProfile.js';
 
 /** 时间相关常量 */
 export const TIME = {
@@ -24,6 +25,9 @@ export const TIME = {
 
   /** 每日的毫秒数 */
   MILLISECONDS_PER_DAY: 24 * 60 * 60 * 1000,
+
+  /** setTimeout 可安全接收的最大延迟（毫秒） */
+  MAX_TIMER_DELAY_MS: 2_147_483_647,
 
   /** 香港时区偏移量（毫秒），用于 UTC 转香港时间 */
   HONG_KONG_TIMEZONE_OFFSET_MS: 8 * 60 * 60 * 1000,
@@ -52,17 +56,20 @@ export const HK_DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** 交易相关常量 */
 export const TRADING = {
-  /** 基础对象直连订阅周期（阶段 2 固定：1m/5m/15m） */
-  CANDLE_PERIODS: [Period.Min_1, Period.Min_5, Period.Min_15] as const,
+  /** 默认目标金额（港币），单次开仓的目标市值 */
+  DEFAULT_TARGET_NOTIONAL: 5000,
 
-  /** 因子运行主周期（TrendFactorRuntime 当前按 1m 样本计算） */
-  FACTOR_CANDLE_PERIOD: Period.Min_1,
+  /** K线周期，用于订阅和获取实时K线数据 */
+  CANDLE_PERIOD: Period.Min_1,
 
-  /** K线缓存上限（1m）：覆盖约 20 个交易日同 session 波动率分位基线 */
-  CANDLE_COUNT: 7_000,
+  /** K线数量，获取的实时K线条数 */
+  CANDLE_COUNT: 200,
 
-  /** 主循环执行间隔（毫秒），mainProgram 的执行频率 */
+  /** 时间唤醒评估异常后的恢复重试间隔（毫秒） */
   INTERVAL_MS: 1000,
+
+  /** 监控标的最大扫描范围（从 _1 扫描到 _100） */
+  MAX_MONITOR_SCAN_RANGE: 100,
 
   /** 默认订单备注（提交订单时写入，便于排查） */
   DEFAULT_ORDER_REMARK: 'QuantDemo',
@@ -74,18 +81,21 @@ export const TRADING = {
   PROTECTIVE_LIQUIDATION_COMPLETED_REASON: 'PROTECTIVE_LIQUIDATION_COMPLETED',
 } as const;
 
-/** 单实例趋势延续策略固定 preset。 */
-export const STRATEGY = {
-  /** 固定基础对象 preset */
-  BASE_INSTRUMENT_SYMBOL: 'HSI.HK',
-} as const;
-
 /** 自动寻标相关常量 */
 export const AUTO_SYMBOL_SEARCH_COOLDOWN_MS = 600_000;
 export const AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS = 3_000;
 
 /** 自动寻标当日最大失败次数（达到后冻结席位至次日） */
 export const AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY = 3;
+
+/** 末日保护相关常量 */
+export const DOOMSDAY = {
+  /** 买入截止窗口：距离收盘前的分钟数 */
+  BUY_CUTOFF_MINUTES_BEFORE_CLOSE: 15,
+
+  /** 清仓接管窗口：距离收盘前的分钟数 */
+  CLEARANCE_TAKEOVER_MINUTES_BEFORE_CLOSE: 5,
+} as const;
 
 /** 生命周期重建相关常量 */
 export const LIFECYCLE = {
@@ -98,18 +108,36 @@ export const LIFECYCLE = {
   /** 交易日历预热向前看天数（需求窗口右边界） */
   CALENDAR_PREWARM_LOOKAHEAD_DAYS: 7,
 
-  /** 交易日历预热固定回看天数 */
+  /** 交易日历预热无仍持仓时回退回看天数 */
   CALENDAR_PREWARM_FALLBACK_LOOKBACK_DAYS: 14,
 
   /** 交易日历接口最大回看天数（超出则抛错阻断重建） */
   CALENDAR_API_MAX_LOOKBACK_DAYS: 365,
 } as const;
 
-/** 信号去抖与冷却相关常量。 */
+/**
+ * 延迟信号验证相关常量
+ * 用于 DelayedSignalVerifier 模块，验证开仓信号的趋势持续性
+ */
 export const VERIFICATION = {
+  /** 验证时间点1偏移量（秒），信号触发后首次验证 */
+  TIME_OFFSET_1_SECONDS: 5,
+
+  /** 验证时间点2偏移量（秒），信号触发后二次验证 */
+  TIME_OFFSET_2_SECONDS: 10,
+
+  /** 验证就绪延迟时间（秒），信号注册后等待验证的时间 */
+  READY_DELAY_SECONDS: 10,
+
   /** 验证通过信号冷却时间（秒），同标的同方向在此时间内只允许一个信号进入风险检查 */
   VERIFIED_SIGNAL_COOLDOWN_SECONDS: 10,
 } as const;
+
+/** 延迟验证中允许无周期的固定指标集合 */
+export const VERIFICATION_FIXED_INDICATORS = new Set(['K', 'D', 'J', 'MACD', 'DIF', 'DEA', 'ADX']);
+
+/** 信号条件解析中允许无周期的固定指标集合（不含 RSI/PSY，ADX 仅用于延迟验证） */
+export const SIGNAL_CONFIG_SUPPORTED_INDICATORS = ['MFI', 'K', 'D', 'J'] as const;
 
 /** 日志相关常量，用于 pino 日志系统 */
 export const LOGGING = {
@@ -147,6 +175,9 @@ const LOG_ANSI_ESC = String.fromCodePoint(27);
 /** ANSI 颜色代码正则（ESC[...m） */
 export const LOG_ANSI_CODE_REGEX = new RegExp(LOG_ANSI_ESC + String.raw`\[[0-9;]*m`, 'g');
 
+/** 是否为调试模式（环境变量 DEBUG=true 时启用） */
+export const IS_DEBUG = process.env['DEBUG'] === 'true';
+
 /** API 相关常量，用于 Longbridge API 调用 */
 export const API = {
   /** 默认重试次数，API 调用失败时的重试上限 */
@@ -168,13 +199,13 @@ export const API = {
   MIN_CALL_INTERVAL_MS: 30,
 } as const;
 
-/** 行情监控相关常量，用于 MarketMonitor 检测价格/指标变化 */
-export const MONITOR = {
-  /** 价格变化检测阈值，低于此值不触发更新 */
-  PRICE_CHANGE_THRESHOLD: 0.001,
+/** 指标缓存相关常量 */
+export const INDICATOR_CACHE = {
+  /** 指标样本默认保留时间窗口（毫秒） */
+  DEFAULT_RETENTION_WINDOW_MS: 100 * 1000,
 
-  /** 涨跌幅变化检测阈值（百分比） */
-  CHANGE_PERCENT_THRESHOLD: 0.01,
+  /** 样本保留窗口安全余量（秒） */
+  RETENTION_SAFETY_MARGIN_SECONDS: 15,
 } as const;
 
 /** 订单相关常量 */
@@ -247,6 +278,19 @@ export const NON_REPLACEABLE_ORDER_TYPES = new Set<OrderType>([
   OrderType.MO,
 ]) as ReadonlySet<OrderType>;
 
+/** 风险检查相关常量（牛熊证） */
+/** 牛证最低距离回收价百分比（低于此值拒绝买入） */
+export const BULL_WARRANT_MIN_DISTANCE_PERCENT = 0.35;
+
+/** 熊证最高距离回收价百分比（高于此值拒绝买入） */
+export const BEAR_WARRANT_MAX_DISTANCE_PERCENT = -0.35;
+
+/** 牛证触发清仓的距离回收价百分比（低于此值触发保护清仓） */
+export const BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT = 0.3;
+
+/** 熊证触发清仓的距离回收价百分比（高于此值触发保护清仓） */
+export const BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT = -0.3;
+
 /** 监控标的价格最小有效值（低于此值视为异常） */
 export const MIN_MONITOR_PRICE_THRESHOLD = 1;
 
@@ -288,8 +332,36 @@ export const REPLACE_UNSUPPORTED_BY_TYPE_ERROR_CODE_SET = new Set(['602012']);
  */
 export const REPLACE_TEMP_BLOCKED_BY_STATUS_ERROR_CODE_SET = new Set(['602013']);
 
+/** 订单 API 暂态状态码：超时、限流和服务端临时不可用 */
+export const ORDER_API_TRANSIENT_STATUS_CODE_SET = new Set([
+  '408',
+  '425',
+  '429',
+  '500',
+  '502',
+  '503',
+  '504',
+]);
+
+/** 订单 API 暂态错误消息关键词 */
+export const ORDER_API_RETRYABLE_MESSAGE_HINTS = [
+  'network',
+  'timeout',
+  'timed out',
+  'temporarily unavailable',
+  'service unavailable',
+  'service busy',
+  'connection',
+  'econnreset',
+  'etimedout',
+  'rate limit',
+] as const;
+
 /** 百分比格式化小数位数 */
 export const DEFAULT_PERCENT_DECIMALS = 2;
+
+/** 牛熊证距离回收价清仓订单类型 */
+export const WARRANT_LIQUIDATION_ORDER_TYPE: OrderTypeConfig = 'ELO';
 
 /** 标的代码格式正则（ticker.region） */
 export const SYMBOL_WITH_REGION_REGEX = /^[A-Z0-9]+\.[A-Z]{2,5}$/;
@@ -306,12 +378,24 @@ export const ACCOUNT_CHANNEL_MAP: Record<string, string> = {
 };
 
 /** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
-export const VALID_SIGNAL_ACTIONS = new Set<SignalType>([
+const STRATEGY_ACTIONS: ReadonlyArray<StrategyAction> = [
   'BUYCALL',
   'SELLCALL',
   'BUYPUT',
   'SELLPUT',
-]);
+] as const;
+
+/** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
+export const VALID_SIGNAL_ACTIONS = new Set<SignalType>(STRATEGY_ACTIONS);
+
+/** 信号操作描述映射，用于日志输出 */
+export const ACTION_DESCRIPTIONS: Record<SignalType, string> = {
+  BUYCALL: '买入做多',
+  BUYPUT: '买入做空',
+  SELLCALL: '卖出做多',
+  SELLPUT: '卖出做空',
+  HOLD: '持有',
+};
 
 /** 信号操作详细描述映射，用于执行链路日志 */
 export const SIGNAL_ACTION_DESCRIPTIONS: Record<SignalType, string> = {
@@ -341,3 +425,7 @@ export const ORDER_OWNERSHIP = {
   LONG_MARKERS: ['RC', 'BULL', 'CALL', '\u725B'],
   SHORT_MARKERS: ['RP', 'BEAR', 'PUT', '\u718A'],
 } as const;
+
+export const LONG_DIRECTION_NAME = '\u505A\u591A\u6807\u7684';
+
+export const SHORT_DIRECTION_NAME = '\u505A\u7A7A\u6807\u7684';

@@ -9,14 +9,13 @@
 import type { Period } from 'longbridge';
 import type { CandleData } from '../../types/data.js';
 import type { CandlestickCacheSnapshot } from '../../types/services.js';
-import { isRecord } from '../../utils/helpers/index.js';
 import type {
   ApplyCandlestickPushParams,
-  BackfillCandlestickSeriesParams,
   CandlestickCacheStore,
   NormalizedCandleValue,
   SeedCandlestickSeriesParams,
 } from './types.js';
+import { isRecord } from '../../utils/helpers/index.js';
 
 function normalizeRecordToNumber(value: Record<string, unknown>): number | undefined {
   const toNumberFn: unknown = Reflect.get(value, 'toNumber');
@@ -135,45 +134,6 @@ function normalizeCandlestickSeries(
 }
 
 /**
- * 合并两组 K 线并按 timestamp 去重、升序排列。
- *
- * @param params 合并参数
- * @returns 合并后的 K 线序列
- */
-function mergeCandlestickSeries(params: {
-  readonly incomingCandles: ReadonlyArray<CandleData>;
-  readonly existingCandles: ReadonlyArray<CandleData>;
-  readonly maxCandles: number;
-  readonly preferIncoming: boolean;
-}): ReadonlyArray<CandleData> {
-  const mergedByTimestamp = new Map<number, CandleData>();
-  const pushCandles = params.preferIncoming
-    ? [params.existingCandles, params.incomingCandles]
-    : [params.incomingCandles, params.existingCandles];
-  for (const candles of pushCandles) {
-    for (const candle of candles) {
-      const timestamp = candle.timestamp;
-      if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
-        continue;
-      }
-
-      mergedByTimestamp.set(timestamp, candle);
-    }
-  }
-
-  const merged = [...mergedByTimestamp.values()].sort((left, right) => {
-    const leftTimestamp = typeof left.timestamp === 'number' ? left.timestamp : 0;
-    const rightTimestamp = typeof right.timestamp === 'number' ? right.timestamp : 0;
-    return leftTimestamp - rightTimestamp;
-  });
-  if (merged.length <= params.maxCandles) {
-    return merged;
-  }
-
-  return merged.slice(merged.length - params.maxCandles);
-}
-
-/**
  * 判断两根 K 线语义是否一致（用于 push 幂等判定）。
  *
  * @param left 左值
@@ -254,57 +214,14 @@ export function seedCandlestickSeries(
   const { store, symbol, period, candles } = params;
   const key = createCandlestickKey(symbol, period);
   const existing = store.snapshots.get(key) ?? null;
-  const normalizedIncomingCandles = normalizeCandlestickSeries(candles, store.maxCandles);
-  const normalizedCandles =
-    existing === null
-      ? normalizedIncomingCandles
-      : mergeCandlestickSeries({
-          incomingCandles: normalizedIncomingCandles,
-          existingCandles: existing.candles,
-          maxCandles: store.maxCandles,
-          preferIncoming: true,
-        });
+  const normalizedCandles = normalizeCandlestickSeries(candles, store.maxCandles);
   const nextVersion = existing === null ? 1 : existing.version + 1;
   const snapshot = buildSnapshot({
     symbol,
     period,
     version: nextVersion,
     candles: normalizedCandles,
-    lastBarConfirmed: existing?.lastBarConfirmed ?? null,
-    initialized: true,
-  });
-  store.snapshots.set(key, snapshot);
-  return snapshot;
-}
-
-/**
- * 以历史回填语义写入 K 线快照。
- *
- * @param params 回填参数
- * @returns 写入后的快照
- */
-export function backfillCandlestickSeries(
-  params: BackfillCandlestickSeriesParams,
-): CandlestickCacheSnapshot {
-  const { store, symbol, period, candles } = params;
-  const key = createCandlestickKey(symbol, period);
-  const existing = store.snapshots.get(key) ?? null;
-  const normalizedIncomingCandles = normalizeCandlestickSeries(candles, store.maxCandles);
-  const mergedCandles =
-    existing === null
-      ? normalizedIncomingCandles
-      : mergeCandlestickSeries({
-          incomingCandles: normalizedIncomingCandles,
-          existingCandles: existing.candles,
-          maxCandles: store.maxCandles,
-          preferIncoming: false,
-        });
-  const snapshot = buildSnapshot({
-    symbol,
-    period,
-    version: existing === null ? 1 : existing.version + 1,
-    candles: mergedCandles,
-    lastBarConfirmed: existing?.lastBarConfirmed ?? null,
+    lastBarConfirmed: null,
     initialized: true,
   });
   store.snapshots.set(key, snapshot);

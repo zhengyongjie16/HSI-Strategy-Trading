@@ -4,13 +4,11 @@
  * 供 sellProcessor、buyProcessor、monitorTaskProcessor 等测试使用。
  * 场景函数命名：run* / assert*；工厂用 create 前缀。
  */
-import type { LastState, StrategyRuntime } from '../../../src/types/state.js';
+import type { LastState, MonitorContext } from '../../../src/types/state.js';
 import {
-  createStrategyRuntimeConfigDouble,
-  createIndicatorDisplayProfileDouble,
+  createMonitorContextDouble,
   createPositionCacheDouble,
   createPositionDouble,
-  createRiskCheckerDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 
@@ -33,18 +31,6 @@ export async function waitUntil(predicate: () => boolean, timeoutMs: number = 80
 }
 
 /**
- * runProcessorFlow 入参。
- * 类型用途：测试中启动处理器、推送任务、等待条件并排空的参数聚合。
- * 使用范围：仅 tests/main/asyncProgram 使用。
- */
-type RunProcessorFlowParams = {
-  readonly processor: { start: () => void; stopAndDrain: () => Promise<void> };
-  readonly pushTask: () => void;
-  readonly waitCondition: () => boolean;
-  readonly timeoutMs?: number;
-};
-
-/**
  * 启动处理器、推送任务、等待条件满足后 stopAndDrain。用于测试异步队列消费流程。
  *
  * @param params.processor 处理器实例（start、stopAndDrain）
@@ -53,7 +39,12 @@ type RunProcessorFlowParams = {
  * @param params.timeoutMs 可选超时毫秒数，默认 800
  * @returns 无返回值，超时由 waitUntil 抛错
  */
-export async function runProcessorFlow(params: RunProcessorFlowParams): Promise<void> {
+export async function runProcessorFlow(params: {
+  readonly processor: { start: () => void; stopAndDrain: () => Promise<void> };
+  readonly pushTask: () => void;
+  readonly waitCondition: () => boolean;
+  readonly timeoutMs?: number;
+}): Promise<void> {
   const { processor, pushTask, waitCondition, timeoutMs = 800 } = params;
   processor.start();
   pushTask();
@@ -81,104 +72,86 @@ export function createLastState(overrides: Partial<LastState> = {}): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorState: {
-      baseInstrumentSymbol: 'HSI.HK',
-      monitorPrice: null,
-      longPrice: null,
-      shortPrice: null,
-      signal: null,
-      pendingSignals: [],
-      lastMonitorSnapshot: null,
-      lastCandlestickCacheVersion: null,
-    },
+    monitorStates: new Map(),
     allTradingSymbols: new Set(),
     ...overrides,
   };
 }
 
-type StrategyRuntimeBaseOptions = Readonly<{
-  state: StrategyRuntime['state'];
-  baseInstrumentName: string;
-}>;
-
 /**
- * 组装 StrategyRuntime 的公共基线字段，并合并调用方覆盖项。
+ * 组装 MonitorContext 的公共基线字段，并合并调用方覆盖项。
  *
  * @param options 基线行情与状态选项
  * @param overrides 额外覆盖字段
- * @returns 合并后的 StrategyRuntime
+ * @returns 合并后的 MonitorContext
  */
-function buildStrategyRuntimeBase(
-  options: StrategyRuntimeBaseOptions,
-  overrides: Partial<StrategyRuntime>,
-): StrategyRuntime {
-  const { state, baseInstrumentName } = options;
+function buildMonitorContextBase(
+  options: Readonly<{
+    state: MonitorContext['state'];
+    monitorSymbolName: string;
+  }>,
+  overrides: Partial<MonitorContext>,
+): MonitorContext {
+  const { state, monitorSymbolName } = options;
   const symbolRegistry = createSymbolRegistryDouble({
-    baseInstrumentSymbol: 'HSI.HK',
+    monitorSymbol: 'HSI.HK',
+    longSeat: {
+      symbol: 'BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: 12_000,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    },
+    shortSeat: {
+      symbol: 'BEAR.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: 13_000,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    },
     longVersion: 2,
     shortVersion: 3,
   });
-  return {
-    config: createStrategyRuntimeConfigDouble(),
+
+  return createMonitorContextDouble({
     state,
     symbolRegistry,
     seatState: {
-      long: symbolRegistry.getSeatState('LONG'),
-      short: symbolRegistry.getSeatState('SHORT'),
+      long: symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+      short: symbolRegistry.getSeatState('HSI.HK', 'SHORT'),
     },
     seatVersion: {
-      long: symbolRegistry.getSeatVersion('LONG'),
-      short: symbolRegistry.getSeatVersion('SHORT'),
+      long: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
+      short: symbolRegistry.getSeatVersion('HSI.HK', 'SHORT'),
     },
-    autoSymbolManager: {
-      maybeSearchOnTick: async () => {},
-      maybeSwitchOnInterval: async () => {},
-      maybeSwitchOnDistance: async () => {},
-      hasPendingSwitch: () => false,
-      resetAllState: () => {},
-    },
-    strategy: {
-      generateSignals: () => [],
-    },
-    dailyLossTracker: {
-      resetAll: () => {},
-      recalculateFromAllOrders: () => {},
-      recordFilledOrder: () => {},
-      getLossOffset: () => 0,
-    },
-    riskChecker: createRiskCheckerDouble(),
-    unrealizedLossMonitor: {
-      monitorUnrealizedLoss: async () => {},
-    },
+    monitorSymbolName,
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
-    baseInstrumentName,
-    normalizedBaseInstrumentSymbol: 'HSI.HK',
-    indicatorProfile: createIndicatorDisplayProfileDouble(),
     ...overrides,
-  } as unknown as StrategyRuntime;
+  });
 }
 
 /**
- * 构造带默认行情与席位的 StrategyRuntime，供 buyProcessor/sellProcessor 测试使用。
+ * 构造带默认行情与席位的 MonitorContext，供 buyProcessor/sellProcessor 测试使用。
  *
  * @param overrides 覆盖字段（可选）
- * @returns 用于测试的 StrategyRuntime
+ * @returns 用于测试的 MonitorContext
  */
-export function createStrategyRuntime(overrides: Partial<StrategyRuntime> = {}): StrategyRuntime {
-  return buildStrategyRuntimeBase(
+export function createMonitorContext(overrides: Partial<MonitorContext> = {}): MonitorContext {
+  return buildMonitorContextBase(
     {
       state: {
-        baseInstrumentSymbol: 'HSI.HK',
-        monitorPrice: 20_000,
-        longPrice: 1.1,
-        shortPrice: 0.9,
+        monitorSymbol: 'HSI.HK',
         signal: null,
-        pendingSignals: [],
+        pendingDelayedSignals: [],
         lastMonitorSnapshot: null,
-        lastCandlestickCacheVersion: null,
+        incrementalIndicatorRuntime: null,
       },
-      baseInstrumentName: 'HSI.HK',
+      monitorSymbolName: 'HSI.HK',
     },
     overrides,
   );
@@ -201,27 +174,22 @@ export function createLastStateWithPositions(): LastState {
 }
 
 /**
- * 构造无行情、无席位的 StrategyRuntime，供 monitorTaskProcessor 等测试使用。
+ * 构造无行情、无席位的 MonitorContext，供 monitorTaskProcessor 等测试使用。
  *
  * @param overrides 覆盖字段（可选）
- * @returns 用于监控任务测试的 StrategyRuntime
+ * @returns 用于监控任务测试的 MonitorContext
  */
-export function createMonitorTaskContext(
-  overrides: Partial<StrategyRuntime> = {},
-): StrategyRuntime {
-  return buildStrategyRuntimeBase(
+export function createMonitorTaskContext(overrides: Partial<MonitorContext> = {}): MonitorContext {
+  return buildMonitorContextBase(
     {
       state: {
-        baseInstrumentSymbol: 'HSI.HK',
-        monitorPrice: null,
-        longPrice: null,
-        shortPrice: null,
+        monitorSymbol: 'HSI.HK',
         signal: null,
-        pendingSignals: [],
+        pendingDelayedSignals: [],
         lastMonitorSnapshot: null,
-        lastCandlestickCacheVersion: null,
+        incrementalIndicatorRuntime: null,
       },
-      baseInstrumentName: 'HSI',
+      monitorSymbolName: 'HSI',
     },
     overrides,
   );

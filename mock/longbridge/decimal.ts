@@ -2,7 +2,7 @@
  * Decimal 辅助（Mock）
  *
  * 功能：
- * - 统一处理 Mock 场景下的数值到 Decimal 转换
+ * - 统一处理 Mock 场景下的数值到 Decimal 转换与比较
  */
 import { Decimal } from 'longbridge';
 import type { MockDecimalInput } from './types.js';
@@ -19,4 +19,24 @@ export function toMockDecimal(value: MockDecimalInput): Decimal {
   }
 
   return new Decimal(value);
+}
+
+/**
+ * 比较两个 Decimal 是否相等。
+ * @param left 左操作数
+ * @param right 右操作数
+ * @returns 相等返回 true，否则返回 false
+ */
+export function decimalEquals(left: Decimal, right: Decimal): boolean {
+  return left.equals(right);
+}
+
+/**
+ * 将 Decimal 安全转换为 JavaScript number。
+ * 注意：超出 number 精度范围的值可能丢失精度。
+ * @param value 待转换的 Decimal 实例
+ * @returns 对应的 number 值
+ */
+export function decimalToNumberSafe(value: Decimal): number {
+  return value.toNumber();
 }

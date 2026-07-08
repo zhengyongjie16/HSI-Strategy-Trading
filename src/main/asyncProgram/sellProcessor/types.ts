@@ -1,9 +1,24 @@
-import type { StrategyRuntime, LastState } from '../../../types/state.js';
-import type { MarketDataClient, Trader } from '../../../types/services.js';
-import type { RefreshGate } from '../../../utils/types.js';
+import type { MonitorContext, LastState } from '../../../types/state.js';
+import type {
+  MarketDataClient,
+  PostTradeConsistencyFreshnessPort,
+  Trader,
+} from '../../../types/services.js';
+import type { SellSignal } from '../../../types/signal.js';
 import type { TaskQueue, SellTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
-import type { Signal } from '../../../types/signal.js';
+
+/**
+ * 卖出 quote retry 状态。
+ * 类型用途：记录单个卖出信号的重试定时器、待重入队信号副本与已重试次数。
+ * 数据来源：由 sellProcessor 在行情不足时创建并维护。
+ * 使用范围：仅 sellProcessor 模块内部使用。
+ */
+export type SellRetryState = {
+  handle: ReturnType<typeof setTimeout> | null;
+  retrySignal: SellSignal | null;
+  attempts: number;
+};
 
 /**
  * 卖出处理器依赖类型（创建 SellProcessor 时的参数）。
@@ -15,8 +30,8 @@ export type SellProcessorDeps = {
   /** 卖出任务队列 */
   readonly taskQueue: TaskQueue<SellTaskType>;
 
-  /** 单实例监控上下文 */
-  readonly monitorContext: StrategyRuntime;
+  /** 获取监控上下文的函数 */
+  readonly getMonitorContext: (monitorSymbol: string) => MonitorContext | undefined;
 
   /** 信号处理器（计算卖出数量） */
   readonly signalProcessor: SignalProcessor;
@@ -30,8 +45,8 @@ export type SellProcessorDeps = {
   /** 获取全局状态的函数 */
   readonly getLastState: () => LastState;
 
-  /** 刷新门禁（等待缓存刷新） */
-  readonly refreshGate: RefreshGate;
+  /** 成交后一致性 freshness 等待端口（等待缓存刷新） */
+  readonly postTradeConsistencyRuntime: PostTradeConsistencyFreshnessPort;
 
   /** 一次性路径 quote retry 调度器 */
   readonly scheduleRetry?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -41,16 +56,7 @@ export type SellProcessorDeps = {
 
   /** 生命周期门禁：false 时跳过任务执行 */
   readonly getCanProcessTask?: () => boolean;
-};
 
-/**
- * 卖出重试状态。
- * 类型用途：保存单个卖出信号的重试句柄、待重入队信号和重试次数。
- * 数据来源：sellProcessor 在 quote 缺失时创建并维护。
- * 使用范围：仅 main/asyncProgram/sellProcessor/index.ts 使用。
- */
-export type SellRetryState = {
-  handle: ReturnType<typeof setTimeout> | null;
-  retrySignal: Signal | null;
-  attempts: number;
+  /** 非 API 程序错误进入 fatal 通道 */
+  readonly onFatalError?: (error: unknown) => void;
 };

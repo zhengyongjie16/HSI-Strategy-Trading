@@ -26,7 +26,7 @@ async function buildFindBestWarrantInput(
   params: BuildFindBestWarrantInputParams,
 ): Promise<FindBestWarrantInput> {
   const {
-    baseInstrumentSymbol,
+    monitorSymbol,
     currentTime,
     marketDataClient,
     warrantListCacheConfig,
@@ -38,7 +38,7 @@ async function buildFindBestWarrantInput(
   const ctx = await marketDataClient.getQuoteContext();
   return buildFindBestWarrantInputFromPolicy({
     ctx,
-    baseInstrumentSymbol,
+    monitorSymbol,
     currentTime,
     policy,
     expiryMinMonths,
@@ -50,7 +50,7 @@ async function buildFindBestWarrantInput(
 
 /**
  * 创建策略解析器，将依赖注入绑定到内部函数，对外暴露统一的共享策略解析与寻标输入构造接口。
- * @param deps - 依赖（autoSearchConfig、baseInstrumentSymbol、marketDataClient、logger、getTradingMinutesSinceOpen 等）
+ * @param deps - 依赖（autoSearchConfig、monitorSymbol、marketDataClient、logger、getTradingMinutesSinceOpen 等）
  * @returns 含 resolveDirectionalAutoSearchPolicy、buildFindBestWarrantInput 的对象
  */
 export function createThresholdResolver(deps: ThresholdResolverDeps): {
@@ -59,7 +59,7 @@ export function createThresholdResolver(deps: ThresholdResolverDeps): {
 } {
   const {
     autoSearchConfig,
-    baseInstrumentSymbol,
+    monitorSymbol,
     marketDataClient,
     warrantListCacheConfig,
     logger,
@@ -84,7 +84,7 @@ export function createThresholdResolver(deps: ThresholdResolverDeps): {
     const policy = resolveDirectionalAutoSearchPolicy({
       ...params,
       autoSearchConfig,
-      baseInstrumentSymbol,
+      monitorSymbol,
       logger,
     });
     policyCache.set(params.direction, policy);
@@ -97,7 +97,7 @@ export function createThresholdResolver(deps: ThresholdResolverDeps): {
   ): Promise<FindBestWarrantInput> {
     return buildFindBestWarrantInput({
       ...params,
-      baseInstrumentSymbol,
+      monitorSymbol,
       marketDataClient,
       expiryMinMonths,
       getTradingMinutesSinceOpen,

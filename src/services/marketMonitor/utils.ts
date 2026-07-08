@@ -1,12 +1,7 @@
 import { DEFAULT_PERCENT_DECIMALS } from '../../constants/index.js';
-import type { FactorSnapshot } from '../../types/factor.js';
 import type { UnrealizedLossMetrics, WarrantDistanceInfo } from '../../types/services.js';
 import type { Quote } from '../../types/quote.js';
 import { decimalGte, formatDecimal } from '../../utils/numeric/index.js';
-
-function isValidNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
 
 /**
  * 格式化行情数据显示为可读字段。默认行为：quote 为 null 时返回 null。
@@ -55,25 +50,6 @@ export function formatQuoteDisplay(
 }
 
 /**
- * 检查数值是否发生变化（超过阈值）
- * @param current 当前值
- * @param last 上次值
- * @param threshold 变化阈值
- * @returns true表示值发生变化，false表示未变化
- */
-export function hasChanged(
-  current: number | null | undefined,
-  last: number | null | undefined,
-  threshold: number,
-): boolean {
-  if (!isValidNumber(current) || !isValidNumber(last)) {
-    return false;
-  }
-
-  return Math.abs(current - last) > threshold;
-}
-
-/**
  * 格式化距离回收价的显示文本
  * @param warrantDistanceInfo 牛熊证距离信息，为 null 时返回 null
  * @param decimals 小数位数，默认使用 DEFAULT_PERCENT_DECIMALS
@@ -97,15 +73,15 @@ export function formatWarrantDistanceDisplay(
 }
 
 /**
- * 格式化浮亏指标展示文本（持仓市值、持仓盈亏、持仓数量）。
+ * 格式化浮亏指标展示文本（持仓市值、持仓盈亏、订单数量）。
  * @param metrics 浮亏实时指标，null 时以 "-" 展示市值与持仓盈亏
- * @param positionCount 当前席位持仓数量，null 时展示 "-"
+ * @param orderCount 未平仓买入订单数量（笔数），null 时展示 "-"
  * @param decimals 金额小数位数，默认 2
  * @returns 统一格式文本
  */
 export function formatPositionDisplay(
   metrics: UnrealizedLossMetrics | null,
-  positionCount: number | null,
+  orderCount: number | null,
   decimals: number = 2,
 ): string {
   const marketValueText =
@@ -118,51 +94,8 @@ export function formatPositionDisplay(
     pnlText = '-';
   }
 
-  const positionCountText =
-    positionCount !== null && Number.isFinite(positionCount) ? String(positionCount) : '-';
+  const orderCountText =
+    orderCount !== null && Number.isFinite(orderCount) ? String(orderCount) : '-';
 
-  return `持仓市值=${marketValueText} 持仓盈亏=${pnlText} 持仓数量=${positionCountText}`;
-}
-
-/**
- * 将趋势因子快照格式化为简洁的展示字符串。
- *
- * @param snapshot 因子快照
- * @returns factor 展示字符串；快照缺失时返回空字符串
- */
-export function buildIndicatorDisplayString(snapshot: FactorSnapshot | null): string {
-  if (!snapshot) {
-    return '';
-  }
-
-  const parts: string[] = [];
-  parts.push(`SESSION=${snapshot.session}`);
-
-  if (snapshot.volatilityRegime) {
-    parts.push(`REGIME=${snapshot.volatilityRegime}`);
-  }
-
-  if (snapshot.trendClassification) {
-    parts.push(`TREND=${snapshot.trendClassification}`);
-  }
-
-  if (snapshot.trendScore !== null) {
-    parts.push(`SCORE=${snapshot.trendScore.toFixed(3)}`);
-  }
-
-  if (snapshot.er15 !== null) {
-    parts.push(`ER15=${snapshot.er15.toFixed(3)}`);
-  }
-
-  if (snapshot.er30 !== null) {
-    parts.push(`ER30=${snapshot.er30.toFixed(3)}`);
-  }
-
-  parts.push(snapshot.readiness.overallReady ? 'READY=Y' : 'READY=N');
-
-  if (!snapshot.readiness.overallReady && snapshot.readiness.reasons.length > 0) {
-    parts.push(`REASON=${snapshot.readiness.reasons.join('|')}`);
-  }
-
-  return parts.join('、');
+  return `持仓市值=${marketValueText} 持仓盈亏=${pnlText} 订单数量=${orderCountText}`;
 }

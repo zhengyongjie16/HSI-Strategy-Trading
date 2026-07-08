@@ -5,29 +5,27 @@
  * - 模拟 QuoteContext 的订阅、查询、失败注入与事件回放行为
  */
 import {
-  type AdjustType,
   type Market,
-  type NaiveDatetime,
   type Period,
   type PushCandlestickEvent,
   type PushQuoteEvent,
-  type SortOrderType,
   type SubType,
   type TradeSessions,
   type WarrantInfo,
   type WarrantQuote,
-  type WarrantSortBy,
   WarrantType,
 } from 'longbridge';
-import { createLongportEventBus } from './eventBus.js';
+import {
+  createLongportEventBus,
+  type EventPublishOptions,
+  type LongportEventBus,
+} from './eventBus.js';
 import type {
-  EventPublishOptions,
   MockWarrantListItem,
   MockCallRecord,
   MockFailureRule,
   MockMethodName,
-  QuoteContextMock,
-  QuoteContextMockOptions,
+  QuoteContextContract,
 } from './types.js';
 import {
   applyMockFailureRule,
@@ -45,13 +43,16 @@ const QUOTE_METHODS: ReadonlySet<MockMethodName> = new Set([
   'unsubscribe',
   'realtimeQuote',
   'subscribeCandlesticks',
-  'historyCandlesticksByOffset',
   'unsubscribeCandlesticks',
-  'realtimeCandlesticks',
   'tradingDays',
   'warrantQuote',
   'warrantList',
 ]);
+
+type QuoteContextMockOptions = {
+  readonly eventBus?: LongportEventBus;
+  readonly now?: () => number;
+};
 
 /**
  * 生成 K 线订阅缓存键。
@@ -60,82 +61,6 @@ const QUOTE_METHODS: ReadonlySet<MockMethodName> = new Set([
  */
 function createCandleKey(symbol: string, period: Period): string {
   return `${symbol}:${String(period)}`;
-}
-
-/**
- * 提取 K 线时间戳毫秒值。
- *
- * 允许 Date、number 与可转字符串对象，方便 mock 兼容不同测试输入来源。
- *
- * @param candle 待解析的 K 线对象
- * @returns 有效时间戳毫秒值；无法解析时返回 null
- */
-function extractCandleTimestampMs(candle: unknown): number | null {
-  if (candle === null || typeof candle !== 'object') {
-    return null;
-  }
-
-  const timestamp = Reflect.get(candle, 'timestamp') as unknown;
-  if (timestamp instanceof Date) {
-    const timestampMs = timestamp.getTime();
-    return Number.isFinite(timestampMs) ? timestampMs : null;
-  }
-
-  if (typeof timestamp === 'number' && Number.isFinite(timestamp)) {
-    return timestamp;
-  }
-
-  if (typeof timestamp === 'string') {
-    const timestampMs = Date.parse(timestamp);
-    return Number.isFinite(timestampMs) ? timestampMs : null;
-  }
-
-  return null;
-}
-
-/**
- * 将 NaiveDatetime 转换为香港时间对应的时间戳。
- *
- * @param datetime 待转换的 NaiveDatetime
- * @returns 有效时间戳毫秒值；无法解析时返回 null
- */
-function extractNaiveDatetimeMs(datetime: NaiveDatetime | undefined | null): number | null {
-  if (datetime === null || datetime === undefined) {
-    return null;
-  }
-
-  const raw = datetime.toString();
-  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
-  const parsed = Date.parse(
-    normalized.includes('+') || normalized.endsWith('Z') ? normalized : `${normalized}+08:00`,
-  );
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-/**
- * 按时间戳对 K 线数组排序。
- *
- * @param candles 原始 K 线数组
- * @returns 按 timestamp 升序排列后的新数组
- */
-function sortCandlesByTimestamp(candles: ReadonlyArray<unknown>): ReadonlyArray<unknown> {
-  return [...candles].sort((left, right) => {
-    const leftTimestamp = extractCandleTimestampMs(left);
-    const rightTimestamp = extractCandleTimestampMs(right);
-    if (leftTimestamp === null && rightTimestamp === null) {
-      return 0;
-    }
-
-    if (leftTimestamp === null) {
-      return 1;
-    }
-
-    if (rightTimestamp === null) {
-      return -1;
-    }
-
-    return leftTimestamp - rightTimestamp;
-  });
 }
 
 /**
@@ -153,6 +78,32 @@ function normalizeWarrantType(value: unknown): 'BULL' | 'BEAR' | null {
   }
 
   return null;
+}
+
+interface QuoteContextMock extends QuoteContextContract {
+  seedQuotes: (quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>) => void;
+  seedRealtimeQuotes: (
+    quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>,
+  ) => void;
+  seedStaticInfo: (
+    staticInfos: ReadonlyArray<{ readonly symbol: string; readonly info: unknown }>,
+  ) => void;
+  seedCandlesticks: (symbol: string, period: Period, candles: ReadonlyArray<unknown>) => void;
+  seedTradingDays: (
+    key: string,
+    value: {
+      readonly tradingDays: ReadonlyArray<unknown>;
+      readonly halfTradingDays: ReadonlyArray<unknown>;
+    },
+  ) => void;
+  seedWarrantQuotes: (quotes: ReadonlyArray<WarrantQuote>) => void;
+  seedWarrantList: (symbol: string, list: ReadonlyArray<MockWarrantListItem>) => void;
+  emitQuote: (event: PushQuoteEvent, options?: EventPublishOptions) => void;
+  emitCandlestick: (event: PushCandlestickEvent, options?: EventPublishOptions) => void;
+  flushEvents: (nowMs?: number) => number;
+  flushAllEvents: () => number;
+  getSubscribedSymbols: () => ReadonlySet<string>;
+  getSubscribedCandlestickKeys: () => ReadonlySet<string>;
 }
 
 /**
@@ -181,7 +132,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   const realtimeQuoteBySymbol = new Map<string, unknown>();
   const staticInfoBySymbol = new Map<string, unknown>();
   const candlesticksByKey = new Map<string, ReadonlyArray<unknown>>();
-  const warrantQuoteBySymbol = new Map<string, WarrantQuote>([]);
+  const warrantQuoteBySymbol = new Map<string, WarrantQuote>();
   const warrantListBySymbol = new Map<string, ReadonlyArray<MockWarrantListItem>>();
   const tradingDaysByKey = new Map<
     string,
@@ -191,7 +142,9 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     }
   >();
 
+  const subscribedSymbols = new Set<string>();
   const subscribedByType = new Map<string, Set<SubType>>();
+  const subscribedCandlestickKeys = new Set<string>();
 
   let quoteSubscriptionDisposer: (() => void) | null = null;
   let candlestickSubscriptionDisposer: (() => void) | null = null;
@@ -236,6 +189,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   ): Promise<void> {
     return withCall('subscribe', [symbols, subTypes], () => {
       for (const symbol of symbols) {
+        subscribedSymbols.add(symbol);
         const current = subscribedByType.get(symbol) ?? new Set<SubType>();
         for (const subType of subTypes) {
           current.add(subType);
@@ -263,6 +217,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
 
         if (current.size === 0) {
           subscribedByType.delete(symbol);
+          subscribedSymbols.delete(symbol);
           quoteBySymbol.delete(symbol);
           staticInfoBySymbol.delete(symbol);
         }
@@ -281,10 +236,11 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   function subscribeCandlesticks(
     symbol: string,
     period: Period,
-    _tradeSessions?: TradeSessions,
+    tradeSessions?: TradeSessions,
   ): Promise<ReadonlyArray<unknown>> {
-    return withCall('subscribeCandlesticks', [symbol, period], () => {
+    return withCall('subscribeCandlesticks', [symbol, period, tradeSessions], () => {
       const key = createCandleKey(symbol, period);
+      subscribedCandlestickKeys.add(key);
       return candlesticksByKey.get(key) ?? [];
     });
   }
@@ -292,66 +248,9 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   function unsubscribeCandlesticks(symbol: string, period: Period): Promise<void> {
     return withCall('unsubscribeCandlesticks', [symbol, period], () => {
       const key = createCandleKey(symbol, period);
+      subscribedCandlestickKeys.delete(key);
       candlesticksByKey.delete(key);
     });
-  }
-
-  function realtimeCandlesticks(
-    symbol: string,
-    period: Period,
-    count: number,
-  ): Promise<ReadonlyArray<unknown>> {
-    return withCall('realtimeCandlesticks', [symbol, period, count], () => {
-      const key = createCandleKey(symbol, period);
-      const data = candlesticksByKey.get(key) ?? [];
-      if (count <= 0 || data.length <= count) {
-        return data;
-      }
-
-      return data.slice(data.length - count);
-    });
-  }
-
-  function historyCandlesticksByOffset(
-    symbol: string,
-    period: Period,
-    adjustType: AdjustType,
-    forward: boolean,
-    datetime: NaiveDatetime | undefined | null,
-    count: number,
-    tradeSessions: TradeSessions,
-  ): Promise<ReadonlyArray<unknown>> {
-    return withCall(
-      'historyCandlesticksByOffset',
-      [symbol, period, adjustType, forward, datetime, count, tradeSessions],
-      () => {
-        const key = createCandleKey(symbol, period);
-        const candles = sortCandlesByTimestamp(candlesticksByKey.get(key) ?? []);
-        if (count <= 0 || candles.length === 0) {
-          return [];
-        }
-
-        const anchorMs = extractNaiveDatetimeMs(datetime);
-        if (anchorMs === null) {
-          return forward
-            ? candles.slice(0, count)
-            : candles.slice(Math.max(candles.length - count, 0));
-        }
-
-        const filtered = candles.filter((candle) => {
-          const timestampMs = extractCandleTimestampMs(candle);
-          if (timestampMs === null) {
-            return false;
-          }
-
-          return forward ? timestampMs > anchorMs : timestampMs < anchorMs;
-        });
-
-        return forward
-          ? filtered.slice(0, count)
-          : filtered.slice(Math.max(filtered.length - count, 0));
-      },
-    );
   }
 
   function tradingDays(
@@ -384,17 +283,14 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     );
   }
 
-  function warrantList(
-    symbol: string,
-    _sortBy: WarrantSortBy,
-    _sortOrder: SortOrderType,
-    types: ReadonlyArray<WarrantType>,
-  ): Promise<ReadonlyArray<WarrantInfo>> {
-    return withCall('warrantList', [symbol, types], () => {
+  const warrantList: QuoteContextContract['warrantList'] = (...args) => {
+    const [symbol, _sortBy, _sortOrder, warrantType] = args;
+    const types = warrantType ?? [];
+    return withCall('warrantList', [...args], () => {
       const list = warrantListBySymbol.get(symbol) ?? [];
       if (types.length === 0) {
         // mock 存储的是自动寻标实际消费的最小字段子集，返回到 QuoteContext 合同时在此处集中收口断言。
-        return list as unknown as ReadonlyArray<WarrantInfo>;
+        return [...list] as unknown as WarrantInfo[];
       }
 
       const typeSet = new Set(
@@ -412,9 +308,9 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
       });
 
       // 经过 mock 边界过滤后，返回值只会流向当前测试所覆盖的消费字段。
-      return filteredList as unknown as ReadonlyArray<WarrantInfo>;
+      return [...filteredList] as unknown as WarrantInfo[];
     });
-  }
+  };
 
   function setOnQuote(callback: (err: Error | null, event: PushQuoteEvent) => void): void {
     quoteSubscriptionDisposer?.();
@@ -495,6 +391,12 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     tradingDaysByKey.set(key, value);
   }
 
+  function seedWarrantQuotes(quotes: ReadonlyArray<WarrantQuote>): void {
+    for (const quoteItem of quotes) {
+      warrantQuoteBySymbol.set(quoteItem.symbol, quoteItem);
+    }
+  }
+
   function seedWarrantList(symbol: string, list: ReadonlyArray<MockWarrantListItem>): void {
     warrantListBySymbol.set(symbol, [...list]);
   }
@@ -518,6 +420,14 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     return bus.flushAll();
   }
 
+  function getSubscribedSymbols(): ReadonlySet<string> {
+    return new Set(subscribedSymbols);
+  }
+
+  function getSubscribedCandlestickKeys(): ReadonlySet<string> {
+    return new Set(subscribedCandlestickKeys);
+  }
+
   return {
     quote,
     staticInfo,
@@ -525,9 +435,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     unsubscribe,
     realtimeQuote,
     subscribeCandlesticks,
-    historyCandlesticksByOffset,
     unsubscribeCandlesticks,
-    realtimeCandlesticks,
     tradingDays,
     warrantQuote,
     warrantList,
@@ -542,10 +450,13 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     seedStaticInfo,
     seedCandlesticks,
     seedTradingDays,
+    seedWarrantQuotes,
     seedWarrantList,
     emitQuote,
     emitCandlestick,
     flushEvents,
     flushAllEvents,
+    getSubscribedSymbols,
+    getSubscribedCandlestickKeys,
   };
 }

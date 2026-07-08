@@ -9,7 +9,7 @@
 import { TIME } from '../../../constants/index.js';
 import { isBuyAction } from '../../../utils/helpers/index.js';
 import { isSellAction } from '../../../utils/display/index.js';
-import type { StrategyRuntimeConfig } from '../../../types/config.js';
+import type { MonitorConfig } from '../../../types/config.js';
 import type { SignalType } from '../../../types/signal.js';
 import type { BuyThrottle } from './types.js';
 import { buildBuyTimeKey } from './utils.js';
@@ -17,10 +17,9 @@ import { buildBuyTimeKey } from './utils.js';
 /**
  * 创建买入节流器。
  *
- * @param defaultMonitorConfig 默认监控配置（唯一真相来源）
  * @returns 买入节流器实例
  */
-export function createBuyThrottle(defaultMonitorConfig: StrategyRuntimeConfig): BuyThrottle {
+export function createBuyThrottle(): BuyThrottle {
   const lastBuyTime = new Map<string, number>();
 
   /**
@@ -30,15 +29,13 @@ export function createBuyThrottle(defaultMonitorConfig: StrategyRuntimeConfig): 
    * @param monitorConfig 监控配置
    * @returns 频率检查结果
    */
-  function canTradeNow(signalAction: SignalType, monitorConfig?: StrategyRuntimeConfig | null) {
+  function canTradeNow(signalAction: SignalType, monitorConfig?: MonitorConfig | null) {
     if (isSellAction(signalAction)) {
       return { canTrade: true };
     }
 
-    const direction: 'LONG' | 'SHORT' = signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
-    const resolvedMonitorConfig = monitorConfig ?? defaultMonitorConfig;
-    const buyIntervalSeconds = resolvedMonitorConfig.buyIntervalSeconds;
-    const timeKey = buildBuyTimeKey(signalAction, resolvedMonitorConfig);
+    const buyIntervalSeconds = monitorConfig?.buyIntervalSeconds ?? 60;
+    const timeKey = buildBuyTimeKey(signalAction, monitorConfig);
     const lastTime = lastBuyTime.get(timeKey);
     if (!lastTime) {
       return { canTrade: true };
@@ -55,8 +52,6 @@ export function createBuyThrottle(defaultMonitorConfig: StrategyRuntimeConfig): 
     return {
       canTrade: false,
       waitSeconds,
-      direction,
-      reason: `需等待 ${waitSeconds} 秒`,
     };
   }
 
@@ -67,15 +62,9 @@ export function createBuyThrottle(defaultMonitorConfig: StrategyRuntimeConfig): 
    * @param monitorConfig 监控配置
    * @returns 无返回值
    */
-  function recordBuyAttempt(
-    signalAction: SignalType,
-    monitorConfig?: StrategyRuntimeConfig | null,
-  ): void {
+  function recordBuyAttempt(signalAction: SignalType, monitorConfig?: MonitorConfig | null): void {
     if (isBuyAction(signalAction)) {
-      lastBuyTime.set(
-        buildBuyTimeKey(signalAction, monitorConfig ?? defaultMonitorConfig),
-        Date.now(),
-      );
+      lastBuyTime.set(buildBuyTimeKey(signalAction, monitorConfig), Date.now());
     }
   }
 

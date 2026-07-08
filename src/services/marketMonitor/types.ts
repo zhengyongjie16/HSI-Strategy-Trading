@@ -1,70 +1,90 @@
-import type { StrategyState } from '../../types/state.js';
+import type { DisplayIndicatorItem, IndicatorUsageProfile } from '../../types/indicatorProfile.js';
 import type { IndicatorSnapshot, Quote } from '../../types/quote.js';
-import type { UnrealizedLossMetrics, WarrantDistanceInfo } from '../../types/services.js';
+import type {
+  QuoteUpdatedEvent,
+  UnrealizedLossMetrics,
+  WarrantDistanceInfo,
+} from '../../types/services.js';
 
 /**
- * 价格展示附加信息。
- * 类型用途：封装做多/做空标的价格日志所需的距回收价、持仓市值/持仓盈亏、持仓数量。
- * 数据来源：processMonitor.riskTasks 从 RiskChecker 的实时缓存计算得到。
- * 使用范围：marketMonitor.monitorPriceChanges 入参。
+ * 编译后的单项显示计划。
+ * 类型用途：把 displayPlan 中的原始指标项解析为可直接渲染的结构化项。
+ * 数据来源：由 createMarketMonitor 基于 indicatorProfile.displayPlan 编译。
+ * 使用范围：仅 marketMonitor 模块内部使用。
  */
-export type PriceDisplayInfo = {
-  /** 距回收价信息 */
-  readonly warrantDistanceInfo: WarrantDistanceInfo | null;
-
-  /** 浮亏实时指标 */
-  readonly unrealizedLossMetrics: UnrealizedLossMetrics | null;
-
-  /** 当前席位持仓数量（单席位场景下通常为 0 或 1） */
-  readonly positionCount: number | null;
-};
+export type CompiledDisplayPlanItem =
+  | { readonly item: 'price'; readonly kind: 'price' }
+  | { readonly item: 'changePercent'; readonly kind: 'changePercent' }
+  | { readonly item: 'MFI'; readonly kind: 'mfi' }
+  | { readonly item: 'K'; readonly kind: 'kdj'; readonly field: 'k' }
+  | { readonly item: 'D'; readonly kind: 'kdj'; readonly field: 'd' }
+  | { readonly item: 'J'; readonly kind: 'kdj'; readonly field: 'j' }
+  | { readonly item: 'ADX'; readonly kind: 'adx' }
+  | { readonly item: 'MACD'; readonly kind: 'macd'; readonly field: 'macd' }
+  | { readonly item: 'DIF'; readonly kind: 'macd'; readonly field: 'dif' }
+  | { readonly item: 'DEA'; readonly kind: 'macd'; readonly field: 'dea' }
+  | { readonly item: DisplayIndicatorItem; readonly kind: 'ema'; readonly period: number }
+  | { readonly item: DisplayIndicatorItem; readonly kind: 'rsi'; readonly period: number }
+  | { readonly item: DisplayIndicatorItem; readonly kind: 'psy'; readonly period: number };
 
 /**
- * 指标监控参数。
- * 类型用途：封装 monitorIndicatorChanges 所需的因子快照、行情与 K 线时间戳。
- * 数据来源：由指标流水线基于实时 K 线与行情组装传入。
- * 使用范围：marketMonitor.monitorIndicatorChanges 入参。
+ * 编译后的显示计划。
+ * 类型用途：缓存 displayPlan 解析结果，避免每次渲染重复解析指标项。
+ * 数据来源：由 createMarketMonitor 基于 indicatorProfile.displayPlan 编译。
+ * 使用范围：仅 marketMonitor 模块内部使用。
  */
-export type MonitorIndicatorChangesParams = Readonly<{
-  readonly monitorSnapshot: IndicatorSnapshot | null;
-  readonly monitorQuote: Quote | null;
-  readonly baseInstrumentSymbol: string;
-  readonly klineTimestamp: number | null;
-  readonly monitorState: StrategyState;
+export type CompiledDisplayPlan = Readonly<{
+  items: ReadonlyArray<CompiledDisplayPlanItem>;
 }>;
 
 /**
- * 行情监控器接口。
- * 类型用途：对外暴露价格与指标监控方法，供主循环驱动控制台输出。
- * 数据来源：主循环传入行情快照与 StrategyState，由本模块计算是否变化。
- * 使用范围：主循环调用，仅用于控制台输出。
+ * 交易标的价格显示附加信息。
+ * 类型用途：承载 trading quote 显示所需的距回收价、浮亏与订单数信息。
+ * 数据来源：由 tradingRiskEventRuntime 路由链路按当前 route 组装。
+ * 使用范围：仅 marketMonitor 交易标的显示链路使用。
+ */
+export type PriceDisplayInfo = {
+  readonly warrantDistanceInfo: WarrantDistanceInfo | null;
+  readonly unrealizedLossMetrics: UnrealizedLossMetrics | null;
+  readonly orderCount: number | null;
+};
+
+/**
+ * monitor indicator 渲染参数。
+ * 类型用途：封装纯渲染 monitor indicators 所需的 snapshot、quote、显示画像与 K 线时间。
+ * 数据来源：由 monitorDisplayRuntime 在补齐 monitor quote 后组装。
+ * 使用范围：仅 marketMonitor.renderMonitorIndicators 使用。
+ */
+export type RenderMonitorIndicatorsParams = Readonly<{
+  readonly monitorSnapshot: IndicatorSnapshot;
+  readonly monitorQuote: Quote | null;
+  readonly monitorSymbol: string;
+  readonly indicatorProfile: IndicatorUsageProfile;
+  readonly klineTimestamp: number | null;
+}>;
+
+/**
+ * trading quote 渲染参数。
+ * 类型用途：封装纯渲染交易标的行情所需的 quote 事件、route 信息、monitor quote 与附加展示信息。
+ * 数据来源：由 tradingQuoteDisplayRuntime 在 route 校验与补齐 monitor quote 后组装。
+ * 使用范围：仅 marketMonitor.renderTradingQuote 使用。
+ */
+export type RenderTradingQuoteParams = Readonly<{
+  readonly event: QuoteUpdatedEvent;
+  readonly tradingSymbol: string;
+  readonly monitorSymbol: string;
+  readonly direction: 'LONG' | 'SHORT';
+  readonly monitorQuote: Quote | null;
+  readonly displayInfo: PriceDisplayInfo | null;
+}>;
+
+/**
+ * 终端显示纯渲染器契约。
+ * 类型用途：统一 monitor indicators 与 trading quote 的纯输出端口。
+ * 数据来源：由 createMarketMonitor 创建。
+ * 使用范围：显示 runtime 与 app 组装链路使用。
  */
 export interface MarketMonitor {
-  /**
-   * 监控并显示做多和做空标的的价格变化。
-   *
-   * @param longQuote 做多标的行情数据
-   * @param shortQuote 做空标的行情数据
-   * @param longSymbol 做多标的代码
-   * @param shortSymbol 做空标的代码
-   * @param monitorState 监控标的状态（包含 longPrice, shortPrice）
-   * @returns 价格是否发生变化
-   */
-  monitorPriceChanges: (
-    longQuote: Quote | null,
-    shortQuote: Quote | null,
-    longSymbol: string,
-    shortSymbol: string,
-    monitorState: StrategyState,
-    longDisplayInfo?: PriceDisplayInfo | null,
-    shortDisplayInfo?: PriceDisplayInfo | null,
-  ) => boolean;
-
-  /**
-   * 监控并显示监控标的的因子变化。
-   *
-   * @param params 因子监控参数（含快照、行情、K线时间戳与状态）
-   * @returns 指标是否发生变化
-   */
-  monitorIndicatorChanges: (params: MonitorIndicatorChangesParams) => boolean;
+  readonly renderTradingQuote: (params: RenderTradingQuoteParams) => void;
+  readonly renderMonitorIndicators: (params: RenderMonitorIndicatorsParams) => void;
 }

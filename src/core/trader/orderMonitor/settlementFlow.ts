@@ -3,15 +3,17 @@
  *
  * 职责：
  * - 对已确认终态订单执行唯一副作用结算
- * - 维护 recentFilled 摘要、tradeLogger 写入与冷却链路更新
+ * - 维护买卖记录与冷却链路更新
  * - 在缺少归属上下文时拒绝结算，避免错误记账
  */
 import { OrderSide } from 'longbridge';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import { toHongKongTimeIso } from '../../../utils/time/index.js';
-import { recordTrade } from '../tradeLogger.js';
-import type { StrategyRuntimeConfig } from '../../../types/config.js';
-import type { RecentFilledOrderSummary } from '../../../types/services.js';
+import type { MonitorConfig } from '../../../types/config.js';
+import type {
+  OrderRecord,
+  OrderRecorder,
+  PostTradeConsistencyRefreshNeed,
+} from '../../../types/services.js';
 import type { TrackedOrder } from '../types.js';
 import type {
   FinalizeOrderSettlementParams,
@@ -19,7 +21,7 @@ import type {
   SettlementFlow,
   SettlementFlowDeps,
 } from './types.js';
-import { resolveSignalAction } from './utils.js';
+import { detachTrackedOrder } from './routingIndex.js';
 
 function resolveOrderSideText(orderSide: OrderSide): 'BUY' | 'SELL' {
   return orderSide === OrderSide.Buy ? 'BUY' : 'SELL';
@@ -29,40 +31,161 @@ function resolveOrderSideFromText(side: 'BUY' | 'SELL'): OrderSide {
   return side === 'BUY' ? OrderSide.Buy : OrderSide.Sell;
 }
 
+function sortOrdersBySellPriority(orders: ReadonlyArray<OrderRecord>): ReadonlyArray<OrderRecord> {
+  return [...orders].sort((left, right) => {
+    if (left.executedPrice !== right.executedPrice) {
+      return left.executedPrice - right.executedPrice;
+    }
+
+    if (left.executedTime !== right.executedTime) {
+      return left.executedTime - right.executedTime;
+    }
+
+    return left.orderId.localeCompare(right.orderId);
+  });
+}
+
+function resolveExactFilledRelatedBuyOrderIds(params: {
+  readonly orderRecorder: OrderRecorder;
+  readonly symbol: string;
+  readonly isLongSymbol: boolean;
+  readonly relatedBuyOrderIds: ReadonlyArray<string>;
+  readonly filledQuantity: number;
+}): ReadonlyArray<string> | null {
+  const { orderRecorder, symbol, isLongSymbol, relatedBuyOrderIds, filledQuantity } = params;
+  if (relatedBuyOrderIds.length === 0 || !isValidPositiveNumber(filledQuantity)) {
+    return null;
+  }
+
+  const relatedBuyOrderIdSet = new Set(relatedBuyOrderIds);
+  const relatedBuyOrders = sortOrdersBySellPriority(
+    orderRecorder
+      .getBuyOrdersForSymbol(symbol, isLongSymbol)
+      .filter((order) => relatedBuyOrderIdSet.has(order.orderId)),
+  );
+  if (relatedBuyOrders.length !== relatedBuyOrderIds.length) {
+    return null;
+  }
+
+  const settledOrderIds: string[] = [];
+  let matchedQuantity = 0;
+  for (const order of relatedBuyOrders) {
+    if (!isValidPositiveNumber(order.executedQuantity)) {
+      return null;
+    }
+
+    matchedQuantity += order.executedQuantity;
+    if (matchedQuantity > filledQuantity) {
+      return null;
+    }
+
+    settledOrderIds.push(order.orderId);
+    if (matchedQuantity === filledQuantity) {
+      return settledOrderIds;
+    }
+  }
+
+  return null;
+}
+
+function settleSellExecutedPart(params: {
+  readonly orderRecorder: OrderRecorder;
+  readonly orderId: string;
+  readonly symbol: string;
+  readonly isLongSymbol: boolean;
+  readonly executedPrice: number | null;
+  readonly executedQuantity: number | null;
+  readonly executedTimeMs: number | null;
+  readonly relatedBuyOrderIds: ReadonlyArray<string>;
+}): {
+  readonly remainingRelatedBuyOrderIds: ReadonlyArray<string> | null;
+} {
+  const {
+    orderRecorder,
+    orderId,
+    symbol,
+    isLongSymbol,
+    executedPrice,
+    executedQuantity,
+    executedTimeMs,
+    relatedBuyOrderIds,
+  } = params;
+  if (
+    !isValidPositiveNumber(executedPrice) ||
+    !isValidPositiveNumber(executedQuantity) ||
+    !isValidPositiveNumber(executedTimeMs)
+  ) {
+    return {
+      remainingRelatedBuyOrderIds: relatedBuyOrderIds.length > 0 ? relatedBuyOrderIds : null,
+    };
+  }
+
+  const settledRelatedBuyOrderIds = resolveExactFilledRelatedBuyOrderIds({
+    orderRecorder,
+    symbol,
+    isLongSymbol,
+    relatedBuyOrderIds,
+    filledQuantity: executedQuantity,
+  });
+  orderRecorder.recordLocalSell(
+    symbol,
+    executedPrice,
+    executedQuantity,
+    isLongSymbol,
+    executedTimeMs,
+    orderId,
+    settledRelatedBuyOrderIds,
+  );
+
+  if (settledRelatedBuyOrderIds === null) {
+    return {
+      remainingRelatedBuyOrderIds: null,
+    };
+  }
+
+  const currentBuyOrderIdSet = new Set(
+    orderRecorder.getBuyOrdersForSymbol(symbol, isLongSymbol).map((order) => order.orderId),
+  );
+  const settledOrderIdSet = new Set(settledRelatedBuyOrderIds);
+  const remainingRelatedBuyOrderIds = relatedBuyOrderIds.filter(
+    (relatedBuyOrderId) =>
+      currentBuyOrderIdSet.has(relatedBuyOrderId) && !settledOrderIdSet.has(relatedBuyOrderId),
+  );
+
+  return {
+    remainingRelatedBuyOrderIds:
+      remainingRelatedBuyOrderIds.length > 0 ? remainingRelatedBuyOrderIds : null,
+  };
+}
+
 function resolveCloseContext(params: {
   readonly trackedOrder: TrackedOrder | undefined;
   readonly closeParams: FinalizeOrderSettlementParams;
-  readonly monitorConfig: StrategyRuntimeConfig;
 }): {
   readonly side: 'BUY' | 'SELL' | null;
   readonly symbol: string | null;
-  readonly baseInstrumentSymbol: string | null;
+  readonly monitorSymbol: string | null;
   readonly isLongSymbol: boolean | undefined;
   readonly isProtectiveLiquidation: boolean;
   readonly liquidationTriggerLimit: number;
-  readonly liquidationCooldownConfig: StrategyRuntimeConfig['liquidationCooldown'];
+  readonly liquidationCooldownConfig: MonitorConfig['liquidationCooldown'];
   readonly executedPrice: number | null;
   readonly executedQuantity: number | null;
   readonly executedTimeMs: number | null;
 } {
-  const { trackedOrder, closeParams, monitorConfig } = params;
+  const { trackedOrder, closeParams } = params;
   const side = closeParams.side ?? (trackedOrder ? resolveOrderSideText(trackedOrder.side) : null);
   return {
     side,
     symbol: trackedOrder?.symbol ?? closeParams.symbol ?? null,
-    baseInstrumentSymbol:
-      trackedOrder?.baseInstrumentSymbol ?? closeParams.baseInstrumentSymbol ?? null,
+    monitorSymbol: trackedOrder?.monitorSymbol ?? closeParams.monitorSymbol ?? null,
     isLongSymbol: trackedOrder?.isLongSymbol ?? closeParams.isLongSymbol,
     isProtectiveLiquidation:
       trackedOrder?.isProtectiveLiquidation ?? closeParams.isProtectiveLiquidation ?? false,
     liquidationTriggerLimit:
-      trackedOrder?.liquidationTriggerLimit ??
-      closeParams.liquidationTriggerLimit ??
-      monitorConfig.liquidationTriggerLimit,
+      trackedOrder?.liquidationTriggerLimit ?? closeParams.liquidationTriggerLimit ?? 1,
     liquidationCooldownConfig:
-      trackedOrder?.liquidationCooldownConfig ??
-      closeParams.liquidationCooldownConfig ??
-      monitorConfig.liquidationCooldown,
+      trackedOrder?.liquidationCooldownConfig ?? closeParams.liquidationCooldownConfig ?? null,
     executedPrice: closeParams.executedPrice ?? trackedOrder?.executedPrice ?? null,
     executedQuantity: closeParams.executedQuantity ?? trackedOrder?.executedQuantity ?? null,
     executedTimeMs: closeParams.executedTimeMs ?? trackedOrder?.lastExecutedTimeMs ?? null,
@@ -102,40 +225,74 @@ function hasExecutionAttributionContext(params: {
   return side !== null && symbol !== null && isLongSymbol !== undefined;
 }
 
+function reserveFollowUpSellOccupancy(params: {
+  readonly orderRecorder: OrderRecorder;
+  readonly orderId: string;
+  readonly symbol: string;
+  readonly isLongSymbol: boolean;
+  readonly followUpQuantity: number;
+  readonly relatedBuyOrderIds: ReadonlyArray<string> | null;
+}): ReadonlyArray<string> {
+  const { orderRecorder, orderId, symbol, isLongSymbol, followUpQuantity, relatedBuyOrderIds } =
+    params;
+  const direction: 'LONG' | 'SHORT' = isLongSymbol ? 'LONG' : 'SHORT';
+  const resolvedRelatedBuyOrderIds =
+    relatedBuyOrderIds ??
+    orderRecorder.allocateRelatedBuyOrderIdsForRecovery(symbol, direction, followUpQuantity);
+  orderRecorder.submitSellOrder(
+    orderId,
+    symbol,
+    direction,
+    followUpQuantity,
+    resolvedRelatedBuyOrderIds,
+  );
+
+  return resolvedRelatedBuyOrderIds;
+}
+
+/**
+ * 新终态结算流程：只处理已确认终态，不做终态推理。
+ */
 export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
   const {
     runtime,
     orderHoldRegistry,
+    orderRecorder,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
-    monitorConfig,
-    refreshGate,
+    postTradeConsistencyRuntime,
+    emitOrderStateChanged,
   } = deps;
 
+  /**
+   * 清理订单运行态，并在删除 tracked order 前基于 symbol 释放 routing index。
+   *
+   * @param orderId 订单 ID
+   * @returns 无返回值
+   */
   function clearRuntimeTracking(orderId: string): void {
+    const trackedOrder = runtime.trackedOrders.get(orderId);
+    if (trackedOrder) {
+      detachTrackedOrder(runtime, trackedOrder.symbol, orderId);
+    }
+
     runtime.trackedOrders.delete(orderId);
     runtime.trackedOrderLifecycles.set(orderId, 'CLOSED');
     orderHoldRegistry.markOrderClosed(orderId);
   }
 
-  function markPostTradeRefresh(symbol: string, isLongSymbol: boolean): void {
-    refreshGate?.markStale();
-    runtime.pendingRefreshSymbols.push({
-      symbol,
-      isLongSymbol,
+  function markPostTradeRefresh(): void {
+    const refreshNeed: PostTradeConsistencyRefreshNeed = {
       refreshAccount: true,
       refreshPositions: true,
-    });
-  }
-
-  function recordRecentFilledOrder(summary: RecentFilledOrderSummary): void {
-    runtime.recentFilledOrders.set(summary.orderId, summary);
+    };
+    postTradeConsistencyRuntime.recordSettlementRefreshNeed(refreshNeed);
   }
 
   function recordDailyLossAndEpisodeProgress(params: {
     readonly orderId: string;
     readonly side: 'BUY' | 'SELL';
-    readonly baseInstrumentSymbol: string | null;
+    readonly monitorSymbol: string | null;
     readonly symbol: string | null;
     readonly isLongSymbol: boolean | undefined;
     readonly isProtectiveLiquidation: boolean;
@@ -146,7 +303,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     const {
       orderId,
       side,
-      baseInstrumentSymbol,
+      monitorSymbol,
       symbol,
       isLongSymbol,
       isProtectiveLiquidation,
@@ -155,7 +312,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       executedTimeMs,
     } = params;
     if (
-      !baseInstrumentSymbol ||
+      !monitorSymbol ||
       !symbol ||
       isLongSymbol === undefined ||
       !isValidPositiveNumber(executedPrice) ||
@@ -167,8 +324,9 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
 
     const orderSide = resolveOrderSideFromText(side);
     dailyLossTracker.recordFilledOrder({
-      direction: isLongSymbol ? 'LONG' : 'SHORT',
+      monitorSymbol,
       symbol,
+      isLongSymbol,
       side: orderSide,
       executedPrice,
       executedQuantity,
@@ -179,66 +337,12 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     if (isProtectiveLiquidation && orderSide === OrderSide.Sell) {
       const direction = isLongSymbol ? 'LONG' : 'SHORT';
       protectiveLiquidationEpisodeTracker.recordProtectiveFillProgress({
+        monitorSymbol,
         direction,
+        symbol,
         executedTimeMs,
       });
     }
-  }
-
-  function recordFilledTradeLog(params: {
-    readonly orderId: string;
-    readonly side: 'BUY' | 'SELL';
-    readonly symbol: string | null;
-    readonly baseInstrumentSymbol: string | null;
-    readonly isLongSymbol: boolean | undefined;
-    readonly isProtectiveLiquidation: boolean;
-    readonly closedReason: FinalizeOrderSettlementParams['closedReason'];
-    readonly executedPrice: number | null;
-    readonly executedQuantity: number | null;
-    readonly executedTimeMs: number | null;
-  }): void {
-    const {
-      orderId,
-      side,
-      symbol,
-      baseInstrumentSymbol,
-      isLongSymbol,
-      isProtectiveLiquidation,
-      closedReason,
-      executedPrice,
-      executedQuantity,
-      executedTimeMs,
-    } = params;
-    if (
-      !symbol ||
-      isLongSymbol === undefined ||
-      !isValidPositiveNumber(executedPrice) ||
-      !isValidPositiveNumber(executedQuantity) ||
-      !isValidPositiveNumber(executedTimeMs)
-    ) {
-      return;
-    }
-
-    const signalAction = resolveSignalAction(resolveOrderSideFromText(side), isLongSymbol);
-    recordTrade({
-      orderId,
-      symbol,
-      symbolName: null,
-      baseInstrumentSymbol,
-      action: signalAction,
-      side,
-      quantity: String(executedQuantity),
-      price: String(executedPrice),
-      orderType: null,
-      status: 'FILLED',
-      error: null,
-      reason: closedReason === 'FILLED' ? null : closedReason,
-      signalTriggerTime: null,
-      executedAt: toHongKongTimeIso(new Date(executedTimeMs)),
-      executedAtMs: executedTimeMs,
-      timestamp: null,
-      isProtectiveClearance: isProtectiveLiquidation,
-    });
   }
 
   function settleOrder(params: FinalizeOrderSettlementParams): FinalizeOrderSettlementResult {
@@ -246,6 +350,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     if (runtime.closedOrderIds.has(orderId)) {
       return {
         handled: false,
+        relatedBuyOrderIds: null,
       };
     }
 
@@ -253,7 +358,6 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     const context = resolveCloseContext({
       trackedOrder,
       closeParams: params,
-      monitorConfig,
     });
     const side = context.side;
     const symbol = context.symbol;
@@ -271,11 +375,17 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       symbol,
       isLongSymbol,
     });
+    const pendingSellDisposition = params.pendingSellDisposition ?? {
+      kind: 'RELEASE',
+    };
     if (recordedExecution !== null && !executionContextReady) {
       return {
         handled: false,
+        relatedBuyOrderIds: null,
       };
     }
+
+    let relatedBuyOrderIds: ReadonlyArray<string> | null = null;
 
     if (closedReason === 'FILLED') {
       if (
@@ -288,22 +398,38 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       ) {
         return {
           handled: false,
+          relatedBuyOrderIds: null,
         };
       }
 
-      recordRecentFilledOrder({
-        orderId,
-        symbol,
-        side: resolveOrderSideFromText(side),
-        executedPrice,
-        executedQuantity,
-        executedTimeMs,
-      });
+      const orderSide = resolveOrderSideFromText(side);
+      if (orderSide === OrderSide.Buy) {
+        orderRecorder.recordLocalBuy(
+          symbol,
+          executedPrice,
+          executedQuantity,
+          isLongSymbol,
+          executedTimeMs,
+        );
+      } else {
+        const filledSell = orderRecorder.markSellFilled(orderId);
+        const settledSell = settleSellExecutedPart({
+          orderRecorder,
+          orderId,
+          symbol,
+          isLongSymbol,
+          executedPrice,
+          executedQuantity,
+          executedTimeMs,
+          relatedBuyOrderIds: filledSell?.relatedBuyOrderIds ?? [],
+        });
+        relatedBuyOrderIds = settledSell.remainingRelatedBuyOrderIds;
+      }
 
       recordDailyLossAndEpisodeProgress({
         orderId,
         side,
-        baseInstrumentSymbol: context.baseInstrumentSymbol,
+        monitorSymbol: context.monitorSymbol,
         symbol,
         isLongSymbol,
         isProtectiveLiquidation: context.isProtectiveLiquidation,
@@ -312,68 +438,92 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         executedTimeMs,
       });
 
-      recordFilledTradeLog({
-        orderId,
-        side,
-        symbol,
-        baseInstrumentSymbol: context.baseInstrumentSymbol,
-        isLongSymbol,
-        isProtectiveLiquidation: context.isProtectiveLiquidation,
-        closedReason,
-        executedPrice,
-        executedQuantity,
-        executedTimeMs,
-      });
-      markPostTradeRefresh(symbol, isLongSymbol);
+      markPostTradeRefresh();
     }
 
-    if (
-      (closedReason === 'CANCELED' || closedReason === 'REJECTED') &&
-      symbol &&
-      side &&
-      isLongSymbol !== undefined &&
-      recordedExecution !== null
-    ) {
-      recordRecentFilledOrder({
-        orderId,
-        symbol,
-        side: resolveOrderSideFromText(side),
-        executedPrice: recordedExecution.executedPrice,
-        executedQuantity: recordedExecution.executedQuantity,
-        executedTimeMs: recordedExecution.executedTimeMs,
-      });
+    if (closedReason === 'CANCELED' || closedReason === 'REJECTED') {
+      if (side === 'SELL') {
+        const cancelledSell = orderRecorder.markSellCancelled(orderId);
+        const cancelledRelatedBuyOrderIds = cancelledSell?.relatedBuyOrderIds ?? [];
+        if (symbol && isLongSymbol !== undefined) {
+          const settledSell = settleSellExecutedPart({
+            orderRecorder,
+            orderId,
+            symbol,
+            isLongSymbol,
+            executedPrice,
+            executedQuantity,
+            executedTimeMs,
+            relatedBuyOrderIds: cancelledRelatedBuyOrderIds,
+          });
+          relatedBuyOrderIds = settledSell.remainingRelatedBuyOrderIds;
+        } else {
+          relatedBuyOrderIds =
+            cancelledRelatedBuyOrderIds.length > 0 ? cancelledRelatedBuyOrderIds : null;
+        }
 
-      recordDailyLossAndEpisodeProgress({
-        orderId,
-        side,
-        baseInstrumentSymbol: context.baseInstrumentSymbol,
-        symbol,
-        isLongSymbol,
-        isProtectiveLiquidation: context.isProtectiveLiquidation,
-        executedPrice: recordedExecution.executedPrice,
-        executedQuantity: recordedExecution.executedQuantity,
-        executedTimeMs: recordedExecution.executedTimeMs,
-      });
+        if (
+          pendingSellDisposition.kind === 'HANDOFF_TO_FOLLOW_UP_SELL' &&
+          symbol &&
+          isLongSymbol !== undefined &&
+          isValidPositiveNumber(pendingSellDisposition.followUpQuantity)
+        ) {
+          relatedBuyOrderIds = reserveFollowUpSellOccupancy({
+            orderRecorder,
+            orderId,
+            symbol,
+            isLongSymbol,
+            followUpQuantity: pendingSellDisposition.followUpQuantity,
+            relatedBuyOrderIds,
+          });
+        }
+      }
 
-      recordFilledTradeLog({
-        orderId,
-        side,
-        symbol,
-        baseInstrumentSymbol: context.baseInstrumentSymbol,
-        isLongSymbol,
-        isProtectiveLiquidation: context.isProtectiveLiquidation,
-        closedReason,
-        executedPrice: recordedExecution.executedPrice,
-        executedQuantity: recordedExecution.executedQuantity,
-        executedTimeMs: recordedExecution.executedTimeMs,
-      });
-      markPostTradeRefresh(symbol, isLongSymbol);
+      if (side === 'BUY' && symbol && isLongSymbol !== undefined && recordedExecution !== null) {
+        orderRecorder.recordLocalBuy(
+          symbol,
+          recordedExecution.executedPrice,
+          recordedExecution.executedQuantity,
+          isLongSymbol,
+          recordedExecution.executedTimeMs,
+        );
+      }
+
+      if (symbol && side && isLongSymbol !== undefined && recordedExecution !== null) {
+        recordDailyLossAndEpisodeProgress({
+          orderId,
+          side,
+          monitorSymbol: context.monitorSymbol,
+          symbol,
+          isLongSymbol,
+          isProtectiveLiquidation: context.isProtectiveLiquidation,
+          executedPrice: recordedExecution.executedPrice,
+          executedQuantity: recordedExecution.executedQuantity,
+          executedTimeMs: recordedExecution.executedTimeMs,
+        });
+
+        markPostTradeRefresh();
+      }
     }
 
     runtime.closedOrderIds.add(orderId);
     clearRuntimeTracking(orderId);
+    emitOrderStateChanged({
+      orderId,
+      symbol,
+      side,
+      source: params.source,
+      status: closedReason,
+      monitorSymbol: context.monitorSymbol,
+      isLongSymbol: isLongSymbol ?? null,
+      isProtectiveLiquidation: context.isProtectiveLiquidation,
+      executedPrice,
+      executedQuantity,
+      executedTimeMs,
+    });
     return {
       handled: true,
+      relatedBuyOrderIds,
     };
   }
 

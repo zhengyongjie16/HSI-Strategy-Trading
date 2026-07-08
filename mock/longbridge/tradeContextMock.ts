@@ -14,6 +14,8 @@ import {
   type GetTodayOrdersOptions,
   type Order,
   type OrderDetail,
+  type OrderType,
+  type OrderSide,
   type PushOrderChanged,
   type ReplaceOrderOptions,
   type StockPositionsResponse,
@@ -21,15 +23,16 @@ import {
   type SubmitOrderResponse,
   type TopicType,
 } from 'longbridge';
-import { createLongportEventBus } from './eventBus.js';
+import {
+  createLongportEventBus,
+  type EventPublishOptions,
+  type LongportEventBus,
+} from './eventBus.js';
 import type {
-  EventPublishOptions,
-  MinimalOrder,
   MockCallRecord,
   MockFailureRule,
   MockMethodName,
-  TradeContextMock,
-  TradeContextMockOptions,
+  TradeContextContract,
 } from './types.js';
 import {
   applyMockFailureRule,
@@ -53,6 +56,26 @@ const TRADE_METHODS: ReadonlySet<MockMethodName> = new Set([
   'tradeSubscribe',
   'tradeUnsubscribe',
 ]);
+
+type TradeContextMockOptions = {
+  readonly eventBus?: LongportEventBus;
+  readonly now?: () => number;
+};
+
+type MinimalOrder = {
+  orderId: string;
+  status: OrderStatus;
+  stockName: string;
+  quantity: Decimal;
+  executedQuantity: Decimal;
+  price: Decimal;
+  executedPrice: Decimal;
+  submittedAt: Date;
+  side: OrderSide;
+  symbol: string;
+  orderType: OrderType;
+  updatedAt: Date;
+};
 
 /**
  * 将 submitOrder 入参转换为内部最小订单结构。
@@ -129,14 +152,12 @@ function asPushEvent(event: PushOrderChanged | MinimalOrder): PushOrderChanged {
     return event;
   }
 
-  const side: unknown = event.side;
-  const orderType: unknown = event.orderType;
   const converted = {
     orderId: event.orderId,
     symbol: event.symbol,
     stockName: event.stockName,
-    side,
-    orderType,
+    side: event.side,
+    orderType: event.orderType,
     submittedQuantity: event.quantity,
     submittedPrice: event.price,
     executedQuantity: event.executedQuantity,
@@ -174,6 +195,18 @@ function filterStockPositionsBySymbols(
   return { channels } as StockPositionsResponse;
 }
 
+interface TradeContextMock extends TradeContextContract {
+  seedTodayOrders: (orders: ReadonlyArray<Order>) => void;
+  seedHistoryOrders: (orders: ReadonlyArray<Order>) => void;
+  seedTodayExecutions: (executions: ReadonlyArray<Execution>) => void;
+  seedAccountBalances: (balances: ReadonlyArray<AccountBalance>) => void;
+  seedStockPositions: (response: StockPositionsResponse) => void;
+  emitOrderChanged: (event: PushOrderChanged | MinimalOrder, options?: EventPublishOptions) => void;
+  flushEvents: (nowMs?: number) => number;
+  flushAllEvents: () => number;
+  getSubscribedTopics: () => ReadonlySet<TopicType>;
+}
+
 /**
  * 创建 TradeContext 的测试替身。
  *
@@ -189,13 +222,13 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
 
   let todayOrdersStore: MinimalOrder[] = [];
   let historyOrdersStore: MinimalOrder[] = [];
-  const executionsStore: ReadonlyArray<Execution> = [];
-  const balancesStore: ReadonlyArray<AccountBalance> = [];
+  let executionsStore: ReadonlyArray<Execution> = [];
+  let balancesStore: ReadonlyArray<AccountBalance> = [];
   let stockPositionsStore: StockPositionsResponse = {
     channels: [],
   } as unknown as StockPositionsResponse;
 
-  const subscribedTopics = new Set<TopicType>([]);
+  const subscribedTopics = new Set<TopicType>();
   let orderChangedDisposer: (() => void) | null = null;
   let orderCounter = 1;
 
@@ -331,9 +364,7 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
   function subscribe(topics: ReadonlyArray<TopicType>): Promise<void> {
     return withCall('tradeSubscribe', [topics], () => {
       for (const topic of topics) {
-        if (!subscribedTopics.has(topic)) {
-          subscribedTopics.add(topic);
-        }
+        subscribedTopics.add(topic);
       }
     });
   }
@@ -341,9 +372,7 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
   function unsubscribe(topics: ReadonlyArray<TopicType>): Promise<void> {
     return withCall('tradeUnsubscribe', [topics], () => {
       for (const topic of topics) {
-        if (subscribedTopics.has(topic)) {
-          subscribedTopics.delete(topic);
-        }
+        subscribedTopics.delete(topic);
       }
     });
   }
@@ -383,6 +412,14 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
     });
   }
 
+  function seedTodayExecutions(executions: ReadonlyArray<Execution>): void {
+    executionsStore = [...executions];
+  }
+
+  function seedAccountBalances(balances: ReadonlyArray<AccountBalance>): void {
+    balancesStore = [...balances];
+  }
+
   function seedStockPositions(response: StockPositionsResponse): void {
     stockPositionsStore = response;
   }
@@ -400,6 +437,10 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
 
   function flushAllEvents(): number {
     return bus.flushAll();
+  }
+
+  function getSubscribedTopics(): ReadonlySet<TopicType> {
+    return new Set(subscribedTopics);
   }
 
   return {
@@ -421,9 +462,12 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
     clearCalls,
     seedTodayOrders,
     seedHistoryOrders,
+    seedTodayExecutions,
+    seedAccountBalances,
     seedStockPositions,
     emitOrderChanged,
     flushEvents,
     flushAllEvents,
+    getSubscribedTopics,
   };
 }

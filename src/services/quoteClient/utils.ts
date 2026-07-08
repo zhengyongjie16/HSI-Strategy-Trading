@@ -1,7 +1,7 @@
-import { NaiveDate, NaiveDatetime, Period, Time } from 'longbridge';
+import { NaiveDate, Period } from 'longbridge';
 import { isRecord, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import type { StaticInfo } from './types.js';
-import { getHKDateKey } from '../../utils/time/index.js';
+import { getRequiredHKDateKey } from '../../utils/time/index.js';
 
 const PERIOD_LABEL_MAP: Readonly<Record<number, string>> = {
   [Period.Unknown]: '未知',
@@ -111,31 +111,10 @@ export function extractName(staticInfo: unknown): string | null {
  * @returns NaiveDate 实例
  */
 export function resolveHKNaiveDate(date: Date): NaiveDate {
-  const dateKey = getHKDateKey(date);
+  const dateKey = getRequiredHKDateKey(date);
   const parts = dateKey.split('-');
   const year = Number(parts[0]);
   const month = Number(parts[1]);
   const day = Number(parts[2]);
   return new NaiveDate(year, month, day);
-}
-
-/**
- * 将时间对象转换为港股时区口径的 NaiveDatetime。
- *
- * @param date 时间对象
- * @returns NaiveDatetime 实例
- */
-export function resolveHKNaiveDatetime(date: Date): NaiveDatetime {
-  const shiftedTime = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  const naiveDate = new NaiveDate(
-    shiftedTime.getUTCFullYear(),
-    shiftedTime.getUTCMonth() + 1,
-    shiftedTime.getUTCDate(),
-  );
-  const naiveTime = new Time(
-    shiftedTime.getUTCHours(),
-    shiftedTime.getUTCMinutes(),
-    shiftedTime.getUTCSeconds(),
-  );
-  return new NaiveDatetime(naiveDate, naiveTime);
 }

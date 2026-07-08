@@ -1,0 +1,609 @@
+/**
+ * 订单（持仓）记录模块（门面模式）
+ *
+ * 功能：
+ * - 跟踪已成交的买入/卖出订单
+ * - 提供智能清仓决策的历史订单数据
+ * - 为浮亏监控提供原始订单数据（R1/N1）
+ * - 追踪待成交卖出订单
+ *
+ * 过滤算法（从旧到新累积过滤）：
+ * 1. M0：最新卖出时间之后成交的买入订单（无条件保留）
+ * 2. 从最旧卖出订单开始，逐轮处理该卖出时间之前仍保留的买入订单
+ * 3. 若卖出数量不足以全部覆盖，则按“低价优先整笔消除”扣减，并补回两次卖出之间新成交的买入订单
+ * 4. 最终记录 = M0 + 最后一轮过滤结果
+ *
+ * 智能清仓逻辑：
+ * - 智能平仓开启：三阶段卖出（整体盈利全卖；未盈利先卖盈利订单；可选卖出超时订单）
+ * - 智能平仓关闭：直接清空所有持仓
+ *
+ * 缓存机制：
+ * - 订单数据缓存到显式清空/刷新为止
+ * - 首次调用时从 API 获取并缓存，之后使用缓存
+ * - 避免频繁调用 historyOrders API
+ */
+import { logger } from '../../utils/logger/index.js';
+import { isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { formatSymbolDisplayFromQuote } from '../utils.js';
+import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/index.js';
+import type { MonitorConfig } from '../../types/config.js';
+import type { Quote } from '../../types/quote.js';
+import type { OrderOwnership } from '../../types/orderRecorder.js';
+import type {
+  OrderRecord,
+  OrderRecorder,
+  PendingSellInfo,
+  RawOrderFromAPI,
+  SellableOrderResult,
+  SellableOrderSelectParams,
+} from '../../types/services.js';
+import type {
+  OrderDailyLossAnalysisDeps,
+  OrderRecorderDeps,
+  OrderRecorderFactoryDeps,
+  OrderStatistics,
+  OrderRefreshResultLogParams,
+  PendingOrderClassificationForRebuild,
+} from './types.js';
+import { createOrderStorage } from './orderStorage.js';
+import { createOrderAPIManager } from './orderApiManager.js';
+import * as orderFilteringEngineModule from './orderFilteringEngine.js';
+import * as orderOwnershipParser from './orderOwnershipParser.js';
+import * as orderRecorderUtils from './utils.js';
+
+/**
+ * 验证订单参数有效性
+ * @param price - 订单价格
+ * @param quantity - 订单数量
+ * @param symbol - 标的代码
+ * @returns 参数有效返回 true，否则返回 false
+ */
+function validateOrderParams(price: number, quantity: number, symbol: string): boolean {
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
+    logger.warn(
+      `[现存订单记录] 订单参数无效，跳过记录：symbol=${symbol}, price=${price}, quantity=${quantity}`,
+    );
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * 记录订单刷新结果日志。
+ * @param params 日志参数（含买卖历史统计、最终记录数与待成交分类）
+ */
+function logRefreshResult(params: OrderRefreshResultLogParams): void {
+  const {
+    symbol,
+    isLongSymbol,
+    originalBuyCount,
+    sellCount,
+    recordedCount,
+    pendingClassification,
+    extraInfo,
+    quote,
+  } = params;
+  const positionType = isLongSymbol ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;
+  const symbolDisplay = formatSymbolDisplayFromQuote(quote, symbol);
+  const pendingInfo = pendingClassification
+    ? `, 待成交买单${pendingClassification.pendingBuyOrders.length}笔, 待成交卖单${pendingClassification.pendingSellOrders.length}笔`
+    : '';
+  if (extraInfo) {
+    logger.info(`[现存订单记录] ${positionType} ${symbolDisplay}: ${extraInfo}${pendingInfo}`);
+  } else {
+    logger.info(
+      `[现存订单记录] ${positionType} ${symbolDisplay}: ` +
+        `历史买入${originalBuyCount}笔, ` +
+        `历史卖出${sellCount}笔, ` +
+        `最终记录${recordedCount}笔${pendingInfo}`,
+    );
+  }
+}
+
+/**
+ * 格式化订单成交时间为可读字符串
+ * @param executedTime - 成交时间戳（毫秒）
+ * @returns 格式化的时间字符串
+ */
+function formatOrderExecutedTime(executedTime: number): string {
+  if (!executedTime) return '未知时间';
+
+  const date = new Date(executedTime);
+  return Number.isNaN(date.getTime())
+    ? '无效时间'
+    : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+/**
+ * 格式化订单信息为日志行
+ * @param order - 订单记录
+ * @param index - 订单索引
+ * @returns 格式化的订单信息字符串
+ */
+function formatOrderLine(order: OrderRecord, index: number): string {
+  const timeStr = formatOrderExecutedTime(order.executedTime);
+  const priceStr = Number.isFinite(order.executedPrice) ? order.executedPrice.toFixed(3) : 'N/A';
+  return `  [${index + 1}] 订单ID: ${order.orderId || 'N/A'}, 价格: ${priceStr}, 数量: ${order.executedQuantity}, 成交时间: ${timeStr}`;
+}
+
+/**
+ * 格式化订单统计信息为日志行
+ * @param stats - 订单统计数据
+ * @returns 格式化的统计信息字符串
+ */
+function formatOrderStatsLine(stats: OrderStatistics): string {
+  const avgPriceStr = Number.isFinite(stats.averagePrice) ? stats.averagePrice.toFixed(3) : 'N/A';
+  return `  统计: 总数量=${stats.totalQuantity}, 平均价格=${avgPriceStr}`;
+}
+
+/**
+ * 创建订单记录器（门面模式），协调存储、API 和过滤引擎，提供本地订单记录与盈利卖单计算。
+ * @param deps 依赖注入（storage、apiManager、filteringEngine）
+ * @returns OrderRecorder 接口实例
+ */
+function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
+  const { storage, apiManager, filteringEngine } = deps;
+
+  /** DEBUG 模式下输出指定标的当前订单列表及统计信息 */
+  function debugOutputOrders(symbol: string, isLongSymbol: boolean): void {
+    if (process.env['DEBUG'] !== 'true') return;
+
+    const positionType = isLongSymbol ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;
+    const currentOrders = storage.getBuyOrdersList(symbol, isLongSymbol);
+    const header = `[订单记录变化] ${positionType} ${symbol}: 当前订单列表 (共${currentOrders.length}笔)`;
+
+    const logLines: string[] = [header];
+    if (currentOrders.length === 0) {
+      logLines.push('  当前无订单记录');
+    } else {
+      for (const [index, order] of currentOrders.entries()) {
+        logLines.push(formatOrderLine(order, index));
+      }
+
+      logLines.push(
+        formatOrderStatsLine(orderRecorderUtils.calculateOrderStatistics(currentOrders)),
+      );
+    }
+
+    logger.debug(logLines.join('\n'));
+  }
+
+  /** 使用已获取的订单列表刷新本地记录（做多标的） */
+  function applyOrdersRefreshForLong(
+    symbol: string,
+    allBuyOrders: ReadonlyArray<OrderRecord>,
+    filledSellOrders: ReadonlyArray<OrderRecord>,
+    pendingClassification: PendingOrderClassificationForRebuild,
+    quote?: Quote | null,
+  ): OrderRecord[] {
+    if (allBuyOrders.length === 0) {
+      storage.setBuyOrdersListForLong(symbol, []);
+      logRefreshResult({
+        symbol,
+        isLongSymbol: true,
+        originalBuyCount: 0,
+        sellCount: 0,
+        recordedCount: 0,
+        pendingClassification,
+        extraInfo: '历史买入0笔, 无需记录',
+        quote,
+      });
+      return [];
+    }
+
+    if (filledSellOrders.length === 0) {
+      const buyOrdersArray = [...allBuyOrders];
+      storage.setBuyOrdersListForLong(symbol, buyOrdersArray);
+      logRefreshResult({
+        symbol,
+        isLongSymbol: true,
+        originalBuyCount: allBuyOrders.length,
+        sellCount: 0,
+        recordedCount: allBuyOrders.length,
+        pendingClassification,
+        extraInfo: '无卖出记录, 记录全部买入订单',
+        quote,
+      });
+      return buyOrdersArray;
+    }
+
+    const finalBuyOrders = [
+      ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, filledSellOrders),
+    ];
+    storage.setBuyOrdersListForLong(symbol, finalBuyOrders);
+    logRefreshResult({
+      symbol,
+      isLongSymbol: true,
+      originalBuyCount: allBuyOrders.length,
+      sellCount: filledSellOrders.length,
+      recordedCount: finalBuyOrders.length,
+      pendingClassification,
+      quote,
+    });
+
+    return finalBuyOrders;
+  }
+
+  /** 使用已获取的订单列表刷新本地记录（做空标的） */
+  function applyOrdersRefreshForShort(
+    symbol: string,
+    allBuyOrders: ReadonlyArray<OrderRecord>,
+    filledSellOrders: ReadonlyArray<OrderRecord>,
+    pendingClassification: PendingOrderClassificationForRebuild,
+    quote?: Quote | null,
+  ): OrderRecord[] {
+    if (allBuyOrders.length === 0) {
+      storage.setBuyOrdersListForShort(symbol, []);
+      logRefreshResult({
+        symbol,
+        isLongSymbol: false,
+        originalBuyCount: 0,
+        sellCount: 0,
+        recordedCount: 0,
+        pendingClassification,
+        extraInfo: '历史买入0笔, 无需记录',
+        quote,
+      });
+      return [];
+    }
+
+    if (filledSellOrders.length === 0) {
+      const buyOrdersArray = [...allBuyOrders];
+      storage.setBuyOrdersListForShort(symbol, buyOrdersArray);
+      logRefreshResult({
+        symbol,
+        isLongSymbol: false,
+        originalBuyCount: allBuyOrders.length,
+        sellCount: 0,
+        recordedCount: allBuyOrders.length,
+        pendingClassification,
+        extraInfo: '无卖出记录, 记录全部买入订单',
+        quote,
+      });
+      return buyOrdersArray;
+    }
+
+    const finalBuyOrders = [
+      ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, filledSellOrders),
+    ];
+    storage.setBuyOrdersListForShort(symbol, finalBuyOrders);
+    logRefreshResult({
+      symbol,
+      isLongSymbol: false,
+      originalBuyCount: allBuyOrders.length,
+      sellCount: filledSellOrders.length,
+      recordedCount: finalBuyOrders.length,
+      pendingClassification,
+      quote,
+    });
+
+    return finalBuyOrders;
+  }
+
+  // ============================================
+  // 公有方法 - 订单记录操作
+  // ============================================
+
+  /** 记录一笔新的买入订单（本地更新，不调用 API） */
+  function recordLocalBuy(
+    symbol: string,
+    executedPrice: number,
+    executedQuantity: number,
+    isLongSymbol: boolean,
+    executedTimeMs: number,
+  ): void {
+    const price = executedPrice;
+    const quantity = executedQuantity;
+    const executedTime = executedTimeMs;
+
+    if (!validateOrderParams(price, quantity, symbol)) {
+      return;
+    }
+
+    const validExecutedTime = isValidPositiveNumber(executedTime) ? executedTime : Date.now();
+
+    storage.addBuyOrder(symbol, price, quantity, isLongSymbol, validExecutedTime);
+    debugOutputOrders(symbol, isLongSymbol);
+  }
+
+  /**
+   * 根据卖出订单更新本地买入记录。
+   * - 卖出数量 >= 总数量：清空记录
+   * - 若提供 relatedBuyOrderIds：按关联买单精确扣减
+   * - 否则回退为低价优先整笔消除策略
+   */
+  function recordLocalSell(
+    symbol: string,
+    executedPrice: number,
+    executedQuantity: number,
+    isLongSymbol: boolean,
+    executedTimeMs: number,
+    orderId?: string | null,
+    relatedBuyOrderIds?: ReadonlyArray<string> | null,
+  ): void {
+    const price = executedPrice;
+    const quantity = executedQuantity;
+
+    if (!validateOrderParams(price, quantity, symbol)) {
+      return;
+    }
+
+    storage.updateAfterSell(
+      symbol,
+      price,
+      quantity,
+      isLongSymbol,
+      executedTimeMs,
+      orderId,
+      relatedBuyOrderIds,
+    );
+    debugOutputOrders(symbol, isLongSymbol);
+  }
+
+  /** 清空指定标的的买入订单记录（用于保护性清仓） */
+  function clearBuyOrders(symbol: string, isLongSymbol: boolean, quote?: Quote | null): void {
+    storage.clearBuyOrders(symbol, isLongSymbol, quote);
+  }
+
+  /** 获取最新买入订单的成交价（用于买入价格限制检查） */
+  function getLatestBuyOrderPrice(symbol: string, isLongSymbol: boolean): number | null {
+    return storage.getLatestBuyOrderPrice(symbol, isLongSymbol);
+  }
+
+  /** 获取指定标的的最新卖出记录 */
+  function getLatestSellRecord(symbol: string, isLongSymbol: boolean): OrderRecord | null {
+    return storage.getLatestSellRecord(symbol, isLongSymbol);
+  }
+
+  /** 按订单 ID 获取卖出成交记录 */
+  function getSellRecordByOrderId(orderId: string): OrderRecord | null {
+    return storage.getSellRecordByOrderId(orderId);
+  }
+
+  // ============================================
+  // 公有方法 - 订单获取和刷新
+  // ============================================
+
+  /** 从 API 获取全量订单数据（启动时调用一次） */
+  async function fetchAllOrdersFromAPI(
+    forceRefresh = false,
+  ): Promise<ReadonlyArray<RawOrderFromAPI>> {
+    return apiManager.fetchAllOrdersFromAPI(forceRefresh);
+  }
+
+  /**
+   * 使用全量订单刷新指定标的订单记录（做多标的）
+   * 仅过滤 symbol 对应订单，不触发 API 调用
+   */
+  function refreshOrdersFromAllOrdersForLong(
+    symbol: string,
+    allOrders: ReadonlyArray<RawOrderFromAPI>,
+    quote?: Quote | null,
+  ): Promise<ReadonlyArray<OrderRecord>> {
+    const filteredOrders = allOrders.filter((order) => order.symbol === symbol);
+    const classified = orderRecorderUtils.classifyOrdersForRebuild(filteredOrders);
+    const allBuyOrders = classified.filledBuyOrders;
+    const filledSellOrders = classified.filledSellOrders;
+
+    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, filledSellOrders, filteredOrders);
+
+    return Promise.resolve(
+      applyOrdersRefreshForLong(symbol, allBuyOrders, filledSellOrders, classified, quote),
+    );
+  }
+
+  /**
+   * 使用全量订单刷新指定标的订单记录（做空标的）
+   * 仅过滤 symbol 对应订单，不触发 API 调用
+   */
+  function refreshOrdersFromAllOrdersForShort(
+    symbol: string,
+    allOrders: ReadonlyArray<RawOrderFromAPI>,
+    quote?: Quote | null,
+  ): Promise<ReadonlyArray<OrderRecord>> {
+    const filteredOrders = allOrders.filter((order) => order.symbol === symbol);
+    const classified = orderRecorderUtils.classifyOrdersForRebuild(filteredOrders);
+    const allBuyOrders = classified.filledBuyOrders;
+    const filledSellOrders = classified.filledSellOrders;
+
+    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, filledSellOrders, filteredOrders);
+
+    return Promise.resolve(
+      applyOrdersRefreshForShort(symbol, allBuyOrders, filledSellOrders, classified, quote),
+    );
+  }
+
+  // ============================================
+  // 公有方法 - 缓存管理
+  // ============================================
+
+  /** 清理指定标的的订单缓存 */
+  function clearOrdersCacheForSymbol(symbol: string): void {
+    apiManager.clearCacheForSymbol(symbol);
+  }
+
+  /** 获取指定标的的买入订单列表 */
+  function getBuyOrdersForSymbol(
+    symbol: string,
+    isLongSymbol: boolean,
+  ): ReadonlyArray<OrderRecord> {
+    return storage.getBuyOrdersList(symbol, isLongSymbol);
+  }
+
+  // ============================================
+  // 待成交卖出订单追踪
+  // ============================================
+
+  /** 提交卖出订单时调用（添加待成交追踪） */
+  function submitSellOrder(
+    orderId: string,
+    symbol: string,
+    direction: 'LONG' | 'SHORT',
+    quantity: number,
+    relatedBuyOrderIds: readonly string[],
+    submittedAtMs?: number,
+  ): void {
+    const submittedAt =
+      typeof submittedAtMs === 'number' && isValidPositiveNumber(submittedAtMs)
+        ? submittedAtMs
+        : Date.now();
+    storage.addPendingSell({
+      orderId,
+      symbol,
+      direction,
+      submittedQuantity: quantity,
+      relatedBuyOrderIds,
+      submittedAt,
+    });
+
+    logger.debug(
+      `[订单记录器] 卖出订单提交追踪: ${orderId} ${symbol} ${direction} ${quantity}股 ` +
+        `关联订单=${relatedBuyOrderIds.length}个`,
+    );
+  }
+
+  /** 更新待成交卖单元数据（数量与关联买单） */
+  function updatePendingSell(
+    orderId: string,
+    params: {
+      readonly submittedQuantity: number;
+      readonly relatedBuyOrderIds: ReadonlyArray<string>;
+    },
+  ): PendingSellInfo | null {
+    return storage.updatePendingSell(orderId, params);
+  }
+
+  /** 标记卖出订单完全成交 */
+  function markSellFilled(orderId: string): PendingSellInfo | null {
+    return storage.markSellFilled(orderId);
+  }
+
+  /** 标记卖出订单部分成交 */
+  function markSellPartialFilled(orderId: string, filledQuantity: number): PendingSellInfo | null {
+    return storage.markSellPartialFilled(orderId, filledQuantity);
+  }
+
+  /** 标记卖出订单取消 */
+  function markSellCancelled(orderId: string): PendingSellInfo | null {
+    return storage.markSellCancelled(orderId);
+  }
+
+  /** 获取待成交卖单快照（用于恢复一致性校验） */
+  function getPendingSellSnapshot(): ReadonlyArray<PendingSellInfo> {
+    return storage.getPendingSellSnapshot();
+  }
+
+  /** 恢复期：为待恢复的卖单分配关联买单 ID */
+  function allocateRelatedBuyOrderIdsForRecovery(
+    symbol: string,
+    direction: 'LONG' | 'SHORT',
+    quantity: number,
+  ): readonly string[] {
+    return storage.allocateRelatedBuyOrderIdsForRecovery(symbol, direction, quantity);
+  }
+
+  /** 获取指定标的的成本均价（实时计算，无缓存） */
+  function getCostAveragePrice(symbol: string, isLongSymbol: boolean): number | null {
+    return storage.getCostAveragePrice(symbol, isLongSymbol);
+  }
+
+  /** 按策略筛选可卖订单（统一处理防重与整笔截断） */
+  function selectSellableOrders(params: SellableOrderSelectParams): SellableOrderResult {
+    return storage.selectSellableOrders(params);
+  }
+
+  /** 重置所有订单记录（storage.clearAll + apiManager.clearCache） */
+  function resetAll(): void {
+    storage.clearAll();
+    apiManager.clearCache();
+  }
+
+  return {
+    recordLocalBuy,
+    recordLocalSell,
+    clearBuyOrders,
+    getLatestBuyOrderPrice,
+    getLatestSellRecord,
+    getSellRecordByOrderId,
+    fetchAllOrdersFromAPI,
+    refreshOrdersFromAllOrdersForLong,
+    refreshOrdersFromAllOrdersForShort,
+    clearOrdersCacheForSymbol,
+    getBuyOrdersForSymbol,
+
+    // 待成交卖出订单追踪
+    submitSellOrder,
+    updatePendingSell,
+    markSellFilled,
+    markSellPartialFilled,
+    markSellCancelled,
+    getPendingSellSnapshot,
+    allocateRelatedBuyOrderIdsForRecovery,
+    getCostAveragePrice,
+    selectSellableOrders,
+
+    resetAll,
+  };
+}
+
+/**
+ * 创建订单记录器正式实例。
+ * 仅要求外部注入 TradeContext 与 RateLimiter，订单存储、API 管理器和过滤引擎在 orderRecorder 边界内完成组装。
+ * @param deps 外部交易上下文与限流器
+ * @returns OrderRecorder 接口实例
+ */
+export function createOrderRecorder(deps: OrderRecorderFactoryDeps): OrderRecorder {
+  const storage = createOrderStorage();
+  const apiManager = createOrderAPIManager({ ctx: deps.ctx, rateLimiter: deps.rateLimiter });
+  const filteringEngine = orderFilteringEngineModule.createOrderFilteringEngine();
+
+  return createOrderRecorderFromParts({
+    storage,
+    apiManager,
+    filteringEngine,
+  });
+}
+
+/**
+ * 创建 dailyLossTracker 所需的订单分析依赖。
+ * 仅暴露日内亏损回算所需的最小能力集合，避免重新引入宽边界 toolkit。
+ * @returns dailyLossTracker 依赖中的订单过滤、归属解析与成交转换能力
+ */
+export function createDailyLossOrderAnalysisDeps(): OrderDailyLossAnalysisDeps {
+  return {
+    filteringEngine: orderFilteringEngineModule.createOrderFilteringEngine(),
+    resolveOrderOwnership,
+    classifyAndConvertOrders: orderRecorderUtils.classifyAndConvertOrders,
+  };
+}
+
+/**
+ * 解析订单归属。
+ * 通过 orderRecorder 公共边界暴露归属分析能力，避免调用方直接引用内部实现文件。
+ * @param order 原始订单
+ * @param monitors 监控配置列表
+ * @returns 订单归属，无法解析时返回 null
+ */
+export function resolveOrderOwnership(
+  order: RawOrderFromAPI,
+  monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+): OrderOwnership | null {
+  return orderOwnershipParser.resolveOrderOwnership(order, monitors);
+}
+
+/**
+ * 获取最新成交标的。
+ * 通过 orderRecorder 公共边界暴露席位恢复所需的最近成交标的解析能力。
+ * @param orders 原始订单列表
+ * @param orderOwnershipMapping 归属映射
+ * @param direction 多空方向
+ * @returns 最近成交的标的代码，无匹配时返回 null
+ */
+export function getLatestTradedSymbol(
+  orders: ReadonlyArray<RawOrderFromAPI>,
+  orderOwnershipMapping: ReadonlyArray<string>,
+  direction: 'LONG' | 'SHORT',
+): string | null {
+  return orderOwnershipParser.getLatestTradedSymbol(orders, orderOwnershipMapping, direction);
+}

@@ -1,11 +1,39 @@
-import type { StrategyThresholdConfig } from './factor.js';
 import type { OrderTypeConfig } from './signal.js';
+import type { SignalConfig } from './signalConfig.js';
+
+/**
+ * 单个延迟验证配置。
+ * 类型用途：配置买入或卖出的延迟验证时间与需验证的指标列表，作为 VerificationConfig 的 buy/sell 字段类型。
+ * 数据来源：配置解析（如 MonitorConfig.verificationConfig）。
+ * 使用范围：延迟验证器、配置校验等；全项目可引用。
+ */
+export type SingleVerificationConfig = {
+  /** 延迟验证时间（秒） */
+  readonly delaySeconds: number;
+
+  /** 需验证的指标列表（null 表示不验证） */
+  readonly indicators: ReadonlyArray<string> | null;
+};
+
+/**
+ * 延迟验证配置。
+ * 类型用途：分别配置买入与卖出的延迟验证参数，作为 MonitorConfig.verificationConfig 的类型。
+ * 数据来源：配置解析。
+ * 使用范围：MonitorConfig、DelayedSignalVerifier 等；全项目可引用。
+ */
+export type VerificationConfig = {
+  /** 买入信号验证配置 */
+  readonly buy: SingleVerificationConfig;
+
+  /** 卖出信号验证配置 */
+  readonly sell: SingleVerificationConfig;
+};
 
 /**
  * 数值范围配置。
- * 类型用途：表示 min/max 形式的数值区间，作为自动寻标和换标阈值范围等字段类型。
+ * 类型用途：表示 min/max 形式的数值区间，作为 AutoSearchConfig 中换标阈值范围等字段类型。
  * 数据来源：配置解析。
- * 使用范围：TradingConfig、StrategyConfig、自动寻标与换标相关逻辑；全项目可引用。
+ * 使用范围：AutoSearchConfig、自动寻标等；全项目可引用。
  */
 export type NumberRange = {
   readonly min: number;
@@ -13,27 +41,19 @@ export type NumberRange = {
 };
 
 /**
- * 席位模式。
- * 类型用途：表达单实例程序的席位装配方式。
- * 数据来源：配置解析（SEAT_MODE）。
- * 使用范围：TradingConfig、StrategyConfig、席位恢复与自动寻标相关逻辑；全项目可引用。
- */
-export type SeatMode = 'static' | 'auto';
-
-/**
- * 自动寻标配置。
- * 类型用途：单实例策略下的自动寻标与换标参数，作为 StrategyConfig.autoSearchConfig 的类型。
+ * 自动寻标配置（单监控标的）。
+ * 类型用途：单监控标的的自动寻标/换标参数，作为 MonitorConfig.autoSearchConfig 的类型。
  * 数据来源：配置解析。
- * 使用范围：StrategyConfig、autoSymbolManager、autoSymbolFinder 等；全项目可引用。
+ * 使用范围：MonitorConfig、autoSymbolManager、autoSymbolFinder 等；全项目可引用。
  */
 export type AutoSearchConfig = {
-  /** 自动寻标开关（由 seatMode 派生） */
+  /** 自动寻标开关 */
   readonly autoSearchEnabled: boolean;
 
-  /** 牛证最低距回收价百分比阈值（内部百分比值，正值；0.35 表示 0.35%） */
+  /** 牛证最低距回收价百分比阈值（内部百分比值，正值；0.35 表示 0.35%；warrantList 原始值会在边界先做单位转换） */
   readonly autoSearchMinDistancePctBull: number | null;
 
-  /** 熊证最低距回收价百分比阈值（内部百分比值，负值；-0.35 表示 -0.35%） */
+  /** 熊证最低距回收价百分比阈值（内部百分比值，负值；-0.35 表示 -0.35%；warrantList 原始值会在边界先做单位转换） */
   readonly autoSearchMinDistancePctBear: number | null;
 
   /** 牛证分均成交额阈值 */
@@ -59,10 +79,30 @@ export type AutoSearchConfig = {
 };
 
 /**
- * 保护性清仓后的买入冷却配置。
- * 类型用途：保护性清仓后一段时间内禁止买入的策略（按分钟/半日/一日），作为 StrategyConfig.liquidationCooldown 的类型。
+ * 信号配置集。
+ * 类型用途：四种交易信号（买多/卖多/买空/卖空）的配置集合，作为 MonitorConfig.signalConfig 的类型。
  * 数据来源：配置解析。
- * 使用范围：StrategyConfig、liquidationCooldown 服务等；全项目可引用。
+ * 使用范围：MonitorConfig、策略、信号处理等；全项目可引用。
+ */
+export type SignalConfigSet = {
+  /** 买入做多配置 */
+  readonly buycall: SignalConfig | null;
+
+  /** 卖出做多配置 */
+  readonly sellcall: SignalConfig | null;
+
+  /** 买入做空配置 */
+  readonly buyput: SignalConfig | null;
+
+  /** 卖出做空配置 */
+  readonly sellput: SignalConfig | null;
+};
+
+/**
+ * 保护性清仓后的买入冷却配置。
+ * 类型用途：保护性清仓后一段时间内禁止买入的策略（按分钟/半日/一日），作为 MonitorConfig.liquidationCooldown 的类型。
+ * 数据来源：配置解析。
+ * 使用范围：MonitorConfig、liquidationCooldown 服务等；全项目可引用。
  */
 export type LiquidationCooldownConfig =
   | {
@@ -77,199 +117,23 @@ export type LiquidationCooldownConfig =
     };
 
 /**
- * 波动率状态阈值配置。
- * 类型用途：表达 Volatility Regime 的默认窗口与分段阈值。
- * 数据来源：配置解析。
- * 使用范围：StrategyConfig、波动率状态计算与信号规划；全项目可引用。
- */
-export type RegimeThresholdConfig = {
-  /** ATR 短周期 */
-  readonly atrShortPeriod: number;
-
-  /** ATR 长周期 */
-  readonly atrLongPeriod: number;
-
-  /** 同 session 波动率分位数窗口（交易日数） */
-  readonly rvQuantileWindowDays: number;
-
-  /** 趋势允许的波动率扩张阈值 */
-  readonly trendOnVolExpansion: number;
-
-  /** 趋势关闭的波动率收缩阈值 */
-  readonly trendOffVolExpansion: number;
-
-  /** 极端波动扩张阈值 */
-  readonly extremeVolExpansion: number;
-
-  /** 趋势允许的波动率分位数阈值 */
-  readonly trendOnVolQuantile: number;
-
-  /** 趋势关闭的波动率分位数阈值 */
-  readonly trendOffVolQuantile: number;
-
-  /** 极端波动分位数阈值 */
-  readonly extremeVolQuantile: number;
-};
-
-/**
- * 趋势评分阈值配置。
- * 类型用途：表达多周期动量评分的权重与开平仓阈值。
- * 数据来源：配置解析。
- * 使用范围：StrategyConfig、TrendScore 计算与 Signal Planner；全项目可引用。
- */
-export type TrendScoreThresholdConfig = {
-  /** 15 分钟窗口权重 */
-  readonly w15: number;
-
-  /** 30 分钟窗口权重 */
-  readonly w30: number;
-
-  /** 60 分钟窗口权重 */
-  readonly w60: number;
-
-  /** 趋势分类阈值 */
-  readonly classificationThreshold: number;
-
-  /** 开仓阈值 */
-  readonly entryThreshold: number;
-
-  /** 趋势衰减退出阈值 */
-  readonly exitThreshold: number;
-
-  /** 反向失效阈值 */
-  readonly reverseInvalidationThreshold: number;
-};
-
-/**
- * 推进效率阈值配置。
- * 类型用途：表达 ER 指标的开仓与退出阈值。
- * 数据来源：配置解析。
- * 使用范围：StrategyConfig、确认层与 Signal Planner；全项目可引用。
- */
-export type ErThresholdConfig = {
-  /** 15 分钟开仓最小效率 */
-  readonly er15EntryMin: number;
-
-  /** 30 分钟开仓最小效率 */
-  readonly er30EntryMin: number;
-
-  /** 15 分钟退出最大效率 */
-  readonly er15ExitMax: number;
-
-  /** 30 分钟退出最大效率 */
-  readonly er30ExitMax: number;
-
-  /** 强趋势效率下限 */
-  readonly strongTrendErFloor: number;
-};
-
-/**
- * VWAP 确认阈值配置。
- * 类型用途：表达 session VWAP 的距离带、斜率与穿越次数阈值。
- * 数据来源：配置解析。
- * 使用范围：StrategyConfig、确认层与 Signal Planner；全项目可引用。
- */
-export type VwapConfirmRulesConfig = {
-  /** 价格贴近 VWAP 的 ATR 倍数带宽 */
-  readonly distanceBandAtr: number;
-
-  /** VWAP 斜率估计窗口（1m bar 数） */
-  readonly slopeWindowBars: number;
-
-  /** 最近 10 分钟允许的 VWAP 穿越次数上限 */
-  readonly maxCrossCountLast10m: number;
-};
-
-/**
- * 开盘结构阈值配置。
- * 类型用途：表达开盘区间、早盘噪音与午盘重估窗口。
- * 数据来源：配置解析。
- * 使用范围：StrategyConfig、Opening Structure 计算与 Signal Planner；全项目可引用。
- */
-export type OpeningStructureRulesConfig = {
-  /** 开盘区间窗口（分钟） */
-  readonly openingRangeMinutes: number;
-
-  /** 突破评分下限 */
-  readonly breakoutScoreMin: number;
-
-  /** 突破后持续观察窗口（1m bar 数） */
-  readonly outsidePersistenceWindowBars: number;
-
-  /** 突破后区间外停留比例下限 */
-  readonly outsidePersistenceMin: number;
-
-  /** 回踩容忍 ATR 倍数 */
-  readonly retestToleranceAtr: number;
-
-  /** 确认所需连续同向 bar 数 */
-  readonly confirmBars: number;
-
-  /** 早盘噪音窗口（分钟） */
-  readonly morningNoiseWindowMinutes: number;
-
-  /** 午盘噪音窗口（分钟） */
-  readonly afternoonNoiseWindowMinutes: number;
-};
-
-/**
- * 午后延续阈值配置。
- * 类型用途：表达上午推进、午休保持与午后再扩张的判断阈值。
- * 数据来源：配置解析。
- * 使用范围：StrategyConfig、午后延续因子与 Signal Planner；全项目可引用。
- */
-export type PmContinuationRulesConfig = {
-  /** 上午推进 z 分数下限 */
-  readonly amMoveZMin: number;
-
-  /** 午休后至少保留上午推进的比例 */
-  readonly middayHoldMin: number;
-
-  /** 午后重新扩张所需的趋势评分下限 */
-  readonly pmReExpansionTrendScoreMin: number;
-
-  /** 午后重新扩张所需的 ER 15m 下限 */
-  readonly pmReExpansionEr15Min: number;
-
-  /** 午后延续最早确认时间（HH:MM） */
-  readonly pmConfirmCutoffTime: string;
-};
-
-/**
- * 交易标的适配阈值配置。
- * 类型用途：表达执行载体的买入风控与静态清仓阈值。
- * 数据来源：配置解析。
- * 使用范围：StrategyConfig、Instrument Adaptation Gate 与自动寻标；全项目可引用。
- */
-export type InstrumentAdaptationRulesConfig = {
-  /** 牛证买入最小距回收价百分比 */
-  readonly bullBuyMinDistancePct: number;
-
-  /** 熊证买入最大距回收价百分比 */
-  readonly bearBuyMaxDistancePct: number;
-
-  /** 牛证清仓距离回收价百分比 */
-  readonly bullLiquidationDistancePct: number;
-
-  /** 熊证清仓距离回收价百分比 */
-  readonly bearLiquidationDistancePct: number;
-};
-
-/**
- * 单实例策略配置。
- * 类型用途：表达程序的席位模式、交易参数、自动寻标参数与所有策略阈值。
+ * 单个监控标的的完整配置。
+ * 类型用途：单监控标的的交易标的、风控参数、信号配置与延迟验证等，作为 MonitorContext.config、RiskCheckContext.config 等类型。
  * 数据来源：配置解析（环境变量/配置文件）。
- * 使用范围：启动、主程序、风控、策略与席位相关逻辑；全项目可引用。
+ * 使用范围：MonitorContext、信号处理、风控等；全项目可引用。
  */
-export type StrategyConfig = {
-  /** 席位模式 */
-  readonly seatMode: SeatMode;
+export type MonitorConfig = {
+  /** 原始环境变量索引（对应 _1, _2 等后缀） */
+  readonly originalIndex: number;
 
-  /** 做多标的代码（静态模式必填，自动模式可为空） */
-  readonly longSymbol: string | null;
+  /** 监控标的代码（如恒指期货） */
+  readonly monitorSymbol: string;
 
-  /** 做空标的代码（静态模式必填，自动模式可为空） */
-  readonly shortSymbol: string | null;
+  /** 做多标的代码（牛证） */
+  readonly longSymbol: string;
+
+  /** 做空标的代码（熊证） */
+  readonly shortSymbol: string;
 
   /** 自动寻标配置 */
   readonly autoSearchConfig: AutoSearchConfig;
@@ -280,10 +144,10 @@ export type StrategyConfig = {
   /** 单次目标交易金额 */
   readonly targetNotional: number;
 
-  /** 执行标的最大持仓市值 */
+  /** 单标的最大持仓市值 */
   readonly maxPositionNotional: number;
 
-  /** 每个执行标的独立最大浮亏 */
+  /** 单标的最大浮亏 */
   readonly maxUnrealizedLossPerSymbol: number;
 
   /** 买入间隔时间（秒） */
@@ -295,36 +159,27 @@ export type StrategyConfig = {
   /** 触发买入冷却所需的保护性清仓次数（默认 1） */
   readonly liquidationTriggerLimit: number;
 
-  /** 波动率状态阈值 */
-  readonly regimeThresholds: RegimeThresholdConfig;
+  /** 延迟验证配置 */
+  readonly verificationConfig: VerificationConfig;
 
-  /** 趋势评分阈值 */
-  readonly trendScoreThresholds: TrendScoreThresholdConfig;
+  /** 信号配置集 */
+  readonly signalConfig: SignalConfigSet;
 
-  /** 推进效率阈值 */
-  readonly erThresholds: ErThresholdConfig;
+  /** 智能平仓开关（true 时启用三阶段智能平仓） */
+  readonly smartCloseEnabled: boolean;
 
-  /** VWAP 确认阈值 */
-  readonly vwapConfirmRules: VwapConfirmRulesConfig;
-
-  /** 开盘结构阈值 */
-  readonly openingStructureRules: OpeningStructureRulesConfig;
-
-  /** 午后延续阈值 */
-  readonly pmContinuationRules: PmContinuationRulesConfig;
-
-  /** 交易标的适配阈值 */
-  readonly instrumentAdaptationRules: InstrumentAdaptationRulesConfig;
+  /** 智能平仓第三阶段超时阈值（分钟，null 表示关闭） */
+  readonly smartCloseTimeoutMinutes: number | null;
 };
 
 /**
  * 全局配置。
- * 类型用途：非策略特定的系统级配置（末日保护、开盘保护、订单类型与超时等），作为 TradingConfig.global 的类型。
+ * 类型用途：非监控标的特定的系统级配置（末日保护、开盘保护、订单类型与超时等），作为 MultiMonitorTradingConfig.global 的类型。
  * 数据来源：配置解析。
  * 使用范围：主程序、doomsdayProtection、orderMonitor 等；全项目可引用。
  */
 export type GlobalConfig = {
-  /** 末日保护开关（收盘前清仓） */
+  /** 末日保护开关（买入截止 + 清仓接管） */
   readonly doomsdayProtection: boolean;
 
   /** 调试模式 */
@@ -383,40 +238,15 @@ export type GlobalConfig = {
 };
 
 /**
- * 单实例交易配置根对象。
- * 类型用途：表达程序的完整配置根，包含固定基础对象、全局配置与策略配置。
+ * 多标的交易配置。
+ * 类型用途：系统完整配置根类型，包含所有监控标的列表与全局配置，作为启动与运行期配置入参。
  * 数据来源：配置解析（环境变量/配置文件）。
- * 使用范围：启动、主程序、门禁、策略与风控装配；全项目可引用。
+ * 使用范围：启动、主程序、gate 等；全项目可引用。
  */
-export type TradingConfig = {
-  /** 固定基础对象代码，由程序内部 preset 提供 */
-  readonly baseInstrument: string;
+export type MultiMonitorTradingConfig = {
+  /** 监控标的配置列表 */
+  readonly monitors: ReadonlyArray<MonitorConfig>;
 
   /** 全局配置 */
   readonly global: GlobalConfig;
-
-  /** 单实例策略配置 */
-  readonly strategy: StrategyConfig;
-};
-
-/**
- * 单实例运行时监控配置。
- * 类型用途：表达主程序、风控、席位与执行链路实际消费的单监控运行时配置。
- * 数据来源：由 TradingConfig 在启动装配阶段投影生成。
- * 使用范围：app、main、core、services 与相关测试；全项目可引用。
- */
-export type StrategyRuntimeConfig = {
-  readonly baseInstrumentSymbol: string;
-  readonly longSymbol: string;
-  readonly shortSymbol: string;
-  readonly autoSearchConfig: AutoSearchConfig;
-  readonly orderOwnershipMapping: ReadonlyArray<string>;
-  readonly targetNotional: number;
-  readonly maxPositionNotional: number;
-  readonly maxUnrealizedLossPerSymbol: number;
-  readonly buyIntervalSeconds: number;
-  readonly liquidationCooldown: LiquidationCooldownConfig | null;
-  readonly liquidationTriggerLimit: number;
-  readonly seatMode: SeatMode;
-  readonly strategyConfig: StrategyThresholdConfig;
 };

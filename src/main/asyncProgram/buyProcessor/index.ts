@@ -3,9 +3,9 @@
  *
  * 功能：
  * - 消费 BuyTaskQueue 中的买入任务
- * - 使用 setImmediate 异步执行，不阻塞主循环
+ * - 使用 setImmediate 异步执行，不阻塞事件调度
  * - 执行风险检查和订单提交
- * - 统一管理信号对象的生命周期（释放到对象池）
+ * - 统一管理买入任务的处理流程
  *
  * 注意：卖出信号由独立的 SellProcessor 处理，以避免被买入风险检查阻塞
  *
@@ -14,16 +14,14 @@
  * 2. 获取监控上下文与执行时 realtime 行情
  * 3. 执行风险检查（买入信号需要 API 调用）
  * 4. 提交订单执行
- * 5. 释放信号对象到对象池
  */
-import { signalObjectPool } from '../../../utils/objectPool/index.js';
 import {
   createBaseProcessor,
   executeSignalsWithLifecycleGate,
   logProcessorTaskFailure,
 } from '../utils.js';
 import { logger } from '../../../utils/logger/index.js';
-import { isBuyAction } from '../../../utils/helpers/index.js';
+import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
 import {
   describeSignalSeatValidationFailure,
@@ -33,6 +31,7 @@ import type { Processor } from '../types.js';
 import type { BuyProcessorDeps } from './types.js';
 import type { Task, BuyTaskType } from '../tradeTaskQueue/types.js';
 import type { RiskCheckContext } from '../../../types/services.js';
+import type { BuySignal } from '../../../types/signal.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 
 /**
@@ -40,17 +39,17 @@ import { formatSymbolDisplay } from '../../../utils/display/index.js';
  * 消费 BuyTaskQueue 中的买入任务，执行风险检查后提交订单；与卖出处理器分离，避免买入侧 API 风险检查阻塞卖出执行。
  * 信号处理语义：
  * - 非买入信号（配置或调用错误）仅记录告警并视为已处理，不影响队列
- * - 无监控上下文时记录告警并结束本次处理；基础处理器仍会释放该任务对应信号，不保留队列任务
+ * - 无监控上下文时记录告警并结束本次处理；基础处理器会直接丢弃该队列任务，不保留待重试状态
  * - 席位未就绪、席位版本不匹配或席位标的已切换时，仅记录信息日志并安全丢弃信号
  * - 风险检查拦截、行情缺失或 lotSize 无效等场景下，会记录原因并跳过下单，同样视为"正常完成但不下单"，调用方无需重试
  *
- * @param deps 依赖注入（任务队列、monitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getLastState、getIsHalfDay、可选 getCanProcessTask）
+ * @param deps 依赖注入（任务队列、getMonitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getLastState、getIsHalfDay、可选 getCanProcessTask）
  * @returns 实现 Processor 接口的买入处理器实例（start/stop/stopAndDrain/restart）
  */
 export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
   const {
     taskQueue,
-    monitorContext,
+    getMonitorContext,
     signalProcessor,
     trader,
     marketDataClient,
@@ -58,6 +57,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     getLastState,
     getIsHalfDay,
     getCanProcessTask,
+    onFatalError,
   } = deps;
 
   /**
@@ -66,20 +66,22 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
    */
   async function processTask(task: Task<BuyTaskType>): Promise<void> {
     const signal = task.data;
-    const baseInstrumentSymbol = monitorContext.config.baseInstrumentSymbol;
+    const monitorSymbol = task.monitorSymbol;
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
     try {
-      // 验证信号类型：此处理器只处理买入信号
-      const isBuySignal = isBuyAction(signal.action);
-      if (!isBuySignal) {
-        logger.warn(`[BuyProcessor] 收到非买入信号，跳过: ${symbolDisplay} ${signal.action}`);
+      // 获取监控上下文
+      const ctx = getMonitorContext(monitorSymbol);
+      if (!ctx) {
+        logger.warn(
+          `[BuyProcessor] 无法获取监控上下文: ${formatSymbolDisplay(monitorSymbol, null)}`,
+        );
         return;
       }
 
-      const ctx = monitorContext;
-      const { config, state, riskChecker } = ctx;
+      const { config, state, orderRecorder, riskChecker } = ctx;
       const isLongSignal = signal.action === 'BUYCALL';
       const seatValidation = validateSignalSeat({
+        monitorSymbol,
         signal,
         symbolRegistry: ctx.symbolRegistry,
       });
@@ -96,11 +98,11 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
 
       // 买入信号：执行风险检查（需要 API 调用获取最新账户和持仓）
       // 构建风险检查上下文
-      const longSeatState = ctx.symbolRegistry.getSeatState('LONG');
-      const shortSeatState = ctx.symbolRegistry.getSeatState('SHORT');
+      const longSeatState = ctx.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
+      const shortSeatState = ctx.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
       const longSymbol = isSeatActive(longSeatState) ? longSeatState.symbol : '';
       const shortSymbol = isSeatActive(shortSeatState) ? shortSeatState.symbol : '';
-      const quoteSymbols = [baseInstrumentSymbol];
+      const quoteSymbols = [monitorSymbol];
       if (longSymbol) {
         quoteSymbols.push(longSymbol);
       }
@@ -112,7 +114,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       const executionQuotes = await marketDataClient.getQuotes(quoteSymbols);
       const longQuote = longSymbol ? (executionQuotes.get(longSymbol) ?? null) : null;
       const shortQuote = shortSymbol ? (executionQuotes.get(shortSymbol) ?? null) : null;
-      const monitorQuote = executionQuotes.get(baseInstrumentSymbol) ?? null;
+      const monitorQuote = executionQuotes.get(monitorSymbol) ?? null;
       const requiredTradeQuote = isLongSignal ? longQuote : shortQuote;
       if (!requiredTradeQuote) {
         logger.warn(`[BuyProcessor] 买入标的行情缺失，跳过: ${symbolDisplay}`);
@@ -121,7 +123,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
 
       if (!monitorQuote || !Number.isFinite(monitorQuote.price) || monitorQuote.price <= 0) {
         logger.warn(
-          `[BuyProcessor] 监控标的行情缺失或价格无效，跳过: ${formatSymbolDisplay(baseInstrumentSymbol, ctx.baseInstrumentName)}`,
+          `[BuyProcessor] 监控标的行情缺失或价格无效，跳过: ${formatSymbolDisplay(monitorSymbol, ctx.monitorSymbolName)}`,
         );
         return;
       }
@@ -129,6 +131,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       const riskCheckContext: RiskCheckContext = {
         trader,
         riskChecker,
+        orderRecorder,
         longQuote,
         shortQuote,
         monitorQuote,
@@ -158,7 +161,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         logger.debug(
           `[BuyProcessor] 买入信号被风险检查拦截: ${symbolDisplay} ${signal.action}${reasonSuffix}`,
         );
-        return;
+        return; // 处理成功（虽然被拦截了）
       }
 
       // 买入委托价必须以执行时行情为准，与卖出逻辑一致；lotSize 为按金额计算数量所必需
@@ -187,11 +190,15 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         return;
       }
 
-      signal.price = finalExecutionQuote.price;
-      signal.lotSize = finalExecutionQuote.lotSize;
+      const signalWithQuote: BuySignal = {
+        ...signal,
+        price: finalExecutionQuote.price,
+        lotSize: finalExecutionQuote.lotSize,
+      };
 
       const executionSeatValidation = validateSignalSeat({
-        signal,
+        monitorSymbol,
+        signal: signalWithQuote,
         symbolRegistry: ctx.symbolRegistry,
       });
       if (!executionSeatValidation.valid) {
@@ -204,12 +211,21 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       await executeSignalsWithLifecycleGate({
         getCanProcessTask,
         trader,
-        signal,
+        signal: signalWithQuote,
         symbolDisplay,
         loggerPrefix: 'BuyProcessor',
         successMessage: '买入订单执行完成',
       });
+      return;
     } catch (err) {
+      if (!isExternalApiRequestError(err)) {
+        throw err;
+      }
+
+      if (err.operation === 'TradeContext.submitOrder') {
+        throw err;
+      }
+
       logProcessorTaskFailure('BuyProcessor', symbolDisplay, signal.action, err);
       return;
     }
@@ -218,9 +234,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     loggerPrefix: 'BuyProcessor',
     taskQueue,
     processTask,
-    releaseAfterProcess: (signal) => {
-      signalObjectPool.release(signal);
-    },
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
+    ...(onFatalError ? { onFatalError } : {}),
   });
 }

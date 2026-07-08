@@ -2,11 +2,11 @@ import { logger } from '../../utils/logger/index.js';
 import type { BaseProcessorConfig, Processor } from './types.js';
 import type { TaskAddedCallback } from './tradeTaskQueue/types.js';
 import type { Trader } from '../../types/services.js';
-import type { Signal } from '../../types/signal.js';
+import type { ExecutableSignal } from '../../types/signal.js';
 import { formatError } from '../../utils/error/index.js';
 
 /**
- * 在生命周期门禁通过时执行信号并记录成功日志；门禁关闭时仅打日志并返回（视为跳过）。
+ * 在生命周期门禁通过时执行信号并记录成功日志；门禁关闭时仅打日志并跳过执行。
  * 调用方负责 catch 异常并记录错误日志。
  *
  * @param params 参数（getCanProcessTask、trader、signal、symbolDisplay、loggerPrefix、successMessage）
@@ -15,7 +15,7 @@ import { formatError } from '../../utils/error/index.js';
 export async function executeSignalsWithLifecycleGate(params: {
   readonly getCanProcessTask?: (() => boolean) | undefined;
   readonly trader: Trader;
-  readonly signal: Signal;
+  readonly signal: ExecutableSignal;
   readonly symbolDisplay: string;
   readonly loggerPrefix: string;
   readonly successMessage: string;
@@ -101,23 +101,23 @@ export function registerTaskAddedCallback(
 /**
  * 创建基础任务处理器。
  * 封装 processQueue、scheduleNextProcess、start、stop、stopAndDrain、restart 的公共逻辑，
- * 供买入处理器和卖出处理器复用；门禁关闭时仅释放信号不执行业务逻辑。
+ * 供买入处理器和卖出处理器复用；门禁关闭时仅跳过任务不执行业务逻辑。
  *
- * @param config 处理器配置（loggerPrefix、taskQueue、processTask、releaseAfterProcess、可选 getCanProcessTask）
+ * @param config 处理器配置（loggerPrefix、taskQueue、processTask、可选 getCanProcessTask）
  * @returns 实现 Processor 接口的处理器实例（start、stop、stopAndDrain、restart）
  */
 export function createBaseProcessor<TType extends string>(
   config: BaseProcessorConfig<TType>,
 ): Processor {
-  const { loggerPrefix, taskQueue, processTask, releaseAfterProcess, getCanProcessTask } = config;
+  const { loggerPrefix, taskQueue, processTask, getCanProcessTask, onFatalError } = config;
   let running = false;
   let immediateHandle: ReturnType<typeof setImmediate> | null = null;
   let inFlightPromise: Promise<void> | null = null;
   let taskAddedUnregister: (() => void) | null = null;
 
   /**
-   * 循环消费队列中的任务，直到队列为空或处理器停止
-   * 门禁关闭时仅释放信号，不执行业务逻辑
+   * 循环消费队列中的任务，直到队列为空或处理器停止。
+   * 门禁关闭时仅跳过任务，不执行业务逻辑。
    * @returns 无返回值
    */
   async function processQueue(): Promise<void> {
@@ -125,18 +125,12 @@ export function createBaseProcessor<TType extends string>(
       const task = taskQueue.pop();
       if (!task) break;
 
-      const signal = task.data;
       const canProcess = getCanProcessTask ? getCanProcessTask() : true;
       if (!canProcess) {
-        releaseAfterProcess(signal);
         continue;
       }
 
-      try {
-        await processTask(task);
-      } finally {
-        releaseAfterProcess(signal);
-      }
+      await processTask(task);
     }
   }
 
@@ -162,6 +156,7 @@ export function createBaseProcessor<TType extends string>(
         inFlightPromise = processQueue()
           .catch((err: unknown) => {
             logger.error(`[${loggerPrefix}] 处理队列时发生错误`, formatError(err));
+            onFatalError?.(err);
           })
           .finally(() => {
             inFlightPromise = null;

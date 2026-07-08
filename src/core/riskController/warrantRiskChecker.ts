@@ -23,7 +23,6 @@ import {
 } from '../../utils/numeric/index.js';
 import type { SignalType } from '../../types/signal.js';
 import type { Decimal } from 'longbridge';
-import type { StrategyRuntimeConfig } from '../../types/config.js';
 import type {
   MarketDataClient,
   BullBearWarrantType,
@@ -32,10 +31,19 @@ import type {
   WarrantDistanceLiquidationResult,
   WarrantRefreshResult,
 } from '../../types/services.js';
-import type { WarrantInfo, WarrantRiskChecker, WarrantRiskCheckerDeps } from './types.js';
+import type { WarrantInfo, WarrantRiskChecker } from './types.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatError } from '../../utils/error/index.js';
 import {
+  isExternalApiRequestError,
+  isProgramError,
+  wrapExternalApiRequest,
+} from '../../utils/apiFailure/index.js';
+import {
+  BULL_WARRANT_MIN_DISTANCE_PERCENT,
+  BEAR_WARRANT_MAX_DISTANCE_PERCENT,
+  BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT,
+  BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT,
   MIN_MONITOR_PRICE_THRESHOLD,
   DEFAULT_PRICE_DECIMALS,
   DEFAULT_PERCENT_DECIMALS,
@@ -187,62 +195,24 @@ function calculateDistancePercentDecimal(monitorCurrentPrice: number, callPrice:
   return decimalMul(ratio, 100);
 }
 
-/**
- * 解析席位模式对应的买入距回收价阈值。
- *
- * @param signalType 买入动作
- * @param monitorConfig 运行时配置
- * @returns 当前动作应使用的阈值
- */
-function resolveBuyDistanceThreshold(
-  signalType: SignalType,
-  monitorConfig: StrategyRuntimeConfig,
-): number {
-  const rules = monitorConfig.strategyConfig.instrumentAdaptationRules;
-  const seatMode = monitorConfig.seatMode;
-  if (signalType === 'BUYCALL') {
-    return seatMode === 'auto' ? rules.autoSearchPrimaryDistanceBull : rules.bullBuyMinDistancePct;
-  }
-
-  return seatMode === 'auto' ? rules.autoSearchPrimaryDistanceBear : rules.bearBuyMaxDistancePct;
-}
-
-/**
- * 解析静态席位距回收价清仓阈值。
- *
- * @param warrantType 牛熊证类型
- * @param monitorConfig 运行时配置
- * @returns 当前清仓阈值
- */
-function resolveLiquidationDistanceThreshold(
-  warrantType: BullBearWarrantType,
-  monitorConfig: StrategyRuntimeConfig,
-): number {
-  const rules = monitorConfig.strategyConfig.instrumentAdaptationRules;
-  return warrantType === 'BULL'
-    ? rules.bullLiquidationDistancePct
-    : rules.bearLiquidationDistancePct;
-}
-
 /** 检查距离回收价是否在安全范围内 */
 function checkDistanceThreshold(
   warrantType: BullBearWarrantType,
   distancePercent: Decimal,
   callPrice: number,
   monitorCurrentPrice: number,
-  threshold: number,
 ): RiskCheckResult {
   const distancePercentNumber = decimalToNumberValue(distancePercent);
 
   // 牛证：当距离回收价百分比低于阈值时停止买入
-  if (warrantType === 'BULL' && decimalLt(distancePercent, threshold)) {
+  if (warrantType === 'BULL' && decimalLt(distancePercent, BULL_WARRANT_MIN_DISTANCE_PERCENT)) {
     return {
       allowed: false,
       reason: `牛证距离回收价百分比为 ${formatDecimal(
         distancePercent,
         DEFAULT_PERCENT_DECIMALS,
       )}%，低于${formatDecimal(
-        threshold,
+        BULL_WARRANT_MIN_DISTANCE_PERCENT,
         DEFAULT_PERCENT_DECIMALS,
       )}%阈值，停止买入（回收价=${formatDecimal(
         callPrice,
@@ -257,14 +227,14 @@ function checkDistanceThreshold(
   }
 
   // 熊证：当距离回收价百分比高于阈值时停止买入
-  if (warrantType === 'BEAR' && decimalGt(distancePercent, threshold)) {
+  if (warrantType === 'BEAR' && decimalGt(distancePercent, BEAR_WARRANT_MAX_DISTANCE_PERCENT)) {
     return {
       allowed: false,
       reason: `熊证距离回收价百分比为 ${formatDecimal(
         distancePercent,
         DEFAULT_PERCENT_DECIMALS,
       )}%，高于${formatDecimal(
-        threshold,
+        BEAR_WARRANT_MAX_DISTANCE_PERCENT,
         DEFAULT_PERCENT_DECIMALS,
       )}%阈值，停止买入（回收价=${formatDecimal(
         callPrice,
@@ -297,10 +267,12 @@ function buildDistanceLiquidationResult(
   distancePercent: Decimal,
   callPrice: number,
   monitorCurrentPrice: number,
-  threshold: number,
 ): WarrantDistanceLiquidationResult {
   const distancePercentNumber = decimalToNumberValue(distancePercent);
   const isBull = warrantType === 'BULL';
+  const threshold = isBull
+    ? BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT
+    : BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT;
   const shouldLiquidate = isBull
     ? decimalLte(distancePercent, threshold)
     : decimalGte(distancePercent, threshold);
@@ -367,8 +339,11 @@ async function checkWarrantType(
   const ctx = await marketDataClient.getQuoteContext();
 
   // 使用 warrantQuote API 获取牛熊证信息
-  const warrantQuotesRaw = await ctx.warrantQuote([symbol]);
-  const warrantQuote = Array.isArray(warrantQuotesRaw) ? (warrantQuotesRaw[0] ?? null) : null;
+  const warrantQuotesRaw = await wrapExternalApiRequest({
+    operation: 'QuoteContext.warrantQuote',
+    request: () => ctx.warrantQuote([symbol]),
+  });
+  const warrantQuote = warrantQuotesRaw[0] ?? null;
   if (!warrantQuote) {
     return { isWarrant: false };
   }
@@ -396,10 +371,9 @@ async function checkWarrantType(
 
 /**
  * 创建牛熊证风险检查器（风控：距离回收价检查）
- * @param _deps 可选依赖，当前未使用
  * @returns WarrantRiskChecker 接口实例
  */
-export function createWarrantRiskChecker(_deps: WarrantRiskCheckerDeps = {}): WarrantRiskChecker {
+export function createWarrantRiskChecker(): WarrantRiskChecker {
   // 闭包捕获的私有状态
   let longWarrantInfo: WarrantInfo | null = null;
   let shortWarrantInfo: WarrantInfo | null = null;
@@ -434,17 +408,15 @@ export function createWarrantRiskChecker(_deps: WarrantRiskCheckerDeps = {}): Wa
         return { status: 'notWarrant', isWarrant: false };
       }
     } catch (err) {
+      if (isExternalApiRequestError(err) || isProgramError(err)) {
+        throw err;
+      }
+
       const errorMessage = formatError(err);
       logger.warn(
         `[风险检查] 检查${isLong ? '做多' : '做空'}标的 ${symbolDisplay} 牛熊证信息时出错：`,
         errorMessage,
       );
-
-      if (isLong) {
-        longWarrantInfo = { isWarrant: false };
-      } else {
-        shortWarrantInfo = { isWarrant: false };
-      }
 
       return { status: 'error', isWarrant: false, reason: errorMessage };
     }
@@ -455,7 +427,6 @@ export function createWarrantRiskChecker(_deps: WarrantRiskCheckerDeps = {}): Wa
     symbol: string,
     signalType: SignalType,
     monitorCurrentPrice: number,
-    monitorConfig: StrategyRuntimeConfig,
   ): RiskCheckResult {
     // 确定是做多还是做空标的
     const isLong = signalType === 'BUYCALL';
@@ -491,16 +462,9 @@ export function createWarrantRiskChecker(_deps: WarrantRiskCheckerDeps = {}): Wa
 
     // 计算距离回收价的百分比
     const distancePercent = calculateDistancePercentDecimal(monitorCurrentPrice, callPrice);
-    const threshold = resolveBuyDistanceThreshold(signalType, monitorConfig);
 
     // 检查风险阈值
-    return checkDistanceThreshold(
-      warrantType,
-      distancePercent,
-      callPrice,
-      monitorCurrentPrice,
-      threshold,
-    );
+    return checkDistanceThreshold(warrantType, distancePercent, callPrice, monitorCurrentPrice);
   }
 
   /** 检查牛熊证距回收价是否触发清仓 */
@@ -508,7 +472,6 @@ export function createWarrantRiskChecker(_deps: WarrantRiskCheckerDeps = {}): Wa
     symbol: string,
     isLongSymbol: boolean,
     monitorCurrentPrice: number,
-    monitorConfig: StrategyRuntimeConfig,
   ): WarrantDistanceLiquidationResult {
     const warrantInfo = isLongSymbol ? longWarrantInfo : shortWarrantInfo;
     if (!warrantInfo?.isWarrant) {
@@ -546,13 +509,11 @@ export function createWarrantRiskChecker(_deps: WarrantRiskCheckerDeps = {}): Wa
     }
 
     const distancePercent = calculateDistancePercentDecimal(monitorCurrentPrice, callPrice);
-    const threshold = resolveLiquidationDistanceThreshold(warrantInfo.warrantType, monitorConfig);
     return buildDistanceLiquidationResult(
       warrantInfo.warrantType,
       distancePercent,
       callPrice,
       monitorCurrentPrice,
-      threshold,
     );
   }
 

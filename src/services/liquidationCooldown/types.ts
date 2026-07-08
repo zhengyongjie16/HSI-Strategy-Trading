@@ -1,13 +1,5 @@
-import type { LiquidationCooldownConfig, StrategyRuntimeConfig } from '../../types/config.js';
+import type { LiquidationCooldownConfig, MultiMonitorTradingConfig } from '../../types/config.js';
 import type { Logger } from '../../utils/logger/types.js';
-
-/**
- * 保护性清仓方向。
- * 类型用途：在 liquidationCooldown 领域内表达按方向维护的冷却与触发计数。
- * 数据来源：保护性清仓完成事件与启动恢复结果。
- * 使用范围：仅 liquidationCooldown 模块及其直接调用方。
- */
-export type ProtectiveLiquidationDirection = 'LONG' | 'SHORT';
 
 /**
  * 未解析的日志记录。
@@ -20,23 +12,25 @@ export type RawRecord = {
 
 /**
  * 记录清仓冷却的参数。
- * 类型用途：包含方向与保护性清仓成交时间戳，由 recordCooldown 消费。
+ * 类型用途：包含标的代码、方向与保护性清仓成交时间戳，由 recordCooldown 消费。
  * 数据来源：由 tradeLogHydrator 在启动恢复时传入。
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type RecordCooldownParams = {
-  readonly direction: ProtectiveLiquidationDirection;
+  readonly symbol: string;
+  readonly direction: 'LONG' | 'SHORT';
   readonly executedTimeMs: number;
 };
 
 /**
  * 记录保护性清仓触发的参数。
- * 类型用途：包含方向、成交时间与触发上限，由 recordLiquidationTrigger 消费。
- * 数据来源：由 postTradeRefresher 在保护性清仓完成确认后传入。
+ * 类型用途：包含标的代码、方向、成交时间与触发上限，由 recordLiquidationTrigger 消费。
+ * 数据来源：由成交后一致性运行时在保护性清仓完成确认后传入。
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type RecordLiquidationTriggerParams = {
-  readonly direction: ProtectiveLiquidationDirection;
+  readonly symbol: string;
+  readonly direction: 'LONG' | 'SHORT';
   readonly executedTimeMs: number;
   readonly triggerLimit: number;
   readonly cooldownConfig: LiquidationCooldownConfig | null;
@@ -63,18 +57,20 @@ export type RecordLiquidationTriggerResult = {
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type RestoreTriggerCountParams = {
-  readonly direction: ProtectiveLiquidationDirection;
+  readonly symbol: string;
+  readonly direction: 'LONG' | 'SHORT';
   readonly count: number;
 };
 
 /**
  * 查询剩余冷却时间的参数。
- * 类型用途：包含方向与冷却配置，由 getRemainingMs 消费。
+ * 类型用途：包含标的代码、方向与冷却配置，由 getRemainingMs 消费。
  * 数据来源：由风控模块在判断是否允许买入前传入。
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type GetRemainingMsParams = {
-  readonly direction: ProtectiveLiquidationDirection;
+  readonly symbol: string;
+  readonly direction: 'LONG' | 'SHORT';
   readonly cooldownConfig: LiquidationCooldownConfig | null;
 
   /** 可选参考时间戳（毫秒）；未提供时使用追踪器注入的 nowMs() */
@@ -98,7 +94,7 @@ export type LiquidationCooldownTrackerDeps = {
  * 数据来源：由当前模块的入参、返回值或运行时派生数据提供（如适用）。
  */
 export type ClearMidnightEligibleParams = {
-  readonly keysToClear: ReadonlySet<ProtectiveLiquidationDirection>;
+  readonly keysToClear: ReadonlySet<string>;
 };
 
 /**
@@ -146,7 +142,7 @@ export type TradeLogHydratorDeps = {
   readonly resolveLogRootDir: () => string;
   readonly nowMs: () => number;
   readonly logger: Logger;
-  readonly monitorConfig: StrategyRuntimeConfig;
+  readonly tradingConfig: MultiMonitorTradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
 };
 
@@ -157,16 +153,17 @@ export type TradeLogHydratorDeps = {
  * 使用范围：供主程序 startup 消费。
  */
 export interface TradeLogHydrator {
-  hydrate: () => ReadonlyMap<ProtectiveLiquidationDirection, number>;
+  hydrate: () => ReadonlyMap<string, number>;
 }
 
 /**
  * 冷却候选记录。
- * 类型用途：包含方向与保护性清仓成交时间，作为恢复冷却状态的中间结果。
- * 数据来源：由 collectLiquidationRecordsByDirection 从日志解析返回。
+ * 类型用途：包含监控标的、方向与保护性清仓成交时间，作为恢复冷却状态的中间结果。
+ * 数据来源：由 collectLiquidationRecordsByMonitor 从日志解析返回。
  * 使用范围：仅 liquidationCooldown 模块内部使用。
  */
 export type CooldownCandidate = {
-  readonly direction: ProtectiveLiquidationDirection;
+  readonly monitorSymbol: string;
+  readonly direction: 'LONG' | 'SHORT';
   readonly executedAtMs: number;
 };

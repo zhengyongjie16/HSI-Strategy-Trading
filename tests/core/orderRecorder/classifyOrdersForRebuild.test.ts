@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-import { classifyOrdersForRebuild } from '../../../src/core/riskController/orderRecords.js';
+import { classifyOrdersForRebuild } from '../../../src/core/orderRecorder/utils.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 
 function createRawOrder(overrides: Partial<RawOrderFromAPI>): RawOrderFromAPI {

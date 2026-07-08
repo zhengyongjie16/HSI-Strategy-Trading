@@ -7,11 +7,11 @@
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
-import { createOrderFilteringEngine } from '../../../src/core/riskController/orderFilteringEngine.js';
-import { classifyAndConvertOrders } from '../../../src/core/riskController/orderRecords.js';
+import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import type { StrategyRuntimeConfig } from '../../../src/types/config.js';
-import type { OrderOwnership } from '../../../src/types/risk.js';
+import type { MonitorConfig } from '../../../src/types/config.js';
+import type { OrderOwnership } from '../../../src/types/orderRecorder.js';
+import type { DailyLossTracker } from '../../../src/types/risk.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 
 function createExecutedOrder(params: {
@@ -41,37 +41,43 @@ function createExecutedOrder(params: {
   };
 }
 
-function createMonitorConfig(): Pick<
-  StrategyRuntimeConfig,
-  'baseInstrumentSymbol' | 'orderOwnershipMapping'
+function createMonitors(): ReadonlyArray<
+  Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>
 > {
-  return {
-    baseInstrumentSymbol: 'HSI.HK',
-    orderOwnershipMapping: [],
-  };
+  return [
+    {
+      monitorSymbol: 'HSI.HK',
+      orderOwnershipMapping: [],
+    },
+  ];
 }
 
 function resolveOrderOwnership(order: RawOrderFromAPI): OrderOwnership | null {
   if (order.symbol === 'BULL.HK') {
-    return { baseInstrumentSymbol: 'HSI.HK', direction: 'LONG' };
+    return { monitorSymbol: 'HSI.HK', direction: 'LONG' };
   }
 
   if (order.symbol === 'BEAR.HK') {
-    return { baseInstrumentSymbol: 'HSI.HK', direction: 'SHORT' };
+    return { monitorSymbol: 'HSI.HK', direction: 'SHORT' };
   }
 
   return null;
 }
 
+function createSegmentTracker(): DailyLossTracker {
+  const orderAnalysisDeps = createDailyLossOrderAnalysisDeps();
+
+  return createDailyLossTracker({
+    ...orderAnalysisDeps,
+    resolveOrderOwnership: (order) => resolveOrderOwnership(order),
+    toHongKongTimeIso,
+  });
+}
+
 describe('dailyLossTracker segment flow', () => {
   it('startNewProtectionEpisode clears old segment state and ignores pre-segment fills', () => {
-    const tracker = createDailyLossTracker({
-      filteringEngine: createOrderFilteringEngine(),
-      resolveOrderOwnership: (order) => resolveOrderOwnership(order),
-      classifyAndConvertOrders,
-      toHongKongTimeIso,
-    });
-    const monitorConfig = createMonitorConfig();
+    const tracker = createSegmentTracker();
+    const monitors = createMonitors();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
     tracker.recalculateFromAllOrders(
@@ -93,31 +99,34 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
-      monitorConfig,
+      monitors,
       now,
     );
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
 
     tracker.startNewProtectionEpisode({
+      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(0);
 
     tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
       symbol: 'BULL.HK',
-      direction: 'LONG',
+      isLongSymbol: true,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:09:00.000Z'),
       orderId: 'buy-before-segment',
     });
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(0);
 
     tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
       symbol: 'BULL.HK',
-      direction: 'LONG',
+      isLongSymbol: true,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
@@ -126,38 +135,128 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
       symbol: 'BULL.HK',
-      direction: 'LONG',
+      isLongSymbol: true,
       side: OrderSide.Sell,
       executedPrice: 9,
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderId: 'sell-new-segment',
     });
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+  });
+
+  it('startNewProtectionEpisode resets only the SHORT segment and keeps LONG state intact', () => {
+    const tracker = createSegmentTracker();
+    const monitors = createMonitors();
+    const now = new Date('2026-03-03T02:00:00.000Z');
+
+    tracker.recalculateFromAllOrders(
+      [
+        createExecutedOrder({
+          orderId: 'long-buy-existing',
+          symbol: 'BULL.HK',
+          side: OrderSide.Buy,
+          executedPrice: 10,
+          executedQuantity: 10,
+          updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+        }),
+        createExecutedOrder({
+          orderId: 'long-sell-existing',
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          executedPrice: 9,
+          executedQuantity: 10,
+          updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+        }),
+        createExecutedOrder({
+          orderId: 'short-buy-old',
+          symbol: 'BEAR.HK',
+          side: OrderSide.Buy,
+          executedPrice: 10,
+          executedQuantity: 10,
+          updatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
+        }),
+        createExecutedOrder({
+          orderId: 'short-sell-old',
+          symbol: 'BEAR.HK',
+          side: OrderSide.Sell,
+          executedPrice: 9,
+          executedQuantity: 10,
+          updatedAtMs: Date.parse('2026-03-03T01:03:00.000Z'),
+        }),
+      ],
+      monitors,
+      now,
+    );
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', false)).toBe(-10);
+
+    tracker.startNewProtectionEpisode({
+      monitorSymbol: 'HSI.HK',
+      direction: 'SHORT',
+      boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
+    });
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', false)).toBe(0);
+
+    tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
+      symbol: 'BEAR.HK',
+      isLongSymbol: false,
+      side: OrderSide.Buy,
+      executedPrice: 10,
+      executedQuantity: 10,
+      executedTimeMs: Date.parse('2026-03-03T01:09:00.000Z'),
+      orderId: 'short-buy-before-segment',
+    });
+    expect(tracker.getLossOffset('HSI.HK', false)).toBe(0);
+
+    tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
+      symbol: 'BEAR.HK',
+      isLongSymbol: false,
+      side: OrderSide.Buy,
+      executedPrice: 10,
+      executedQuantity: 10,
+      executedTimeMs: Date.parse('2026-03-03T01:11:00.000Z'),
+      orderId: 'short-buy-new-segment',
+    });
+
+    tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
+      symbol: 'BEAR.HK',
+      isLongSymbol: false,
+      side: OrderSide.Sell,
+      executedPrice: 9,
+      executedQuantity: 10,
+      executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
+      orderId: 'short-sell-new-segment',
+    });
+
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', false)).toBe(-10);
   });
 
   it('startNewProtectionEpisode is idempotent for the same protection boundary', () => {
-    const tracker = createDailyLossTracker({
-      filteringEngine: createOrderFilteringEngine(),
-      resolveOrderOwnership: (order) => resolveOrderOwnership(order),
-      classifyAndConvertOrders,
-      toHongKongTimeIso,
-    });
+    const tracker = createSegmentTracker();
     const now = new Date('2026-03-03T02:00:00.000Z');
-    const monitorConfig = createMonitorConfig();
+    const monitors = createMonitors();
     const firstBoundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitorConfig, now);
+    tracker.recalculateFromAllOrders([], monitors, now);
 
     tracker.startNewProtectionEpisode({
+      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: firstBoundaryMs,
     });
 
     tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
       symbol: 'BULL.HK',
-      direction: 'LONG',
+      isLongSymbol: true,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
@@ -166,33 +265,30 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordFilledOrder({
+      monitorSymbol: 'HSI.HK',
       symbol: 'BULL.HK',
-      direction: 'LONG',
+      isLongSymbol: true,
       side: OrderSide.Sell,
       executedPrice: 9,
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderId: 'sell-after-first-reset',
     });
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
 
     tracker.startNewProtectionEpisode({
+      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: firstBoundaryMs,
     });
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
   });
 
   it('recalculateFromAllOrders respects external protectionBoundaryByDirection at startup', () => {
-    const tracker = createDailyLossTracker({
-      filteringEngine: createOrderFilteringEngine(),
-      resolveOrderOwnership: (order) => resolveOrderOwnership(order),
-      classifyAndConvertOrders,
-      toHongKongTimeIso,
-    });
-    const monitorConfig = createMonitorConfig();
-    const protectionBoundaryByDirection = new Map<'LONG' | 'SHORT', number>([
-      ['LONG', Date.parse('2026-03-03T01:10:00.000Z')],
+    const tracker = createSegmentTracker();
+    const monitors = createMonitors();
+    const protectionBoundaryByDirection = new Map<string, number>([
+      ['HSI.HK:LONG', Date.parse('2026-03-03T01:10:00.000Z')],
     ]);
 
     tracker.recalculateFromAllOrders(
@@ -230,22 +326,17 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
         }),
       ],
-      monitorConfig,
+      monitors,
       new Date('2026-03-03T02:00:00.000Z'),
       protectionBoundaryByDirection,
     );
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
   });
 
   it('recalculateFromAllOrders keeps same-day in-memory protection boundary when no boundary is passed', () => {
-    const tracker = createDailyLossTracker({
-      filteringEngine: createOrderFilteringEngine(),
-      resolveOrderOwnership: (order) => resolveOrderOwnership(order),
-      classifyAndConvertOrders,
-      toHongKongTimeIso,
-    });
-    const monitorConfig = createMonitorConfig();
+    const tracker = createSegmentTracker();
+    const monitors = createMonitors();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
     tracker.recalculateFromAllOrders(
@@ -267,16 +358,17 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
-      monitorConfig,
+      monitors,
       now,
     );
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
 
     tracker.startNewProtectionEpisode({
+      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(0);
 
     tracker.recalculateFromAllOrders(
       [
@@ -313,21 +405,16 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
         }),
       ],
-      monitorConfig,
+      monitors,
       now,
     );
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
   });
 
   it('recalculateFromAllOrders includes canceled order executed part to keep restart consistency', () => {
-    const tracker = createDailyLossTracker({
-      filteringEngine: createOrderFilteringEngine(),
-      resolveOrderOwnership: (order) => resolveOrderOwnership(order),
-      classifyAndConvertOrders,
-      toHongKongTimeIso,
-    });
-    const monitorConfig = createMonitorConfig();
+    const tracker = createSegmentTracker();
+    const monitors = createMonitors();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
     tracker.recalculateFromAllOrders(
@@ -351,10 +438,10 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
-      monitorConfig,
+      monitors,
       now,
     );
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
   });
 });

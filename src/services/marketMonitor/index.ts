@@ -1,251 +1,335 @@
 /**
- * 行情监控模块
+ * marketMonitor 模块
  *
- * 功能：
- * - 监控做多/做空标的价格变化
- * - 监控单实例基础对象的 factor 快照变化
- * - 输出价格、持仓与 factor 摘要，避免继续依赖旧指标兼容层
+ * 职责：
+ * - 作为终端显示纯渲染器，直接格式化并输出 monitor indicators / trading quote
+ * - 不再承担任何本地变化检测与显示缓存所有权
  */
 import { logger } from '../../utils/logger/index.js';
 import { toHongKongTimeLog } from '../../utils/time/index.js';
+import { isValidNumber, parseIndicatorPeriod } from '../../utils/indicatorHelpers/index.js';
 import {
   formatQuoteDisplay,
-  buildIndicatorDisplayString,
   formatPositionDisplay,
   formatWarrantDistanceDisplay,
-  hasChanged,
 } from './utils.js';
-import { LOG_COLORS, MONITOR } from '../../constants/index.js';
-import type { StrategyState } from '../../types/state.js';
-import type { FactorSnapshot } from '../../types/factor.js';
-import type { Quote } from '../../types/quote.js';
-import type { MonitorIndicatorChangesParams, MarketMonitor, PriceDisplayInfo } from './types.js';
+import { LOG_COLORS } from '../../constants/index.js';
+import type { DisplayIndicatorItem, IndicatorUsageProfile } from '../../types/indicatorProfile.js';
+import type { IndicatorSnapshot, Quote } from '../../types/quote.js';
+import type {
+  CompiledDisplayPlan,
+  CompiledDisplayPlanItem,
+  MarketMonitor,
+  RenderMonitorIndicatorsParams,
+  RenderTradingQuoteParams,
+} from './types.js';
 
-/**
- * 格式化 K 线时间戳为日志前缀（仅显示时分秒）。
- *
- * @param timestamp 时间戳（毫秒），为 0 或 falsy 时不显示
- * @returns 格式化的时间前缀字符串，如 "[K线时间: 10:30:15] " 或空字符串
- */
+const compiledDisplayPlanCache = new WeakMap<IndicatorUsageProfile, CompiledDisplayPlan>();
+
 function formatKlineTimePrefix(timestamp: number | null | undefined): string {
   if (timestamp && Number.isFinite(timestamp)) {
-    const timeStr = toHongKongTimeLog(new Date(timestamp));
-    return `[K线时间: ${timeStr.split(' ')[1]}] `;
+    const timeText = toHongKongTimeLog(new Date(timestamp));
+    return `[K线时间: ${timeText.split(' ')[1]}] `;
   }
 
   return '';
 }
 
-/**
- * 从因子快照与行情信息构造展示签名。
- *
- * @param params 当前价格、涨跌幅与 factor 快照
- * @returns 用于变化检测的展示签名
- */
-function buildDisplaySignature(params: {
-  readonly currentPrice: number;
-  readonly changePercent: number | null;
-  readonly factorSnapshot: FactorSnapshot | null;
-}): string {
-  const priceText = Number.isFinite(params.currentPrice) ? params.currentPrice.toFixed(3) : 'NaN';
-  const changeText =
-    params.changePercent === null || !Number.isFinite(params.changePercent)
-      ? 'NaN'
-      : params.changePercent.toFixed(2);
-  const factorText = buildIndicatorDisplayString(params.factorSnapshot);
-  return `P=${priceText}|C=${changeText}|${factorText}`;
+function parsePeriodDisplayItem(
+  item: DisplayIndicatorItem,
+  prefix: 'EMA:' | 'RSI:' | 'PSY:',
+): number | null {
+  return parseIndicatorPeriod({ indicatorName: item, prefix });
 }
 
-/**
- * 格式化当前价格文本。
- *
- * @param price 当前价格
- * @returns 显示价格文本
- */
-function formatCurrentPriceText(price: number): string {
-  return Number.isFinite(price) ? price.toFixed(3) : '-';
-}
-
-/**
- * 格式化涨跌幅文本。
- *
- * @param changePercent 涨跌幅（百分比）
- * @returns 显示涨跌幅文本
- */
-function formatChangePercentText(changePercent: number | null): string {
-  if (changePercent === null || !Number.isFinite(changePercent)) {
-    return '-';
+function compileDisplayPlanItem(item: DisplayIndicatorItem): CompiledDisplayPlanItem | null {
+  if (item === 'price') {
+    return { item, kind: 'price' };
   }
 
-  const prefix = changePercent >= 0 ? '+' : '';
-  return `${prefix}${changePercent.toFixed(2)}%`;
+  if (item === 'changePercent') {
+    return { item, kind: 'changePercent' };
+  }
+
+  if (item === 'MFI') {
+    return { item, kind: 'mfi' };
+  }
+
+  if (item === 'K') {
+    return { item, kind: 'kdj', field: 'k' };
+  }
+
+  if (item === 'D') {
+    return { item, kind: 'kdj', field: 'd' };
+  }
+
+  if (item === 'J') {
+    return { item, kind: 'kdj', field: 'j' };
+  }
+
+  if (item === 'ADX') {
+    return { item, kind: 'adx' };
+  }
+
+  if (item === 'MACD') {
+    return { item, kind: 'macd', field: 'macd' };
+  }
+
+  if (item === 'DIF') {
+    return { item, kind: 'macd', field: 'dif' };
+  }
+
+  if (item === 'DEA') {
+    return { item, kind: 'macd', field: 'dea' };
+  }
+
+  const emaPeriod = parsePeriodDisplayItem(item, 'EMA:');
+  if (emaPeriod !== null) {
+    return { item, kind: 'ema', period: emaPeriod };
+  }
+
+  const rsiPeriod = parsePeriodDisplayItem(item, 'RSI:');
+  if (rsiPeriod !== null) {
+    return { item, kind: 'rsi', period: rsiPeriod };
+  }
+
+  const psyPeriod = parsePeriodDisplayItem(item, 'PSY:');
+  if (psyPeriod !== null) {
+    return { item, kind: 'psy', period: psyPeriod };
+  }
+
+  return null;
 }
 
-/**
- * 构造监控标的 factor 日志文本。
- *
- * @param params 当前价格、涨跌幅、factor 快照及展示前缀
- * @returns 完整日志文本
- */
-function buildMonitorIndicatorLogText(params: {
-  readonly timePrefix: string;
-  readonly baseInstrumentName: string;
-  readonly baseInstrumentSymbol: string;
-  readonly currentPrice: number;
+function assertUnreachable(value: never): never {
+  throw new Error(`Unexpected compiled display plan item: ${JSON.stringify(value)}`);
+}
+
+function getCompiledDisplayPlan(indicatorProfile: IndicatorUsageProfile): CompiledDisplayPlan {
+  const cached = compiledDisplayPlanCache.get(indicatorProfile);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const items: CompiledDisplayPlanItem[] = [];
+
+  for (const item of indicatorProfile.displayPlan) {
+    const compiledItem = compileDisplayPlanItem(item);
+    if (compiledItem === null) {
+      continue;
+    }
+
+    items.push(compiledItem);
+  }
+
+  const compiledPlan: CompiledDisplayPlan = {
+    items,
+  };
+  compiledDisplayPlanCache.set(indicatorProfile, compiledPlan);
+  return compiledPlan;
+}
+
+function getSnapshotDisplayValue(params: {
+  readonly compiledItem: CompiledDisplayPlanItem;
+  readonly snapshot: IndicatorSnapshot;
+  readonly currentPrice: number | null;
   readonly changePercent: number | null;
-  readonly factorSnapshot: FactorSnapshot;
-}): string {
-  const factorText = buildIndicatorDisplayString(params.factorSnapshot);
-  const priceText = formatCurrentPriceText(params.currentPrice);
-  const changeText = formatChangePercentText(params.changePercent);
-  return (
-    `${LOG_COLORS.cyan}${params.timePrefix}[监控标的] ` +
-    `${params.baseInstrumentName}(${params.baseInstrumentSymbol}) ` +
-    `价格=${priceText} 涨跌幅=${changeText} 因子=${factorText}${LOG_COLORS.reset}`
+}): number | null {
+  const { compiledItem, snapshot, currentPrice, changePercent } = params;
+  switch (compiledItem.kind) {
+    case 'price': {
+      return Number.isFinite(currentPrice) ? currentPrice : null;
+    }
+
+    case 'changePercent': {
+      return changePercent !== null && Number.isFinite(changePercent) ? changePercent : null;
+    }
+
+    case 'mfi': {
+      return Number.isFinite(snapshot.mfi) ? snapshot.mfi : null;
+    }
+
+    case 'kdj': {
+      const value = snapshot.kdj?.[compiledItem.field];
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    }
+
+    case 'adx': {
+      return Number.isFinite(snapshot.adx) ? snapshot.adx : null;
+    }
+
+    case 'macd': {
+      const value = snapshot.macd?.[compiledItem.field];
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    }
+
+    case 'ema': {
+      const value = snapshot.ema?.[compiledItem.period];
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    }
+
+    case 'rsi': {
+      const value = snapshot.rsi?.[compiledItem.period];
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    }
+
+    case 'psy': {
+      const value = snapshot.psy?.[compiledItem.period];
+      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    }
+
+    default: {
+      return assertUnreachable(compiledItem);
+    }
+  }
+}
+
+function formatIndicator(value: number | null | undefined, decimals: number = 2): string {
+  if (isValidNumber(value)) {
+    return value.toFixed(decimals);
+  }
+
+  return '-';
+}
+
+function calculateChangePercent(
+  currentPrice: number | null,
+  prevClose: number | null,
+): number | null {
+  if (
+    currentPrice === null ||
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0 ||
+    prevClose === null ||
+    !Number.isFinite(prevClose) ||
+    prevClose <= 0
+  ) {
+    return null;
+  }
+
+  return ((currentPrice - prevClose) / prevClose) * 100;
+}
+
+function resolveTradingQuoteLabel(direction: RenderTradingQuoteParams['direction']): string {
+  return direction === 'LONG' ? '做多标的' : '做空标的';
+}
+
+function resolveDisplayQuote(params: RenderTradingQuoteParams): Quote | null {
+  if (params.event.symbol !== params.tradingSymbol) {
+    return null;
+  }
+
+  return params.event.quote;
+}
+
+function renderTradingQuote(params: RenderTradingQuoteParams): void {
+  const label = resolveTradingQuoteLabel(params.direction);
+  const quote = resolveDisplayQuote(params);
+  const display = formatQuoteDisplay(quote, params.tradingSymbol);
+  if (display === null) {
+    logger.warn(`未获取到${label}行情。`);
+    return;
+  }
+
+  const timePrefix = formatKlineTimePrefix(quote?.timestamp);
+  const distanceText = formatWarrantDistanceDisplay(
+    params.displayInfo?.warrantDistanceInfo ?? null,
+  );
+  const distanceSuffix = distanceText ? ` ${distanceText}` : '';
+  const positionText = formatPositionDisplay(
+    params.displayInfo?.unrealizedLossMetrics ?? null,
+    params.displayInfo?.orderCount ?? null,
+  );
+  logger.info(
+    `${timePrefix}[${label}] ${display.nameText}(${display.codeText}) 最新价格=${display.priceText} 涨跌额=${display.changeAmountText} 涨跌幅度=${display.changePercentText}${distanceSuffix} ${positionText}`,
   );
 }
 
 /**
- * 将标的行情与距回收价信息格式化并输出到日志。
+ * 渲染监控标的指标日志。
+ * 直接根据 displayPlan 读取当前 snapshot 与实时 quote，不保留本地比较状态。
  *
- * @param quote 行情数据，可为 null
- * @param symbol 标的代码
- * @param label 显示标签（如「做多标的」）
- * @param displayInfo 展示附加信息（距回收价、持仓市值/持仓盈亏、持仓数量）
- * @returns void
+ * @param params monitor snapshot、monitor quote、monitorSymbol、indicatorProfile 与 K 线时间
  */
-function displayQuoteInfo(
-  quote: Quote | null,
-  symbol: string,
-  label: string,
-  displayInfo: PriceDisplayInfo | null,
-): void {
-  const display = formatQuoteDisplay(quote, symbol);
-  if (display) {
-    const timePrefix = formatKlineTimePrefix(quote?.timestamp);
-    const distanceText = formatWarrantDistanceDisplay(displayInfo?.warrantDistanceInfo ?? null);
-    const distanceSuffix = distanceText ? ` ${distanceText}` : '';
-    const positionRealtimeText = formatPositionDisplay(
-      displayInfo?.unrealizedLossMetrics ?? null,
-      displayInfo?.positionCount ?? null,
-    );
-    logger.info(
-      `${timePrefix}[${label}] ${display.nameText}(${display.codeText}) 最新价格=${display.priceText} 涨跌额=${display.changeAmountText} 涨跌幅度=${display.changePercentText}${distanceSuffix} ${positionRealtimeText}`,
-    );
-  } else {
-    logger.warn(`未获取到${label}行情。`);
+function renderMonitorIndicators(params: RenderMonitorIndicatorsParams): void {
+  const compiledPlan = getCompiledDisplayPlan(params.indicatorProfile);
+  const currentPrice = params.monitorQuote?.price ?? null;
+  const prevClose = params.monitorQuote?.prevClose ?? null;
+  const changePercent = calculateChangePercent(currentPrice, prevClose);
+  const indicators: string[] = [];
+
+  for (const compiledItem of compiledPlan.items) {
+    if (compiledItem.kind === 'price') {
+      if (currentPrice !== null && Number.isFinite(currentPrice)) {
+        indicators.push(`价格=${currentPrice.toFixed(3)}`);
+      } else {
+        indicators.push('价格=-');
+      }
+
+      continue;
+    }
+
+    if (compiledItem.kind === 'changePercent') {
+      if (changePercent !== null && Number.isFinite(changePercent)) {
+        const sign = changePercent >= 0 ? '+' : '';
+        indicators.push(`涨跌幅=${sign}${changePercent.toFixed(2)}%`);
+      } else {
+        indicators.push('涨跌幅=-');
+      }
+
+      continue;
+    }
+
+    const value = getSnapshotDisplayValue({
+      compiledItem,
+      snapshot: params.monitorSnapshot,
+      currentPrice,
+      changePercent,
+    });
+    if (value === null) {
+      continue;
+    }
+
+    switch (compiledItem.kind) {
+      case 'ema': {
+        indicators.push(`EMA${compiledItem.period}=${formatIndicator(value, 3)}`);
+        break;
+      }
+
+      case 'rsi': {
+        indicators.push(`RSI${compiledItem.period}=${formatIndicator(value, 3)}`);
+        break;
+      }
+
+      case 'psy': {
+        indicators.push(`PSY${compiledItem.period}=${formatIndicator(value, 3)}`);
+        break;
+      }
+
+      case 'mfi':
+      case 'adx':
+      case 'kdj':
+      case 'macd': {
+        indicators.push(`${compiledItem.item}=${formatIndicator(value, 3)}`);
+        break;
+      }
+
+      default: {
+        assertUnreachable(compiledItem);
+      }
+    }
   }
+
+  const monitorSymbolName = params.monitorQuote?.name ?? params.monitorSymbol;
+  const timePrefix = formatKlineTimePrefix(params.klineTimestamp);
+  logger.info(
+    `${LOG_COLORS.cyan}${timePrefix}[监控标的] ${monitorSymbolName}(${params.monitorSymbol}) ${indicators.join(' ')}${LOG_COLORS.reset}`,
+  );
 }
 
-/**
- * 创建行情监控器，供主循环每 tick 调用以检测价格与 factor 变化并输出到控制台。
- *
- * 职责：监控做多/做空标的价格变化、监控基础对象 factor 摘要变化，并格式化显示。
- */
 export function createMarketMonitor(): MarketMonitor {
   return {
-    monitorPriceChanges: (
-      longQuote: Quote | null,
-      shortQuote: Quote | null,
-      longSymbol: string,
-      shortSymbol: string,
-      monitorState: StrategyState,
-      longDisplayInfo: PriceDisplayInfo | null = null,
-      shortDisplayInfo: PriceDisplayInfo | null = null,
-    ): boolean => {
-      const longPrice = longQuote?.price;
-      const shortPrice = shortQuote?.price;
-
-      const longPriceChanged =
-        monitorState.longPrice === null && Number.isFinite(longPrice)
-          ? true
-          : hasChanged(
-              longPrice ?? null,
-              monitorState.longPrice ?? null,
-              MONITOR.PRICE_CHANGE_THRESHOLD,
-            );
-
-      const shortPriceChanged =
-        monitorState.shortPrice === null && Number.isFinite(shortPrice)
-          ? true
-          : hasChanged(
-              shortPrice ?? null,
-              monitorState.shortPrice ?? null,
-              MONITOR.PRICE_CHANGE_THRESHOLD,
-            );
-
-      if (longPriceChanged || shortPriceChanged) {
-        displayQuoteInfo(longQuote, longSymbol, '做多标的', longDisplayInfo);
-        displayQuoteInfo(shortQuote, shortSymbol, '做空标的', shortDisplayInfo);
-
-        if (Number.isFinite(longPrice)) {
-          monitorState.longPrice = longPrice ?? null;
-        }
-
-        if (Number.isFinite(shortPrice)) {
-          monitorState.shortPrice = shortPrice ?? null;
-        }
-
-        return true;
-      }
-
-      return false;
-    },
-
-    monitorIndicatorChanges: (params: MonitorIndicatorChangesParams): boolean => {
-      const { monitorSnapshot, monitorQuote, baseInstrumentSymbol, klineTimestamp, monitorState } =
-        params;
-
-      if (!monitorSnapshot) {
-        return false;
-      }
-
-      const factorSnapshot = monitorSnapshot.factorSnapshot ?? null;
-      if (!factorSnapshot) {
-        logger.warn(
-          `未获取到监控标的 ${baseInstrumentSymbol} 的 factor 快照，跳过本次 factor 展示`,
-        );
-        return false;
-      }
-
-      const currentPrice = monitorSnapshot.price;
-      const prevClose = monitorQuote?.prevClose ?? null;
-      let changePercent: number | null = null;
-      if (
-        Number.isFinite(currentPrice) &&
-        currentPrice > 0 &&
-        Number.isFinite(prevClose) &&
-        prevClose !== null &&
-        prevClose > 0
-      ) {
-        changePercent = ((currentPrice - prevClose) / prevClose) * 100;
-      }
-
-      const signature = buildDisplaySignature({
-        currentPrice,
-        changePercent,
-        factorSnapshot,
-      });
-      if (monitorState.lastDisplaySignature === signature) {
-        return false;
-      }
-
-      const baseInstrumentName = monitorQuote?.name ?? baseInstrumentSymbol;
-      const timePrefix = formatKlineTimePrefix(klineTimestamp);
-      logger.info(
-        buildMonitorIndicatorLogText({
-          timePrefix,
-          baseInstrumentName,
-          baseInstrumentSymbol,
-          currentPrice,
-          changePercent,
-          factorSnapshot,
-        }),
-      );
-
-      monitorState.lastDisplaySignature = signature;
-      monitorState.lastMonitorSnapshot = monitorSnapshot;
-      return true;
-    },
+    renderTradingQuote,
+    renderMonitorIndicators,
   };
 }

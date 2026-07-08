@@ -1,9 +1,9 @@
 /**
- * 信号处理模块 - 卖出数量计算
+ * 信号处理模块 - 卖出数量计算与智能平仓
  *
  * 功能：
  * - 计算卖出信号数量并生成原因说明
- * - 趋势卖出统一执行全平
+ * - 支持智能平仓与全仓清仓
  * - 处理末日保护无条件清仓
  *
  * 卖出委托价规则（业务约束）：
@@ -11,33 +11,59 @@
  * - 本模块在决定卖出时使用当前 quote，并写回 signal.price，确保 orderExecutor 提交时用的是执行时价格。
  */
 import { logger } from '../../utils/logger/index.js';
-import { getLongDirectionName, getShortDirectionName } from '../utils.js';
-import { buildSellReason, resolveSellQuantityByFullClose, validateSellContext } from './utils.js';
+import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/index.js';
+import {
+  buildSellReason,
+  validateSellContext,
+  resolveSellQuantityByFullClose,
+  resolveSellQuantityBySmartClose,
+} from './utils.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
+import type { OrderRecorder } from '../../types/services.js';
 import type { ProcessSellSignalsParams } from './types.js';
+import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 import { isSellAction } from '../../utils/display/index.js';
 
 /**
  * 计算卖出信号的数量和原因
- * 趋势退出统一按当前可用仓位全平。
- *
+ * 智能平仓开启：按三阶段规则计算；关闭：清仓所有持仓
  * @param params 卖出数量计算参数（持仓、行情、方向、配置与时间快照）
  * @returns 包含卖出数量、是否持有、原因说明及关联买入订单ID列表的结果
  */
 function calculateSellQuantity(params: {
   readonly position: Position | null;
   readonly quote: Quote | null;
+  readonly orderRecorder: OrderRecorder | null;
   readonly direction: 'LONG' | 'SHORT';
   readonly originalReason: string;
+  readonly smartCloseEnabled: boolean;
+  readonly symbol: string;
+  readonly smartCloseTimeoutMinutes: number | null;
+  readonly nowMs: number;
+  readonly isHalfDay: boolean;
+  readonly tradingCalendarSnapshot: TradingCalendarSnapshot;
 }): {
   quantity: number | null;
   shouldHold: boolean;
   reason: string;
+  relatedBuyOrderIds: readonly string[];
 } {
-  const { position, quote, direction, originalReason } = params;
+  const {
+    position,
+    quote,
+    orderRecorder,
+    direction,
+    originalReason,
+    smartCloseEnabled,
+    symbol,
+    smartCloseTimeoutMinutes,
+    nowMs,
+    isHalfDay,
+    tradingCalendarSnapshot,
+  } = params;
   const reason = originalReason || '';
-  const directionName = direction === 'LONG' ? getLongDirectionName() : getShortDirectionName();
+  const directionName = direction === 'LONG' ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;
 
   // 验证输入参数
   const validationResult = validateSellContext(position, quote);
@@ -46,38 +72,72 @@ function calculateSellQuantity(params: {
       quantity: null,
       shouldHold: true,
       reason: buildSellReason(reason, validationResult.reason),
+      relatedBuyOrderIds: [],
     };
   }
 
-  const { availableQuantity } = validationResult;
-  const fullCloseResult = resolveSellQuantityByFullClose({
+  const { currentPrice, availableQuantity } = validationResult;
+
+  // 智能平仓关闭：直接清仓所有持仓
+  if (!smartCloseEnabled) {
+    const fullCloseResult = resolveSellQuantityByFullClose({
+      availableQuantity,
+      directionName,
+    });
+    return {
+      ...fullCloseResult,
+      reason: buildSellReason(reason, fullCloseResult.reason),
+    };
+  }
+
+  // 智能平仓开启：按三阶段规则计算可卖数量，并结合订单记录做防重扣减，避免重复卖出同一批持仓
+  const smartCloseResult = resolveSellQuantityBySmartClose({
+    orderRecorder,
+    currentPrice,
     availableQuantity,
-    directionName,
+    direction,
+    symbol,
+    smartCloseTimeoutMinutes,
+    nowMs,
+    isHalfDay,
+    tradingCalendarSnapshot,
   });
   return {
-    ...fullCloseResult,
-    reason: buildSellReason(reason, fullCloseResult.reason),
+    ...smartCloseResult,
+    reason: buildSellReason(reason, smartCloseResult.reason),
   };
 }
 
 /**
- * 处理卖出信号，计算实际卖出数量并写回信号对象
+ * 处理卖出信号，计算实际卖出数量并返回新信号数组
  *
- * 遍历信号列表，对每个卖出信号（SELLCALL/SELLPUT）统一按趋势失效全平数量处理。
- * 末日保护信号同样使用无条件清仓。
+ * 遍历信号列表，对每个卖出信号（SELLCALL/SELLPUT）根据智能平仓配置计算数量。
+ * 末日保护信号无条件清仓，不受智能平仓影响。
  * 委托价以执行时行情为准，覆盖信号生成时的快照价，确保提交时价格准确。
  *
- * @param params 卖出信号处理参数（行情与持仓）
- * @returns 处理后的信号列表（与入参为同一引用）
+ * @param params 卖出信号处理参数（行情、持仓、配置与时间快照）
+ * @returns 处理后的新信号数组（不修改入参）
  */
 export const processSellSignals = (
   params: ProcessSellSignalsParams,
 ): ProcessSellSignalsParams['signals'] => {
-  const { signals, longPosition, shortPosition, longQuote, shortQuote } = params;
-  for (const sig of signals) {
+  const {
+    signals,
+    longPosition,
+    shortPosition,
+    longQuote,
+    shortQuote,
+    orderRecorder,
+    smartCloseEnabled,
+    smartCloseTimeoutMinutes,
+    nowMs,
+    isHalfDay,
+    tradingCalendarSnapshot,
+  } = params;
+  return signals.map((sig) => {
     // 只处理卖出信号（SELLCALL 和 SELLPUT），跳过买入信号
     if (!isSellAction(sig.action)) {
-      continue;
+      return sig;
     }
 
     // 根据信号类型确定对应的持仓和行情
@@ -88,7 +148,7 @@ export const processSellSignals = (
     const directionName = isLongSignal ? '做多' : '做空';
     const signalName = isLongSignal ? 'SELLCALL' : 'SELLPUT';
 
-    // 检查是否是末日保护程序的清仓信号（无条件清仓）
+    // 检查是否是末日保护程序的清仓信号（无条件清仓，不受智能平仓影响）
     const isDoomsdaySignal = sig.reason?.includes('末日保护程序');
 
     // 持仓或行情缺失时记录日志
@@ -118,55 +178,59 @@ export const processSellSignals = (
     if (isDoomsdaySignal) {
       // 末日保护程序：无条件清仓，使用全部可用数量
       if (position && position.availableQuantity > 0) {
-        sig.quantity = position.availableQuantity;
-
-        // 委托价必须以执行时行情为准，覆盖流水线可能写入的旧价
-        if (quote?.price !== undefined) {
-          sig.price = quote.price;
-        }
-
-        if (quote?.lotSize !== undefined) {
-          sig.lotSize = quote.lotSize;
-        }
-
-        logger.debug(
-          `[卖出信号处理] ${signalName}(末日保护): 无条件清仓，卖出数量=${sig.quantity}`,
-        );
+        const quantity = position.availableQuantity;
+        logger.debug(`[卖出信号处理] ${signalName}(末日保护): 无条件清仓，卖出数量=${quantity}`);
+        return {
+          ...sig,
+          quantity,
+          ...(quote?.price !== undefined && { price: quote.price }),
+          ...(quote?.lotSize !== undefined && { lotSize: quote.lotSize }),
+        };
       } else {
         logger.warn(`[卖出信号处理] ${signalName}(末日保护): 持仓对象无效，无法清仓`);
-        sig.action = 'HOLD';
-        sig.reason = `${sig.reason}，但持仓对象无效`;
-      }
-    } else {
-      // 正常卖出信号：趋势卖出统一按当前可用仓位全平
-      const result = calculateSellQuantity({
-        position,
-        quote,
-        direction,
-        originalReason: sig.reason ?? '',
-      });
-      if (result.shouldHold) {
-        logger.info(`[卖出信号处理] ${signalName}被跳过: ${result.reason}`);
-        sig.action = 'HOLD';
-        sig.reason = result.reason;
-      } else {
-        logger.debug(
-          `[卖出信号处理] ${signalName}通过: 卖出数量=${result.quantity}, 原因=${result.reason}`,
-        );
-        sig.quantity = result.quantity;
-        sig.reason = result.reason;
-
-        // 委托价必须以执行时行情为准，覆盖流水线可能写入的旧价
-        if (quote?.price !== undefined) {
-          sig.price = quote.price;
-        }
-
-        if (quote?.lotSize !== undefined) {
-          sig.lotSize = quote.lotSize;
-        }
+        return {
+          ...sig,
+          action: 'HOLD' as const,
+          reason: `${sig.reason}，但持仓对象无效`,
+        };
       }
     }
-  }
 
-  return signals;
+    // 正常卖出信号：根据智能平仓配置进行数量计算
+    // 传入 sig.symbol 以精确筛选订单记录（多标的支持）
+    const result = calculateSellQuantity({
+      position,
+      quote,
+      orderRecorder,
+      direction,
+      originalReason: sig.reason ?? '',
+      smartCloseEnabled,
+      symbol: sig.symbol,
+      smartCloseTimeoutMinutes,
+      nowMs,
+      isHalfDay,
+      tradingCalendarSnapshot,
+    });
+    if (result.shouldHold) {
+      logger.info(`[卖出信号处理] ${signalName}被跳过: ${result.reason}`);
+      return {
+        ...sig,
+        action: 'HOLD' as const,
+        reason: result.reason,
+        relatedBuyOrderIds: null,
+      };
+    }
+
+    logger.debug(
+      `[卖出信号处理] ${signalName}通过: 卖出数量=${result.quantity}, 原因=${result.reason}`,
+    );
+    return {
+      ...sig,
+      reason: result.reason,
+      relatedBuyOrderIds: result.relatedBuyOrderIds,
+      quantity: result.quantity,
+      ...(quote?.price !== undefined && { price: quote.price }),
+      ...(quote?.lotSize !== undefined && { lotSize: quote.lotSize }),
+    };
+  });
 };

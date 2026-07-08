@@ -1,9 +1,10 @@
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { Signal } from '../../types/signal.js';
-import type { GlobalConfig } from '../../types/config.js';
-import type { RiskCheckContext } from '../../types/services.js';
+import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { OrderRecorder, RiskCheckContext } from '../../types/services.js';
 import type { LiquidationCooldownTracker } from '../../services/liquidationCooldown/types.js';
+import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 
 // ==================== 结果类型定义 ====================
 
@@ -26,7 +27,7 @@ export type SellContextValidationResult =
 
 /**
  * 卖出信号处理入参。
- * 类型用途：统一承载 processSellSignals 卖出数量计算所需的行情与持仓。
+ * 类型用途：统一承载 processSellSignals 卖出数量计算所需的行情、持仓、订单记录与时间上下文。
  * 数据来源：由卖出处理链路在调用前组装。
  * 使用范围：signalProcessor 模块与调用方之间的参数契约。
  */
@@ -36,6 +37,12 @@ export type ProcessSellSignalsParams = {
   readonly shortPosition: Position | null;
   readonly longQuote: Quote | null;
   readonly shortQuote: Quote | null;
+  readonly orderRecorder: OrderRecorder;
+  readonly smartCloseEnabled: boolean;
+  readonly smartCloseTimeoutMinutes: number | null;
+  readonly nowMs: number;
+  readonly isHalfDay: boolean;
+  readonly tradingCalendarSnapshot: TradingCalendarSnapshot;
 };
 
 // ==================== 服务接口定义 ====================
@@ -49,7 +56,7 @@ export type ProcessSellSignalsParams = {
 export interface SignalProcessor {
   /**
    * 处理卖出信号，计算实际卖出数量
-   * 趋势退出与保护性卖出统一使用全平语义
+   * 根据智能平仓配置决定是全仓卖出还是按三阶段智能平仓卖出
    */
   processSellSignals: (params: ProcessSellSignalsParams) => Signal[];
 
@@ -60,7 +67,10 @@ export interface SignalProcessor {
    * 风险检查阶段不会刷新买入频率状态，即不会在此阶段记录买入尝试。
    * 卖出路径继续使用缓存上下文 context.account/context.positions 执行基础风险检查。
    */
-  applyRiskChecks: (signals: Signal[], context: RiskCheckContext) => Promise<Signal[]>;
+  applyRiskChecks: <TSignal extends Signal>(
+    signals: TSignal[],
+    context: RiskCheckContext,
+  ) => Promise<TSignal[]>;
 
   /**
    * 清空风险检查冷却时间记录
@@ -78,6 +88,6 @@ export interface SignalProcessor {
  * 使用范围：仅 signalProcessor 工厂创建阶段使用。
  */
 export type SignalProcessorDeps = {
-  readonly globalConfig: GlobalConfig;
+  readonly tradingConfig: MultiMonitorTradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
 };

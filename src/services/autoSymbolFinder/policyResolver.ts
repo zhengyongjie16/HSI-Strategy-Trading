@@ -31,11 +31,11 @@ function isLongDirection(direction: DirectionalAutoSearchPolicy['direction']): b
  */
 function buildPolicyErrorMessage(params: {
   readonly logPrefix: string;
-  readonly baseInstrumentSymbol: string;
+  readonly monitorSymbol: string;
   readonly direction: DirectionalAutoSearchPolicy['direction'];
   readonly message: string;
 }): string {
-  return `${params.logPrefix}: ${params.baseInstrumentSymbol} ${params.direction} ${params.message}`;
+  return `${params.logPrefix}: ${params.monitorSymbol} ${params.direction} ${params.message}`;
 }
 
 /**
@@ -179,7 +179,7 @@ export function resolveDirectionalAutoSearchPolicy(
     input.logger.error(
       buildPolicyErrorMessage({
         logPrefix: input.logPrefix,
-        baseInstrumentSymbol: input.baseInstrumentSymbol,
+        monitorSymbol: input.monitorSymbol,
         direction: input.direction,
         message: '缺少自动寻标阈值或换标区间配置',
       }),
@@ -196,7 +196,7 @@ export function resolveDirectionalAutoSearchPolicy(
     input.logger.error(
       buildPolicyErrorMessage({
         logPrefix: input.logPrefix,
-        baseInstrumentSymbol: input.baseInstrumentSymbol,
+        monitorSymbol: input.monitorSymbol,
         direction: input.direction,
         message: finiteSnapshotError,
       }),
@@ -227,7 +227,7 @@ export function resolveDirectionalAutoSearchPolicy(
     input.logger.error(
       buildPolicyErrorMessage({
         logPrefix: input.logPrefix,
-        baseInstrumentSymbol: input.baseInstrumentSymbol,
+        monitorSymbol: input.monitorSymbol,
         direction: input.direction,
         message: invariantError,
       }),
@@ -249,7 +249,7 @@ export function buildFindBestWarrantInputFromPolicy(
 ): FindBestWarrantInput {
   return {
     ctx: params.ctx,
-    baseInstrumentSymbol: params.baseInstrumentSymbol,
+    monitorSymbol: params.monitorSymbol,
     tradingMinutes: params.getTradingMinutesSinceOpen(params.currentTime),
     policy: params.policy,
     expiryMinMonths: params.expiryMinMonths,

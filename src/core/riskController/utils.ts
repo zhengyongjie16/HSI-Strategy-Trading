@@ -6,8 +6,8 @@ import {
   decimalToNumberValue,
   toDecimalValue,
 } from '../../utils/numeric/index.js';
-import type { StrategyRuntimeConfig } from '../../types/config.js';
-import type { OrderOwnership } from '../../types/risk.js';
+import type { MonitorConfig } from '../../types/config.js';
+import type { OrderOwnership } from '../../types/orderRecorder.js';
 import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
 import type { OrderOwnershipDiagnostics, OrderOwnershipDiagnosticSample } from './types.js';
 
@@ -75,15 +75,11 @@ export function collectOrderOwnershipDiagnostics({
   maxSamples = 3,
 }: {
   readonly orders: ReadonlyArray<RawOrderFromAPI>;
-  readonly monitors: ReadonlyArray<
-    Pick<StrategyRuntimeConfig, 'baseInstrumentSymbol' | 'orderOwnershipMapping'>
-  >;
+  readonly monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>;
   readonly now: Date;
   readonly resolveOrderOwnership: (
     order: RawOrderFromAPI,
-    monitors: ReadonlyArray<
-      Pick<StrategyRuntimeConfig, 'baseInstrumentSymbol' | 'orderOwnershipMapping'>
-    >,
+    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
   ) => OrderOwnership | null;
   readonly toHongKongTimeIso: (date: Date | null) => string;
   readonly maxSamples?: number;
