@@ -1,4 +1,4 @@
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { MarketDataClient } from '../../types/services.js';
@@ -18,23 +18,26 @@ export interface BusinessEventProgram {
 
   /** 停止监听并等待在途业务路由完成。 */
   readonly stopAndDrain: () => Promise<void>;
+
+  /** 等待 K 线业务链路 fatal error。 */
+  readonly drainFatalError: () => Promise<never>;
 }
 
 /**
  * 单 monitor 的业务事件路由状态。
- * 类型用途：实现 per-monitor single-flight + latest-only collapse。
+ * 类型用途：实现 single-flight + latest-only collapse。
  * 数据来源：由 businessEventProgram 在运行期维护。
  * 使用范围：仅 businessEventProgram 模块内部使用。
  */
 export type BusinessEventRouteState =
   | {
-      inFlight: boolean;
-      dirty: false;
+      readonly inFlight: boolean;
+      readonly dirty: false;
     }
   | {
-      inFlight: boolean;
-      dirty: true;
-      pendingObservedAtMs: number;
+      readonly inFlight: boolean;
+      readonly dirty: true;
+      readonly pendingObservedAtMs: number;
     };
 
 /**
@@ -78,15 +81,15 @@ type BusinessEventMonitorDisplayRuntime = Readonly<{
 
 /**
  * K 线业务程序依赖。
- * 类型用途：收口普通 K 线业务 owner 所需的共享服务、状态、任务队列与显示 runtime。
+ * 类型用途：收口普通 K 线业务 owner 所需的唯一 monitorContext、共享服务、状态、任务队列与显示 runtime。
  * 数据来源：由 app 顶层装配注入。
  * 使用范围：仅 businessEventProgram 模块使用。
  */
 export type BusinessEventProgramDeps = Readonly<{
   marketDataClient: Pick<MarketDataClient, 'getCandlestickSnapshot' | 'onCandlestickUpdated'>;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   lastState: LastState;
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   indicatorCache: IndicatorCache;

@@ -82,8 +82,8 @@ function createGateIntegrationContext(
       },
     }),
     doomsdayProtection: createDoomsdayProtectionDouble(),
-    tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
-    monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+    tradingConfig: createTradingConfig({ monitor: monitorConfig }),
+    monitorContext,
     tradingGateEventRuntime: {
       emitGateStateChanged: (event) => {
         params.gateEvents.push({

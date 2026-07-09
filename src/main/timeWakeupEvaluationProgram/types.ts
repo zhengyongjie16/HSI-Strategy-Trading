@@ -1,5 +1,5 @@
 import type { DoomsdayProtection } from '../../core/doomsdayProtection/types.js';
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { MarketDataClient, Trader } from '../../types/services.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { DayLifecycleManager } from '../lifecycle/types.js';
@@ -28,8 +28,8 @@ export type TimeWakeupEvaluationContext = Readonly<{
   trader: Trader;
   lastState: LastState;
   doomsdayProtection: DoomsdayProtection;
-  tradingConfig: MultiMonitorTradingConfig;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  tradingConfig: TradingConfig;
+  monitorContext: MonitorContext;
   tradingGateEventRuntime: Pick<TradingGateEventRuntime, 'emitGateStateChanged'>;
   quoteSubscriptionRuntime: Pick<QuoteSubscriptionRuntime, 'reconcilePositionHoldFromCurrentTruth'>;
   dayLifecycleManager: DayLifecycleManager;

@@ -124,24 +124,25 @@ export function createQuoteSubscriptionRuntime(
 
   function projectMonitorBase(): void {
     setOwnerSymbols(
-      { reason: 'MONITOR_BASE', ownerKey: 'all-monitors' },
-      deps.tradingConfig.monitors.map((monitorConfig) => monitorConfig.monitorSymbol),
+      { reason: 'MONITOR_BASE', ownerKey: deps.tradingConfig.monitor.monitorSymbol },
+      [deps.tradingConfig.monitor.monitorSymbol],
     );
   }
 
   function projectAllSeatBound(): void {
     const seatSymbols: string[] = [];
-    for (const monitorConfig of deps.tradingConfig.monitors) {
-      for (const direction of ['LONG', 'SHORT'] as const) {
-        const seatState = deps.symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
-        if (
-          seatState.symbol &&
-          (seatState.status === 'SWITCHING' ||
-            seatState.status === 'ACTIVATING' ||
-            seatState.status === 'ACTIVE')
-        ) {
-          seatSymbols.push(seatState.symbol);
-        }
+    for (const direction of ['LONG', 'SHORT'] as const) {
+      const seatState = deps.symbolRegistry.getSeatState(
+        deps.tradingConfig.monitor.monitorSymbol,
+        direction,
+      );
+      if (
+        seatState.symbol &&
+        (seatState.status === 'SWITCHING' ||
+          seatState.status === 'ACTIVATING' ||
+          seatState.status === 'ACTIVE')
+      ) {
+        seatSymbols.push(seatState.symbol);
       }
     }
 

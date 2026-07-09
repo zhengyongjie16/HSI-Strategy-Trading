@@ -18,7 +18,7 @@ import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/trade
  */
 export type SeatRuntimeCleanupDispatcherDeps = Readonly<{
   symbolRegistry: SymbolRegistry;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;

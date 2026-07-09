@@ -101,7 +101,7 @@ export function registerTaskAddedCallback(
 /**
  * 创建基础任务处理器。
  * 封装 processQueue、scheduleNextProcess、start、stop、stopAndDrain、restart 的公共逻辑，
- * 供买入处理器和卖出处理器复用；门禁关闭时仅跳过任务不执行业务逻辑。
+ * 供买入处理器和卖出处理器复用；先校验任务内部不变量，门禁关闭时仅跳过后续业务逻辑。
  *
  * @param config 处理器配置（loggerPrefix、taskQueue、processTask、可选 getCanProcessTask）
  * @returns 实现 Processor 接口的处理器实例（start、stop、stopAndDrain、restart）
@@ -109,7 +109,8 @@ export function registerTaskAddedCallback(
 export function createBaseProcessor<TType extends string>(
   config: BaseProcessorConfig<TType>,
 ): Processor {
-  const { loggerPrefix, taskQueue, processTask, getCanProcessTask, onFatalError } = config;
+  const { loggerPrefix, taskQueue, processTask, validateTask, getCanProcessTask, onFatalError } =
+    config;
   let running = false;
   let immediateHandle: ReturnType<typeof setImmediate> | null = null;
   let inFlightPromise: Promise<void> | null = null;
@@ -117,7 +118,7 @@ export function createBaseProcessor<TType extends string>(
 
   /**
    * 循环消费队列中的任务，直到队列为空或处理器停止。
-   * 门禁关闭时仅跳过任务，不执行业务逻辑。
+   * 先执行轻量任务不变量校验；门禁关闭时仅跳过后续业务逻辑。
    * @returns 无返回值
    */
   async function processQueue(): Promise<void> {
@@ -125,6 +126,7 @@ export function createBaseProcessor<TType extends string>(
       const task = taskQueue.pop();
       if (!task) break;
 
+      validateTask?.(task);
       const canProcess = getCanProcessTask ? getCanProcessTask() : true;
       if (!canProcess) {
         continue;

@@ -4,7 +4,7 @@ import type { TradeLogHydrator } from '../../services/liquidationCooldown/types.
 import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/types.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { LifecycleState, SymbolRegistry } from '../../types/seat.js';
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
 import type { MarketDataClient, RawOrderFromAPI, Trader } from '../../types/services.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
@@ -95,7 +95,7 @@ export type DayLifecycleManagerDeps = Readonly<{
 
 /**
  * rebuildTradingDayState 的外部依赖（开盘重建时刷新交易状态所需的注入）。
- * 类型用途：包含行情客户端、交易、lastState、symbolRegistry、monitorContexts、dailyLossTracker、displayAccountAndPositions 等。
+ * 类型用途：包含行情客户端、交易、lastState、symbolRegistry、monitorContext、dailyLossTracker、displayAccountAndPositions 等。
  * 数据来源：由 lifecycle 或 cacheDomains 在创建/调用 rebuildTradingDayState 时传入。
  * 使用范围：仅 lifecycle 内部使用。
  */
@@ -104,7 +104,7 @@ export type RebuildTradingDayStateDeps = Readonly<{
   trader: Trader;
   lastState: LastState;
   symbolRegistry: SymbolRegistry;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   dailyLossTracker: DailyLossTracker;
   displayAccountAndPositions: (params: {
     readonly lastState: LastState;
@@ -159,7 +159,7 @@ export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
   marketDataClient: MarketDataClient;
   trader: Trader;
   lastState: LastState;
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   dailyLossTracker: DailyLossTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
@@ -232,6 +232,6 @@ export type DateRangeChunk = Readonly<{
 export type PrewarmTradingCalendarSnapshotParams = Readonly<{
   marketDataClient: MarketDataClient;
   lastState: LastState;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   now: Date;
 }>;

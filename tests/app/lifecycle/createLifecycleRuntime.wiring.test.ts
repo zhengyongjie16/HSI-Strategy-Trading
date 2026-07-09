@@ -26,6 +26,7 @@ import {
   createAutoSearchWakeupRuntimeDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
   createMarketDataClientDouble,
+  createMonitorContextDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteSubscriptionRuntimeDouble,
   createSdkConfigDouble,
@@ -171,15 +172,22 @@ function createLastState(): LastState {
     },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorStates: new Map(),
+    monitorState: {
+      monitorSymbol: 'HSI.HK',
+      signal: null,
+      pendingDelayedSignals: [],
+      lastMonitorSnapshot: null,
+      incrementalIndicatorRuntime: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
 
 function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
   const lastState = createLastState();
-  const tradingConfig = createTradingConfig({ monitors: [] });
+  const tradingConfig = createTradingConfig();
   const warrantListCache = createWarrantListCache();
+  const monitorContext = createMonitorContextDouble();
 
   return {
     preGateRuntime: {
@@ -204,6 +212,7 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
     businessEventProgram: {
       start: () => {},
       stopAndDrain: async () => {},
+      drainFatalError: () => new Promise<never>(() => {}),
     },
     postGateRuntime: {
       liquidationCooldownTracker: {
@@ -219,7 +228,7 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
       },
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts: new Map(),
+      monitorContext,
       tradingGateEventRuntime: createTradingGateEventRuntimeDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       seatActivationDispatcher: createSeatActivationDispatcherDouble(),

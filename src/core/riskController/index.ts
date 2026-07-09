@@ -58,7 +58,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
    * - N1: 当前持仓数量
    * - R2: 按当前价估算的持仓市值（currentPrice * N1）
    * - unrealizedPnL: 持仓浮动盈亏（R2 - R1）
-   * 仅在有持仓数量（N1>0）时要求有效当前价；N1<=0 时按 R2=0 处理，兼容清仓后残余成本场景。
+   * 仅在有持仓数量（N1>0）时要求有效当前价；N1<=0 时按 R2=0 处理，用于覆盖清仓后仍残留成本记录的场景。
    */
   function buildUnrealizedLossMetrics(
     symbol: string | null,

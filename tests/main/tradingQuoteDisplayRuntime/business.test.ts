@@ -7,10 +7,13 @@
  */
 import { describe, expect, it, mock } from 'bun:test';
 import {
+  createMonitorConfigDouble,
   createMonitorContextDouble,
   createQuoteDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
+import { createSymbolRegistry as createProductionSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
+import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 
 const warnLogs: string[] = [];
@@ -60,7 +63,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     });
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
     const renders: string[] = [];
-    const monitorContexts = new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]);
+    const monitorContext = createMonitorContextDouble({ symbolRegistry });
     const runtime = createTradingQuoteDisplayRuntime({
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -74,7 +77,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
       },
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -85,11 +88,11 @@ describe('tradingQuoteDisplayRuntime', () => {
     });
 
     runtime.start();
-    monitorContexts.clear();
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
       quote: createQuoteDouble('BULL.HK', 1.01),
     });
+
     await waitTick();
 
     expect(renders).toEqual(['BULL.HK']);
@@ -136,7 +139,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
       },
       symbolRegistry,
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]),
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -173,7 +176,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     await runtime.stopAndDrain();
   });
 
-  it('logs and disables rendering when startup routing cache build fails', async () => {
+  it('throws when startup routing cache build fails', async () => {
     warnLogs.length = 0;
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
@@ -189,7 +192,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         frozenTradingDayKey: null,
       },
       shortSeat: {
-        symbol: 'BEAR.HK',
+        symbol: 'BULL.HK',
         status: 'ACTIVE',
         lastSwitchAt: null,
         lastSearchAt: null,
@@ -198,77 +201,41 @@ describe('tradingQuoteDisplayRuntime', () => {
         frozenTradingDayKey: null,
       },
     });
-    let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
-    const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
       marketDataClient: {
-        onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
-          quoteUpdatedListener = listener;
-          return () => {
-            if (quoteUpdatedListener === listener) {
-              quoteUpdatedListener = undefined;
-            }
-          };
-        },
+        onQuoteUpdated: () => () => {},
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
       },
       symbolRegistry,
-      monitorContexts: new Map([
-        ['HSI.HK', createMonitorContextDouble({ symbolRegistry })],
-        ['TECH.HK', createMonitorContextDouble({ symbolRegistry })],
-      ]),
+      monitorContext: createMonitorContextDouble({
+        symbolRegistry,
+      }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
       },
-      renderTradingQuote: (params: { readonly tradingSymbol: string }) => {
-        renders.push(params.tradingSymbol);
-      },
+      renderTradingQuote: () => {},
     });
 
     expect(() => {
       runtime.start();
-    }).not.toThrow();
-
-    quoteUpdatedListener?.({
-      symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
-    });
-    await waitTick();
-
-    expect(warnLogs).toHaveLength(1);
-    expect(renders).toEqual([]);
-    await runtime.stopAndDrain();
+    }).toThrow(/标的重复归属/);
+    expect(warnLogs).toHaveLength(0);
   });
 
-  it('does not reuse the old routing cache when seat truth refresh fails', async () => {
+  it('exposes routing rebuild invariant errors when seat truth refresh fails', async () => {
     warnLogs.length = 0;
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
-    const symbolRegistry = createSymbolRegistryDouble({
+    const monitorConfig = createMonitorConfigDouble({
       monitorSymbol: 'HSI.HK',
-      longSeat: {
-        symbol: 'BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: 'BEAR.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
+      longSymbol: 'BULL.HK',
+      shortSymbol: 'BEAR.HK',
     });
+    const symbolRegistry = createProductionSymbolRegistry(monitorConfig);
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
+    const fatalErrors: Error[] = [];
     const renders: string[] = [];
-    const monitorContexts = new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]);
     const runtime = createTradingQuoteDisplayRuntime({
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -282,7 +249,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
       },
       symbolRegistry,
-      monitorContexts,
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -290,19 +257,32 @@ describe('tradingQuoteDisplayRuntime', () => {
       renderTradingQuote: (params: { readonly tradingSymbol: string }) => {
         renders.push(params.tradingSymbol);
       },
+      onFatalError: (error) => {
+        fatalErrors.push(error instanceof Error ? error : new Error(String(error)));
+      },
     });
 
     runtime.start();
-    monitorContexts.set('TECH.HK', createMonitorContextDouble({ symbolRegistry }));
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+
+    symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+      symbol: 'BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    });
+
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
       quote: createQuoteDouble('BULL.HK', 1.01),
     });
     await waitTick();
 
-    expect(warnLogs).toHaveLength(1);
+    expect(fatalErrors.some((error) => error.message.includes('标的重复归属'))).toBe(true);
     expect(renders).toEqual([]);
+    expect(warnLogs).toHaveLength(0);
     await runtime.stopAndDrain();
   });
 
@@ -326,7 +306,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
       },
       symbolRegistry,
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]),
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -359,7 +339,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         getQuotes: async () => new Map(),
       },
       symbolRegistry,
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]),
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -416,7 +396,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
       },
       symbolRegistry,
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]),
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -484,7 +464,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         },
       },
       symbolRegistry,
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]),
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -512,6 +492,11 @@ describe('tradingQuoteDisplayRuntime', () => {
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     warnLogs.length = 0;
+    const quoteError = createExternalApiRequestError({
+      operation: 'QuoteContext.realtimeQuote',
+      attempts: 1,
+      cause: new Error('quote supplement failed'),
+    });
     const symbolRegistry = createSymbolRegistryDouble({
       monitorSymbol: 'HSI.HK',
       longSeat: {
@@ -549,14 +534,14 @@ describe('tradingQuoteDisplayRuntime', () => {
         getQuotes: async () => {
           if (shouldFail) {
             shouldFail = false;
-            throw new Error('quote supplement failed');
+            throw quoteError;
           }
 
           return new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]);
         },
       },
       symbolRegistry,
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble({ symbolRegistry })]]),
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -583,6 +568,73 @@ describe('tradingQuoteDisplayRuntime', () => {
 
     expect(warnLogs).toHaveLength(1);
     expect(renders).toEqual(['BULL.HK']);
+    await runtime.stopAndDrain();
+  });
+
+  it('exposes render invariant errors to fatal handler instead of treating them as quote supplement failures', async () => {
+    const { createTradingQuoteDisplayRuntime } =
+      await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
+    warnLogs.length = 0;
+    const symbolRegistry = createSymbolRegistryDouble({
+      monitorSymbol: 'HSI.HK',
+      longSeat: {
+        symbol: 'BULL.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSeatActivatedAt: null,
+        lastSearchAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+      shortSeat: {
+        symbol: 'BEAR.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSeatActivatedAt: null,
+        lastSearchAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+    });
+    let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
+    const renderError = new TypeError('display invariant broken');
+    const fatalErrors: unknown[] = [];
+    const runtime = createTradingQuoteDisplayRuntime({
+      marketDataClient: {
+        onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
+          quoteUpdatedListener = listener;
+          return () => {
+            if (quoteUpdatedListener === listener) {
+              quoteUpdatedListener = undefined;
+            }
+          };
+        },
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+      },
+      symbolRegistry,
+      monitorContext: createMonitorContextDouble({ symbolRegistry }),
+      lastState: {
+        isTradingEnabled: true,
+        canTrade: true,
+      },
+      renderTradingQuote: () => {
+        throw renderError;
+      },
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    runtime.start();
+    quoteUpdatedListener?.({
+      symbol: 'BULL.HK',
+      quote: createQuoteDouble('BULL.HK', 1.01),
+    });
+    await waitTick();
+    await waitTick();
+
+    expect(fatalErrors).toEqual([renderError]);
+    expect(warnLogs).toHaveLength(0);
     await runtime.stopAndDrain();
   });
 });

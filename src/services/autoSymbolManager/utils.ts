@@ -342,48 +342,60 @@ function normalizeSeatState(nextState: SeatState): SeatState {
 }
 
 /**
- * 从注册表中解析指定监控标的与方向的席位条目（内部辅助函数）
- * @param registry 席位注册表
- * @param monitorSymbol 监控标的代码
- * @param direction 方向（LONG 或 SHORT）
- * @returns 对应方向的席位条目
- * @throws 当监控标的不存在于注册表时抛出错误
+ * 校验调用方传入的监控标的是否为唯一 monitor。
+ * @param actualMonitorSymbol 调用方传入的监控标的代码
+ * @param expectedMonitorSymbol 唯一监控标的代码
+ * @throws 当监控标的不是唯一 monitor 时抛出错误
  */
-function resolveSeatEntry(
-  registry: Map<string, SymbolSeatEntry>,
-  monitorSymbol: string,
-  direction: 'LONG' | 'SHORT',
-): SeatEntry {
-  const entry = registry.get(monitorSymbol);
-  if (!entry) {
-    throw new Error(`SymbolRegistry 未找到监控标的: ${monitorSymbol}`);
+function requireExpectedMonitorSymbol(
+  actualMonitorSymbol: string,
+  expectedMonitorSymbol: string,
+): void {
+  if (actualMonitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(`SymbolRegistry 未找到监控标的: ${actualMonitorSymbol}`);
   }
-
-  return direction === 'LONG' ? entry.long : entry.short;
 }
 
 /**
- * 创建席位注册表并初始化多/空席位状态。
- * @param monitors 所有监控标的配置列表
+ * 从唯一 monitor 席位存储中解析指定方向的席位条目（内部辅助函数）
+ * @param seatStore 唯一 monitor 的席位存储
+ * @param expectedMonitorSymbol 唯一监控标的代码
+ * @param monitorSymbol 监控标的代码
+ * @param direction 方向（LONG 或 SHORT）
+ * @returns 对应方向的席位条目
+ * @throws 当监控标的不是唯一 monitor 时抛出错误
+ */
+function resolveSeatEntry(
+  seatStore: SymbolSeatEntry,
+  expectedMonitorSymbol: string,
+  monitorSymbol: string,
+  direction: 'LONG' | 'SHORT',
+): SeatEntry {
+  requireExpectedMonitorSymbol(monitorSymbol, expectedMonitorSymbol);
+
+  return direction === 'LONG' ? seatStore.long : seatStore.short;
+}
+
+/**
+ * 创建席位注册表并初始化唯一 monitor 的多/空席位状态。
+ * @param monitor 唯一监控标的配置
  * @returns 实现了 SymbolRegistry 接口的注册表对象
  */
-export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): SymbolRegistry {
-  const registry = new Map<string, SymbolSeatEntry>();
+export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
+  const expectedMonitorSymbol = monitor.monitorSymbol;
   const listeners = new Set<SeatStateChangedListener>();
   const versionListeners = new Set<SeatVersionChangedListener>();
   const truthListeners = new Set<SeatTruthChangedListener>();
 
-  for (const monitor of monitors) {
-    const autoSearchEnabled = monitor.autoSearchConfig.autoSearchEnabled;
-    registry.set(monitor.monitorSymbol, {
-      long: autoSearchEnabled
-        ? createSeatEntry(null, 'EMPTY')
-        : createSeatEntry(monitor.longSymbol, 'ACTIVE'),
-      short: autoSearchEnabled
-        ? createSeatEntry(null, 'EMPTY')
-        : createSeatEntry(monitor.shortSymbol, 'ACTIVE'),
-    });
-  }
+  const autoSearchEnabled = monitor.autoSearchConfig.autoSearchEnabled;
+  const seatStore: SymbolSeatEntry = {
+    long: autoSearchEnabled
+      ? createSeatEntry(null, 'EMPTY')
+      : createSeatEntry(monitor.longSymbol, 'ACTIVE'),
+    short: autoSearchEnabled
+      ? createSeatEntry(null, 'EMPTY')
+      : createSeatEntry(monitor.shortSymbol, 'ACTIVE'),
+  };
 
   /**
    * 广播席位状态变化事件。
@@ -429,10 +441,10 @@ export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): Sy
 
   return {
     getSeatState(monitorSymbol: string, direction: 'LONG' | 'SHORT'): SeatState {
-      return resolveSeatEntry(registry, monitorSymbol, direction).state;
+      return resolveSeatEntry(seatStore, expectedMonitorSymbol, monitorSymbol, direction).state;
     },
     getSeatVersion(monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      return resolveSeatEntry(registry, monitorSymbol, direction).version;
+      return resolveSeatEntry(seatStore, expectedMonitorSymbol, monitorSymbol, direction).version;
     },
     resolveSeatBySymbol(symbol: string): {
       monitorSymbol: string;
@@ -444,24 +456,22 @@ export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): Sy
         return null;
       }
 
-      for (const [monitorSymbol, entry] of registry) {
-        if (entry.long.state.symbol === symbol) {
-          return {
-            monitorSymbol,
-            direction: 'LONG',
-            seatState: entry.long.state,
-            seatVersion: entry.long.version,
-          };
-        }
+      if (seatStore.long.state.symbol === symbol) {
+        return {
+          monitorSymbol: expectedMonitorSymbol,
+          direction: 'LONG',
+          seatState: seatStore.long.state,
+          seatVersion: seatStore.long.version,
+        };
+      }
 
-        if (entry.short.state.symbol === symbol) {
-          return {
-            monitorSymbol,
-            direction: 'SHORT',
-            seatState: entry.short.state,
-            seatVersion: entry.short.version,
-          };
-        }
+      if (seatStore.short.state.symbol === symbol) {
+        return {
+          monitorSymbol: expectedMonitorSymbol,
+          direction: 'SHORT',
+          seatState: seatStore.short.state,
+          seatVersion: seatStore.short.version,
+        };
       }
 
       return null;
@@ -471,7 +481,12 @@ export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): Sy
       direction: 'LONG' | 'SHORT',
       nextState: SeatState,
     ): SeatState {
-      const seatEntry = resolveSeatEntry(registry, monitorSymbol, direction);
+      const seatEntry = resolveSeatEntry(
+        seatStore,
+        expectedMonitorSymbol,
+        monitorSymbol,
+        direction,
+      );
       const previousState = seatEntry.state;
       const previousVersion = seatEntry.lastEventVersion;
       seatEntry.state = normalizeSeatState(nextState);
@@ -492,7 +507,12 @@ export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): Sy
       direction: 'LONG' | 'SHORT',
       nextState: SeatState,
     ): { readonly seatState: SeatState; readonly seatVersion: number } {
-      const seatEntry = resolveSeatEntry(registry, monitorSymbol, direction);
+      const seatEntry = resolveSeatEntry(
+        seatStore,
+        expectedMonitorSymbol,
+        monitorSymbol,
+        direction,
+      );
       const previousState = seatEntry.state;
       const previousVersion = seatEntry.version;
       const previousStateEventVersion = seatEntry.lastEventVersion;
@@ -518,7 +538,12 @@ export function createSymbolRegistry(monitors: ReadonlyArray<MonitorConfig>): Sy
       return { seatState: seatEntry.state, seatVersion: seatEntry.version };
     },
     bumpSeatVersion(monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      const seatEntry = resolveSeatEntry(registry, monitorSymbol, direction);
+      const seatEntry = resolveSeatEntry(
+        seatStore,
+        expectedMonitorSymbol,
+        monitorSymbol,
+        direction,
+      );
       const previousVersion = seatEntry.version;
       seatEntry.version += 1;
       emitSeatVersionChanged({

@@ -46,7 +46,7 @@ export type SeatEntry = {
 
 /**
  * 单个监控标的的席位条目。
- * 类型用途：存储多空两个方向的 SeatEntry，作为 SymbolRegistry Map 的值类型。
+ * 类型用途：存储唯一 monitor 多空两个方向的 SeatEntry。
  * 数据来源：由 createSymbolRegistry 初始化并维护。
  * 使用范围：仅 autoSymbolManager 模块内部使用。
  */

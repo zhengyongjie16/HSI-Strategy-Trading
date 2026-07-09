@@ -1,15 +1,9 @@
 import { logger } from '../../utils/logger/index.js';
-import { TRADING } from '../../constants/index.js';
 import type { LiquidationCooldownConfig, MonitorConfig, NumberRange } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
 import { getStringConfig, isSymbolWithRegion } from '../utils.js';
 import { validateLongbridgeConfig } from '../auth/utils.js';
-import type {
-  DuplicateSymbol,
-  SignalConfigKey,
-  SymbolValidationContext,
-  ValidationResult,
-} from './types.js';
+import type { SignalConfigKey, SymbolValidationContext, ValidationResult } from './types.js';
 
 const AUTO_SEARCH_DISTANCE_UNIT_HINT =
   'Longbridge warrantList.toCallPrice 原始值会先从小数比值转换为该百分比值口径。';
@@ -75,40 +69,12 @@ function validateRequiredSymbol({
 }
 
 /**
- * 记录交易标的使用情况并检测重复配置。
- * @param symbol 交易标的代码
- * @param index 当前监控标的索引
- * @param tradingSymbols 已出现过的标的映射
- * @param duplicateSymbols 重复记录输出数组
- * @returns void
- */
-export function recordTradingSymbolUsage(
-  symbol: string,
-  index: number,
-  tradingSymbols: Map<string, number>,
-  duplicateSymbols: DuplicateSymbol[],
-): void {
-  const previousIndex = tradingSymbols.get(symbol);
-  if (previousIndex !== undefined) {
-    duplicateSymbols.push({
-      symbol,
-      index,
-      previousIndex,
-    });
-    return;
-  }
-
-  tradingSymbols.set(symbol, index);
-}
-
-/**
  * 校验自动寻标降级区间与主阈值的相对关系。
  * @param params 校验参数
  * @returns 错误文案或 null
  */
 function validateDegradedRangeRelationship(params: {
   readonly prefix: string;
-  readonly index: number;
   readonly direction: 'LONG' | 'SHORT';
   readonly primaryThreshold: number;
   readonly switchDistanceRange: NumberRange;
@@ -116,18 +82,18 @@ function validateDegradedRangeRelationship(params: {
   if (params.direction === 'LONG') {
     if (params.switchDistanceRange.min >= params.primaryThreshold) {
       return (
-        `${params.prefix}: SWITCH_DISTANCE_RANGE_BULL_${params.index} 无效（降级区间必须满足 ` +
-        `SWITCH_DISTANCE_RANGE_BULL_${params.index}.min < ` +
-        `AUTO_SEARCH_MIN_DISTANCE_PCT_BULL_${params.index}，` +
+        `${params.prefix}: SWITCH_DISTANCE_RANGE_BULL 无效（降级区间必须满足 ` +
+        `SWITCH_DISTANCE_RANGE_BULL.min < ` +
+        `AUTO_SEARCH_MIN_DISTANCE_PCT_BULL，` +
         `运行时单位为百分比值，0.35 表示 0.35%；${AUTO_SEARCH_DISTANCE_UNIT_HINT}）`
       );
     }
 
     if (params.primaryThreshold >= params.switchDistanceRange.max) {
       return (
-        `${params.prefix}: SWITCH_DISTANCE_RANGE_BULL_${params.index} 无效（主阈值必须满足 ` +
-        `AUTO_SEARCH_MIN_DISTANCE_PCT_BULL_${params.index} < ` +
-        `SWITCH_DISTANCE_RANGE_BULL_${params.index}.max，` +
+        `${params.prefix}: SWITCH_DISTANCE_RANGE_BULL 无效（主阈值必须满足 ` +
+        `AUTO_SEARCH_MIN_DISTANCE_PCT_BULL < ` +
+        `SWITCH_DISTANCE_RANGE_BULL.max，` +
         `确保自动寻标候选严格位于换标安全区间内部，运行时单位为百分比值，0.35 表示 0.35%；${AUTO_SEARCH_DISTANCE_UNIT_HINT}）`
       );
     }
@@ -137,18 +103,18 @@ function validateDegradedRangeRelationship(params: {
 
   if (params.switchDistanceRange.min >= params.primaryThreshold) {
     return (
-      `${params.prefix}: SWITCH_DISTANCE_RANGE_BEAR_${params.index} 无效（主阈值必须满足 ` +
-      `SWITCH_DISTANCE_RANGE_BEAR_${params.index}.min < ` +
-      `AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR_${params.index}，` +
+      `${params.prefix}: SWITCH_DISTANCE_RANGE_BEAR 无效（主阈值必须满足 ` +
+      `SWITCH_DISTANCE_RANGE_BEAR.min < ` +
+      `AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR，` +
       `确保自动寻标候选严格位于换标安全区间内部，运行时单位为百分比值，-0.35 表示 -0.35%；${AUTO_SEARCH_DISTANCE_UNIT_HINT}）`
     );
   }
 
   if (params.primaryThreshold >= params.switchDistanceRange.max) {
     return (
-      `${params.prefix}: SWITCH_DISTANCE_RANGE_BEAR_${params.index} 无效（降级区间必须满足 ` +
-      `AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR_${params.index} < ` +
-      `SWITCH_DISTANCE_RANGE_BEAR_${params.index}.max，` +
+      `${params.prefix}: SWITCH_DISTANCE_RANGE_BEAR 无效（降级区间必须满足 ` +
+      `AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR < ` +
+      `SWITCH_DISTANCE_RANGE_BEAR.max，` +
       `运行时单位为百分比值，-0.35 表示 -0.35%；${AUTO_SEARCH_DISTANCE_UNIT_HINT}）`
     );
   }
@@ -228,54 +194,6 @@ function validateCriticalMinimumNumberConfig({
 }
 
 /**
- * 校验监控标的索引是否连续。
- * @param env 进程环境变量
- * @returns 索引连续性校验结果
- */
-export function validateMonitorSymbolIndexContinuity(env: NodeJS.ProcessEnv): Readonly<{
-  errors: ReadonlyArray<string>;
-  missingFields: ReadonlyArray<string>;
-}> {
-  const configuredMonitorIndexes: number[] = [];
-
-  for (let i = 1; i <= TRADING.MAX_MONITOR_SCAN_RANGE; i++) {
-    const monitorSymbol = getStringConfig(env, `MONITOR_SYMBOL_${i}`);
-    if (!monitorSymbol) {
-      continue;
-    }
-
-    configuredMonitorIndexes.push(i);
-  }
-
-  if (configuredMonitorIndexes.length === 0) {
-    return {
-      errors: [],
-      missingFields: [],
-    };
-  }
-
-  const highestConfiguredIndex = configuredMonitorIndexes.at(-1) ?? 0;
-  const configuredMonitorSet = new Set(configuredMonitorIndexes);
-  const errors: string[] = [];
-  const missingFields: string[] = [];
-
-  for (let i = 1; i <= highestConfiguredIndex; i++) {
-    if (configuredMonitorSet.has(i)) {
-      continue;
-    }
-
-    const missingKey = `MONITOR_SYMBOL_${i}`;
-    errors.push(`${missingKey} 未配置（监控标的索引必须连续，不允许断档）`);
-    missingFields.push(missingKey);
-  }
-
-  return {
-    errors,
-    missingFields,
-  };
-}
-
-/**
  * 从行情数据验证标的有效性。
  * @param quote 标的行情数据
  * @param symbol 标的代码
@@ -317,25 +235,23 @@ export function validateSymbolFromQuote(
 }
 
 /**
- * 验证单个监控标的的配置完整性。
+ * 验证唯一监控标的配置完整性。
  * @param config 监控标的配置
- * @param index 监控标的索引
  * @param env 进程环境变量
  * @returns 监控标的验证结果
  */
 export function validateMonitorConfig(
   config: MonitorConfig,
-  index: number,
   env: NodeJS.ProcessEnv,
 ): ValidationResult {
   let errors: ReadonlyArray<string> = [];
   let missingFields: ReadonlyArray<string> = [];
-  const prefix = `监控标的 ${index}`;
+  const prefix = '监控标的';
 
   const result1 = validateRequiredSymbol({
     prefix,
     symbol: config.monitorSymbol,
-    envKey: `MONITOR_SYMBOL_${index}`,
+    envKey: 'MONITOR_SYMBOL',
     errors,
     missingFields,
   });
@@ -345,16 +261,18 @@ export function validateMonitorConfig(
   const autoSearchEnabled = config.autoSearchConfig.autoSearchEnabled;
 
   if (config.orderOwnershipMapping.length === 0) {
-    const mappingKey = `ORDER_OWNERSHIP_MAPPING_${index}`;
-    errors = [...errors, `${prefix}: ${mappingKey} 未配置或为空（用于 stockName 归属解析）`];
-    missingFields = [...missingFields, mappingKey];
+    errors = [
+      ...errors,
+      `${prefix}: ORDER_OWNERSHIP_MAPPING 未配置或为空（用于 stockName 归属解析）`,
+    ];
+    missingFields = [...missingFields, 'ORDER_OWNERSHIP_MAPPING'];
   }
 
   if (!autoSearchEnabled) {
     const result2 = validateRequiredSymbol({
       prefix,
       symbol: config.longSymbol,
-      envKey: `LONG_SYMBOL_${index}`,
+      envKey: 'LONG_SYMBOL',
       errors,
       missingFields,
     });
@@ -364,7 +282,7 @@ export function validateMonitorConfig(
     const result3 = validateRequiredSymbol({
       prefix,
       symbol: config.shortSymbol,
-      envKey: `SHORT_SYMBOL_${index}`,
+      envKey: 'SHORT_SYMBOL',
       errors,
       missingFields,
     });
@@ -372,7 +290,16 @@ export function validateMonitorConfig(
     missingFields = result3.missingFields;
   }
 
-  const targetNotionalEnvKey = `TARGET_NOTIONAL_${index}`;
+  if (
+    config.longSymbol.trim() !== '' &&
+    config.shortSymbol.trim() !== '' &&
+    config.longSymbol === config.shortSymbol
+  ) {
+    errors = [...errors, `${prefix}: LONG_SYMBOL 与 SHORT_SYMBOL 不得相同`];
+    missingFields = [...missingFields, 'LONG_SYMBOL', 'SHORT_SYMBOL'];
+  }
+
+  const targetNotionalEnvKey = 'TARGET_NOTIONAL';
   const targetNotionalValidationError = validateCriticalMinimumNumberConfig({
     env,
     envKey: targetNotionalEnvKey,
@@ -388,7 +315,7 @@ export function validateMonitorConfig(
     missingFields = [...missingFields, targetNotionalEnvKey];
   }
 
-  const maxPositionNotionalEnvKey = `MAX_POSITION_NOTIONAL_${index}`;
+  const maxPositionNotionalEnvKey = 'MAX_POSITION_NOTIONAL';
   const maxPositionNotionalValidationError = validateCriticalMinimumNumberConfig({
     env,
     envKey: maxPositionNotionalEnvKey,
@@ -404,7 +331,7 @@ export function validateMonitorConfig(
     missingFields = [...missingFields, maxPositionNotionalEnvKey];
   }
 
-  const buyIntervalEnvKey = `BUY_INTERVAL_SECONDS_${index}`;
+  const buyIntervalEnvKey = 'BUY_INTERVAL_SECONDS';
   const buyIntervalValidationError = validateCriticalBoundedNumberConfig({
     env,
     envKey: buyIntervalEnvKey,
@@ -425,7 +352,7 @@ export function validateMonitorConfig(
     missingFields = [...missingFields, buyIntervalEnvKey];
   }
 
-  const liquidationCooldownEnvKey = `LIQUIDATION_COOLDOWN_MINUTES_${index}`;
+  const liquidationCooldownEnvKey = 'LIQUIDATION_COOLDOWN_MINUTES';
   const configuredCooldown = getStringConfig(env, liquidationCooldownEnvKey);
   const isCooldownParsingFailed = Boolean(configuredCooldown) && !config.liquidationCooldown;
   const isMinutesOutOfRange =
@@ -443,13 +370,12 @@ export function validateMonitorConfig(
   if (config.liquidationCooldown) {
     const triggerLimit = config.liquidationTriggerLimit;
     if (!Number.isInteger(triggerLimit) || triggerLimit < 1 || triggerLimit > 10) {
-      const triggerLimitEnvKey = `LIQUIDATION_TRIGGER_LIMIT_${index}`;
-      errors = [...errors, `${prefix}: ${triggerLimitEnvKey} 无效（范围 1-10）`];
-      missingFields = [...missingFields, triggerLimitEnvKey];
+      errors = [...errors, `${prefix}: LIQUIDATION_TRIGGER_LIMIT 无效（范围 1-10）`];
+      missingFields = [...missingFields, 'LIQUIDATION_TRIGGER_LIMIT'];
     }
   }
 
-  const smartCloseTimeoutEnvKey = `SMART_CLOSE_TIMEOUT_MINUTES_${index}`;
+  const smartCloseTimeoutEnvKey = 'SMART_CLOSE_TIMEOUT_MINUTES';
   const smartCloseTimeoutRaw = env[smartCloseTimeoutEnvKey];
   if (smartCloseTimeoutRaw !== undefined) {
     const trimmed = smartCloseTimeoutRaw.trim();
@@ -473,16 +399,15 @@ export function validateMonitorConfig(
     'sellput',
   ];
   const signalConfigEnvNames: Record<SignalConfigKey, string> = {
-    buycall: `SIGNAL_BUYCALL_${index}`,
-    sellcall: `SIGNAL_SELLCALL_${index}`,
-    buyput: `SIGNAL_BUYPUT_${index}`,
-    sellput: `SIGNAL_SELLPUT_${index}`,
+    buycall: 'SIGNAL_BUYCALL',
+    sellcall: 'SIGNAL_SELLCALL',
+    buyput: 'SIGNAL_BUYPUT',
+    sellput: 'SIGNAL_SELLPUT',
   };
 
   for (const key of signalConfigKeys) {
     const envName = signalConfigEnvNames[key];
     const signalConfig = config.signalConfig[key];
-
     if (!signalConfig?.conditionGroups || signalConfig.conditionGroups.length === 0) {
       errors = [...errors, `${prefix}: ${envName} 未配置或解析失败（信号配置为必需项）`];
       missingFields = [...missingFields, envName];
@@ -491,25 +416,25 @@ export function validateMonitorConfig(
 
   if (autoSearchEnabled) {
     const autoSearchConfig = config.autoSearchConfig;
-    const switchIntervalEnvKey = `SWITCH_INTERVAL_MINUTES_${index}`;
+    const switchIntervalEnvKey = 'SWITCH_INTERVAL_MINUTES';
     const requiredNumberFields = [
       {
         value: autoSearchConfig.autoSearchMinDistancePctBull,
-        envKey: `AUTO_SEARCH_MIN_DISTANCE_PCT_BULL_${index}`,
+        envKey: 'AUTO_SEARCH_MIN_DISTANCE_PCT_BULL',
       },
       {
         value: autoSearchConfig.autoSearchMinDistancePctBear,
-        envKey: `AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR_${index}`,
+        envKey: 'AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR',
       },
       {
         value: autoSearchConfig.autoSearchMinTurnoverPerMinuteBull,
-        envKey: `AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL_${index}`,
+        envKey: 'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL',
       },
       {
         value: autoSearchConfig.autoSearchMinTurnoverPerMinuteBear,
-        envKey: `AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR_${index}`,
+        envKey: 'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR',
       },
-    ];
+    ] as const;
 
     for (const field of requiredNumberFields) {
       if (field.value === null || !Number.isFinite(field.value)) {
@@ -522,16 +447,16 @@ export function validateMonitorConfig(
       !Number.isFinite(autoSearchConfig.autoSearchExpiryMinMonths) ||
       autoSearchConfig.autoSearchExpiryMinMonths < 1
     ) {
-      errors = [...errors, `${prefix}: AUTO_SEARCH_EXPIRY_MIN_MONTHS_${index} 无效（必须 >= 1）`];
-      missingFields = [...missingFields, `AUTO_SEARCH_EXPIRY_MIN_MONTHS_${index}`];
+      errors = [...errors, `${prefix}: AUTO_SEARCH_EXPIRY_MIN_MONTHS 无效（必须 >= 1）`];
+      missingFields = [...missingFields, 'AUTO_SEARCH_EXPIRY_MIN_MONTHS'];
     }
 
     if (
       !Number.isFinite(autoSearchConfig.autoSearchOpenDelayMinutes) ||
       autoSearchConfig.autoSearchOpenDelayMinutes < 0
     ) {
-      errors = [...errors, `${prefix}: AUTO_SEARCH_OPEN_DELAY_MINUTES_${index} 无效（必须 >= 0）`];
-      missingFields = [...missingFields, `AUTO_SEARCH_OPEN_DELAY_MINUTES_${index}`];
+      errors = [...errors, `${prefix}: AUTO_SEARCH_OPEN_DELAY_MINUTES 无效（必须 >= 0）`];
+      missingFields = [...missingFields, 'AUTO_SEARCH_OPEN_DELAY_MINUTES'];
     }
 
     const switchIntervalValidationError = validateCriticalBoundedNumberConfig({
@@ -563,16 +488,15 @@ export function validateMonitorConfig(
     ) {
       errors = [
         ...errors,
-        `${prefix}: SWITCH_DISTANCE_RANGE_BULL_${index} 未配置或无效（格式 min,max 且 min<=max）`,
+        `${prefix}: SWITCH_DISTANCE_RANGE_BULL 未配置或无效（格式 min,max 且 min<=max）`,
       ];
-      missingFields = [...missingFields, `SWITCH_DISTANCE_RANGE_BULL_${index}`];
+      missingFields = [...missingFields, 'SWITCH_DISTANCE_RANGE_BULL'];
     } else if (
       autoSearchConfig.autoSearchMinDistancePctBull !== null &&
       Number.isFinite(autoSearchConfig.autoSearchMinDistancePctBull)
     ) {
       const bullRangeRelationshipError = validateDegradedRangeRelationship({
         prefix,
-        index,
         direction: 'LONG',
         primaryThreshold: autoSearchConfig.autoSearchMinDistancePctBull,
         switchDistanceRange: bullRange,
@@ -591,16 +515,15 @@ export function validateMonitorConfig(
     ) {
       errors = [
         ...errors,
-        `${prefix}: SWITCH_DISTANCE_RANGE_BEAR_${index} 未配置或无效（格式 min,max 且 min<=max）`,
+        `${prefix}: SWITCH_DISTANCE_RANGE_BEAR 未配置或无效（格式 min,max 且 min<=max）`,
       ];
-      missingFields = [...missingFields, `SWITCH_DISTANCE_RANGE_BEAR_${index}`];
+      missingFields = [...missingFields, 'SWITCH_DISTANCE_RANGE_BEAR'];
     } else if (
       autoSearchConfig.autoSearchMinDistancePctBear !== null &&
       Number.isFinite(autoSearchConfig.autoSearchMinDistancePctBear)
     ) {
       const bearRangeRelationshipError = validateDegradedRangeRelationship({
         prefix,
-        index,
         direction: 'SHORT',
         primaryThreshold: autoSearchConfig.autoSearchMinDistancePctBear,
         switchDistanceRange: bearRange,

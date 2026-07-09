@@ -34,51 +34,45 @@ import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 /**
  * 基于订单与持仓生成席位快照，用于恢复运行时席位标的。
  *
- * @param input 包含 monitors、positions、orders 的输入
- * @returns 席位快照，含各监控标的与方向的解析结果条目
+ * @param input 包含 monitor、positions、orders 的输入
+ * @returns 席位快照，含唯一 monitor 各方向的解析结果条目
  */
 function resolveSeatSnapshot(input: SeatSnapshotInput): SeatSnapshot {
-  const { monitors, positions, orders } = input;
+  const { monitor, positions, orders } = input;
   const entries: SeatSymbolSnapshotEntry[] = [];
 
-  for (const monitor of monitors) {
-    const candidateLongSymbol = getLatestTradedSymbol(
-      orders,
-      monitor.orderOwnershipMapping,
-      'LONG',
-    );
-    const candidateShortSymbol = getLatestTradedSymbol(
-      orders,
-      monitor.orderOwnershipMapping,
-      'SHORT',
-    );
-    const resolvedLongSymbol = resolveSeatOnStartup({
-      autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
-      candidateSymbol: candidateLongSymbol ?? null,
-      configuredSymbol: monitor.longSymbol,
-      positions,
+  const candidateLongSymbol = getLatestTradedSymbol(orders, monitor.orderOwnershipMapping, 'LONG');
+  const candidateShortSymbol = getLatestTradedSymbol(
+    orders,
+    monitor.orderOwnershipMapping,
+    'SHORT',
+  );
+  const resolvedLongSymbol = resolveSeatOnStartup({
+    autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
+    candidateSymbol: candidateLongSymbol ?? null,
+    configuredSymbol: monitor.longSymbol,
+    positions,
+  });
+  if (resolvedLongSymbol) {
+    entries.push({
+      monitorSymbol: monitor.monitorSymbol,
+      direction: 'LONG',
+      symbol: resolvedLongSymbol,
     });
-    if (resolvedLongSymbol) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'LONG',
-        symbol: resolvedLongSymbol,
-      });
-    }
+  }
 
-    const resolvedShortSymbol = resolveSeatOnStartup({
-      autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
-      candidateSymbol: candidateShortSymbol ?? null,
-      configuredSymbol: monitor.shortSymbol,
-      positions,
+  const resolvedShortSymbol = resolveSeatOnStartup({
+    autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
+    candidateSymbol: candidateShortSymbol ?? null,
+    configuredSymbol: monitor.shortSymbol,
+    positions,
+  });
+  if (resolvedShortSymbol) {
+    entries.push({
+      monitorSymbol: monitor.monitorSymbol,
+      direction: 'SHORT',
+      symbol: resolvedShortSymbol,
     });
-    if (resolvedShortSymbol) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'SHORT',
-        symbol: resolvedShortSymbol,
-      });
-    }
   }
 
   return { entries };
@@ -108,7 +102,7 @@ export async function prepareSeatsForRuntime(
     warrantListCacheConfig,
   } = deps;
   const snapshot = resolveSeatSnapshot({
-    monitors: tradingConfig.monitors,
+    monitor: tradingConfig.monitor,
     positions,
     orders,
   });
@@ -136,21 +130,19 @@ export async function prepareSeatsForRuntime(
     });
   }
 
-  for (const monitorConfig of tradingConfig.monitors) {
-    const longKey = `${monitorConfig.monitorSymbol}:LONG`;
-    const shortKey = `${monitorConfig.monitorSymbol}:SHORT`;
-    updateSeatOnRuntimeRecovery(
-      monitorConfig.monitorSymbol,
-      'LONG',
-      snapshotMap.get(longKey) ?? null,
-    );
+  const longKey = `${tradingConfig.monitor.monitorSymbol}:LONG`;
+  const shortKey = `${tradingConfig.monitor.monitorSymbol}:SHORT`;
+  updateSeatOnRuntimeRecovery(
+    tradingConfig.monitor.monitorSymbol,
+    'LONG',
+    snapshotMap.get(longKey) ?? null,
+  );
 
-    updateSeatOnRuntimeRecovery(
-      monitorConfig.monitorSymbol,
-      'SHORT',
-      snapshotMap.get(shortKey) ?? null,
-    );
-  }
+  updateSeatOnRuntimeRecovery(
+    tradingConfig.monitor.monitorSymbol,
+    'SHORT',
+    snapshotMap.get(shortKey) ?? null,
+  );
 
   let quoteContextPromise: ReturnType<typeof marketDataClient.getQuoteContext> | null = null;
 
@@ -286,40 +278,39 @@ export async function prepareSeatsForRuntime(
   async function trySearchEmptySeats(): Promise<void> {
     const currentTime = now();
 
-    for (const monitorConfig of tradingConfig.monitors) {
-      if (!monitorConfig.autoSearchConfig.autoSearchEnabled) {
+    const monitorConfig = tradingConfig.monitor;
+    if (!monitorConfig.autoSearchConfig.autoSearchEnabled) {
+      return;
+    }
+
+    for (const direction of ['LONG', 'SHORT'] as const) {
+      const seatState = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
+      const openDelayMinutes = monitorConfig.autoSearchConfig.autoSearchOpenDelayMinutes;
+      if (shouldSkipRuntimeRecoverySearch(seatState, openDelayMinutes, currentTime)) {
         continue;
       }
 
-      for (const direction of ['LONG', 'SHORT'] as const) {
-        const seatState = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
-        const openDelayMinutes = monitorConfig.autoSearchConfig.autoSearchOpenDelayMinutes;
-        if (shouldSkipRuntimeRecoverySearch(seatState, openDelayMinutes, currentTime)) {
-          continue;
+      try {
+        const symbol = await searchSeatSymbol({
+          monitorSymbol: monitorConfig.monitorSymbol,
+          direction,
+          autoSearchConfig: monitorConfig.autoSearchConfig,
+          currentTime,
+        });
+        if (symbol) {
+          logger.info(
+            `[席位恢复] ${monitorConfig.monitorSymbol} ${direction} 已进入激活阶段: ${symbol}`,
+          );
+        }
+      } catch (err) {
+        resetSearchingSeatAfterException(monitorConfig.monitorSymbol, direction, currentTime);
+        if (isExternalApiRequestError(err)) {
+          logger.warn(
+            `[席位恢复] ${monitorConfig.monitorSymbol} ${direction} 寻标 API 请求失败，等待恢复链路重试: ${err.message}`,
+          );
         }
 
-        try {
-          const symbol = await searchSeatSymbol({
-            monitorSymbol: monitorConfig.monitorSymbol,
-            direction,
-            autoSearchConfig: monitorConfig.autoSearchConfig,
-            currentTime,
-          });
-          if (symbol) {
-            logger.info(
-              `[席位恢复] ${monitorConfig.monitorSymbol} ${direction} 已进入激活阶段: ${symbol}`,
-            );
-          }
-        } catch (err) {
-          resetSearchingSeatAfterException(monitorConfig.monitorSymbol, direction, currentTime);
-          if (isExternalApiRequestError(err)) {
-            logger.warn(
-              `[席位恢复] ${monitorConfig.monitorSymbol} ${direction} 寻标 API 请求失败，等待恢复链路重试: ${err.message}`,
-            );
-          }
-
-          throw err;
-        }
+        throw err;
       }
     }
   }
@@ -328,7 +319,7 @@ export async function prepareSeatsForRuntime(
 
   return {
     seatSymbols: collectBoundSeatSymbols({
-      monitors: tradingConfig.monitors,
+      monitorSymbol: tradingConfig.monitor.monitorSymbol,
       symbolRegistry,
     }),
   };

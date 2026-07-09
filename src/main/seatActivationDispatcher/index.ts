@@ -16,10 +16,20 @@ import type {
 } from './types.js';
 
 function buildSeatActivationRouteKey(params: {
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
 }): SeatActivationRouteKey {
-  return `${params.monitorSymbol}:${params.direction}`;
+  return params.direction;
+}
+
+function assertSeatActivationMonitorSymbol(
+  actualMonitorSymbol: string,
+  expectedMonitorSymbol: string,
+): void {
+  if (actualMonitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[SeatActivationDispatcher] 非唯一 monitorSymbol 输入: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
+    );
+  }
 }
 
 function resolveNextSymbol(seatState: SeatState): string | null {
@@ -65,7 +75,7 @@ function scheduleSeatRefresh(params: {
     );
   }
 
-  const dedupeKey = `${params.monitorSymbol}:SEAT_REFRESH:${params.direction}`;
+  const dedupeKey = `SEAT_REFRESH:${params.direction}`;
   params.deps.monitorTaskQueue.scheduleLatest({
     type: 'SEAT_REFRESH',
     dedupeKey,
@@ -99,13 +109,12 @@ export function createSeatActivationDispatcher(
   let unsubscribeSeatStateChanged: (() => void) | null = null;
   const pendingActivations = new Map<SeatActivationRouteKey, PendingSeatActivation>();
 
-  function clearPendingActivation(monitorSymbol: string, direction: 'LONG' | 'SHORT'): void {
-    pendingActivations.delete(buildSeatActivationRouteKey({ monitorSymbol, direction }));
+  function clearPendingActivation(direction: 'LONG' | 'SHORT'): void {
+    pendingActivations.delete(buildSeatActivationRouteKey({ direction }));
   }
 
   function rememberPendingActivation(event: SeatStateChangedEvent): void {
     const routeKey = buildSeatActivationRouteKey({
-      monitorSymbol: event.monitorSymbol,
       direction: event.direction,
     });
 
@@ -117,7 +126,6 @@ export function createSeatActivationDispatcher(
 
   function resolvePreviousSymbol(event: SeatStateChangedEvent): string | null {
     const routeKey = buildSeatActivationRouteKey({
-      monitorSymbol: event.monitorSymbol,
       direction: event.direction,
     });
     const pendingActivation = pendingActivations.get(routeKey);
@@ -129,18 +137,23 @@ export function createSeatActivationDispatcher(
   }
 
   function handleSeatStateChanged(event: SeatStateChangedEvent): void {
+    assertSeatActivationMonitorSymbol(
+      event.monitorSymbol,
+      deps.tradingConfig.monitor.monitorSymbol,
+    );
+
     if (event.nextState.status === 'SWITCHING') {
       rememberPendingActivation(event);
       return;
     }
 
     if (event.nextState.status !== 'ACTIVATING') {
-      clearPendingActivation(event.monitorSymbol, event.direction);
+      clearPendingActivation(event.direction);
       return;
     }
 
     const previousSymbol = resolvePreviousSymbol(event);
-    clearPendingActivation(event.monitorSymbol, event.direction);
+    clearPendingActivation(event.direction);
 
     scheduleSeatRefresh({
       deps,
@@ -157,19 +170,17 @@ export function createSeatActivationDispatcher(
       return;
     }
 
-    for (const monitorConfig of deps.tradingConfig.monitors) {
-      dispatchCurrentActivatingSeat({
-        deps,
-        monitorSymbol: monitorConfig.monitorSymbol,
-        direction: 'LONG',
-      });
+    dispatchCurrentActivatingSeat({
+      deps,
+      monitorSymbol: deps.tradingConfig.monitor.monitorSymbol,
+      direction: 'LONG',
+    });
 
-      dispatchCurrentActivatingSeat({
-        deps,
-        monitorSymbol: monitorConfig.monitorSymbol,
-        direction: 'SHORT',
-      });
-    }
+    dispatchCurrentActivatingSeat({
+      deps,
+      monitorSymbol: deps.tradingConfig.monitor.monitorSymbol,
+      direction: 'SHORT',
+    });
   }
 
   function start(): void {

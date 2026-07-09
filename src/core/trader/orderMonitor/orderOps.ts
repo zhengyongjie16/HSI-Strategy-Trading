@@ -185,6 +185,7 @@ function resolveAttachedTrackedOrder(
 export function createOrderOps(deps: OrderOpsDeps): OrderOps {
   const {
     runtime,
+    monitorConfig,
     ctx,
     rateLimiter,
     cacheManager,
@@ -213,9 +214,13 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       monitorSymbol,
       isProtectiveLiquidation,
       orderType,
-      liquidationTriggerLimit,
-      liquidationCooldownConfig,
     } = params;
+    if (monitorSymbol !== monitorConfig.monitorSymbol) {
+      throw new Error(
+        `[订单监控] trackOrder 收到不匹配的 monitorSymbol=${monitorSymbol}，期望=${monitorConfig.monitorSymbol}`,
+      );
+    }
+
     resetOrderReplaceRuntimeState(runtime, orderId);
     const now = Date.now();
     const submittedAt =
@@ -230,8 +235,8 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       isLongSymbol,
       monitorSymbol,
       isProtectiveLiquidation,
-      liquidationTriggerLimit: liquidationTriggerLimit ?? 1,
-      liquidationCooldownConfig: liquidationCooldownConfig ?? null,
+      liquidationTriggerLimit: monitorConfig.liquidationTriggerLimit,
+      liquidationCooldownConfig: monitorConfig.liquidationCooldown,
       orderType,
       submittedPrice: price,
       initialSubmittedPrice,

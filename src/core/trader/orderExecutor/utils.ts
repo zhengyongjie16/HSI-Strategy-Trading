@@ -21,7 +21,6 @@ export function getActionDescription(signalAction: Signal['action']): string {
 
 /**
  * 将配置中的订单类型字符串转换为 Longbridge 订单类型枚举。
- * 默认行为：未知值回退为 ELO。
  *
  * @param typeConfig 订单类型配置
  * @returns Longbridge 订单类型枚举
@@ -41,7 +40,7 @@ export function getOrderTypeFromConfig(typeConfig: OrderTypeConfig): OrderType {
     }
 
     default: {
-      return OrderType.ELO;
+      throw new Error(`[OrderExecutor] 未知订单类型配置: ${String(typeConfig)}`);
     }
   }
 }
@@ -102,19 +101,14 @@ export function resolveOrderSide(action: Signal['action']): OrderSide | null {
 
 /**
  * 构造买入频率限制键。
- * 默认行为：缺少 monitorSymbol 时仅按方向键区分。
  *
  * @param signalAction 信号动作
  * @param monitorConfig 监控配置
  * @returns 频率限制键
  */
-export function buildBuyTimeKey(
-  signalAction: string,
-  monitorConfig?: MonitorConfig | null,
-): string {
+export function buildBuyTimeKey(signalAction: string, monitorConfig: MonitorConfig): string {
   const direction: 'LONG' | 'SHORT' = signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
-  const monitorSymbol = monitorConfig?.monitorSymbol ?? '';
-  return monitorSymbol ? `${monitorSymbol}:${direction}` : direction;
+  return `${monitorConfig.monitorSymbol}:${direction}`;
 }
 
 /**

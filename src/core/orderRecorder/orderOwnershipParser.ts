@@ -75,27 +75,25 @@ function parseOrderOwnership(
 }
 
 /**
- * 在多监控标的场景下解析订单归属
- * 根据订单 stockName 与各监控的 orderOwnershipMapping 匹配，判断属于哪一监控标的及多空方向。
+ * 在单监控标的场景下解析订单归属。
+ * 根据订单 stockName 与唯一监控配置的 orderOwnershipMapping 匹配，判断多空方向并回填 monitorSymbol。
  * @param order 原始 API 订单（含 stockName）
- * @param monitors 监控配置列表，每项含 monitorSymbol 与 orderOwnershipMapping
+ * @param monitor 唯一监控配置
  * @returns 归属结果（monitorSymbol + direction），无法匹配时返回 null
  */
 export function resolveOrderOwnership(
   order: RawOrderFromAPI,
-  monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+  monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
 ): OrderOwnership | null {
-  for (const monitor of monitors) {
-    const direction = parseOrderOwnership(order.stockName, monitor.orderOwnershipMapping);
-    if (direction) {
-      return {
-        monitorSymbol: monitor.monitorSymbol,
-        direction,
-      };
-    }
+  const direction = parseOrderOwnership(order.stockName, monitor.orderOwnershipMapping);
+  if (direction === null) {
+    return null;
   }
 
-  return null;
+  return {
+    monitorSymbol: monitor.monitorSymbol,
+    direction,
+  };
 }
 
 /**

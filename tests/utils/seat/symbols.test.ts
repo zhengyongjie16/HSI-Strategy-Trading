@@ -58,9 +58,11 @@ describe('seat symbol helpers', () => {
         frozenTradingDayKey: null,
       },
     });
-    const monitors = [createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' })];
+    const monitor = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
 
-    expect(collectBoundSeatSymbols({ monitors, symbolRegistry: registry })).toEqual([
+    expect(
+      collectBoundSeatSymbols({ monitorSymbol: monitor.monitorSymbol, symbolRegistry: registry }),
+    ).toEqual([
       { monitorSymbol: 'HSI.HK', direction: 'LONG', symbol: 'BULL.HK' },
       { monitorSymbol: 'HSI.HK', direction: 'SHORT', symbol: 'BEAR.HK' },
     ]);

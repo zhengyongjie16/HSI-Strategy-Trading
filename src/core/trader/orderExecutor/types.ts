@@ -15,7 +15,7 @@ export type SubmitTargetOrder = (
   signal: Signal,
   targetSymbol: string,
   isShortSymbol: boolean,
-  monitorConfig?: MonitorConfig | null,
+  monitorConfig: MonitorConfig,
 ) => Promise<string | null>;
 
 /**
@@ -31,10 +31,7 @@ export type SubmitTargetOrderDeps = {
   readonly orderRecorder: OrderRecorder;
   readonly globalConfig: GlobalConfig;
   readonly canExecuteSignal: (signal: Signal, stage: string) => boolean;
-  readonly recordBuyAttempt: (
-    signalAction: SignalType,
-    monitorConfig?: MonitorConfig | null,
-  ) => void;
+  readonly recordBuyAttempt: (signalAction: SignalType, monitorConfig: MonitorConfig) => void;
 };
 
 /**
@@ -44,9 +41,9 @@ export type SubmitTargetOrderDeps = {
  * 使用范围：仅 orderExecutor 目录内部使用。
  */
 export interface BuyThrottle {
-  canTradeNow: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => TradeCheckResult;
+  canTradeNow: (signalAction: SignalType, monitorConfig: MonitorConfig) => TradeCheckResult;
   resetBuyThrottle: () => void;
-  recordBuyAttempt: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => void;
+  recordBuyAttempt: (signalAction: SignalType, monitorConfig: MonitorConfig) => void;
 }
 
 /**

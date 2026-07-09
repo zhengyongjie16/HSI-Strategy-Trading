@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 接收 businessEventProgram 提交后的 monitor snapshot 渲染请求
- * - 以 monitorSymbol 为单位执行 single-flight + latest-only collapse
+ * - 对唯一 monitor 执行 single-flight + latest-only collapse
  * - 在 runtime gate 打开时异步读取当前 monitor quote 并交给纯渲染器输出
  */
 import { TRADING } from '../../constants/index.js';
@@ -20,27 +20,27 @@ function isGateOpen(lastState: MonitorDisplayRuntimeDeps['lastState']): boolean 
   return lastState.isTradingEnabled && lastState.canTrade === true;
 }
 
+function requireExpectedMonitorSymbol(
+  actualMonitorSymbol: string,
+  expectedMonitorSymbol: string,
+): void {
+  if (actualMonitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[monitorDisplayRuntime] requestRender monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
+    );
+  }
+}
+
 export function createMonitorDisplayRuntime(
   deps: MonitorDisplayRuntimeDeps,
 ): MonitorDisplayRuntime {
-  const routeStates = new Map<string, MonitorDisplayRouteState>();
+  const routeState: MonitorDisplayRouteState = {
+    inFlight: false,
+    dirty: false,
+    latestMonitorSnapshot: null,
+  };
   const activePromises = new Set<Promise<void>>();
   let running = false;
-
-  function getOrCreateRouteState(monitorSymbol: string): MonitorDisplayRouteState {
-    const existing = routeStates.get(monitorSymbol);
-    if (existing !== undefined) {
-      return existing;
-    }
-
-    const routeState: MonitorDisplayRouteState = {
-      inFlight: false,
-      dirty: false,
-      latestMonitorSnapshot: null,
-    };
-    routeStates.set(monitorSymbol, routeState);
-    return routeState;
-  }
 
   function trackPromise(promise: Promise<void>): void {
     activePromises.add(promise);
@@ -49,11 +49,8 @@ export function createMonitorDisplayRuntime(
     });
   }
 
-  async function processRoute(monitorSymbol: string): Promise<void> {
-    const routeState = routeStates.get(monitorSymbol);
-    if (routeState === undefined) {
-      return;
-    }
+  async function processRoute(): Promise<void> {
+    const monitorSymbol = deps.monitorContext.config.monitorSymbol;
 
     try {
       while (running && routeState.dirty) {
@@ -73,21 +70,12 @@ export function createMonitorDisplayRuntime(
             return;
           }
 
-          const latestRouteState = routeStates.get(monitorSymbol);
-          if (latestRouteState?.dirty === true) {
-            continue;
-          }
-
           const latestSnapshot = routeState.latestMonitorSnapshot;
           if (latestSnapshot === null) {
             return;
           }
 
-          const monitorContext = deps.monitorContexts.get(monitorSymbol);
-          if (monitorContext === undefined) {
-            return;
-          }
-
+          routeState.dirty = false;
           const candlestickSnapshot = deps.marketDataClient.getCandlestickSnapshot(
             monitorSymbol,
             TRADING.CANDLE_PERIOD,
@@ -96,7 +84,7 @@ export function createMonitorDisplayRuntime(
             monitorSymbol,
             monitorSnapshot: latestSnapshot,
             monitorQuote: quotesMap.get(monitorSymbol) ?? null,
-            indicatorProfile: monitorContext.indicatorProfile,
+            indicatorProfile: deps.monitorContext.indicatorProfile,
             klineTimestamp: candlestickSnapshot?.lastBarTimestamp ?? null,
           });
         } catch (error) {
@@ -110,7 +98,7 @@ export function createMonitorDisplayRuntime(
       routeState.inFlight = false;
       if (routeState.dirty && running) {
         routeState.inFlight = true;
-        trackPromise(processRoute(monitorSymbol));
+        trackPromise(processRoute());
       }
     }
   }
@@ -127,7 +115,8 @@ export function createMonitorDisplayRuntime(
       return;
     }
 
-    const routeState = getOrCreateRouteState(params.monitorSymbol);
+    requireExpectedMonitorSymbol(params.monitorSymbol, deps.monitorContext.config.monitorSymbol);
+
     routeState.latestMonitorSnapshot = params.monitorSnapshot;
     routeState.dirty = true;
     if (routeState.inFlight) {
@@ -135,7 +124,7 @@ export function createMonitorDisplayRuntime(
     }
 
     routeState.inFlight = true;
-    trackPromise(processRoute(params.monitorSymbol));
+    trackPromise(processRoute());
   }
 
   async function stopAndDrain(): Promise<void> {
@@ -144,7 +133,8 @@ export function createMonitorDisplayRuntime(
       await Promise.allSettled(activePromises);
     }
 
-    routeStates.clear();
+    routeState.dirty = false;
+    routeState.latestMonitorSnapshot = null;
   }
 
   return {

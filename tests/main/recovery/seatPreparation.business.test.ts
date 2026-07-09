@@ -162,7 +162,7 @@ describe('recovery seat preparation business flow', () => {
 
     let quoteContextCalls = 0;
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -233,7 +233,7 @@ describe('recovery seat preparation business flow', () => {
     const quoteCtx = createQuoteContextMock();
 
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -281,7 +281,7 @@ describe('recovery seat preparation business flow', () => {
     });
 
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -338,7 +338,7 @@ describe('recovery seat preparation business flow', () => {
     let error: unknown = null;
     try {
       await prepareSeatsForRuntime({
-        tradingConfig: createTradingConfig({ monitors: [monitor] }),
+        tradingConfig: createTradingConfig({ monitor }),
         symbolRegistry,
         positions: [],
         orders: [],
@@ -392,7 +392,7 @@ describe('recovery seat preparation business flow', () => {
     let error: unknown = null;
     try {
       await prepareSeatsForRuntime({
-        tradingConfig: createTradingConfig({ monitors: [monitor] }),
+        tradingConfig: createTradingConfig({ monitor }),
         symbolRegistry,
         positions: [],
         orders: [],
@@ -447,7 +447,7 @@ describe('recovery seat preparation business flow', () => {
     });
     const currentTime = new Date('2026-02-16T01:35:00.000Z');
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -525,7 +525,7 @@ describe('recovery seat preparation business flow', () => {
     ]);
 
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -554,7 +554,7 @@ describe('recovery seat preparation business flow', () => {
     seedAutoSearchCandidates(quoteCtx);
 
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -580,7 +580,7 @@ describe('recovery seat preparation business flow', () => {
     seedAutoSearchCandidates(quoteCtx);
 
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -613,7 +613,7 @@ describe('recovery seat preparation business flow', () => {
     seedAutoSearchCandidates(quoteCtx);
 
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],
@@ -693,7 +693,7 @@ describe('recovery seat preparation business flow', () => {
     ]);
 
     const prepared = await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitor] }),
+      tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
       orders: [],

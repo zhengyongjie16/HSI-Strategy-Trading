@@ -125,6 +125,80 @@ function createOrdinarySignalTradingConfig(): ReturnType<typeof createTradingCon
 }
 
 describe('businessEventProgram business flow', () => {
+  it('ignores candlestick events from foreign monitor symbols', async () => {
+    let listener: (event: CandlestickUpdatedEvent) => void = (_event: CandlestickUpdatedEvent) => {
+      throw new Error('expected candlestick listener');
+    };
+    const marketDataClient = requireCandlestickEventClient(
+      createMarketDataClientDouble({
+        getCandlestickSnapshot: () => ({
+          symbol: 'HSI.HK',
+          period: Period.Min_1,
+          version: 7,
+          candles: createCandles(90, 120, 0.2),
+          lastBarTimestamp: 1_708_005_340_000,
+          lastBarConfirmed: true,
+          initialized: true,
+        }),
+        getQuotes: async () => {
+          throw new Error('businessEventProgram must not read realtime quotes');
+        },
+        onCandlestickUpdated: (nextListener) => {
+          listener = nextListener;
+          return () => {
+            listener = (_event: CandlestickUpdatedEvent) => {
+              throw new Error('candlestick listener already unsubscribed');
+            };
+          };
+        },
+      }),
+    );
+    const monitorContext = createMonitorContext();
+    const { indicatorCache, pushes } = createIndicatorCacheRecorder();
+    const renderRequests: Array<{
+      readonly monitorSymbol: string;
+      readonly monitorSnapshot: IndicatorSnapshot;
+    }> = [];
+    const program = createBusinessEventProgram({
+      marketDataClient,
+      monitorContext,
+      lastState: createLastState(),
+      tradingConfig: createOrdinarySignalTradingConfig(),
+      buyTaskQueue: createBuyTaskQueue(),
+      sellTaskQueue: createSellTaskQueue(),
+      indicatorCache,
+      monitorDisplayRuntime: {
+        requestRender: (params: {
+          readonly monitorSymbol: string;
+          readonly monitorSnapshot: IndicatorSnapshot;
+        }) => {
+          renderRequests.push(params);
+        },
+      },
+    });
+
+    try {
+      program.start();
+      const snapshot = marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
+      if (snapshot === null) {
+        throw new Error('expected candlestick snapshot');
+      }
+
+      listener({
+        symbol: 'TECH.HK',
+        period: Period.Min_1,
+        snapshot,
+      });
+
+      await Bun.sleep(20);
+      expect(monitorContext.state.lastMonitorSnapshot).toBeNull();
+      expect(pushes).toEqual([]);
+      expect(renderRequests).toEqual([]);
+    } finally {
+      await program.stopAndDrain();
+    }
+  });
+
   it('does not clean existing direction tasks when ordinary signal projection sees empty seat', async () => {
     let listener: (event: CandlestickUpdatedEvent) => void = (_event: CandlestickUpdatedEvent) => {
       throw new Error('expected candlestick listener');
@@ -180,7 +254,7 @@ describe('businessEventProgram business flow', () => {
     });
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: createLastState(),
       tradingConfig: createOrdinarySignalTradingConfig(),
       buyTaskQueue,
@@ -249,7 +323,7 @@ describe('businessEventProgram business flow', () => {
 
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: createLastState(),
       tradingConfig: createOrdinarySignalTradingConfig(),
       buyTaskQueue: createBuyTaskQueue(),
@@ -335,7 +409,7 @@ describe('businessEventProgram business flow', () => {
 
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: createLastState(),
       tradingConfig: createOrdinarySignalTradingConfig(),
       buyTaskQueue,
@@ -420,7 +494,7 @@ describe('businessEventProgram business flow', () => {
 
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: createLastState(),
       tradingConfig: createOrdinarySignalTradingConfig(),
       buyTaskQueue: createBuyTaskQueue(),
@@ -483,7 +557,7 @@ describe('businessEventProgram business flow', () => {
 
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: createLastState(),
       tradingConfig: createOrdinarySignalTradingConfig(),
       buyTaskQueue: createBuyTaskQueue(),
@@ -553,7 +627,7 @@ describe('businessEventProgram business flow', () => {
 
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: createLastState(),
       tradingConfig: createOrdinarySignalTradingConfig(),
       buyTaskQueue,
@@ -608,7 +682,7 @@ describe('businessEventProgram business flow', () => {
 
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: createLastState(),
       tradingConfig: createOrdinarySignalTradingConfig(),
       buyTaskQueue,
@@ -707,7 +781,7 @@ describe('businessEventProgram business flow', () => {
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
       monitorTaskQueue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       trader: createTraderDouble(),
       marketDataClient: marketDataClientDouble,
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble({
@@ -725,7 +799,7 @@ describe('businessEventProgram business flow', () => {
     const { indicatorCache } = createIndicatorCacheRecorder();
     const program = createBusinessEventProgram({
       marketDataClient,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState,
       tradingConfig,
       buyTaskQueue: createBuyTaskQueue(),
@@ -786,6 +860,81 @@ describe('businessEventProgram business flow', () => {
       await program.stopAndDrain();
       await monitorTaskProcessor.stopAndDrain();
       seatActivationDispatcher.stop();
+    }
+  });
+
+  it('exposes route failures through fatal drain and stops later candlestick processing', async () => {
+    let listener: (event: CandlestickUpdatedEvent) => void = (_event: CandlestickUpdatedEvent) => {
+      throw new Error('expected candlestick listener');
+    };
+    const marketDataClient = requireCandlestickEventClient(
+      createMarketDataClientDouble({
+        getCandlestickSnapshot: () => ({
+          symbol: 'HSI.HK',
+          period: Period.Min_1,
+          version: 7,
+          candles: createCandles(90, 120, 0.2),
+          lastBarTimestamp: 1_708_005_340_000,
+          lastBarConfirmed: true,
+          initialized: true,
+        }),
+        onCandlestickUpdated: (nextListener) => {
+          listener = nextListener;
+          return () => {};
+        },
+      }),
+    );
+    const monitorContext = createMonitorContext({
+      strategy: createStrategyDouble({
+        generateSignals: () => {
+          throw new TypeError('ordinary route contract broken');
+        },
+      }),
+    });
+    const renderRequests: IndicatorSnapshot[] = [];
+    const program = createBusinessEventProgram({
+      marketDataClient,
+      monitorContext,
+      lastState: createLastState(),
+      tradingConfig: createOrdinarySignalTradingConfig(),
+      buyTaskQueue: createBuyTaskQueue(),
+      sellTaskQueue: createSellTaskQueue(),
+      indicatorCache: createIndicatorCacheRecorder().indicatorCache,
+      monitorDisplayRuntime: {
+        requestRender: (params) => {
+          renderRequests.push(params.monitorSnapshot);
+        },
+      },
+    });
+
+    try {
+      program.start();
+      const fatalPromise = program.drainFatalError().catch((error: unknown) => error);
+      const snapshot = marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
+      if (snapshot === null) {
+        throw new Error('expected candlestick snapshot');
+      }
+
+      listener({
+        symbol: 'HSI.HK',
+        period: Period.Min_1,
+        snapshot,
+      });
+
+      const fatalError = await fatalPromise;
+      expect(fatalError).toBeInstanceOf(TypeError);
+      expect((fatalError as Error).message).toContain('ordinary route contract broken');
+      expect(renderRequests).toHaveLength(1);
+
+      listener({
+        symbol: 'HSI.HK',
+        period: Period.Min_1,
+        snapshot: { ...snapshot, version: 8 },
+      });
+      await Bun.sleep(20);
+      expect(renderRequests).toHaveLength(1);
+    } finally {
+      await program.stopAndDrain();
     }
   });
 });

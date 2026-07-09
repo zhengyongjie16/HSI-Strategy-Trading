@@ -582,14 +582,14 @@ export function createDailyLossOrderAnalysisDeps(): OrderDailyLossAnalysisDeps {
  * 解析订单归属。
  * 通过 orderRecorder 公共边界暴露归属分析能力，避免调用方直接引用内部实现文件。
  * @param order 原始订单
- * @param monitors 监控配置列表
+ * @param monitor 唯一监控配置
  * @returns 订单归属，无法解析时返回 null
  */
 export function resolveOrderOwnership(
   order: RawOrderFromAPI,
-  monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+  monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
 ): OrderOwnership | null {
-  return orderOwnershipParser.resolveOrderOwnership(order, monitors);
+  return orderOwnershipParser.resolveOrderOwnership(order, monitor);
 }
 
 /**

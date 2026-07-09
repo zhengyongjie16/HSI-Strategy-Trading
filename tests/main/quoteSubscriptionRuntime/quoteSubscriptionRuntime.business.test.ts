@@ -30,7 +30,13 @@ function createLastState(): LastState {
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorStates: new Map(),
+    monitorState: {
+      monitorSymbol: 'HSI.HK',
+      signal: null,
+      pendingDelayedSignals: [],
+      lastMonitorSnapshot: null,
+      incrementalIndicatorRuntime: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -71,7 +77,7 @@ describe('QuoteSubscriptionRuntime', () => {
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
     });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     lastState.cachedPositions = [
       createPositionDouble({ symbol: 'POS.HK', quantity: 100, availableQuantity: 100 }),
@@ -80,7 +86,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async (symbols) => {
@@ -107,13 +113,13 @@ describe('QuoteSubscriptionRuntime', () => {
 
   it('启动后按 order hold 事件动态增删订阅', async () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async (symbols) => {
@@ -149,12 +155,12 @@ describe('QuoteSubscriptionRuntime', () => {
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
     });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async () => {},
@@ -188,13 +194,13 @@ describe('QuoteSubscriptionRuntime', () => {
 
   it('临时 retain 完成 admission，释放后才允许退订', async () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async (symbols) => {
@@ -223,13 +229,13 @@ describe('QuoteSubscriptionRuntime', () => {
 
   it('retain release mutation 失败会进入 fatal drain', async () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const releaseError = new Error('unsubscribe failed');
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async () => {},
@@ -261,12 +267,12 @@ describe('QuoteSubscriptionRuntime', () => {
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
     });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async (symbols) => {
@@ -297,13 +303,13 @@ describe('QuoteSubscriptionRuntime', () => {
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
     });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async (symbols) => {
@@ -331,14 +337,14 @@ describe('QuoteSubscriptionRuntime', () => {
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
     });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     lastState.allTradingSymbols = new Set(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async (symbols) => {
@@ -365,13 +371,13 @@ describe('QuoteSubscriptionRuntime', () => {
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
     });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscriptionError = new Error('subscribe failed');
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
         subscribeSymbols: async (symbols) => {

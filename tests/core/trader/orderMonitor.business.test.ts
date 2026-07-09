@@ -320,19 +320,14 @@ function createDeps(params?: {
     });
 
   const baseConfig = createTradingConfig();
-  const baseMonitor = baseConfig.monitors[0];
-  if (!baseMonitor) {
-    throw new Error('missing monitor config for orderMonitor test');
-  }
+  const baseMonitor = baseConfig.monitor;
 
   const tradingConfig = createTradingConfig({
-    monitors: [
-      {
-        ...baseMonitor,
-        orderOwnershipMapping: ['HSI'],
-        liquidationTriggerLimit: params?.liquidationTriggerLimit ?? 1,
-      },
-    ],
+    monitor: {
+      ...baseMonitor,
+      orderOwnershipMapping: ['HSI'],
+      liquidationTriggerLimit: params?.liquidationTriggerLimit ?? 1,
+    },
     global: {
       ...baseConfig.global,
       buyOrderTimeout: {
@@ -1039,7 +1034,6 @@ describe('orderMonitor business flow', () => {
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
       orderType: OrderType.ELO,
-      liquidationTriggerLimit: 3,
     });
     await flushMicrotasks();
 
@@ -1476,7 +1470,7 @@ describe('orderMonitor business flow', () => {
             status: OrderStatus.New,
           }),
         ]),
-      /终态已确认但结算失败/,
+      /不匹配但权威终态存在成交事实/,
     );
 
     expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);

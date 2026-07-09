@@ -3,16 +3,16 @@
  *
  * 功能：
  * - 启动时读取当日成交日志
- * - 按监控标的方向收集保护性清仓完成事件并模拟触发周期
+ * - 按唯一监控标的方向收集保护性清仓完成事件并模拟触发周期
  * - 恢复触发计数器与仍有效的清仓冷却缓存
  */
 import type { TradeLogHydrator, TradeLogHydratorDeps, RawRecord } from './types.js';
 import type { TradeRecord } from '../../types/trader.js';
+import { TRADING } from '../../constants/index.js';
 import { isRecord } from '../../utils/helpers/index.js';
 import { buildTradeLogPath } from '../../utils/trading/tradeLogPath.js';
 import {
   buildCooldownKey,
-  collectLiquidationRecordsByMonitor,
   resolveCooldownEndMs,
   resolveRemainingCooldownMs,
   simulateTriggerCycle,
@@ -55,6 +55,100 @@ function normalizeTradeRecord(raw: unknown): TradeRecord | null {
   return record;
 }
 
+function isValidIsoTimestamp(value: string | null): boolean {
+  if (value === null) {
+    return false;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed);
+}
+
+function resolveProtectiveDirection(action: string | null): 'LONG' | 'SHORT' {
+  if (action === 'SELLCALL') {
+    return 'LONG';
+  }
+
+  if (action === 'SELLPUT') {
+    return 'SHORT';
+  }
+
+  throw new Error(`[清仓冷却] 保护性清仓完成记录 action 无法解析方向: ${String(action)}`);
+}
+
+function assertProtectiveCompletionRecord(
+  record: TradeRecord,
+  expectedMonitorSymbol: string,
+): {
+  readonly monitorSymbol: string;
+  readonly direction: 'LONG' | 'SHORT';
+  readonly executedAtMs: number;
+} {
+  if (record.monitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[清仓冷却] 保护性清仓完成记录 monitorSymbol 不匹配唯一配置: ` +
+        `${String(record.monitorSymbol)} !== ${expectedMonitorSymbol}`,
+    );
+  }
+
+  if (!isValidIsoTimestamp(record.executedAt)) {
+    throw new Error('[清仓冷却] 保护性清仓完成记录 executedAt 无效');
+  }
+
+  if (record.executedAtMs === null || !Number.isFinite(record.executedAtMs)) {
+    throw new Error('[清仓冷却] 保护性清仓完成记录 executedAtMs 无效');
+  }
+
+  return {
+    monitorSymbol: record.monitorSymbol,
+    direction: resolveProtectiveDirection(record.action),
+    executedAtMs: record.executedAtMs,
+  };
+}
+
+function collectStrictProtectiveRecords(params: {
+  readonly tradeRecords: ReadonlyArray<TradeRecord>;
+  readonly expectedMonitorSymbol: string;
+}): ReadonlyMap<
+  string,
+  ReadonlyArray<{
+    readonly monitorSymbol: string;
+    readonly direction: 'LONG' | 'SHORT';
+    readonly executedAtMs: number;
+  }>
+> {
+  const grouped = new Map<
+    string,
+    Array<{
+      readonly monitorSymbol: string;
+      readonly direction: 'LONG' | 'SHORT';
+      readonly executedAtMs: number;
+    }>
+  >();
+
+  for (const record of params.tradeRecords) {
+    if (record.reason !== TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON) {
+      continue;
+    }
+
+    const protectiveRecord = assertProtectiveCompletionRecord(record, params.expectedMonitorSymbol);
+    const key = buildCooldownKey(protectiveRecord.monitorSymbol, protectiveRecord.direction);
+    const existing = grouped.get(key);
+    if (existing !== undefined) {
+      existing.push(protectiveRecord);
+      continue;
+    }
+
+    grouped.set(key, [protectiveRecord]);
+  }
+
+  for (const records of grouped.values()) {
+    records.sort((left, right) => left.executedAtMs - right.executedAtMs);
+  }
+
+  return grouped;
+}
+
 /**
  * 创建交易日志冷却恢复器，绑定文件读取、冷却追踪器等依赖，对外暴露 hydrate 方法。
  * @param deps - 依赖（日志目录解析、liquidationCooldownTracker 等）
@@ -70,13 +164,10 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
     tradingConfig,
     liquidationCooldownTracker,
   } = deps;
-
-  const monitorConfigMap = new Map(
-    tradingConfig.monitors.map((config) => [config.monitorSymbol, config]),
-  );
+  const monitorConfig = tradingConfig.monitor;
 
   /**
-   * 读取当日成交日志，按监控标的方向模拟触发-冷却周期并恢复当前状态。
+   * 读取当日成交日志，按唯一监控标的方向模拟触发-冷却周期并恢复当前状态。
    * 启动时调用一次，用于跨进程重启后恢复触发计数器和未到期冷却。
    */
   function hydrate(): ReadonlyMap<string, number> {
@@ -92,31 +183,28 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
     try {
       const content = readFileSync(logFile, 'utf8');
       parsed = JSON.parse(content);
-    } catch (err) {
-      logger.error('[清仓冷却] 成交日志解析失败，跳过冷却恢复', err);
-      return latestCompletedBoundaryByDirection;
+    } catch (error) {
+      throw new Error(`[清仓冷却] 成交日志解析失败: ${String(error)}`, { cause: error });
     }
 
     if (!Array.isArray(parsed)) {
-      logger.warn('[清仓冷却] 成交日志格式无效，跳过冷却恢复');
-      return latestCompletedBoundaryByDirection;
+      throw new TypeError('[清仓冷却] 成交日志根节点必须为数组');
     }
 
     const records: TradeRecord[] = [];
-    for (const item of parsed) {
+    for (const [index, item] of parsed.entries()) {
       const normalized = normalizeTradeRecord(item);
       if (!normalized) {
-        continue;
+        throw new TypeError(`[清仓冷却] 第 ${index + 1} 条成交日志记录结构非法`);
       }
 
       records.push(normalized);
     }
 
     let restoredCooldownCount = 0;
-    const monitorSymbols = new Set(tradingConfig.monitors.map((config) => config.monitorSymbol));
-    const groupedRecords = collectLiquidationRecordsByMonitor({
-      monitorSymbols,
+    const groupedRecords = collectStrictProtectiveRecords({
       tradeRecords: records,
+      expectedMonitorSymbol: monitorConfig.monitorSymbol,
     });
 
     for (const recordGroup of groupedRecords.values()) {
@@ -133,13 +221,12 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
         );
       }
 
-      const monitorConfig = monitorConfigMap.get(firstRecord.monitorSymbol) ?? null;
-      const cooldownConfig = monitorConfig?.liquidationCooldown ?? null;
+      const cooldownConfig = monitorConfig.liquidationCooldown;
       if (!cooldownConfig) {
         continue;
       }
 
-      const triggerLimit = monitorConfig?.liquidationTriggerLimit ?? 1;
+      const triggerLimit = monitorConfig.liquidationTriggerLimit;
       const cycleResult = simulateTriggerCycle({
         records: recordGroup,
         triggerLimit,

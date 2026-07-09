@@ -14,7 +14,7 @@ import { getDoomsdayBuyCutoffWindowRangeLabel } from '../doomsdayProtection/util
 import { getSymbolName } from './utils.js';
 import type { Quote } from '../../types/quote.js';
 import type { Signal } from '../../types/signal.js';
-import type { LiquidationCooldownConfig, MultiMonitorTradingConfig } from '../../types/config.js';
+import type { LiquidationCooldownConfig, TradingConfig } from '../../types/config.js';
 import type { RiskCheckContext } from '../../types/services.js';
 import type { LiquidationCooldownTracker } from '../../services/liquidationCooldown/types.js';
 
@@ -85,7 +85,7 @@ export const createRiskCheckPipeline = ({
   liquidationCooldownTracker,
   lastRiskCheckTime,
 }: {
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
   readonly lastRiskCheckTime: Map<string, number>;
 }): (<TSignal extends Signal>(

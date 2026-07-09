@@ -9,7 +9,7 @@
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatError } from '../../utils/error/index.js';
-import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import { isUnconfirmedOrderSubmissionError } from '../../utils/apiFailure/index.js';
 import { logger } from '../../utils/logger/index.js';
 import type { Quote } from '../../types/quote.js';
 import type {
@@ -99,7 +99,7 @@ export const createUnrealizedLossMonitor = (
       const executionResult = await trader.executeSignals([liquidationSignal]);
       submittedCount = executionResult.submittedCount;
     } catch (error) {
-      if (isExternalApiRequestError(error) && error.operation === 'TradeContext.submitOrder') {
+      if (isUnconfirmedOrderSubmissionError(error)) {
         throw error;
       }
 

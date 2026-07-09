@@ -2,11 +2,11 @@
  * autoSearchDistance 配置业务测试
  *
  * 功能：
- * - 验证自动寻标距离配置的运行时单位口径与降级区间校验行为。
+ * - 验证单 monitor 自动寻标距离配置的运行时单位口径与降级区间校验行为。
  */
 import { describe, expect, it } from 'bun:test';
 
-import { createMultiMonitorTradingConfig } from '../../src/config/trading/index.js';
+import { createTradingConfig as parseTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
 import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
@@ -15,7 +15,7 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
   return {
     LONGBRIDGE_AUTH_MODE: 'oauth',
     LONGBRIDGE_CLIENT_ID: 'client-id',
-    MONITOR_SYMBOL_1: 'HSI.HK',
+    MONITOR_SYMBOL: 'HSI.HK',
     ...overrides,
   };
 }
@@ -71,9 +71,10 @@ async function validateMonitorConfig(
       env: {
         LONGBRIDGE_AUTH_MODE: 'oauth',
         LONGBRIDGE_CLIENT_ID: 'client-id',
+        MONITOR_SYMBOL: 'HSI.HK',
       },
       tradingConfig: createTradingConfig({
-        monitors: [monitorConfig],
+        monitor: monitorConfig,
       }),
     });
     return true;
@@ -84,24 +85,24 @@ async function validateMonitorConfig(
 
 describe('auto search distance config business flow', () => {
   it('keeps AUTO_SEARCH_MIN_DISTANCE_PCT_* as percent-value runtime units', () => {
-    const config = createMultiMonitorTradingConfig({
+    const config = parseTradingConfig({
       env: createBaseEnv({
-        AUTO_SEARCH_ENABLED_1: 'true',
-        AUTO_SEARCH_MIN_DISTANCE_PCT_BULL_1: '0.35',
-        AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR_1: '-0.35',
-        SWITCH_DISTANCE_RANGE_BULL_1: '0.2,1.5',
-        SWITCH_DISTANCE_RANGE_BEAR_1: '-1.5,-0.2',
+        AUTO_SEARCH_ENABLED: 'true',
+        AUTO_SEARCH_MIN_DISTANCE_PCT_BULL: '0.35',
+        AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR: '-0.35',
+        SWITCH_DISTANCE_RANGE_BULL: '0.2,1.5',
+        SWITCH_DISTANCE_RANGE_BEAR: '-1.5,-0.2',
       }),
     });
 
-    expect(config.monitors[0]?.autoSearchConfig.autoSearchMinDistancePctBull).toBe(0.35);
-    expect(config.monitors[0]?.autoSearchConfig.autoSearchMinDistancePctBear).toBe(-0.35);
-    expect(config.monitors[0]?.autoSearchConfig.switchDistanceRangeBull).toEqual({
+    expect(config.monitor.autoSearchConfig.autoSearchMinDistancePctBull).toBe(0.35);
+    expect(config.monitor.autoSearchConfig.autoSearchMinDistancePctBear).toBe(-0.35);
+    expect(config.monitor.autoSearchConfig.switchDistanceRangeBull).toEqual({
       min: 0.2,
       max: 1.5,
     });
 
-    expect(config.monitors[0]?.autoSearchConfig.switchDistanceRangeBear).toEqual({
+    expect(config.monitor.autoSearchConfig.switchDistanceRangeBear).toEqual({
       min: -1.5,
       max: -0.2,
     });

@@ -11,9 +11,8 @@
  * - 确保同类型任务只保留最新的一个，避免重复处理
  *
  * 使用场景：
- * - 自动换标任务（按 monitorSymbol + direction 去重）
- * - 浮亏检查任务（按 monitorSymbol 去重）
- * - 牛熊证距离检查任务（按 monitorSymbol 去重）
+ * - AUTO_SYMBOL_TICK（调用方通常按 task type + direction 生成 dedupeKey）
+ * - SEAT_REFRESH（调用方按 task type + direction 生成 dedupeKey，并用新 seatVersion 覆盖旧任务）
  */
 import { randomUUID } from 'node:crypto';
 

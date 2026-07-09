@@ -7,7 +7,7 @@
  * - 避免把旧 symbol 的周期换标累计交易时长误带到新 symbol
  */
 import { isSeatActive } from '../../utils/seat/guards.js';
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 
 const seatActivationCarryoverByRegistry = new WeakMap<
@@ -41,7 +41,7 @@ function buildSeatDirectionKey(monitorSymbol: string, direction: 'LONG' | 'SHORT
  * @param params 交易配置与席位注册表
  */
 export function captureSeatActivationCarryover(params: {
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
   readonly symbolRegistry: SymbolRegistry;
 }): void {
   const { tradingConfig, symbolRegistry } = params;
@@ -53,25 +53,20 @@ export function captureSeatActivationCarryover(params: {
       activatedAtMs: number;
     }>
   >();
-  for (const monitorConfig of tradingConfig.monitors) {
-    for (const direction of ['LONG', 'SHORT'] as const) {
-      const seatState = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
-      if (!isSeatActive(seatState)) {
-        continue;
-      }
-
-      if (
-        seatState.lastSeatActivatedAt === null ||
-        !Number.isFinite(seatState.lastSeatActivatedAt)
-      ) {
-        continue;
-      }
-
-      nextSnapshot.set(buildSeatDirectionKey(monitorConfig.monitorSymbol, direction), {
-        symbol: seatState.symbol,
-        activatedAtMs: seatState.lastSeatActivatedAt,
-      });
+  for (const direction of ['LONG', 'SHORT'] as const) {
+    const seatState = symbolRegistry.getSeatState(tradingConfig.monitor.monitorSymbol, direction);
+    if (!isSeatActive(seatState)) {
+      continue;
     }
+
+    if (seatState.lastSeatActivatedAt === null || !Number.isFinite(seatState.lastSeatActivatedAt)) {
+      continue;
+    }
+
+    nextSnapshot.set(buildSeatDirectionKey(tradingConfig.monitor.monitorSymbol, direction), {
+      symbol: seatState.symbol,
+      activatedAtMs: seatState.lastSeatActivatedAt,
+    });
   }
 
   if (nextSnapshot.size === 0 && existingSnapshot !== undefined) {

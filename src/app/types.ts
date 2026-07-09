@@ -7,7 +7,7 @@ import type {
 import type { Position } from '../types/account.js';
 import type { SymbolRegistry } from '../types/seat.js';
 import type { LastState, MonitorContext, MonitorState } from '../types/state.js';
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../types/config.js';
+import type { MonitorConfig, TradingConfig } from '../types/config.js';
 import type { Quote } from '../types/quote.js';
 import type {
   MarketDataClient,
@@ -165,7 +165,7 @@ export type RuntimeValidationCollector = Readonly<{
  * 使用范围：仅 app 运行时标的校验链路使用。
  */
 export type RuntimeValidationCollectionParams = Readonly<{
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   positions: ReadonlyArray<Position>;
 }>;
@@ -201,7 +201,7 @@ export type RunTradingDayOpenRebuildParams = Readonly<{
 /**
  * 监控上下文工厂依赖注入参数。
  * 类型用途：供 createMonitorContext 工厂函数消费，用于构造 MonitorContext。
- * 数据来源：由 app 顶层装配链路在每个 monitor 上下文创建时传入。
+ * 数据来源：由 app 顶层装配链路在唯一 monitorContext 创建时传入。
  * 使用范围：仅 app createMonitorContext 使用。
  */
 export type MonitorContextFactoryDeps = Readonly<{
@@ -243,7 +243,7 @@ export type CleanupContext = Readonly<{
   autoSearchWakeupRuntime: AutoSearchWakeupRuntime;
   postTradeConsistencyRuntime: PostTradeConsistencyRuntime;
   marketDataClient: MarketDataClient;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   indicatorCache: IndicatorCache;
   lastState: LastState;
 }>;
@@ -307,11 +307,11 @@ export type LoadStartupSnapshotParams = Readonly<{
 /**
  * 延迟验证通过后的分流注册参数。
  * 类型用途：封装注册 DelayedSignalVerifier 回调所需的共享状态与队列。
- * 数据来源：由 app 顶层装配在 monitor contexts 创建完成后传入。
+ * 数据来源：由 app 顶层装配在唯一 monitorContext 创建完成后传入。
  * 使用范围：仅 app 延迟验证接线使用。
  */
 export type RegisterDelayedSignalHandlersParams = Readonly<{
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   lastState: LastState;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
@@ -321,14 +321,14 @@ export type RegisterDelayedSignalHandlersParams = Readonly<{
 }>;
 
 /**
- * 批量监控上下文装配参数。
- * 类型用途：封装 createMonitorContexts 所需的 pre/post gate 运行时对象与启动 quotesMap。
+ * 唯一监控上下文装配参数。
+ * 类型用途：封装 createMonitorContext 所需的 pre/post gate 运行时对象与启动 quotesMap。
  * 数据来源：由 app 顶层装配在 startup snapshot 之后组装传入。
- * 使用范围：仅 monitor 批量装配链路使用。
+ * 使用范围：仅唯一 monitorContext 装配链路使用。
  */
-export type CreateMonitorContextsParams = Readonly<{
+export type CreateMonitorContextParams = Readonly<{
   preGateRuntime: PreGateRuntime;
-  postGateRuntime: MutableMonitorContextsPostGateRuntime;
+  postGateRuntime: MonitorContextBootstrapRuntime;
   quotesMap: ReadonlyMap<string, Quote | null> | null;
   strategyFactory?: TradingSignalStrategyFactory;
 }>;
@@ -341,7 +341,7 @@ export type CreateMonitorContextsParams = Readonly<{
  */
 export type PreGateRuntime = Readonly<{
   config: Config;
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   warrantListCache: WarrantListCache;
   warrantListCacheConfig: WarrantListCacheConfig;
@@ -377,11 +377,11 @@ export type PersistableTradeRecord = TradeRecord & {
  * 数据来源：由 createPostGateRuntime 创建。
  * 使用范围：仅 app 顶层装配与后续 runtime 工厂使用。
  */
-type PostGateRuntime = Readonly<{
+export type PostGateRuntime = Readonly<{
   liquidationCooldownTracker: LiquidationCooldownTracker;
   dailyLossTracker: DailyLossTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   tradingGateEventRuntime: TradingGateEventRuntime;
   quoteSubscriptionRuntime: QuoteSubscriptionRuntime;
   seatActivationDispatcher: SeatActivationDispatcher;
@@ -411,14 +411,17 @@ type PostGateRuntime = Readonly<{
 }>;
 
 /**
- * post-gate runtime 的可变监控上下文注册态。
- * 类型用途：仅在 app 装配阶段暴露 monitorContexts 的写能力，其余运行时消费方保持只读视图。
- * 数据来源：由 createPostGateRuntime 创建，并在 createMonitorContexts 阶段短暂使用。
- * 使用范围：仅 app 顶层装配链路使用。
+ * monitorContext 启动装配所需的最小 post-gate 运行时切片。
+ * 类型用途：允许在完整 runtime 组装完毕前先创建唯一 monitorContext，并通过工厂返回值收敛到单上下文装配链路。
+ * 数据来源：由 createPostGateRuntime 在内部装配点按需组装。
+ * 使用范围：仅 createMonitorContext 使用。
  */
-export type MutableMonitorContextsPostGateRuntime = Omit<PostGateRuntime, 'monitorContexts'> & {
-  readonly monitorContexts: Map<string, MonitorContext>;
-};
+export type MonitorContextBootstrapRuntime = Readonly<{
+  readonly trader: Trader;
+  readonly dailyLossTracker: DailyLossTracker;
+  readonly indicatorCache: IndicatorCache;
+  readonly lastState: LastState;
+}>;
 
 /**
  * 异步运行时对象。
@@ -470,12 +473,12 @@ export type PostTradeConsistencyRuntimeDeps = Readonly<{
 
 /**
  * 成交后一致性运行时业务依赖。
- * 类型用途：在 monitor contexts 与风控跟踪器完成装配后，为 PostTradeConsistencyRuntime 绑定成交后业务刷新所需协作者。
- * 数据来源：由 app 顶层 runApp 在 monitor contexts 装配完成后、任何 start 前显式注入。
+ * 类型用途：在唯一 monitorContext 与风控跟踪器完成装配后，为 PostTradeConsistencyRuntime 绑定成交后业务刷新所需协作者。
+ * 数据来源：由 app 顶层 runApp 在唯一 monitorContext 装配完成后、任何 start 前显式注入。
  * 使用范围：仅成交后一致性运行时与 app 装配层使用。
  */
 export type PostTradeConsistencyRuntimeBusinessDeps = Readonly<{
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   dailyLossTracker: DailyLossTracker;
   liquidationCooldownTracker: LiquidationCooldownTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
@@ -526,14 +529,11 @@ export type LifecycleRuntimeFactoryDeps = Readonly<{
  */
 export type RunAppDeps = Readonly<{
   createPreGateRuntime: (params: AppEnvironmentParams) => Promise<PreGateRuntime>;
-  createPostGateRuntime: (
-    params: CreatePostGateRuntimeParams,
-  ) => Promise<MutableMonitorContextsPostGateRuntime>;
+  createPostGateRuntime: (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime>;
   loadStartupSnapshot: (params: LoadStartupSnapshotParams) => Promise<StartupSnapshotResult>;
   collectRuntimeValidationSymbols: (
     params: RuntimeValidationCollectionParams,
   ) => RuntimeValidationCollector;
-  createMonitorContexts: (params: CreateMonitorContextsParams) => void;
   createRebuildTradingDayState: (
     deps: RebuildTradingDayStateDeps,
   ) => (params: RebuildTradingDayStateParams) => Promise<void>;

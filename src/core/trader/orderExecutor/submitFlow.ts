@@ -8,7 +8,6 @@
  */
 import { OrderSide, OrderType, TimeInForceType, type TradeContext } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
-import { TRADING } from '../../../constants/index.js';
 import {
   isExternalApiRequestError,
   wrapExternalApiRequest,
@@ -114,7 +113,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       remark,
       overridePrice,
       isShortSymbol,
-      monitorConfig = null,
+      monitorConfig,
       relatedBuyOrderIds = null,
     } = params;
 
@@ -187,11 +186,9 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           initialSubmittedPrice: resolvedPrice ?? 0,
           quantity: submittedQuantityNum,
           isLongSymbol,
-          monitorSymbol: monitorConfig?.monitorSymbol ?? null,
+          monitorSymbol: monitorConfig.monitorSymbol,
           isProtectiveLiquidation,
           orderType: orderTypeParam,
-          liquidationTriggerLimit: monitorConfig?.liquidationTriggerLimit ?? 1,
-          liquidationCooldownConfig: monitorConfig?.liquidationCooldown ?? null,
         });
 
         const sellRelatedBuyOrderIds = relatedBuyOrderIds ?? signal.relatedBuyOrderIds ?? null;
@@ -243,7 +240,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     signal: Signal,
     targetSymbol: string,
     isShortSymbol: boolean,
-    monitorConfig: MonitorConfig | null = null,
+    monitorConfig: MonitorConfig,
   ): Promise<string | null> {
     if (!signal.symbol || typeof signal.symbol !== 'string') {
       logger.error(`[订单提交] 信号缺少有效的标的代码: ${JSON.stringify(signal)}`);
@@ -260,7 +257,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       return null;
     }
 
-    const targetNotional = monitorConfig?.targetNotional ?? TRADING.DEFAULT_TARGET_NOTIONAL;
+    const targetNotional = monitorConfig.targetNotional;
     const orderType = resolveOrderType(signal);
     const timeInForce = TimeInForceType.Day;
     const isProtectiveLiquidation = isLiquidationSignal(signal);

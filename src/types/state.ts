@@ -23,7 +23,7 @@ type CachedLastStateTradingDayInfo = Readonly<{
 
 /**
  * 单个监控标的的运行时状态。
- * 类型用途：承载单监控标的的信号、待延迟验证信号、指标快照等，在事件驱动信号链路中持续更新，作为 MonitorContext.state、LastState.monitorStates 的值类型。
+ * 类型用途：承载唯一监控标的的信号、待延迟验证信号、指标快照等，在事件驱动信号链路中持续更新，作为 MonitorContext.state、LastState.monitorState。
  * 数据来源：业务事件链路根据行情与策略输出更新。
  * 使用范围：LastState、MonitorContext、signal pipeline 等；全项目可引用。
  */
@@ -51,7 +51,7 @@ export type MonitorState = {
 
 /**
  * 系统全局状态。
- * 类型用途：聚合可交易标志、半日市、账户/持仓缓存、各监控标的状态等，供时间唤醒评估、业务事件链路、异步处理器与生命周期域使用。
+ * 类型用途：聚合可交易标志、半日市、账户/持仓缓存、唯一监控标的状态等，供时间唤醒评估、业务事件链路、异步处理器与生命周期域使用。
  * 数据来源：启动快照、生命周期域、timeWakeupEvaluationProgram、businessEventProgram 与异步处理器共同维护。
  * 使用范围：timeWakeupEvaluationProgram、MonitorContext、RiskCheckContext、买卖处理器等；全项目可引用。
  */
@@ -99,8 +99,8 @@ export type LastState = {
   /** 交易日历快照（YYYY-MM-DD -> 是否交易日/半日市） */
   tradingCalendarSnapshot?: ReadonlyMap<string, TradingDayInfo>;
 
-  /** 各监控标的状态（monitorSymbol -> MonitorState） */
-  readonly monitorStates: ReadonlyMap<string, MonitorState>;
+  /** 唯一监控标的状态 */
+  readonly monitorState: MonitorState;
 
   /** 订阅标的集合（运行时动态维护） */
   allTradingSymbols: ReadonlySet<string>;

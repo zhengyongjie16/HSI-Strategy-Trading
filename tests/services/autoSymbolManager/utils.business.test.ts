@@ -22,12 +22,12 @@ import {
 
 describe('autoSymbolManager utils business flow', () => {
   it('atomically updates seat state and version before publishing events', () => {
-    const symbolRegistry = createSymbolRegistry([
+    const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
-    ]);
+    );
     const observed: Array<{
       readonly eventKind: 'version' | 'state' | 'truth';
       readonly status: string;
@@ -80,12 +80,12 @@ describe('autoSymbolManager utils business flow', () => {
   });
 
   it('updates seat state without bumping version or publishing version events', () => {
-    const symbolRegistry = createSymbolRegistry([
+    const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
-    ]);
+    );
     const stateEvents: Array<{
       readonly previousVersion: number;
       readonly nextVersion: number;
@@ -154,12 +154,12 @@ describe('autoSymbolManager utils business flow', () => {
   });
 
   it('bumps seat version without publishing state events', () => {
-    const symbolRegistry = createSymbolRegistry([
+    const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
-    ]);
+    );
     const stateEvents: Array<unknown> = [];
     const versionEvents: Array<{
       readonly previousVersion: number;
@@ -230,12 +230,12 @@ describe('autoSymbolManager utils business flow', () => {
     logger.error = ((message: string, extra?: unknown) => {
       errorLogs.push({ message, extra });
     }) satisfies Logger['error'];
-    const symbolRegistry = createSymbolRegistry([
+    const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
-    ]);
+    );
     const events: string[] = [];
     symbolRegistry.onSeatVersionChanged(() => {
       events.push('version:first');
@@ -314,12 +314,12 @@ describe('autoSymbolManager utils business flow', () => {
     logger.error = ((message: string, extra?: unknown) => {
       errorLogs.push({ message, extra });
     }) satisfies Logger['error'];
-    const symbolRegistry = createSymbolRegistry([
+    const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
-    ]);
+    );
 
     symbolRegistry.onSeatStateChanged(() => {
       throw new Error('state listener failed');
@@ -365,12 +365,12 @@ describe('autoSymbolManager utils business flow', () => {
     logger.error = ((message: string, extra?: unknown) => {
       errorLogs.push({ message, extra });
     }) satisfies Logger['error'];
-    const symbolRegistry = createSymbolRegistry([
+    const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
-    ]);
+    );
 
     symbolRegistry.onSeatVersionChanged(() => {
       throw new Error('version listener failed');

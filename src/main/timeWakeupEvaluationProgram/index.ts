@@ -5,7 +5,10 @@
  */
 import { DOOMSDAY, TIME, TRADING } from '../../constants/index.js';
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
-import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import {
+  isExternalApiRequestError,
+  isUnconfirmedOrderSubmissionError,
+} from '../../utils/apiFailure/index.js';
 import { logger } from '../../utils/logger/index.js';
 import {
   getHKDateKey,
@@ -23,26 +26,21 @@ import type { TimeWakeupEvaluationContext, TimeWakeupEvaluationResult } from './
 const takeoverStateByLastState = new WeakMap<TimeWakeupEvaluationContext['lastState'], boolean>();
 
 /**
- * 取消所有 monitor 的普通延迟验证信号。
+ * 取消唯一监控标的的普通延迟验证信号。
  *
- * @param monitorContexts 监控上下文集合
+ * @param monitorContext 监控上下文
  * @returns 取消的信号总数
  */
 function cancelAllDelayedSignals(
-  monitorContexts: TimeWakeupEvaluationContext['monitorContexts'],
+  monitorContext: TimeWakeupEvaluationContext['monitorContext'],
 ): number {
-  let totalCancelled = 0;
-  for (const [monitorSymbol, monitorContext] of monitorContexts) {
-    const pendingCount = monitorContext.delayedSignalVerifier.getPendingCount();
-    if (pendingCount <= 0) {
-      continue;
-    }
-
-    monitorContext.delayedSignalVerifier.cancelAllForSymbol(monitorSymbol);
-    totalCancelled += pendingCount;
+  const pendingCount = monitorContext.delayedSignalVerifier.getPendingCount();
+  if (pendingCount <= 0) {
+    return 0;
   }
 
-  return totalCancelled;
+  monitorContext.delayedSignalVerifier.cancelAllForSymbol(monitorContext.config.monitorSymbol);
+  return pendingCount;
 }
 
 function createEvaluationResult(
@@ -230,7 +228,7 @@ export async function timeWakeupEvaluationProgram({
   lastState,
   doomsdayProtection,
   tradingConfig,
-  monitorContexts,
+  monitorContext,
   tradingGateEventRuntime,
   quoteSubscriptionRuntime,
   dayLifecycleManager,
@@ -359,7 +357,7 @@ export async function timeWakeupEvaluationProgram({
       logger.info(`进入连续交易时段${isHalfDayToday ? '（半日交易）' : ''}，开始正常交易。`);
     } else if (isTradingDayToday) {
       logger.info('当前为竞价或非连续交易时段，连续交易门禁关闭。');
-      const totalCancelled = cancelAllDelayedSignals(monitorContexts);
+      const totalCancelled = cancelAllDelayedSignals(monitorContext);
       if (totalCancelled > 0) {
         logger.info(`[交易时段结束] 已清理 ${totalCancelled} 个待验证信号`);
       }
@@ -413,7 +411,7 @@ export async function timeWakeupEvaluationProgram({
     tradingConfig.global.doomsdayProtection &&
     isWithinDoomsdayClearanceTakeoverWindow(currentTime, isHalfDayToday);
   if (!previousTakeoverActive && doomsdayTakeoverActive) {
-    const totalCancelled = cancelAllDelayedSignals(monitorContexts);
+    const totalCancelled = cancelAllDelayedSignals(monitorContext);
     if (totalCancelled > 0) {
       logger.info(`[清仓接管] 已清理 ${totalCancelled} 个普通待验证信号`);
     }
@@ -437,8 +435,7 @@ export async function timeWakeupEvaluationProgram({
       const cancelResult = await doomsdayProtection.cancelPendingBuyOrders({
         currentTime,
         isHalfDay: isHalfDayToday,
-        monitorConfigs: tradingConfig.monitors,
-        monitorContexts,
+        monitorContext,
         trader,
       });
       pushFutureCandidate(candidates, 'DOOMSDAY_RETRY', cancelResult.nextRetryAtMs, currentMs);
@@ -452,8 +449,7 @@ export async function timeWakeupEvaluationProgram({
         currentTime,
         isHalfDay: isHalfDayToday,
         positions,
-        monitorConfigs: tradingConfig.monitors,
-        monitorContexts,
+        monitorContext,
         trader,
         marketDataClient,
         lastState,
@@ -473,7 +469,7 @@ export async function timeWakeupEvaluationProgram({
         throw error;
       }
 
-      if (error.operation === 'TradeContext.submitOrder') {
+      if (isUnconfirmedOrderSubmissionError(error)) {
         try {
           await refreshDoomsdayApiFailureFacts({
             trader,

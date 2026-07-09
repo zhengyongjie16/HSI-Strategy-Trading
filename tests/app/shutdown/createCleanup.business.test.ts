@@ -16,21 +16,16 @@ describe('cleanup business flow', () => {
   it('drains processors, destroys delayed verifiers and releases monitor snapshots', async () => {
     const steps: string[] = [];
     const monitorState = createMonitorState('HSI.HK');
-    const monitorContexts = new Map([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          delayedSignalVerifier: createDelayedSignalVerifierDouble({
-            destroy: () => {
-              steps.push('destroyVerifier');
-            },
-          }),
-        }),
-      ],
-    ]);
-    const lastState = createLastState(new Map([['HSI.HK', monitorState]]));
+    const monitorContext = createMonitorContextDouble({
+      delayedSignalVerifier: createDelayedSignalVerifierDouble({
+        destroy: () => {
+          steps.push('destroyVerifier');
+        },
+      }),
+    });
+    const lastState = createLastState(monitorState);
 
-    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContexts, lastState }));
+    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContext, lastState }));
 
     await cleanup.execute();
 
@@ -64,21 +59,16 @@ describe('cleanup business flow', () => {
     const steps: string[] = [];
     const monitorState = createMonitorState('HSI.HK');
     const detachedSnapshot = monitorState.lastMonitorSnapshot;
-    const monitorContexts = new Map([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          delayedSignalVerifier: createDelayedSignalVerifierDouble({
-            destroy: () => {
-              steps.push('destroyVerifier');
-            },
-          }),
-        }),
-      ],
-    ]);
-    const lastState = createLastState(new Map([['HSI.HK', monitorState]]));
+    const monitorContext = createMonitorContextDouble({
+      delayedSignalVerifier: createDelayedSignalVerifierDouble({
+        destroy: () => {
+          steps.push('destroyVerifier');
+        },
+      }),
+    });
+    const lastState = createLastState(monitorState);
 
-    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContexts, lastState }));
+    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContext, lastState }));
 
     await cleanup.execute();
 
@@ -119,23 +109,18 @@ describe('cleanup business flow', () => {
   it('continues remaining cleanup steps and throws aggregate error when one step fails', async () => {
     const steps: string[] = [];
     const monitorState = createMonitorState('HSI.HK');
-    const monitorContexts = new Map([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          delayedSignalVerifier: createDelayedSignalVerifierDouble({
-            destroy: () => {
-              steps.push('destroyVerifier');
-            },
-          }),
-        }),
-      ],
-    ]);
-    const lastState = createLastState(new Map([['HSI.HK', monitorState]]));
+    const monitorContext = createMonitorContextDouble({
+      delayedSignalVerifier: createDelayedSignalVerifierDouble({
+        destroy: () => {
+          steps.push('destroyVerifier');
+        },
+      }),
+    });
+    const lastState = createLastState(monitorState);
 
     const cleanup = createCleanup(
       createCleanupDeps(steps, {
-        monitorContexts,
+        monitorContext,
         lastState,
         buyProcessor: {
           start: () => {},
@@ -185,7 +170,7 @@ describe('cleanup business flow', () => {
 
   it('closes trading gate before draining processors during cleanup', async () => {
     const steps: string[] = [];
-    const lastState = createLastState(new Map());
+    const lastState = createLastState(createMonitorState('HSI.HK'));
     const cleanup = createCleanup(
       createCleanupDeps(steps, {
         lastState,

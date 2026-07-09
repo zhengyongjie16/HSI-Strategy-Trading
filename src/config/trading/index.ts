@@ -1,17 +1,10 @@
 /**
  * trading 配置模块。
  *
- * 负责扫描多监控标的配置，解析 monitor/global 两级交易配置，
- * 并保持原有 fail-fast 行为与默认值语义不变。
+ * 负责解析唯一 monitor/global 两级交易配置。
  */
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../../types/config.js';
-import { TRADING } from '../../constants/index.js';
-import {
-  createConfigValidationError,
-  getBooleanConfig,
-  getNumberConfig,
-  getStringConfig,
-} from '../utils.js';
+import type { TradingConfig } from '../../types/config.js';
+import { createConfigValidationError, getBooleanConfig, getNumberConfig } from '../utils.js';
 import {
   parseFailFastBoundedNumberConfig,
   parseMonitorConfig,
@@ -19,50 +12,14 @@ import {
 } from './utils.js';
 
 /**
- * 解析所有监控标的配置，自动扫描 MONITOR_SYMBOL_1..N 并强制索引连续。
+ * 解析唯一监控标的配置。
  * @param params.env 进程环境变量对象
- * @returns 多监控标的交易配置
+ * @returns 单 monitor 交易配置
  */
-export function createMultiMonitorTradingConfig({
-  env,
-}: {
-  env: NodeJS.ProcessEnv;
-}): MultiMonitorTradingConfig {
-  const monitors: MonitorConfig[] = [];
-  const configuredMonitorIndexes: number[] = [];
-
-  for (let i = 1; i <= TRADING.MAX_MONITOR_SCAN_RANGE; i++) {
-    const monitorSymbol = getStringConfig(env, `MONITOR_SYMBOL_${i}`);
-    if (!monitorSymbol) {
-      continue;
-    }
-
-    configuredMonitorIndexes.push(i);
-  }
-
-  if (configuredMonitorIndexes.length > 0) {
-    const configuredMonitorSet = new Set(configuredMonitorIndexes);
-    const highestConfiguredIndex = configuredMonitorIndexes.at(-1) ?? 0;
-    for (let i = 1; i <= highestConfiguredIndex; i++) {
-      if (!configuredMonitorSet.has(i)) {
-        throw createConfigValidationError(
-          `[配置错误] MONITOR_SYMBOL_${i} 未配置（监控标的索引必须连续，不允许断档）`,
-          [`MONITOR_SYMBOL_${i}`],
-        );
-      }
-    }
-
-    for (let i = 1; i <= highestConfiguredIndex; i++) {
-      const config = parseMonitorConfig(env, i);
-      if (!config) {
-        throw createConfigValidationError(
-          `[配置错误] MONITOR_SYMBOL_${i} 未配置（监控标的索引必须连续）`,
-          [`MONITOR_SYMBOL_${i}`],
-        );
-      }
-
-      monitors.push(config);
-    }
+export function createTradingConfig({ env }: { env: NodeJS.ProcessEnv }): TradingConfig {
+  const monitor = parseMonitorConfig(env);
+  if (monitor === null) {
+    throw createConfigValidationError('[配置错误] MONITOR_SYMBOL 未配置', ['MONITOR_SYMBOL']);
   }
 
   const buyOrderTimeoutEnabled = getBooleanConfig(env, 'BUY_ORDER_TIMEOUT_ENABLED', true);
@@ -121,7 +78,7 @@ export function createMultiMonitorTradingConfig({
   const liquidationOrderType = parseTradingOrderType(env, 'LIQUIDATION_ORDER_TYPE', 'MO');
 
   return {
-    monitors,
+    monitor,
     global: {
       doomsdayProtection: getBooleanConfig(env, 'DOOMSDAY_PROTECTION', true),
       debug: getBooleanConfig(env, 'DEBUG', false),

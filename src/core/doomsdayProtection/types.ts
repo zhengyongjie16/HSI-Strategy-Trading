@@ -1,5 +1,4 @@
 import type { Position } from '../../types/account.js';
-import type { MonitorConfig } from '../../types/config.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { SellSignalAction } from '../../types/signal.js';
 import type { Trader, MarketDataClient } from '../../types/services.js';
@@ -30,8 +29,7 @@ export type DoomsdayClearanceContext = {
   readonly currentTime: Date;
   readonly isHalfDay: boolean;
   readonly positions: ReadonlyArray<Position>;
-  readonly monitorConfigs: ReadonlyArray<MonitorConfig>;
-  readonly monitorContexts: ReadonlyMap<string, MonitorContext>;
+  readonly monitorContext: MonitorContext;
   readonly trader: Trader;
   readonly marketDataClient: MarketDataClient;
   readonly lastState: LastState;
@@ -59,8 +57,7 @@ export type DoomsdayClearanceResult = {
 export type CancelPendingBuyOrdersContext = {
   readonly currentTime: Date;
   readonly isHalfDay: boolean;
-  readonly monitorConfigs: ReadonlyArray<MonitorConfig>;
-  readonly monitorContexts: ReadonlyMap<string, MonitorContext>;
+  readonly monitorContext: MonitorContext;
   readonly trader: Trader;
 };
 

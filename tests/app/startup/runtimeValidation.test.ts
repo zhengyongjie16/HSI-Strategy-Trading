@@ -7,18 +7,16 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { collectRuntimeValidationSymbols } from '../../../src/app/startup/runtimeValidation.js';
-import type { MultiMonitorTradingConfig } from '../../../src/types/config.js';
+import type { TradingConfig } from '../../../src/types/config.js';
 import {
   createMonitorConfigDouble,
   createPositionDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 
-function createTradingConfig(
-  monitors: MultiMonitorTradingConfig['monitors'],
-): MultiMonitorTradingConfig {
+function createTradingConfig(monitor: TradingConfig['monitor']): TradingConfig {
   return {
-    monitors,
+    monitor,
     global: {
       doomsdayProtection: true,
       debug: false,
@@ -50,9 +48,8 @@ function createTradingConfig(
 
 describe('app runtimeValidation', () => {
   it('deduplicates monitor, seat and position symbols while keeping required seat symbols', () => {
-    const tradingConfig = createTradingConfig([
+    const tradingConfig = createTradingConfig(
       createMonitorConfigDouble({
-        originalIndex: 1,
         monitorSymbol: 'HSI.HK',
         autoSearchConfig: {
           autoSearchEnabled: false,
@@ -67,7 +64,7 @@ describe('app runtimeValidation', () => {
           switchDistanceRangeBear: null,
         },
       }),
-    ]);
+    );
     const symbolRegistry = createSymbolRegistryDouble({
       monitorSymbol: 'HSI.HK',
       longSeat: {
@@ -110,19 +107,19 @@ describe('app runtimeValidation', () => {
     expect(collector.runtimeValidationInputs).toEqual([
       {
         symbol: 'HSI.HK',
-        label: '监控标的 1',
+        label: '监控标的',
         requireLotSize: false,
         required: true,
       },
       {
         symbol: 'BULL.HK',
-        label: '做多席位标的 1',
+        label: '做多席位标的',
         requireLotSize: true,
         required: true,
       },
       {
         symbol: 'BEAR.HK',
-        label: '做空席位标的 1',
+        label: '做空席位标的',
         requireLotSize: true,
         required: true,
       },
@@ -137,9 +134,8 @@ describe('app runtimeValidation', () => {
   });
 
   it('marks seat symbols as optional when auto search is enabled', () => {
-    const tradingConfig = createTradingConfig([
+    const tradingConfig = createTradingConfig(
       createMonitorConfigDouble({
-        originalIndex: 2,
         monitorSymbol: 'HSCEI.HK',
         autoSearchConfig: {
           autoSearchEnabled: true,
@@ -160,7 +156,7 @@ describe('app runtimeValidation', () => {
           },
         },
       }),
-    ]);
+    );
     const symbolRegistry = createSymbolRegistryDouble({
       monitorSymbol: 'HSCEI.HK',
     });
@@ -173,14 +169,14 @@ describe('app runtimeValidation', () => {
 
     expect(collector.runtimeValidationInputs[1]).toEqual({
       symbol: 'BULL.HK',
-      label: '做多席位标的 2',
+      label: '做多席位标的',
       requireLotSize: true,
       required: false,
     });
 
     expect(collector.runtimeValidationInputs[2]).toEqual({
       symbol: 'BEAR.HK',
-      label: '做空席位标的 2',
+      label: '做空席位标的',
       requireLotSize: true,
       required: false,
     });

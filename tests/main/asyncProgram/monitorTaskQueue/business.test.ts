@@ -37,7 +37,7 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
         monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
@@ -46,7 +46,7 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
         monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 2,
@@ -65,8 +65,8 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'A',
-        monitorSymbol: 'A',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -74,8 +74,8 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'B',
-        monitorSymbol: 'B',
+        dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
+        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),
@@ -83,16 +83,16 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'C',
-        monitorSymbol: 'C',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG:3',
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 3,
       }),
     );
 
-    expect(queue.pop()?.monitorSymbol).toBe('A');
-    expect(queue.pop()?.monitorSymbol).toBe('B');
-    expect(queue.pop()?.monitorSymbol).toBe('C');
+    expect(queue.pop()?.dedupeKey).toBe('AUTO_SYMBOL_TICK:LONG:1');
+    expect(queue.pop()?.dedupeKey).toBe('AUTO_SYMBOL_TICK:SHORT:2');
+    expect(queue.pop()?.dedupeKey).toBe('AUTO_SYMBOL_TICK:LONG:3');
     expect(queue.isEmpty()).toBeTrue();
   });
 
@@ -106,7 +106,7 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest({
       type: 'SEAT_REFRESH',
-      dedupeKey: 'HSI.HK:SEAT_REFRESH',
+      dedupeKey: 'SEAT_REFRESH:LONG',
       monitorSymbol: 'HSI.HK',
       data: {
         monitorSymbol: 'HSI.HK',
@@ -121,7 +121,7 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest({
       type: 'SEAT_REFRESH',
-      dedupeKey: 'HSI.HK:SEAT_REFRESH',
+      dedupeKey: 'SEAT_REFRESH:LONG',
       monitorSymbol: 'HSI.HK',
       data: {
         monitorSymbol: 'HSI.HK',
@@ -138,7 +138,7 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest({
       type: 'SEAT_REFRESH',
-      dedupeKey: 'HSI.HK:SEAT_REFRESH:2',
+      dedupeKey: 'SEAT_REFRESH:LONG:2',
       monitorSymbol: 'HSI.HK',
       data: {
         monitorSymbol: 'HSI.HK',
@@ -159,8 +159,8 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'A',
-        monitorSymbol: 'A',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -168,31 +168,31 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'B',
-        monitorSymbol: 'B',
+        dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
+        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),
     );
 
-    const removedSymbols: string[] = [];
+    const removedKeys: string[] = [];
     const removed = queue.removeTasks(
-      (task) => task.monitorSymbol === 'A',
+      (task) => task.data.direction === 'LONG',
       (task) => {
-        removedSymbols.push(task.monitorSymbol);
+        removedKeys.push(task.dedupeKey);
       },
     );
 
     expect(removed).toBe(1);
-    expect(removedSymbols).toEqual(['A']);
+    expect(removedKeys).toEqual(['AUTO_SYMBOL_TICK:LONG:1']);
 
-    const clearedSymbols: string[] = [];
+    const clearedKeys: string[] = [];
     const cleared = queue.clearAll((task) => {
-      clearedSymbols.push(task.monitorSymbol);
+      clearedKeys.push(task.dedupeKey);
     });
 
     expect(cleared).toBe(1);
-    expect(clearedSymbols).toEqual(['B']);
+    expect(clearedKeys).toEqual(['AUTO_SYMBOL_TICK:SHORT:2']);
     expect(queue.isEmpty()).toBeTrue();
   });
 
@@ -201,8 +201,8 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'A',
-        monitorSymbol: 'A',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -210,17 +210,17 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'B',
-        monitorSymbol: 'B',
+        dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
+        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),
     );
 
-    const removed = queue.removeTasks((task) => task.dedupeKey === 'A');
+    const removed = queue.removeTasks((task) => task.dedupeKey === 'AUTO_SYMBOL_TICK:LONG:1');
 
     expect(removed).toBe(1);
-    expect(queue.pop()?.dedupeKey).toBe('B');
+    expect(queue.pop()?.dedupeKey).toBe('AUTO_SYMBOL_TICK:SHORT:2');
     expect(queue.pop()).toBeNull();
     expect(queue.isEmpty()).toBeTrue();
   });
@@ -230,8 +230,8 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'A',
-        monitorSymbol: 'A',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
+        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -239,14 +239,14 @@ describe('monitorTaskQueue business behavior', () => {
 
     queue.scheduleLatest(
       createAutoSymbolTickTask({
-        dedupeKey: 'B',
-        monitorSymbol: 'B',
+        dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
+        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),
     );
 
-    expect(queue.pop()?.dedupeKey).toBe('A');
+    expect(queue.pop()?.dedupeKey).toBe('AUTO_SYMBOL_TICK:LONG:1');
 
     const clearedKeys: string[] = [];
     const cleared = queue.clearAll((task) => {
@@ -254,7 +254,7 @@ describe('monitorTaskQueue business behavior', () => {
     });
 
     expect(cleared).toBe(1);
-    expect(clearedKeys).toEqual(['B']);
+    expect(clearedKeys).toEqual(['AUTO_SYMBOL_TICK:SHORT:2']);
     expect(queue.isEmpty()).toBeTrue();
   });
 });

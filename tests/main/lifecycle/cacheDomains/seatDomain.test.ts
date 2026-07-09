@@ -10,7 +10,7 @@ import {
   clearSeatActivationCarryover,
   resolveSeatActivationCarryover,
 } from '../../../../src/main/lifecycle/seatActivationCarryover.js';
-import type { MultiMonitorTradingConfig } from '../../../../src/types/config.js';
+import type { TradingConfig } from '../../../../src/types/config.js';
 import type { SeatState, SymbolRegistry } from '../../../../src/types/seat.js';
 import type { MonitorContext } from '../../../../src/types/state.js';
 import type { WarrantListCache } from '../../../../src/services/autoSymbolFinder/types.js';
@@ -60,30 +60,23 @@ describe('createSeatDomain', () => {
       nextState: SeatState;
     }> = [];
     const bumpCalls: Array<{ monitorSymbol: string; direction: string }> = [];
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: { monitorSymbol: 'HSI.HK' },
-          seatState: { long: emptySeatState, short: emptySeatState },
-          seatVersion: { long: 1, short: 1 },
-          autoSymbolManager: {
-            getPeriodicSwitchPendingState: () => ({
-              pending: false,
-              pendingSinceMs: null,
-            }),
-            resetAllState: () => {
-              resetAllStateCount += 1;
-            },
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
-    const tradingConfig: MultiMonitorTradingConfig = {
-      monitors: [
-        { monitorSymbol: 'HSI.HK' } as unknown as MultiMonitorTradingConfig['monitors'][0],
-      ],
-      global: {} as MultiMonitorTradingConfig['global'],
+    const monitorContext = {
+      config: { monitorSymbol: 'HSI.HK' },
+      seatState: { long: emptySeatState, short: emptySeatState },
+      seatVersion: { long: 1, short: 1 },
+      autoSymbolManager: {
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {
+          resetAllStateCount += 1;
+        },
+      },
+    } as unknown as MonitorContext;
+    const tradingConfig: TradingConfig = {
+      monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
+      global: {} as TradingConfig['global'],
     };
     const symbolRegistry: SymbolRegistry = {
       getSeatState: (_monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
@@ -126,7 +119,7 @@ describe('createSeatDomain', () => {
     const domain = createSeatDomain({
       tradingConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       warrantListCache,
     });
 
@@ -193,28 +186,21 @@ describe('createSeatDomain', () => {
       status: 'ACTIVE',
       lastSeatActivatedAt: 310,
     };
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: { monitorSymbol: 'HSI.HK' },
-          seatState: { long: emptySeatState, short: emptySeatState },
-          seatVersion: { long: 1, short: 1 },
-          autoSymbolManager: {
-            getPeriodicSwitchPendingState: () => ({
-              pending: false,
-              pendingSinceMs: null,
-            }),
-            resetAllState: () => {},
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
-    const tradingConfig: MultiMonitorTradingConfig = {
-      monitors: [
-        { monitorSymbol: 'HSI.HK' } as unknown as MultiMonitorTradingConfig['monitors'][0],
-      ],
-      global: {} as MultiMonitorTradingConfig['global'],
+    const monitorContext = {
+      config: { monitorSymbol: 'HSI.HK' },
+      seatState: { long: emptySeatState, short: emptySeatState },
+      seatVersion: { long: 1, short: 1 },
+      autoSymbolManager: {
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    } as unknown as MonitorContext;
+    const tradingConfig: TradingConfig = {
+      monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
+      global: {} as TradingConfig['global'],
     };
     const symbolRegistry: SymbolRegistry = {
       getSeatState: (_monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
@@ -249,7 +235,7 @@ describe('createSeatDomain', () => {
     const domain = createSeatDomain({
       tradingConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       warrantListCache,
     });
 
@@ -300,28 +286,21 @@ describe('createSeatDomain', () => {
       status: 'ACTIVE',
       lastSeatActivatedAt: 310,
     };
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: { monitorSymbol: 'HSI.HK' },
-          seatState: { long: emptySeatState, short: emptySeatState },
-          seatVersion: { long: 1, short: 1 },
-          autoSymbolManager: {
-            getPeriodicSwitchPendingState: () => ({
-              pending: false,
-              pendingSinceMs: null,
-            }),
-            resetAllState: () => {},
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
-    const tradingConfig: MultiMonitorTradingConfig = {
-      monitors: [
-        { monitorSymbol: 'HSI.HK' } as unknown as MultiMonitorTradingConfig['monitors'][0],
-      ],
-      global: {} as MultiMonitorTradingConfig['global'],
+    const monitorContext = {
+      config: { monitorSymbol: 'HSI.HK' },
+      seatState: { long: emptySeatState, short: emptySeatState },
+      seatVersion: { long: 1, short: 1 },
+      autoSymbolManager: {
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    } as unknown as MonitorContext;
+    const tradingConfig: TradingConfig = {
+      monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
+      global: {} as TradingConfig['global'],
     };
     const symbolRegistry: SymbolRegistry = {
       getSeatState: (_monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
@@ -342,7 +321,7 @@ describe('createSeatDomain', () => {
     const domain = createSeatDomain({
       tradingConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       warrantListCache,
     });
 
@@ -378,8 +357,22 @@ describe('createSeatDomain', () => {
   });
 
   it('openRebuild 为空操作，不抛错', async () => {
-    const monitorContexts = new Map<string, MonitorContext>();
-    const tradingConfig = { monitors: [], global: {} } as unknown as MultiMonitorTradingConfig;
+    const monitorContext = {
+      config: { monitorSymbol: 'HSI.HK' },
+      seatState: { long: emptySeatState, short: emptySeatState },
+      seatVersion: { long: 1, short: 1 },
+      autoSymbolManager: {
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    } as unknown as MonitorContext;
+    const tradingConfig = {
+      monitor: { monitorSymbol: 'HSI.HK' },
+      global: {},
+    } as unknown as TradingConfig;
     const symbolRegistry = {
       getSeatState: () => emptySeatState,
       getSeatVersion: () => 0,
@@ -391,7 +384,7 @@ describe('createSeatDomain', () => {
     const domain = createSeatDomain({
       tradingConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       warrantListCache,
     });
     await domain.openRebuild({

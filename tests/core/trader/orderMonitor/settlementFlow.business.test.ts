@@ -142,7 +142,7 @@ describe('settlementFlow business flow', () => {
     expect('closeSyncQueue' in runtime).toBe(false);
   });
 
-  it('settles partially-filled canceled sell with quantity fallback and records a post-trade refresh need', () => {
+  it('settles partially-filled canceled sell with recovered quantity and records a post-trade refresh need', () => {
     const runtime = createRuntime();
     const orderStateEvents: OrderStateChangedEvent[] = [];
     const buyOrders: ReadonlyArray<OrderRecord> = [
@@ -361,6 +361,48 @@ describe('settlementFlow business flow', () => {
 
     expect(result.handled).toBe(false);
     expect(runtime.closedOrderIds.has('BUY-PARTIAL-MISSING-ATTR')).toBe(false);
+  });
+
+  it('rejects settlement when executed close lacks monitor attribution', () => {
+    const runtime = createRuntime();
+    const refreshNeeds: Array<{
+      readonly refreshAccount: boolean;
+      readonly refreshPositions: boolean;
+    }> = [];
+    const orderStateEvents: OrderStateChangedEvent[] = [];
+    const settlementFlow = createSettlementFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: (need) => {
+          refreshNeeds.push(need);
+        },
+      },
+      emitOrderStateChanged: (event) => {
+        orderStateEvents.push(event);
+      },
+    });
+
+    const result = settlementFlow.settleOrder({
+      orderId: 'SELL-PROTECTIVE-MISSING-MONITOR',
+      closedReason: 'FILLED',
+      source: 'WS',
+      symbol: 'BULL.HK',
+      side: 'SELL',
+      isLongSymbol: true,
+      isProtectiveLiquidation: true,
+      executedPrice: 1.02,
+      executedQuantity: 100,
+      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+    });
+
+    expect(result.handled).toBe(false);
+    expect(runtime.closedOrderIds.has('SELL-PROTECTIVE-MISSING-MONITOR')).toBe(false);
+    expect(refreshNeeds).toEqual([]);
+    expect(orderStateEvents).toEqual([]);
   });
 
   it('records original liquidation symbol when protective sell settlement updates episode progress', () => {

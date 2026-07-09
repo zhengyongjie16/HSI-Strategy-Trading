@@ -56,9 +56,6 @@ export const HK_DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** 交易相关常量 */
 export const TRADING = {
-  /** 默认目标金额（港币），单次开仓的目标市值 */
-  DEFAULT_TARGET_NOTIONAL: 5000,
-
   /** K线周期，用于订阅和获取实时K线数据 */
   CANDLE_PERIOD: Period.Min_1,
 
@@ -67,9 +64,6 @@ export const TRADING = {
 
   /** 时间唤醒评估异常后的恢复重试间隔（毫秒） */
   INTERVAL_MS: 1000,
-
-  /** 监控标的最大扫描范围（从 _1 扫描到 _100） */
-  MAX_MONITOR_SCAN_RANGE: 100,
 
   /** 默认订单备注（提交订单时写入，便于排查） */
   DEFAULT_ORDER_REMARK: 'QuantDemo',
@@ -108,8 +102,8 @@ export const LIFECYCLE = {
   /** 交易日历预热向前看天数（需求窗口右边界） */
   CALENDAR_PREWARM_LOOKAHEAD_DAYS: 7,
 
-  /** 交易日历预热无仍持仓时回退回看天数 */
-  CALENDAR_PREWARM_FALLBACK_LOOKBACK_DAYS: 14,
+  /** 交易日历预热无仍持仓时的默认回看天数 */
+  CALENDAR_PREWARM_DEFAULT_LOOKBACK_DAYS: 14,
 
   /** 交易日历接口最大回看天数（超出则抛错阻断重建） */
   CALENDAR_API_MAX_LOOKBACK_DAYS: 365,

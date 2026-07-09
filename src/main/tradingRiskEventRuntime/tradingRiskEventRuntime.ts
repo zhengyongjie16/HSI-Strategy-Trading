@@ -9,7 +9,10 @@
  */
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
-import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import {
+  isExternalApiRequestError,
+  isUnconfirmedOrderSubmissionError,
+} from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
 import { logger } from '../../utils/logger/index.js';
@@ -36,6 +39,10 @@ function createRouteExecutionState(): RouteExecutionState {
     latestRoute: null,
     latestEvent: null,
   };
+}
+
+function shouldExposeRouteProcessingError(error: unknown): boolean {
+  return !isExternalApiRequestError(error) || isUnconfirmedOrderSubmissionError(error);
 }
 
 /**
@@ -102,6 +109,18 @@ export function createTradingRiskEventRuntime(
     return fatalError;
   }
 
+  function enterRoutingIndexFatal(error: unknown): void {
+    const fatalError = recordRoutingIndexFatal(error);
+    running = false;
+    unsubscribeQuoteUpdated?.();
+    unsubscribeQuoteUpdated = null;
+    unsubscribeSeatTruthChanged?.();
+    unsubscribeSeatTruthChanged = null;
+    routeStates.clear();
+    logger.error('[TradingRiskEventRuntime] 路由索引进入 fatal 状态', formatError(fatalError));
+    deps.onFatalError?.(fatalError);
+  }
+
   /**
    * 基于当前 SymbolRegistry 权威快照同步刷新路由索引缓存。
    *
@@ -110,7 +129,7 @@ export function createTradingRiskEventRuntime(
   function refreshRoutingIndex(): TradingRiskRoutingIndex {
     try {
       const routingIndex = buildTradingRiskRoutingIndex({
-        monitorContexts: deps.monitorContexts,
+        monitorContext: deps.monitorContext,
         symbolRegistry: deps.symbolRegistry,
       });
       cachedRoutingIndex = routingIndex;
@@ -172,7 +191,7 @@ export function createTradingRiskEventRuntime(
   function launchRouteProcessing(routeKey: string): void {
     const processingPromise = processRouteQueue(routeKey).catch((error: unknown) => {
       logger.error('[TradingRiskEventRuntime] 风险事件处理失败', formatError(error));
-      if (!isExternalApiRequestError(error)) {
+      if (shouldExposeRouteProcessingError(error)) {
         deps.onFatalError?.(error);
       }
     });
@@ -194,7 +213,7 @@ export function createTradingRiskEventRuntime(
     try {
       refreshRoutingIndex();
     } catch (error) {
-      logger.error('[TradingRiskEventRuntime] 路由索引进入 fatal 状态', formatError(error));
+      enterRoutingIndexFatal(error);
     }
   }
 

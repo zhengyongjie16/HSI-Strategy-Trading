@@ -21,7 +21,10 @@ import {
   logProcessorTaskFailure,
 } from '../utils.js';
 import { logger } from '../../../utils/logger/index.js';
-import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
+import {
+  isExternalApiRequestError,
+  isUnconfirmedOrderSubmissionError,
+} from '../../../utils/apiFailure/index.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
 import {
   describeSignalSeatValidationFailure,
@@ -34,22 +37,35 @@ import type { RiskCheckContext } from '../../../types/services.js';
 import type { BuySignal } from '../../../types/signal.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 
+function requireExpectedMonitorSymbol(
+  expectedMonitorSymbol: string,
+  actualMonitorSymbol: string,
+): string {
+  if (actualMonitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[BuyProcessor] task.monitorSymbol 不匹配唯一监控标的: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
+    );
+  }
+
+  return expectedMonitorSymbol;
+}
+
 /**
  * 创建买入处理器。
  * 消费 BuyTaskQueue 中的买入任务，执行风险检查后提交订单；与卖出处理器分离，避免买入侧 API 风险检查阻塞卖出执行。
  * 信号处理语义：
  * - 非买入信号（配置或调用错误）仅记录告警并视为已处理，不影响队列
- * - 无监控上下文时记录告警并结束本次处理；基础处理器会直接丢弃该队列任务，不保留待重试状态
+ * - task.monitorSymbol 与唯一监控标的不一致时直接抛错进入 fatal 通道
  * - 席位未就绪、席位版本不匹配或席位标的已切换时，仅记录信息日志并安全丢弃信号
  * - 风险检查拦截、行情缺失或 lotSize 无效等场景下，会记录原因并跳过下单，同样视为"正常完成但不下单"，调用方无需重试
  *
- * @param deps 依赖注入（任务队列、getMonitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getLastState、getIsHalfDay、可选 getCanProcessTask）
+ * @param deps 依赖注入（任务队列、唯一 monitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getLastState、getIsHalfDay、可选 getCanProcessTask）
  * @returns 实现 Processor 接口的买入处理器实例（start/stop/stopAndDrain/restart）
  */
 export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
   const {
     taskQueue,
-    getMonitorContext,
+    monitorContext,
     signalProcessor,
     trader,
     marketDataClient,
@@ -59,6 +75,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     getCanProcessTask,
     onFatalError,
   } = deps;
+  const expectedMonitorSymbol = monitorContext.config.monitorSymbol;
 
   /**
    * 处理单个买入任务
@@ -66,18 +83,10 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
    */
   async function processTask(task: Task<BuyTaskType>): Promise<void> {
     const signal = task.data;
-    const monitorSymbol = task.monitorSymbol;
+    const monitorSymbol = requireExpectedMonitorSymbol(expectedMonitorSymbol, task.monitorSymbol);
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
     try {
-      // 获取监控上下文
-      const ctx = getMonitorContext(monitorSymbol);
-      if (!ctx) {
-        logger.warn(
-          `[BuyProcessor] 无法获取监控上下文: ${formatSymbolDisplay(monitorSymbol, null)}`,
-        );
-        return;
-      }
-
+      const ctx = monitorContext;
       const { config, state, orderRecorder, riskChecker } = ctx;
       const isLongSignal = signal.action === 'BUYCALL';
       const seatValidation = validateSignalSeat({
@@ -222,7 +231,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         throw err;
       }
 
-      if (err.operation === 'TradeContext.submitOrder') {
+      if (isUnconfirmedOrderSubmissionError(err)) {
         throw err;
       }
 
@@ -234,6 +243,9 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     loggerPrefix: 'BuyProcessor',
     taskQueue,
     processTask,
+    validateTask: (task) => {
+      requireExpectedMonitorSymbol(expectedMonitorSymbol, task.monitorSymbol);
+    },
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
     ...(onFatalError ? { onFatalError } : {}),
   });

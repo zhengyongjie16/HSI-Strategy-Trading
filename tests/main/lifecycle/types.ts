@@ -13,7 +13,7 @@ export type ProtectiveOrderParams = Readonly<{
   readonly quantity: number;
   readonly executedPrice: number;
   readonly executedQuantity: number;
-  readonly updatedAtMs: number;
+  readonly updatedAtMs?: number;
 }>;
 
 /**

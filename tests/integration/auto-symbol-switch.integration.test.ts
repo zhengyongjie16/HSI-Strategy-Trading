@@ -280,7 +280,7 @@ describe('auto-symbol-switch integration', () => {
     );
 
     const tradingConfig = createTradingConfig({
-      monitors: [monitorConfig],
+      monitor: monitorConfig,
     });
 
     const orderRecorder = createOrderRecorderDouble({

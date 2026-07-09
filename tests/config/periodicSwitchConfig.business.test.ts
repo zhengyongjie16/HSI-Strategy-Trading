@@ -2,11 +2,11 @@
  * periodicSwitch 配置业务测试
  *
  * 功能：
- * - 验证周期换标间隔配置的解析边界与配置校验行为。
+ * - 验证单 monitor 周期换标间隔配置的解析边界与配置校验行为。
  */
 import { describe, expect, it } from 'bun:test';
 
-import { createMultiMonitorTradingConfig } from '../../src/config/trading/index.js';
+import { createTradingConfig as parseTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
 import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
@@ -15,63 +15,63 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
   return {
     LONGBRIDGE_AUTH_MODE: 'oauth',
     LONGBRIDGE_CLIENT_ID: 'client-id',
-    MONITOR_SYMBOL_1: 'HSI.HK',
+    MONITOR_SYMBOL: 'HSI.HK',
     ...overrides,
   };
 }
 
 describe('periodic switch config business flow', () => {
-  it('parses SWITCH_INTERVAL_MINUTES_1 with feature-gated fail-fast rules', () => {
-    const missingConfig = createMultiMonitorTradingConfig({
+  it('parses SWITCH_INTERVAL_MINUTES with feature-gated fail-fast rules', () => {
+    const missingConfig = parseTradingConfig({
       env: createBaseEnv(),
     });
-    expect(missingConfig.monitors[0]?.autoSearchConfig.switchIntervalMinutes).toBe(0);
+    expect(missingConfig.monitor.autoSearchConfig.switchIntervalMinutes).toBe(0);
 
-    const disabledConfig = createMultiMonitorTradingConfig({
+    const disabledConfig = parseTradingConfig({
       env: createBaseEnv({
-        AUTO_SEARCH_ENABLED_1: 'false',
-        SWITCH_INTERVAL_MINUTES_1: '999',
+        AUTO_SEARCH_ENABLED: 'false',
+        SWITCH_INTERVAL_MINUTES: '999',
       }),
     });
-    expect(disabledConfig.monitors[0]?.autoSearchConfig.switchIntervalMinutes).toBe(0);
+    expect(disabledConfig.monitor.autoSearchConfig.switchIntervalMinutes).toBe(0);
 
-    const validConfig = createMultiMonitorTradingConfig({
+    const validConfig = parseTradingConfig({
       env: createBaseEnv({
-        AUTO_SEARCH_ENABLED_1: 'true',
-        SWITCH_INTERVAL_MINUTES_1: '15',
+        AUTO_SEARCH_ENABLED: 'true',
+        SWITCH_INTERVAL_MINUTES: '15',
       }),
     });
-    expect(validConfig.monitors[0]?.autoSearchConfig.switchIntervalMinutes).toBe(15);
+    expect(validConfig.monitor.autoSearchConfig.switchIntervalMinutes).toBe(15);
 
     expect(() =>
-      createMultiMonitorTradingConfig({
+      parseTradingConfig({
         env: createBaseEnv({
-          AUTO_SEARCH_ENABLED_1: 'true',
-          SWITCH_INTERVAL_MINUTES_1: '-5',
+          AUTO_SEARCH_ENABLED: 'true',
+          SWITCH_INTERVAL_MINUTES: '-5',
         }),
       }),
-    ).toThrow(/SWITCH_INTERVAL_MINUTES_1/);
+    ).toThrow(/SWITCH_INTERVAL_MINUTES/);
 
     expect(() =>
-      createMultiMonitorTradingConfig({
+      parseTradingConfig({
         env: createBaseEnv({
-          AUTO_SEARCH_ENABLED_1: 'true',
-          SWITCH_INTERVAL_MINUTES_1: '999',
+          AUTO_SEARCH_ENABLED: 'true',
+          SWITCH_INTERVAL_MINUTES: '999',
         }),
       }),
-    ).toThrow(/SWITCH_INTERVAL_MINUTES_1/);
+    ).toThrow(/SWITCH_INTERVAL_MINUTES/);
 
     expect(() =>
-      createMultiMonitorTradingConfig({
+      parseTradingConfig({
         env: createBaseEnv({
-          AUTO_SEARCH_ENABLED_1: 'true',
-          SWITCH_INTERVAL_MINUTES_1: 'invalid-number',
+          AUTO_SEARCH_ENABLED: 'true',
+          SWITCH_INTERVAL_MINUTES: 'invalid-number',
         }),
       }),
-    ).toThrow(/SWITCH_INTERVAL_MINUTES_1/);
+    ).toThrow(/SWITCH_INTERVAL_MINUTES/);
   });
 
-  it('flags invalid SWITCH_INTERVAL_MINUTES_1 during config validation when auto-search is enabled', async () => {
+  it('flags invalid SWITCH_INTERVAL_MINUTES during config validation when auto-search is enabled', async () => {
     const signalConfig = {
       conditionGroups: [
         {
@@ -104,7 +104,7 @@ describe('periodic switch config business flow', () => {
     });
 
     const tradingConfig = createTradingConfig({
-      monitors: [monitorConfig],
+      monitor: monitorConfig,
     });
 
     const invalidValues = ['not-a-number', '-1', '121'] as const;
@@ -115,8 +115,9 @@ describe('periodic switch config business flow', () => {
           env: {
             LONGBRIDGE_AUTH_MODE: 'oauth',
             LONGBRIDGE_CLIENT_ID: 'client-id',
-            AUTO_SEARCH_ENABLED_1: 'true',
-            SWITCH_INTERVAL_MINUTES_1: invalidValue,
+            MONITOR_SYMBOL: 'HSI.HK',
+            AUTO_SEARCH_ENABLED: 'true',
+            SWITCH_INTERVAL_MINUTES: invalidValue,
           },
           tradingConfig,
         });
@@ -126,7 +127,7 @@ describe('periodic switch config business flow', () => {
 
       expect(caughtError).not.toBeNull();
       const validationError = caughtError as { missingFields?: ReadonlyArray<string> };
-      expect(validationError.missingFields).toContain('SWITCH_INTERVAL_MINUTES_1');
+      expect(validationError.missingFields).toContain('SWITCH_INTERVAL_MINUTES');
     }
   });
 });

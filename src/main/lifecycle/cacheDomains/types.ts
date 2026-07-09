@@ -1,5 +1,5 @@
 import type { LastState, MonitorContext } from '../../../types/state.js';
-import type { MultiMonitorTradingConfig } from '../../../types/config.js';
+import type { TradingConfig } from '../../../types/config.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { Processor } from '../../asyncProgram/types.js';
@@ -55,7 +55,7 @@ interface SignalRuntimePostTradeConsistencyRuntime {
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type SignalRuntimeDomainDeps = Readonly<{
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   buyProcessor: Processor;
   sellProcessor: Processor;
   monitorTaskProcessor: MonitorTaskProcessor;
@@ -83,14 +83,14 @@ export type SignalRuntimeDomainDeps = Readonly<{
 
 /**
  * 席位域依赖。
- * 类型用途：createSeatDomain 的入参，提供 tradingConfig、symbolRegistry、monitorContexts、warrantListCache。
+ * 类型用途：createSeatDomain 的入参，提供 tradingConfig、symbolRegistry、monitorContext、warrantListCache。
  * 数据来源：由 lifecycle 在注册 cacheDomains 时组装传入。
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type SeatDomainDeps = Readonly<{
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   warrantListCache: WarrantListCache;
 }>;
 
@@ -106,7 +106,7 @@ export type OrderDomainDeps = Readonly<{
 
 /**
  * 风险域依赖。
- * 类型用途：createRiskDomain 的入参，提供 signalProcessor、dailyLossTracker、monitorContexts、liquidationCooldownTracker。
+ * 类型用途：createRiskDomain 的入参，提供 signalProcessor、dailyLossTracker、monitorContext、liquidationCooldownTracker。
  * 数据来源：由 lifecycle 在注册 cacheDomains 时组装传入。
  * 使用范围：仅 lifecycle 模块使用。
  */
@@ -114,7 +114,7 @@ export type RiskDomainDeps = Readonly<{
   signalProcessor: SignalProcessor;
   dailyLossTracker: DailyLossTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   liquidationCooldownTracker: LiquidationCooldownTracker;
 }>;
 

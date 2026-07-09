@@ -36,7 +36,7 @@ export interface TradingQuoteDisplayRuntime {
 export type TradingQuoteDisplayRuntimeDeps = Readonly<{
   marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
   symbolRegistry: SymbolRegistry;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   lastState: Pick<LastState, 'isTradingEnabled' | 'canTrade'>;
   renderTradingQuote: (params: {
     readonly event: QuoteUpdatedEvent;
@@ -50,4 +50,5 @@ export type TradingQuoteDisplayRuntimeDeps = Readonly<{
       ? TValue
       : never;
   }) => void;
+  onFatalError?: (error: unknown) => void;
 }>;

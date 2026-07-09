@@ -14,6 +14,7 @@ import {
 } from '../tradingRiskEventRuntime/routeValidation.js';
 import { logger } from '../../utils/logger/index.js';
 import { formatError } from '../../utils/error/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type { TradingRiskRoutingIndex } from '../tradingRiskEventRuntime/types.js';
 import type {
   TradingQuoteDisplayRouteState,
@@ -31,7 +32,7 @@ export function createTradingQuoteDisplayRuntime(
   const activePromises = new Set<Promise<void>>();
   const routeStates = new Map<string, TradingQuoteDisplayRouteState>();
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
-  let routingIndexFatalError: Error | null = null;
+  let fatalError: Error | null = null;
   let running = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
@@ -47,29 +48,37 @@ export function createTradingQuoteDisplayRuntime(
    * 按当前席位事实重建交易 quote 到监控 route 的派生索引。
    */
   function rebuildRoutingIndex(): void {
-    try {
-      cachedRoutingIndex = buildTradingRiskRoutingIndex({
-        monitorContexts: deps.monitorContexts,
-        symbolRegistry: deps.symbolRegistry,
-      });
-      routingIndexFatalError = null;
-    } catch (error) {
-      cachedRoutingIndex = null;
-      routingIndexFatalError = error instanceof Error ? error : new Error(formatError(error));
-      logger.warn(
-        '[tradingQuoteDisplayRuntime] routing index build failed',
-        formatError(routingIndexFatalError),
-      );
+    const nextRoutingIndex = buildTradingRiskRoutingIndex({
+      monitorContext: deps.monitorContext,
+      symbolRegistry: deps.symbolRegistry,
+    });
+    cachedRoutingIndex = nextRoutingIndex;
+  }
+
+  function enterFatalState(error: unknown, logMessage: string): void {
+    const nextFatalError = error instanceof Error ? error : new Error(formatError(error));
+    if (fatalError !== null) {
+      return;
+    }
+
+    fatalError = nextFatalError;
+    running = false;
+    cachedRoutingIndex = null;
+    routeStates.clear();
+    logger.error(logMessage, formatError(nextFatalError));
+    deps.onFatalError?.(nextFatalError);
+    if (!deps.onFatalError) {
+      throw nextFatalError;
     }
   }
 
   /**
    * 获取当前可用的派生 routing index。
    *
-   * @returns routing index 构建失败或尚不可用时返回 null
+   * @returns 尚未初始化时返回 null
    */
   function getCurrentRoutingIndex(): TradingRiskRoutingIndex | null {
-    if (routingIndexFatalError !== null) {
+    if (fatalError !== null) {
       return null;
     }
 
@@ -111,22 +120,42 @@ export function createTradingQuoteDisplayRuntime(
           return;
         }
 
+        let quotesMap: Awaited<
+          ReturnType<TradingQuoteDisplayRuntimeDeps['marketDataClient']['getQuotes']>
+        >;
         try {
-          const quotesMap = await deps.marketDataClient.getQuotes([route.monitorSymbol]);
-          const latestRouteState = routeStates.get(routeKey);
-          if (latestRouteState?.dirty === true) {
-            continue;
-          }
-
-          const routingIndex = getCurrentRoutingIndex();
-          if (
-            routingIndex === null ||
-            !isGateOpen(deps.lastState) ||
-            !isTradingRiskRouteCurrent(route, routingIndex)
-          ) {
+          quotesMap = await deps.marketDataClient.getQuotes([route.monitorSymbol]);
+        } catch (error) {
+          if (!isExternalApiRequestError(error)) {
+            enterFatalState(
+              error,
+              '[tradingQuoteDisplayRuntime] quote supplement entered fatal state',
+            );
             return;
           }
 
+          logger.warn(
+            `[tradingQuoteDisplayRuntime] quote supplement failed routeKey=${routeKey}`,
+            formatError(error),
+          );
+          return;
+        }
+
+        const latestRouteState = routeStates.get(routeKey);
+        if (latestRouteState?.dirty === true) {
+          continue;
+        }
+
+        const routingIndex = getCurrentRoutingIndex();
+        if (
+          routingIndex === null ||
+          !isGateOpen(deps.lastState) ||
+          !isTradingRiskRouteCurrent(route, routingIndex)
+        ) {
+          return;
+        }
+
+        try {
           deps.renderTradingQuote({
             event,
             tradingSymbol: route.tradingSymbol,
@@ -135,10 +164,8 @@ export function createTradingQuoteDisplayRuntime(
             monitorQuote: quotesMap.get(route.monitorSymbol) ?? null,
           });
         } catch (error) {
-          logger.warn(
-            `[tradingQuoteDisplayRuntime] render failed routeKey=${routeKey}`,
-            formatError(error),
-          );
+          enterFatalState(error, '[tradingQuoteDisplayRuntime] render entered fatal state');
+          return;
         }
       }
     } finally {
@@ -153,7 +180,7 @@ export function createTradingQuoteDisplayRuntime(
   function handleQuoteUpdated(
     event: Parameters<TradingQuoteDisplayRuntimeDeps['renderTradingQuote']>[0]['event'],
   ): void {
-    if (!running || !isGateOpen(deps.lastState)) {
+    if (fatalError !== null || !running || !isGateOpen(deps.lastState)) {
       return;
     }
 
@@ -184,10 +211,15 @@ export function createTradingQuoteDisplayRuntime(
       return;
     }
 
-    running = true;
     rebuildRoutingIndex();
+    fatalError = null;
+    running = true;
     unsubscribeSeatTruthChanged = deps.symbolRegistry.onSeatTruthChanged(() => {
-      rebuildRoutingIndex();
+      try {
+        rebuildRoutingIndex();
+      } catch (error) {
+        enterFatalState(error, '[tradingQuoteDisplayRuntime] routing index entered fatal state');
+      }
     });
 
     unsubscribeQuoteUpdated = deps.marketDataClient.onQuoteUpdated((event) => {
@@ -202,7 +234,7 @@ export function createTradingQuoteDisplayRuntime(
     unsubscribeSeatTruthChanged?.();
     unsubscribeSeatTruthChanged = null;
     cachedRoutingIndex = null;
-    routingIndexFatalError = null;
+    fatalError = null;
     if (activePromises.size > 0) {
       await Promise.allSettled(activePromises);
     }

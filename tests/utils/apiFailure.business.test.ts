@@ -10,6 +10,7 @@ import {
   createExternalApiRequestError,
   isAllExternalApiRequestErrors,
   isExternalApiRequestError,
+  isUnconfirmedOrderSubmissionError,
   wrapExternalApiRequest,
 } from '../../src/utils/apiFailure/index.js';
 
@@ -150,6 +151,35 @@ describe('apiFailure boundary', () => {
     expect(aggregate).toBeInstanceOf(AggregateError);
     expect(isAllExternalApiRequestErrors([first, second])).toBeTrue();
     expect(isAllExternalApiRequestErrors([first, new Error('internal')])).toBeFalse();
+  });
+
+  it('classifies only submitOrder external failures as unconfirmed order submission errors', () => {
+    const submitError = createExternalApiRequestError({
+      operation: 'TradeContext.submitOrder',
+      attempts: 1,
+      cause: new Error('submit timeout'),
+    });
+    const timeoutMarketConversionSubmitError = createExternalApiRequestError({
+      operation: 'TradeContext.submitOrder.timeoutMarketConversion',
+      attempts: 1,
+      cause: new Error('market conversion submit timeout'),
+    });
+    const positionError = createExternalApiRequestError({
+      operation: 'TradeContext.stockPositions.quantityResolver',
+      attempts: 1,
+      cause: new Error('position timeout'),
+    });
+    const quoteError = createExternalApiRequestError({
+      operation: 'QuoteContext.realtimeQuote',
+      attempts: 1,
+      cause: new Error('quote timeout'),
+    });
+
+    expect(isUnconfirmedOrderSubmissionError(submitError)).toBeTrue();
+    expect(isUnconfirmedOrderSubmissionError(timeoutMarketConversionSubmitError)).toBeTrue();
+    expect(isUnconfirmedOrderSubmissionError(positionError)).toBeFalse();
+    expect(isUnconfirmedOrderSubmissionError(quoteError)).toBeFalse();
+    expect(isUnconfirmedOrderSubmissionError(new Error('internal'))).toBeFalse();
   });
 
   it('does not retry non-transient business errors by default', async () => {
@@ -389,6 +419,68 @@ describe('apiFailure boundary', () => {
 
     expect(error).toBe(businessError);
     expect(attempts).toBe(1);
+  });
+
+  it('keeps nested six-digit business codes non-retryable', async () => {
+    let attempts = 0;
+    const businessError = new Error('fetch failed', {
+      cause: {
+        code: '601011',
+        status: 503,
+      },
+    });
+
+    let error: unknown = null;
+    try {
+      await wrapExternalApiRequest({
+        operation: 'test.nested-business-code-priority',
+        request: async () => {
+          attempts += 1;
+          throw businessError;
+        },
+        retryConfig: {
+          retries: 2,
+          delayMs: 0,
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBe(businessError);
+    expect(attempts).toBe(1);
+  });
+
+  it('retries nested structured transient network codes', async () => {
+    let attempts = 0;
+    const transientError = new Error('fetch failed', {
+      cause: {
+        code: 'ETIMEDOUT',
+      },
+    });
+
+    let error: unknown = null;
+    try {
+      await wrapExternalApiRequest({
+        operation: 'test.nested-transient-network-code',
+        request: async () => {
+          attempts += 1;
+          throw transientError;
+        },
+        retryConfig: {
+          retries: 1,
+          delayMs: 0,
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      name: 'ExternalApiRequestError',
+      operation: 'test.nested-transient-network-code',
+    });
+    expect(attempts).toBe(2);
   });
 
   it('does not retry ordinary unknown errors by default', async () => {

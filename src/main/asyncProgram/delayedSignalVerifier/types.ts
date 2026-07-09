@@ -51,7 +51,7 @@ export type VerificationResult = {
  * 数据来源：由启动装配通过 onVerified() 注册。
  * 使用范围：delayedSignalVerifier 与调用方之间契约，仅内部使用。
  */
-export type VerifiedCallback = (signal: Signal, monitorSymbol: string) => void;
+export type VerifiedCallback = (signal: Signal) => void;
 
 /**
  * DelayedSignalVerifier 依赖配置（创建验证器时的参数）。
@@ -60,6 +60,7 @@ export type VerifiedCallback = (signal: Signal, monitorSymbol: string) => void;
  * 使用范围：仅创建 DelayedSignalVerifier 的调用方使用，内部使用。
  */
 export type DelayedSignalVerifierDeps = {
+  readonly monitorSymbol: string;
   readonly indicatorCache: IndicatorCache;
   readonly onFatalError?: (error: unknown) => void;
 };

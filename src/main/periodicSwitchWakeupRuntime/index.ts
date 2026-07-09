@@ -7,6 +7,7 @@
  * - 通过 AUTO_SYMBOL_TICK latest-only 任务推进周期换标，不向 timeWakeupPlanner 暴露候选
  */
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
+import type { SeatTruthChangedListener } from '../../types/seat.js';
 import type { MonitorTaskInput } from '../asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
@@ -21,7 +22,7 @@ import type {
 } from './types.js';
 
 function buildRouteKey(route: PeriodicSwitchRoute): string {
-  return `${route.monitorSymbol}:${route.direction}`;
+  return route.direction;
 }
 
 function baselineMatches(
@@ -49,6 +50,17 @@ function isFailedBaseline(
 }
 
 const PERIODIC_SWITCH_DIRECTIONS: ReadonlyArray<PeriodicSwitchDirection> = ['LONG', 'SHORT'];
+
+function assertPeriodicSwitchMonitorSymbol(
+  actualMonitorSymbol: string,
+  expectedMonitorSymbol: string,
+): void {
+  if (actualMonitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[PeriodicSwitchWakeupRuntime] 非唯一 monitorSymbol 输入: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
+    );
+  }
+}
 
 /**
  * 创建周期换标唤醒 runtime。
@@ -94,18 +106,14 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function readCurrentBaseline(route: PeriodicSwitchRoute): PeriodicSwitchRouteBaseline | null {
-    const monitorContext = deps.monitorContexts.get(route.monitorSymbol);
-    if (monitorContext === undefined) {
-      return null;
-    }
-
-    const autoSearchConfig = monitorContext.config.autoSearchConfig;
+    const monitorSymbol = deps.tradingConfig.monitor.monitorSymbol;
+    const autoSearchConfig = deps.monitorContext.config.autoSearchConfig;
     if (!autoSearchConfig.autoSearchEnabled || autoSearchConfig.switchIntervalMinutes <= 0) {
       return null;
     }
 
-    const seatState = deps.symbolRegistry.getSeatState(route.monitorSymbol, route.direction);
-    const seatVersion = deps.symbolRegistry.getSeatVersion(route.monitorSymbol, route.direction);
+    const seatState = deps.symbolRegistry.getSeatState(monitorSymbol, route.direction);
+    const seatVersion = deps.symbolRegistry.getSeatVersion(monitorSymbol, route.direction);
     if (
       seatState.status !== 'ACTIVE' ||
       seatState.symbol === null ||
@@ -117,7 +125,7 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     return {
-      monitorSymbol: route.monitorSymbol,
+      monitorSymbol,
       direction: route.direction,
       symbol: seatState.symbol,
       seatVersion,
@@ -125,13 +133,8 @@ export function createPeriodicSwitchWakeupRuntime(
     };
   }
 
-  function getSwitchIntervalMinutes(route: PeriodicSwitchRoute): number | null {
-    const monitorContext = deps.monitorContexts.get(route.monitorSymbol);
-    if (monitorContext === undefined) {
-      return null;
-    }
-
-    const switchIntervalMinutes = monitorContext.config.autoSearchConfig.switchIntervalMinutes;
+  function getSwitchIntervalMinutes(): number | null {
+    const switchIntervalMinutes = deps.monitorContext.config.autoSearchConfig.switchIntervalMinutes;
     if (switchIntervalMinutes <= 0) {
       return null;
     }
@@ -151,7 +154,7 @@ export function createPeriodicSwitchWakeupRuntime(
     };
     const task: MonitorTaskInput<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'> = {
       type: 'AUTO_SYMBOL_TICK',
-      dedupeKey: `${baseline.monitorSymbol}:AUTO_SYMBOL_TICK:${baseline.direction}`,
+      dedupeKey: `AUTO_SYMBOL_TICK:${baseline.direction}`,
       monitorSymbol: baseline.monitorSymbol,
       data,
     };
@@ -181,7 +184,7 @@ export function createPeriodicSwitchWakeupRuntime(
 
   /**
    * 对单 route 重新读取权威 truth 并安排一次 due 行为。
-   * baseline 不完整或 dueAtMs 为 null 时只清理旧派生状态，不做 fallback。
+   * baseline 不完整或 dueAtMs 为 null 时只清理旧派生状态，不额外补排到期动作。
    */
   function planRoute(route: PeriodicSwitchRoute): void {
     if (!running) {
@@ -198,7 +201,7 @@ export function createPeriodicSwitchWakeupRuntime(
       return;
     }
 
-    const switchIntervalMinutes = getSwitchIntervalMinutes(route);
+    const switchIntervalMinutes = getSwitchIntervalMinutes();
     if (switchIntervalMinutes === null) {
       return;
     }
@@ -245,16 +248,18 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function seedRoutes(): void {
-    for (const monitorConfig of deps.tradingConfig.monitors) {
-      for (const direction of PERIODIC_SWITCH_DIRECTIONS) {
-        planRoute({ monitorSymbol: monitorConfig.monitorSymbol, direction });
-      }
+    for (const direction of PERIODIC_SWITCH_DIRECTIONS) {
+      planRoute({ direction });
     }
   }
 
-  function handleSeatTruthChanged(event: PeriodicSwitchRoute): void {
-    planRoute({ monitorSymbol: event.monitorSymbol, direction: event.direction });
-  }
+  const handleSeatTruthChanged: SeatTruthChangedListener = (event) => {
+    assertPeriodicSwitchMonitorSymbol(
+      event.monitorSymbol,
+      deps.tradingConfig.monitor.monitorSymbol,
+    );
+    planRoute({ direction: event.direction });
+  };
 
   function redispatchWaitingEmptyRoutes(): void {
     if (!running) {
@@ -282,16 +287,14 @@ export function createPeriodicSwitchWakeupRuntime(
       return;
     }
 
-    for (const monitorConfig of deps.tradingConfig.monitors) {
-      for (const direction of PERIODIC_SWITCH_DIRECTIONS) {
-        const route = { monitorSymbol: monitorConfig.monitorSymbol, direction };
-        const state = routeStates.get(buildRouteKey(route));
-        if (state !== undefined && state.waitingEmpty !== null) {
-          continue;
-        }
-
-        planRoute(route);
+    for (const direction of PERIODIC_SWITCH_DIRECTIONS) {
+      const route = { direction };
+      const state = routeStates.get(buildRouteKey(route));
+      if (state !== undefined && state.waitingEmpty !== null) {
+        continue;
       }
+
+      planRoute(route);
     }
   }
 
@@ -391,7 +394,7 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     state.waitingEmpty = null;
-    const switchIntervalMinutes = getSwitchIntervalMinutes(baseline);
+    const switchIntervalMinutes = getSwitchIntervalMinutes();
     if (switchIntervalMinutes === null) {
       return;
     }

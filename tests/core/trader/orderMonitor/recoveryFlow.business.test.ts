@@ -88,10 +88,7 @@ function createTrackedOrder(orderId: string, symbol: string): OrderMonitorTracke
 }
 
 function createMonitorConfigWithOwnership(): MonitorConfig {
-  const monitor = createTradingConfig().monitors[0];
-  if (!monitor) {
-    throw new Error('missing monitor config for recoveryFlow test');
-  }
+  const monitor = createTradingConfig().monitor;
 
   return {
     ...monitor,
@@ -141,7 +138,7 @@ describe('orderMonitor recoveryFlow', () => {
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
       tradingConfig: createTradingConfig({
-        monitors: [createMonitorConfigWithOwnership()],
+        monitor: createMonitorConfigWithOwnership(),
       }),
       symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
       trackOrder: (params: TrackOrderParams) => {
@@ -175,7 +172,7 @@ describe('orderMonitor recoveryFlow', () => {
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
       tradingConfig: createTradingConfig({
-        monitors: [createMonitorConfigWithOwnership()],
+        monitor: createMonitorConfigWithOwnership(),
       }),
       symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
       trackOrder: (params: TrackOrderParams) => {
@@ -203,5 +200,54 @@ describe('orderMonitor recoveryFlow', () => {
 
     expect(trackCalls).toEqual(['ORDER-1', 'ORDER-2']);
     expect(runtime.runtimeState).toBe('ACTIVE');
+  });
+
+  it('blocks recovery when mismatched pending buy terminal state contains executed quantity', async () => {
+    const runtime = createRuntimeStore();
+    const recoveryFlow = createRecoveryFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig: createTradingConfig({
+        monitor: createMonitorConfigWithOwnership(),
+      }),
+      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
+      trackOrder: () => {},
+      cancelOrder: async () => {
+        runtime.queriedTerminalStateByOrderId.set('ORDER-MISMATCHED-FILLED', {
+          kind: 'TERMINAL',
+          closedReason: 'FILLED',
+          executedPrice: 1.02,
+          executedQuantity: 100,
+          executedTimeMs: Date.parse('2026-04-08T09:01:00.000Z'),
+          status: OrderStatus.Filled,
+        });
+        return {
+          kind: 'ALREADY_CLOSED',
+          closedReason: 'FILLED',
+          source: 'API_ERROR',
+          relatedBuyOrderIds: null,
+        };
+      },
+      settleOrder: () => {
+        throw new Error('mismatched filled buy must not settle');
+      },
+      handleOrderChangedWhenActive: () => {},
+    });
+
+    try {
+      await recoveryFlow.recoverOrderTrackingFromSnapshot([
+        createPendingOrder({
+          orderId: 'ORDER-MISMATCHED-FILLED',
+          symbol: 'OLD_BULL.HK',
+          side: OrderSide.Buy,
+        }),
+      ]);
+      throw new Error('expected recovery to reject');
+    } catch (error) {
+      expect((error as Error).message).toContain('不匹配但权威终态存在成交事实');
+    }
+
+    expect(runtime.runtimeState).toBe('STOPPED');
   });
 });

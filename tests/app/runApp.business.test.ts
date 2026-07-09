@@ -13,7 +13,7 @@ import type {
   AppEnvironmentParams,
   AsyncRuntime,
   CleanupController,
-  MutableMonitorContextsPostGateRuntime,
+  PostGateRuntime,
   PreGateRuntime,
   RunAppDeps,
 } from '../../src/app/types.js';
@@ -36,6 +36,7 @@ import {
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
+  createMonitorContextDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteSubscriptionRuntimeDouble,
@@ -46,6 +47,7 @@ import {
   createTraderDouble,
   createTradingGateEventRuntimeDouble,
 } from '../helpers/testDoubles.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
 
 type RunAppScenario =
   | 'startupRebuildPending'
@@ -80,7 +82,13 @@ function createMinimalLastState(): LastState {
       get: () => null,
     },
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: {
+      monitorSymbol: 'HSI.HK',
+      signal: null,
+      pendingDelayedSignals: [],
+      lastMonitorSnapshot: null,
+      incrementalIndicatorRuntime: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -114,12 +122,14 @@ function createMonitorTaskProcessorRecorder(name: string): AsyncRuntime['monitor
 function createStartStopRecorder(name: string): {
   readonly start: () => void;
   readonly stopAndDrain: () => Promise<void>;
+  readonly drainFatalError: () => Promise<never>;
 } {
   return {
     start: () => {
       recordSteadyRuntimeStart(name);
     },
     stopAndDrain: async () => {},
+    drainFatalError: () => new Promise<never>(() => {}),
   };
 }
 
@@ -138,7 +148,7 @@ function createTradeTaskQueueDouble<TType extends string>(): TaskQueue<TType> {
   };
 }
 
-function createMonitorTaskQueueDouble(): MutableMonitorContextsPostGateRuntime['monitorTaskQueue'] {
+function createMonitorTaskQueueDouble(): PostGateRuntime['monitorTaskQueue'] {
   return {
     scheduleLatest: () => {},
     pop: () => null,
@@ -172,8 +182,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
 
   return {
     config: createSdkConfigDouble(),
-    tradingConfig: {
-      monitors: [],
+    tradingConfig: createTradingConfig({
       global: {
         doomsdayProtection: true,
         debug: false,
@@ -188,7 +197,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
         buyOrderTimeout: { enabled: false, timeoutSeconds: 0 },
         sellOrderTimeout: { enabled: false, timeoutSeconds: 0 },
       },
-    },
+    }),
     symbolRegistry: createSymbolRegistryDouble(),
     warrantListCache,
     warrantListCacheConfig: {
@@ -203,10 +212,11 @@ function createMockPreGateRuntime(): PreGateRuntime {
 
 function createMockPostGateRuntime(
   lastState: LastState,
+  monitorContext: PostGateRuntime['monitorContext'],
   autoSearchFatalPromise: Promise<never> = new Promise<never>(() => {}),
   postTradeFatalPromise: Promise<never> = new Promise<never>(() => {}),
   postGateFatalPromise: Promise<never> = new Promise<never>(() => {}),
-): MutableMonitorContextsPostGateRuntime {
+): PostGateRuntime {
   const signalProcessor: SignalProcessor = {
     processSellSignals: ({ signals }: ProcessSellSignalsParams): Signal[] => signals,
     applyRiskChecks: async <TSignal extends Signal>(
@@ -234,7 +244,7 @@ function createMockPostGateRuntime(
     liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
     dailyLossTracker: createDailyLossTrackerDouble(),
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    monitorContexts: new Map(),
+    monitorContext,
     tradingGateEventRuntime: createTradingGateEventRuntimeDouble({
       onGateStateChanged: () => noop,
     }),
@@ -336,12 +346,14 @@ function createRunAppHarness(
   options: {
     readonly rejectTimeWakeupDuringStart?: boolean;
     readonly cleanupError?: Error;
+    readonly postGateMonitorContext?: PostGateRuntime['monitorContext'];
   } = {},
 ): {
   readonly runApp: RunAppFunction;
   readonly triggerShutdown: () => void;
   readonly triggerTimeWakeupFatal: (error: Error) => void;
   readonly triggerAutoSearchFatal: (error: Error) => void;
+  readonly triggerBusinessEventFatal: (error: Error) => void;
   readonly triggerPostTradeFatal: (error: Error) => void;
   readonly triggerPostGateFatal: (error: Error) => void;
 } {
@@ -349,6 +361,7 @@ function createRunAppHarness(
   const shutdownController = createShutdownController();
   let rejectTimeWakeupFatal: ((error: Error) => void) | null = null;
   let rejectAutoSearchFatal: ((error: Error) => void) | null = null;
+  let rejectBusinessEventFatal: ((error: Error) => void) | null = null;
   let rejectPostTradeFatal: ((error: Error) => void) | null = null;
   let rejectPostGateFatal: ((error: Error) => void) | null = null;
   const timeWakeupFatalPromise = new Promise<never>((_, reject) => {
@@ -356,6 +369,9 @@ function createRunAppHarness(
   });
   const autoSearchFatalPromise = new Promise<never>((_, reject) => {
     rejectAutoSearchFatal = reject;
+  });
+  const businessEventFatalPromise = new Promise<never>((_, reject) => {
+    rejectBusinessEventFatal = reject;
   });
   const postTradeFatalPromise = new Promise<never>((_, reject) => {
     rejectPostTradeFatal = reject;
@@ -365,13 +381,16 @@ function createRunAppHarness(
   });
   const deps = {
     createPreGateRuntime: async () => createMockPreGateRuntime(),
-    createPostGateRuntime: async () =>
-      createMockPostGateRuntime(
+    createPostGateRuntime: async () => {
+      const runtime = createMockPostGateRuntime(
         lastState,
+        options.postGateMonitorContext ?? createMonitorContextDouble(),
         autoSearchFatalPromise,
         postTradeFatalPromise,
         postGateFatalPromise,
-      ),
+      );
+      return runtime;
+    },
     loadStartupSnapshot: async () => {
       const now = new Date('2026-04-29T09:30:00.000+08:00');
       if (currentScenario === 'startupRebuildPending') {
@@ -389,7 +408,6 @@ function createRunAppHarness(
       requiredSymbols: new Set<string>(),
       runtimeValidationInputs: [],
     }),
-    createMonitorContexts: () => {},
     createRebuildTradingDayState: () => async () => {
       rebuildCallCount += 1;
       if (currentScenario === 'initialRebuildApiFails') {
@@ -408,6 +426,7 @@ function createRunAppHarness(
     registerDelayedSignalHandlers: noop,
     createBusinessEventProgram: () => ({
       ...createStartStopRecorder('businessEventProgram.start'),
+      drainFatalError: () => businessEventFatalPromise,
     }),
     createAsyncRuntime: () => createMockAsyncRuntime(),
     createLifecycleRuntime: () => ({
@@ -461,6 +480,9 @@ function createRunAppHarness(
     },
     triggerAutoSearchFatal: (error) => {
       rejectAutoSearchFatal?.(error);
+    },
+    triggerBusinessEventFatal: (error) => {
+      rejectBusinessEventFatal?.(error);
     },
     triggerPostTradeFatal: (error) => {
       rejectPostTradeFatal?.(error);
@@ -584,6 +606,18 @@ describe('runApp business flow', () => {
     expect(cleanupExecuteCount).toBe(1);
   });
 
+  it('business event fatal triggers cleanup and propagates the error', async () => {
+    currentScenario = 'initialRebuildSucceeds';
+    const harness = createRunAppHarness();
+    const runPromise = harness.runApp({ env: {} });
+
+    await flushMicrotasks(20);
+    harness.triggerBusinessEventFatal(new Error('business event fatal'));
+
+    await expectPromiseRejectsWithMessage(runPromise, /business event fatal/);
+    expect(cleanupExecuteCount).toBe(1);
+  });
+
   it('post-gate runtime fatal triggers cleanup and propagates the error', async () => {
     currentScenario = 'initialRebuildSucceeds';
     const harness = createRunAppHarness();
@@ -646,5 +680,18 @@ describe('runApp business flow', () => {
     expect(timeWakeupEvaluatedIndex).toBeGreaterThan(-1);
     expect(businessEventStartIndex).toBeGreaterThan(timeWakeupEvaluatedIndex);
     expect(runtimeStartSteps).toContain('trader.startOrderMonitorRuntime');
+  });
+
+  it('reuses the post-gate monitorContext during runApp assembly', async () => {
+    currentScenario = 'initialRebuildSucceeds';
+    const harness = createRunAppHarness({
+      postGateMonitorContext: createMonitorContextDouble({
+        monitorSymbolName: '',
+        longSymbolName: '',
+        shortSymbolName: '',
+      }),
+    });
+
+    await runAppAndTriggerShutdown(harness.runApp, harness.triggerShutdown);
   });
 });

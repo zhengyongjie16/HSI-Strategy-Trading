@@ -38,7 +38,7 @@ async function loadCreateTraderWithStubbedTradeContext(
     TradeContext: tradeContextFactory,
   }));
 
-  const traderModulePath = `../../../src/core/trader/index.js?legacy-worker-removal-${suffix}`;
+  const traderModulePath = `../../../src/core/trader/index.js?worker-removal-cachebust-${suffix}`;
   const traderModuleUnknown: unknown = await import(traderModulePath);
   const traderModule = traderModuleUnknown as TraderModuleShape;
   return traderModule.createTrader;

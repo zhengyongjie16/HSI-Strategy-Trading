@@ -1,4 +1,4 @@
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
@@ -16,14 +16,11 @@ import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.j
 
 /**
  * 周期换标 route。
- * 类型用途：以结构化字段标识某监控标的某方向的周期换标路线。
- * 数据来源：启动 seed、seat truth 事件和 gate 事件中的 monitorSymbol/direction。
+ * 类型用途：以方向唯一标识单 monitor 下的一条周期换标路线。
+ * 数据来源：启动 seed、seat truth 事件和 gate 事件中的 direction。
  * 使用范围：PeriodicSwitchWakeupRuntime 的公开方法与内部排程。
  */
 export type PeriodicSwitchRoute = Readonly<{
-  /** 监控标的代码 */
-  monitorSymbol: string;
-
   /** 席位方向 */
   direction: 'LONG' | 'SHORT';
 }>;
@@ -108,11 +105,11 @@ export type PeriodicSwitchRouteState = {
  * 使用范围：createPeriodicSwitchWakeupRuntime 工厂。
  */
 export type PeriodicSwitchWakeupRuntimeDeps = Readonly<{
-  /** 交易配置中的监控标的列表 */
-  tradingConfig: Pick<MultiMonitorTradingConfig, 'monitors'>;
+  /** 交易配置中的唯一监控标的配置 */
+  tradingConfig: Pick<TradingConfig, 'monitor'>;
 
-  /** 当前 monitor contexts */
-  monitorContexts: ReadonlyMap<string, Pick<MonitorContext, 'config'>>;
+  /** 当前唯一 monitorContext */
+  monitorContext: Pick<MonitorContext, 'config'>;
 
   /** 权威席位注册表 */
   symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion' | 'onSeatTruthChanged'>;

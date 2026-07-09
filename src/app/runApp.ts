@@ -3,8 +3,8 @@
  *
  * 职责：
  * - 收口 pre-gate / post-gate runtime 创建
- * - 保持启动快照失败回退与开盘重建语义不变
- * - 在唯一装配入口中创建 monitor contexts、async runtime、lifecycle 与 cleanup
+ * - 保持启动快照失败后阻断交易并切换到开盘重建重试的语义不变
+ * - 在唯一装配入口中复用 monitorContext，并组装 async runtime、lifecycle 与 cleanup
  */
 import { validateRuntimeSymbolsFromQuotesMap } from '../config/validator/index.js';
 import { createBusinessEventProgram } from '../main/businessEventProgram/index.js';
@@ -18,7 +18,7 @@ import { formatError, toError } from '../utils/error/index.js';
 import { isExternalApiRequestError } from '../utils/apiFailure/index.js';
 import { createCleanup } from './shutdown/createCleanup.js';
 import { createLifecycleRuntime } from './lifecycle/createLifecycleRuntime.js';
-import { createMonitorContexts } from './context/createMonitorContexts.js';
+import { syncMonitorContextRuntimeSnapshot } from './context/createMonitorContext.js';
 import { registerDelayedSignalHandlers } from './wiring/registerDelayedSignalHandlers.js';
 import { loadStartupSnapshot } from './startup/startupSnapshot.js';
 import { collectRuntimeValidationSymbols } from './startup/runtimeValidation.js';
@@ -45,7 +45,6 @@ const DEFAULT_RUN_APP_DEPS: RunAppDeps = {
   createPostGateRuntime,
   loadStartupSnapshot,
   collectRuntimeValidationSymbols,
-  createMonitorContexts,
   createRebuildTradingDayState,
   displayAccountAndPositions,
   registerDelayedSignalHandlers,
@@ -87,7 +86,6 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
     createPostGateRuntime: buildPostGateRuntime,
     loadStartupSnapshot: loadStartupRuntimeSnapshot,
     collectRuntimeValidationSymbols: buildRuntimeValidationCollector,
-    createMonitorContexts: buildMonitorContexts,
     createRebuildTradingDayState: buildRebuildTradingDayState,
     displayAccountAndPositions: renderAccountAndPositions,
     registerDelayedSignalHandlers: bindDelayedSignalHandlers,
@@ -155,14 +153,17 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       }
     }
 
-    buildMonitorContexts({
-      preGateRuntime,
-      postGateRuntime,
-      quotesMap: startupSnapshot.kind === 'READY' ? startupSnapshot.quotesMap : null,
-    });
+    const monitorContext = postGateRuntime.monitorContext;
+    if (startupSnapshot.kind === 'READY') {
+      syncMonitorContextRuntimeSnapshot({
+        monitorContext,
+        symbolRegistry: preGateRuntime.symbolRegistry,
+        quotesMap: startupSnapshot.quotesMap,
+      });
+    }
 
     postGateRuntime.postTradeConsistencyRuntime.bindBusinessDeps({
-      monitorContexts: postGateRuntime.monitorContexts,
+      monitorContext,
       dailyLossTracker: postGateRuntime.dailyLossTracker,
       liquidationCooldownTracker: postGateRuntime.liquidationCooldownTracker,
       protectiveLiquidationEpisodeTracker: postGateRuntime.protectiveLiquidationEpisodeTracker,
@@ -173,7 +174,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       trader: postGateRuntime.trader,
       lastState: postGateRuntime.lastState,
       symbolRegistry: preGateRuntime.symbolRegistry,
-      monitorContexts: postGateRuntime.monitorContexts,
+      monitorContext,
       dailyLossTracker: postGateRuntime.dailyLossTracker,
       displayAccountAndPositions: renderAccountAndPositions,
     });
@@ -184,7 +185,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
     });
     const businessEventProgram = buildBusinessEventProgram({
       marketDataClient: preGateRuntime.marketDataClient,
-      monitorContexts: postGateRuntime.monitorContexts,
+      monitorContext,
       lastState: postGateRuntime.lastState,
       tradingConfig: preGateRuntime.tradingConfig,
       buyTaskQueue: postGateRuntime.buyTaskQueue,
@@ -201,7 +202,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
     });
 
     bindDelayedSignalHandlers({
-      monitorContexts: postGateRuntime.monitorContexts,
+      monitorContext,
       lastState: postGateRuntime.lastState,
       buyTaskQueue: postGateRuntime.buyTaskQueue,
       sellTaskQueue: postGateRuntime.sellTaskQueue,
@@ -217,7 +218,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
           lastState: postGateRuntime.lastState,
           doomsdayProtection: postGateRuntime.doomsdayProtection,
           tradingConfig: preGateRuntime.tradingConfig,
-          monitorContexts: postGateRuntime.monitorContexts,
+          monitorContext,
           tradingGateEventRuntime: postGateRuntime.tradingGateEventRuntime,
           quoteSubscriptionRuntime: postGateRuntime.quoteSubscriptionRuntime,
           dayLifecycleManager,
@@ -249,7 +250,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       periodicSwitchWakeupRuntime: postGateRuntime.periodicSwitchWakeupRuntime,
       timeWakeupRuntime,
       marketDataClient: preGateRuntime.marketDataClient,
-      monitorContexts: postGateRuntime.monitorContexts,
+      monitorContext,
       indicatorCache: postGateRuntime.indicatorCache,
       lastState: postGateRuntime.lastState,
     });
@@ -321,6 +322,7 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       await Promise.race([
         waitForShutdown(),
         timeWakeupRuntime.drainFatalError(),
+        businessEventProgram.drainFatalError(),
         asyncRuntime.drainFatalError(),
         postGateRuntime.drainFatalError(),
         postGateRuntime.postTradeConsistencyRuntime.drainFatalError(),

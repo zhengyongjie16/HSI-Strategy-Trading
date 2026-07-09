@@ -283,12 +283,6 @@ export function extractErrorCode(err: unknown, depth: number = 0): string | null
     return codeMatch[1];
   }
 
-  const fallbackSixDigitsRegex = /\b(\d{6})\b/;
-  const fallbackMatch = fallbackSixDigitsRegex.exec(message);
-  if (fallbackMatch?.[1]) {
-    return fallbackMatch[1];
-  }
-
   logger.debug(`[错误码提取] 无法从错误消息中提取错误码: ${message}`);
 
   return null;

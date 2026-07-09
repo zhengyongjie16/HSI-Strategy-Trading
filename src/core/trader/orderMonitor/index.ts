@@ -103,6 +103,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   const orderOps = createOrderOps({
     runtime,
+    monitorConfig: tradingConfig.monitor,
     ctx,
     rateLimiter,
     cacheManager,

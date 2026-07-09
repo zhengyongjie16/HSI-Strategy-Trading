@@ -1,5 +1,5 @@
 import type { Logger } from '../../utils/logger/types.js';
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../../types/config.js';
+import type { MonitorConfig, TradingConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { SeatSymbolSnapshotEntry, SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, RawOrderFromAPI } from '../../types/services.js';
@@ -7,16 +7,14 @@ import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/typ
 
 /**
  * resolveSeatSnapshot() 的输入参数。
- * 类型用途：构建席位快照的入参，包含监控配置、持仓、订单。
- * 数据来源：启动时从 API 获取的持仓与订单，以及配置中的 monitors。
+ * 类型用途：构建席位快照的入参，包含唯一监控配置、持仓、订单。
+ * 数据来源：启动时从 API 获取的持仓与订单，以及配置中的 monitor。
  * 使用范围：仅席位恢复流程（prepareSeatsForRuntime 等）使用。
  */
 export type SeatSnapshotInput = {
-  readonly monitors: ReadonlyArray<
-    Pick<
-      MonitorConfig,
-      'monitorSymbol' | 'autoSearchConfig' | 'longSymbol' | 'shortSymbol' | 'orderOwnershipMapping'
-    >
+  readonly monitor: Pick<
+    MonitorConfig,
+    'monitorSymbol' | 'autoSearchConfig' | 'longSymbol' | 'shortSymbol' | 'orderOwnershipMapping'
   >;
   readonly positions: ReadonlyArray<Position>;
   readonly orders: ReadonlyArray<RawOrderFromAPI>;
@@ -24,7 +22,7 @@ export type SeatSnapshotInput = {
 
 /**
  * resolveSeatSnapshot() 的返回结果。
- * 类型用途：包含所有监控标的的席位快照条目，供后续席位恢复与 symbolRegistry 初始化使用。
+ * 类型用途：包含唯一监控标的下的席位快照条目，供后续席位恢复与 symbolRegistry 初始化使用。
  * 数据来源：由 resolveSeatSnapshot(SeatSnapshotInput) 根据持仓、订单、配置计算返回。
  * 使用范围：仅席位恢复流程内部使用。
  */
@@ -39,7 +37,7 @@ export type SeatSnapshot = {
  * 使用范围：仅席位恢复流程使用。
  */
 export type PrepareSeatsForRuntimeDeps = {
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
   readonly symbolRegistry: SymbolRegistry;
   readonly positions: ReadonlyArray<Position>;
   readonly orders: ReadonlyArray<RawOrderFromAPI>;

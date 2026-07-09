@@ -48,7 +48,7 @@ function createRuntimeParams(
     now: new Date('2026-03-13T09:30:00+08:00'),
     preGateRuntime: {
       config: createSdkConfigDouble(),
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: monitorConfig.monitorSymbol }),
       warrantListCache,
       warrantListCacheConfig: {
@@ -140,7 +140,7 @@ describe('createPostGateRuntime trade log persistence', () => {
     const createPostGateRuntime = createPostGateRuntimeWithPositionRefreshForTest();
     const runtime = await createPostGateRuntime(createRuntimeParams({ marketDataClient }));
     runtime.postTradeConsistencyRuntime.bindBusinessDeps({
-      monitorContexts: runtime.monitorContexts,
+      monitorContext: runtime.monitorContext,
       dailyLossTracker: runtime.dailyLossTracker,
       liquidationCooldownTracker: runtime.liquidationCooldownTracker,
       protectiveLiquidationEpisodeTracker: runtime.protectiveLiquidationEpisodeTracker,
@@ -263,7 +263,7 @@ describe('createPostGateRuntime trade log persistence', () => {
     expect(fs.readFileSync(logFile, 'utf8')).toBe('{}');
   });
 
-  it('writes protective liquidation completion records compatible with tradeLogHydrator', async () => {
+  it('writes protective liquidation completion records consumable by tradeLogHydrator', async () => {
     const executedTimeMs = Date.parse('2026-03-13T10:00:00+08:00');
     const event: OrderStateChangedEvent = {
       orderId: 'PL-001',
@@ -282,16 +282,14 @@ describe('createPostGateRuntime trade log persistence', () => {
     await emitOrderStateChangedThroughPostGateRuntime(event);
 
     const tradingConfig = createTradingConfig({
-      monitors: [
-        createMonitorConfig({
-          monitorSymbol: 'HSI.HK',
-          liquidationTriggerLimit: 1,
-          liquidationCooldown: {
-            mode: 'minutes',
-            minutes: 5,
-          },
-        }),
-      ],
+      monitor: createMonitorConfig({
+        monitorSymbol: 'HSI.HK',
+        liquidationTriggerLimit: 1,
+        liquidationCooldown: {
+          mode: 'minutes',
+          minutes: 5,
+        },
+      }),
     });
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => executedTimeMs + 60_000,

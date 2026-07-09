@@ -112,10 +112,7 @@ function createDeps(): {
 } {
   const tradeCtx = createTradeContextMock();
   const baseConfig = createTradingConfig();
-  const baseMonitor = baseConfig.monitors[0];
-  if (!baseMonitor) {
-    throw new Error('missing monitor config for route hook integration test');
-  }
+  const baseMonitor = baseConfig.monitor;
 
   const deps: OrderMonitorDeps = {
     ctx: tradeCtx as unknown as TradeContext,
@@ -142,12 +139,10 @@ function createDeps(): {
       recordSettlementRefreshNeed: () => {},
     },
     tradingConfig: createTradingConfig({
-      monitors: [
-        {
-          ...baseMonitor,
-          orderOwnershipMapping: ['HSI'],
-        },
-      ],
+      monitor: {
+        ...baseMonitor,
+        orderOwnershipMapping: ['HSI'],
+      },
       global: {
         ...baseConfig.global,
         buyOrderTimeout: {
@@ -323,7 +318,7 @@ describe('createOrderMonitor route hooks integration', () => {
   });
 
   it('真实装配路径不再暴露旧的 processWithLatestQuotes 轮询入口', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('no-legacy-poll');
+    const createOrderMonitor = await loadActualCreateOrderMonitor('no-poll-hook');
     const { deps } = createDeps();
     const monitor = createOrderMonitor(deps);
 

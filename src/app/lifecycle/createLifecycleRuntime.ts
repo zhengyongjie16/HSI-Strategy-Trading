@@ -48,7 +48,7 @@ function createLifecycleCacheDomains(
   } = params;
   const { tradingConfig, symbolRegistry, warrantListCache, marketDataClient } = preGateRuntime;
   const {
-    monitorContexts,
+    monitorContext,
     indicatorCache,
     buyTaskQueue,
     sellTaskQueue,
@@ -85,7 +85,7 @@ function createLifecycleCacheDomains(
 
   return [
     buildSignalRuntimeDomain({
-      monitorContexts,
+      monitorContext,
       buyProcessor,
       sellProcessor,
       monitorTaskProcessor,
@@ -113,7 +113,7 @@ function createLifecycleCacheDomains(
     buildSeatDomain({
       tradingConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       warrantListCache,
     }),
     buildOrderDomain({
@@ -123,7 +123,7 @@ function createLifecycleCacheDomains(
       signalProcessor,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
-      monitorContexts,
+      monitorContext,
       liquidationCooldownTracker,
     }),
     buildGlobalStateDomain({

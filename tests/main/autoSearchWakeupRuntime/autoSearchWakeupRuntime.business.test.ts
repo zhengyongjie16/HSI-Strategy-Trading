@@ -98,7 +98,7 @@ function makeSeatEmpty(
 describe('AutoSearchWakeupRuntime', () => {
   it('start 时 seed 当前 EMPTY seat 并调用 maybeSearchOnEvent', async () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
     const calls: SearchOnEventParams[] = [];
     const monitorContext = createMonitorContextDouble({
@@ -112,9 +112,9 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
@@ -139,7 +139,7 @@ describe('AutoSearchWakeupRuntime', () => {
 
   it('同一路由 seed 搜索未完成时 gate-open 不重复启动搜索', async () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
     let resolveSearch = (): void => {
       throw new Error('expected in-flight search resolver');
@@ -164,9 +164,9 @@ describe('AutoSearchWakeupRuntime', () => {
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       lastState,
       tradingGateEventRuntime,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
@@ -192,7 +192,7 @@ describe('AutoSearchWakeupRuntime', () => {
 
   it('gate 从关闭变为打开时唤醒已经存在的 EMPTY seat', async () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
     const calls: SearchOnEventParams[] = [];
     const monitorContext = createMonitorContextDouble({
@@ -210,9 +210,9 @@ describe('AutoSearchWakeupRuntime', () => {
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       lastState,
       tradingGateEventRuntime,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
@@ -242,7 +242,7 @@ describe('AutoSearchWakeupRuntime', () => {
 
   it('非 API 寻标错误进入 fatal channel', async () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
@@ -255,9 +255,9 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
@@ -283,7 +283,7 @@ describe('AutoSearchWakeupRuntime', () => {
     const startMs = Date.parse('2026-04-10T02:00:00.000Z');
     const timers = createTimerHarness(startMs);
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
     symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
       ...symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'),
@@ -308,9 +308,9 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
@@ -347,7 +347,7 @@ describe('AutoSearchWakeupRuntime', () => {
     const startMs = Date.parse('2026-04-10T02:00:00.000Z');
     const timers = createTimerHarness(startMs);
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
     const calls: SearchOnEventParams[] = [];
     const monitorContext = createMonitorContextDouble({
@@ -380,9 +380,9 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
@@ -412,7 +412,7 @@ describe('AutoSearchWakeupRuntime', () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig({
       autoSearchOpenDelayMinutes: openDelayMinutes,
     });
-    const symbolRegistry = createSymbolRegistry([monitorConfig]);
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
     const calls: SearchOnEventParams[] = [];
     const monitorContext = createMonitorContextDouble({
@@ -426,9 +426,9 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
@@ -458,5 +458,49 @@ describe('AutoSearchWakeupRuntime', () => {
     await runtime.stopAndDrain();
 
     expect(calls.map((call) => call.direction)).toEqual(['LONG']);
+  });
+
+  it('seat 写入携带非唯一 monitorSymbol 时在 symbolRegistry 边界 fail-fast', async () => {
+    const monitorConfig = createAutoSearchEnabledMonitorConfig();
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
+    const monitorContext = createMonitorContextDouble({
+      config: monitorConfig,
+      symbolRegistry,
+      autoSymbolManager: createAutoSymbolManagerDouble(),
+    });
+    const tradingGateEventRuntime = createTradingGateEventRuntime();
+    const runtime = createAutoSearchWakeupRuntime({
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
+      symbolRegistry,
+      monitorContext,
+      lastState: {
+        canTrade: true,
+        isTradingEnabled: true,
+      },
+      tradingGateEventRuntime,
+      now: () => new Date('2026-04-10T02:00:00.000Z'),
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    });
+
+    runtime.start();
+
+    expect(() => {
+      symbolRegistry.updateSeatStateWithVersionBump('TECH.HK', 'LONG', {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        callPrice: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      });
+    }).toThrow('SymbolRegistry 未找到监控标的: TECH.HK');
+
+    await runtime.stopAndDrain();
   });
 });

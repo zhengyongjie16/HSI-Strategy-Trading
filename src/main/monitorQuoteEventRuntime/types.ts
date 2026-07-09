@@ -82,7 +82,7 @@ export type StartDistanceSwitchExecutor = (params: {
  */
 export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
-  readonly monitorContexts?: ReadonlyMap<string, MonitorContext>;
+  readonly monitorContext: MonitorContext;
   readonly executeStaticLiquidation?: MonitorQuoteEventExecutor;
   readonly startDistanceSwitch?: StartDistanceSwitchExecutor;
   readonly handoffPendingSwitch?: Pick<
@@ -112,7 +112,7 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
  */
 export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
-  readonly monitorContexts: ReadonlyMap<string, MonitorContext>;
+  readonly monitorContext: MonitorContext;
   readonly trader: Pick<Trader, 'executeSignals'>;
   readonly lastState: Pick<
     LastState,
@@ -152,7 +152,6 @@ export type MonitorQuoteRouteMode = 'STATIC_LIQUIDATION' | 'DISTANCE_SWITCH';
  */
 export type MonitorQuoteRouteState = {
   generation: number;
-  latestMonitorContext: MonitorContext | null;
   latestEvent: QuoteUpdatedEvent | null;
   wakeupSymbols: ReadonlySet<string>;
   retainedQuoteSymbols: ReadonlySet<string>;
@@ -184,16 +183,16 @@ type SwitchWakeupFreshnessDeps = Readonly<{
 
 /**
  * Switch wakeup route key。
- * 类型用途：以 monitorSymbol + direction + seatVersion 唯一标识一条 pending switch 推进链，支撑 single-flight 与旧版本自然失效。
+ * 类型用途：以 direction + seatVersion 唯一标识一条 pending switch 推进链，支撑单 monitor 下的 single-flight 与旧版本自然失效。
  * 数据来源：由 SwitchWakeupRuntime 在 handoffPendingSwitch 时构造。
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
-export type SwitchWakeupRouteKey = `${string}:${'LONG' | 'SHORT'}:${number}`;
+export type SwitchWakeupRouteKey = `${'LONG' | 'SHORT'}:${number}`;
 
 /**
  * Switch wakeup route。
  * 类型用途：描述当前 runtime 持有的一条 pending switch 权威路由身份。
- * 数据来源：由 handoffPendingSwitch 参数与 monitorContexts 权威快照组合得到。
+ * 数据来源：由 handoffPendingSwitch 参数与单一 monitorContext 权威快照组合得到。
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
 export type SwitchWakeupRoute = Readonly<{
@@ -278,8 +277,8 @@ export type SwitchWakeupRuntimeDeps = Readonly<{
   /** 权威席位注册表 */
   symbolRegistry: SymbolRegistry;
 
-  /** 全量 monitor contexts */
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  /** 单一监控上下文 */
+  monitorContext: MonitorContext;
 
   /** 全局运行时状态 */
   lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay' | 'cachedPositions'>;

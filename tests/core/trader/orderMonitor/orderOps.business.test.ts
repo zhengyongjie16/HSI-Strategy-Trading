@@ -12,10 +12,13 @@ import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
 } from '../../../../src/core/trader/orderMonitor/types.js';
+import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import { createTradeContextDouble } from '../../../helpers/testDoubles.js';
 import type { OrderHoldRegistry, OrderCacheManager } from '../../../../src/core/trader/types.js';
 import type { RateLimiter } from '../../../../src/types/services.js';
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
+
+const TEST_MONITOR_CONFIG = createTradingConfig().monitor;
 
 function createRuntimeStore(): OrderMonitorRuntimeStore {
   return {
@@ -80,6 +83,7 @@ describe('orderMonitor orderOps', () => {
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const deps = {
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -130,6 +134,7 @@ describe('orderMonitor orderOps', () => {
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const deps = {
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -168,6 +173,42 @@ describe('orderMonitor orderOps', () => {
     expect(routeWakeups).toEqual([]);
   });
 
+  it('trackOrder 在 monitorSymbol 不匹配唯一配置时立即失败', () => {
+    const runtime = createRuntimeStore();
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(),
+      rateLimiter: createRateLimiter(),
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'QUERY_FAILED' as const,
+          reason: 'NOT_FOUND' as const,
+          errorCode: '603001',
+          message: 'not used in this test',
+        }),
+      },
+      triggerRoute: () => {},
+    });
+
+    expect(() => {
+      orderOps.trackOrder({
+        orderId: 'ORDER-TRACK-MISMATCH',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        price: 1.01,
+        initialSubmittedPrice: 1.01,
+        quantity: 100,
+        isLongSymbol: true,
+        monitorSymbol: 'OTHER.HK',
+        isProtectiveLiquidation: false,
+        orderType: OrderType.ELO,
+      });
+    }).toThrow(/monitorSymbol.*期望=HSI\.HK/);
+  });
+
   it('cancelOrder retries repeated request failures and rethrows ExternalApiRequestError', async () => {
     const runtime = createRuntimeStore();
     const tradeCtx = createTradeContextMock();
@@ -178,6 +219,7 @@ describe('orderMonitor orderOps', () => {
     };
     const orderOps = createOrderOps({
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -215,6 +257,7 @@ describe('orderMonitor orderOps', () => {
     };
     const orderOps = createOrderOps({
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -252,6 +295,7 @@ describe('orderMonitor orderOps', () => {
     };
     const orderOps = createOrderOps({
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -285,6 +329,7 @@ describe('orderMonitor orderOps', () => {
     };
     const orderOps = createOrderOps({
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -332,6 +377,7 @@ describe('orderMonitor orderOps', () => {
     };
     const orderOps = createOrderOps({
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -382,6 +428,7 @@ describe('orderMonitor orderOps', () => {
     };
     const orderOps = createOrderOps({
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
@@ -435,6 +482,7 @@ describe('orderMonitor orderOps', () => {
     };
     const deps = {
       runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),

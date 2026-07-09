@@ -67,9 +67,10 @@ describe('orderRecorder public analysis boundary', () => {
     ]);
 
     expect(
-      deps.resolveOrderOwnership(buyOrder, [
-        { monitorSymbol: 'HSI', orderOwnershipMapping: ['HSI'] },
-      ]),
+      deps.resolveOrderOwnership(buyOrder, {
+        monitorSymbol: 'HSI',
+        orderOwnershipMapping: ['HSI'],
+      }),
     ).toEqual({ monitorSymbol: 'HSI', direction: 'LONG' });
     expect(Object.keys(deps.filteringEngine)).toEqual(['applyFilteringAlgorithm']);
 
@@ -96,9 +97,10 @@ describe('orderRecorder public analysis boundary', () => {
     });
 
     expect(
-      orderRecorder.resolveOrderOwnership(buyOrder, [
-        { monitorSymbol: 'HSI', orderOwnershipMapping: ['HSI'] },
-      ]),
+      orderRecorder.resolveOrderOwnership(buyOrder, {
+        monitorSymbol: 'HSI',
+        orderOwnershipMapping: ['HSI'],
+      }),
     ).toEqual({ monitorSymbol: 'HSI', direction: 'LONG' });
     expect(orderRecorder.getLatestTradedSymbol([buyOrder], ['HSI'], 'LONG')).toBe('70000.HK');
   });

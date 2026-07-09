@@ -16,8 +16,8 @@ import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createIndicatorCache } from '../../src/main/asyncProgram/indicatorCache/index.js';
-import { createDelayedSignalVerifier } from '../../src/main/asyncProgram/delayedSignalVerifier/index.js';
+import { createIndicatorCache as createIndicatorCacheImpl } from '../../src/main/asyncProgram/indicatorCache/index.js';
+import { createDelayedSignalVerifier as createDelayedSignalVerifierImpl } from '../../src/main/asyncProgram/delayedSignalVerifier/index.js';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
 import { initMonitorState } from '../../src/utils/helpers/index.js';
 import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
@@ -34,8 +34,8 @@ import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { Period } from 'longbridge';
 import type { CandleData } from '../../src/types/data.js';
-import type { LastState, MonitorContext } from '../../src/types/state.js';
-import type { MultiMonitorTradingConfig, MonitorConfig } from '../../src/types/config.js';
+import type { LastState } from '../../src/types/state.js';
+import type { MonitorConfig, TradingConfig } from '../../src/types/config.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
 import type {
   CandlestickUpdatedEvent,
@@ -43,6 +43,22 @@ import type {
   OrderStateChangedEvent,
   QuoteUpdatedEvent,
 } from '../../src/types/services.js';
+
+function createIndicatorCache(retentionWindowMs: number) {
+  return createIndicatorCacheImpl({
+    monitorSymbol: 'HSI.HK',
+    retentionWindowMs,
+  });
+}
+
+function createDelayedSignalVerifier(params: {
+  readonly indicatorCache: ReturnType<typeof createIndicatorCacheImpl>;
+}) {
+  return createDelayedSignalVerifierImpl({
+    monitorSymbol: 'HSI.HK',
+    ...params,
+  });
+}
 import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import {
   createAccountSnapshotDouble,
@@ -127,10 +143,10 @@ function createNoopUnrealizedLossMonitor(): UnrealizedLossMonitor {
   };
 }
 
-function createTradingConfigForMonitor(monitorConfig: MonitorConfig): MultiMonitorTradingConfig {
+function createTradingConfigForMonitor(monitorConfig: MonitorConfig): TradingConfig {
   const base = createTradingConfig();
   return {
-    monitors: [monitorConfig],
+    monitor: monitorConfig,
     global: {
       ...base.global,
       doomsdayProtection: false,
@@ -163,7 +179,7 @@ function createSimulationLastState(params: {
         isHalfDay: false,
       },
     },
-    monitorStates: new Map([[params.monitorConfig.monitorSymbol, params.monitorState]]),
+    monitorState: params.monitorState,
     allTradingSymbols: new Set<string>(),
   };
 }
@@ -222,7 +238,7 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache({ retentionWindowMs: 300_000 });
+    const indicatorCache = createIndicatorCache(300_000);
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorState = initMonitorState(monitorConfig);
@@ -323,10 +339,6 @@ describe('full business simulation integration', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContexts = new Map<string, MonitorContext>([
-      [monitorConfig.monitorSymbol, monitorContext],
-    ]);
-
     const submittedActions: string[] = [];
     const trader = createTraderDouble({
       getAccountSnapshot: async () => createAccountSnapshotDouble(200_000),
@@ -358,7 +370,7 @@ describe('full business simulation integration', () => {
     };
     const buyProcessor = createBuyProcessor({
       taskQueue: buyTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -386,7 +398,7 @@ describe('full business simulation integration', () => {
     });
     const sellProcessor = createSellProcessor({
       taskQueue: sellTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -430,7 +442,7 @@ describe('full business simulation integration', () => {
         }),
         onCandlestickUpdated: candlestickUpdatedEvents.subscribe,
       },
-      monitorContexts,
+      monitorContext,
       lastState,
       tradingConfig,
       buyTaskQueue,
@@ -511,7 +523,7 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache({ retentionWindowMs: 300_000 });
+    const indicatorCache = createIndicatorCache(300_000);
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
@@ -628,10 +640,6 @@ describe('full business simulation integration', () => {
       delayedSignalVerifier,
       autoSymbolManager,
     });
-    const monitorContexts = new Map<string, MonitorContext>([
-      [monitorConfig.monitorSymbol, monitorContext],
-    ]);
-
     const processedTaskTypes: string[] = [];
     const postTradeConsistencyRuntime = {
       waitForFresh: async () => {},
@@ -654,7 +662,7 @@ describe('full business simulation integration', () => {
       marketDataClient: autoSwitchMarketDataClient,
       trader,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled: false,
@@ -670,7 +678,7 @@ describe('full business simulation integration', () => {
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
       tradingConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       tradingGateEventRuntime,
       now: runtimeNow,
@@ -683,7 +691,7 @@ describe('full business simulation integration', () => {
     });
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
       tradingConfig,
-      monitorContexts,
+      monitorContext,
       symbolRegistry,
       monitorTaskQueue,
       trader,
@@ -706,7 +714,7 @@ describe('full business simulation integration', () => {
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
       monitorTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol) ?? null,
+      monitorContext,
       trader,
       marketDataClient: autoSwitchMarketDataClient,
       quoteSubscriptionRuntime,
@@ -722,7 +730,7 @@ describe('full business simulation integration', () => {
     });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
       marketDataClient: autoSwitchMarketDataClient,
-      monitorContexts,
+      monitorContext,
       trader,
       lastState,
       postTradeConsistencyRuntime,
@@ -746,7 +754,7 @@ describe('full business simulation integration', () => {
 
     const buyProcessor = createBuyProcessor({
       taskQueue: buyTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -759,7 +767,7 @@ describe('full business simulation integration', () => {
     });
     const sellProcessor = createSellProcessor({
       taskQueue: sellTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -938,7 +946,7 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache({ retentionWindowMs: 300_000 });
+    const indicatorCache = createIndicatorCache(300_000);
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
@@ -1029,10 +1037,6 @@ describe('full business simulation integration', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContexts = new Map<string, MonitorContext>([
-      [monitorConfig.monitorSymbol, monitorContext],
-    ]);
-
     const submittedActions: string[] = [];
     const trader = createTraderDouble({
       getAccountSnapshot: async () => createAccountSnapshotDouble(200_000),
@@ -1063,7 +1067,7 @@ describe('full business simulation integration', () => {
     };
     const buyProcessor = createBuyProcessor({
       taskQueue: buyTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -1091,7 +1095,7 @@ describe('full business simulation integration', () => {
     });
     const sellProcessor = createSellProcessor({
       taskQueue: sellTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+      monitorContext,
       signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -1118,7 +1122,7 @@ describe('full business simulation integration', () => {
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
       monitorTaskQueue,
-      getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol) ?? null,
+      monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -1137,7 +1141,7 @@ describe('full business simulation integration', () => {
     let postTradeStopCount = 0;
 
     const signalRuntimeDomain = createSignalRuntimeDomain({
-      monitorContexts,
+      monitorContext,
       buyProcessor,
       sellProcessor,
       monitorTaskProcessor,
@@ -1270,7 +1274,7 @@ describe('full business simulation integration', () => {
         lastState,
         doomsdayProtection: createDoomsdayProtectionDouble(),
         tradingConfig,
-        monitorContexts,
+        monitorContext,
         tradingGateEventRuntime: createTradingGateEventRuntimeDouble(),
         quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
         dayLifecycleManager,
@@ -1291,7 +1295,7 @@ describe('full business simulation integration', () => {
         lastState,
         doomsdayProtection: createDoomsdayProtectionDouble(),
         tradingConfig,
-        monitorContexts,
+        monitorContext,
         tradingGateEventRuntime: createTradingGateEventRuntimeDouble(),
         quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
         dayLifecycleManager,

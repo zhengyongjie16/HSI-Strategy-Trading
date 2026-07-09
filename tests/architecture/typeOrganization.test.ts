@@ -132,7 +132,7 @@ describe('type organization regressions', () => {
     }
   });
 
-  it('stores strategy contracts in core/strategy/types.ts and keeps legacy ports path removed', async () => {
+  it('stores strategy contracts in core/strategy/types.ts and keeps removed ports path absent', async () => {
     const strategyTypesSource = await readProjectFile('src/core/strategy/types.ts');
 
     expect(strategyTypesSource).toMatch(/export\s+interface\s+TradingSignalStrategy\b/);
@@ -186,7 +186,7 @@ describe('type organization regressions', () => {
 
   it('keeps default strategy factory direct and neutrally named', async () => {
     const strategySource = await readProjectFile('src/core/strategy/index.ts');
-    const monitorContextSource = await readProjectFile('src/app/context/createMonitorContexts.ts');
+    const monitorContextSource = await readProjectFile('src/app/context/createMonitorContext.ts');
 
     expect(strategySource).toMatch(/export\s+function\s+createMultiIndicatorTradingStrategy\b/);
     expect(strategySource).not.toMatch(/createDefaultTradingSignalStrategyFactory/);
@@ -252,6 +252,60 @@ describe('type organization regressions', () => {
     expectNoNamedExport(quoteTypesSource, 'QuoteStaticInfo');
   });
 
+  it('removes single-monitor refactor structural residues from active code and tests', async () => {
+    const symbolRegistrySource = await readProjectFile('src/services/autoSymbolManager/utils.ts');
+    const monitorQuoteTypesSource = await readProjectFile(
+      'src/main/monitorQuoteEventRuntime/types.ts',
+    );
+    const monitorQuoteRuntimeSource = await readProjectFile(
+      'src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.ts',
+    );
+    const queueCleanupSource = await readProjectFile(
+      'src/main/seatRuntimeCleanupDispatcher/queueCleanup.ts',
+    );
+    const seatRuntimeCleanupTestSource = await readProjectFile(
+      'tests/main/seatRuntimeCleanupDispatcher/business.test.ts',
+    );
+    const periodicChainTestSource = await readProjectFile(
+      'tests/integration/periodic-auto-symbol-chain.integration.test.ts',
+    );
+    const monitorQuoteTestSource = await readProjectFile(
+      'tests/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.business.test.ts',
+    );
+    const monitorTaskProcessorTestSource = await readProjectFile(
+      'tests/main/asyncProgram/monitorTaskProcessor/business.test.ts',
+    );
+    const postTradeConsistencyRuntimeSource = await readProjectFile(
+      'src/app/runtime/createPostTradeConsistencyRuntime.ts',
+    );
+    const historyOrdersUtilitySource = await readProjectFile('utils/getHistoryOrders.js');
+
+    expect(symbolRegistrySource).not.toMatch(/new Map<string,\s*SymbolSeatEntry>/);
+    expect(symbolRegistrySource).not.toMatch(
+      /for \(const \[monitorSymbol,\s*entry\] of registry\)/,
+    );
+    expect(monitorQuoteTypesSource).not.toMatch(/readonly monitorContext\?: MonitorContext/);
+    expect(monitorQuoteRuntimeSource).not.toMatch(/monitorContext === undefined/);
+    expect(monitorQuoteRuntimeSource).not.toMatch(/!monitorContext/);
+    expect(queueCleanupSource).not.toMatch(/seatSnapshots/);
+    expect(queueCleanupSource).not.toMatch(/Object\.hasOwn\(task\.data,\s*'long'\)/);
+    expect(`${seatRuntimeCleanupTestSource}\n${periodicChainTestSource}`).not.toMatch(
+      /\$\{monitorSymbol\}:(AUTO_SYMBOL_TICK|SEAT_REFRESH)/,
+    );
+    expect(monitorQuoteTestSource).not.toMatch(/Object\.assign\(\s*staticMonitorContext as/);
+    expect(monitorQuoteTypesSource).not.toMatch(/latestMonitorContext/);
+    expect(monitorQuoteRuntimeSource).not.toMatch(/latestMonitorContext/);
+    expect(monitorTaskProcessorTestSource).not.toMatch(/as never/);
+    expect(postTradeConsistencyRuntimeSource).not.toMatch(/Map<string,\s*MonitorContext>/);
+    expect(postTradeConsistencyRuntimeSource).not.toMatch(/ReadonlyMap<string,\s*MonitorContext>/);
+    expect(postTradeConsistencyRuntimeSource).not.toMatch(/buildMonitorContextBySeatSymbol/);
+    expect(historyOrdersUtilitySource).not.toMatch(/多标的支持/);
+    expect(historyOrdersUtilitySource).not.toMatch(/applyMultiSymbolFiltering/);
+    expect(historyOrdersUtilitySource).not.toMatch(/node tests\/getHistoryOrders\.js/);
+    expect(historyOrdersUtilitySource).not.toMatch(/adjustOrdersByQuantityLimit/);
+    expect(historyOrdersUtilitySource).not.toMatch(/executedPrice\s*>=\s*sellPrice/);
+  });
+
   it('keeps unused startup and runtime gate parsing removed from production surface', async () => {
     const seatTypesSource = await readProjectFile('src/types/seat.ts');
 
@@ -305,7 +359,7 @@ describe('type organization regressions', () => {
 
     expect(symbolsSource).not.toContain('MonitorConfig');
     expect(symbolsSource).toMatch(
-      /readonly\s+monitors:\s*ReadonlyArray<\{\s*readonly\s+monitorSymbol:\s*string;\s*\}>/,
+      /readonly\s+monitorSymbol:\s*string;\s*readonly\s+symbolRegistry:\s*Pick<SymbolRegistry,\s*'getSeatState'>/,
     );
 
     expect(symbolsSource).toMatch(

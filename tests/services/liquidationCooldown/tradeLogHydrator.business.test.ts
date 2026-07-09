@@ -32,9 +32,9 @@ function createCompletedRecord(params: {
     error: null,
     reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
     signalTriggerTime: null,
-    executedAt: null,
+    executedAt: new Date(params.executedAtMs).toISOString(),
     executedAtMs: params.executedAtMs,
-    timestamp: null,
+    timestamp: new Date(params.executedAtMs).toISOString(),
     isProtectiveClearance: true,
   };
 }
@@ -68,19 +68,61 @@ describe('tradeLogHydrator business flow', () => {
     expect(boundaries.size).toBe(0);
   });
 
+  it('fails fast when existing trade log JSON is invalid', () => {
+    const tracker = createLiquidationCooldownTracker({
+      nowMs: () => 1_000,
+    });
+    const hydrator = createTradeLogHydrator({
+      readFileSync: () => '{invalid-json',
+      existsSync: () => true,
+      resolveLogRootDir: () => TEST_LOG_ROOT_DIR,
+      nowMs: () => 1_000,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: tracker,
+    });
+
+    expect(() => hydrator.hydrate()).toThrow('成交日志解析失败');
+  });
+
+  it('fails fast when existing trade log root is not an array', () => {
+    const tracker = createLiquidationCooldownTracker({
+      nowMs: () => 1_000,
+    });
+    const hydrator = createTradeLogHydrator({
+      readFileSync: () => JSON.stringify({ records: [] }),
+      existsSync: () => true,
+      resolveLogRootDir: () => TEST_LOG_ROOT_DIR,
+      nowMs: () => 1_000,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: tracker,
+    });
+
+    expect(() => hydrator.hydrate()).toThrow('成交日志根节点必须为数组');
+  });
+
   it('restores trigger count from completed events when cooldown not yet activated', () => {
     const nowMs = Date.parse('2026-03-13T10:00:00+08:00');
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => nowMs,
     });
     const tradingConfig = createTradingConfig({
-      monitors: [
-        createMonitorConfig({
-          monitorSymbol: 'HSI.HK',
-          liquidationTriggerLimit: 2,
-          liquidationCooldown: { mode: 'minutes', minutes: 5 },
-        }),
-      ],
+      monitor: createMonitorConfig({
+        monitorSymbol: 'HSI.HK',
+        liquidationTriggerLimit: 2,
+        liquidationCooldown: { mode: 'minutes', minutes: 5 },
+      }),
     });
     const records = [
       createCompletedRecord({
@@ -127,13 +169,11 @@ describe('tradeLogHydrator business flow', () => {
       nowMs: () => nowMs,
     });
     const tradingConfig = createTradingConfig({
-      monitors: [
-        createMonitorConfig({
-          monitorSymbol: 'HSI.HK',
-          liquidationTriggerLimit: 1,
-          liquidationCooldown: { mode: 'minutes', minutes: 5 },
-        }),
-      ],
+      monitor: createMonitorConfig({
+        monitorSymbol: 'HSI.HK',
+        liquidationTriggerLimit: 1,
+        liquidationCooldown: { mode: 'minutes', minutes: 5 },
+      }),
     });
     const records = [
       createCompletedRecord({
@@ -167,5 +207,73 @@ describe('tradeLogHydrator business flow', () => {
     });
     expect(remainingMs).toBe(270_000);
     expect(boundaries.get('HSI.HK:LONG')).toBe(executedAtMs);
+  });
+
+  it('fails fast when protective clearance record monitorSymbol mismatches configured monitor', () => {
+    const nowMs = Date.parse('2026-03-13T10:00:00+08:00');
+    const tracker = createLiquidationCooldownTracker({
+      nowMs: () => nowMs,
+    });
+    const hydrator = createTradeLogHydrator({
+      readFileSync: () =>
+        JSON.stringify([
+          createCompletedRecord({
+            monitorSymbol: 'HSCEI.HK',
+            action: 'SELLCALL',
+            executedAtMs: nowMs - 30_000,
+          }),
+        ]),
+      existsSync: () => true,
+      resolveLogRootDir: () => TEST_LOG_ROOT_DIR,
+      nowMs: () => nowMs,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: tracker,
+    });
+
+    expect(() => hydrator.hydrate()).toThrow('monitorSymbol 不匹配唯一配置');
+  });
+
+  it('fails fast when protective clearance record action cannot resolve direction', () => {
+    const nowMs = Date.parse('2026-03-13T10:00:00+08:00');
+    const tracker = createLiquidationCooldownTracker({
+      nowMs: () => nowMs,
+    });
+    const hydrator = createTradeLogHydrator({
+      readFileSync: () =>
+        JSON.stringify([
+          createCompletedRecord({
+            monitorSymbol: 'HSI.HK',
+            action: 'SELLCALL',
+            executedAtMs: nowMs - 30_000,
+          }),
+          {
+            ...createCompletedRecord({
+              monitorSymbol: 'HSI.HK',
+              action: 'SELLCALL',
+              executedAtMs: nowMs - 20_000,
+            }),
+            action: 'BUYCALL',
+          },
+        ]),
+      existsSync: () => true,
+      resolveLogRootDir: () => TEST_LOG_ROOT_DIR,
+      nowMs: () => nowMs,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: tracker,
+    });
+
+    expect(() => hydrator.hydrate()).toThrow('action 无法解析方向');
   });
 });

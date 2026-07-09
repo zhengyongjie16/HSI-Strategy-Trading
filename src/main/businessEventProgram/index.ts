@@ -3,14 +3,14 @@
  *
  * 职责：
  * - 监听 monitor symbol 的 K 线更新事件
- * - 以 per-monitor single-flight + latest-only collapse 推进普通 latest snapshot
+ * - 以单 route single-flight + latest-only collapse 推进普通 latest snapshot
  * - 在事件路径中直接生成普通 immediate / delayed signals
  * - 在普通指标推进成功后立即写入 indicatorCache 延迟验证样本
  * - 不负责生命周期时间唤醒、末日保护和周期换标 due 事件
  */
 import { TRADING } from '../../constants/index.js';
 import { logger } from '../../utils/logger/index.js';
-import { formatError } from '../../utils/error/index.js';
+import { formatError, toError } from '../../utils/error/index.js';
 import { projectVerificationSampleValues } from '../asyncProgram/indicatorCache/utils.js';
 import { runIndicatorPipeline } from './indicatorPipeline.js';
 import { runSignalPipeline } from './signalPipeline.js';
@@ -30,7 +30,7 @@ import type {
 export function createBusinessEventProgram(deps: BusinessEventProgramDeps): BusinessEventProgram {
   const {
     marketDataClient,
-    monitorContexts,
+    monitorContext,
     lastState,
     tradingConfig,
     buyTaskQueue,
@@ -45,47 +45,64 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
     buyTaskQueue,
     sellTaskQueue,
   };
-  const routeStates = new Map<string, BusinessEventRouteState>();
+  const monitorSymbol = monitorContext.config.monitorSymbol;
+  let routeState: BusinessEventRouteState = {
+    inFlight: false,
+    dirty: false,
+  };
   const activePromises = new Set<Promise<void>>();
+  const fatalRejectors = new Set<(error: Error) => void>();
+  let fatalError: Error | null = null;
   let running = false;
   let unsubscribeCandlestickUpdated: (() => void) | null = null;
 
-  /**
-   * 获取或创建单 monitor route 状态。
-   *
-   * @param monitorSymbol 监控标的
-   * @returns route 状态
-   */
-  function getOrCreateRouteState(monitorSymbol: string): BusinessEventRouteState {
-    const existing = routeStates.get(monitorSymbol);
-    if (existing !== undefined) {
-      return existing;
+  function handleFatalError(error: unknown): void {
+    if (fatalError !== null) {
+      return;
     }
 
-    const routeState: BusinessEventRouteState = {
+    fatalError = toError(error);
+    running = false;
+    unsubscribeCandlestickUpdated?.();
+    unsubscribeCandlestickUpdated = null;
+    routeState = {
       inFlight: false,
       dirty: false,
     };
-    routeStates.set(monitorSymbol, routeState);
-    return routeState;
+
+    for (const reject of fatalRejectors) {
+      reject(fatalError);
+    }
+
+    fatalRejectors.clear();
+  }
+
+  function drainFatalError(): Promise<never> {
+    if (fatalError !== null) {
+      return Promise.reject(fatalError);
+    }
+
+    return new Promise<never>((_, reject) => {
+      fatalRejectors.add(reject);
+    });
   }
 
   /**
-   * 启动并跟踪单 monitor route 的异步调度任务。
+   * 启动并跟踪唯一 monitor route 的异步调度任务。
    *
-   * @param monitorSymbol 监控标的
    * @param failureMessage 失败日志前缀
    */
-  function startMonitorRouteProcessing(monitorSymbol: string, failureMessage: string): void {
+  function startMonitorRouteProcessing(failureMessage: string): void {
     const processingPromise = Promise.resolve()
       .then(() => {
-        processBusinessEventRoute(monitorSymbol);
+        processBusinessEventRoute();
       })
       .catch((error: unknown) => {
         logger.error(
           `[businessEventProgram] ${failureMessage} monitorSymbol=${monitorSymbol}`,
           formatError(error),
         );
+        handleFatalError(error);
       });
     activePromises.add(processingPromise);
     void processingPromise.finally(() => {
@@ -94,33 +111,20 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
   }
 
   /**
-   * 处理单 monitor 的 K 线业务链路。
-   *
-   * @param monitorSymbol 监控标的
+   * 处理唯一 monitor 的 K 线业务链路。
    */
-  function processBusinessEventRoute(monitorSymbol: string): void {
-    if (!routeStates.has(monitorSymbol)) {
-      return;
-    }
-
+  function processBusinessEventRoute(): void {
     try {
       while (running) {
-        const currentRouteState = routeStates.get(monitorSymbol);
-        if (!currentRouteState?.dirty) {
+        if (!routeState.dirty) {
           return;
         }
 
-        const observedAtMs = currentRouteState.pendingObservedAtMs;
-        routeStates.set(monitorSymbol, {
-          inFlight: currentRouteState.inFlight,
+        const observedAtMs = routeState.pendingObservedAtMs;
+        routeState = {
+          inFlight: routeState.inFlight,
           dirty: false,
-        });
-
-        const monitorContext = monitorContexts.get(monitorSymbol);
-        if (monitorContext === undefined) {
-          routeStates.delete(monitorSymbol);
-          return;
-        }
+        };
 
         const monitorSnapshot = runIndicatorPipeline({
           monitorSymbol,
@@ -164,45 +168,40 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
         });
       }
     } finally {
-      const latestRouteState = routeStates.get(monitorSymbol);
-      if (latestRouteState !== undefined) {
-        const idleRouteState: BusinessEventRouteState = latestRouteState.dirty
-          ? {
-              inFlight: false,
-              dirty: true,
-              pendingObservedAtMs: latestRouteState.pendingObservedAtMs,
-            }
-          : {
-              inFlight: false,
-              dirty: false,
-            };
-        routeStates.set(monitorSymbol, idleRouteState);
-        if (running && idleRouteState.dirty) {
-          routeStates.set(monitorSymbol, {
-            inFlight: true,
+      const idleRouteState: BusinessEventRouteState = routeState.dirty
+        ? {
+            inFlight: false,
             dirty: true,
-            pendingObservedAtMs: idleRouteState.pendingObservedAtMs,
-          });
-          startMonitorRouteProcessing(monitorSymbol, 'monitor route 重入失败');
-        }
+            pendingObservedAtMs: routeState.pendingObservedAtMs,
+          }
+        : {
+            inFlight: false,
+            dirty: false,
+          };
+      routeState = idleRouteState;
+      if (running && idleRouteState.dirty) {
+        routeState = {
+          inFlight: true,
+          dirty: true,
+          pendingObservedAtMs: idleRouteState.pendingObservedAtMs,
+        };
+        startMonitorRouteProcessing('monitor route 重入失败');
       }
     }
   }
 
   /**
-   * 统一触发单 monitor 业务路由。
+   * 统一触发唯一 monitor 业务路由。
    *
-   * @param monitorSymbol 监控标的
    * @param observedAtMs 本次 K 线事件被监听到的时间戳
    */
-  function triggerMonitorRoute(monitorSymbol: string, observedAtMs: number): void {
-    let routeState = getOrCreateRouteState(monitorSymbol);
+  function triggerMonitorRoute(observedAtMs: number): void {
     routeState = {
       ...routeState,
       dirty: true,
       pendingObservedAtMs: observedAtMs,
     };
-    routeStates.set(monitorSymbol, routeState);
+
     if (routeState.inFlight || !running) {
       return;
     }
@@ -211,8 +210,7 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
       ...routeState,
       inFlight: true,
     };
-    routeStates.set(monitorSymbol, routeState);
-    startMonitorRouteProcessing(monitorSymbol, 'monitor route 执行失败');
+    startMonitorRouteProcessing('monitor route 执行失败');
   }
 
   function start(): void {
@@ -220,17 +218,18 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
       return;
     }
 
+    fatalError = null;
     running = true;
     unsubscribeCandlestickUpdated = marketDataClient.onCandlestickUpdated((event) => {
       if (event.period !== TRADING.CANDLE_PERIOD) {
         return;
       }
 
-      if (!monitorContexts.has(event.symbol)) {
+      if (event.symbol !== monitorSymbol) {
         return;
       }
 
-      triggerMonitorRoute(event.symbol, Date.now());
+      triggerMonitorRoute(Date.now());
     });
   }
 
@@ -243,11 +242,15 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
       await Promise.allSettled(activePromises);
     }
 
-    routeStates.clear();
+    routeState = {
+      inFlight: false,
+      dirty: false,
+    };
   }
 
   return {
     start,
     stopAndDrain,
+    drainFatalError,
   };
 }

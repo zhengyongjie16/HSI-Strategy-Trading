@@ -6,7 +6,7 @@ import type { DoomsdayProtection } from '../../../core/doomsdayProtection/types.
 
 /**
  * 买入处理器依赖类型（创建 BuyProcessor 时的参数）。
- * 类型用途：创建 BuyProcessor 时的依赖注入对象，包含任务队列、监控上下文、信号处理器、交易执行器、末日保护等。
+ * 类型用途：创建 BuyProcessor 时的依赖注入对象，包含任务队列、唯一监控上下文、信号处理器、交易执行器、末日保护等。
  * 数据来源：由主程序/启动流程在创建 BuyProcessor 时组装并传入工厂。
  * 使用范围：仅 buyProcessor 及启动流程使用，内部使用。
  */
@@ -14,8 +14,8 @@ export type BuyProcessorDeps = {
   /** 买入任务队列 */
   readonly taskQueue: TaskQueue<BuyTaskType>;
 
-  /** 获取监控上下文的函数 */
-  readonly getMonitorContext: (monitorSymbol: string) => MonitorContext | undefined;
+  /** 唯一监控上下文 */
+  readonly monitorContext: MonitorContext;
 
   /** 信号处理器（风险检查） */
   readonly signalProcessor: SignalProcessor;

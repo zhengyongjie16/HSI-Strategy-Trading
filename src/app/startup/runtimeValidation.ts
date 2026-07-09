@@ -68,44 +68,42 @@ export function collectRuntimeValidationSymbols(
 ): RuntimeValidationCollector {
   const { tradingConfig, symbolRegistry, positions } = params;
   const collector = createRuntimeValidationCollector();
+  const monitorConfig = tradingConfig.monitor;
 
-  for (const monitorConfig of tradingConfig.monitors) {
-    const index = monitorConfig.originalIndex;
-    pushRuntimeValidationSymbol({
-      symbol: monitorConfig.monitorSymbol,
-      label: `监控标的 ${index}`,
-      requireLotSize: false,
-      required: true,
-      collector,
-    });
+  pushRuntimeValidationSymbol({
+    symbol: monitorConfig.monitorSymbol,
+    label: '监控标的',
+    requireLotSize: false,
+    required: true,
+    collector,
+  });
 
-    const longSeatSymbol = resolveBoundSeatSymbol(
-      symbolRegistry,
-      monitorConfig.monitorSymbol,
-      'LONG',
-    );
-    const shortSeatSymbol = resolveBoundSeatSymbol(
-      symbolRegistry,
-      monitorConfig.monitorSymbol,
-      'SHORT',
-    );
-    const autoSearchEnabled = monitorConfig.autoSearchConfig.autoSearchEnabled;
-    pushRuntimeValidationSymbol({
-      symbol: longSeatSymbol,
-      label: `做多席位标的 ${index}`,
-      requireLotSize: true,
-      required: !autoSearchEnabled,
-      collector,
-    });
+  const longSeatSymbol = resolveBoundSeatSymbol(
+    symbolRegistry,
+    monitorConfig.monitorSymbol,
+    'LONG',
+  );
+  const shortSeatSymbol = resolveBoundSeatSymbol(
+    symbolRegistry,
+    monitorConfig.monitorSymbol,
+    'SHORT',
+  );
+  const autoSearchEnabled = monitorConfig.autoSearchConfig.autoSearchEnabled;
+  pushRuntimeValidationSymbol({
+    symbol: longSeatSymbol,
+    label: '做多席位标的',
+    requireLotSize: true,
+    required: !autoSearchEnabled,
+    collector,
+  });
 
-    pushRuntimeValidationSymbol({
-      symbol: shortSeatSymbol,
-      label: `做空席位标的 ${index}`,
-      requireLotSize: true,
-      required: !autoSearchEnabled,
-      collector,
-    });
-  }
+  pushRuntimeValidationSymbol({
+    symbol: shortSeatSymbol,
+    label: '做空席位标的',
+    requireLotSize: true,
+    required: !autoSearchEnabled,
+    collector,
+  });
 
   for (const position of positions) {
     pushRuntimeValidationSymbol({

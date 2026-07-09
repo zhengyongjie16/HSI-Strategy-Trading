@@ -16,16 +16,20 @@ function shouldCleanupDirectionRuntime(event: SeatStateChangedEvent): boolean {
   return event.previousState.status === 'ACTIVE' && event.nextState.status !== 'ACTIVE';
 }
 
+function assertCleanupMonitorSymbol(monitorSymbol: string, expectedMonitorSymbol: string): void {
+  if (monitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[SeatRuntimeCleanupDispatcher] 非唯一 monitorSymbol 事件: expected=${expectedMonitorSymbol} actual=${monitorSymbol}`,
+    );
+  }
+}
+
 function cleanupDirectionRuntime(
   deps: SeatRuntimeCleanupDispatcherDeps,
   event: SeatStateChangedEvent,
 ): void {
-  const monitorContext = deps.monitorContexts.get(event.monitorSymbol);
-  if (monitorContext === undefined) {
-    throw new Error(
-      `[SeatRuntimeCleanupDispatcher] 未找到监控上下文: monitorSymbol=${event.monitorSymbol} direction=${event.direction}`,
-    );
-  }
+  assertCleanupMonitorSymbol(event.monitorSymbol, deps.monitorContext.config.monitorSymbol);
+  const monitorContext = deps.monitorContext;
 
   if (event.direction === 'LONG') {
     monitorContext.riskChecker.clearLongWarrantInfo();

@@ -69,23 +69,18 @@ function createClearanceSignal(params: ClearanceSignalParams): SellSignal {
 
 /**
  * 从监控上下文中解析席位对应的交易标的。
- * 用于末日清仓时确定每个监控标的下的多/空实际交易标的（牛熊证代码）。
+ * 用于末日清仓时确定唯一监控标的下 LONG/SHORT 席位的实际交易标的（牛熊证代码）。
  *
- * @param context 监控上下文，缺失时无法解析
+ * @param context 监控上下文
  * @param monitorSymbol 监控标的代码（如 HSI.HK）
  * @param direction 多空方向（LONG/SHORT）
- * @returns 该席位对应的交易标的代码，席位未就绪或上下文缺失时返回 null
+ * @returns 该席位对应的交易标的代码，席位未就绪时返回 null
  */
 function resolveSeatSymbol(
-  context: MonitorContext | undefined,
+  context: MonitorContext,
   monitorSymbol: string,
   direction: 'LONG' | 'SHORT',
 ): string | null {
-  if (!context) {
-    logger.warn(`[末日保护程序] 未找到监控上下文，跳过席位: ${monitorSymbol} ${direction}`);
-    return null;
-  }
-
   const seatState = context.symbolRegistry.getSeatState(monitorSymbol, direction);
   if (!isSeatActive(seatState)) {
     logger.debug(`[末日保护程序] 席位未就绪，跳过: ${monitorSymbol} ${direction}`);
@@ -96,14 +91,10 @@ function resolveSeatSymbol(
 }
 
 function resolveSeatVersion(
-  context: MonitorContext | undefined,
+  context: MonitorContext,
   monitorSymbol: string,
   direction: 'LONG' | 'SHORT',
 ): number | null {
-  if (!context) {
-    return null;
-  }
-
   const seatState = context.symbolRegistry.getSeatState(monitorSymbol, direction);
   if (!isSeatActive(seatState)) {
     return null;
@@ -113,28 +104,24 @@ function resolveSeatVersion(
 }
 
 /**
- * 解析指定监控标的的多空席位交易标的。
- * 供清仓流程按监控维度获取做多/做空标的，用于匹配持仓与拉取行情。
+ * 解析当前监控上下文的多空席位交易标的。
+ * 供清仓流程获取做多/做空标的，用于匹配持仓与拉取行情。
  *
- * @param monitorSymbol 监控标的代码
- * @param monitorContexts 各监控标的的上下文 Map
- * @returns 该监控标的下的 longSymbol 与 shortSymbol（未就绪时为 null）
+ * @param monitorContext 单一监控上下文
+ * @returns 当前监控下的 longSymbol 与 shortSymbol（未就绪时为 null）
  */
-function resolveMonitorSymbols(
-  monitorSymbol: string,
-  monitorContexts: DoomsdayClearanceContext['monitorContexts'],
-): {
+function resolveMonitorSymbols(monitorContext: MonitorContext): {
   longSymbol: string | null;
   shortSymbol: string | null;
   longSeatVersion: number | null;
   shortSeatVersion: number | null;
 } {
-  const context = monitorContexts.get(monitorSymbol);
+  const monitorSymbol = monitorContext.config.monitorSymbol;
   return {
-    longSymbol: resolveSeatSymbol(context, monitorSymbol, 'LONG'),
-    shortSymbol: resolveSeatSymbol(context, monitorSymbol, 'SHORT'),
-    longSeatVersion: resolveSeatVersion(context, monitorSymbol, 'LONG'),
-    shortSeatVersion: resolveSeatVersion(context, monitorSymbol, 'SHORT'),
+    longSymbol: resolveSeatSymbol(monitorContext, monitorSymbol, 'LONG'),
+    shortSymbol: resolveSeatSymbol(monitorContext, monitorSymbol, 'SHORT'),
+    longSeatVersion: resolveSeatVersion(monitorContext, monitorSymbol, 'LONG'),
+    shortSeatVersion: resolveSeatVersion(monitorContext, monitorSymbol, 'SHORT'),
   };
 }
 
@@ -268,8 +255,7 @@ export function createDoomsdayProtection(deps?: {
       currentTime,
       isHalfDay,
       positions,
-      monitorConfigs,
-      monitorContexts,
+      monitorContext,
       trader,
       marketDataClient,
       lastState,
@@ -313,81 +299,71 @@ export function createDoomsdayProtection(deps?: {
     }
 
     const allTradingSymbols = new Set<string>();
-    for (const monitorConfig of monitorConfigs) {
-      const { longSymbol, shortSymbol } = resolveMonitorSymbols(
-        monitorConfig.monitorSymbol,
-        monitorContexts,
-      );
-      if (longSymbol) {
-        allTradingSymbols.add(longSymbol);
-      }
+    const { longSymbol, shortSymbol, longSeatVersion, shortSeatVersion } =
+      resolveMonitorSymbols(monitorContext);
+    if (longSymbol) {
+      allTradingSymbols.add(longSymbol);
+    }
 
-      if (shortSymbol) {
-        allTradingSymbols.add(shortSymbol);
-      }
+    if (shortSymbol) {
+      allTradingSymbols.add(shortSymbol);
     }
 
     const quoteMap = await batchGetQuotes(marketDataClient, allTradingSymbols);
     const allClearanceSignals: SellSignal[] = [];
     const unresolvedSymbols = new Set<string>();
 
-    for (const monitorConfig of monitorConfigs) {
-      const { longSymbol, shortSymbol, longSeatVersion, shortSeatVersion } = resolveMonitorSymbols(
-        monitorConfig.monitorSymbol,
-        monitorContexts,
+    const longQuote = longSymbol ? (quoteMap.get(longSymbol) ?? null) : null;
+    const shortQuote = shortSymbol ? (quoteMap.get(shortSymbol) ?? null) : null;
+
+    for (const pos of processingPositions) {
+      if (pos.symbol === longSymbol) {
+        const quoteReadiness = resolveQuoteReadinessForRequirement({
+          quote: longQuote,
+          requirement: 'PRICE',
+        });
+        if (quoteReadiness !== 'READY') {
+          if (quoteReadiness === 'MISSING') {
+            unresolvedSymbols.add(pos.symbol);
+          } else {
+            logger.warn(
+              `[末日保护程序] 清仓行情无效，跳过本轮清仓信号: symbol=${pos.symbol} readiness=${quoteReadiness}`,
+            );
+          }
+
+          continue;
+        }
+      }
+
+      if (pos.symbol === shortSymbol) {
+        const quoteReadiness = resolveQuoteReadinessForRequirement({
+          quote: shortQuote,
+          requirement: 'PRICE',
+        });
+        if (quoteReadiness !== 'READY') {
+          if (quoteReadiness === 'MISSING') {
+            unresolvedSymbols.add(pos.symbol);
+          } else {
+            logger.warn(
+              `[末日保护程序] 清仓行情无效，跳过本轮清仓信号: symbol=${pos.symbol} readiness=${quoteReadiness}`,
+            );
+          }
+
+          continue;
+        }
+      }
+
+      const signal = processPositionForClearance(
+        pos,
+        longSymbol,
+        shortSymbol,
+        longSeatVersion,
+        shortSeatVersion,
+        longQuote,
+        shortQuote,
       );
-      const longQuote = longSymbol ? (quoteMap.get(longSymbol) ?? null) : null;
-      const shortQuote = shortSymbol ? (quoteMap.get(shortSymbol) ?? null) : null;
-
-      for (const pos of processingPositions) {
-        if (pos.symbol === longSymbol) {
-          const quoteReadiness = resolveQuoteReadinessForRequirement({
-            quote: longQuote,
-            requirement: 'PRICE',
-          });
-          if (quoteReadiness !== 'READY') {
-            if (quoteReadiness === 'MISSING') {
-              unresolvedSymbols.add(pos.symbol);
-            } else {
-              logger.warn(
-                `[末日保护程序] 清仓行情无效，跳过本轮清仓信号: symbol=${pos.symbol} readiness=${quoteReadiness}`,
-              );
-            }
-
-            continue;
-          }
-        }
-
-        if (pos.symbol === shortSymbol) {
-          const quoteReadiness = resolveQuoteReadinessForRequirement({
-            quote: shortQuote,
-            requirement: 'PRICE',
-          });
-          if (quoteReadiness !== 'READY') {
-            if (quoteReadiness === 'MISSING') {
-              unresolvedSymbols.add(pos.symbol);
-            } else {
-              logger.warn(
-                `[末日保护程序] 清仓行情无效，跳过本轮清仓信号: symbol=${pos.symbol} readiness=${quoteReadiness}`,
-              );
-            }
-
-            continue;
-          }
-        }
-
-        const signal = processPositionForClearance(
-          pos,
-          longSymbol,
-          shortSymbol,
-          longSeatVersion,
-          shortSeatVersion,
-          longQuote,
-          shortQuote,
-        );
-        if (signal) {
-          allClearanceSignals.push(signal);
-        }
+      if (signal) {
+        allClearanceSignals.push(signal);
       }
     }
 
@@ -415,21 +391,13 @@ export function createDoomsdayProtection(deps?: {
         lastState.positionCache.update(lastState.cachedPositions);
         await onPositionsCommitted?.();
 
-        for (const monitorContext of monitorContexts.values()) {
-          const { config, orderRecorder } = monitorContext;
-          const { longSymbol, shortSymbol } = resolveMonitorSymbols(
-            config.monitorSymbol,
-            monitorContexts,
-          );
-          if (longSymbol && submittedSymbols.has(longSymbol)) {
-            const quote = quoteMap.get(longSymbol) ?? null;
-            orderRecorder.clearBuyOrders(longSymbol, true, quote);
-          }
+        const { orderRecorder } = monitorContext;
+        if (longSymbol && submittedSymbols.has(longSymbol)) {
+          orderRecorder.clearBuyOrders(longSymbol, true, longQuote);
+        }
 
-          if (shortSymbol && submittedSymbols.has(shortSymbol)) {
-            const quote = quoteMap.get(shortSymbol) ?? null;
-            orderRecorder.clearBuyOrders(shortSymbol, false, quote);
-          }
+        if (shortSymbol && submittedSymbols.has(shortSymbol)) {
+          orderRecorder.clearBuyOrders(shortSymbol, false, shortQuote);
         }
       } else {
         logger.warn(
@@ -499,7 +467,7 @@ export function createDoomsdayProtection(deps?: {
     async cancelPendingBuyOrders(
       context: CancelPendingBuyOrdersContext,
     ): Promise<CancelPendingBuyOrdersResult> {
-      const { currentTime, isHalfDay, monitorConfigs, monitorContexts, trader } = context;
+      const { currentTime, isHalfDay, monitorContext, trader } = context;
 
       // 检查是否处于买入截止窗口
       if (!isWithinDoomsdayBuyCutoffWindow(currentTime, isHalfDay)) {
@@ -520,18 +488,13 @@ export function createDoomsdayProtection(deps?: {
 
       // 收集所有唯一的交易标的
       const allTradingSymbols = new Set<string>();
-      for (const monitorConfig of monitorConfigs) {
-        const { longSymbol, shortSymbol } = resolveMonitorSymbols(
-          monitorConfig.monitorSymbol,
-          monitorContexts,
-        );
-        if (longSymbol) {
-          allTradingSymbols.add(longSymbol);
-        }
+      const { longSymbol, shortSymbol } = resolveMonitorSymbols(monitorContext);
+      if (longSymbol) {
+        allTradingSymbols.add(longSymbol);
+      }
 
-        if (shortSymbol) {
-          allTradingSymbols.add(shortSymbol);
-        }
+      if (shortSymbol) {
+        allTradingSymbols.add(shortSymbol);
       }
 
       if (allTradingSymbols.size === 0) {

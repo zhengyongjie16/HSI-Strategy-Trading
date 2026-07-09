@@ -1,15 +1,15 @@
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.js';
 
 /**
  * 自动寻标 route key。
- * 类型用途：以 monitorSymbol + direction + seatVersion 唯一标识一条空席位寻标唤醒链。
+ * 类型用途：以 direction + seatVersion 唯一标识一条空席位寻标唤醒链。
  * 数据来源：由 AutoSearchWakeupRuntime 在安排 one-shot timer 时构造。
  * 使用范围：仅 AutoSearchWakeupRuntime 模块内部使用。
  */
-export type AutoSearchRouteKey = `${string}:${'LONG' | 'SHORT'}:${number}`;
+export type AutoSearchRouteKey = `${'LONG' | 'SHORT'}:${number}`;
 
 /**
  * 自动寻标 runtime 依赖。
@@ -18,9 +18,9 @@ export type AutoSearchRouteKey = `${string}:${'LONG' | 'SHORT'}:${number}`;
  * 使用范围：AutoSearchWakeupRuntime 工厂。
  */
 export type AutoSearchWakeupRuntimeDeps = Readonly<{
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled'>;
   tradingGateEventRuntime: Pick<TradingGateEventRuntime, 'onGateStateChanged'>;
   now: () => Date;

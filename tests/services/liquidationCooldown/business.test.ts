@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { createLiquidationCooldownTracker } from '../../../src/services/liquidationCooldown/index.js';
 
 describe('liquidationCooldown business flow', () => {
-  it('triggerLimit=1 keeps backward compatibility and activates cooldown immediately', () => {
+  it('triggerLimit=1 activates cooldown immediately', () => {
     const now = 1_000_000;
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => now,

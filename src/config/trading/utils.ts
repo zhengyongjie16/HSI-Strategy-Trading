@@ -146,59 +146,58 @@ function getPercentValueConfig(
  * @returns 内部订单类型配置
  */
 function mapOrderTypeConfig(orderType: OrderType): OrderTypeConfig {
-  return OPEN_API_ORDER_TYPE_TO_CONFIG[orderType] ?? 'ELO';
+  const mappedConfig = OPEN_API_ORDER_TYPE_TO_CONFIG[orderType];
+  if (mappedConfig === undefined) {
+    throw new Error(`[TradingConfig] 未知 OpenAPI 订单类型: ${String(orderType)}`);
+  }
+
+  return mappedConfig;
 }
 
 /**
- * 解析单个监控标的配置。
+ * 解析唯一监控标的配置。
  * @param env 进程环境变量对象
- * @param index 监控标的索引
- * @returns 解析后的监控配置，该索引未配置时返回 null
+ * @returns 解析后的监控配置，未配置时返回 null
  */
-export function parseMonitorConfig(env: NodeJS.ProcessEnv, index: number): MonitorConfig | null {
-  if (index < 1) {
-    return null;
-  }
-
-  const suffix = `_${index}`;
-  const monitorSymbol = getStringConfig(env, `MONITOR_SYMBOL${suffix}`);
+export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null {
+  const monitorSymbol = getStringConfig(env, 'MONITOR_SYMBOL');
   if (!monitorSymbol) {
     return null;
   }
 
-  const longSymbol = getStringConfig(env, `LONG_SYMBOL${suffix}`) ?? '';
-  const shortSymbol = getStringConfig(env, `SHORT_SYMBOL${suffix}`) ?? '';
-  const autoSearchEnabled = getBooleanConfig(env, `AUTO_SEARCH_ENABLED${suffix}`, false);
+  const longSymbol = getStringConfig(env, 'LONG_SYMBOL') ?? '';
+  const shortSymbol = getStringConfig(env, 'SHORT_SYMBOL') ?? '';
+  const autoSearchEnabled = getBooleanConfig(env, 'AUTO_SEARCH_ENABLED', false);
   const autoSearchMinDistancePctBull = getPercentValueConfig(
     env,
-    `AUTO_SEARCH_MIN_DISTANCE_PCT_BULL${suffix}`,
+    'AUTO_SEARCH_MIN_DISTANCE_PCT_BULL',
     0,
   );
   const autoSearchMinDistancePctBear = getPercentValueConfig(
     env,
-    `AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR${suffix}`,
+    'AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR',
     -100,
   );
   const autoSearchMinTurnoverPerMinuteBull = getNumberConfig(
     env,
-    `AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL${suffix}`,
+    'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL',
     0,
   );
   const autoSearchMinTurnoverPerMinuteBear = getNumberConfig(
     env,
-    `AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR${suffix}`,
+    'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR',
     0,
   );
   const autoSearchExpiryMinMonths = parseBoundedNumberConfig({
     env,
-    envKey: `AUTO_SEARCH_EXPIRY_MIN_MONTHS${suffix}`,
+    envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
     defaultValue: 3,
     min: 1,
     max: 120,
   });
   const autoSearchOpenDelayMinutes = parseBoundedNumberConfig({
     env,
-    envKey: `AUTO_SEARCH_OPEN_DELAY_MINUTES${suffix}`,
+    envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
     defaultValue: 5,
     min: 0,
     max: 60,
@@ -206,77 +205,66 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv, index: number): Monit
   const switchIntervalMinutes = autoSearchEnabled
     ? parseFailFastBoundedNumberConfig({
         env,
-        envKey: `SWITCH_INTERVAL_MINUTES${suffix}`,
+        envKey: 'SWITCH_INTERVAL_MINUTES',
         defaultValue: 0,
         min: 0,
         max: 120,
       })
     : 0;
-  const switchDistanceRangeBull = parseNumberRangeConfig(
-    env,
-    `SWITCH_DISTANCE_RANGE_BULL${suffix}`,
-  );
-  const switchDistanceRangeBear = parseNumberRangeConfig(
-    env,
-    `SWITCH_DISTANCE_RANGE_BEAR${suffix}`,
-  );
-  const orderOwnershipMapping = parseOrderOwnershipMapping(env, `ORDER_OWNERSHIP_MAPPING${suffix}`);
+  const switchDistanceRangeBull = parseNumberRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BULL');
+  const switchDistanceRangeBear = parseNumberRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BEAR');
+  const orderOwnershipMapping = parseOrderOwnershipMapping(env, 'ORDER_OWNERSHIP_MAPPING');
   const targetNotional = parseFailFastMinimumNumberConfig({
     env,
-    envKey: `TARGET_NOTIONAL${suffix}`,
+    envKey: 'TARGET_NOTIONAL',
     defaultValue: 10000,
     min: 1,
   });
   const maxPositionNotional = parseFailFastMinimumNumberConfig({
     env,
-    envKey: `MAX_POSITION_NOTIONAL${suffix}`,
+    envKey: 'MAX_POSITION_NOTIONAL',
     defaultValue: 100000,
     min: 1,
   });
-  const maxUnrealizedLossPerSymbol =
-    getNumberConfig(env, `MAX_UNREALIZED_LOSS_PER_SYMBOL${suffix}`, 0) ?? 0;
+  const maxUnrealizedLossPerSymbol = getNumberConfig(env, 'MAX_UNREALIZED_LOSS_PER_SYMBOL', 0) ?? 0;
   const buyIntervalSeconds = parseFailFastBoundedNumberConfig({
     env,
-    envKey: `BUY_INTERVAL_SECONDS${suffix}`,
+    envKey: 'BUY_INTERVAL_SECONDS',
     defaultValue: 60,
     min: 10,
     max: 600,
   });
-  const liquidationCooldown = parseLiquidationCooldownConfig(
-    env,
-    `LIQUIDATION_COOLDOWN_MINUTES${suffix}`,
-  );
+  const liquidationCooldown = parseLiquidationCooldownConfig(env, 'LIQUIDATION_COOLDOWN_MINUTES');
   const liquidationTriggerLimit = parseBoundedNumberConfig({
     env,
-    envKey: `LIQUIDATION_TRIGGER_LIMIT${suffix}`,
+    envKey: 'LIQUIDATION_TRIGGER_LIMIT',
     defaultValue: 1,
     min: 1,
     max: 10,
   });
   const verificationConfig = {
     buy: {
-      delaySeconds: parseVerificationDelay(env, `VERIFICATION_DELAY_SECONDS_BUY${suffix}`, 60),
-      indicators: parseVerificationIndicators(env, `VERIFICATION_INDICATORS_BUY${suffix}`),
+      delaySeconds: parseVerificationDelay(env, 'VERIFICATION_DELAY_SECONDS_BUY', 60),
+      indicators: parseVerificationIndicators(env, 'VERIFICATION_INDICATORS_BUY'),
     },
     sell: {
-      delaySeconds: parseVerificationDelay(env, `VERIFICATION_DELAY_SECONDS_SELL${suffix}`, 60),
-      indicators: parseVerificationIndicators(env, `VERIFICATION_INDICATORS_SELL${suffix}`),
+      delaySeconds: parseVerificationDelay(env, 'VERIFICATION_DELAY_SECONDS_SELL', 60),
+      indicators: parseVerificationIndicators(env, 'VERIFICATION_INDICATORS_SELL'),
     },
   };
-  const smartCloseEnabled = getBooleanConfig(env, `SMART_CLOSE_ENABLED${suffix}`, true);
+  const smartCloseEnabled = getBooleanConfig(env, 'SMART_CLOSE_ENABLED', true);
   const smartCloseTimeoutMinutes = parseSmartCloseTimeoutMinutesConfig(
     env,
-    `SMART_CLOSE_TIMEOUT_MINUTES${suffix}`,
+    'SMART_CLOSE_TIMEOUT_MINUTES',
   );
   const signalConfig = {
-    buycall: parseSignalConfigFromEnv(env, `SIGNAL_BUYCALL${suffix}`),
-    sellcall: parseSignalConfigFromEnv(env, `SIGNAL_SELLCALL${suffix}`),
-    buyput: parseSignalConfigFromEnv(env, `SIGNAL_BUYPUT${suffix}`),
-    sellput: parseSignalConfigFromEnv(env, `SIGNAL_SELLPUT${suffix}`),
+    buycall: parseSignalConfigFromEnv(env, 'SIGNAL_BUYCALL'),
+    sellcall: parseSignalConfigFromEnv(env, 'SIGNAL_SELLCALL'),
+    buyput: parseSignalConfigFromEnv(env, 'SIGNAL_BUYPUT'),
+    sellput: parseSignalConfigFromEnv(env, 'SIGNAL_SELLPUT'),
   };
 
   return {
-    originalIndex: index,
     monitorSymbol,
     longSymbol,
     shortSymbol,

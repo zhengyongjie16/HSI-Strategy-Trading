@@ -123,9 +123,6 @@ export type LiquidationCooldownConfig =
  * 使用范围：MonitorContext、信号处理、风控等；全项目可引用。
  */
 export type MonitorConfig = {
-  /** 原始环境变量索引（对应 _1, _2 等后缀） */
-  readonly originalIndex: number;
-
   /** 监控标的代码（如恒指期货） */
   readonly monitorSymbol: string;
 
@@ -174,7 +171,7 @@ export type MonitorConfig = {
 
 /**
  * 全局配置。
- * 类型用途：非监控标的特定的系统级配置（末日保护、开盘保护、订单类型与超时等），作为 MultiMonitorTradingConfig.global 的类型。
+ * 类型用途：非监控标的特定的系统级配置（末日保护、开盘保护、订单类型与超时等），作为 TradingConfig.global 的类型。
  * 数据来源：配置解析。
  * 使用范围：主程序、doomsdayProtection、orderMonitor 等；全项目可引用。
  */
@@ -238,14 +235,14 @@ export type GlobalConfig = {
 };
 
 /**
- * 多标的交易配置。
- * 类型用途：系统完整配置根类型，包含所有监控标的列表与全局配置，作为启动与运行期配置入参。
+ * 交易配置。
+ * 类型用途：系统完整配置根类型，包含唯一监控标的与全局配置，作为启动与运行期配置入参。
  * 数据来源：配置解析（环境变量/配置文件）。
  * 使用范围：启动、主程序、gate 等；全项目可引用。
  */
-export type MultiMonitorTradingConfig = {
-  /** 监控标的配置列表 */
-  readonly monitors: ReadonlyArray<MonitorConfig>;
+export type TradingConfig = {
+  /** 唯一监控标的配置 */
+  readonly monitor: MonitorConfig;
 
   /** 全局配置 */
   readonly global: GlobalConfig;

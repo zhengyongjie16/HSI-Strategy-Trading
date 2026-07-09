@@ -17,6 +17,7 @@ import {
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createQuoteDouble,
+  createRiskCheckerDouble,
   createSignalDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
@@ -98,7 +99,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor,
       trader,
       marketDataClient,
@@ -182,7 +183,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -238,7 +239,11 @@ describe('sellProcessor business flow', () => {
       lastState,
     });
     postTradeConsistencyRuntime.bindBusinessDeps({
-      monitorContexts: new Map(),
+      monitorContext: createMonitorContext({
+        riskChecker: createRiskCheckerDouble({
+          refreshUnrealizedLossData: async () => ({ r1: 0, n1: 0 }),
+        }),
+      }),
       dailyLossTracker: {
         resetAll: () => {},
         recalculateFromAllOrders: () => {},
@@ -282,7 +287,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -322,7 +327,7 @@ describe('sellProcessor business flow', () => {
     let executeCalls = 0;
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: {
         applyRiskChecks: async () => [],
         processSellSignals: ({ signals }: { signals: Signal[] }) => {
@@ -395,7 +400,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -451,7 +456,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -510,7 +515,7 @@ describe('sellProcessor business flow', () => {
     let clearedRetryHandles = 0;
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -573,7 +578,7 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -640,7 +645,7 @@ describe('sellProcessor business flow', () => {
     let clearedRetryHandles = 0;
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -707,7 +712,7 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -785,7 +790,7 @@ describe('sellProcessor business flow', () => {
     });
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -847,7 +852,7 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble({
@@ -918,7 +923,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -968,7 +973,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -1024,7 +1029,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -1072,7 +1077,7 @@ describe('sellProcessor business flow', () => {
     let executeCalls = 0;
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: {
         applyRiskChecks: async () => [],
         processSellSignals: ({ signals }: { signals: Signal[] }) => {
@@ -1118,6 +1123,49 @@ describe('sellProcessor business flow', () => {
     expect(executeCalls).toBe(0);
   });
 
+  it('fails fast on foreign monitor sell task before lifecycle gate skip', async () => {
+    const queue = createSellTaskQueue();
+    const fatalErrors: unknown[] = [];
+
+    const processor = createSellProcessor({
+      taskQueue: queue,
+      monitorContext: createMonitorContext(),
+      signalProcessor: {
+        applyRiskChecks: async () => [],
+        processSellSignals: ({ signals }: { signals: Signal[] }) => signals,
+        resetRiskCheckCooldown: () => {},
+      },
+      trader: createTraderDouble(),
+      marketDataClient: createMarketDataClientDouble(),
+      getLastState: () => createLastState(),
+      postTradeConsistencyRuntime: {
+        waitForFresh: async () => {},
+        onFreshReached: () => () => {},
+      },
+      getCanProcessTask: () => false,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    let signal = createSignalDouble('SELLCALL', 'BULL.HK');
+    signal = { ...signal, seatVersion: 2 };
+
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.push({ type: 'IMMEDIATE_SELL', monitorSymbol: 'TECH.HK', data: signal });
+      },
+      waitCondition: () => fatalErrors.length === 1,
+      timeoutMs: 800,
+    });
+
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]).toBeInstanceOf(Error);
+    expect((fatalErrors[0] as Error).message).toContain('task.monitorSymbol 不匹配唯一监控标的');
+    expect(queue.isEmpty()).toBeTrue();
+  });
+
   it('blocks final execution when lifecycle gate closes after sell-quantity resolution', async () => {
     const queue = createSellTaskQueue();
 
@@ -1147,7 +1195,7 @@ describe('sellProcessor business flow', () => {
 
     const processor = createSellProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({

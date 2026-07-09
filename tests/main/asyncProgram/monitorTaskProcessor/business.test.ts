@@ -20,7 +20,7 @@ import type {
 } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTask } from '../../../../src/main/asyncProgram/monitorTaskQueue/types.js';
-import type { MultiMonitorTradingConfig } from '../../../../src/types/config.js';
+import type { TradingConfig } from '../../../../src/types/config.js';
 
 import { createTradingConfig as createTradingConfigFactory } from '../../../../mock/factories/configFactory.js';
 
@@ -43,9 +43,9 @@ import {
 } from '../utils.js';
 import type { CreateBusinessProcessorParams } from '../types.js';
 
-function createTradingConfig(): MultiMonitorTradingConfig {
+function createTradingConfig(): TradingConfig {
   return createTradingConfigFactory({
-    monitors: [createMonitorConfigDouble()],
+    monitor: createMonitorConfigDouble(),
   });
 }
 
@@ -87,7 +87,7 @@ function createBusinessProcessor(
 
   return createMonitorTaskProcessor({
     monitorTaskQueue: queue,
-    getMonitorContext: () => context,
+    monitorContext: context,
     trader: resolvedTrader,
     marketDataClient,
     quoteSubscriptionRuntime,
@@ -192,7 +192,7 @@ describe('monitorTaskProcessor business flow', () => {
 
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue: queue,
-      getMonitorContext: () => context,
+      monitorContext: context,
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -225,7 +225,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:WAKEUP',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:WAKEUP',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -291,7 +291,7 @@ describe('monitorTaskProcessor business flow', () => {
     });
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue: queue,
-      getMonitorContext: () => context,
+      monitorContext: context,
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -317,7 +317,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:API_FAIL',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:API_FAIL',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -372,7 +372,7 @@ describe('monitorTaskProcessor business flow', () => {
     });
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue: queue,
-      getMonitorContext: () => context,
+      monitorContext: context,
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -398,7 +398,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:FATAL',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FATAL',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -475,7 +475,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -553,7 +553,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:CURRENT_GATE',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:CURRENT_GATE',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -632,7 +632,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:PERIODIC_PENDING',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_PENDING',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -729,7 +729,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:PERIODIC_REPLAN',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_REPLAN',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -837,7 +837,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:PERIODIC_GATE_CLOSED',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_GATE_CLOSED',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -917,7 +917,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -986,7 +986,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:STALE_ACTIVATION',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:STALE_ACTIVATION',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -1024,7 +1024,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
 
     const processor = createBusinessProcessor({
       queue,
@@ -1041,7 +1041,7 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG:STALE_VERSION', {
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:STALE_VERSION', {
           seatVersion: 1,
         });
       },
@@ -1113,7 +1113,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:GATE',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:GATE',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -1133,13 +1133,13 @@ describe('monitorTaskProcessor business flow', () => {
     expect(maybeSearchCalls).toBe(0);
   });
 
-  it('sends SEAT_REFRESH missing monitor context to fatal channel', async () => {
+  it('sends SEAT_REFRESH foreign monitor symbol to fatal channel', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue: queue,
-      getMonitorContext: () => null,
+      monitorContext: createMonitorTaskContext(),
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -1163,7 +1163,9 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG:MISSING_CONTEXT');
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:FOREIGN_MONITOR', {
+          monitorSymbol: 'TECH.HK',
+        });
       },
       waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
       timeoutMs: 500,
@@ -1171,6 +1173,48 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(fatalErrors).toHaveLength(1);
     expect(fatalErrors[0]).toBeInstanceOf(Error);
+    expect(statuses).toEqual([]);
+  });
+
+  it('sends AUTO_SYMBOL_TICK foreign data monitor symbol to fatal channel', async () => {
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const statuses: MonitorTaskStatus[] = [];
+    const fatalErrors: unknown[] = [];
+    const processor = createBusinessProcessor({
+      queue,
+      context: createMonitorTaskContext(),
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+      onProcessed: createStatusCollector(statuses),
+    });
+
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.scheduleLatest({
+          type: 'AUTO_SYMBOL_TICK',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FOREIGN_MONITOR',
+          monitorSymbol: 'HSI.HK',
+          data: {
+            monitorSymbol: 'TECH.HK',
+            direction: 'LONG',
+            seatVersion: 2,
+            symbol: 'BULL.HK',
+            lastSeatActivatedAt: 12_000,
+            currentTimeMs: Date.now(),
+          },
+        });
+      },
+      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+      timeoutMs: 500,
+    });
+
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]).toBeInstanceOf(Error);
+    expect((fatalErrors[0] as Error).message).toContain(
+      'task.data.monitorSymbol 不匹配唯一监控标的',
+    );
     expect(statuses).toEqual([]);
   });
 
@@ -1217,7 +1261,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
     const statuses: MonitorTaskStatus[] = [];
     const lastState = createLastState();
 
@@ -1255,7 +1299,7 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG');
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG');
       },
       waitCondition: () => statuses.length === 1,
       timeoutMs: 500,
@@ -1297,7 +1341,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BEAR.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
 
     const processor = createBusinessProcessor({
       queue,
@@ -1312,7 +1356,7 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:SHORT', {
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:SHORT', {
           direction: 'SHORT',
           seatVersion: 3,
           previousSymbol: 'OLD_BEAR.HK',
@@ -1341,7 +1385,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BEAR.HK',
       status: 'ACTIVATING',
       callPrice: null,
-    } as never);
+    });
 
     const processor = createBusinessProcessor({
       queue,
@@ -1352,7 +1396,7 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:SHORT:INVALID_CALL_PRICE', {
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:SHORT:INVALID_CALL_PRICE', {
           direction: 'SHORT',
           seatVersion: 3,
           previousSymbol: 'OLD_BEAR.HK',
@@ -1407,7 +1451,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
 
     const processor = createBusinessProcessor({
       queue,
@@ -1428,7 +1472,7 @@ describe('monitorTaskProcessor business flow', () => {
     });
 
     processor.start();
-    scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG:ADMISSION');
+    scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:ADMISSION');
 
     await admissionStartedDeferred.promise;
     await Promise.resolve();
@@ -1489,7 +1533,7 @@ describe('monitorTaskProcessor business flow', () => {
             status: 'SWITCHING',
             lastSwitchAt: Date.now(),
             callPrice: null,
-          } as never);
+          });
           return result;
         },
       },
@@ -1499,7 +1543,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
 
     const processor = createBusinessProcessor({
       queue,
@@ -1517,7 +1561,7 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG:STALE_CACHE_LEAK');
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:STALE_CACHE_LEAK');
       },
       waitCondition: () => statuses.length === 1,
       timeoutMs: 500,
@@ -1541,7 +1585,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
     const originalSeatVersion = context.symbolRegistry.getSeatVersion('HSI.HK', 'LONG');
 
     const processor = createBusinessProcessor({
@@ -1564,7 +1608,7 @@ describe('monitorTaskProcessor business flow', () => {
     });
 
     processor.start();
-    scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG:API_FAIL');
+    scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:API_FAIL');
 
     await waitUntil(() => statuses.length === 1 || fatalErrors.length === 1, 500);
     await Bun.sleep(Math.max(API.DEFAULT_RETRY_DELAY_MS - 100, 0));
@@ -1609,7 +1653,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
 
     const processor = createBusinessProcessor({
       queue,
@@ -1629,7 +1673,7 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG:FAIL');
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:FAIL');
       },
       waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
       timeoutMs: 500,
@@ -1657,7 +1701,7 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
-    } as never);
+    });
 
     context.riskChecker.refreshUnrealizedLossData = async () => {
       const latestSeat = context.symbolRegistry.getSeatState('HSI.HK', 'LONG');
@@ -1668,7 +1712,7 @@ describe('monitorTaskProcessor business flow', () => {
         status: 'SWITCHING',
         lastSwitchAt: Date.now(),
         callPrice: null,
-      } as never);
+      });
       return { r1: 100, n1: 100 };
     };
 
@@ -1688,7 +1732,7 @@ describe('monitorTaskProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'HSI.HK:SEAT_REFRESH:LONG:STALE_DURING_REFRESH');
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:STALE_DURING_REFRESH');
       },
       waitCondition: () => statuses.length === 1,
       timeoutMs: 500,

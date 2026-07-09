@@ -1,7 +1,7 @@
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { Signal } from '../../types/signal.js';
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { OrderRecorder, RiskCheckContext } from '../../types/services.js';
 import type { LiquidationCooldownTracker } from '../../services/liquidationCooldown/types.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
@@ -88,6 +88,6 @@ export interface SignalProcessor {
  * 使用范围：仅 signalProcessor 工厂创建阶段使用。
  */
 export type SignalProcessorDeps = {
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
 };

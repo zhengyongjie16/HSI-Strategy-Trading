@@ -9,8 +9,9 @@ import { describe, expect, it } from 'bun:test';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { initMonitorState } from '../../src/utils/helpers/index.js';
 
-import type { MultiMonitorTradingConfig } from '../../src/types/config.js';
 import type { LastState, MonitorContext } from '../../src/types/state.js';
 import type {
   MonitorTaskDataMap,
@@ -48,7 +49,7 @@ function createLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: initMonitorState(createMonitorConfigDouble()),
     allTradingSymbols: new Set(),
   };
 }
@@ -85,7 +86,7 @@ function schedulePeriodicTick(
 
   monitorTaskQueue.scheduleLatest({
     type: 'AUTO_SYMBOL_TICK',
-    dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:${direction}`,
+    dedupeKey: `AUTO_SYMBOL_TICK:${direction}`,
     monitorSymbol,
     data: {
       monitorSymbol,
@@ -209,7 +210,7 @@ describe('periodic auto-symbol full chain integration', () => {
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -218,9 +219,7 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -395,7 +394,7 @@ describe('periodic auto-symbol full chain integration', () => {
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -404,9 +403,7 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -551,7 +548,7 @@ describe('periodic auto-symbol full chain integration', () => {
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -560,9 +557,7 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -707,7 +702,7 @@ describe('periodic auto-symbol full chain integration', () => {
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
@@ -716,9 +711,7 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: {
-        monitors: [monitorConfig],
-      } as unknown as MultiMonitorTradingConfig,
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);

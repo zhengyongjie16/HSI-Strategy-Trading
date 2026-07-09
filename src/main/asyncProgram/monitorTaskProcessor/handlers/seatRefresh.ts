@@ -9,7 +9,7 @@
 import { logger } from '../../../../utils/logger/index.js';
 import { isSeatVersionMatch } from '../../../../utils/seat/guards.js';
 
-import type { MultiMonitorTradingConfig } from '../../../../types/config.js';
+import type { TradingConfig } from '../../../../types/config.js';
 import type { MarketDataClient } from '../../../../types/services.js';
 import type { QuoteSubscriptionRuntime } from '../../../quoteSubscriptionRuntime/types.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
@@ -59,6 +59,35 @@ function setDirectionSymbolName(
   } else {
     context.shortSymbolName = symbolName;
   }
+}
+
+/**
+ * 收集席位刷新期间必须能归属的交易标的。
+ * @param context 当前唯一 monitor 运行时上下文
+ * @param data 席位刷新任务数据
+ * @returns 相关交易标的集合
+ */
+function collectSeatRefreshRelatedTradingSymbols(
+  context: MonitorTaskContext,
+  data: SeatRefreshTaskData,
+): Set<string> {
+  const symbols = new Set<string>([data.nextSymbol]);
+  if (data.previousSymbol !== null) {
+    symbols.add(data.previousSymbol);
+  }
+
+  const longSeat = context.symbolRegistry.getSeatState(data.monitorSymbol, 'LONG');
+  const shortSeat = context.symbolRegistry.getSeatState(data.monitorSymbol, 'SHORT');
+  if (longSeat.symbol !== null) {
+    symbols.add(longSeat.symbol);
+  }
+
+  if (shortSeat.symbol !== null) {
+    symbols.add(shortSeat.symbol);
+  }
+
+  symbols.delete(context.config.monitorSymbol);
+  return symbols;
 }
 
 /**
@@ -127,17 +156,17 @@ function resolveActivatingSeatSnapshot(
  * 创建席位刷新任务处理器。
  * 在 seat 进入 ACTIVATING 后执行 admission、订单/风控缓存初始化与旧标的订单缓存收口；仅当全部成功时才把 seat 推进到 ACTIVE。
  *
- * @param deps 依赖注入，包含 getContextOrSkip、tradingConfig、marketDataClient
+ * @param deps 依赖注入，包含 requireContext、tradingConfig、marketDataClient
  * @returns 处理 SEAT_REFRESH 任务的异步函数
  */
 export function createSeatRefreshHandler({
-  getContextOrSkip,
+  requireContext,
   tradingConfig,
   marketDataClient,
   quoteSubscriptionRuntime,
 }: {
-  readonly getContextOrSkip: (monitorSymbol: string) => MonitorTaskContext | null;
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly requireContext: (monitorSymbol: string) => MonitorTaskContext;
+  readonly tradingConfig: TradingConfig;
   readonly marketDataClient: MarketDataClient;
   readonly quoteSubscriptionRuntime: Pick<
     QuoteSubscriptionRuntime,
@@ -152,12 +181,7 @@ export function createSeatRefreshHandler({
     helpers: RefreshHelpers,
   ): Promise<MonitorTaskStatus> {
     const data: SeatRefreshTaskData = task.data;
-    const context = getContextOrSkip(data.monitorSymbol);
-    if (!context) {
-      throw new Error(
-        `[SEAT_REFRESH] 未找到监控上下文: monitorSymbol=${data.monitorSymbol} direction=${data.direction} seatVersion=${data.seatVersion} nextSymbol=${data.nextSymbol}`,
-      );
-    }
+    const context = requireContext(data.monitorSymbol);
 
     const entrySeatState = resolveActivatingSeatSnapshot(context, data);
     if (!entrySeatState) {
@@ -208,8 +232,10 @@ export function createSeatRefreshHandler({
       const allOrders = await helpers.ensureAllOrders();
       context.dailyLossTracker.recalculateFromAllOrders(
         allOrders,
-        tradingConfig.monitors,
+        tradingConfig.monitor,
         new Date(),
+        undefined,
+        collectSeatRefreshRelatedTradingSymbols(context, data),
       );
 
       await (isLong

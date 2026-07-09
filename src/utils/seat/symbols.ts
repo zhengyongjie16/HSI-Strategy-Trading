@@ -19,41 +19,33 @@ export function resolveBoundSeatSymbol(
 }
 
 /**
- * 收集所有监控标的当前已绑定席位的标的代码列表。
+ * 收集唯一监控标的当前已绑定席位的标的代码列表。
  *
- * @param params 包含 monitors 与只读 symbolRegistry 查询口
+ * @param params 包含唯一 monitorSymbol 与只读 symbolRegistry 查询口
  * @returns 已绑定席位的 monitorSymbol、direction 与 symbol 条目数组
  */
 export function collectBoundSeatSymbols(params: {
-  readonly monitors: ReadonlyArray<{
-    readonly monitorSymbol: string;
-  }>;
+  readonly monitorSymbol: string;
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState'>;
 }): ReadonlyArray<SeatSymbolSnapshotEntry> {
   const entries: SeatSymbolSnapshotEntry[] = [];
 
-  for (const monitor of params.monitors) {
-    const longSymbol = resolveBoundSeatSymbol(params.symbolRegistry, monitor.monitorSymbol, 'LONG');
-    if (longSymbol !== null) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'LONG',
-        symbol: longSymbol,
-      });
-    }
+  const longSymbol = resolveBoundSeatSymbol(params.symbolRegistry, params.monitorSymbol, 'LONG');
+  if (longSymbol !== null) {
+    entries.push({
+      monitorSymbol: params.monitorSymbol,
+      direction: 'LONG',
+      symbol: longSymbol,
+    });
+  }
 
-    const shortSymbol = resolveBoundSeatSymbol(
-      params.symbolRegistry,
-      monitor.monitorSymbol,
-      'SHORT',
-    );
-    if (shortSymbol !== null) {
-      entries.push({
-        monitorSymbol: monitor.monitorSymbol,
-        direction: 'SHORT',
-        symbol: shortSymbol,
-      });
-    }
+  const shortSymbol = resolveBoundSeatSymbol(params.symbolRegistry, params.monitorSymbol, 'SHORT');
+  if (shortSymbol !== null) {
+    entries.push({
+      monitorSymbol: params.monitorSymbol,
+      direction: 'SHORT',
+      symbol: shortSymbol,
+    });
   }
 
   return entries;

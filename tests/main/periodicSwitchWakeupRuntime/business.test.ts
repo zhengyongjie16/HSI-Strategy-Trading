@@ -201,7 +201,7 @@ function createHarness(
     readonly nowMs?: number;
     readonly monitorConfig?: MonitorConfig;
     readonly symbolRegistry?: ReturnType<typeof createSymbolRegistryDouble>;
-    readonly monitorContexts?: ReadonlyMap<string, Pick<MonitorContext, 'config'>>;
+    readonly monitorContext?: Pick<MonitorContext, 'config'>;
     readonly calculateDueAtMs?: PeriodicSwitchWakeupRuntimeDeps['calculateDueAtMs'];
   } = {},
 ): PeriodicHarness {
@@ -219,15 +219,14 @@ function createHarness(
     config: monitorConfig,
     symbolRegistry,
   });
-  const monitorContexts =
-    params.monitorContexts ?? new Map([[monitorConfig.monitorSymbol, monitorContext]]);
+  const runtimeMonitorContext = params.monitorContext ?? monitorContext;
   const timers = createTimerHarness(params.nowMs ?? 10_000);
   const subscriptions = createSubscriptionHarness();
   const tasks: ScheduledTask[] = [];
 
   const runtime = createPeriodicSwitchWakeupRuntime({
-    tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
-    monitorContexts,
+    tradingConfig: createTradingConfig({ monitor: monitorConfig }),
+    monitorContext: runtimeMonitorContext,
     symbolRegistry,
     monitorTaskQueue: {
       scheduleLatest: (task) => {
@@ -266,7 +265,7 @@ function expectTickTask(
   }
 
   expect(task.type).toBe('AUTO_SYMBOL_TICK');
-  expect(task.dedupeKey).toBe(`${expected.monitorSymbol}:AUTO_SYMBOL_TICK:${expected.direction}`);
+  expect(task.dedupeKey).toBe(`AUTO_SYMBOL_TICK:${expected.direction}`);
   expect(task.monitorSymbol).toBe(expected.monitorSymbol);
   expect(task.data.monitorSymbol).toBe(expected.monitorSymbol);
   expect(task.data.direction).toBe(expected.direction);
@@ -519,9 +518,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitFresh();
 
     expect(harness.tasks).toHaveLength(2);
-    expect(harness.tasks.every((task) => task.dedupeKey === 'HSI.HK:AUTO_SYMBOL_TICK:LONG')).toBe(
-      true,
-    );
+    expect(harness.tasks.every((task) => task.dedupeKey === 'AUTO_SYMBOL_TICK:LONG')).toBe(true);
     expect(harness.tasks.every((task) => task.data.direction === 'LONG')).toBe(true);
   });
 
@@ -1020,5 +1017,25 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     expect(harness.tasks).toHaveLength(3);
     expect(harness.tasks[1]?.data).toMatchObject(baseline);
     expect(harness.tasks[2]?.data).toMatchObject(baseline);
+  });
+
+  it('seat truth 事件携带非唯一 monitorSymbol 时 fail-fast', () => {
+    const harness = createHarness({ nowMs: 400_000 });
+    harness.runtime.start();
+
+    expect(() => {
+      harness.symbolRegistry.updateSeatStateWithVersionBump('TECH.HK', 'LONG', {
+        symbol: 'BULL2.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: 500_000,
+        callPrice: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      });
+    }).toThrow(AggregateError);
+
+    expect(harness.tasks).toHaveLength(2);
   });
 });

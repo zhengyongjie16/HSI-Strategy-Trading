@@ -4,14 +4,23 @@
  * 功能：
  * - 提供可覆盖默认值的监控配置与全局交易配置构建能力
  */
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../../src/types/config.js';
+import type { MonitorConfig, TradingConfig } from '../../src/types/config.js';
+import type { SignalConfig } from '../../src/types/signalConfig.js';
+
+const DEFAULT_SIGNAL_CONFIG: SignalConfig = {
+  conditionGroups: [
+    {
+      conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
+      requiredCount: null,
+    },
+  ],
+};
 
 /**
  * 构造单监控配置，供测试或 Mock 使用；未传字段使用默认监控/风控参数。
  */
 export function createMonitorConfig(overrides: Partial<MonitorConfig> = {}): MonitorConfig {
   return {
-    originalIndex: 1,
     monitorSymbol: 'HSI.HK',
     longSymbol: 'BULL.HK',
     shortSymbol: 'BEAR.HK',
@@ -28,7 +37,7 @@ export function createMonitorConfig(overrides: Partial<MonitorConfig> = {}): Mon
       switchDistanceRangeBear: null,
     },
 
-    orderOwnershipMapping: [],
+    orderOwnershipMapping: ['HSI'],
     targetNotional: 5000,
     maxPositionNotional: 50000,
     maxUnrealizedLossPerSymbol: 2000,
@@ -46,10 +55,10 @@ export function createMonitorConfig(overrides: Partial<MonitorConfig> = {}): Mon
       },
     },
     signalConfig: {
-      buycall: null,
-      sellcall: null,
-      buyput: null,
-      sellput: null,
+      buycall: DEFAULT_SIGNAL_CONFIG,
+      sellcall: DEFAULT_SIGNAL_CONFIG,
+      buyput: DEFAULT_SIGNAL_CONFIG,
+      sellput: DEFAULT_SIGNAL_CONFIG,
     },
     smartCloseEnabled: true,
     smartCloseTimeoutMinutes: null,
@@ -58,13 +67,11 @@ export function createMonitorConfig(overrides: Partial<MonitorConfig> = {}): Mon
 }
 
 /**
- * 构造多监控交易配置（含 global 与 monitors），供集成测试使用；支持部分覆盖。
+ * 构造单监控交易配置（含 monitor 与 global），供测试使用；支持部分覆盖。
  */
-export function createTradingConfig(
-  overrides: Partial<MultiMonitorTradingConfig> = {},
-): MultiMonitorTradingConfig {
+export function createTradingConfig(overrides: Partial<TradingConfig> = {}): TradingConfig {
   return {
-    monitors: [createMonitorConfig()],
+    monitor: createMonitorConfig(),
     global: {
       doomsdayProtection: true,
       debug: false,

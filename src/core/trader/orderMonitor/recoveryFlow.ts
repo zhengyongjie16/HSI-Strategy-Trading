@@ -10,7 +10,6 @@ import { OrderSide, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { PENDING_ORDER_STATUSES } from '../../../constants/index.js';
-import type { MonitorConfig } from '../../../types/config.js';
 import type { RawOrderFromAPI } from '../../../types/services.js';
 import { resolveOrderOwnership } from '../../orderRecorder/index.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
@@ -43,15 +42,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     settleOrder,
     handleOrderChangedWhenActive,
   } = deps;
-  const triggerLimitByMonitor = new Map(
-    tradingConfig.monitors.map((monitor) => [
-      monitor.monitorSymbol,
-      monitor.liquidationTriggerLimit,
-    ]),
-  );
-  const cooldownConfigByMonitor = new Map(
-    tradingConfig.monitors.map((monitor) => [monitor.monitorSymbol, monitor.liquidationCooldown]),
-  );
+  const monitorConfig = tradingConfig.monitor;
 
   /**
    * 基于订单名称映射解析监控标的与方向。
@@ -60,7 +51,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
    * @returns 归属信息，无法解析返回 null
    */
   function resolveOrderSeatOwnership(order: RawOrderFromAPI): OrderSeatOwnership | null {
-    const resolved = resolveOrderOwnership(order, tradingConfig.monitors);
+    const resolved = resolveOrderOwnership(order, monitorConfig);
     if (!resolved) {
       return null;
     }
@@ -70,36 +61,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       direction: resolved.direction,
       isLongSymbol: resolved.direction === 'LONG',
     };
-  }
-
-  /**
-   * 获取监控标的的保护性清仓触发上限。
-   *
-   * @param monitorSymbol 监控标的
-   * @returns 触发上限，缺失时回退 1
-   */
-  function resolveLiquidationTriggerLimit(monitorSymbol: string | null): number {
-    if (!monitorSymbol) {
-      return 1;
-    }
-
-    return triggerLimitByMonitor.get(monitorSymbol) ?? 1;
-  }
-
-  /**
-   * 获取监控标的的保护性清仓冷却配置。
-   *
-   * @param monitorSymbol 监控标的
-   * @returns 冷却配置，缺失时回退 null
-   */
-  function resolveLiquidationCooldownConfig(
-    monitorSymbol: string | null,
-  ): MonitorConfig['liquidationCooldown'] {
-    if (!monitorSymbol) {
-      return null;
-    }
-
-    return cooldownConfigByMonitor.get(monitorSymbol) ?? null;
   }
 
   /**
@@ -340,8 +301,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const submittedAtMs = resolveSubmittedAtMs(order.submittedAt);
     const executedQuantity = decimalToNumber(order.executedQuantity);
     const isProtectiveLiquidation = hasProtectiveLiquidationRemark(order.remark);
-    const liquidationTriggerLimit = resolveLiquidationTriggerLimit(ownership.monitorSymbol);
-    const liquidationCooldownConfig = resolveLiquidationCooldownConfig(ownership.monitorSymbol);
     const trackOrderParams: TrackOrderParams = {
       orderId: order.orderId,
       symbol: order.symbol,
@@ -355,8 +314,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       monitorSymbol: ownership.monitorSymbol,
       isProtectiveLiquidation,
       orderType: order.orderType,
-      liquidationTriggerLimit,
-      liquidationCooldownConfig,
     };
     trackOrder(trackOrderParams);
     const trackedOrder = runtime.trackedOrders.get(order.orderId);
@@ -444,6 +401,12 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               throw new Error(`[订单监控] 买单 ${order.orderId} 缺少权威终态查询结果，阻断恢复`);
             }
 
+            if (isValidPositiveNumber(queriedTerminalState.executedQuantity)) {
+              throw new Error(
+                `[订单监控] 买单 ${order.orderId} 不匹配但权威终态存在成交事实，阻断恢复`,
+              );
+            }
+
             const settlementPayload = {
               orderId: order.orderId,
               closedReason: queriedTerminalState.closedReason,
@@ -455,12 +418,8 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               side: 'BUY',
               monitorSymbol: ownership?.monitorSymbol ?? null,
               isProtectiveLiquidation: hasProtectiveLiquidationRemark(order.remark),
-              liquidationTriggerLimit: resolveLiquidationTriggerLimit(
-                ownership?.monitorSymbol ?? null,
-              ),
-              liquidationCooldownConfig: resolveLiquidationCooldownConfig(
-                ownership?.monitorSymbol ?? null,
-              ),
+              liquidationTriggerLimit: monitorConfig.liquidationTriggerLimit,
+              liquidationCooldownConfig: monitorConfig.liquidationCooldown,
               ...(ownership?.isLongSymbol === undefined
                 ? {}
                 : { isLongSymbol: ownership.isLongSymbol }),

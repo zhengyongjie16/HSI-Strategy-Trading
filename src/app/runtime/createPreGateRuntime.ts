@@ -9,7 +9,7 @@
 import { AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS } from '../../constants/index.js';
 import { validateAllConfig } from '../../config/validator/index.js';
 import { createSdkConfigFromAuth } from '../../config/auth/index.js';
-import { createMultiMonitorTradingConfig } from '../../config/trading/index.js';
+import { createTradingConfig } from '../../config/trading/index.js';
 import { createWarrantListCache } from '../../services/autoSymbolFinder/utils.js';
 import { createMarketDataClient } from '../../services/quoteClient/index.js';
 import { createSymbolRegistry } from '../../services/autoSymbolManager/utils.js';
@@ -44,10 +44,10 @@ export function createPreGateRuntimeFactory(
     params: AppEnvironmentParams,
   ): Promise<PreGateRuntime> {
     const { env } = params;
-    const tradingConfig = createMultiMonitorTradingConfig({ env });
+    const tradingConfig = createTradingConfig({ env });
     await validateAllConfig({ env, tradingConfig });
 
-    const symbolRegistry = createSymbolRegistry(tradingConfig.monitors);
+    const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
     const warrantListCache = createWarrantListCache();
     const warrantListCacheConfig = {
       cache: warrantListCache,

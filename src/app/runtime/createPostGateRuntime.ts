@@ -14,6 +14,7 @@ import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index
 import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
 import { createDoomsdayProtection } from '../../core/doomsdayProtection/index.js';
 import { createSignalProcessor } from '../../core/signalProcessor/index.js';
+import { createMonitorContext } from '../context/createMonitorContext.js';
 import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import { createIndicatorCache } from '../../main/asyncProgram/indicatorCache/index.js';
@@ -49,14 +50,14 @@ import {
 } from '../../utils/time/index.js';
 import { logger, retainLatestLogFiles } from '../../utils/logger/index.js';
 import { toError } from '../../utils/error/index.js';
-import type { LastState, MonitorContext } from '../../types/state.js';
+import type { LastState } from '../../types/state.js';
 import type { OrderStateChangedEvent } from '../../types/services.js';
 import type { MonitorTaskDataMap } from '../../main/asyncProgram/monitorTaskProcessor/types.js';
 import type { QuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/types.js';
 import type {
   CreatePostGateRuntimeParams,
-  MutableMonitorContextsPostGateRuntime,
   PersistableTradeRecord,
+  PostGateRuntime,
 } from '../types.js';
 import type { CreatePostGateRuntimeDeps } from './types.js';
 
@@ -118,9 +119,16 @@ function resolveTradeReason(
  */
 function resolveTradeRecordFromOrderStateChangedEvent(
   event: OrderStateChangedEvent,
+  expectedMonitorSymbol: string,
 ): PersistableTradeRecord | null {
   if (!hasPersistableTradeExecutionContext(event)) {
     return null;
+  }
+
+  if (event.monitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[createPostGateRuntime] order event monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${event.monitorSymbol}`,
+    );
   }
 
   return {
@@ -155,8 +163,12 @@ function resolveTradeRecordFromOrderStateChangedEvent(
 function persistTradeRecordFromOrderStateChangedEvent(params: {
   readonly env: NodeJS.ProcessEnv;
   readonly event: OrderStateChangedEvent;
+  readonly expectedMonitorSymbol: string;
 }): void {
-  const tradeRecord = resolveTradeRecordFromOrderStateChangedEvent(params.event);
+  const tradeRecord = resolveTradeRecordFromOrderStateChangedEvent(
+    params.event,
+    params.expectedMonitorSymbol,
+  );
   if (tradeRecord === null) {
     return;
   }
@@ -192,12 +204,12 @@ function persistTradeRecordFromOrderStateChangedEvent(params: {
  */
 export function createPostGateRuntimeFactory(
   deps: CreatePostGateRuntimeDeps,
-): (params: CreatePostGateRuntimeParams) => Promise<MutableMonitorContextsPostGateRuntime> {
+): (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime> {
   const { createTrader: buildTrader } = deps;
 
   return async function createPostGateRuntime(
     params: CreatePostGateRuntimeParams,
-  ): Promise<MutableMonitorContextsPostGateRuntime> {
+  ): Promise<PostGateRuntime> {
     const { env, preGateRuntime, now } = params;
     const {
       config,
@@ -215,7 +227,6 @@ export function createPostGateRuntimeFactory(
       toHongKongTimeIso,
     });
     const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
-    const monitorContexts = new Map<string, MonitorContext>();
     const initialDayKey = getRequiredHKDateKey(now);
     const initialTradingDayInfo =
       startupTradingDayInfo !== null && startupTradingDayInfo.dateKey === initialDayKey
@@ -244,12 +255,7 @@ export function createPostGateRuntimeFactory(
         initialTradingDayInfo === null
           ? new Map()
           : new Map([[initialDayKey, initialTradingDayInfo]]),
-      monitorStates: new Map(
-        tradingConfig.monitors.map((monitorConfig) => [
-          monitorConfig.monitorSymbol,
-          initMonitorState(monitorConfig),
-        ]),
-      ),
+      monitorState: initMonitorState(tradingConfig.monitor),
       allTradingSymbols: new Set(),
     };
     let traderRef: Awaited<ReturnType<typeof createTrader>> | null = null;
@@ -354,6 +360,7 @@ export function createPostGateRuntimeFactory(
         persistTradeRecordFromOrderStateChangedEvent({
           env,
           event,
+          expectedMonitorSymbol: tradingConfig.monitor.monitorSymbol,
         });
       } catch (error) {
         handleFatalError(error);
@@ -361,11 +368,35 @@ export function createPostGateRuntimeFactory(
       }
     });
 
+    const maxDelaySeconds = Math.max(
+      tradingConfig.monitor.verificationConfig.buy.delaySeconds,
+      tradingConfig.monitor.verificationConfig.sell.delaySeconds,
+    );
+    const indicatorCacheRetentionSeconds =
+      maxDelaySeconds +
+      VERIFICATION.READY_DELAY_SECONDS +
+      INDICATOR_CACHE.RETENTION_SAFETY_MARGIN_SECONDS;
+    // 额外保留缓存安全余量，确保延迟验证读取最近样本时窗口充足。
+    const indicatorCache = createIndicatorCache({
+      retentionWindowMs: indicatorCacheRetentionSeconds * TIME.MILLISECONDS_PER_SECOND,
+      monitorSymbol: tradingConfig.monitor.monitorSymbol,
+    });
+    const monitorContext = createMonitorContext({
+      preGateRuntime,
+      postGateRuntime: {
+        trader,
+        dailyLossTracker,
+        indicatorCache,
+        lastState,
+      },
+      quotesMap: null,
+    });
+
     const tradingRiskEventRuntime = createTradingRiskEventRuntime({
       marketDataClient,
       trader,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
@@ -376,7 +407,7 @@ export function createPostGateRuntimeFactory(
       marketDataClient,
       trader,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
@@ -392,7 +423,7 @@ export function createPostGateRuntimeFactory(
     });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
       marketDataClient,
-      monitorContexts,
+      monitorContext,
       trader,
       lastState,
       postTradeConsistencyRuntime,
@@ -404,19 +435,20 @@ export function createPostGateRuntimeFactory(
     });
     const monitorDisplayRuntime = createMonitorDisplayRuntime({
       marketDataClient,
-      monitorContexts,
+      monitorContext,
       lastState,
       marketMonitor,
     });
     const tradingQuoteDisplayRuntime = createTradingQuoteDisplayRuntime({
       marketDataClient,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       renderTradingQuote: (renderParams) => {
-        const monitorContext = monitorContexts.get(renderParams.monitorSymbol);
-        if (monitorContext === undefined) {
-          return;
+        if (renderParams.monitorSymbol !== monitorContext.config.monitorSymbol) {
+          throw new Error(
+            `[createPostGateRuntime] trading quote route monitorSymbol mismatch: expected=${monitorContext.config.monitorSymbol} actual=${renderParams.monitorSymbol}`,
+          );
         }
 
         const displayInfo = buildPriceDisplayInfo({
@@ -433,30 +465,15 @@ export function createPostGateRuntimeFactory(
           displayInfo,
         });
       },
+      onFatalError: handleFatalError,
     });
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker,
     });
-    const maxDelaySeconds = Math.max(
-      ...tradingConfig.monitors.map((monitorConfig) =>
-        Math.max(
-          monitorConfig.verificationConfig.buy.delaySeconds,
-          monitorConfig.verificationConfig.sell.delaySeconds,
-        ),
-      ),
-    );
-    const indicatorCacheRetentionSeconds =
-      maxDelaySeconds +
-      VERIFICATION.READY_DELAY_SECONDS +
-      INDICATOR_CACHE.RETENTION_SAFETY_MARGIN_SECONDS;
-    // 额外保留缓存安全余量，确保延迟验证读取最近样本时窗口充足。
-    const indicatorCache = createIndicatorCache({
-      retentionWindowMs: indicatorCacheRetentionSeconds * TIME.MILLISECONDS_PER_SECOND,
-    });
     const seatRuntimeCleanupDispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -464,7 +481,7 @@ export function createPostGateRuntimeFactory(
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
       tradingConfig,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       tradingGateEventRuntime,
       now: () => new Date(),
@@ -477,7 +494,7 @@ export function createPostGateRuntimeFactory(
     });
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
       tradingConfig,
-      monitorContexts,
+      monitorContext,
       symbolRegistry,
       monitorTaskQueue,
       trader,
@@ -502,7 +519,7 @@ export function createPostGateRuntimeFactory(
       liquidationCooldownTracker,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
-      monitorContexts,
+      monitorContext,
       tradingGateEventRuntime,
       quoteSubscriptionRuntime,
       seatActivationDispatcher,

@@ -8,7 +8,6 @@
  */
 import { OrderSide } from 'longbridge';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import type { MonitorConfig } from '../../../types/config.js';
 import type {
   OrderRecord,
   OrderRecorder,
@@ -167,8 +166,6 @@ function resolveCloseContext(params: {
   readonly monitorSymbol: string | null;
   readonly isLongSymbol: boolean | undefined;
   readonly isProtectiveLiquidation: boolean;
-  readonly liquidationTriggerLimit: number;
-  readonly liquidationCooldownConfig: MonitorConfig['liquidationCooldown'];
   readonly executedPrice: number | null;
   readonly executedQuantity: number | null;
   readonly executedTimeMs: number | null;
@@ -182,10 +179,6 @@ function resolveCloseContext(params: {
     isLongSymbol: trackedOrder?.isLongSymbol ?? closeParams.isLongSymbol,
     isProtectiveLiquidation:
       trackedOrder?.isProtectiveLiquidation ?? closeParams.isProtectiveLiquidation ?? false,
-    liquidationTriggerLimit:
-      trackedOrder?.liquidationTriggerLimit ?? closeParams.liquidationTriggerLimit ?? 1,
-    liquidationCooldownConfig:
-      trackedOrder?.liquidationCooldownConfig ?? closeParams.liquidationCooldownConfig ?? null,
     executedPrice: closeParams.executedPrice ?? trackedOrder?.executedPrice ?? null,
     executedQuantity: closeParams.executedQuantity ?? trackedOrder?.executedQuantity ?? null,
     executedTimeMs: closeParams.executedTimeMs ?? trackedOrder?.lastExecutedTimeMs ?? null,
@@ -219,10 +212,11 @@ function resolveRecordedExecution(params: {
 function hasExecutionAttributionContext(params: {
   readonly side: 'BUY' | 'SELL' | null;
   readonly symbol: string | null;
+  readonly monitorSymbol: string | null;
   readonly isLongSymbol: boolean | undefined;
 }): boolean {
-  const { side, symbol, isLongSymbol } = params;
-  return side !== null && symbol !== null && isLongSymbol !== undefined;
+  const { side, symbol, monitorSymbol, isLongSymbol } = params;
+  return side !== null && symbol !== null && monitorSymbol !== null && isLongSymbol !== undefined;
 }
 
 function reserveFollowUpSellOccupancy(params: {
@@ -373,6 +367,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     const executionContextReady = hasExecutionAttributionContext({
       side,
       symbol,
+      monitorSymbol: context.monitorSymbol,
       isLongSymbol,
     });
     const pendingSellDisposition = params.pendingSellDisposition ?? {

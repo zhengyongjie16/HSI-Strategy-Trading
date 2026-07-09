@@ -38,10 +38,7 @@ function createRiskContext(params: {
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
 }) {
   const cachedAccount = createAccountSnapshotDouble(100000);
-  const monitorConfig = createTradingConfig().monitors[0];
-  if (!monitorConfig) {
-    throw new Error('missing monitor config for integration test');
-  }
+  const monitorConfig = createTradingConfig().monitor;
 
   return {
     trader: params.trader,
@@ -474,7 +471,7 @@ describe('buy-flow integration', () => {
     expect(Number(payload.submittedQuantity.toString())).toBe(200);
   });
 
-  it('rejects invalid explicit buy quantity without fallback to targetNotional', async () => {
+  it('rejects invalid explicit buy quantity without silently using targetNotional', async () => {
     const tradingConfig = createTradingConfig();
     const tradeCtx = createTradeContextMock();
     const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
@@ -567,10 +564,7 @@ describe('buy-flow integration', () => {
       isExecutionAllowed: () => true,
     });
 
-    const monitorConfig = tradingConfig.monitors[0];
-    if (!monitorConfig) {
-      throw new Error('missing monitor config for integration test');
-    }
+    const monitorConfig = tradingConfig.monitor;
 
     const firstSignal = createSignal({
       symbol: 'BULL.HK',
@@ -636,10 +630,7 @@ describe('buy-flow integration', () => {
       isExecutionAllowed: () => true,
     });
 
-    const monitorConfig = tradingConfig.monitors[0];
-    if (!monitorConfig) {
-      throw new Error('missing monitor config for integration test');
-    }
+    const monitorConfig = tradingConfig.monitor;
 
     const failedSignal = createSignal({
       symbol: 'BULL.HK',

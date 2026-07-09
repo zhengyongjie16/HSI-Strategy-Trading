@@ -43,7 +43,7 @@ export type StartNewProtectionEpisodeParams = {
 
 /**
  * 当日亏损追踪器接口。
- * 类型用途：按监控标的与方向维护已实现盈亏偏移，供浮亏刷新、成交处理与生命周期重建共享。
+ * 类型用途：按唯一 monitor 的 LONG/SHORT 方向维护已实现盈亏偏移，供浮亏刷新、成交处理与生命周期重建共享。
  * 数据来源：由 riskController 模块实现并注入。
  * 使用范围：主程序、生命周期、订单监控、浮亏监控；全项目可引用。
  */
@@ -54,9 +54,10 @@ export interface DailyLossTracker {
   /** 使用完整订单列表重新计算当日状态，作为启动初始化或纠偏手段。 */
   recalculateFromAllOrders: (
     allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<string, number>,
+    relatedTradingSymbols?: ReadonlySet<string>,
   ) => void;
 
   /** 增量记录单笔成交，仅接受 executedTimeMs > 当前保护性边界 且 当日日键匹配的订单 */
@@ -113,7 +114,7 @@ export type DailyLossTrackerDeps = {
   readonly filteringEngine: OrderFilteringEngine;
   readonly resolveOrderOwnership: (
     order: RawOrderFromAPI,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
   ) => OrderOwnership | null;
   readonly classifyAndConvertOrders: (orders: ReadonlyArray<RawOrderFromAPI>) => {
     buyOrders: ReadonlyArray<OrderRecord>;

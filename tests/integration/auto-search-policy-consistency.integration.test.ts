@@ -163,7 +163,7 @@ describe('auto search policy consistency integration', () => {
       },
     });
     await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry: startupRegistry,
       positions: [],
       orders: [],
@@ -413,7 +413,7 @@ describe('auto search policy consistency integration', () => {
       },
     });
     await prepareSeatsForRuntime({
-      tradingConfig: createTradingConfig({ monitors: [monitorConfig] }),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry: startupRegistry,
       positions: [],
       orders: [],

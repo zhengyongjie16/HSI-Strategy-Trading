@@ -64,16 +64,16 @@ function handoffPeriodicWakeup(params: {
  * 创建周期换标任务处理器（AUTO_SYMBOL_TICK）。
  * 执行前校验席位快照，防止换标后执行旧任务；该任务只触发周期换标 due 检查。
  *
- * @param deps 依赖注入，包含 getContextOrSkip、switchWakeupRuntime、getCanTradeNow
+ * @param deps 依赖注入，包含 requireContext、switchWakeupRuntime、getCanTradeNow
  * @returns AUTO_SYMBOL_TICK 处理函数
  */
 export function createAutoSymbolHandlers({
-  getContextOrSkip,
+  requireContext,
   switchWakeupRuntime,
   periodicSwitchWakeupRuntime,
   getCanTradeNow,
 }: {
-  readonly getContextOrSkip: (monitorSymbol: string) => MonitorTaskContext | null;
+  readonly requireContext: (monitorSymbol: string) => MonitorTaskContext;
   readonly switchWakeupRuntime: Pick<SwitchWakeupRuntime, 'handoffPendingSwitch'>;
   readonly periodicSwitchWakeupRuntime: Pick<
     PeriodicSwitchWakeupRuntime,
@@ -141,10 +141,7 @@ export function createAutoSymbolHandlers({
     task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
   ): Promise<MonitorTaskStatus> {
     const data: AutoSymbolTickTaskData = task.data;
-    const context = getContextOrSkip(data.monitorSymbol);
-    if (!context) {
-      return 'skipped';
-    }
+    const context = requireContext(data.monitorSymbol);
 
     const isSnapshotValid = isSeatSnapshotValid(
       data.monitorSymbol,

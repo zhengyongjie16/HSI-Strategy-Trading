@@ -68,7 +68,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     symbolRegistry,
     isExecutionAllowed,
   } = deps;
-  const { global, monitors } = tradingConfig;
+  const { global, monitor } = tradingConfig;
 
   /**
    * 通过信号标的解析监控配置与方向，未找到时返回 null。
@@ -85,16 +85,14 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       return null;
     }
 
-    const monitorConfig = monitors.find(
-      (config) => config.monitorSymbol === resolvedSeat.monitorSymbol,
-    );
-    if (!monitorConfig) {
-      logger.warn(`[订单执行] 未找到监控配置，跳过信号: ${signalSymbol}`);
-      return null;
+    if (resolvedSeat.monitorSymbol !== monitor.monitorSymbol) {
+      throw new Error(
+        `[订单执行] 席位归属监控标的不匹配: signalSymbol=${signalSymbol} resolvedMonitor=${resolvedSeat.monitorSymbol} configuredMonitor=${monitor.monitorSymbol}`,
+      );
     }
 
     return {
-      monitorConfig,
+      monitorConfig: monitor,
       isShortSymbol: resolvedSeat.direction === 'SHORT',
       seatVersion: resolvedSeat.seatVersion,
     };

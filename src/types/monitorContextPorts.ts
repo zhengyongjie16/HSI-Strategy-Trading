@@ -155,7 +155,7 @@ export interface DelayedSignalVerifierPort {
     readonly monitorSymbol: string;
     readonly verificationIndicators: ReadonlyArray<VerificationIndicator>;
   }) => void;
-  onVerified: (callback: (signal: Signal, monitorSymbol: string) => void) => void;
+  onVerified: (callback: (signal: Signal) => void) => void;
   cancelAll: () => number;
   cancelAllForSymbol: (monitorSymbol: string) => void;
   cancelAllForDirection: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => number;

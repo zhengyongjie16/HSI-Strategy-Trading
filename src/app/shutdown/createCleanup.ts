@@ -7,20 +7,7 @@
  */
 import { logger } from '../../utils/logger/index.js';
 import { formatError } from '../../utils/error/index.js';
-import type { MonitorState } from '../../types/state.js';
 import type { CleanupContext, CleanupController, CleanupFailure } from '../types.js';
-
-/**
- * 清空所有监控标的的最后快照引用。
- *
- * @param monitorStates 监控状态 Map，键为监控标的代码
- * @returns void
- */
-function clearAllMonitorSnapshots(monitorStates: ReadonlyMap<string, MonitorState>): void {
-  for (const monitorState of monitorStates.values()) {
-    monitorState.lastMonitorSnapshot = null;
-  }
-}
 
 /**
  * 创建程序退出时的清理函数，负责按顺序停止处理器、销毁验证器、清空缓存。
@@ -48,7 +35,7 @@ export function createCleanup(context: CleanupContext): CleanupController {
     quoteSubscriptionRuntime,
     postTradeConsistencyRuntime,
     marketDataClient,
-    monitorContexts,
+    monitorContext,
     indicatorCache,
     lastState,
   } = context;
@@ -142,18 +129,16 @@ export function createCleanup(context: CleanupContext): CleanupController {
       await postTradeConsistencyRuntime.stopAndDrain();
     });
 
-    for (const [monitorSymbol, monitorContext] of monitorContexts) {
-      await runStep(`销毁延迟验证器 ${monitorSymbol}`, () => {
-        monitorContext.delayedSignalVerifier.destroy();
-      });
-    }
+    await runStep(`销毁延迟验证器 ${monitorContext.config.monitorSymbol}`, () => {
+      monitorContext.delayedSignalVerifier.destroy();
+    });
 
     await runStep('清空指标缓存', () => {
       indicatorCache.clearAll();
     });
 
     await runStep('清空监控快照引用', () => {
-      clearAllMonitorSnapshots(lastState.monitorStates);
+      lastState.monitorState.lastMonitorSnapshot = null;
     });
 
     await runStep('重置行情运行态订阅与缓存', async () => {

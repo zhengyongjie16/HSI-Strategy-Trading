@@ -1,4 +1,4 @@
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { LastState } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, Trader, Unsubscribe } from '../../types/services.js';
@@ -56,7 +56,7 @@ export type MutableQuoteSubscriptionRetainStore = Map<string, Set<string>>;
  * 使用范围：QuoteSubscriptionRuntime 工厂。
  */
 export type QuoteSubscriptionRuntimeDeps = Readonly<{
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   marketDataClient: Pick<MarketDataClient, 'subscribeSymbols' | 'unsubscribeSymbols'>;
   trader: Pick<Trader, 'getOrderHoldSymbols' | 'onOrderHoldSymbolsChanged'>;

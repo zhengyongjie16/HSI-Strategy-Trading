@@ -196,8 +196,8 @@ export const processSellSignals = (
       }
     }
 
-    // 正常卖出信号：根据智能平仓配置进行数量计算
-    // 传入 sig.symbol 以精确筛选订单记录（多标的支持）
+    // 正常卖出信号：根据智能平仓配置进行数量计算。
+    // 传入 sig.symbol，确保只筛选当前席位标的对应的订单记录。
     const result = calculateSellQuantity({
       position,
       quote,

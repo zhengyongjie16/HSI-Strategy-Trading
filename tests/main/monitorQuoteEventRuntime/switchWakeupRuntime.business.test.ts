@@ -3,7 +3,7 @@
  *
  * 覆盖：
  * - WAIT wakeups 可由 ORDER_EVENT / FRESHNESS / SYMBOL_QUOTE / RETRY_TIMER 继续推进 pending switch
- * - route key 需要按 monitorSymbol + direction + seatVersion 隔离，并对旧 seatVersion 自然失效
+ * - route key 需要按 direction + seatVersion 隔离，并对旧 seatVersion 自然失效
  * - stopAndDrain 后旧事件与旧 timer 不再继续推进
  * - baseline / gate 关闭时事件只唤醒不推进，恢复后再由新事件继续推进
  * - 同一路由使用 single-flight + latest-only collapse
@@ -142,7 +142,7 @@ describe('switchWakeupRuntime', () => {
 
   function createBaseHarness(
     params: {
-      readonly monitorContexts?: Map<string, MonitorContext>;
+      readonly monitorContext?: MonitorContext;
       readonly symbolRegistry?: SymbolRegistry;
       readonly lastState?: {
         canTrade: boolean | null;
@@ -164,7 +164,7 @@ describe('switchWakeupRuntime', () => {
   ): Readonly<{
     runtime: ReturnType<typeof createSwitchWakeupRuntime>;
     symbolRegistry: SymbolRegistry;
-    monitorContexts: Map<string, MonitorContext>;
+    monitorContext: MonitorContext;
     lastState: {
       canTrade: boolean | null;
       isTradingEnabled: boolean;
@@ -214,25 +214,20 @@ describe('switchWakeupRuntime', () => {
         createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
       ],
     };
-    const monitorContexts =
-      params.monitorContexts ??
-      new Map([
-        [
-          'HSI.HK',
-          createMonitorContextDouble({
-            config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-            symbolRegistry,
-            state: {
-              monitorSymbol: 'HSI.HK',
-              signal: null,
-              pendingDelayedSignals: [],
-              lastMonitorSnapshot: null,
-              incrementalIndicatorRuntime: null,
-            },
-            ...(params.autoSymbolManager ? { autoSymbolManager: params.autoSymbolManager } : {}),
-          }),
-        ],
-      ]);
+    const monitorContext =
+      params.monitorContext ??
+      createMonitorContextDouble({
+        config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
+        symbolRegistry,
+        state: {
+          monitorSymbol: 'HSI.HK',
+          signal: null,
+          pendingDelayedSignals: [],
+          lastMonitorSnapshot: null,
+          incrementalIndicatorRuntime: null,
+        },
+        ...(params.autoSymbolManager ? { autoSymbolManager: params.autoSymbolManager } : {}),
+      });
     const trader = createTraderDouble({
       onOrderStateChanged: (listener) => {
         orderStateChangedListener = listener;
@@ -256,7 +251,7 @@ describe('switchWakeupRuntime', () => {
       },
       trader,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       postTradeConsistencyRuntime: consistencyHarness.port,
       doomsdayProtectionEnabled: params.doomsdayProtectionEnabled ?? false,
@@ -280,7 +275,7 @@ describe('switchWakeupRuntime', () => {
     return {
       runtime,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
       lastState,
       consistencyHarness,
       timerHarness,
@@ -348,10 +343,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -446,10 +438,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const firstMonitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (firstMonitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const firstMonitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -462,11 +451,6 @@ describe('switchWakeupRuntime', () => {
     emitOrderStateChanged('OTHER.HK');
     await waitTick();
     expect(advanceCalls).toHaveLength(0);
-
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
 
     runtimeHarness.lastState.cachedPositions = [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 1, availableQuantity: 1 }),
@@ -524,199 +508,27 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.runtime.stopAndDrain();
   });
 
-  it('isolates routes by monitorSymbol + direction + seatVersion so multiple monitors do not conflict', async () => {
-    const longSymbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
-      longSeat: {
-        symbol: 'BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: 'BEAR.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 1,
-      shortVersion: 1,
+  it('fails fast when handoff monitorSymbol does not match the unique monitor', async () => {
+    const runtimeHarness = createBaseHarness();
+    const foreignMonitorContext = createMonitorContextDouble({
+      config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
+      symbolRegistry: createSymbolRegistryDouble({
+        monitorSymbol: 'TECH.HK',
+      }),
     });
-    const secondRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'TECH.HK',
-      longSeat: {
-        symbol: 'TECHBULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: 'TECHBEAR.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 1,
-      shortVersion: 1,
-    });
-    const sharedSymbolRegistry = {
-      getSeatState: (monitorSymbol: string, direction: 'LONG' | 'SHORT') =>
-        monitorSymbol === 'HSI.HK'
-          ? longSymbolRegistry.getSeatState(monitorSymbol, direction)
-          : secondRegistry.getSeatState(monitorSymbol, direction),
-      getSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') =>
-        monitorSymbol === 'HSI.HK'
-          ? longSymbolRegistry.getSeatVersion(monitorSymbol, direction)
-          : secondRegistry.getSeatVersion(monitorSymbol, direction),
-      resolveSeatBySymbol: (symbol: string) =>
-        longSymbolRegistry.resolveSeatBySymbol(symbol) ??
-        secondRegistry.resolveSeatBySymbol(symbol),
-      updateSeatState: (
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-        nextState: ReturnType<typeof longSymbolRegistry.getSeatState>,
-      ) =>
-        monitorSymbol === 'HSI.HK'
-          ? longSymbolRegistry.updateSeatState(monitorSymbol, direction, nextState)
-          : secondRegistry.updateSeatState(monitorSymbol, direction, nextState),
-      updateSeatStateWithVersionBump: (
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-        nextState: ReturnType<typeof longSymbolRegistry.getSeatState>,
-      ) =>
-        monitorSymbol === 'HSI.HK'
-          ? longSymbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, direction, nextState)
-          : secondRegistry.updateSeatStateWithVersionBump(monitorSymbol, direction, nextState),
-      bumpSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') =>
-        monitorSymbol === 'HSI.HK'
-          ? longSymbolRegistry.bumpSeatVersion(monitorSymbol, direction)
-          : secondRegistry.bumpSeatVersion(monitorSymbol, direction),
-      onSeatStateChanged: () => () => {},
-      onSeatVersionChanged: () => () => {},
-      onSeatTruthChanged: () => {
-        throw new Error('switchWakeupRuntime test must not subscribe to seat truth events');
-      },
-    };
-
-    const longAdvanceCalls: string[] = [];
-    const techAdvanceCalls: string[] = [];
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-          symbolRegistry: sharedSymbolRegistry,
-          autoSymbolManager: {
-            maybeSearchOnEvent: async () => {},
-            evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
-            startSwitchOnDistance: async (params) => ({
-              started: false,
-              direction: params.direction,
-              driveResult: { kind: 'NOOP' },
-            }),
-            advancePendingSwitch: async (params) => {
-              longAdvanceCalls.push(`${params.direction}:${params.positions.length}`);
-              return {
-                advanced: true,
-                direction: params.direction,
-                stillPending: false,
-                driveResult: { kind: 'COMPLETED' },
-              };
-            },
-            hasPendingSwitch: () => true,
-            getPeriodicSwitchPendingState: () => ({
-              pending: false,
-              pendingSinceMs: null,
-            }),
-            resetAllState: () => {},
-          },
-        }),
-      ],
-      [
-        'TECH.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
-          symbolRegistry: sharedSymbolRegistry,
-          autoSymbolManager: {
-            maybeSearchOnEvent: async () => {},
-            evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
-            startSwitchOnDistance: async (params) => ({
-              started: false,
-              direction: params.direction,
-              driveResult: { kind: 'NOOP' },
-            }),
-            advancePendingSwitch: async (params) => {
-              techAdvanceCalls.push(`${params.direction}:${params.positions.length}`);
-              return {
-                advanced: true,
-                direction: params.direction,
-                stillPending: false,
-                driveResult: { kind: 'COMPLETED' },
-              };
-            },
-            hasPendingSwitch: () => true,
-            getPeriodicSwitchPendingState: () => ({
-              pending: false,
-              pendingSinceMs: null,
-            }),
-            resetAllState: () => {},
-          },
-        }),
-      ],
-    ]);
-
-    const runtimeHarness = createBaseHarness({
-      monitorContexts,
-      symbolRegistry: sharedSymbolRegistry,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-        cachedPositions: [],
-      },
-    });
-
-    const hsiMonitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    const techMonitorContext = runtimeHarness.monitorContexts.get('TECH.HK');
-    if (hsiMonitorContext === undefined || techMonitorContext === undefined) {
-      throw new Error('expected monitor contexts');
-    }
 
     runtimeHarness.runtime.start();
-    runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
-      direction: 'LONG',
-      monitorContext: hsiMonitorContext,
-      driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
-    });
 
-    runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'TECH.HK',
-      direction: 'LONG',
-      monitorContext: techMonitorContext,
-      driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
-    });
-
-    runtimeHarness.lastState.cachedPositions = [
-      createPositionDouble({ symbol: 'BULL.HK', quantity: 1, availableQuantity: 1 }),
-    ];
-    runtimeHarness.consistencyHarness.emitFreshReached();
-    await waitTick();
-
-    expect(longAdvanceCalls).toEqual(['LONG:1']);
-    expect(techAdvanceCalls).toEqual(['LONG:1']);
+    expect(() => {
+      runtimeHarness.runtime.handoffPendingSwitch({
+        monitorSymbol: 'TECH.HK',
+        direction: 'LONG',
+        monitorContext: foreignMonitorContext,
+        driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
+      });
+    }).toThrow(
+      '[SwitchWakeupRuntime] handoff monitorSymbol mismatch: expected=HSI.HK actual=TECH.HK',
+    );
 
     await runtimeHarness.runtime.stopAndDrain();
   });
@@ -783,7 +595,7 @@ describe('switchWakeupRuntime', () => {
         },
       }),
       symbolRegistry,
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
@@ -877,10 +689,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -931,10 +740,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.consistencyHarness.blockFreshWait();
     runtimeHarness.runtime.start();
@@ -994,10 +800,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1053,10 +856,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1129,10 +929,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1201,10 +998,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1236,10 +1030,7 @@ describe('switchWakeupRuntime', () => {
         },
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1252,7 +1043,7 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
     await runtimeHarness.runtime.stopAndDrain();
 
-    expect(releaseCalls).toEqual([{ ownerKey: 'HSI.HK:LONG:1', reason: 'SWITCH_WAKEUP' }]);
+    expect(releaseCalls).toEqual([{ ownerKey: 'LONG:1', reason: 'SWITCH_WAKEUP' }]);
   });
 
   it('switches symbol quote wakeup membership when WAIT wakeups change', async () => {
@@ -1292,10 +1083,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1353,10 +1141,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1405,10 +1190,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1425,146 +1207,24 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.runtime.stopAndDrain();
   });
 
-  it('keeps multiple routes independently matched by the same quote symbol', async () => {
-    const hsiRegistry = createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' });
-    const techRegistry = createSymbolRegistryDouble({ monitorSymbol: 'TECH.HK' });
-    const sharedSymbolRegistry = {
-      getSeatState: (monitorSymbol: string, direction: 'LONG' | 'SHORT') =>
-        monitorSymbol === 'HSI.HK'
-          ? hsiRegistry.getSeatState(monitorSymbol, direction)
-          : techRegistry.getSeatState(monitorSymbol, direction),
-      getSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') =>
-        monitorSymbol === 'HSI.HK'
-          ? hsiRegistry.getSeatVersion(monitorSymbol, direction)
-          : techRegistry.getSeatVersion(monitorSymbol, direction),
-      resolveSeatBySymbol: (symbol: string) =>
-        hsiRegistry.resolveSeatBySymbol(symbol) ?? techRegistry.resolveSeatBySymbol(symbol),
-      updateSeatState: (
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-        nextState: ReturnType<typeof hsiRegistry.getSeatState>,
-      ) =>
-        monitorSymbol === 'HSI.HK'
-          ? hsiRegistry.updateSeatState(monitorSymbol, direction, nextState)
-          : techRegistry.updateSeatState(monitorSymbol, direction, nextState),
-      updateSeatStateWithVersionBump: (
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-        nextState: ReturnType<typeof hsiRegistry.getSeatState>,
-      ) =>
-        monitorSymbol === 'HSI.HK'
-          ? hsiRegistry.updateSeatStateWithVersionBump(monitorSymbol, direction, nextState)
-          : techRegistry.updateSeatStateWithVersionBump(monitorSymbol, direction, nextState),
-      bumpSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') =>
-        monitorSymbol === 'HSI.HK'
-          ? hsiRegistry.bumpSeatVersion(monitorSymbol, direction)
-          : techRegistry.bumpSeatVersion(monitorSymbol, direction),
-      onSeatStateChanged: () => () => {},
-      onSeatVersionChanged: () => () => {},
-      onSeatTruthChanged: () => () => {},
-    };
-    const hsiAdvanceCalls: string[] = [];
-    const techAdvanceCalls: string[] = [];
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-          symbolRegistry: sharedSymbolRegistry,
-          autoSymbolManager: {
-            maybeSearchOnEvent: async () => {},
-            evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
-            startSwitchOnDistance: async (params) => ({
-              started: false,
-              direction: params.direction,
-              driveResult: { kind: 'NOOP' },
-            }),
-            advancePendingSwitch: async (params) => {
-              hsiAdvanceCalls[hsiAdvanceCalls.length] = params.direction;
-              return {
-                advanced: true,
-                direction: params.direction,
-                stillPending: false,
-                driveResult: { kind: 'COMPLETED' },
-              };
-            },
-            hasPendingSwitch: () => true,
-            getPeriodicSwitchPendingState: () => ({
-              pending: false,
-              pendingSinceMs: null,
-            }),
-            resetAllState: () => {},
-          },
-        }),
-      ],
-      [
-        'TECH.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
-          symbolRegistry: sharedSymbolRegistry,
-          autoSymbolManager: {
-            maybeSearchOnEvent: async () => {},
-            evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
-            startSwitchOnDistance: async (params) => ({
-              started: false,
-              direction: params.direction,
-              driveResult: { kind: 'NOOP' },
-            }),
-            advancePendingSwitch: async (params) => {
-              techAdvanceCalls[techAdvanceCalls.length] = params.direction;
-              return {
-                advanced: true,
-                direction: params.direction,
-                stillPending: false,
-                driveResult: { kind: 'COMPLETED' },
-              };
-            },
-            hasPendingSwitch: () => true,
-            getPeriodicSwitchPendingState: () => ({
-              pending: false,
-              pendingSinceMs: null,
-            }),
-            resetAllState: () => {},
-          },
-        }),
-      ],
-    ]);
-    const runtimeHarness = createBaseHarness({
-      monitorContexts,
-      symbolRegistry: sharedSymbolRegistry,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-        cachedPositions: [],
-      },
+  it('fails fast when handoff monitorContext identity does not match the unique context', async () => {
+    const runtimeHarness = createBaseHarness();
+    const foreignMonitorContext = createMonitorContextDouble({
+      config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry: runtimeHarness.symbolRegistry,
     });
-    const hsiMonitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    const techMonitorContext = runtimeHarness.monitorContexts.get('TECH.HK');
-    if (hsiMonitorContext === undefined || techMonitorContext === undefined) {
-      throw new Error('expected monitor contexts');
-    }
 
     runtimeHarness.runtime.start();
-    runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
-      direction: 'LONG',
-      monitorContext: hsiMonitorContext,
-      driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
-    });
 
-    runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'TECH.HK',
-      direction: 'LONG',
-      monitorContext: techMonitorContext,
-      driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
-    });
+    expect(() => {
+      runtimeHarness.runtime.handoffPendingSwitch({
+        monitorSymbol: 'HSI.HK',
+        direction: 'LONG',
+        monitorContext: foreignMonitorContext,
+        driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+      });
+    }).toThrow('[SwitchWakeupRuntime] handoff monitorContext identity mismatch');
 
-    emitQuoteUpdated('BULL.HK', 1.23);
-    await waitTick();
-
-    expect(hsiAdvanceCalls).toEqual(['LONG']);
-    expect(techAdvanceCalls).toEqual(['LONG']);
     await runtimeHarness.runtime.stopAndDrain();
   });
 
@@ -1601,10 +1261,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1669,10 +1326,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const stopMonitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (stopMonitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const stopMonitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1732,10 +1386,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1799,10 +1450,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -1871,10 +1519,7 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const monitorContext = runtimeHarness.monitorContexts.get('HSI.HK');
-    if (monitorContext === undefined) {
-      throw new Error('expected HSI.HK monitor context');
-    }
+    const monitorContext = runtimeHarness.monitorContext;
 
     runtimeHarness.lastState.cachedPositions = [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),

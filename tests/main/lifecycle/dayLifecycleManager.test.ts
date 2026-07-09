@@ -489,7 +489,7 @@ describe('createDayLifecycleManager', () => {
           cachedTradingDayInfo: null,
         } as never,
         symbolRegistry,
-        monitorContexts: new Map([['HSI.HK', monitorContext]]),
+        monitorContext,
         dailyLossTracker: {
           getLossOffset: () => 0,
         } as never,

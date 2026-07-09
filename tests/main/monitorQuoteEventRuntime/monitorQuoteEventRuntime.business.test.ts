@@ -23,6 +23,7 @@ import type {
   CreateDefaultMonitorQuoteEventRuntimeDeps,
   MonitorQuoteEventRuntime,
 } from '../../../src/main/monitorQuoteEventRuntime/types.js';
+import type { MonitorContext } from '../../../src/types/state.js';
 import type { StartSwitchOnDistanceResult } from '../../../src/types/monitorContextPorts.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 
@@ -166,7 +167,7 @@ function createDefaultStaticLiquidationHarness(): RuntimeHarness &
           ['BEAR.HK', createQuoteDouble('BEAR.HK', 1, 100)],
         ]),
     },
-    monitorContexts: new Map([['HSI.HK', monitorContext]]),
+    monitorContext,
     trader: createTraderDouble({
       executeSignals: async (signals) => {
         for (const signal of signals) {
@@ -308,7 +309,7 @@ function createDefaultDistanceSwitchHarness(
       },
       getQuotes: async () => new Map(),
     },
-    monitorContexts: new Map([['HSI.HK', monitorContext]]),
+    monitorContext,
     trader: createTraderDouble(),
     lastState: {
       positionCache: createPositionCacheDouble(),
@@ -372,6 +373,7 @@ function createDefaultStaticWaitHarness(
   let longQuoteAvailable = params.longQuoteAvailable ?? false;
   const shortQuoteAvailable = params.shortQuoteAvailable ?? false;
   const quoteResponseGate = params.deferQuoteResponse ? createDeferred<true>() : null;
+  let routeMode: 'STATIC_LIQUIDATION' | 'DISTANCE_SWITCH' = 'STATIC_LIQUIDATION';
   const symbolRegistry = createSymbolRegistryDouble({
     monitorSymbol: 'HSI.HK',
     longSeat: {
@@ -446,7 +448,19 @@ function createDefaultStaticWaitHarness(
       }),
     }),
   });
-  const monitorContexts = new Map([['HSI.HK', staticMonitorContext]]);
+  const monitorContext: MonitorContext = {
+    ...staticMonitorContext,
+    get config() {
+      return routeMode === 'STATIC_LIQUIDATION'
+        ? staticMonitorContext.config
+        : distanceMonitorContext.config;
+    },
+    get autoSymbolManager() {
+      return routeMode === 'STATIC_LIQUIDATION'
+        ? staticMonitorContext.autoSymbolManager
+        : distanceMonitorContext.autoSymbolManager;
+    },
+  };
   const runtime = createDefaultMonitorQuoteEventRuntime({
     marketDataClient: {
       onQuoteUpdated: (listener) => {
@@ -467,7 +481,7 @@ function createDefaultStaticWaitHarness(
         ]);
       },
     },
-    monitorContexts,
+    monitorContext,
     trader: createTraderDouble({
       executeSignals: async (signals) => {
         if (
@@ -558,7 +572,7 @@ function createDefaultStaticWaitHarness(
       });
     },
     switchMonitorRouteToDistanceMode(): void {
-      monitorContexts.set('HSI.HK', distanceMonitorContext);
+      routeMode = 'DISTANCE_SWITCH';
     },
   };
 }
@@ -595,7 +609,7 @@ describe('monitorQuoteEventRuntime contract', () => {
         },
         getQuotes: async () => new Map(),
       },
-      monitorContexts: new Map(),
+      monitorContext: createMonitorContextDouble(),
       trader: createTraderDouble(),
       lastState: {
         positionCache: createPositionCacheDouble(),

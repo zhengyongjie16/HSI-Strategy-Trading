@@ -45,18 +45,13 @@ function clearTradeQueues(
 }
 
 /**
- * 取消所有监控标的的延迟验证信号。
+ * 取消唯一监控标的的延迟验证信号。
  *
- * @param monitorContexts 所有监控上下文
+ * @param monitorContext 监控上下文
  * @returns 取消的信号总数
  */
-function cancelAllDelayedSignals(monitorContexts: ReadonlyMap<string, MonitorContext>): number {
-  let total = 0;
-  for (const monitorContext of monitorContexts.values()) {
-    total += monitorContext.delayedSignalVerifier.cancelAll();
-  }
-
-  return total;
+function cancelAllDelayedSignals(monitorContext: MonitorContext): number {
+  return monitorContext.delayedSignalVerifier.cancelAll();
 }
 
 /**
@@ -68,7 +63,7 @@ function cancelAllDelayedSignals(monitorContexts: ReadonlyMap<string, MonitorCon
  */
 export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheDomain {
   const {
-    monitorContexts,
+    monitorContext,
     buyProcessor,
     sellProcessor,
     monitorTaskProcessor,
@@ -116,7 +111,7 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
         sellTaskQueue,
         monitorTaskQueue,
       });
-      const removedDelayed = cancelAllDelayedSignals(monitorContexts);
+      const removedDelayed = cancelAllDelayedSignals(monitorContext);
 
       postTradeConsistencyRuntime.midnightClear();
       indicatorCache.clearAll();

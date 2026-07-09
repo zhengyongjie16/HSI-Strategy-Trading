@@ -27,18 +27,6 @@ export type SymbolValidationContext = {
 };
 
 /**
- * 重复交易标的记录。
- * 类型用途：表示重复出现的交易标的及其原始索引。
- * 数据来源：由 duplicate symbol 检测流程收集。
- * 使用范围：仅 validator 模块内部使用。
- */
-export type DuplicateSymbol = {
-  readonly symbol: string;
-  readonly index: number;
-  readonly previousIndex: number;
-};
-
-/**
  * 信号配置键名联合类型。
  * 类型用途：表示 MonitorConfig.signalConfig 的固定四个键。
  * 数据来源：派生自 MonitorConfig 的 signalConfig 字段键名。

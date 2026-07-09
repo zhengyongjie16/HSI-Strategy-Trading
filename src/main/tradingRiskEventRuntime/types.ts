@@ -4,11 +4,11 @@ import type { SymbolRegistry } from '../../types/seat.js';
 
 /**
  * 风险路由键。
- * 类型用途：以 monitorSymbol + direction 作为单条风险执行链的唯一键，支撑 single-flight 与 latest-only collapse。
+ * 类型用途：以 LONG / SHORT 方向作为单条风险执行链的唯一键，支撑 single-flight 与 latest-only collapse。
  * 数据来源：由 routing index 构建流程生成。
  * 使用范围：仅 tradingRiskEventRuntime 模块内部使用。
  */
-export type TradingRiskRouteKey = `${string}:${'LONG' | 'SHORT'}`;
+export type TradingRiskRouteKey = 'LONG' | 'SHORT';
 
 /**
  * 风险路由条目。
@@ -85,7 +85,7 @@ export type TradingRiskEventRuntimeDeps = Readonly<{
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
   readonly trader: Trader;
   readonly symbolRegistry: SymbolRegistry;
-  readonly monitorContexts: ReadonlyMap<string, MonitorContext>;
+  readonly monitorContext: MonitorContext;
   readonly lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
   readonly postTradeConsistencyRuntime: TradingRiskConsistencyPort;
   readonly doomsdayProtectionEnabled: boolean;

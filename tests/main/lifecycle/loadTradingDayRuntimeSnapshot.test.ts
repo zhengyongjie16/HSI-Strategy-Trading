@@ -43,6 +43,16 @@ function getInFlight(_key: string): undefined {
   return;
 }
 
+function createMinimalMonitorState(monitorSymbol = 'HSI.HK'): MonitorState {
+  return {
+    monitorSymbol,
+    signal: null,
+    pendingDelayedSignals: [],
+    lastMonitorSnapshot: null,
+    incrementalIndicatorRuntime: null,
+  };
+}
+
 function createMinimalLastState(): LastState {
   return {
     canTrade: null,
@@ -57,15 +67,15 @@ function createMinimalLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorStates: new Map<string, MonitorState>(),
+    monitorState: createMinimalMonitorState(),
     allTradingSymbols: new Set<string>(),
   };
 }
 
 function createTradingConfig(
-  monitors: LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitors'] = [],
+  monitor: LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitor'] = createMonitorConfigDouble(),
 ): LoadTradingDayRuntimeSnapshotDeps['tradingConfig'] {
-  return createTradingConfigFactory({ monitors });
+  return createTradingConfigFactory({ monitor });
 }
 
 function createWarrantListCacheConfig(): LoadTradingDayRuntimeSnapshotDeps['warrantListCacheConfig'] {
@@ -93,7 +103,7 @@ function createBaseDeps(
     trader: overrides.trader ?? createTraderDouble(),
     lastState: overrides.lastState ?? createMinimalLastState(),
     tradingConfig,
-    symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry(tradingConfig.monitors),
+    symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry(tradingConfig.monitor),
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
     protectiveLiquidationEpisodeTracker:
       overrides.protectiveLiquidationEpisodeTracker ??
@@ -129,14 +139,14 @@ function createLoadParams(
   };
 }
 
-function createProtectiveMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitors'][number] {
+function createProtectiveMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitor'] {
   return createMonitorConfigDouble({
     monitorSymbol: 'HSI.HK',
     orderOwnershipMapping: ['HSI'],
   });
 }
 
-function createAutoSearchMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitors'][number] {
+function createAutoSearchMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitor'] {
   return createMonitorConfigDouble({
     monitorSymbol: 'HSI.HK',
     autoSearchConfig: {
@@ -179,6 +189,10 @@ function toApiDistanceRatio(percentValue: number): number {
 }
 
 function createProtectiveOrder(params: ProtectiveOrderParams): RawOrderFromAPI {
+  const updatedAt = params.updatedAtMs === undefined ? null : new Date(params.updatedAtMs);
+  const submittedAt =
+    params.updatedAtMs === undefined ? null : new Date(params.updatedAtMs - 30_000);
+
   return {
     orderId: params.orderId,
     symbol: 'BULL.HK',
@@ -191,8 +205,8 @@ function createProtectiveOrder(params: ProtectiveOrderParams): RawOrderFromAPI {
     quantity: params.quantity,
     executedPrice: params.executedPrice,
     executedQuantity: params.executedQuantity,
-    submittedAt: new Date(params.updatedAtMs - 30_000),
-    updatedAt: new Date(params.updatedAtMs),
+    submittedAt,
+    updatedAt,
   };
 }
 
@@ -206,7 +220,7 @@ function createBoundaryCaptureDailyLossTracker(
   ) => void,
 ): LoadTradingDayRuntimeSnapshotDeps['dailyLossTracker'] {
   return createDailyLossTrackerDouble({
-    recalculateFromAllOrders: (_allOrders, _monitors, _now, protectionBoundaryByDirection) => {
+    recalculateFromAllOrders: (_allOrders, _monitor, _now, protectionBoundaryByDirection) => {
       if (protectionBoundaryByDirection === undefined) {
         return;
       }
@@ -350,7 +364,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
   it('only runs startup auto-search after continuous session and morning delay are both satisfied', async () => {
     const monitor = createAutoSearchMonitor();
-    const tradingConfig = createTradingConfig([monitor]);
+    const tradingConfig = createTradingConfig(monitor);
     const quoteContext = createQuoteContextMock();
     quoteContext.seedWarrantList('HSI.HK', [
       createWarrantInfo({
@@ -387,7 +401,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradingConfig,
       marketDataClient,
       trader: createReadyTrader(),
-      symbolRegistry: createSymbolRegistry(tradingConfig.monitors),
+      symbolRegistry: createSymbolRegistry(tradingConfig.monitor),
     });
     const blockedLoad = createLoadTradingDayRuntimeSnapshot(blockedDeps);
     await blockedLoad(
@@ -410,7 +424,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradingConfig,
       marketDataClient,
       trader: createReadyTrader(),
-      symbolRegistry: createSymbolRegistry(tradingConfig.monitors),
+      symbolRegistry: createSymbolRegistry(tradingConfig.monitor),
     });
     const allowedLoad = createLoadTradingDayRuntimeSnapshot(allowedDeps);
     await allowedLoad(
@@ -428,7 +442,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
   it('schedules SEAT_REFRESH for ACTIVATING seats restored during recovery', async () => {
     const monitor = createAutoSearchMonitor();
-    const tradingConfig = createTradingConfig([monitor]);
+    const tradingConfig = createTradingConfig(monitor);
     const quoteContext = createQuoteContextMock();
     quoteContext.seedWarrantList('HSI.HK', [
       createWarrantInfo({
@@ -455,7 +469,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       dateKey: '2026-02-16',
       info: { isTradingDay: true, isHalfDay: false },
     };
-    const symbolRegistry = createSymbolRegistry(tradingConfig.monitors);
+    const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const seatActivationDispatcher = createSeatActivationDispatcher({
       tradingConfig,
@@ -525,11 +539,8 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(lastState.tradingCalendarSnapshot).toBeUndefined();
   });
 
-  it('subscribes candlesticks and leaves seeded local cache snapshots observable', async () => {
-    const monitors = [
-      createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
-      createMonitorConfigDouble({ monitorSymbol: 'HHI.HK' }),
-    ];
+  it('subscribes candlesticks for the unique monitor and leaves seeded local cache snapshots observable', async () => {
+    const monitor = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const subscribedSymbols: string[] = [];
     const seededBySymbol = new Set<string>();
     const marketDataClient = createMarketDataClientDouble({
@@ -573,7 +584,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       },
     });
     const deps = createBaseDeps({
-      tradingConfig: createTradingConfig(monitors),
+      tradingConfig: createTradingConfig(monitor),
       marketDataClient,
       trader: createReadyTrader(),
     });
@@ -581,13 +592,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const load = createLoadTradingDayRuntimeSnapshot(deps);
     await load(createLoadParams({ requireTradingDay: true }));
 
-    expect(subscribedSymbols).toEqual(['HSI.HK', 'HHI.HK']);
+    expect(subscribedSymbols).toEqual(['HSI.HK']);
     expect(
       marketDataClient.getCandlestickSnapshot('HSI.HK', TRADING.CANDLE_PERIOD)?.initialized,
-    ).toBe(true);
-
-    expect(
-      marketDataClient.getCandlestickSnapshot('HHI.HK', TRADING.CANDLE_PERIOD)?.initialized,
     ).toBe(true);
   });
 
@@ -601,7 +608,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         fetchAllOrdersFromAPI: async () => allOrders,
       }),
       dailyLossTracker: createDailyLossTrackerDouble({
-        recalculateFromAllOrders: (receivedOrders, _monitors, _now, receivedSegments) => {
+        recalculateFromAllOrders: (receivedOrders, _monitor, _now, receivedSegments) => {
           callOrder.push('recalculate');
           expect(receivedOrders).toBe(allOrders);
           expect(receivedSegments).toBeInstanceOf(Map);
@@ -647,7 +654,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      tradingConfig: createTradingConfig([monitor]),
+      tradingConfig: createTradingConfig(monitor),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [protectiveOrder],
       }),
@@ -692,7 +699,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      tradingConfig: createTradingConfig([monitor]),
+      tradingConfig: createTradingConfig(monitor),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [protectiveOrder],
       }),
@@ -748,7 +755,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      tradingConfig: createTradingConfig([monitor]),
+      tradingConfig: createTradingConfig(monitor),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [completedOrder, pendingOrder],
       }),
@@ -788,6 +795,97 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(receivedBoundaryMap?.get('HSI.HK:LONG')).toBe(completedBoundaryMs);
   });
 
+  it('fails fast when hydrated protective boundary key belongs to a non-configured monitor', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const monitor = createProtectiveMonitor();
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader(),
+      tradeLogHydrator: {
+        hydrate: () => new Map([['HSCEI.HK:LONG', Date.parse('2026-03-13T02:20:00.000Z')]]),
+      },
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+
+    try {
+      await load(
+        createLoadParams({
+          now,
+          hydrateCooldownFromTradeLog: true,
+        }),
+      );
+      throw new Error('expected loadTradingDayRuntimeSnapshot to reject');
+    } catch (error) {
+      expect((error as Error).message).toContain(
+        'hydrated protective boundary monitorSymbol 不匹配唯一配置',
+      );
+    }
+  });
+
+  it('fails fast when protective order ownership cannot be resolved to the unique monitor', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const executedAtMs = Date.parse('2026-03-13T02:30:00.000Z');
+    const monitor = createProtectiveMonitor();
+    const unmatchedProtectiveOrder: RawOrderFromAPI = {
+      ...createProtectiveOrder({
+        orderId: 'protective-unmatched-1',
+        status: OrderStatus.Canceled,
+        price: 9,
+        quantity: 10,
+        executedPrice: 9,
+        executedQuantity: 10,
+        updatedAtMs: executedAtMs,
+      }),
+      stockName: 'UNMATCHED RC',
+    };
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader({
+        fetchAllOrdersFromAPI: async () => [unmatchedProtectiveOrder],
+      }),
+      tradeLogHydrator: { hydrate: () => new Map() },
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+
+    try {
+      await load(createLoadParams({ now }));
+      throw new Error('expected loadTradingDayRuntimeSnapshot to reject');
+    } catch (error) {
+      expect((error as Error).message).toContain('保护性清仓订单无法归属到唯一监控标的');
+    }
+  });
+
+  it('fails fast when protective order misses updatedAt during recovery', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const monitor = createProtectiveMonitor();
+    const protectiveOrder = createProtectiveOrder({
+      orderId: 'protective-missing-updated-at-1',
+      status: OrderStatus.Canceled,
+      price: 9,
+      quantity: 10,
+      executedPrice: 9,
+      executedQuantity: 10,
+    });
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader({
+        fetchAllOrdersFromAPI: async () => [protectiveOrder],
+      }),
+      tradeLogHydrator: { hydrate: () => new Map() },
+    });
+
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+
+    try {
+      await load(createLoadParams({ now }));
+      throw new Error('expected loadTradingDayRuntimeSnapshot to reject');
+    } catch (error) {
+      expect((error as Error).message).toContain('保护性清仓订单缺少有效更新时间');
+    }
+  });
+
   it('advances restored completed boundary when a newer completed protective fill exists and direction is flat', async () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const hydratedBoundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
@@ -809,7 +907,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const deps = createBaseDeps({
       lastState,
-      tradingConfig: createTradingConfig([monitor]),
+      tradingConfig: createTradingConfig(monitor),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [completedOrder],
       }),

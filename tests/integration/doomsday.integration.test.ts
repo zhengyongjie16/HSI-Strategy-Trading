@@ -9,6 +9,7 @@ import { OrderSide } from 'longbridge';
 
 import { createDoomsdayProtection } from '../../src/core/doomsdayProtection/index.js';
 import { createExternalApiRequestError } from '../../src/utils/apiFailure/index.js';
+import { initMonitorState } from '../../src/utils/helpers/index.js';
 
 import type { AutoSymbolManagerPort } from '../../src/types/monitorContextPorts.js';
 import type { LastState, MonitorContext } from '../../src/types/state.js';
@@ -46,7 +47,7 @@ function createLastState(): LastState {
       createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 }),
     ]),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: initMonitorState(createMonitorConfigDouble()),
     allTradingSymbols: new Set(['BULL.HK', 'BEAR.HK']),
   };
 }
@@ -207,20 +208,14 @@ describe('doomsday integration', () => {
     const result1 = await doomsday.cancelPendingBuyOrders({
       currentTime: new Date('2026-02-16T07:50:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig),
       trader,
     });
 
     const result2 = await doomsday.cancelPendingBuyOrders({
       currentTime: new Date('2026-02-16T07:51:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig),
       trader,
     });
 
@@ -256,10 +251,7 @@ describe('doomsday integration', () => {
     const context = {
       currentTime: new Date('2026-02-16T07:50:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig),
       trader,
     };
 
@@ -311,10 +303,7 @@ describe('doomsday integration', () => {
     const result = await doomsday.cancelPendingBuyOrders({
       currentTime: new Date('2026-02-16T07:50:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig),
       trader,
     });
 
@@ -339,10 +328,7 @@ describe('doomsday integration', () => {
     const context = {
       currentTime: new Date('2026-02-16T07:50:00.000Z'),
       isHalfDay: false,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig),
       trader,
     };
 
@@ -393,8 +379,7 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([[monitorConfig.monitorSymbol, monitorContext]]),
+      monitorContext,
       trader,
       marketDataClient: {
         getQuoteContext: async () => ({}) as never,
@@ -447,10 +432,7 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient: {
         getQuoteContext: async () => ({}) as never,
@@ -518,10 +500,7 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -576,10 +555,7 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -635,10 +611,7 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:00.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -659,10 +632,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -707,10 +677,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -729,10 +696,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -776,10 +740,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -796,10 +757,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -811,10 +769,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -863,10 +818,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -883,10 +835,7 @@ describe('doomsday integration', () => {
       currentTime: now,
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -897,10 +846,7 @@ describe('doomsday integration', () => {
       currentTime: new Date('2026-02-16T07:56:05.000Z'),
       isHalfDay: false,
       positions: lastState.cachedPositions,
-      monitorConfigs: [monitorConfig],
-      monitorContexts: new Map([
-        [monitorConfig.monitorSymbol, createMonitorContext(monitorConfig, orderRecorder)],
-      ]),
+      monitorContext: createMonitorContext(monitorConfig, orderRecorder),
       trader,
       marketDataClient,
       lastState,
@@ -926,19 +872,14 @@ describe('doomsday integration', () => {
       },
     });
     const trader = createTraderDouble();
-    const monitorContexts = new Map([
-      [
-        monitorConfig.monitorSymbol,
-        createMonitorContext(
-          monitorConfig,
-          createOrderRecorderDouble({
-            clearBuyOrders: () => {
-              clearCalls += 1;
-            },
-          }),
-        ),
-      ],
-    ]);
+    const monitorContext = createMonitorContext(
+      monitorConfig,
+      createOrderRecorderDouble({
+        clearBuyOrders: () => {
+          clearCalls += 1;
+        },
+      }),
+    );
 
     let error: unknown = null;
     try {
@@ -946,8 +887,7 @@ describe('doomsday integration', () => {
         currentTime: new Date('2026-02-16T07:56:00.000Z'),
         isHalfDay: false,
         positions: lastState.cachedPositions,
-        monitorConfigs: [monitorConfig],
-        monitorContexts,
+        monitorContext,
         trader,
         marketDataClient,
         lastState,
@@ -977,19 +917,14 @@ describe('doomsday integration', () => {
         });
       },
     });
-    const monitorContexts = new Map([
-      [
-        monitorConfig.monitorSymbol,
-        createMonitorContext(
-          monitorConfig,
-          createOrderRecorderDouble({
-            clearBuyOrders: () => {
-              clearCalls += 1;
-            },
-          }),
-        ),
-      ],
-    ]);
+    const monitorContext = createMonitorContext(
+      monitorConfig,
+      createOrderRecorderDouble({
+        clearBuyOrders: () => {
+          clearCalls += 1;
+        },
+      }),
+    );
     const marketDataClient = createMarketDataClientDouble({
       getQuotes: async () =>
         new Map([
@@ -1004,8 +939,7 @@ describe('doomsday integration', () => {
         currentTime: new Date('2026-02-16T07:56:00.000Z'),
         isHalfDay: false,
         positions: lastState.cachedPositions,
-        monitorConfigs: [monitorConfig],
-        monitorContexts,
+        monitorContext,
         trader,
         marketDataClient,
         lastState,
@@ -1021,10 +955,10 @@ describe('doomsday integration', () => {
     expect(lastState.positionCache.get('BULL.HK')).not.toBeNull();
   });
 
-  it('propagates clearance execution error even when duplicate signals are deduplicated', async () => {
+  it('propagates clearance execution error even when duplicate single-monitor signals are deduplicated', async () => {
     const doomsday = createDoomsdayProtection();
-    const primaryMonitor = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-    const secondaryMonitor = createMonitorConfigDouble({ monitorSymbol: 'HSCEI.HK' });
+    const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
+    const lastState = createLastState();
 
     const trader = createTraderDouble({
       executeSignals: async () => {
@@ -1037,12 +971,11 @@ describe('doomsday integration', () => {
       await doomsday.executeClearance({
         currentTime: new Date('2026-02-16T07:56:00.000Z'),
         isHalfDay: false,
-        positions: createLastState().cachedPositions,
-        monitorConfigs: [primaryMonitor, secondaryMonitor],
-        monitorContexts: new Map([
-          [primaryMonitor.monitorSymbol, createMonitorContext(primaryMonitor)],
-          [secondaryMonitor.monitorSymbol, createMonitorContext(secondaryMonitor)],
-        ]),
+        positions: [
+          ...lastState.cachedPositions,
+          createPositionDouble({ symbol: 'BULL.HK', quantity: 200, availableQuantity: 200 }),
+        ],
+        monitorContext: createMonitorContext(monitorConfig),
         trader,
         marketDataClient: {
           getQuoteContext: async () => ({}) as never,
@@ -1060,7 +993,7 @@ describe('doomsday integration', () => {
           isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
           resetRuntimeSubscriptionsAndCaches: async () => {},
         },
-        lastState: createLastState(),
+        lastState,
       });
     } catch (error) {
       caught = error;

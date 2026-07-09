@@ -42,7 +42,7 @@ function createCandlestickKey(symbol: string, period: Period): string {
  * 标准化 K 线数值字段。
  *
  * @param value 原始字段值
- * @returns 标准化后的 CandleValue 兼容值
+ * @returns 标准化后的 CandleValue 值
  */
 function normalizeCandleValue(value: unknown): NormalizedCandleValue {
   if (

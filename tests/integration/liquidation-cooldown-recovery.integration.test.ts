@@ -49,9 +49,9 @@ function createCompletedRecord(params: {
     error: null,
     reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
     signalTriggerTime: null,
-    executedAt: null,
+    executedAt: new Date(params.executedAtMs).toISOString(),
     executedAtMs: params.executedAtMs,
-    timestamp: null,
+    timestamp: new Date(params.executedAtMs).toISOString(),
     isProtectiveClearance: true,
   };
 }
@@ -110,7 +110,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     liquidationCooldown: { mode: 'minutes', minutes: 5 },
   });
   const tradingConfig = createTradingConfig({
-    monitors: [monitorConfig],
+    monitor: monitorConfig,
   });
   const tracker = createLiquidationCooldownTracker({
     nowMs: () => params.nowMs,
@@ -187,26 +187,17 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
 }
 
 describe('liquidation-cooldown-recovery integration', () => {
-  it('isolates cooldown by monitor symbol and only blocks the affected monitor in both buy directions', async () => {
+  it('fails fast when hydration log contains cooldown records from a non-configured monitor symbol', async () => {
     const nowMs = Date.parse('2026-03-13T10:00:00+08:00');
-    const monitorA = createMonitorConfig({
-      originalIndex: 1,
+    const monitorConfig = createMonitorConfig({
       monitorSymbol: 'HSI.HK',
       longSymbol: 'A-BULL.HK',
       shortSymbol: 'A-BEAR.HK',
       liquidationTriggerLimit: 1,
       liquidationCooldown: { mode: 'minutes', minutes: 5 },
     });
-    const monitorB = createMonitorConfig({
-      originalIndex: 2,
-      monitorSymbol: 'HSCEI.HK',
-      longSymbol: 'B-BULL.HK',
-      shortSymbol: 'B-BEAR.HK',
-      liquidationTriggerLimit: 1,
-      liquidationCooldown: { mode: 'minutes', minutes: 5 },
-    });
     const tradingConfig = createTradingConfig({
-      monitors: [monitorA, monitorB],
+      monitor: monitorConfig,
     });
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => nowMs,
@@ -215,9 +206,14 @@ describe('liquidation-cooldown-recovery integration', () => {
       readFileSync: () =>
         JSON.stringify([
           createCompletedRecord({
-            monitorSymbol: monitorA.monitorSymbol,
+            monitorSymbol: monitorConfig.monitorSymbol,
             action: 'SELLCALL',
             executedAtMs: nowMs - 30_000,
+          }),
+          createCompletedRecord({
+            monitorSymbol: 'HSCEI.HK',
+            action: 'SELLCALL',
+            executedAtMs: nowMs - 20_000,
           }),
         ]),
       existsSync: () => true,
@@ -233,93 +229,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       liquidationCooldownTracker: tracker,
     });
 
-    const boundaries = hydrator.hydrate();
-    expect(boundaries.get('HSI.HK:LONG')).toBe(nowMs - 30_000);
-    expect(boundaries.get('HSCEI.HK:LONG')).toBeUndefined();
-    expect(boundaries.get('HSCEI.HK:SHORT')).toBeUndefined();
-
-    const traderA = createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
-      getStockPositions: async () => [],
-      canTradeNow: () => ({ canTrade: true }),
-    });
-    const traderB = createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
-      getStockPositions: async () => [],
-      canTradeNow: () => ({ canTrade: true }),
-    });
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
-      liquidationCooldownTracker: tracker,
-    });
-    const contextA = createRiskContext({
-      trader: traderA,
-      riskChecker: createRiskCheckerDouble(),
-      orderRecorder: createOrderRecorderDouble(),
-      monitorConfig: monitorA,
-    });
-    const contextB = createRiskContext({
-      trader: traderB,
-      riskChecker: createRiskCheckerDouble(),
-      orderRecorder: createOrderRecorderDouble(),
-      monitorConfig: monitorB,
-    });
-
-    const monitorABuyCallSignal = createSignal({
-      symbol: monitorA.longSymbol,
-      action: 'BUYCALL',
-      triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
-      reason: 'monitorA-buycall',
-    });
-    const monitorABuyPutSignal = createSignal({
-      symbol: monitorA.shortSymbol,
-      action: 'BUYPUT',
-      triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
-      reason: 'monitorA-buyput',
-    });
-    const monitorBBuyCallSignal = createSignal({
-      symbol: monitorB.longSymbol,
-      action: 'BUYCALL',
-      triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
-      reason: 'monitorB-buycall',
-    });
-    const monitorBBuyPutSignal = createSignal({
-      symbol: monitorB.shortSymbol,
-      action: 'BUYPUT',
-      triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
-      reason: 'monitorB-buyput',
-    });
-
-    const monitorABuyCallResult = await withMockedNow(nowMs, async () =>
-      signalProcessor.applyRiskChecks([monitorABuyCallSignal], contextA),
-    );
-    const monitorABuyPutResult = await withMockedNow(nowMs + 10, async () =>
-      signalProcessor.applyRiskChecks([monitorABuyPutSignal], contextA),
-    );
-    const monitorBBuyCallResult = await withMockedNow(nowMs + 20, async () =>
-      signalProcessor.applyRiskChecks([monitorBBuyCallSignal], contextB),
-    );
-    const monitorBBuyPutResult = await withMockedNow(nowMs + 30, async () =>
-      signalProcessor.applyRiskChecks([monitorBBuyPutSignal], contextB),
-    );
-
-    expect(monitorABuyCallResult).toHaveLength(0);
-    expect(monitorABuyPutResult).toHaveLength(0);
-    expect(monitorABuyCallSignal.reason).toBe('monitorA-buycall');
-    expect(monitorABuyPutSignal.reason).toBe('monitorA-buyput');
-
-    expect(monitorBBuyCallResult).toHaveLength(1);
-    expect(monitorBBuyPutResult).toHaveLength(1);
-    expect(monitorBBuyCallSignal.reason).toBe('monitorB-buycall');
-    expect(monitorBBuyPutSignal.reason).toBe('monitorB-buyput');
+    expect(() => hydrator.hydrate()).toThrow('monitorSymbol 不匹配唯一配置');
   });
 
   it('blocks BUYCALL and BUYPUT after hydrating only LONG cooldown records', async () => {
@@ -348,7 +258,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       liquidationCooldown: { mode: 'minutes', minutes: 5 },
     });
     const tradingConfig = createTradingConfig({
-      monitors: [monitorConfig],
+      monitor: monitorConfig,
     });
     const tracker = createLiquidationCooldownTracker({
       nowMs: () => nowMs,

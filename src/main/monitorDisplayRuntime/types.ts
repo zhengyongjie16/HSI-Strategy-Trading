@@ -37,7 +37,7 @@ export interface MonitorDisplayRuntime {
  */
 export type MonitorDisplayRuntimeDeps = Readonly<{
   marketDataClient: Pick<MarketDataClient, 'getQuotes' | 'getCandlestickSnapshot'>;
-  monitorContexts: ReadonlyMap<string, MonitorContext>;
+  monitorContext: MonitorContext;
   lastState: Pick<LastState, 'isTradingEnabled' | 'canTrade'>;
   marketMonitor: {
     readonly renderMonitorIndicators: (params: {

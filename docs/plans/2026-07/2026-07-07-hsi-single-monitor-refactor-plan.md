@@ -20,7 +20,10 @@
 
 - 使用第一性原理审查，不把推断列为已确认缺陷。
 - 优先事件驱动设计，保留 K 线事件、quote 事件、延迟验证、time wakeup、订单事件的显式推进边界。
-- fail-fast，不提供旧 `_1` 配置兼容读取，不引入 fallback 或降级业务逻辑。
+- fail-fast，旧 `_1` 配置键一律直接报错，不引入降级业务逻辑。
+- 禁止在生产代码、测试代码、当前生效文档和活动注释中保留兼容性、补丁性、临时过渡性、回退式旧路径；目标态必须直接落为单 monitor 版本，不得额外包一层“兼容旧多标的模型”的委托壳。
+- 单 monitor 重构不等于“把多 monitor 结构限制为一个元素”；凡是已经没有业务必要的多标的外层容器、Map/Set/Array、route registry、plural contract、索引语义和桥接 helper，必须直接删除或收缩为单对象/单状态/单队列/单 route。
+- 清理与本次目标不再一致的无效注释；不得保留“后续兼容旧配置”“暂时保留多标的结构”“补丁式绕行”等说明性注释。
 - 完成后必须清理生产代码、测试、文档和内部路径中的残留引用。
 
 ## 已确认的当前耦合点
@@ -29,14 +32,14 @@
 
 - `src/types/config.ts` 中 `MultiMonitorTradingConfig.monitors` 是根配置数组契约，`MonitorConfig.originalIndex` 明确对应 `_1` / `_2` 后缀。
 - `src/config/trading/index.ts` 的 `createMultiMonitorTradingConfig` 扫描 `MONITOR_SYMBOL_1..N`，并强制索引连续。
-- `src/config/trading/utils.ts` 的 `parseMonitorConfig(env, index)` 通过 `const suffix = \`_${index}\`` 读取所有 monitor 级字段。
+- `src/config/trading/utils.ts` 的 `parseMonitorConfig(env, index)` 通过 `const suffix = \`\_${index}\`` 读取所有 monitor 级字段。
 - `src/config/validator/index.ts` / `src/config/validator/utils.ts` 仍按 index 生成字段名，校验 monitor index continuity、跨 monitor alias 冲突和跨 monitor 交易标的重复。
 - `.env.example` 与 `README.md` 明确要求即使只有一个监控标的也必须使用 `_1`。
 
 ### 启动与运行时装配
 
 - `src/app/runtime/createPostGateRuntime.ts` 创建 `monitorContexts = new Map<string, MonitorContext>()`，并用 `tradingConfig.monitors.map(...)` 初始化 `lastState.monitorStates`。
-- `src/app/context/createMonitorContexts.ts` 遍历 `preGateRuntime.tradingConfig.monitors`，为每个 monitor 创建策略、风控、延迟验证器和自动寻标管理器。
+- `src/app/context/createMonitorContext.ts` 负责将唯一 monitor 配置装配为策略、风控、延迟验证器和自动寻标管理器。
 - `src/app/runtime/createAsyncRuntime.ts` 向异步处理器注入 `getMonitorContext(monitorSymbol)`，允许任务按任意 monitorSymbol 查找不同上下文。
 
 ### 实时事件链路
@@ -63,7 +66,7 @@
 
 - `mock/factories/configFactory.ts` 默认返回 `monitors: [createMonitorConfig()]`。
 - `tests/config/tradingConfig.failfast.business.test.ts` 覆盖 `_1/_3` 缺 `_2`、cross-monitor alias conflict、重复交易标的等多 monitor 行为。
-- `tests/app/context/createMonitorContexts.business.test.ts` 验证 HSI 与 HSCEI 两个 monitor 独立装配。
+- `tests/app/context/createMonitorContext.business.test.ts` 验证唯一 monitor 的上下文装配与策略工厂注入行为。
 - `tests/app/startup/runtimeValidation.test.ts` 期望输出 “监控标的 1 / 做多席位标的 1 / 做空席位标的 1”。
 - `tests/main/lifecycle/loadTradingDayRuntimeSnapshot.test.ts` 验证多个 monitor K 线订阅。
 - `tests/integration/liquidation-cooldown-recovery.integration.test.ts` 验证 cooldown by monitor symbol 隔离。
@@ -117,7 +120,7 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 
 - `monitorContexts: Map<string, MonitorContext>` 改为 `monitorContext: MonitorContext`
 - `lastState.monitorStates: Map<string, MonitorState>` 改为 `lastState.monitorState: MonitorState`
-- `createMonitorContexts` 改为 `createMonitorContext`
+- `createMonitorContext` 作为唯一上下文装配函数
 - `getMonitorContext(monitorSymbol)` 改为直接注入 `monitorContext`，对任务中携带的 monitorSymbol 做唯一配置校验
 
 ### 事件驱动链路
@@ -139,7 +142,7 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - 外部行情噪声：K 线、quote push、无关交易标的事件若不属于唯一 monitor 或当前 LONG/SHORT 席位，直接丢弃或忽略，不进入业务链路。
 - stale 快照：`seatVersion`、`symbol`、`lastSeatActivatedAt` 等快照与当前席位事实不一致时，按失效任务或失效信号显式跳过。
 - 内部不变量错误：task 顶层 `monitorSymbol`、task data `monitorSymbol`、delayed verifier entry、verified callback、switch handoff 参数、tracked order / settlement 归属、protective episode、protective completion log 若携带非唯一 `monitorSymbol`，或同一对象内部 monitorSymbol 不一致，必须 fail-fast 或进入对应 async fatal 通道，不得静默跳过、不得映射到唯一 context。
-- 恢复事实无法唯一归属：启动、开盘重建、订单恢复、trade log hydration 中涉及订单、日志或保护性清仓事实无法解析到唯一 monitor + LONG/SHORT 时，必须阻断恢复，不得 fallback 到唯一 monitor。
+- 恢复事实无法唯一归属：启动、开盘重建、订单恢复、trade log hydration 中涉及订单、日志或保护性清仓事实无法解析到唯一 monitor + LONG/SHORT 时，必须阻断恢复，不得强行记到唯一 monitor。
 
 ### 方向级边界
 
@@ -163,8 +166,8 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - 不改变普通信号、延迟验证、买入风控、卖出智能平仓、末日保护的业务口径。
 - 不删除自动寻标和自动换标功能，只移除多 monitor 外层维度。
 - 不把 HSI 写死在代码中。
-- 不兼容读取旧 `_1` 配置。
-- 不引入 fallback、降级标的、代理盘口或替代 monitor 数据源。
+- 旧 `_1` 配置键一律直接报错。
+- 不引入降级标的、代理盘口或替代 monitor 数据源。
 
 ## 实施任务
 
@@ -200,7 +203,7 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 
 - Modify: `src/app/runtime/createPreGateRuntime.ts`
 - Modify: `src/app/runtime/createPostGateRuntime.ts`
-- Modify: `src/app/context/createMonitorContexts.ts`
+- Modify: `src/app/context/createMonitorContext.ts`
 - Modify: `src/app/runtime/createAsyncRuntime.ts`
 - Modify: `src/main/asyncProgram/buyProcessor/index.ts`
 - Modify: `src/main/asyncProgram/buyProcessor/types.ts`
@@ -213,7 +216,7 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - Modify: `src/app/startup/runtimeValidation.ts`
 - Modify: `src/types/state.ts`
 - Modify: `src/app/types.ts`
-- Test: `tests/app/context/createMonitorContexts.business.test.ts`
+- Test: `tests/app/context/createMonitorContext.business.test.ts`
 - Test: `tests/app/startup/runtimeValidation.test.ts`
 - Test: `tests/app/runtime/createAsyncRuntime.wiring.test.ts`
 - Test: `tests/main/asyncProgram/buyProcessor/*.test.ts`
@@ -223,7 +226,7 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - [ ] 将 pre-gate 和 post-gate runtime 的 `tradingConfig.monitors` 调用改为 `tradingConfig.monitor`。
 - [ ] 将 `monitorContexts` Map 改为单 `monitorContext`。
 - [ ] 将 `lastState.monitorStates` 改为单 `monitorState`。
-- [ ] 将 `createMonitorContexts` 改为单上下文装配函数。
+- [ ] 将 `createMonitorContext` 固化为单上下文装配函数。
 - [ ] async processors 不再通过 Map 查上下文，改为直接接收唯一 context。
 - [ ] buy/sell processor 不再接收 `getMonitorContext(monitorSymbol)` 分发函数，改为持有唯一 `monitorContext`。
 - [ ] `monitorTaskProcessor` 不再由 `createAsyncRuntime` 注入 `getMonitorContext(monitorSymbol)`；改为接收唯一 `monitorContext` / 唯一 `MonitorTaskContext`，并在 task monitorSymbol 不变量错误时进入明确错误路径。
@@ -255,11 +258,11 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - [ ] 将 `routeStates: Map<string, ...>` 改为单 route state。
 - [ ] K 线事件只在 symbol 等于唯一 monitorSymbol 时触发。
 - [ ] indicator cache 改为单队列。
-- [ ] indicator cache 的 `push/getClosest` API 必须二选一收敛：要么删除 monitorSymbol 参数，要么在 cache 内注入唯一 monitorSymbol 并在 `push/getClosest` 入口校验相等；不得保留接收任意 monitorSymbol 但实际读写同一队列的隐性兼容。
-- [ ] delayed signal verifier 可保留 signal 的 monitorSymbol 字段，但缓存读取不再按 monitorSymbol 分片。
-- [ ] delayed signal verifier 在 `addSignal`、定时 `executeVerification` 和 `performVerification` 读取缓存前必须校验 signal / entry 的 monitorSymbol 等于唯一配置 monitorSymbol；不满足属于内部不变量错误，必须 fail-fast 或进入 async fatal，不得按普通失效信号静默丢弃，也不得读取唯一缓存队列。
+- [ ] indicator cache 的 `push/getClosest` API 必须二选一收敛：要么删除 monitorSymbol 参数，要么在 cache 内注入唯一 monitorSymbol 并在 `push/getClosest` 入口校验相等；不得保留接收任意 monitorSymbol 但实际读写同一队列的旧式绕行写法。
+- [ ] delayed signal verifier 的待验证 entry 保留 `monitorSymbol`，缓存读取不再按 monitorSymbol 分片。
+- [ ] delayed signal verifier 在 `addSignal`、定时 `executeVerification` 和 `performVerification` 读取缓存前必须校验 entry 的 monitorSymbol 等于唯一配置 monitorSymbol；不满足属于内部不变量错误，必须 fail-fast 或进入 async fatal，不得按普通失效信号静默丢弃，也不得读取唯一缓存队列。
 - [ ] delayed signal verified 回流接线改为唯一 `monitorContext`，不得继续通过 `monitorContexts.get(signalMonitorSymbol)` 分发。
-- [ ] verified 回流时校验 signal.monitorSymbol / callback monitorSymbol 等于唯一配置 monitorSymbol；不满足属于内部不变量错误，必须 fail-fast 或进入 async fatal，不引入兼容路由。
+- [ ] verified 回流只携带 `Signal`，任务 envelope 的 monitorSymbol 必须来自唯一 `monitorContext.config.monitorSymbol`，不得继续外传 callback monitorSymbol 或额外分流路径。
 - [ ] 保留 latest-only collapse 和 single-flight 语义。
 - [ ] 增加非 HSI K 线事件不推进信号链路的测试。
 - [ ] 增加 indicator cache / delayed verifier 负向测试：非唯一 monitorSymbol 的样本或待验证信号不得命中唯一 monitor 的缓存样本。
@@ -373,8 +376,8 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - [ ] 增加提交链路负向测试：缺少唯一 `monitorConfig`、下单成功后 `trackOrder` 本地同步失败、或成交归因事件出现 `monitorSymbol: null` 时必须 fail-fast / async fatal。
 - [ ] 订单监控恢复仍要求卖单可归属且与当前席位匹配。
 - [ ] 保留卖单无法归属或席位不匹配时阻断恢复的 fail-fast 行为。
-- [ ] pending buy 恢复同样不得 fallback 到唯一 monitor；无法归属或席位不匹配时只能按现有严格路径尝试撤单并等待权威终态，若无法确认安全收口必须阻断恢复。
-- [ ] 增加订单恢复负向测试：pending sell 缺少 RC/RP 或 mapping 不匹配时阻断恢复，不允许 fallback 到唯一 monitor。
+- [ ] pending buy 恢复同样不得强行记到唯一 monitor；无法归属或席位不匹配时只能按现有严格路径尝试撤单并等待权威终态，若无法确认安全收口必须阻断恢复。
+- [ ] 增加订单恢复负向测试：pending sell 缺少 RC/RP 或 mapping 不匹配时阻断恢复，不允许强行记到唯一 monitor。
 - [ ] 增加订单恢复负向测试：pending sell 归属方向与当前席位 symbol 不匹配时阻断恢复；断言 runtime 回到 `STOPPED`，且 tracked orders 与 pending sell 占用被清理。
 - [ ] 增加订单恢复负向测试：pending buy 缺少 RC/RP、mapping 不匹配、归属方向与当前席位 symbol 不匹配、撤单请求后无法确认终态时均不得归到唯一 monitor，必须阻断恢复。
 
@@ -450,7 +453,7 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - [ ] 启动快照与开盘重建恢复保护性清仓边界、进行中 episode、pending protective sell 时，相关订单或日志必须能解析到唯一 monitor + LONG/SHORT 方向；缺少 RC/RP、mapping 不匹配、解析出非唯一 monitor 或方向与当前席位不匹配，均必须阻断恢复。
 - [ ] 启动快照与开盘重建读取到已存在但损坏、非数组或结构非法的交易日志文件时，必须阻断恢复，不得按空日志继续放行交易。
 - [ ] 启动快照与开盘重建恢复保护性清仓完成日志时，缺少 monitorSymbol、monitorSymbol 非唯一配置、action 无法解析 LONG/SHORT、executedAt / executedAtMs 无效，均必须阻断恢复，不得跳过后继续放行交易。
-- [ ] 保护性清仓恢复不得 fallback 到唯一 monitor，也不得跳过无法归属的保护性清仓订单后继续放行交易；该类跳过会破坏冷却、亏损分段与 pending protective order 判定。
+- [ ] 保护性清仓恢复不得强行记到唯一 monitor，也不得跳过无法归属的保护性清仓订单后继续放行交易；该类跳过会破坏冷却、亏损分段与 pending protective order 判定。
 
 ### Task 9: 系统级时间、末日保护、展示与收尾入口
 
@@ -475,7 +478,7 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - [ ] 末日保护撤买与清仓入口改为唯一 monitorConfig + monitorContext，仍保留 LONG/SHORT 分别清仓。
 - [ ] trading quote display routing 改为唯一 monitorContext 的 LONG/SHORT route，不再从 monitorContexts Map 构建多 monitor 索引。
 - [ ] cleanup 销毁唯一 delayedSignalVerifier、清空唯一 monitorState 快照，不再遍历 monitorContexts / monitorStates。
-- [ ] 这些系统级入口不得新增旧 monitor 数组兼容，也不得把不存在的 monitorSymbol 静默路由到唯一 context。
+- [ ] 这些系统级入口不得新增旧 monitor 数组读取路径，也不得把不存在的 monitorSymbol 静默路由到唯一 context。
 
 ### Task 10: 测试、文档和残留清理
 
@@ -503,6 +506,12 @@ SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
 - [ ] 额外检查并更新测试辅助：`tests/**/utils.ts`、`tests/helpers/**`、`mock/**` 中不得继续暴露 `monitors[]`、`monitorContexts Map`、`monitorStates Map` 或多 monitor 默认样例。
 - [ ] 删除 index gap、cross-monitor、multiple monitors do not conflict 测试。
 - [ ] 保留并强化 LONG/SHORT 方向隔离测试。
+- [ ] 删除当前有效代码、测试和注释中的兼容性、补丁性、临时过渡性表述与逻辑；不得保留“兼容旧配置键”“先映射到唯一 monitor 再继续”“暂时沿用旧容器结构”这类壳层实现。
+- [ ] 二次审查时不得只看 grep 命中词；还必须复核结构性残留，例如单元素 `Map<string, MonitorContext>`、单元素 `Map<string, Set<string>>`、只服务唯一 monitor 的 route state registry、仅剩一个 monitor 仍保留的 `monitors` 数组或复数命名契约。
+- [ ] 对可直接收缩为单对象、单状态、单队列、单路由、单依赖注入的实现，不允许保留旧多标的外层抽象；发现此类壳结构必须继续精简，而不是仅把其中内容改为单 monitor 数据。
+- [ ] 仍以 `monitorSymbol` 作为外层 key 建容器、索引、registry 或桥接 helper 的实现，默认视为结构性残留；只有能证明其服务的是 `LONG/SHORT` 方向边界而非 monitor 外层边界时才允许保留。
+- [ ] 测试辅助、mock、fixture、helper、类型与文档示例中，不得继续通过旧复数或 by-monitor 契约暗示多 monitor 模型，例如 `routeStates`、`queuesByMonitor`、`registryByMonitor`、`getMonitorContext`；若语义已是单实例，命名与类型也必须同步收缩。
+- [ ] 二次审查最终说明必须输出残留分类表，至少区分 `active code`、`active tests`、`active comments`、`current docs`、`historical allowed docs`；其中前三类对兼容性、补丁性、临时过渡性残留的允许保留数必须为 `0`。
 - [ ] 当前入口文档必须改写为单 HSI monitor 目标；至少包含根 `README.md`、`.env.example`、`docs/README.md` 与当前计划文档。
 - [ ] 额外检查当前协作/规则入口：`CLAUDE.md`、`AGENTS.md`、`.agents/**`、`.codex/**` 中若仍描述当前目标态为多 monitor，必须更新或明确标记为历史/技能上下文，不得与本计划冲突。
 - [ ] 历史归档文档若保留旧 per-monitor / multi-monitor 描述，必须归入 `historical allowed docs`，不得作为当前目标态引用；典型范围包括 `docs/plans/**`、`docs/issues/**`、`docs/superpowers/**` 中的历史方案或问题记录。
@@ -574,6 +583,7 @@ rg -n "createMultiMonitorTradingConfig|MultiMonitorTradingConfig|MultiMonitor" s
 rg -n "tradingConfig\\.monitors|monitorContexts|monitorContexts\\.get|monitorContexts\\.set|monitorContexts\\.has|monitorContexts\\.values|getMonitorContext|monitors\\.map|monitors\\.forEach|monitors\\[[0-9]+\\]|\\.monitors\\[|monitors:\\s*\\[|Pick<.*'monitors'>|for \\(const monitor" src tests mock docs
 rg -n "originalIndex|监控标的 [0-9]|做多席位标的 [0-9]|做空席位标的 [0-9]" src tests mock docs README.md .env.example
 rg -n "per-monitor|cross-monitor|multi-monitor|multiple monitors|同时监控多个|多个监控标的|多标的|每个监控标的|监控标的 2" src tests mock docs README.md .env.example
+rg -n "legacy|compat|backward compatible|temporary|transitional|shim|fallback|workaround|兼容|兼容层|补丁|临时|过渡|兜底|回退" src tests mock docs README.md .env.example
 rg -n "HSCEI\\.HK|HHI\\.HK|TECH\\.HK|0981\\.HK|9988\\.HK" tests mock docs README.md .env.example src
 rg -n "重复归属|ownership alias conflicts across monitors|owned by multiple monitors|multiple monitors do not conflict|multi-monitor-concurrency" tests docs src
 Get-ChildItem -Recurse tests -Filter utils.ts
@@ -582,13 +592,21 @@ rg -n "tradingConfig\\.monitors|monitorContexts|monitorStates|lastState\\.monito
 
 允许保留的情况必须在最终说明中逐项列明，例如历史归档文档中明确标记为旧方案的引用。生产代码和当前测试目标不应再依赖多 monitor 契约。
 
+除文本搜索外，二次审查还必须做结构复核，至少覆盖以下对象：
+
+- 单 monitor 目标下仍保留的单元素外层容器，例如 `Map<string, MonitorContext>`、`Map<string, MonitorState>`、`Map<string, Set<string>>`、单 monitor route registry、单 monitor queue registry。
+- 仍以复数契约存在但只承载唯一 monitor 的字段、类型、函数或变量命名，例如 `monitors`、`monitorContexts`、`monitorStates`、`getMonitorContext`、`createMultiMonitor*`、`*ByMonitorSymbol`。
+- 仍以唯一 `monitorSymbol` 作为外层 key 做分发、索引或透传的桥接 helper，例如 `routeStates`、`queuesByMonitor`、`registryByMonitor`、`resolve...ByMonitor`、`withMonitor...`。
+- 仍靠“先接受旧多标的输入，再在内部映射到唯一 monitor”维持运行的桥接逻辑、委托层或补丁层。
+- 仍在活动注释、测试名称、错误信息、日志文案中表达“兼容旧多标的模型”“暂时保留旧结构”“multiple monitors”之类已失效语义的内容。
+
 ## 验证命令
 
 分阶段验证：
 
 ```powershell
 bun test tests/config/tradingConfig.failfast.business.test.ts
-bun test tests/app/runtime tests/app/lifecycle tests/app/startup tests/app/context/createMonitorContexts.business.test.ts tests/app/wiring tests/app/shutdown
+bun test tests/app/runtime tests/app/lifecycle tests/app/startup tests/app/context/createMonitorContext.business.test.ts tests/app/wiring tests/app/shutdown
 bun test tests/main/businessEventProgram tests/main/asyncProgram/buyProcessor tests/main/asyncProgram/sellProcessor tests/main/asyncProgram/delayedSignalVerifier tests/main/asyncProgram/indicatorCache tests/main/asyncProgram/monitorTaskQueue tests/main/asyncProgram/monitorTaskProcessor
 bun test tests/main/quoteSubscriptionRuntime tests/main/monitorQuoteEventRuntime tests/main/monitorDisplayRuntime tests/main/tradingQuoteDisplayRuntime
 bun test tests/main/autoSearchWakeupRuntime tests/main/periodicSwitchWakeupRuntime tests/main/seatActivationDispatcher tests/main/seatRuntimeCleanupDispatcher
@@ -616,7 +634,7 @@ git status --short --branch
 
 ## 风险与控制
 
-- 配置层风险：如果保留旧 `_1` 读取，会形成隐性兼容路径，后续面板仍可能继续输出多标的字段。控制方式是旧键 fail-fast。
+- 配置层风险：如果保留旧 `_1` 读取，会形成隐藏旧路径，后续面板仍可能继续输出多标的字段。控制方式是旧键 fail-fast。
 - 配置层风险：如果把当前 duplicate trading symbol 校验整体删除，会同时误删唯一 monitor 内 LONG/SHORT 同标的 fail-fast。控制方式是删除跨 monitor 重复校验时，显式保留单 monitor 内 LONG/SHORT 不得相同的配置级校验。
 - 事件链路风险：如果只把 `monitors[0]` 包装为唯一 monitor，per-monitor route Map 仍会保留多标的能力。控制方式是删除外层 Map。
 - 队列清理风险：如果只改 dispatcher 外壳而遗漏 `monitorTaskQueue` 与 `queueCleanup.ts`，旧的多 monitor 测试契约或非唯一 monitorSymbol 路由仍可能残留。控制方式是把 monitor task queue 与席位退场队列清理纳入任务与验证。
@@ -627,6 +645,8 @@ git status --short --branch
 - 恢复风险：订单归属改造若过度简化，会导致恢复期卖单不能安全匹配席位。控制方式是保留无法归属或席位不匹配即阻断恢复。
 - 恢复风险：保护性清仓恢复若跳过无法归属订单，会遗漏 pending protective sell、冷却边界或亏损分段边界。控制方式是保护性清仓订单/日志恢复必须唯一归属失败即阻断。
 - 系统入口风险：time wakeup、末日保护、post-trade consistency、seat refresh、cleanup 若保留 `monitorContexts` Map，会形成隐藏多 monitor 分发核心。控制方式是把这些入口纳入任务清单并改为唯一 context + 显式 monitorSymbol 校验。
+- 重构质量风险：若保留兼容层、补丁层或过渡层，即使表面功能可运行，后续二次改动仍会被旧模型牵制。控制方式是把“禁止兼容/补丁/过渡逻辑”列为显式完成标准，并在二次审查中同时检查代码、测试、注释与当前文档。
+- 结构残留风险：若只删除旧关键词而保留单元素多标的壳结构，系统仍会继续承载错误抽象边界。控制方式是把单元素 Map/Set/route registry、复数命名契约和桥接 helper 纳入结构复核清单，发现后继续收缩。
 - 文档风险：历史计划若继续描述 per-monitor 目标态，后续实现会被旧文档误导。控制方式是把当前方案作为新的目标态；当前入口文档必须改写，历史归档文档必须标记为历史方案或列入允许保留清单。
 
 ## 完成标准
@@ -640,9 +660,13 @@ git status --short --branch
 - quote 订阅仍能覆盖 HSI、LONG/SHORT 交易标的、持仓和在途订单。
 - LONG/SHORT 方向级风险、订单和冷却边界全部保留。
 - 清仓冷却买入拦截保留同 monitor 双方向共同门禁语义。
-- 保护性清仓启动/重建恢复无法唯一归属时阻断恢复，不 fallback 到唯一 monitor。
+- 保护性清仓启动/重建恢复无法唯一归属时阻断恢复，不强行记到唯一 monitor。
 - 旧多 monitor 测试已删除或改写为单 HSI + 方向隔离测试。
 - 测试辅助不再暴露 `monitorContexts` / `monitorStates` 旧根结构。
+- 当前有效代码、测试、注释和文档中不存在兼容性、补丁性、临时过渡性旧路径，也不存在为保留旧多标的模型而留下的委托壳。
+- 不再保留无业务必要的多标的外层抽象；凡可收缩为单对象、单状态、单队列、单 route 的结构均已实际收缩，而非仅保留单元素容器。
+- 二次审查已确认不存在误导性复数命名、`routeStates` / `queuesByMonitor` / `registryByMonitor` / `getMonitorContext` 一类旧 by-monitor 契约，也不存在“`monitorSymbol` 只剩唯一值却仍作为外层 key 分发”的桥接逻辑。
+- 二次审查已确认不存在“multiple monitors / 兼容旧配置”之类失效注释、测试命名和当前生效文档表述。
 - 残留搜索清单通过复核。
 - `bun type-check`、`bun lint`、`bun test`、`bun run build` 通过。
 - 收尾无无关测试或构建进程残留。

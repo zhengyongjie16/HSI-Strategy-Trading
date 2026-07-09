@@ -8,8 +8,8 @@ import { TRADING } from '../../../src/constants/index.js';
 import { timeWakeupEvaluationProgram } from '../../../src/main/timeWakeupEvaluationProgram/index.js';
 import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import type { TimeWakeupEvaluationContext } from '../../../src/main/timeWakeupEvaluationProgram/types.js';
-import type { LastState, MonitorContext } from '../../../src/types/state.js';
-import type { MultiMonitorTradingConfig } from '../../../src/types/config.js';
+import type { LastState } from '../../../src/types/state.js';
+import type { TradingConfig } from '../../../src/types/config.js';
 import type {
   DayLifecycleTickResult,
   LifecycleRuntimeFlags,
@@ -94,7 +94,13 @@ function createLastState(
         isHalfDay: false,
       },
     },
-    monitorStates: new Map(),
+    monitorState: {
+      monitorSymbol: '700.HK',
+      signal: null,
+      pendingDelayedSignals: [],
+      lastMonitorSnapshot: null,
+      incrementalIndicatorRuntime: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -102,9 +108,9 @@ function createLastState(
 function createTradingConfig(
   morningProtectionMinutes: number | null,
   afternoonProtectionMinutes: number | null,
-): MultiMonitorTradingConfig {
+): TradingConfig {
   return {
-    monitors: [createMonitorConfigDouble({ monitorSymbol: '700.HK' })],
+    monitor: createMonitorConfigDouble({ monitorSymbol: '700.HK' }),
     global: {
       doomsdayProtection: true,
       debug: false,
@@ -134,10 +140,6 @@ function createTimeWakeupEvaluationHarness(
     config: monitorConfig,
     ...(options.verifier ? { delayedSignalVerifier: options.verifier } : {}),
   });
-  const monitorContexts = new Map<string, MonitorContext>([
-    [monitorConfig.monitorSymbol, monitorContext],
-  ]);
-
   return {
     marketDataClient: createMarketDataClientDouble({
       isTradingDay:
@@ -176,7 +178,7 @@ function createTimeWakeupEvaluationHarness(
       options.morningProtectionMinutes ?? null,
       options.afternoonProtectionMinutes ?? null,
     ),
-    monitorContexts,
+    monitorContext,
     tradingGateEventRuntime: {
       emitGateStateChanged: options.emitGateStateChanged ?? (() => {}),
     },

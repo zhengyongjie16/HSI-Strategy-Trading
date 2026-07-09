@@ -22,14 +22,16 @@ import type {
   TaskQueue,
 } from '../../../src/main/asyncProgram/tradeTaskQueue/types.js';
 
+type QueuedTask<TType extends string> = Parameters<TaskQueue<TType>['push']>[0];
+
 type DelayedSignalHandlerHarness = Readonly<{
-  callbackRef: { current: (signal: Signal, monitorSymbol: string) => void };
+  callbackRef: { current: (signal: Signal) => void };
   monitorSymbol: string;
-  buyTasks: Signal[];
-  sellTasks: Signal[];
+  buyTasks: QueuedTask<BuyTaskType>[];
+  sellTasks: QueuedTask<SellTaskType>[];
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
-  monitorContexts: ReturnType<typeof createMonitorContexts>;
+  monitorContext: ReturnType<typeof createMonitorContext>;
 }>;
 
 function createTaskQueueDouble<TType extends string>(): TaskQueue<TType> {
@@ -43,42 +45,42 @@ function createTaskQueueDouble<TType extends string>(): TaskQueue<TType> {
   };
 }
 
-function createMonitorContexts(
+function createMonitorContext(
   monitorSymbol: string,
-  callbackRef: { current: (signal: Signal, monitorSymbol: string) => void },
+  callbackRef: { current: (signal: Signal) => void },
 ) {
   const symbolRegistry = createSymbolRegistryDouble({ monitorSymbol });
   const monitorContext = createMonitorContextDouble({
     symbolRegistry,
     monitorSymbolName: monitorSymbol,
     delayedSignalVerifier: createDelayedSignalVerifierDouble({
-      onVerified: (callback: (signal: Signal, symbol: string) => void) => {
+      onVerified: (callback: (signal: Signal) => void) => {
         callbackRef.current = callback;
       },
     }),
   });
 
-  return new Map([[monitorSymbol, monitorContext]]);
+  return monitorContext;
 }
 
 function createHarness(): DelayedSignalHandlerHarness {
-  const callbackRef: { current: (signal: Signal, monitorSymbol: string) => void } = {
+  const callbackRef: { current: (signal: Signal) => void } = {
     current: () => {
       throw new Error('verified callback not registered');
     },
   };
-  const buyTasks: Signal[] = [];
-  const sellTasks: Signal[] = [];
+  const buyTasks: QueuedTask<BuyTaskType>[] = [];
+  const sellTasks: QueuedTask<SellTaskType>[] = [];
   const buyTaskQueue = createTaskQueueDouble<BuyTaskType>();
   const sellTaskQueue = createTaskQueueDouble<SellTaskType>();
   const monitorSymbol = 'HSI.HK';
 
   buyTaskQueue.push = (task) => {
-    buyTasks.push(task.data);
+    buyTasks.push(task);
   };
 
   sellTaskQueue.push = (task) => {
-    sellTasks.push(task.data);
+    sellTasks.push(task);
   };
 
   return {
@@ -88,7 +90,7 @@ function createHarness(): DelayedSignalHandlerHarness {
     sellTasks,
     buyTaskQueue,
     sellTaskQueue,
-    monitorContexts: createMonitorContexts(monitorSymbol, callbackRef),
+    monitorContext: createMonitorContext(monitorSymbol, callbackRef),
   };
 }
 
@@ -97,7 +99,7 @@ describe('registerDelayedSignalHandlers business flow', () => {
     const harness = createHarness();
 
     registerDelayedSignalHandlers({
-      monitorContexts: harness.monitorContexts,
+      monitorContext: harness.monitorContext,
       lastState: createLastState({
         isTradingEnabled: true,
         canTrade: true,
@@ -112,7 +114,7 @@ describe('registerDelayedSignalHandlers business flow', () => {
       doomsdayProtectionEnabled: false,
     });
 
-    harness.callbackRef.current(createSignalDouble('HOLD', 'BULL.HK'), harness.monitorSymbol);
+    harness.callbackRef.current(createSignalDouble('HOLD', 'BULL.HK'));
 
     expect(harness.buyTasks).toHaveLength(0);
     expect(harness.sellTasks).toHaveLength(0);
@@ -122,7 +124,7 @@ describe('registerDelayedSignalHandlers business flow', () => {
     const harness = createHarness();
 
     registerDelayedSignalHandlers({
-      monitorContexts: harness.monitorContexts,
+      monitorContext: harness.monitorContext,
       lastState: createLastState({
         isTradingEnabled: true,
         canTrade: true,
@@ -139,9 +141,11 @@ describe('registerDelayedSignalHandlers business flow', () => {
       now: () => new Date('2026-03-09T09:35:00+08:00'),
     });
 
-    harness.callbackRef.current(createSignalDouble('BUYCALL', 'BULL.HK'), harness.monitorSymbol);
+    harness.callbackRef.current(createSignalDouble('BUYCALL', 'BULL.HK'));
 
     expect(harness.buyTasks).toHaveLength(1);
+    expect(harness.buyTasks[0]?.monitorSymbol).toBe(harness.monitorSymbol);
+    expect(harness.buyTasks[0]?.data.symbol).toBe('BULL.HK');
     expect(harness.sellTasks).toHaveLength(0);
   });
 
@@ -149,7 +153,7 @@ describe('registerDelayedSignalHandlers business flow', () => {
     const harness = createHarness();
 
     registerDelayedSignalHandlers({
-      monitorContexts: harness.monitorContexts,
+      monitorContext: harness.monitorContext,
       lastState: createLastState({
         isTradingEnabled: true,
         canTrade: true,
@@ -165,7 +169,7 @@ describe('registerDelayedSignalHandlers business flow', () => {
       now: () => new Date('2026-03-09T15:56:00+08:00'),
     });
 
-    harness.callbackRef.current(createSignalDouble('BUYCALL', 'BULL.HK'), harness.monitorSymbol);
+    harness.callbackRef.current(createSignalDouble('BUYCALL', 'BULL.HK'));
 
     expect(harness.buyTasks).toHaveLength(0);
     expect(harness.sellTasks).toHaveLength(0);

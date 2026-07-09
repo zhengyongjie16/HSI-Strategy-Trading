@@ -5,7 +5,7 @@
  * - 接管已启动 pending switch 的后续推进 owner
  * - 监听 ORDER_EVENT / FRESHNESS / SYMBOL_QUOTE / RETRY_TIMER 四类显式唤醒源
  * - 每次唤醒时重新读取权威快照，并以 single-flight + latest-only collapse 推进 advancePendingSwitch
- * - 以 monitorSymbol + direction + seatVersion 作为 route key，确保旧 seatVersion 注册自然失效
+ * - 以 direction + seatVersion 作为 route key，确保旧 seatVersion 注册自然失效
  */
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
 import { formatError } from '../../utils/error/index.js';
@@ -25,15 +25,14 @@ import type {
 /**
  * 构造 route key。
  *
- * @param params 监控标的、方向与 seatVersion
+ * @param params 方向与 seatVersion
  * @returns route key
  */
 function buildRouteKey(params: {
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly seatVersion: number;
 }): SwitchWakeupRouteKey {
-  return `${params.monitorSymbol}:${params.direction}:${params.seatVersion}`;
+  return `${params.direction}:${params.seatVersion}`;
 }
 
 /**
@@ -347,7 +346,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   }
 
   /**
-   * 按 monitor+direction 清理旧版本 route，只保留当前 handoff 的 seatVersion。
+   * 按同一方向清理旧版本 route，只保留当前 handoff 的 seatVersion。
    *
    * @param nextRoute 新 route
    */
@@ -373,8 +372,8 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @returns 当前仍有效时返回 true
    */
   function isRouteCurrent(route: SwitchWakeupRoute): boolean {
-    const monitorContext = deps.monitorContexts.get(route.monitorSymbol);
-    if (monitorContext === undefined) {
+    const monitorContext = deps.monitorContext;
+    if (monitorContext.config.monitorSymbol !== route.monitorSymbol) {
       return false;
     }
 
@@ -397,8 +396,8 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @returns 权威 route 或 null
    */
   function resolveAuthoritativeRoute(routeState: SwitchWakeupRouteState): SwitchWakeupRoute | null {
-    const monitorContext = deps.monitorContexts.get(routeState.route.monitorSymbol);
-    if (monitorContext === undefined) {
+    const monitorContext = deps.monitorContext;
+    if (monitorContext.config.monitorSymbol !== routeState.route.monitorSymbol) {
       return null;
     }
 
@@ -709,12 +708,20 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       return;
     }
 
-    const authoritativeMonitorContext = deps.monitorContexts.get(params.monitorSymbol);
-    if (
-      authoritativeMonitorContext === undefined ||
-      authoritativeMonitorContext !== params.monitorContext
-    ) {
-      return;
+    if (deps.monitorContext.config.monitorSymbol !== params.monitorSymbol) {
+      throw new Error(
+        `[SwitchWakeupRuntime] handoff monitorSymbol mismatch: expected=${deps.monitorContext.config.monitorSymbol} actual=${params.monitorSymbol}`,
+      );
+    }
+
+    if (params.monitorContext.config.monitorSymbol !== params.monitorSymbol) {
+      throw new Error(
+        `[SwitchWakeupRuntime] handoff context monitorSymbol mismatch: context=${params.monitorContext.config.monitorSymbol} actual=${params.monitorSymbol}`,
+      );
+    }
+
+    if (deps.monitorContext !== params.monitorContext) {
+      throw new Error('[SwitchWakeupRuntime] handoff monitorContext identity mismatch');
     }
 
     const seatVersion = params.monitorContext.symbolRegistry.getSeatVersion(
@@ -723,7 +730,6 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     );
     const route: SwitchWakeupRoute = {
       routeKey: buildRouteKey({
-        monitorSymbol: params.monitorSymbol,
         direction: params.direction,
         seatVersion,
       }),

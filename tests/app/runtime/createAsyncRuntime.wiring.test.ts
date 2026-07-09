@@ -54,16 +54,17 @@ function createDeps(
     lastState: LastState;
     monitorTaskQueue: ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>;
     periodicSwitchWakeupRuntime: PeriodicSwitchWakeupRuntime;
-    monitorContexts?: ReadonlyMap<string, MonitorContext>;
+    monitorContext?: MonitorContext;
   }>,
 ): AsyncRuntimeFactoryDeps {
-  const { lastState, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContexts } = options;
+  const { lastState, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContext } = options;
   const warrantListCache = createWarrantListCache();
+  const runtimeMonitorContext = monitorContext ?? createMonitorTaskContext();
 
   return {
     preGateRuntime: {
       config: { refreshAccessToken: () => Promise.resolve('') },
-      tradingConfig: createTradingConfig({ monitors: [] }),
+      tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
       warrantListCache,
       warrantListCacheConfig: {
@@ -85,7 +86,7 @@ function createDeps(
       },
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts: monitorContexts ?? new Map(),
+      monitorContext: runtimeMonitorContext,
       tradingGateEventRuntime: {
         emitGateStateChanged: () => {},
         onGateStateChanged: () => () => {},
@@ -178,7 +179,7 @@ describe('app createAsyncRuntime wiring', () => {
       pushTask: () => {
         monitorTaskQueue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG',
+          dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
           monitorSymbol: 'HSI.HK',
           data: {
             monitorSymbol: 'HSI.HK',
@@ -246,7 +247,7 @@ describe('app createAsyncRuntime wiring', () => {
       const runtime = createAsyncRuntime(
         createDeps({
           lastState: createLastState({ canTrade: true, isHalfDay: false }),
-          monitorContexts: new Map([['HSI.HK', context]]),
+          monitorContext: context,
           monitorTaskQueue,
           periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
         }),
@@ -257,7 +258,7 @@ describe('app createAsyncRuntime wiring', () => {
         pushTask: () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
-            dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:DOOMSDAY',
+            dedupeKey: 'AUTO_SYMBOL_TICK:LONG:DOOMSDAY',
             monitorSymbol: 'HSI.HK',
             data: {
               monitorSymbol: 'HSI.HK',
@@ -290,149 +291,161 @@ describe('app createAsyncRuntime wiring', () => {
   });
 
   it('marks AUTO_SYMBOL_TICK API failures as failed without entering async fatal channel', async () => {
+    const originalNow = Date.now;
+    Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
-    const context = createMonitorTaskContext({
-      autoSymbolManager: {
-        maybeSearchOnEvent: async () => {},
-        evaluatePeriodicSwitchDue: async () => {
-          throw createExternalApiRequestError({
-            operation: 'test.periodicDue',
-            attempts: 1,
-            cause: new Error('api unavailable'),
+    try {
+      const context = createMonitorTaskContext({
+        autoSymbolManager: {
+          maybeSearchOnEvent: async () => {},
+          evaluatePeriodicSwitchDue: async () => {
+            throw createExternalApiRequestError({
+              operation: 'test.periodicDue',
+              attempts: 1,
+              cause: new Error('api unavailable'),
+            });
+          },
+          startSwitchOnDistance: async (params) => ({
+            started: false,
+            direction: params.direction,
+            driveResult: {
+              kind: 'NOOP',
+            },
+          }),
+          advancePendingSwitch: async (params) => ({
+            advanced: false,
+            direction: params.direction,
+            stillPending: false,
+            driveResult: {
+              kind: 'NOOP',
+            },
+          }),
+          hasPendingSwitch: () => false,
+          getPeriodicSwitchPendingState: () => ({
+            pending: false,
+            pendingSinceMs: null,
+          }),
+          resetAllState: () => {},
+        },
+      });
+      const runtime = createAsyncRuntime(
+        createDeps({
+          lastState: createLastState(),
+          monitorContext: context,
+          monitorTaskQueue,
+          periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
+        }),
+      );
+
+      await runProcessorFlow({
+        processor: runtime.monitorTaskProcessor,
+        pushTask: () => {
+          monitorTaskQueue.scheduleLatest({
+            type: 'AUTO_SYMBOL_TICK',
+            dedupeKey: 'AUTO_SYMBOL_TICK:LONG:API_FAIL',
+            monitorSymbol: 'HSI.HK',
+            data: {
+              monitorSymbol: 'HSI.HK',
+              direction: 'LONG',
+              seatVersion: 2,
+              symbol: 'BULL.HK',
+              lastSeatActivatedAt: 12_000,
+              currentTimeMs: 70_000,
+            },
           });
         },
-        startSwitchOnDistance: async (params) => ({
-          started: false,
-          direction: params.direction,
-          driveResult: {
-            kind: 'NOOP',
-          },
-        }),
-        advancePendingSwitch: async (params) => ({
-          advanced: false,
-          direction: params.direction,
-          stillPending: false,
-          driveResult: {
-            kind: 'NOOP',
-          },
-        }),
-        hasPendingSwitch: () => false,
-        getPeriodicSwitchPendingState: () => ({
-          pending: false,
-          pendingSinceMs: null,
-        }),
-        resetAllState: () => {},
-      },
-    });
-    const runtime = createAsyncRuntime(
-      createDeps({
-        lastState: createLastState(),
-        monitorContexts: new Map([['HSI.HK', context]]),
-        monitorTaskQueue,
-        periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
-      }),
-    );
+        waitCondition: () => monitorTaskQueue.isEmpty(),
+      });
 
-    await runProcessorFlow({
-      processor: runtime.monitorTaskProcessor,
-      pushTask: () => {
-        monitorTaskQueue.scheduleLatest({
-          type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:API_FAIL',
+      expect(replanCalls).toEqual([
+        {
           monitorSymbol: 'HSI.HK',
-          data: {
-            monitorSymbol: 'HSI.HK',
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: 70_000,
-          },
-        });
-      },
-      waitCondition: () => monitorTaskQueue.isEmpty(),
-    });
-
-    expect(replanCalls).toEqual([
-      {
-        monitorSymbol: 'HSI.HK',
-        direction: 'LONG',
-        seatVersion: 2,
-        symbol: 'BULL.HK',
-        lastSeatActivatedAt: 12_000,
-        taskTimeMs: 70_000,
-        status: 'failed',
-      },
-    ]);
+          direction: 'LONG',
+          seatVersion: 2,
+          symbol: 'BULL.HK',
+          lastSeatActivatedAt: 12_000,
+          taskTimeMs: 70_000,
+          status: 'failed',
+        },
+      ]);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it('sends non API AUTO_SYMBOL_TICK processing errors to async fatal channel', async () => {
+    const originalNow = Date.now;
+    Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
-    const context = createMonitorTaskContext({
-      autoSymbolManager: {
-        maybeSearchOnEvent: async () => {},
-        evaluatePeriodicSwitchDue: async () => {
-          throw new TypeError('periodic due contract broken');
+    try {
+      const context = createMonitorTaskContext({
+        autoSymbolManager: {
+          maybeSearchOnEvent: async () => {},
+          evaluatePeriodicSwitchDue: async () => {
+            throw new TypeError('periodic due contract broken');
+          },
+          startSwitchOnDistance: async (params) => ({
+            started: false,
+            direction: params.direction,
+            driveResult: {
+              kind: 'NOOP',
+            },
+          }),
+          advancePendingSwitch: async (params) => ({
+            advanced: false,
+            direction: params.direction,
+            stillPending: false,
+            driveResult: {
+              kind: 'NOOP',
+            },
+          }),
+          hasPendingSwitch: () => false,
+          getPeriodicSwitchPendingState: () => ({
+            pending: false,
+            pendingSinceMs: null,
+          }),
+          resetAllState: () => {},
         },
-        startSwitchOnDistance: async (params) => ({
-          started: false,
-          direction: params.direction,
-          driveResult: {
-            kind: 'NOOP',
-          },
+      });
+      const runtime = createAsyncRuntime(
+        createDeps({
+          lastState: createLastState(),
+          monitorContext: context,
+          monitorTaskQueue,
+          periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
         }),
-        advancePendingSwitch: async (params) => ({
-          advanced: false,
-          direction: params.direction,
-          stillPending: false,
-          driveResult: {
-            kind: 'NOOP',
-          },
-        }),
-        hasPendingSwitch: () => false,
-        getPeriodicSwitchPendingState: () => ({
-          pending: false,
-          pendingSinceMs: null,
-        }),
-        resetAllState: () => {},
-      },
-    });
-    const runtime = createAsyncRuntime(
-      createDeps({
-        lastState: createLastState(),
-        monitorContexts: new Map([['HSI.HK', context]]),
-        monitorTaskQueue,
-        periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
-      }),
-    );
-    const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
+      );
+      const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
 
-    await runProcessorFlow({
-      processor: runtime.monitorTaskProcessor,
-      pushTask: () => {
-        monitorTaskQueue.scheduleLatest({
-          type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'HSI.HK:AUTO_SYMBOL_TICK:LONG:FAIL',
-          monitorSymbol: 'HSI.HK',
-          data: {
+      await runProcessorFlow({
+        processor: runtime.monitorTaskProcessor,
+        pushTask: () => {
+          monitorTaskQueue.scheduleLatest({
+            type: 'AUTO_SYMBOL_TICK',
+            dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FAIL',
             monitorSymbol: 'HSI.HK',
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: 70_000,
-          },
-        });
-      },
-      waitCondition: () => monitorTaskQueue.isEmpty(),
-    });
+            data: {
+              monitorSymbol: 'HSI.HK',
+              direction: 'LONG',
+              seatVersion: 2,
+              symbol: 'BULL.HK',
+              lastSeatActivatedAt: 12_000,
+              currentTimeMs: 70_000,
+            },
+          });
+        },
+        waitCondition: () => monitorTaskQueue.isEmpty(),
+      });
 
-    const fatalError = await fatalErrorPromise;
+      const fatalError = await fatalErrorPromise;
 
-    expect(fatalError).toBeInstanceOf(TypeError);
-    expect((fatalError as Error).message).toBe('periodic due contract broken');
-    expect(replanCalls).toEqual([]);
+      expect(fatalError).toBeInstanceOf(TypeError);
+      expect((fatalError as Error).message).toBe('periodic due contract broken');
+      expect(replanCalls).toEqual([]);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 });

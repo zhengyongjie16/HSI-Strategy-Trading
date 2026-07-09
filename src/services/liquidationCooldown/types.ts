@@ -1,4 +1,4 @@
-import type { LiquidationCooldownConfig, MultiMonitorTradingConfig } from '../../types/config.js';
+import type { LiquidationCooldownConfig, TradingConfig } from '../../types/config.js';
 import type { Logger } from '../../utils/logger/types.js';
 
 /**
@@ -142,7 +142,7 @@ export type TradeLogHydratorDeps = {
   readonly resolveLogRootDir: () => string;
   readonly nowMs: () => number;
   readonly logger: Logger;
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
 };
 
@@ -159,7 +159,7 @@ export interface TradeLogHydrator {
 /**
  * 冷却候选记录。
  * 类型用途：包含监控标的、方向与保护性清仓成交时间，作为恢复冷却状态的中间结果。
- * 数据来源：由 collectLiquidationRecordsByMonitor 从日志解析返回。
+ * 数据来源：由 tradeLogHydrator 从保护性清仓完成日志严格解析返回。
  * 使用范围：仅 liquidationCooldown 模块内部使用。
  */
 export type CooldownCandidate = {

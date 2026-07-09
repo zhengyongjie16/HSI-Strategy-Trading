@@ -11,9 +11,10 @@ import {
 } from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
 import type { SeatState } from '../../../src/types/seat.js';
 import {
+  createMonitorConfigDouble,
+  createMonitorContextDouble,
   createDelayedSignalVerifierDouble,
   createRiskCheckerDouble,
   createSignalDouble,
@@ -72,10 +73,12 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
         return 2;
       },
     });
-    const monitorContext = {
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfigDouble({ monitorSymbol }),
+      symbolRegistry,
       riskChecker,
       delayedSignalVerifier,
-    } as unknown as MonitorContext;
+    });
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
@@ -103,7 +106,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
-      dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:LONG`,
+      dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
       monitorSymbol,
       data: {
         monitorSymbol,
@@ -117,7 +120,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     monitorTaskQueue.scheduleLatest({
       type: 'SEAT_REFRESH',
-      dedupeKey: `${monitorSymbol}:SEAT_REFRESH:LONG`,
+      dedupeKey: 'SEAT_REFRESH:LONG',
       monitorSymbol,
       data: {
         monitorSymbol,
@@ -132,7 +135,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
-      dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:SHORT`,
+      dedupeKey: 'AUTO_SYMBOL_TICK:SHORT',
       monitorSymbol,
       data: {
         monitorSymbol,
@@ -146,7 +149,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     const dispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
-      monitorContexts: new Map([[monitorSymbol, monitorContext]]),
+      monitorContext,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -187,7 +190,9 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     });
     let clearShortCalls = 0;
     let delayedCancelled = 0;
-    const monitorContext = {
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfigDouble({ monitorSymbol }),
+      symbolRegistry,
       riskChecker: createRiskCheckerDouble({
         clearShortWarrantInfo: () => {
           clearShortCalls += 1;
@@ -203,7 +208,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
           return 1;
         },
       }),
-    } as unknown as MonitorContext;
+    });
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
@@ -222,7 +227,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
-      dedupeKey: `${monitorSymbol}:AUTO_SYMBOL_TICK:SHORT`,
+      dedupeKey: 'AUTO_SYMBOL_TICK:SHORT',
       monitorSymbol,
       data: {
         monitorSymbol,
@@ -236,7 +241,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     const dispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
-      monitorContexts: new Map([[monitorSymbol, monitorContext]]),
+      monitorContext,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -260,17 +265,19 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
       longSeat: createEmptySeatState(),
     });
     let clearLongCalls = 0;
-    const monitorContext = {
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfigDouble({ monitorSymbol }),
+      symbolRegistry,
       riskChecker: createRiskCheckerDouble({
         clearLongWarrantInfo: () => {
           clearLongCalls += 1;
         },
       }),
       delayedSignalVerifier: createDelayedSignalVerifierDouble(),
-    } as unknown as MonitorContext;
+    });
     const dispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
-      monitorContexts: new Map([[monitorSymbol, monitorContext]]),
+      monitorContext,
       buyTaskQueue: createBuyTaskQueue(),
       sellTaskQueue: createSellTaskQueue(),
       monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
@@ -297,15 +304,16 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     expect(clearLongCalls).toBe(1);
   });
 
-  it('找不到监控上下文时暴露 wiring 错误', () => {
+  it('seat 事件携带非唯一 monitorSymbol 时 fail-fast', () => {
     const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
       monitorSymbol,
       longSeat: createActiveSeatState('BULL.HK'),
     });
+    const monitorContext = createMonitorContextDouble({ symbolRegistry });
     const dispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
-      monitorContexts: new Map(),
+      monitorContext,
       buyTaskQueue: createBuyTaskQueue(),
       sellTaskQueue: createSellTaskQueue(),
       monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
@@ -314,7 +322,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     dispatcher.start();
     let caught: unknown = null;
     try {
-      symbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, 'LONG', createEmptySeatState());
+      symbolRegistry.updateSeatStateWithVersionBump('TECH.HK', 'LONG', createEmptySeatState());
     } catch (err) {
       caught = err;
     } finally {
@@ -325,7 +333,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     expect(symbolRegistry.getSeatStateListenerErrors()).toHaveLength(1);
     const error = symbolRegistry.getSeatStateListenerErrors()[0];
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('[SeatRuntimeCleanupDispatcher] 未找到监控上下文');
+    expect((error as Error).message).toContain('非唯一 monitorSymbol 事件');
     expect(symbolRegistry.getSeatStateChangedListenerCount()).toBe(0);
   });
 
@@ -365,17 +373,19 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
       longSeat: createActiveSeatState('BULL.HK'),
     });
     let clearLongCalls = 0;
-    const monitorContext = {
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfigDouble({ monitorSymbol }),
+      symbolRegistry,
       riskChecker: createRiskCheckerDouble({
         clearLongWarrantInfo: () => {
           clearLongCalls += 1;
         },
       }),
       delayedSignalVerifier: createDelayedSignalVerifierDouble(),
-    } as unknown as MonitorContext;
+    });
     const dispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
-      monitorContexts: new Map([[monitorSymbol, monitorContext]]),
+      monitorContext,
       buyTaskQueue: createBuyTaskQueue(),
       sellTaskQueue: createSellTaskQueue(),
       monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),

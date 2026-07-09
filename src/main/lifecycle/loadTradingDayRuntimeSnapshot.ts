@@ -61,6 +61,26 @@ function resolveDirectionFromKey(
   };
 }
 
+function parseDirectionKeyOrThrow(params: {
+  readonly directionKey: string;
+  readonly expectedMonitorSymbol: string;
+  readonly source: string;
+}): { readonly monitorSymbol: string; readonly direction: ProtectiveLiquidationDirection } {
+  const parsed = resolveDirectionFromKey(params.directionKey);
+  if (parsed === null) {
+    throw new Error(`[loadTradingDayRuntimeSnapshot] ${params.source} directionKey 非法`);
+  }
+
+  if (parsed.monitorSymbol !== params.expectedMonitorSymbol) {
+    throw new Error(
+      `[loadTradingDayRuntimeSnapshot] ${params.source} monitorSymbol 不匹配唯一配置: ` +
+        `${parsed.monitorSymbol} !== ${params.expectedMonitorSymbol}`,
+    );
+  }
+
+  return parsed;
+}
+
 function restoreCompletedBoundary(params: {
   readonly protectiveLiquidationEpisodeTracker: LoadTradingDayRuntimeSnapshotDeps['protectiveLiquidationEpisodeTracker'];
   readonly restoredBoundaryByDirection: Map<string, number>;
@@ -124,6 +144,7 @@ export function createLoadTradingDayRuntimeSnapshot(
       hydrateCooldownFromTradeLog,
       forceOrderRefresh,
     } = params;
+    const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
     if (requireTradingDay) {
       const tradingDayInfo = await marketDataClient.isTradingDay(now);
       if (!tradingDayInfo.isTradingDay) {
@@ -195,17 +216,17 @@ export function createLoadTradingDayRuntimeSnapshot(
         continue;
       }
 
-      if (!(order.updatedAt instanceof Date)) {
-        continue;
+      if (!(order.updatedAt instanceof Date) || !isValidPositiveNumber(order.updatedAt.getTime())) {
+        throw new Error('[loadTradingDayRuntimeSnapshot] 保护性清仓订单缺少有效更新时间');
       }
 
       if (getHKDateKey(order.updatedAt) !== currentDayKey) {
         continue;
       }
 
-      const ownership = resolveOrderOwnership(order, tradingConfig.monitors);
+      const ownership = resolveOrderOwnership(order, tradingConfig.monitor);
       if (!ownership) {
-        continue;
+        throw new Error('[loadTradingDayRuntimeSnapshot] 保护性清仓订单无法归属到唯一监控标的');
       }
 
       const directionKey = buildCooldownKey(ownership.monitorSymbol, ownership.direction);
@@ -244,10 +265,11 @@ export function createLoadTradingDayRuntimeSnapshot(
 
     const restoredBoundaryByDirection = new Map<string, number>();
     for (const [directionKey, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
-      const parsed = resolveDirectionFromKey(directionKey);
-      if (!parsed) {
-        continue;
-      }
+      const parsed = parseDirectionKeyOrThrow({
+        directionKey,
+        expectedMonitorSymbol,
+        source: 'hydrated protective boundary',
+      });
 
       restoreCompletedBoundary({
         protectiveLiquidationEpisodeTracker,
@@ -267,10 +289,11 @@ export function createLoadTradingDayRuntimeSnapshot(
         continue;
       }
 
-      const parsed = resolveDirectionFromKey(directionKey);
-      if (!parsed) {
-        continue;
-      }
+      const parsed = parseDirectionKeyOrThrow({
+        directionKey,
+        expectedMonitorSymbol,
+        source: 'protective latest fill',
+      });
 
       const position = lastState.positionCache.get(protectiveFill.symbol);
       const isDirectionFlat = position === null || position.quantity <= 0;
@@ -289,10 +312,11 @@ export function createLoadTradingDayRuntimeSnapshot(
     }
 
     for (const [directionKey, protectiveFill] of protectiveLatestFillByDirection) {
-      const parsed = resolveDirectionFromKey(directionKey);
-      if (!parsed) {
-        continue;
-      }
+      const parsed = parseDirectionKeyOrThrow({
+        directionKey,
+        expectedMonitorSymbol,
+        source: 'protective episode rebuild',
+      });
 
       const boundaryExecutedTimeMs = restoredBoundaryByDirection.get(directionKey);
       const hasPendingProtective = pendingProtectiveDirectionKeys.has(directionKey);
@@ -344,38 +368,39 @@ export function createLoadTradingDayRuntimeSnapshot(
       });
     }
 
+    const orderHoldSymbols = trader.getOrderHoldSymbols();
+    const allTradingSymbols = collectRuntimeQuoteSymbols(
+      tradingConfig.monitor,
+      symbolRegistry,
+      lastState.cachedPositions,
+      orderHoldSymbols,
+    );
+    const relatedTradingSymbols = new Set(allTradingSymbols);
+    relatedTradingSymbols.delete(tradingConfig.monitor.monitorSymbol);
     const protectionBoundaryByDirection =
       protectiveLiquidationEpisodeTracker.getLatestProtectionBoundaryByDirection();
     dailyLossTracker.recalculateFromAllOrders(
       allOrders,
-      tradingConfig.monitors,
+      tradingConfig.monitor,
       now,
       protectionBoundaryByDirection,
+      relatedTradingSymbols,
     );
 
     if (resetRuntimeSubscriptions) {
       await marketDataClient.resetRuntimeSubscriptionsAndCaches();
     }
 
-    const orderHoldSymbols = trader.getOrderHoldSymbols();
-    const allTradingSymbols = collectRuntimeQuoteSymbols(
-      tradingConfig.monitors,
-      symbolRegistry,
-      lastState.cachedPositions,
-      orderHoldSymbols,
-    );
     lastState.allTradingSymbols = allTradingSymbols;
     if (allTradingSymbols.size > 0) {
       await marketDataClient.subscribeSymbols([...allTradingSymbols]);
     }
 
-    for (const monitorConfig of tradingConfig.monitors) {
-      await marketDataClient.subscribeCandlesticks(
-        monitorConfig.monitorSymbol,
-        TRADING.CANDLE_PERIOD,
-        TradeSessions.Intraday,
-      );
-    }
+    await marketDataClient.subscribeCandlesticks(
+      tradingConfig.monitor.monitorSymbol,
+      TRADING.CANDLE_PERIOD,
+      TradeSessions.Intraday,
+    );
 
     const quotesMap = await marketDataClient.getQuotes(allTradingSymbols);
     return {

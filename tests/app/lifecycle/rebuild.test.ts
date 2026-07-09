@@ -16,7 +16,7 @@ import type { Quote } from '../../../src/types/quote.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 
 describe('app rebuild helpers', () => {
-  it('rethrows trading-day resolver failures without fallbacking to non-trading day', async () => {
+  it('rethrows trading-day resolver failures without treating the day as non-trading', async () => {
     const thrownError = new Error('trading day service unavailable');
     const resolveErrors: unknown[] = [];
     let lookupCalls = 0;

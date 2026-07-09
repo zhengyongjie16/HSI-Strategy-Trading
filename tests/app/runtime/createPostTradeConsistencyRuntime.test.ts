@@ -81,7 +81,13 @@ function createLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
-    monitorStates: new Map(),
+    monitorState: {
+      monitorSymbol: 'HSI.HK',
+      signal: null,
+      pendingDelayedSignals: [],
+      lastMonitorSnapshot: null,
+      incrementalIndicatorRuntime: null,
+    },
     allTradingSymbols: new Set(),
   };
 }
@@ -95,7 +101,32 @@ function bindMinimalBusinessDeps(
   runtime: ReturnType<typeof createPostTradeConsistencyRuntime>,
 ): void {
   runtime.bindBusinessDeps({
-    monitorContexts: new Map(),
+    monitorContext: createMonitorContextDouble({
+      config: createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+      }),
+      symbolRegistry: createSymbolRegistryDouble({
+        monitorSymbol: 'HSI.HK',
+        longSeat: {
+          symbol: '',
+          status: 'EMPTY',
+          lastSwitchAt: null,
+          lastSearchAt: null,
+          lastSeatActivatedAt: null,
+          searchFailCountToday: 0,
+          frozenTradingDayKey: null,
+        },
+        shortSeat: {
+          symbol: '',
+          status: 'EMPTY',
+          lastSwitchAt: null,
+          lastSearchAt: null,
+          lastSeatActivatedAt: null,
+          searchFailCountToday: 0,
+          frozenTradingDayKey: null,
+        },
+      }),
+    }),
     dailyLossTracker: createDailyLossTrackerDouble(),
     liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -387,7 +418,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       lastState,
     });
     runtime.bindBusinessDeps({
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -409,6 +440,104 @@ describe('createPostTradeConsistencyRuntime', () => {
       currentVersion: 1,
       staleVersion: 1,
     });
+  });
+
+  it('keeps the attributed direction snapshot stable while refreshing seat symbols', async () => {
+    const lastState = createLastState();
+    const riskRefreshCalls: Array<{
+      readonly symbol: string;
+      readonly isLongSymbol: boolean;
+      readonly dailyLossOffset: number | undefined;
+    }> = [];
+    const symbolRegistry = createSymbolRegistryDouble({
+      monitorSymbol: 'HSI.HK',
+      longSeat: {
+        symbol: 'BULL.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+      shortSeat: {
+        symbol: 'BEAR.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+    });
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+      }),
+      symbolRegistry,
+      dailyLossTracker: createDailyLossTrackerDouble({
+        getLossOffset: (_monitorSymbol, isLongSymbol) => (isLongSymbol ? 11 : 22),
+      }),
+      riskChecker: createRiskCheckerDouble({
+        refreshUnrealizedLossData: async (
+          _orderRecorder,
+          symbol,
+          isLongSymbol,
+          _quote,
+          dailyLossOffset,
+        ) => {
+          riskRefreshCalls.push({ symbol, isLongSymbol, dailyLossOffset });
+          if (symbol === 'BULL.HK') {
+            symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+              symbol: 'BEAR.HK',
+              status: 'ACTIVE',
+              lastSwitchAt: null,
+              lastSearchAt: null,
+              lastSeatActivatedAt: null,
+              searchFailCountToday: 0,
+              frozenTradingDayKey: null,
+            });
+          }
+
+          return { r1: 100, n1: 100 };
+        },
+      }),
+    });
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => createAccountSnapshotDouble(66_000),
+          getStockPositions: async () => [],
+        }),
+      lastState,
+    });
+    runtime.bindBusinessDeps({
+      monitorContext,
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    });
+
+    runtime.recordSettlementRefreshNeed({
+      refreshAccount: true,
+      refreshPositions: true,
+    });
+    runtime.start();
+    await runtime.waitForFresh();
+    await runtime.stopAndDrain();
+
+    expect(riskRefreshCalls).toEqual([
+      {
+        symbol: 'BULL.HK',
+        isLongSymbol: true,
+        dailyLossOffset: 11,
+      },
+      {
+        symbol: 'BEAR.HK',
+        isLongSymbol: false,
+        dailyLossOffset: 22,
+      },
+    ]);
   });
 
   it('fails fast when account refresh hits TypeError and exposes the fatal channel immediately', async () => {
@@ -575,7 +704,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     });
 
     runtime.bindBusinessDeps({
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -660,7 +789,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     });
 
     runtime.bindBusinessDeps({
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -694,6 +823,62 @@ describe('createPostTradeConsistencyRuntime', () => {
     );
     expect(accountCallCount).toBe(1);
     expect(riskRefreshCallCount).toBe(1);
+    expect(runtime.getStatus()).toEqual({
+      started: false,
+      currentVersion: 0,
+      staleVersion: 1,
+    });
+  });
+
+  it('fails fast when an in-progress protective episode belongs to a foreign monitor', async () => {
+    const lastState = createLastState();
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => createAccountSnapshotDouble(100),
+          getStockPositions: async () => [],
+        }),
+      lastState,
+    });
+
+    runtime.bindBusinessDeps({
+      monitorContext: createMonitorContextDouble({
+        config: createMonitorConfigDouble({
+          monitorSymbol: 'HSI.HK',
+        }),
+      }),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
+        getInProgressEpisodes: () => [
+          {
+            monitorSymbol: 'TECH.HK',
+            direction: 'LONG',
+            symbol: 'BULL.HK',
+            latestExecutedTimeMs: 10_000,
+          },
+        ],
+      }),
+    });
+
+    runtime.recordSettlementRefreshNeed({
+      refreshAccount: true,
+      refreshPositions: false,
+    });
+
+    runtime.start();
+    let caught: unknown = null;
+    try {
+      await runtime.drainFatalError();
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain(
+      'protective episode monitorSymbol mismatch: expected=HSI.HK actual=TECH.HK',
+    );
+
     expect(runtime.getStatus()).toEqual({
       started: false,
       currentVersion: 0,
@@ -775,7 +960,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       lastState,
     });
     runtime.bindBusinessDeps({
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble({
         startNewProtectionEpisode: (params) => {
           startNewProtectionEpisodeCalls.push(params);
@@ -873,7 +1058,7 @@ describe('createPostTradeConsistencyRuntime', () => {
         frozenTradingDayKey: null,
       },
       shortSeat: {
-        symbol: 'BEAR.HK',
+        symbol: 'BULL.HK',
         status: 'ACTIVE',
         lastSwitchAt: null,
         lastSearchAt: null,
@@ -882,22 +1067,10 @@ describe('createPostTradeConsistencyRuntime', () => {
         frozenTradingDayKey: null,
       },
     });
-    const duplicateMonitorContexts = new Map([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
-          symbolRegistry,
-        }),
-      ],
-      [
-        'TECH.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfigDouble({ monitorSymbol: 'TECH.HK' }),
-          symbolRegistry,
-        }),
-      ],
-    ]);
+    const duplicateMonitorContext = createMonitorContextDouble({
+      config: createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry,
+    });
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () =>
         createTraderDouble({
@@ -908,7 +1081,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     });
     expect(() => {
       runtime.bindBusinessDeps({
-        monitorContexts: duplicateMonitorContexts,
+        monitorContext: duplicateMonitorContext,
         dailyLossTracker: createDailyLossTrackerDouble(),
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
         protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -1152,7 +1325,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       lastState,
     });
     runtime.bindBusinessDeps({
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble({
         startNewProtectionEpisode: (params) => {
           startNewProtectionEpisodeCalls.push(params);

@@ -87,17 +87,15 @@ function createSignalConfig() {
 function createTradingConfigForValidation() {
   const signalConfig = createSignalConfig();
   return createTradingConfig({
-    monitors: [
-      createMonitorConfigDouble({
-        orderOwnershipMapping: ['HSI'],
-        signalConfig: {
-          buycall: signalConfig,
-          sellcall: signalConfig,
-          buyput: signalConfig,
-          sellput: signalConfig,
-        },
-      }),
-    ],
+    monitor: createMonitorConfigDouble({
+      orderOwnershipMapping: ['HSI'],
+      signalConfig: {
+        buycall: signalConfig,
+        sellcall: signalConfig,
+        buyput: signalConfig,
+        sellput: signalConfig,
+      },
+    }),
   });
 }
 

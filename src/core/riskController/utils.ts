@@ -59,7 +59,7 @@ export function sumOrderCost(orders: ReadonlyArray<OrderRecord>): number {
 /**
  * 收集订单归属诊断信息，用于启动时检测当日成交订单中未能归属到任何监控标的的订单数量与样例。
  * @param orders 全量原始订单列表
- * @param monitors 监控配置列表，用于归属匹配
+ * @param monitor 唯一监控配置，用于归属匹配
  * @param now 当前时间，用于确定当日日键
  * @param resolveOrderOwnership 订单归属解析函数
  * @param toHongKongTimeIso 日期转香港时间 ISO 字符串的函数
@@ -68,18 +68,18 @@ export function sumOrderCost(orders: ReadonlyArray<OrderRecord>): number {
  */
 export function collectOrderOwnershipDiagnostics({
   orders,
-  monitors,
+  monitor,
   now,
   resolveOrderOwnership,
   toHongKongTimeIso,
   maxSamples = 3,
 }: {
   readonly orders: ReadonlyArray<RawOrderFromAPI>;
-  readonly monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>;
+  readonly monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>;
   readonly now: Date;
   readonly resolveOrderOwnership: (
     order: RawOrderFromAPI,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
   ) => OrderOwnership | null;
   readonly toHongKongTimeIso: (date: Date | null) => string;
   readonly maxSamples?: number;
@@ -114,7 +114,7 @@ export function collectOrderOwnershipDiagnostics({
 
     inDayFilled += 1;
 
-    const ownership = resolveOrderOwnership(order, monitors);
+    const ownership = resolveOrderOwnership(order, monitor);
     if (ownership) {
       continue;
     }

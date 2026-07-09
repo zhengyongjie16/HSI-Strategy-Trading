@@ -2,7 +2,7 @@ import type { PeriodicSwitchWakeupRuntime } from '../../periodicSwitchWakeupRunt
 import type { SwitchWakeupRuntime } from '../../monitorQuoteEventRuntime/types.js';
 import type { MonitorTaskQueue, MonitorTask } from '../monitorTaskQueue/types.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
-import type { MultiMonitorTradingConfig } from '../../../types/config.js';
+import type { TradingConfig } from '../../../types/config.js';
 import type { RawOrderFromAPI, Trader, MarketDataClient } from '../../../types/services.js';
 import type { QuoteSubscriptionRuntime } from '../../quoteSubscriptionRuntime/types.js';
 
@@ -85,8 +85,8 @@ export type MonitorTaskStatus = 'processed' | 'skipped' | 'failed' | 'blocked';
 
 /**
  * 监控任务处理上下文（处理器执行任务时的运行时依赖）。
- * 类型用途：处理器执行监控任务时所需的上下文，含 symbolRegistry、orderRecorder、riskChecker、名称缓存等；由 getMonitorContext(monitorSymbol) 获取。
- * 数据来源：由 app runtime 注入的 getMonitorContext 按 monitorSymbol 从 monitorContexts 等组装返回。
+ * 类型用途：处理器执行任务时所需的唯一上下文，含 symbolRegistry、orderRecorder、riskChecker、名称缓存等。
+ * 数据来源：由 app runtime 直接注入唯一 monitorContext。
  * 使用范围：仅 monitorTaskProcessor 内部使用。
  */
 export type MonitorTaskContext = Pick<
@@ -123,13 +123,13 @@ export type RefreshHelpers = Readonly<{
 
 /**
  * MonitorTaskProcessor 依赖注入配置（创建监控任务处理器时的参数）。
- * 类型用途：创建 MonitorTaskProcessor 所需的全部外部依赖（队列、getMonitorContext、trader 等）。
+ * 类型用途：创建 MonitorTaskProcessor 所需的全部外部依赖（队列、唯一 monitorContext、trader 等）。
  * 数据来源：由主程序/启动流程组装并传入工厂。
  * 使用范围：仅 monitorTaskProcessor 及启动流程使用，内部使用。
  */
 export type MonitorTaskProcessorDeps = Readonly<{
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
-  getMonitorContext: (monitorSymbol: string) => MonitorTaskContext | null;
+  monitorContext: MonitorTaskContext;
   trader: Trader;
   marketDataClient: MarketDataClient;
   quoteSubscriptionRuntime: Pick<
@@ -142,7 +142,7 @@ export type MonitorTaskProcessorDeps = Readonly<{
     'markWaitingEmpty' | 'clearWaitingEmpty' | 'replanRouteAfterTask'
   >;
   lastState: LastState;
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
 
   /** 生命周期门禁：false 时任务直接跳过 */
   getCanProcessTask?: () => boolean;

@@ -382,6 +382,11 @@ async function submitTimeoutMarketOrder(
   marketConversionQuantity: number,
   relatedBuyOrderIds: ReadonlyArray<string>,
 ): Promise<void> {
+  if (typeof order.monitorSymbol !== 'string' || order.monitorSymbol.length === 0) {
+    throw new Error(`[订单监控] 市价转单时缺少 monitorSymbol: orderId=${order.orderId}`);
+  }
+
+  const monitorSymbol = order.monitorSymbol;
   if (!isRouteGenerationCurrent(deps.runtime, params)) {
     deps.orderRecorder.markSellCancelled(order.orderId);
     return;
@@ -466,11 +471,9 @@ async function submitTimeoutMarketOrder(
       initialSubmittedPrice: 0,
       quantity: marketConversionQuantity,
       isLongSymbol: order.isLongSymbol,
-      monitorSymbol: order.monitorSymbol,
+      monitorSymbol,
       isProtectiveLiquidation: order.isProtectiveLiquidation,
       orderType: OrderType.MO,
-      liquidationTriggerLimit: order.liquidationTriggerLimit,
-      liquidationCooldownConfig: order.liquidationCooldownConfig,
     });
   } catch (error: unknown) {
     if (!brokerSubmissionAccepted) {

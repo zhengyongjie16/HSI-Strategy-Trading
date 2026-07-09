@@ -29,12 +29,12 @@ export function createBuyThrottle(): BuyThrottle {
    * @param monitorConfig 监控配置
    * @returns 频率检查结果
    */
-  function canTradeNow(signalAction: SignalType, monitorConfig?: MonitorConfig | null) {
+  function canTradeNow(signalAction: SignalType, monitorConfig: MonitorConfig) {
     if (isSellAction(signalAction)) {
       return { canTrade: true };
     }
 
-    const buyIntervalSeconds = monitorConfig?.buyIntervalSeconds ?? 60;
+    const buyIntervalSeconds = monitorConfig.buyIntervalSeconds;
     const timeKey = buildBuyTimeKey(signalAction, monitorConfig);
     const lastTime = lastBuyTime.get(timeKey);
     if (!lastTime) {
@@ -62,7 +62,7 @@ export function createBuyThrottle(): BuyThrottle {
    * @param monitorConfig 监控配置
    * @returns 无返回值
    */
-  function recordBuyAttempt(signalAction: SignalType, monitorConfig?: MonitorConfig | null): void {
+  function recordBuyAttempt(signalAction: SignalType, monitorConfig: MonitorConfig): void {
     if (isBuyAction(signalAction)) {
       lastBuyTime.set(buildBuyTimeKey(signalAction, monitorConfig), Date.now());
     }

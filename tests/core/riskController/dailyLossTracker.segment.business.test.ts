@@ -19,6 +19,7 @@ function createExecutedOrder(params: {
   readonly symbol: string;
   readonly side: OrderSide;
   readonly status?: OrderStatus;
+  readonly stockName?: string;
   readonly executedPrice: number;
   readonly executedQuantity: number;
   readonly updatedAtMs: number;
@@ -27,7 +28,7 @@ function createExecutedOrder(params: {
   return {
     orderId: params.orderId,
     symbol: params.symbol,
-    stockName: params.symbol,
+    stockName: params.stockName ?? params.symbol,
     side: params.side,
     status: params.status ?? OrderStatus.Filled,
     orderType: OrderType.ELO,
@@ -41,15 +42,11 @@ function createExecutedOrder(params: {
   };
 }
 
-function createMonitors(): ReadonlyArray<
-  Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>
-> {
-  return [
-    {
-      monitorSymbol: 'HSI.HK',
-      orderOwnershipMapping: [],
-    },
-  ];
+function createMonitor(): Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'> {
+  return {
+    monitorSymbol: 'HSI.HK',
+    orderOwnershipMapping: [],
+  };
 }
 
 function resolveOrderOwnership(order: RawOrderFromAPI): OrderOwnership | null {
@@ -77,7 +74,7 @@ function createSegmentTracker(): DailyLossTracker {
 describe('dailyLossTracker segment flow', () => {
   it('startNewProtectionEpisode clears old segment state and ignores pre-segment fills', () => {
     const tracker = createSegmentTracker();
-    const monitors = createMonitors();
+    const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
     tracker.recalculateFromAllOrders(
@@ -99,7 +96,7 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
-      monitors,
+      monitor,
       now,
     );
     expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
@@ -149,7 +146,7 @@ describe('dailyLossTracker segment flow', () => {
 
   it('startNewProtectionEpisode resets only the SHORT segment and keeps LONG state intact', () => {
     const tracker = createSegmentTracker();
-    const monitors = createMonitors();
+    const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
     tracker.recalculateFromAllOrders(
@@ -187,7 +184,7 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:03:00.000Z'),
         }),
       ],
-      monitors,
+      monitor,
       now,
     );
     expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
@@ -242,10 +239,10 @@ describe('dailyLossTracker segment flow', () => {
   it('startNewProtectionEpisode is idempotent for the same protection boundary', () => {
     const tracker = createSegmentTracker();
     const now = new Date('2026-03-03T02:00:00.000Z');
-    const monitors = createMonitors();
+    const monitor = createMonitor();
     const firstBoundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitors, now);
+    tracker.recalculateFromAllOrders([], monitor, now);
 
     tracker.startNewProtectionEpisode({
       monitorSymbol: 'HSI.HK',
@@ -286,7 +283,7 @@ describe('dailyLossTracker segment flow', () => {
 
   it('recalculateFromAllOrders respects external protectionBoundaryByDirection at startup', () => {
     const tracker = createSegmentTracker();
-    const monitors = createMonitors();
+    const monitor = createMonitor();
     const protectionBoundaryByDirection = new Map<string, number>([
       ['HSI.HK:LONG', Date.parse('2026-03-03T01:10:00.000Z')],
     ]);
@@ -326,7 +323,7 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
         }),
       ],
-      monitors,
+      monitor,
       new Date('2026-03-03T02:00:00.000Z'),
       protectionBoundaryByDirection,
     );
@@ -336,7 +333,7 @@ describe('dailyLossTracker segment flow', () => {
 
   it('recalculateFromAllOrders keeps same-day in-memory protection boundary when no boundary is passed', () => {
     const tracker = createSegmentTracker();
-    const monitors = createMonitors();
+    const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
     tracker.recalculateFromAllOrders(
@@ -358,7 +355,7 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
-      monitors,
+      monitor,
       now,
     );
     expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
@@ -405,7 +402,7 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
         }),
       ],
-      monitors,
+      monitor,
       now,
     );
 
@@ -414,7 +411,7 @@ describe('dailyLossTracker segment flow', () => {
 
   it('recalculateFromAllOrders includes canceled order executed part to keep restart consistency', () => {
     const tracker = createSegmentTracker();
-    const monitors = createMonitors();
+    const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
     tracker.recalculateFromAllOrders(
@@ -438,10 +435,40 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
-      monitors,
+      monitor,
       now,
     );
 
     expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+  });
+
+  it('recalculateFromAllOrders fails fast when a relevant in-day executed order cannot be owned', () => {
+    const tracker = createDailyLossTracker({
+      ...createDailyLossOrderAnalysisDeps(),
+      resolveOrderOwnership: () => null,
+      toHongKongTimeIso,
+    });
+    const monitor = createMonitor();
+    const now = new Date('2026-03-03T02:00:00.000Z');
+
+    expect(() => {
+      tracker.recalculateFromAllOrders(
+        [
+          createExecutedOrder({
+            orderId: 'unowned-relevant-long',
+            symbol: 'BULL.HK',
+            stockName: 'Unparseable Warrant',
+            side: OrderSide.Buy,
+            executedPrice: 10,
+            executedQuantity: 10,
+            updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          }),
+        ],
+        monitor,
+        now,
+        undefined,
+        new Set(['BULL.HK', 'BEAR.HK']),
+      );
+    }).toThrow(/相关成交订单无法归属.*BULL\.HK/);
   });
 });

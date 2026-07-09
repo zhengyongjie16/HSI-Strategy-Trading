@@ -23,7 +23,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   const { preGateRuntime, postGateRuntime } = params;
   const { tradingConfig, marketDataClient } = preGateRuntime;
   const {
-    monitorContexts,
+    monitorContext,
     trader,
     lastState,
     postTradeConsistencyRuntime,
@@ -69,7 +69,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
 
   const monitorTaskProcessor = createMonitorTaskProcessor({
     monitorTaskQueue,
-    getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol) ?? null,
+    monitorContext,
     trader,
     marketDataClient,
     switchWakeupRuntime,
@@ -83,7 +83,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   });
   const buyProcessor = createBuyProcessor({
     taskQueue: buyTaskQueue,
-    getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+    monitorContext,
     signalProcessor,
     trader,
     marketDataClient,
@@ -95,7 +95,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   });
   const sellProcessor = createSellProcessor({
     taskQueue: sellTaskQueue,
-    getMonitorContext: (monitorSymbol) => monitorContexts.get(monitorSymbol),
+    monitorContext,
     signalProcessor,
     trader,
     marketDataClient,

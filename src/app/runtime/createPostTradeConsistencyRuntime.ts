@@ -74,40 +74,18 @@ function hasRefreshNeed(need: PostTradeConsistencyRefreshNeed): boolean {
  * 避免把更新版本回退成旧批次版本。
  *
  * @param currentPendingVersion 当前已积压的版本号
- * @param fallbackVersion 本批次至少要保留的版本号
+ * @param minimumRetainedVersion 本批次至少要保留的版本号
  * @returns 下一次重试应追上的目标版本
  */
 function mergePendingVersion(
   currentPendingVersion: number | null,
-  fallbackVersion: number,
+  minimumRetainedVersion: number,
 ): number {
   if (currentPendingVersion === null) {
-    return fallbackVersion;
+    return minimumRetainedVersion;
   }
 
-  return Math.max(currentPendingVersion, fallbackVersion);
-}
-
-/**
- * 解析指定方向当前可归属的席位标的。
- *
- * @param monitorContext 监控上下文
- * @param direction 保护性清仓方向
- * @returns 当前激活席位的标的代码；若席位未激活则返回 null
- */
-function resolveDirectionSeatSymbol(
-  monitorContext: MonitorContext,
-  direction: ProtectiveLiquidationDirection,
-): string | null {
-  const seatState = monitorContext.symbolRegistry.getSeatState(
-    monitorContext.config.monitorSymbol,
-    direction,
-  );
-  if (!isSeatActive(seatState)) {
-    return null;
-  }
-
-  return seatState.symbol;
+  return Math.max(currentPendingVersion, minimumRetainedVersion);
 }
 
 /**
@@ -130,67 +108,79 @@ function isSymbolFlatByPositionCache(
 }
 
 /**
- * 记录交易标的归属，并在检测到重复归属时立即失败。
+ * 记录交易标的方向归属，并在检测到 LONG/SHORT 重复归属时立即失败。
  *
- * @param attributedContexts 当前已记录的 symbol -> monitorContext 映射
+ * @param attributedDirections 当前已记录的 symbol -> direction 映射
+ * @param attributedSymbols 当前已收集的可归属交易标的
  * @param symbol 待归属的交易标的
- * @param monitorContext 当前 monitorContext
  * @param direction 当前席位方向
  */
 function registerAttributedSeatSymbolOrThrow(
-  attributedContexts: Map<string, MonitorContext>,
+  attributedDirections: Map<string, ProtectiveLiquidationDirection>,
+  attributedSymbols: Array<
+    Readonly<{
+      readonly symbol: string;
+      readonly direction: ProtectiveLiquidationDirection;
+    }>
+  >,
   symbol: string,
-  monitorContext: MonitorContext,
-  direction: 'LONG' | 'SHORT',
+  direction: ProtectiveLiquidationDirection,
 ): void {
-  const existingContext = attributedContexts.get(symbol);
-  if (existingContext !== undefined) {
+  const existingDirection = attributedDirections.get(symbol);
+  if (existingDirection !== undefined) {
     throw new Error(
-      `[PostTradeConsistencyRuntime] 标的重复归属: ${symbol} 同时归属 ${existingContext.config.monitorSymbol} 与 ${monitorContext.config.monitorSymbol}:${direction}`,
+      `[PostTradeConsistencyRuntime] 标的重复归属: ${symbol} 同时归属 ${existingDirection} 与 ${direction}`,
     );
   }
 
-  attributedContexts.set(symbol, monitorContext);
+  attributedDirections.set(symbol, direction);
+  attributedSymbols.push({ symbol, direction });
 }
 
 /**
- * 构建“交易标的 -> MonitorContext”的归属映射。
+ * 构建当前激活交易标的的方向归属列表。
  *
- * 仅收集当前激活席位，确保成交后 R1/N1 刷新只触达仍可归属的 symbol。
+ * 仅收集唯一 monitor 当前激活席位，确保成交后 R1/N1 刷新只触达仍可归属的 symbol。
  *
- * @param monitorContexts 全量监控上下文
- * @returns 可归属 symbol 到 monitorContext 的映射
+ * @param monitorContext 唯一监控上下文
+ * @returns 可归属交易标的及其方向
  */
-function buildMonitorContextBySeatSymbol(
-  monitorContexts: ReadonlyMap<string, MonitorContext>,
-): ReadonlyMap<string, MonitorContext> {
-  const attributedContexts = new Map<string, MonitorContext>();
+function buildAttributedSeatSymbols(monitorContext: MonitorContext): ReadonlyArray<
+  Readonly<{
+    readonly symbol: string;
+    readonly direction: ProtectiveLiquidationDirection;
+  }>
+> {
+  const attributedDirections = new Map<string, ProtectiveLiquidationDirection>();
+  const attributedSymbols: Array<
+    Readonly<{
+      readonly symbol: string;
+      readonly direction: ProtectiveLiquidationDirection;
+    }>
+  > = [];
+  const monitorSymbol = monitorContext.config.monitorSymbol;
+  const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
+  const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
 
-  for (const monitorContext of monitorContexts.values()) {
-    const monitorSymbol = monitorContext.config.monitorSymbol;
-    const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-    const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
-
-    if (isSeatActive(longSeatState)) {
-      registerAttributedSeatSymbolOrThrow(
-        attributedContexts,
-        longSeatState.symbol,
-        monitorContext,
-        'LONG',
-      );
-    }
-
-    if (isSeatActive(shortSeatState)) {
-      registerAttributedSeatSymbolOrThrow(
-        attributedContexts,
-        shortSeatState.symbol,
-        monitorContext,
-        'SHORT',
-      );
-    }
+  if (isSeatActive(longSeatState)) {
+    registerAttributedSeatSymbolOrThrow(
+      attributedDirections,
+      attributedSymbols,
+      longSeatState.symbol,
+      'LONG',
+    );
   }
 
-  return attributedContexts;
+  if (isSeatActive(shortSeatState)) {
+    registerAttributedSeatSymbolOrThrow(
+      attributedDirections,
+      attributedSymbols,
+      shortSeatState.symbol,
+      'SHORT',
+    );
+  }
+
+  return attributedSymbols;
 }
 
 /**
@@ -207,12 +197,16 @@ function settleProtectiveLiquidationEpisodes(
   businessDeps: PostTradeConsistencyRuntimeBusinessDeps,
   getQuantityBySymbol: (symbol: string) => { quantity: number } | null,
 ): void {
+  const expectedMonitorSymbol = businessDeps.monitorContext.config.monitorSymbol;
+
   for (const episode of businessDeps.protectiveLiquidationEpisodeTracker.getInProgressEpisodes()) {
-    const monitorContext = businessDeps.monitorContexts.get(episode.monitorSymbol);
-    if (monitorContext === undefined) {
-      continue;
+    if (episode.monitorSymbol !== expectedMonitorSymbol) {
+      throw new Error(
+        `[PostTradeConsistencyRuntime] protective episode monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${episode.monitorSymbol}`,
+      );
     }
 
+    const monitorContext = businessDeps.monitorContext;
     const isDirectionFlat = isSymbolFlatByPositionCache(episode.symbol, getQuantityBySymbol);
     const hasPendingProtectiveOrders = trader.hasPendingProtectiveLiquidationOrders(
       episode.monitorSymbol,
@@ -249,17 +243,18 @@ function settleProtectiveLiquidationEpisodes(
  *
  * 仅对当前仍能归属到激活席位的 symbol 刷新 R1/N1，避免把已脱离席位归属的旧 symbol 带入本轮一致性恢复。
  *
- * @param monitorContexts 全量监控上下文
+ * @param monitorContext 唯一监控上下文
  * @returns 是否全部刷新成功
  */
 async function refreshAttributedUnrealizedLossData(
-  monitorContexts: ReadonlyMap<string, MonitorContext>,
+  monitorContext: MonitorContext,
 ): Promise<boolean> {
-  const attributedContexts = buildMonitorContextBySeatSymbol(monitorContexts);
+  const attributedSymbols = buildAttributedSeatSymbols(monitorContext);
   let refreshOk = true;
 
-  for (const [symbol, monitorContext] of attributedContexts) {
-    const isLongSymbol = resolveDirectionSeatSymbol(monitorContext, 'LONG') === symbol;
+  for (const attributedSymbol of attributedSymbols) {
+    const { symbol, direction } = attributedSymbol;
+    const isLongSymbol = direction === 'LONG';
     const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(
       monitorContext.config.monitorSymbol,
       isLongSymbol,
@@ -306,7 +301,7 @@ async function runPostRefreshBusinessFlow(
     lastState.positionCache.get(symbol),
   );
 
-  return refreshAttributedUnrealizedLossData(businessDeps.monitorContexts);
+  return refreshAttributedUnrealizedLossData(businessDeps.monitorContext);
 }
 
 /**
@@ -504,15 +499,15 @@ export function createPostTradeConsistencyRuntime(
   }
 
   /**
-   * 绑定 monitor contexts 与风险协作者。
+   * 绑定唯一 monitorContext 与风险协作者。
    *
-   * 运行时先于 monitor contexts 创建，因此业务依赖需要在顶层装配完成后显式绑定。
+   * 运行时先于唯一 monitorContext 创建，因此业务依赖需要在顶层装配完成后显式绑定。
    * 重复绑定视为用最新依赖替换旧依赖。
    *
    * @param deps 业务依赖集合
    */
   function bindBusinessDeps(runtimeBusinessDeps: PostTradeConsistencyRuntimeBusinessDeps): void {
-    buildMonitorContextBySeatSymbol(runtimeBusinessDeps.monitorContexts);
+    buildAttributedSeatSymbols(runtimeBusinessDeps.monitorContext);
     businessDeps = runtimeBusinessDeps;
   }
 

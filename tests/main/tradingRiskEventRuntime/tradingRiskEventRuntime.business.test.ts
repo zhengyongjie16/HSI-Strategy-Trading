@@ -22,17 +22,11 @@ import { buildTradingRiskRoutingIndex } from '../../../src/main/tradingRiskEvent
 import { logger } from '../../../src/utils/logger/index.js';
 import { resolveTradingRiskRoute } from '../../../src/main/tradingRiskEventRuntime/routeValidation.js';
 import { createUnrealizedLossMonitor } from '../../../src/core/riskController/unrealizedLossMonitor.js';
+import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import type { TradingRiskEventRuntimeDeps } from '../../../src/main/tradingRiskEventRuntime/types.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
-import type {
-  SeatState,
-  SeatStateChangedEvent,
-  SeatVersionChangedEvent,
-  SymbolRegistry,
-} from '../../../src/types/seat.js';
-
-type TestSeatTruthChangedEvent = Parameters<Parameters<SymbolRegistry['onSeatTruthChanged']>[0]>[0];
+import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
 
 type TestTradingRiskConsistencyStatus = ReturnType<
   TradingRiskEventRuntimeDeps['postTradeConsistencyRuntime']['getStatus']
@@ -85,163 +79,8 @@ function waitTick(): Promise<void> {
   });
 }
 
-function createMultiMonitorSymbolRegistryDouble(params: {
-  readonly seats: ReadonlyMap<
-    string,
-    Readonly<{
-      readonly long: SeatState;
-      readonly short: SeatState;
-      readonly longVersion: number;
-      readonly shortVersion: number;
-    }>
-  >;
-}): TestSymbolRegistry {
-  const entries = new Map(
-    [...params.seats].map(([monitorSymbol, entry]) => [
-      monitorSymbol,
-      {
-        long: { state: entry.long, version: entry.longVersion },
-        short: { state: entry.short, version: entry.shortVersion },
-      },
-    ]),
-  );
-  const seatStateChangedListeners = new Set<(event: SeatStateChangedEvent) => void>();
-  const seatVersionChangedListeners = new Set<(event: SeatVersionChangedEvent) => void>();
-  const seatTruthChangedListeners = new Set<(event: TestSeatTruthChangedEvent) => void>();
-
-  function resolveEntry(monitorSymbol: string, direction: 'LONG' | 'SHORT') {
-    const entry = entries.get(monitorSymbol);
-    if (entry === undefined) {
-      throw new Error(`Unknown monitorSymbol: ${monitorSymbol}`);
-    }
-
-    return direction === 'LONG' ? entry.long : entry.short;
-  }
-
-  function emitSeatTruthChanged(monitorSymbol: string, direction: 'LONG' | 'SHORT'): void {
-    for (const listener of seatTruthChangedListeners) {
-      listener({ monitorSymbol, direction });
-    }
-  }
-
-  return {
-    getSeatState: (monitorSymbol, direction) => resolveEntry(monitorSymbol, direction).state,
-    getSeatVersion: (monitorSymbol, direction) => resolveEntry(monitorSymbol, direction).version,
-    resolveSeatBySymbol: (symbol) => {
-      for (const [monitorSymbol, entry] of entries) {
-        if (entry.long.state.symbol === symbol) {
-          return {
-            monitorSymbol,
-            direction: 'LONG',
-            seatState: entry.long.state,
-            seatVersion: entry.long.version,
-          };
-        }
-
-        if (entry.short.state.symbol === symbol) {
-          return {
-            monitorSymbol,
-            direction: 'SHORT',
-            seatState: entry.short.state,
-            seatVersion: entry.short.version,
-          };
-        }
-      }
-
-      return null;
-    },
-    updateSeatState: (monitorSymbol, direction, nextState) => {
-      const entry = resolveEntry(monitorSymbol, direction);
-      const previousState = entry.state;
-      entry.state = nextState;
-      for (const listener of seatStateChangedListeners) {
-        listener({
-          monitorSymbol,
-          direction,
-          previousState,
-          nextState,
-          previousVersion: entry.version,
-          nextVersion: entry.version,
-        });
-      }
-
-      emitSeatTruthChanged(monitorSymbol, direction);
-
-      return entry.state;
-    },
-    updateSeatStateWithVersionBump: (monitorSymbol, direction, nextState) => {
-      const entry = resolveEntry(monitorSymbol, direction);
-      const previousState = entry.state;
-      const previousVersion = entry.version;
-      entry.state = nextState;
-      entry.version += 1;
-      for (const listener of seatVersionChangedListeners) {
-        listener({
-          monitorSymbol,
-          direction,
-          previousVersion,
-          nextVersion: entry.version,
-        });
-      }
-
-      for (const listener of seatStateChangedListeners) {
-        listener({
-          monitorSymbol,
-          direction,
-          previousState,
-          nextState,
-          previousVersion,
-          nextVersion: entry.version,
-        });
-      }
-
-      emitSeatTruthChanged(monitorSymbol, direction);
-
-      return { seatState: entry.state, seatVersion: entry.version };
-    },
-    bumpSeatVersion: (monitorSymbol, direction) => {
-      const entry = resolveEntry(monitorSymbol, direction);
-      const previousVersion = entry.version;
-      entry.version += 1;
-      for (const listener of seatVersionChangedListeners) {
-        listener({
-          monitorSymbol,
-          direction,
-          previousVersion,
-          nextVersion: entry.version,
-        });
-      }
-
-      emitSeatTruthChanged(monitorSymbol, direction);
-
-      return entry.version;
-    },
-    onSeatStateChanged: (listener) => {
-      seatStateChangedListeners.add(listener);
-      return () => {
-        seatStateChangedListeners.delete(listener);
-      };
-    },
-    onSeatVersionChanged: (listener) => {
-      seatVersionChangedListeners.add(listener);
-      return () => {
-        seatVersionChangedListeners.delete(listener);
-      };
-    },
-    onSeatTruthChanged: (listener) => {
-      seatTruthChangedListeners.add(listener);
-      return () => {
-        seatTruthChangedListeners.delete(listener);
-      };
-    },
-    getSeatStateChangedListenerCount: () => seatStateChangedListeners.size,
-    getSeatVersionChangedListenerCount: () => seatVersionChangedListeners.size,
-    getSeatTruthChangedListenerCount: () => seatTruthChangedListeners.size,
-  };
-}
-
 describe('tradingRiskEventRuntime routing', () => {
-  it('throws when the same trading symbol is owned by multiple monitors', () => {
+  it('throws when the same trading symbol is owned by both LONG and SHORT seats', () => {
     const symbolRegistry = createSymbolRegistryDouble({
       longSeat: {
         symbol: 'BULL.HK',
@@ -253,7 +92,7 @@ describe('tradingRiskEventRuntime routing', () => {
         frozenTradingDayKey: null,
       },
       shortSeat: {
-        symbol: 'BEAR.HK',
+        symbol: 'BULL.HK',
         status: 'ACTIVE',
         lastSwitchAt: null,
         lastSearchAt: null,
@@ -262,26 +101,14 @@ describe('tradingRiskEventRuntime routing', () => {
         frozenTradingDayKey: null,
       },
     });
-    const monitorContexts = new Map<string, ReturnType<typeof createMonitorContextDouble>>([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-          symbolRegistry,
-        }),
-      ],
-      [
-        'TECH.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
-          symbolRegistry,
-        }),
-      ],
-    ]);
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry,
+    });
 
     expect(() =>
       buildTradingRiskRoutingIndex({
-        monitorContexts,
+        monitorContext,
         symbolRegistry,
       }),
     ).toThrow('重复归属');
@@ -313,7 +140,7 @@ describe('tradingRiskEventRuntime routing', () => {
       symbolRegistry,
     });
     const routingIndex = buildTradingRiskRoutingIndex({
-      monitorContexts: new Map([['HSI.HK', monitorContext]]),
+      monitorContext,
       symbolRegistry,
     });
 
@@ -341,7 +168,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       readonly doomsdayProtectionEnabled?: boolean;
       readonly consistencyPort?: ReturnType<typeof createConsistencyPort>;
       readonly consistencyStatus?: TestTradingRiskConsistencyStatus;
-      readonly monitorContexts?: ReadonlyMap<string, ReturnType<typeof createMonitorContextDouble>>;
+      readonly monitorContext?: ReturnType<typeof createMonitorContextDouble>;
       readonly now?: () => Date;
       readonly symbolRegistry?: SymbolRegistry;
       readonly trader?: ReturnType<typeof createTraderDouble>;
@@ -377,17 +204,12 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         monitorDirectionalUnrealizedLoss: async () => {},
       });
     const monitorContext =
-      params.monitorContexts ??
-      new Map([
-        [
-          'HSI.HK',
-          createMonitorContextDouble({
-            config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-            symbolRegistry,
-            unrealizedLossMonitor,
-          }),
-        ],
-      ]);
+      params.monitorContext ??
+      createMonitorContextDouble({
+        config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
+        symbolRegistry,
+        unrealizedLossMonitor,
+      });
     const consistencyPort =
       params.consistencyPort ??
       createConsistencyPort(
@@ -410,7 +232,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         },
         trader,
         symbolRegistry,
-        monitorContexts: monitorContext,
+        monitorContext,
         lastState: params.lastState ?? {
           canTrade: true,
           isTradingEnabled: true,
@@ -471,6 +293,78 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     expect(fatalErrors).toHaveLength(1);
     expect(fatalErrors[0]).toBeInstanceOf(TypeError);
     expect((fatalErrors[0] as Error).message).toContain('risk route broken');
+  });
+
+  it('exposes protective liquidation submitOrder uncertainty to fatal handler', async () => {
+    const submitError = createExternalApiRequestError({
+      operation: 'TradeContext.submitOrder',
+      attempts: 1,
+      cause: new Error('submit timeout'),
+    });
+    const fatalErrors: unknown[] = [];
+    const { deps } = createRuntimeDeps({
+      unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
+        monitorDirectionalUnrealizedLoss: async () => {
+          throw submitError;
+        },
+      }),
+    });
+    const runtime = createTradingRiskEventRuntime({
+      ...deps,
+      onFatalError: (error: unknown) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    runtime.start();
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await waitTick();
+    await waitTick();
+    await runtime.stopAndDrain();
+
+    expect(fatalErrors).toEqual([submitError]);
+  });
+
+  it('drops non-submit ExternalApiRequestError without entering fatal state', async () => {
+    const quoteError = createExternalApiRequestError({
+      operation: 'QuoteContext.realtimeQuote',
+      attempts: 1,
+      cause: new Error('quote timeout'),
+    });
+    const fatalErrors: unknown[] = [];
+    const executedPrices: number[] = [];
+    let shouldFail = true;
+    const { deps } = createRuntimeDeps({
+      unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
+        monitorDirectionalUnrealizedLoss: async ({ quote }) => {
+          if (shouldFail) {
+            shouldFail = false;
+            throw quoteError;
+          }
+
+          executedPrices.push(quote.price);
+        },
+      }),
+    });
+    const runtime = createTradingRiskEventRuntime({
+      ...deps,
+      onFatalError: (error: unknown) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    runtime.start();
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await waitTick();
+    await waitTick();
+
+    emitQuoteUpdated('BULL.HK', 2.34);
+    await waitTick();
+    await waitTick();
+    await runtime.stopAndDrain();
+
+    expect(fatalErrors).toEqual([]);
+    expect(executedPrices).toEqual([2.34]);
   });
 
   it('starts and stops quote push processing', async () => {
@@ -774,7 +668,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     expect(quoteUpdatedListeners.size).toBe(0);
   });
 
-  it('isolates runtime duplicate routing fatal and recovers after seat truth is fixed', async () => {
+  it('propagates runtime duplicate routing fatal and stops later risk processing', async () => {
     const hsiLong: SeatState = {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -793,70 +687,42 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     };
-    const techLong: SeatState = {
-      symbol: 'TECHBULL.HK',
-      status: 'ACTIVE',
-      lastSwitchAt: null,
-      lastSearchAt: null,
-      lastSeatActivatedAt: null,
-      searchFailCountToday: 0,
-      frozenTradingDayKey: null,
-    };
-    const techShort: SeatState = {
-      symbol: 'TECHBEAR.HK',
-      status: 'ACTIVE',
-      lastSwitchAt: null,
-      lastSearchAt: null,
-      lastSeatActivatedAt: null,
-      searchFailCountToday: 0,
-      frozenTradingDayKey: null,
-    };
-    const symbolRegistry = createMultiMonitorSymbolRegistryDouble({
-      seats: new Map([
-        ['HSI.HK', { long: hsiLong, short: hsiShort, longVersion: 1, shortVersion: 1 }],
-        ['TECH.HK', { long: techLong, short: techShort, longVersion: 1, shortVersion: 1 }],
-      ]),
+    const symbolRegistry = createSymbolRegistryDouble({
+      monitorSymbol: 'HSI.HK',
+      longSeat: hsiLong,
+      shortSeat: hsiShort,
+      longVersion: 1,
+      shortVersion: 1,
     });
     const executedSymbols: string[] = [];
+    const fatalErrors: Error[] = [];
     const probeSymbols: string[] = [];
-    const monitorContexts = new Map<string, ReturnType<typeof createMonitorContextDouble>>([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-          symbolRegistry,
-          unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
-            monitorDirectionalUnrealizedLoss: async ({ symbol }) => {
-              executedSymbols.push(symbol);
-            },
-          }),
-        }),
-      ],
-      [
-        'TECH.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
-          symbolRegistry,
-          unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
-            monitorDirectionalUnrealizedLoss: async ({ symbol }) => {
-              executedSymbols.push(symbol);
-            },
-          }),
-        }),
-      ],
-    ]);
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry,
+      unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
+        monitorDirectionalUnrealizedLoss: async ({ symbol }) => {
+          executedSymbols.push(symbol);
+        },
+      }),
+    });
     const { deps } = createRuntimeDeps({
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
     });
-    const runtime = createTradingRiskEventRuntime(deps);
+    const runtime = createTradingRiskEventRuntime({
+      ...deps,
+      onFatalError: (error) => {
+        fatalErrors.push(error instanceof Error ? error : new Error(String(error)));
+      },
+    });
 
     runtime.start();
     subscribeQuoteProbe(probeSymbols);
 
     expect(() => {
-      symbolRegistry.updateSeatState('TECH.HK', 'SHORT', {
-        ...techShort,
+      symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+        ...hsiShort,
         symbol: 'BULL.HK',
       });
     }).not.toThrow();
@@ -866,17 +732,18 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     }).not.toThrow();
     await waitTick();
 
+    expect(fatalErrors.some((error) => error.message.includes('重复归属'))).toBe(true);
     expect(executedSymbols).toEqual([]);
     expect(probeSymbols).toEqual(['BULL.HK']);
 
-    symbolRegistry.updateSeatStateWithVersionBump('TECH.HK', 'SHORT', {
-      ...techShort,
-      symbol: 'TECHBEAR2.HK',
+    symbolRegistry.updateSeatStateWithVersionBump('HSI.HK', 'SHORT', {
+      ...hsiShort,
+      symbol: 'BEAR2.HK',
     });
     emitQuoteUpdated('BULL.HK', 2.34);
     await waitTick();
 
-    expect(executedSymbols).toEqual(['BULL.HK']);
+    expect(executedSymbols).toEqual([]);
     expect(probeSymbols).toEqual(['BULL.HK', 'BULL.HK']);
     await runtime.stopAndDrain();
   });
@@ -906,29 +773,12 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     };
-    const techLong: SeatState = {
-      symbol: 'TECHBULL.HK',
-      status: 'ACTIVE',
-      lastSwitchAt: null,
-      lastSearchAt: null,
-      lastSeatActivatedAt: null,
-      searchFailCountToday: 0,
-      frozenTradingDayKey: null,
-    };
-    const techShort: SeatState = {
-      symbol: 'TECHBEAR.HK',
-      status: 'ACTIVE',
-      lastSwitchAt: null,
-      lastSearchAt: null,
-      lastSeatActivatedAt: null,
-      searchFailCountToday: 0,
-      frozenTradingDayKey: null,
-    };
-    const symbolRegistry = createMultiMonitorSymbolRegistryDouble({
-      seats: new Map([
-        ['HSI.HK', { long: hsiLong, short: hsiShort, longVersion: 1, shortVersion: 1 }],
-        ['TECH.HK', { long: techLong, short: techShort, longVersion: 1, shortVersion: 1 }],
-      ]),
+    const symbolRegistry = createSymbolRegistryDouble({
+      monitorSymbol: 'HSI.HK',
+      longSeat: hsiLong,
+      shortSeat: hsiShort,
+      longVersion: 1,
+      shortVersion: 1,
     });
     const consistencyPort = createConsistencyPort({
       started: true,
@@ -937,31 +787,19 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     consistencyPort.enablePendingFreshWait();
     const executedSymbols: string[] = [];
-    const monitorContexts = new Map<string, ReturnType<typeof createMonitorContextDouble>>([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-          symbolRegistry,
-          unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
-            monitorDirectionalUnrealizedLoss: async ({ symbol }) => {
-              executedSymbols.push(symbol);
-            },
-          }),
-        }),
-      ],
-      [
-        'TECH.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
-          symbolRegistry,
-        }),
-      ],
-    ]);
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry,
+      unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
+        monitorDirectionalUnrealizedLoss: async ({ symbol }) => {
+          executedSymbols.push(symbol);
+        },
+      }),
+    });
     const { deps } = createRuntimeDeps({
       consistencyPort,
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
     });
     const runtime = createTradingRiskEventRuntime(deps);
 
@@ -971,8 +809,8 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       await waitTick();
 
       expect(() => {
-        symbolRegistry.updateSeatState('TECH.HK', 'SHORT', {
-          ...techShort,
+        symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+          ...hsiShort,
           symbol: 'BULL.HK',
         });
       }).not.toThrow();
@@ -999,7 +837,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         frozenTradingDayKey: null,
       },
       shortSeat: {
-        symbol: 'BEAR.HK',
+        symbol: 'BULL.HK',
         status: 'ACTIVE',
         lastSwitchAt: null,
         lastSearchAt: null,
@@ -1008,25 +846,13 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         frozenTradingDayKey: null,
       },
     });
-    const monitorContexts = new Map<string, ReturnType<typeof createMonitorContextDouble>>([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-          symbolRegistry,
-        }),
-      ],
-      [
-        'TECH.HK',
-        createMonitorContextDouble({
-          config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
-          symbolRegistry,
-        }),
-      ],
-    ]);
+    const monitorContext = createMonitorContextDouble({
+      config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry,
+    });
     const { deps } = createRuntimeDeps({
       symbolRegistry,
-      monitorContexts,
+      monitorContext,
     });
     const runtime = createTradingRiskEventRuntime(deps);
 

@@ -55,6 +55,9 @@ export type _SampleQueue = {
 export type IndicatorCacheOptions = {
   /** 样本保留时间窗口（毫秒），默认 100000 */
   readonly retentionWindowMs?: number;
+
+  /** 唯一监控标的代码；所有读写都必须匹配该代码 */
+  readonly monitorSymbol: string;
 };
 
 /**

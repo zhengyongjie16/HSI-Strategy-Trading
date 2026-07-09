@@ -33,7 +33,10 @@ import {
   resolveNextQuoteRetry,
   resolveQuoteReadinessForRequirement,
 } from '../../../utils/quoteRetry/index.js';
-import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
+import {
+  isExternalApiRequestError,
+  isUnconfirmedOrderSubmissionError,
+} from '../../../utils/apiFailure/index.js';
 import { isRefreshGateAbortError } from '../../../utils/refreshGate/index.js';
 import { logger } from '../../../utils/logger/index.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
@@ -46,6 +49,19 @@ import type { SellProcessorDeps, SellRetryState } from './types.js';
 import type { Task, SellTaskType } from '../tradeTaskQueue/types.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import type { SellSignal, Signal } from '../../../types/signal.js';
+
+function requireExpectedMonitorSymbol(
+  expectedMonitorSymbol: string,
+  actualMonitorSymbol: string,
+): string {
+  if (actualMonitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[SellProcessor] task.monitorSymbol 不匹配唯一监控标的: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
+    );
+  }
+
+  return expectedMonitorSymbol;
+}
 
 /**
  * 复制卖出信号，用于 quote retry 的 delayed re-enqueue。
@@ -110,13 +126,13 @@ function buildSellRetryKey(params: {
  * 创建卖出处理器。
  * 消费 SellTaskQueue 中的卖出任务，经成交后一致性 freshness 等待后计算卖出数量并执行；独立于买入处理器，保证卖出优先、不被风险检查阻塞。
  *
- * @param deps 依赖注入（任务队列、getMonitorContext、signalProcessor、trader、getLastState、postTradeConsistencyRuntime、可选 getCanProcessTask）
+ * @param deps 依赖注入（任务队列、唯一 monitorContext、signalProcessor、trader、getLastState、postTradeConsistencyRuntime、可选 getCanProcessTask）
  * @returns 实现 Processor 接口的卖出处理器实例（start/stop/stopAndDrain/restart）
  */
 export function createSellProcessor(deps: SellProcessorDeps): Processor {
   const {
     taskQueue,
-    getMonitorContext,
+    monitorContext,
     signalProcessor,
     trader,
     marketDataClient,
@@ -127,6 +143,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     getCanProcessTask,
     onFatalError,
   } = deps;
+  const expectedMonitorSymbol = monitorContext.config.monitorSymbol;
   const retryStates = new Map<string, SellRetryState>();
   let lifecycleActive = true;
   const schedule =
@@ -163,7 +180,8 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
    * 处理单个卖出任务
    */
   async function processTask(task: Task<SellTaskType>): Promise<void> {
-    const { data: signal, monitorSymbol } = task;
+    const signal = task.data;
+    const monitorSymbol = requireExpectedMonitorSymbol(expectedMonitorSymbol, task.monitorSymbol);
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
     try {
       try {
@@ -176,15 +194,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         throw err;
       }
 
-      // 获取监控上下文
-      const ctx = getMonitorContext(monitorSymbol);
-      if (!ctx) {
-        logger.warn(
-          `[SellProcessor] 无法获取监控上下文: ${formatSymbolDisplay(monitorSymbol, null)}`,
-        );
-        return;
-      }
-
+      const ctx = monitorContext;
       const { config, orderRecorder, symbolRegistry } = ctx;
       const lastState = getLastState();
       const seatValidation = validateSignalSeat({
@@ -347,7 +357,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         throw err;
       }
 
-      if (err.operation === 'TradeContext.submitOrder') {
+      if (isUnconfirmedOrderSubmissionError(err)) {
         throw err;
       }
 
@@ -359,6 +369,9 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     loggerPrefix: 'SellProcessor',
     taskQueue,
     processTask,
+    validateTask: (task) => {
+      requireExpectedMonitorSymbol(expectedMonitorSymbol, task.monitorSymbol);
+    },
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
     ...(onFatalError ? { onFatalError } : {}),
   });

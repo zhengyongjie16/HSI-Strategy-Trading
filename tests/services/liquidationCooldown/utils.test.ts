@@ -2,46 +2,12 @@
  * liquidationCooldown utils 业务测试
  *
  * 功能：
- * - 验证保护性清仓记录分组与触发周期模拟算法。
+ * - 验证保护性清仓触发周期模拟算法。
  */
 import { describe, expect, it } from 'bun:test';
-import { TRADING } from '../../../src/constants/index.js';
 
-import type { TradeRecord } from '../../../src/types/trader.js';
 import type { CooldownCandidate } from '../../../src/services/liquidationCooldown/types.js';
-import {
-  collectLiquidationRecordsByMonitor,
-  simulateTriggerCycle,
-} from '../../../src/services/liquidationCooldown/utils.js';
-
-function createTradeRecord(params: {
-  readonly monitorSymbol: string | null;
-  readonly symbol: string;
-  readonly action: string | null;
-  readonly executedAtMs: number;
-  readonly isProtectiveClearance: boolean;
-  readonly reason?: string | null;
-}): TradeRecord {
-  return {
-    orderId: 'order-id',
-    symbol: params.symbol,
-    symbolName: null,
-    monitorSymbol: params.monitorSymbol,
-    action: params.action,
-    side: 'SELL',
-    quantity: '1000',
-    price: '1.23',
-    orderType: 'ELO',
-    status: 'FILLED',
-    error: null,
-    reason: params.reason ?? null,
-    signalTriggerTime: null,
-    executedAt: null,
-    executedAtMs: params.executedAtMs,
-    timestamp: null,
-    isProtectiveClearance: params.isProtectiveClearance,
-  };
-}
+import { simulateTriggerCycle } from '../../../src/services/liquidationCooldown/utils.js';
 
 function createCandidate(executedAtMs: number): CooldownCandidate {
   return {
@@ -52,79 +18,6 @@ function createCandidate(executedAtMs: number): CooldownCandidate {
 }
 
 describe('liquidationCooldown utils', () => {
-  it('collectLiquidationRecordsByMonitor groups by monitor + direction and sorts by time', () => {
-    const records = [
-      createTradeRecord({
-        monitorSymbol: 'HSI.HK',
-        symbol: 'BULL1.HK',
-        action: 'SELLCALL',
-        executedAtMs: 300,
-        isProtectiveClearance: true,
-        reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
-      }),
-      createTradeRecord({
-        monitorSymbol: 'HSI.HK',
-        symbol: 'BULL2.HK',
-        action: 'SELLCALL',
-        executedAtMs: 100,
-        isProtectiveClearance: true,
-        reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
-      }),
-      createTradeRecord({
-        monitorSymbol: 'HSI.HK',
-        symbol: 'BEAR1.HK',
-        action: 'SELLPUT',
-        executedAtMs: 200,
-        isProtectiveClearance: true,
-        reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
-      }),
-      createTradeRecord({
-        monitorSymbol: 'QQQ.HK',
-        symbol: 'QQQ_BULL.HK',
-        action: 'SELLCALL',
-        executedAtMs: 50,
-        isProtectiveClearance: true,
-        reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
-      }),
-      createTradeRecord({
-        monitorSymbol: 'HSI.HK',
-        symbol: 'BULL3.HK',
-        action: 'BUYCALL',
-        executedAtMs: 400,
-        isProtectiveClearance: true,
-        reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
-      }),
-    ];
-
-    const grouped = collectLiquidationRecordsByMonitor({
-      monitorSymbols: new Set(['HSI.HK']),
-      tradeRecords: records,
-    });
-
-    const longGroup = grouped.get('HSI.HK:LONG') ?? [];
-    const shortGroup = grouped.get('HSI.HK:SHORT') ?? [];
-    expect(longGroup.map((item) => item.executedAtMs)).toEqual([100, 300]);
-    expect(shortGroup.map((item) => item.executedAtMs)).toEqual([200]);
-    expect(grouped.has('QQQ.HK:LONG')).toBe(false);
-  });
-
-  it('collectLiquidationRecordsByMonitor returns empty map for non-completion records', () => {
-    const grouped = collectLiquidationRecordsByMonitor({
-      monitorSymbols: new Set(['HSI.HK']),
-      tradeRecords: [
-        createTradeRecord({
-          monitorSymbol: 'HSI.HK',
-          symbol: 'BULL.HK',
-          action: 'SELLCALL',
-          executedAtMs: 100,
-          isProtectiveClearance: false,
-        }),
-      ],
-    });
-
-    expect(grouped.size).toBe(0);
-  });
-
   it('simulateTriggerCycle returns zero for empty records', () => {
     const result = simulateTriggerCycle({
       records: [],

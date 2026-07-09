@@ -21,9 +21,7 @@ function createMockMonitorState(monitorSymbol: string): MonitorState {
 
 describe('createGlobalStateDomain', () => {
   it('midnightClear 设置 canTrade 为 false 并清空 allTradingSymbols 与缓存字段', async () => {
-    const monitorStates = new Map<string, MonitorState>([
-      ['HSI.HK', createMockMonitorState('HSI.HK')],
-    ]);
+    const monitorState = createMockMonitorState('HSI.HK');
     const positionCacheUpdateSizes: number[] = [];
     const lastState: LastState = {
       canTrade: true,
@@ -49,7 +47,7 @@ describe('createGlobalStateDomain', () => {
         get: () => null,
       },
       cachedTradingDayInfo: null,
-      monitorStates,
+      monitorState,
       allTradingSymbols: new Set(['12345.HK']),
     };
 
@@ -74,13 +72,9 @@ describe('createGlobalStateDomain', () => {
     expect(lastState.cachedPositions).toHaveLength(0);
     expect(positionCacheUpdateSizes).toEqual([0]);
     expect(lastState.cachedTradingDayInfo).toBe(null);
-    const state = monitorStates.get('HSI.HK');
-    expect(state).toBeDefined();
-    if (state) {
-      expect(state.signal).toBe(null);
-      expect(state.pendingDelayedSignals).toHaveLength(0);
-      expect(state.lastMonitorSnapshot).toBe(null);
-    }
+    expect(monitorState.signal).toBe(null);
+    expect(monitorState.pendingDelayedSignals).toHaveLength(0);
+    expect(monitorState.lastMonitorSnapshot).toBe(null);
 
     expect(runOpenRebuildCalled).toBe(false);
   });
@@ -97,15 +91,10 @@ describe('createGlobalStateDomain', () => {
       macd: { macd: 10, dif: 3, dea: 2 },
       adx: null,
     };
-    const monitorStates = new Map<string, MonitorState>([
-      [
-        'HSI.HK',
-        {
-          ...createMockMonitorState('HSI.HK'),
-          lastMonitorSnapshot: detachedSnapshot,
-        },
-      ],
-    ]);
+    const monitorState: MonitorState = {
+      ...createMockMonitorState('HSI.HK'),
+      lastMonitorSnapshot: detachedSnapshot,
+    };
     const lastState: LastState = {
       canTrade: true,
       isHalfDay: false,
@@ -119,7 +108,7 @@ describe('createGlobalStateDomain', () => {
       cachedPositions: [],
       positionCache: { update: () => {}, get: () => null },
       cachedTradingDayInfo: null,
-      monitorStates,
+      monitorState,
       allTradingSymbols: new Set(),
     };
     const domain = createGlobalStateDomain({
@@ -153,7 +142,7 @@ describe('createGlobalStateDomain', () => {
       cachedPositions: [],
       positionCache: { update: () => {}, get: () => null },
       cachedTradingDayInfo: null,
-      monitorStates: new Map(),
+      monitorState: createMockMonitorState('HSI.HK'),
       allTradingSymbols: new Set(),
     };
     let capturedNow: Date | null = null as Date | null;

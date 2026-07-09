@@ -599,7 +599,7 @@ const pinoLogger = pino(
 );
 
 /**
- * 导出的 logger 对象，保持与原有 API 兼容。
+ * 导出的 logger 对象。
  * 输出同时写入控制台与按日期轮转的日志文件；DEBUG 级别仅在 DEBUG=true 时输出。
  */
 export const logger: Logger = {

@@ -5,8 +5,8 @@
  * - 验证延迟验证通过/拒绝场景与指标边界及业务期望
  */
 import { describe, expect, it } from 'bun:test';
-import { createIndicatorCache } from '../../../../src/main/asyncProgram/indicatorCache/index.js';
-import { createDelayedSignalVerifier } from '../../../../src/main/asyncProgram/delayedSignalVerifier/index.js';
+import { createIndicatorCache as createIndicatorCacheImpl } from '../../../../src/main/asyncProgram/indicatorCache/index.js';
+import { createDelayedSignalVerifier as createDelayedSignalVerifierImpl } from '../../../../src/main/asyncProgram/delayedSignalVerifier/index.js';
 import { performVerification } from '../../../../src/main/asyncProgram/delayedSignalVerifier/utils.js';
 import { createSignal } from '../../../../mock/factories/signalFactory.js';
 import type { VerificationIndicator } from '../../../../src/types/indicatorProfile.js';
@@ -14,6 +14,20 @@ import type { IndicatorCache } from '../../../../src/main/asyncProgram/indicator
 
 const K_VERIFICATION_INDICATORS: ReadonlyArray<VerificationIndicator> = ['K'];
 const ADX_VERIFICATION_INDICATORS: ReadonlyArray<VerificationIndicator> = ['ADX'];
+
+function createIndicatorCache(): IndicatorCache {
+  return createIndicatorCacheImpl({ monitorSymbol: 'HSI.HK' });
+}
+
+function createDelayedSignalVerifier(params: {
+  readonly indicatorCache: IndicatorCache;
+  readonly onFatalError?: (error: unknown) => void;
+}) {
+  return createDelayedSignalVerifierImpl({
+    monitorSymbol: 'HSI.HK',
+    ...params,
+  });
+}
 
 function withMockedNowSync<T>(nowMs: number, run: () => T): T {
   const originalNow = Date.now;
@@ -44,6 +58,49 @@ function createSampleAdx(adx: number) {
 }
 
 describe('delayedSignalVerifier business flow', () => {
+  it('rejects indicator cache writes and reads for foreign monitor symbols', () => {
+    const indicatorCache = createIndicatorCache();
+
+    expect(() => {
+      indicatorCache.push('TECH.HK', createSampleK(11), 90_000);
+    }).toThrow(/不匹配唯一监控标的/);
+
+    expect(() => {
+      indicatorCache.getClosest('TECH.HK', 90_000);
+    }).toThrow(/不匹配唯一监控标的/);
+  });
+
+  it('rejects delayed verification operations for foreign monitor symbols', () => {
+    const indicatorCache = createIndicatorCache();
+    const verifier = createDelayedSignalVerifier({
+      indicatorCache,
+    });
+    const signal = createSignal({
+      symbol: 'BULL.HK',
+      action: 'BUYCALL',
+      triggerTimeMs: 90_000,
+      indicators1: { K: 10 },
+    });
+
+    expect(() => {
+      verifier.addSignal({
+        signal,
+        monitorSymbol: 'TECH.HK',
+        verificationIndicators: K_VERIFICATION_INDICATORS,
+      });
+    }).toThrow(/不匹配唯一监控标的/);
+
+    expect(() => {
+      verifier.cancelAllForSymbol('TECH.HK');
+    }).toThrow(/不匹配唯一监控标的/);
+
+    expect(() => {
+      verifier.cancelAllForDirection('TECH.HK', 'LONG');
+    }).toThrow(/不匹配唯一监控标的/);
+
+    verifier.destroy();
+  });
+
   it('passes BUYCALL from minimal verification samples without full snapshot payload', async () => {
     const baseTime = 90_000;
     const indicatorCache = createIndicatorCache();
@@ -82,6 +139,47 @@ describe('delayedSignalVerifier business flow', () => {
     await Bun.sleep(20);
 
     expect(verified).toBe(1);
+  });
+
+  it('calls verified callback with only the verified signal', async () => {
+    const baseTime = 90_500;
+    const indicatorCache = createIndicatorCache();
+    const verifier = createDelayedSignalVerifier({
+      indicatorCache,
+    });
+
+    for (const sample of [
+      { values: createSampleK(11), timestamp: baseTime },
+      { values: createSampleK(12), timestamp: baseTime + 5_000 },
+      { values: createSampleK(13), timestamp: baseTime + 10_000 },
+    ]) {
+      indicatorCache.push('HSI.HK', sample.values, sample.timestamp);
+    }
+
+    let receivedArgs: ReadonlyArray<unknown> = [];
+    verifier.onVerified((...args) => {
+      receivedArgs = args;
+    });
+
+    const signal = createSignal({
+      symbol: 'BULL.HK',
+      action: 'BUYCALL',
+      triggerTimeMs: baseTime,
+      indicators1: { K: 10 },
+    });
+
+    withMockedNowSync(baseTime + 10_000, () => {
+      verifier.addSignal({
+        signal,
+        monitorSymbol: 'HSI.HK',
+        verificationIndicators: K_VERIFICATION_INDICATORS,
+      });
+    });
+
+    await Bun.sleep(20);
+
+    expect(receivedArgs).toHaveLength(1);
+    expect(receivedArgs[0]).toBe(signal);
   });
 
   it('exposes verification execution errors to fatal handler', async () => {

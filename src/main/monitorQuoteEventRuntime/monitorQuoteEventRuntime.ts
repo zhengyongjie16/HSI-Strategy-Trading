@@ -29,17 +29,19 @@ import type {
 } from './types.js';
 
 /**
- * 根据 quote 事件查找监控上下文。
+ * 根据 quote 事件匹配唯一监控上下文。
  *
- * @param params.monitorContexts monitor 上下文索引
+ * @param params.monitorContext monitor 上下文
  * @param params.event 标准化 quote 事件
- * @returns 命中的 monitor 上下文；未命中时返回 null
+ * @returns 事件属于唯一 monitor 时返回 monitor 上下文；否则返回 null
  */
-function getMonitorContextForQuoteEvent(params: {
-  readonly monitorContexts: ReadonlyMap<string, MonitorContext>;
+function matchMonitorContextForQuoteEvent(params: {
+  readonly monitorContext: MonitorContext;
   readonly event: QuoteUpdatedEvent;
 }): MonitorContext | null {
-  return params.monitorContexts.get(params.event.symbol) ?? null;
+  return params.event.symbol === params.monitorContext.config.monitorSymbol
+    ? params.monitorContext
+    : null;
 }
 
 /**
@@ -91,7 +93,6 @@ function isBaselineReady(deps: CreateMonitorQuoteEventRuntimeDeps): boolean {
 function createRouteState(mode: MonitorQuoteRouteMode): MonitorQuoteRouteState {
   return {
     generation: 0,
-    latestMonitorContext: null,
     latestEvent: null,
     wakeupSymbols: new Set(),
     retainedQuoteSymbols: new Set(),
@@ -179,7 +180,7 @@ export function createDefaultMonitorQuoteEventRuntime(
 ): MonitorQuoteEventRuntime {
   const runtimeDeps: CreateMonitorQuoteEventRuntimeDeps = {
     marketDataClient: deps.marketDataClient,
-    monitorContexts: deps.monitorContexts,
+    monitorContext: deps.monitorContext,
     executeStaticLiquidation: createDefaultStaticLiquidationExecutor(deps),
     startDistanceSwitch: createDefaultStartDistanceSwitchExecutor({
       lastState: deps.lastState,
@@ -211,116 +212,68 @@ function createMonitorQuoteEventRuntime(
 ): MonitorQuoteEventRuntime {
   const {
     marketDataClient,
-    monitorContexts,
+    monitorContext,
     executeStaticLiquidation,
     startDistanceSwitch,
     handoffPendingSwitch,
   } = deps;
   const scheduleTimer = deps.scheduleTimer ?? setTimeout;
   const clearTimer = deps.clearTimer ?? clearTimeout;
+  const runtimeMonitorSymbol = monitorContext.config.monitorSymbol;
 
   let running = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
-  const routeStates = new Map<string, MonitorQuoteRouteState>();
-  const staticWakeupsBySymbol = new Map<string, Set<string>>();
+  let routeState: MonitorQuoteRouteState | null = null;
+  const staticWakeupSymbols = new Set<string>();
   const activePromises = new Set<Promise<void>>();
 
   /**
-   * 将 monitorSymbol 注册到静态清仓唤醒 symbol 的反向索引。
-   *
-   * @param symbol 可唤醒静态清仓 route 的 quote symbol
-   * @param monitorSymbol 被唤醒的监控标的
+   * 清空静态清仓 WAIT 持有的显式唤醒 quote symbol。
    */
-  function addMonitorSymbolToStaticWakeupIndex(symbol: string, monitorSymbol: string): void {
-    const monitorSymbols = staticWakeupsBySymbol.get(symbol) ?? new Set<string>();
-    monitorSymbols.add(monitorSymbol);
-    staticWakeupsBySymbol.set(symbol, monitorSymbols);
+  function clearStaticWakeupIndexes(): void {
+    staticWakeupSymbols.clear();
   }
 
   /**
-   * 从静态清仓唤醒 symbol 的反向索引移除 monitorSymbol。
+   * 用最新 WAIT 结果覆盖显式唤醒 quote symbol 集合。
    *
-   * @param symbol 曾注册的 quote symbol
-   * @param monitorSymbol 需要解除唤醒关系的监控标的
+   * @param symbols 本轮 WAIT 需要继续监听的 quote symbol
    */
-  function removeMonitorSymbolFromStaticWakeupIndex(symbol: string, monitorSymbol: string): void {
-    const monitorSymbols = staticWakeupsBySymbol.get(symbol);
-    if (monitorSymbols === undefined) {
-      return;
-    }
-
-    monitorSymbols.delete(monitorSymbol);
-    if (monitorSymbols.size === 0) {
-      staticWakeupsBySymbol.delete(symbol);
-    }
-  }
-
-  /**
-   * 移除指定 monitorSymbol 当前 route 持有的全部静态清仓唤醒索引。
-   *
-   * @param monitorSymbol 需要清理唤醒索引的监控标的
-   */
-  function removeStaticWakeupIndexes(monitorSymbol: string): void {
-    const routeState = routeStates.get(monitorSymbol);
-    if (routeState === undefined) {
-      return;
-    }
-
-    for (const symbol of routeState.wakeupSymbols) {
-      removeMonitorSymbolFromStaticWakeupIndex(symbol, monitorSymbol);
-    }
-  }
-
-  /**
-   * 按指定 monitorSymbol 当前 route 的 wakeupSymbols 重建静态清仓唤醒索引。
-   *
-   * @param monitorSymbol 需要注册唤醒索引的监控标的
-   */
-  function registerStaticWakeupIndexes(monitorSymbol: string): void {
-    const routeState = routeStates.get(monitorSymbol);
-    if (routeState === undefined) {
-      return;
-    }
-
-    for (const symbol of routeState.wakeupSymbols) {
-      addMonitorSymbolToStaticWakeupIndex(symbol, monitorSymbol);
+  function registerStaticWakeupIndexes(symbols: ReadonlySet<string>): void {
+    clearStaticWakeupIndexes();
+    for (const symbol of symbols) {
+      staticWakeupSymbols.add(symbol);
     }
   }
 
   /**
    * 获取或创建 route 状态。
    *
-   * @param monitorSymbol 监控标的
    * @param mode route 模式
    * @returns route 状态
    */
-  function getOrCreateRouteState(
-    monitorSymbol: string,
-    mode: MonitorQuoteRouteMode,
-  ): MonitorQuoteRouteState {
-    const existing = routeStates.get(monitorSymbol);
-    if (existing) {
-      if (existing.mode !== mode) {
-        if (existing.retryTimerHandle !== null) {
-          clearTimer(existing.retryTimerHandle);
-          existing.retryTimerHandle = null;
+  function getOrCreateRouteState(mode: MonitorQuoteRouteMode): MonitorQuoteRouteState {
+    if (routeState !== null) {
+      if (routeState.mode !== mode) {
+        if (routeState.retryTimerHandle !== null) {
+          clearTimer(routeState.retryTimerHandle);
+          routeState.retryTimerHandle = null;
         }
 
-        removeStaticWakeupIndexes(monitorSymbol);
-        releaseStaticLiquidationRetain(monitorSymbol);
-        existing.generation += 1;
-        existing.mode = mode;
-        existing.wakeupSymbols = new Set();
-        existing.retryAttempts = 0;
-        existing.submittedLiquidationDirections.clear();
+        clearStaticWakeupIndexes();
+        releaseStaticLiquidationRetain();
+        routeState.generation += 1;
+        routeState.mode = mode;
+        routeState.wakeupSymbols = new Set();
+        routeState.retryAttempts = 0;
+        routeState.submittedLiquidationDirections.clear();
       }
 
-      return existing;
+      return routeState;
     }
 
-    const nextState = createRouteState(mode);
-    routeStates.set(monitorSymbol, nextState);
-    return nextState;
+    routeState = createRouteState(mode);
+    return routeState;
   }
 
   function registerInFlight(promise: Promise<void>): void {
@@ -331,13 +284,12 @@ function createMonitorQuoteEventRuntime(
   }
 
   function isRouteExecutionCurrent(params: {
-    readonly monitorSymbol: string;
     readonly routeState: MonitorQuoteRouteState;
     readonly generation: number;
   }): boolean {
     return (
       running &&
-      routeStates.get(params.monitorSymbol) === params.routeState &&
+      routeState === params.routeState &&
       params.routeState.generation === params.generation
     );
   }
@@ -345,13 +297,12 @@ function createMonitorQuoteEventRuntime(
   /**
    * 启动 route 处理并接入 fatal drain。
    *
-   * @param monitorSymbol 监控标的
    * @param source 本次触发来源
    */
-  function launchRouteProcessing(monitorSymbol: string, source: string): void {
-    const processingPromise = processRouteQueue(monitorSymbol).catch((error: unknown) => {
+  function launchRouteProcessing(source: string): void {
+    const processingPromise = processRouteQueue().catch((error: unknown) => {
       logger.error(
-        `[MonitorQuoteEventRuntime] monitor quote route 处理失败 source=${source} monitorSymbol=${monitorSymbol}`,
+        `[MonitorQuoteEventRuntime] monitor quote route 处理失败 source=${source} monitorSymbol=${runtimeMonitorSymbol}`,
         formatError(error),
       );
 
@@ -362,12 +313,9 @@ function createMonitorQuoteEventRuntime(
 
   /**
    * 释放静态清仓 WAIT 持有的 quote retain。
-   *
-   * @param monitorSymbol 监控标的
    */
-  function releaseStaticLiquidationRetain(monitorSymbol: string): void {
-    const routeState = routeStates.get(monitorSymbol);
-    if (routeState === undefined || routeState.retainedQuoteSymbols.size === 0) {
+  function releaseStaticLiquidationRetain(): void {
+    if (routeState === null || routeState.retainedQuoteSymbols.size === 0) {
       return;
     }
 
@@ -380,7 +328,7 @@ function createMonitorQuoteEventRuntime(
 
     void quoteSubscriptionRuntime
       .releaseRetain({
-        ownerKey: monitorSymbol,
+        ownerKey: runtimeMonitorSymbol,
         reason: 'STATIC_LIQUIDATION_WAIT',
       })
       .catch((error: unknown) => {
@@ -395,20 +343,15 @@ function createMonitorQuoteEventRuntime(
   /**
    * 注册静态清仓 WAIT 期间需要保留订阅的 quote symbols。
    *
-   * @param monitorSymbol 监控标的
    * @param symbols 等待期间需要保留订阅的标的
    */
-  function retainStaticLiquidationSymbols(
-    monitorSymbol: string,
-    symbols: ReadonlySet<string>,
-  ): void {
-    const routeState = routeStates.get(monitorSymbol);
-    if (routeState === undefined) {
+  function retainStaticLiquidationSymbols(symbols: ReadonlySet<string>): void {
+    if (routeState === null) {
       return;
     }
 
     if (symbols.size === 0) {
-      releaseStaticLiquidationRetain(monitorSymbol);
+      releaseStaticLiquidationRetain();
       return;
     }
 
@@ -420,8 +363,9 @@ function createMonitorQuoteEventRuntime(
     }
 
     const requestedSymbols = new Set(symbols);
-    routeState.retainedQuoteSymbols = requestedSymbols;
-    routeState.retainNeedsRetry = false;
+    const activeRouteState = routeState;
+    activeRouteState.retainedQuoteSymbols = requestedSymbols;
+    activeRouteState.retainNeedsRetry = false;
     const quoteSubscriptionRuntime = deps.quoteSubscriptionRuntime;
     if (quoteSubscriptionRuntime === undefined) {
       return;
@@ -429,13 +373,16 @@ function createMonitorQuoteEventRuntime(
 
     void quoteSubscriptionRuntime
       .retainSymbols({
-        ownerKey: monitorSymbol,
+        ownerKey: runtimeMonitorSymbol,
         reason: 'STATIC_LIQUIDATION_WAIT',
         symbols: [...symbols],
       })
       .catch((error: unknown) => {
-        if (routeState.retainedQuoteSymbols === requestedSymbols) {
-          routeState.retainNeedsRetry = true;
+        if (
+          routeState === activeRouteState &&
+          activeRouteState.retainedQuoteSymbols === requestedSymbols
+        ) {
+          activeRouteState.retainNeedsRetry = true;
         }
 
         logger.error(
@@ -449,58 +396,62 @@ function createMonitorQuoteEventRuntime(
   /**
    * 清理 route 持有的一次性 retry timer。
    *
-   * @param routeState route 状态
+   * @param targetRouteState route 状态
    */
-  function clearRouteRetryTimer(routeState: MonitorQuoteRouteState): void {
-    if (routeState.retryTimerHandle === null) {
+  function clearRouteRetryTimer(targetRouteState: MonitorQuoteRouteState): void {
+    if (targetRouteState.retryTimerHandle === null) {
       return;
     }
 
-    clearTimer(routeState.retryTimerHandle);
-    routeState.retryTimerHandle = null;
+    clearTimer(targetRouteState.retryTimerHandle);
+    targetRouteState.retryTimerHandle = null;
   }
 
   /**
    * 按 WAIT 结果重建静态清仓 route 的显式 wakeup 与 retry timer。
    *
-   * @param monitorSymbol 监控标的
    * @param executionResult 本轮静态清仓执行结果
    */
   function updateStaticLiquidationWaitState(
-    monitorSymbol: string,
     executionResult: Extract<StaticLiquidationRuntimeResult, { kind: 'WAIT' }>,
   ): void {
-    const routeState = routeStates.get(monitorSymbol);
-    if (!routeState) {
+    if (routeState === null) {
       return;
     }
 
-    clearRouteRetryTimer(routeState);
+    const activeRouteState = routeState;
+
+    clearRouteRetryTimer(activeRouteState);
     const nextWakeupSymbols = new Set(executionResult.wakeupSymbols);
     if (!running) {
-      removeStaticWakeupIndexes(monitorSymbol);
-      routeState.wakeupSymbols = new Set();
-      releaseStaticLiquidationRetain(monitorSymbol);
+      clearStaticWakeupIndexes();
+      activeRouteState.wakeupSymbols = new Set();
+      releaseStaticLiquidationRetain();
       return;
     }
 
-    const wakeupSymbolsChanged = !areStringSetsEqual(routeState.wakeupSymbols, nextWakeupSymbols);
+    const wakeupSymbolsChanged = !areStringSetsEqual(
+      activeRouteState.wakeupSymbols,
+      nextWakeupSymbols,
+    );
     if (wakeupSymbolsChanged) {
-      removeStaticWakeupIndexes(monitorSymbol);
-      routeState.wakeupSymbols = nextWakeupSymbols;
-      registerStaticWakeupIndexes(monitorSymbol);
+      activeRouteState.wakeupSymbols = nextWakeupSymbols;
+      registerStaticWakeupIndexes(activeRouteState.wakeupSymbols);
     }
 
-    retainStaticLiquidationSymbols(monitorSymbol, routeState.wakeupSymbols);
+    retainStaticLiquidationSymbols(activeRouteState.wakeupSymbols);
 
     if (executionResult.retryAtMs === null) {
       return;
     }
 
     const delayMs = Math.max(0, executionResult.retryAtMs - (deps.now?.() ?? new Date()).getTime());
-    routeState.retryTimerHandle = scheduleTimer(() => {
-      routeState.retryTimerHandle = null;
-      triggerRoute(monitorSymbol);
+    activeRouteState.retryTimerHandle = scheduleTimer(() => {
+      if (routeState === activeRouteState) {
+        activeRouteState.retryTimerHandle = null;
+      }
+
+      triggerRoute();
     }, delayMs);
   }
 
@@ -514,13 +465,10 @@ function createMonitorQuoteEventRuntime(
   }
 
   /**
-   * 触发某个 monitor route 的 latest-only 执行。
-   *
-   * @param monitorSymbol 监控标的
+   * 触发唯一 monitor route 的 latest-only 执行。
    */
-  function triggerRoute(monitorSymbol: string): void {
-    const routeState = routeStates.get(monitorSymbol);
-    if (!routeState || !running) {
+  function triggerRoute(): void {
+    if (routeState === null || !running) {
       return;
     }
 
@@ -530,7 +478,7 @@ function createMonitorQuoteEventRuntime(
     }
 
     routeState.inFlight = true;
-    launchRouteProcessing(monitorSymbol, 'QUOTE_EVENT');
+    launchRouteProcessing('QUOTE_EVENT');
   }
 
   /**
@@ -561,33 +509,30 @@ function createMonitorQuoteEventRuntime(
   }
 
   /**
-   * 处理单个 monitor route 的 latest-only 队列。
-   *
-   * @param monitorSymbol 监控标的
+   * 处理唯一 monitor route 的 latest-only 队列。
    */
-  async function processRouteQueue(monitorSymbol: string): Promise<void> {
-    const routeState = routeStates.get(monitorSymbol);
-    if (!routeState) {
+  async function processRouteQueue(): Promise<void> {
+    if (routeState === null) {
       return;
     }
 
+    const activeRouteState = routeState;
+
     try {
-      while (routeState.dirty) {
+      while (activeRouteState.dirty) {
         if (!running) {
           return;
         }
 
-        routeState.dirty = false;
-        const snapshotEvent = routeState.latestEvent;
-        const latestMonitorContext =
-          monitorContexts?.get(monitorSymbol) ?? routeState.latestMonitorContext;
-        if (!snapshotEvent || !latestMonitorContext) {
-          routeStates.delete(monitorSymbol);
+        activeRouteState.dirty = false;
+        const snapshotEvent = activeRouteState.latestEvent;
+        if (!snapshotEvent) {
+          clearStaticWakeupIndexes();
+          routeState = null;
           return;
         }
 
-        routeState.latestMonitorContext = latestMonitorContext;
-        const executionGeneration = routeState.generation;
+        const executionGeneration = activeRouteState.generation;
 
         const canExecute = await waitForExecutionFreshness();
         if (!canExecute) {
@@ -596,34 +541,31 @@ function createMonitorQuoteEventRuntime(
 
         if (
           !isRouteExecutionCurrent({
-            monitorSymbol,
-            routeState,
+            routeState: activeRouteState,
             generation: executionGeneration,
           })
         ) {
           continue;
         }
 
-        if (routeState.mode === 'DISTANCE_SWITCH') {
+        if (activeRouteState.mode === 'DISTANCE_SWITCH') {
           if (!startDistanceSwitch) {
             continue;
           }
 
           const results = await startDistanceSwitch({
-            monitorContext: latestMonitorContext,
+            monitorContext,
             event: snapshotEvent,
             canContinue: () =>
               isRouteExecutionCurrent({
-                monitorSymbol,
-                routeState,
+                routeState: activeRouteState,
                 generation: executionGeneration,
               }),
           });
 
           if (
             !isRouteExecutionCurrent({
-              monitorSymbol,
-              routeState,
+              routeState: activeRouteState,
               generation: executionGeneration,
             })
           ) {
@@ -638,9 +580,9 @@ function createMonitorQuoteEventRuntime(
               result.driveResult.kind === 'WAIT'
             ) {
               handoffPendingSwitch({
-                monitorSymbol,
+                monitorSymbol: runtimeMonitorSymbol,
                 direction: result.direction,
-                monitorContext: latestMonitorContext,
+                monitorContext,
                 driveResult: result.driveResult,
               });
             }
@@ -654,33 +596,30 @@ function createMonitorQuoteEventRuntime(
         }
 
         const executionResult = await executeStaticLiquidation({
-          monitorContext: latestMonitorContext,
+          monitorContext,
           event: snapshotEvent,
-          retryAttempts: routeState.retryAttempts,
-          excludedDirections: routeState.submittedLiquidationDirections,
+          retryAttempts: activeRouteState.retryAttempts,
+          excludedDirections: activeRouteState.submittedLiquidationDirections,
           canContinue: () =>
             isRouteExecutionCurrent({
-              monitorSymbol,
-              routeState,
+              routeState: activeRouteState,
               generation: executionGeneration,
             }),
           onDirectionSubmitted: (direction) => {
             if (
               isRouteExecutionCurrent({
-                monitorSymbol,
-                routeState,
+                routeState: activeRouteState,
                 generation: executionGeneration,
               })
             ) {
-              routeState.submittedLiquidationDirections.add(direction);
+              activeRouteState.submittedLiquidationDirections.add(direction);
             }
           },
         });
 
         if (
           !isRouteExecutionCurrent({
-            monitorSymbol,
-            routeState,
+            routeState: activeRouteState,
             generation: executionGeneration,
           })
         ) {
@@ -688,25 +627,24 @@ function createMonitorQuoteEventRuntime(
         }
 
         if (executionResult.kind === 'WAIT') {
-          routeState.retryAttempts += 1;
-          updateStaticLiquidationWaitState(monitorSymbol, executionResult);
+          activeRouteState.retryAttempts += 1;
+          updateStaticLiquidationWaitState(executionResult);
           continue;
         }
 
-        clearRouteRetryTimer(routeState);
-        removeStaticWakeupIndexes(monitorSymbol);
-        releaseStaticLiquidationRetain(monitorSymbol);
-        routeState.wakeupSymbols = new Set();
-        routeState.retryAttempts = 0;
-        routeState.submittedLiquidationDirections.clear();
+        clearRouteRetryTimer(activeRouteState);
+        clearStaticWakeupIndexes();
+        releaseStaticLiquidationRetain();
+        activeRouteState.wakeupSymbols = new Set();
+        activeRouteState.retryAttempts = 0;
+        activeRouteState.submittedLiquidationDirections.clear();
       }
     } finally {
-      const latestState = routeStates.get(monitorSymbol);
-      if (latestState) {
-        latestState.inFlight = false;
-        if (latestState.dirty && running) {
-          latestState.inFlight = true;
-          launchRouteProcessing(monitorSymbol, 'REENTER');
+      if (routeState === activeRouteState) {
+        activeRouteState.inFlight = false;
+        if (activeRouteState.dirty && running) {
+          activeRouteState.inFlight = true;
+          launchRouteProcessing('REENTER');
         }
       }
     }
@@ -718,12 +656,12 @@ function createMonitorQuoteEventRuntime(
    * @param event 标准化 quote 事件
    */
   function handleQuoteUpdated(event: QuoteUpdatedEvent): void {
-    if (!running || !monitorContexts) {
+    if (!running) {
       return;
     }
 
-    const eventMonitorContext = getMonitorContextForQuoteEvent({
-      monitorContexts,
+    const eventMonitorContext = matchMonitorContextForQuoteEvent({
+      monitorContext,
       event,
     });
     if (eventMonitorContext) {
@@ -731,45 +669,26 @@ function createMonitorQuoteEventRuntime(
         .autoSearchEnabled
         ? 'DISTANCE_SWITCH'
         : 'STATIC_LIQUIDATION';
-      const routeState = getOrCreateRouteState(eventMonitorContext.config.monitorSymbol, mode);
-      routeState.latestMonitorContext = eventMonitorContext;
-      routeState.latestEvent = event;
+      const currentRouteState = getOrCreateRouteState(mode);
+      currentRouteState.latestEvent = event;
       if (mode === 'STATIC_LIQUIDATION') {
-        clearRouteRetryTimer(routeState);
+        clearRouteRetryTimer(currentRouteState);
       }
 
-      triggerRoute(eventMonitorContext.config.monitorSymbol);
+      triggerRoute();
     }
 
-    const wakeupMonitorSymbols = staticWakeupsBySymbol.get(event.symbol);
-    if (wakeupMonitorSymbols === undefined) {
+    if (
+      event.symbol === runtimeMonitorSymbol ||
+      routeState === null ||
+      !staticWakeupSymbols.has(event.symbol)
+    ) {
       return;
     }
 
-    for (const monitorSymbol of wakeupMonitorSymbols) {
-      if (monitorSymbol === eventMonitorContext?.config.monitorSymbol) {
-        continue;
-      }
-
-      const routeState = routeStates.get(monitorSymbol);
-      if (routeState === undefined) {
-        continue;
-      }
-
-      const latestMonitorContext =
-        monitorContexts.get(monitorSymbol) ?? routeState.latestMonitorContext;
-      if (!latestMonitorContext) {
-        removeStaticWakeupIndexes(monitorSymbol);
-        releaseStaticLiquidationRetain(monitorSymbol);
-        routeStates.delete(monitorSymbol);
-        continue;
-      }
-
-      routeState.latestMonitorContext = latestMonitorContext;
-      routeState.latestEvent = event;
-      clearRouteRetryTimer(routeState);
-      triggerRoute(monitorSymbol);
-    }
+    routeState.latestEvent = event;
+    clearRouteRetryTimer(routeState);
+    triggerRoute();
   }
 
   function start(): void {
@@ -786,28 +705,26 @@ function createMonitorQuoteEventRuntime(
     unsubscribeQuoteUpdated?.();
     unsubscribeQuoteUpdated = null;
 
-    for (const [monitorSymbol, routeState] of routeStates) {
+    if (routeState !== null) {
       clearRouteRetryTimer(routeState);
-      removeStaticWakeupIndexes(monitorSymbol);
-      releaseStaticLiquidationRetain(monitorSymbol);
+      clearStaticWakeupIndexes();
+      releaseStaticLiquidationRetain();
       routeState.wakeupSymbols = new Set();
     }
-
-    staticWakeupsBySymbol.clear();
 
     if (activePromises.size > 0) {
       await Promise.allSettled(activePromises);
     }
 
-    for (const [monitorSymbol, routeState] of routeStates) {
+    if (routeState !== null) {
       clearRouteRetryTimer(routeState);
-      removeStaticWakeupIndexes(monitorSymbol);
-      releaseStaticLiquidationRetain(monitorSymbol);
+      clearStaticWakeupIndexes();
+      releaseStaticLiquidationRetain();
       routeState.wakeupSymbols = new Set();
     }
 
-    staticWakeupsBySymbol.clear();
-    routeStates.clear();
+    clearStaticWakeupIndexes();
+    routeState = null;
   }
 
   return {

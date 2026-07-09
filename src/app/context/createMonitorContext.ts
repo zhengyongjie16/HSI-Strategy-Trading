@@ -1,0 +1,173 @@
+/**
+ * app 监控上下文装配模块
+ *
+ * 职责：
+ * - 创建单 monitor 的 MonitorContext
+ * - 根据启动 quotesMap 刷新唯一 monitorContext 的席位与名称快照
+ * - 将唯一 monitor 配置装配为纯返回值，由调用方持有唯一上下文
+ * - 固化 monitorState 与 tradingConfig.monitor 的一一对应装配不变量
+ */
+import { createMultiIndicatorTradingStrategy } from '../../core/strategy/index.js';
+import { createPositionLimitChecker } from '../../core/riskController/positionLimitChecker.js';
+import { createRiskChecker } from '../../core/riskController/index.js';
+import { createUnrealizedLossChecker } from '../../core/riskController/unrealizedLossChecker.js';
+import { createUnrealizedLossMonitor } from '../../core/riskController/unrealizedLossMonitor.js';
+import { createWarrantRiskChecker } from '../../core/riskController/warrantRiskChecker.js';
+import { createDelayedSignalVerifier } from '../../main/asyncProgram/delayedSignalVerifier/index.js';
+import { createAutoSymbolManager } from '../../services/autoSymbolManager/index.js';
+import { compileIndicatorUsageProfile } from '../../services/indicators/profile/index.js';
+import type { MonitorContext } from '../../types/state.js';
+import { resolveMonitorContextRuntimeSnapshot } from '../../utils/seat/snapshots.js';
+import type { CreateMonitorContextParams, MonitorContextFactoryDeps } from '../types.js';
+
+const DEFAULT_STRATEGY_FACTORY = createMultiIndicatorTradingStrategy;
+
+function applyRuntimeSnapshotToMonitorContext(
+  monitorContext: MonitorContext,
+  runtimeSnapshot: ReturnType<typeof resolveMonitorContextRuntimeSnapshot>,
+): void {
+  monitorContext.seatState = runtimeSnapshot.seatState;
+  monitorContext.seatVersion = runtimeSnapshot.seatVersion;
+  monitorContext.longSymbolName = runtimeSnapshot.longSymbolName;
+  monitorContext.shortSymbolName = runtimeSnapshot.shortSymbolName;
+  monitorContext.monitorSymbolName = runtimeSnapshot.monitorSymbolName;
+}
+
+/**
+ * 创建监控标的运行时上下文，从注册表读取席位状态与版本号，从行情 Map 提取标的名称，
+ * 并预编译指标画像，避免运行期重复解析。
+ *
+ * @param deps 工厂依赖（config、state、symbolRegistry、quotesMap、strategy、orderRecorder 等）
+ * @returns 该监控标的的 MonitorContext 实例
+ */
+function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
+  const {
+    config,
+    state,
+    symbolRegistry,
+    quotesMap,
+    strategy,
+    orderRecorder,
+    dailyLossTracker,
+    riskChecker,
+    unrealizedLossMonitor,
+    delayedSignalVerifier,
+    autoSymbolManager,
+  } = deps;
+  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
+    config.monitorSymbol,
+    symbolRegistry,
+    quotesMap ?? new Map<string, null>(),
+  );
+  const indicatorProfile = compileIndicatorUsageProfile({
+    signalConfig: config.signalConfig,
+    verificationConfig: config.verificationConfig,
+  });
+
+  return {
+    config,
+    state,
+    symbolRegistry,
+    seatState: runtimeSnapshot.seatState,
+    seatVersion: runtimeSnapshot.seatVersion,
+    autoSymbolManager,
+    strategy,
+    orderRecorder,
+    dailyLossTracker,
+    riskChecker,
+    unrealizedLossMonitor,
+    delayedSignalVerifier,
+    longSymbolName: runtimeSnapshot.longSymbolName,
+    shortSymbolName: runtimeSnapshot.shortSymbolName,
+    monitorSymbolName: runtimeSnapshot.monitorSymbolName,
+    normalizedMonitorSymbol: config.monitorSymbol,
+    indicatorProfile,
+  };
+}
+
+/**
+ * 刷新唯一 monitorContext 的席位与名称快照。
+ * 默认行为：仅同步运行期会变化的 seatState、seatVersion 与名称缓存，不重建上下文本体。
+ *
+ * @param params 需要刷新的 monitorContext、symbolRegistry 与最新 quotesMap
+ * @returns 无返回值
+ */
+export function syncMonitorContextRuntimeSnapshot(params: {
+  readonly monitorContext: MonitorContext;
+  readonly symbolRegistry: MonitorContextFactoryDeps['symbolRegistry'];
+  readonly quotesMap: MonitorContextFactoryDeps['quotesMap'];
+}): void {
+  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
+    params.monitorContext.config.monitorSymbol,
+    params.symbolRegistry,
+    params.quotesMap ?? new Map<string, null>(),
+  );
+  applyRuntimeSnapshotToMonitorContext(params.monitorContext, runtimeSnapshot);
+}
+
+/**
+ * 创建唯一监控上下文。
+ * 默认行为：唯一 monitor 直接绑定 lastState.monitorState，若状态标的与配置不一致则直接抛错。
+ *
+ * @param params 监控上下文装配所需的 pre/post gate 运行时对象与 quotesMap
+ * @returns 唯一 MonitorContext
+ */
+export function createMonitorContext(params: CreateMonitorContextParams): MonitorContext {
+  const {
+    preGateRuntime,
+    postGateRuntime,
+    quotesMap,
+    strategyFactory = DEFAULT_STRATEGY_FACTORY,
+  } = params;
+
+  const monitorConfig = preGateRuntime.tradingConfig.monitor;
+  const monitorState = postGateRuntime.lastState.monitorState;
+  if (monitorState.monitorSymbol !== monitorConfig.monitorSymbol) {
+    throw new Error(
+      `监控状态与配置标的不一致: state=${monitorState.monitorSymbol}, config=${monitorConfig.monitorSymbol}`,
+    );
+  }
+
+  const riskChecker = createRiskChecker({
+    warrantRiskChecker: createWarrantRiskChecker(),
+    positionLimitChecker: createPositionLimitChecker({
+      maxPositionNotional: monitorConfig.maxPositionNotional,
+    }),
+    unrealizedLossChecker: createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: monitorConfig.maxUnrealizedLossPerSymbol,
+    }),
+  });
+  const autoSymbolManager = createAutoSymbolManager({
+    monitorConfig,
+    symbolRegistry: preGateRuntime.symbolRegistry,
+    marketDataClient: preGateRuntime.marketDataClient,
+    trader: postGateRuntime.trader,
+    orderRecorder: postGateRuntime.trader.orderRecorder,
+    riskChecker,
+    warrantListCacheConfig: preGateRuntime.warrantListCacheConfig,
+    getTradingCalendarSnapshot: () =>
+      postGateRuntime.lastState.tradingCalendarSnapshot ?? new Map(),
+  });
+  const strategy = strategyFactory({
+    signalConfig: monitorConfig.signalConfig,
+    verificationConfig: monitorConfig.verificationConfig,
+  });
+  return buildMonitorContext({
+    config: monitorConfig,
+    state: monitorState,
+    symbolRegistry: preGateRuntime.symbolRegistry,
+    quotesMap,
+    strategy,
+    orderRecorder: postGateRuntime.trader.orderRecorder,
+    dailyLossTracker: postGateRuntime.dailyLossTracker,
+    riskChecker,
+    unrealizedLossMonitor: createUnrealizedLossMonitor({
+      maxUnrealizedLossPerSymbol: monitorConfig.maxUnrealizedLossPerSymbol,
+    }),
+    delayedSignalVerifier: createDelayedSignalVerifier({
+      monitorSymbol: monitorConfig.monitorSymbol,
+      indicatorCache: postGateRuntime.indicatorCache,
+    }),
+    autoSymbolManager,
+  });
+}

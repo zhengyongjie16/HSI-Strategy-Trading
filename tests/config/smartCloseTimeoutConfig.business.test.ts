@@ -2,10 +2,10 @@
  * smartCloseTimeout 配置业务测试
  *
  * 功能：
- * - 验证 SMART_CLOSE_TIMEOUT_MINUTES_N 的解析与校验行为
+ * - 验证 SMART_CLOSE_TIMEOUT_MINUTES 在单 monitor 配置下的解析与校验行为
  */
 import { describe, expect, it } from 'bun:test';
-import { createMultiMonitorTradingConfig } from '../../src/config/trading/index.js';
+import { createTradingConfig as parseTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
 import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
@@ -14,45 +14,45 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
   return {
     LONGBRIDGE_AUTH_MODE: 'oauth',
     LONGBRIDGE_CLIENT_ID: 'client-id',
-    MONITOR_SYMBOL_1: 'HSI.HK',
+    MONITOR_SYMBOL: 'HSI.HK',
     ...overrides,
   };
 }
 
 describe('smart close timeout config', () => {
   it('解析空值/null/0/正整数', () => {
-    const missingConfig = createMultiMonitorTradingConfig({
+    const missingConfig = parseTradingConfig({
       env: createBaseEnv(),
     });
-    expect(missingConfig.monitors[0]?.smartCloseTimeoutMinutes).toBeNull();
+    expect(missingConfig.monitor.smartCloseTimeoutMinutes).toBeNull();
 
-    const emptyConfig = createMultiMonitorTradingConfig({
+    const emptyConfig = parseTradingConfig({
       env: createBaseEnv({
-        SMART_CLOSE_TIMEOUT_MINUTES_1: '',
+        SMART_CLOSE_TIMEOUT_MINUTES: '',
       }),
     });
-    expect(emptyConfig.monitors[0]?.smartCloseTimeoutMinutes).toBeNull();
+    expect(emptyConfig.monitor.smartCloseTimeoutMinutes).toBeNull();
 
-    const nullConfig = createMultiMonitorTradingConfig({
+    const nullConfig = parseTradingConfig({
       env: createBaseEnv({
-        SMART_CLOSE_TIMEOUT_MINUTES_1: 'null',
+        SMART_CLOSE_TIMEOUT_MINUTES: 'null',
       }),
     });
-    expect(nullConfig.monitors[0]?.smartCloseTimeoutMinutes).toBeNull();
+    expect(nullConfig.monitor.smartCloseTimeoutMinutes).toBeNull();
 
-    const zeroConfig = createMultiMonitorTradingConfig({
+    const zeroConfig = parseTradingConfig({
       env: createBaseEnv({
-        SMART_CLOSE_TIMEOUT_MINUTES_1: '0',
+        SMART_CLOSE_TIMEOUT_MINUTES: '0',
       }),
     });
-    expect(zeroConfig.monitors[0]?.smartCloseTimeoutMinutes).toBe(0);
+    expect(zeroConfig.monitor.smartCloseTimeoutMinutes).toBe(0);
 
-    const validConfig = createMultiMonitorTradingConfig({
+    const validConfig = parseTradingConfig({
       env: createBaseEnv({
-        SMART_CLOSE_TIMEOUT_MINUTES_1: '30',
+        SMART_CLOSE_TIMEOUT_MINUTES: '30',
       }),
     });
-    expect(validConfig.monitors[0]?.smartCloseTimeoutMinutes).toBe(30);
+    expect(validConfig.monitor.smartCloseTimeoutMinutes).toBe(30);
   });
 
   it('非法值（负数/非整数/非法字符串）在配置校验阶段报错', async () => {
@@ -76,7 +76,7 @@ describe('smart close timeout config', () => {
     });
 
     const tradingConfig = createTradingConfig({
-      monitors: [monitorConfig],
+      monitor: monitorConfig,
     });
 
     const invalidValues = ['-3', '1.5', 'abc'] as const;
@@ -85,7 +85,7 @@ describe('smart close timeout config', () => {
       try {
         await validateAllConfig({
           env: createBaseEnv({
-            SMART_CLOSE_TIMEOUT_MINUTES_1: invalidValue,
+            SMART_CLOSE_TIMEOUT_MINUTES: invalidValue,
           }),
           tradingConfig,
         });
@@ -95,7 +95,7 @@ describe('smart close timeout config', () => {
 
       expect(caughtError).not.toBeNull();
       const validationError = caughtError as { missingFields?: ReadonlyArray<string> };
-      expect(validationError.missingFields).toContain('SMART_CLOSE_TIMEOUT_MINUTES_1');
+      expect(validationError.missingFields).toContain('SMART_CLOSE_TIMEOUT_MINUTES');
     }
   });
 });

@@ -68,7 +68,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor,
       trader,
       marketDataClient,
@@ -126,7 +126,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -183,7 +183,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -239,7 +239,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -294,7 +294,7 @@ describe('buyProcessor business flow', () => {
     let quoteCalls = 0;
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => monitorContext,
+      monitorContext,
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
@@ -349,7 +349,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -404,7 +404,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor,
       trader: createTraderDouble({
         executeSignals: async () => {
@@ -458,7 +458,7 @@ describe('buyProcessor business flow', () => {
 
     const processor = createBuyProcessor({
       taskQueue: queue,
-      getMonitorContext: () => createMonitorContext(),
+      monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
       trader: createTraderDouble(),
       marketDataClient: createMarketDataClientDouble({
@@ -485,5 +485,46 @@ describe('buyProcessor business flow', () => {
     await processor.stopAndDrain();
 
     expect(riskCalls).toBe(0);
+  });
+
+  it('fails fast on foreign monitor buy task before lifecycle gate skip', async () => {
+    const queue = createBuyTaskQueue();
+    const fatalErrors: unknown[] = [];
+
+    const processor = createBuyProcessor({
+      taskQueue: queue,
+      monitorContext: createMonitorContext(),
+      signalProcessor: {
+        processSellSignals: () => [],
+        applyRiskChecks: async () => [],
+        resetRiskCheckCooldown: () => {},
+      },
+      trader: createTraderDouble(),
+      marketDataClient: createMarketDataClientDouble(),
+      doomsdayProtection: createDoomsdayProtectionDouble(),
+      getLastState: () => createLastState(),
+      getIsHalfDay: () => false,
+      getCanProcessTask: () => false,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    let signal = createSignalDouble('BUYCALL', 'BULL.HK');
+    signal = { ...signal, seatVersion: 2 };
+
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.push({ type: 'IMMEDIATE_BUY', monitorSymbol: 'TECH.HK', data: signal });
+      },
+      waitCondition: () => fatalErrors.length === 1,
+      timeoutMs: 800,
+    });
+
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]).toBeInstanceOf(Error);
+    expect((fatalErrors[0] as Error).message).toContain('task.monitorSymbol 不匹配唯一监控标的');
+    expect(queue.isEmpty()).toBeTrue();
   });
 });

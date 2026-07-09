@@ -26,7 +26,7 @@ import type { DecimalLike } from '../utils/helpers/types.js';
 
 /**
  * 可转换为数字的值类型。
- * 类型用途：兼容 Longbridge SDK 返回的 Decimal 与原始数值，用于当前服务类型中的价格、数量等字段声明。
+ * 类型用途：承接 Longbridge SDK 返回的 Decimal 形态与原始数值，用于当前服务类型中的价格、数量等字段声明。
  * 数据来源：Longbridge API 返回或本地数字。
  * 使用范围：services 类型模块内部字段复用，不作为跨模块公共类型导出。
  */
@@ -686,7 +686,7 @@ export interface Trader {
   // ========== 订单执行 ==========
 
   /** 检查当前是否可交易 */
-  canTradeNow: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => TradeCheckResult;
+  canTradeNow: (signalAction: SignalType, monitorConfig: MonitorConfig) => TradeCheckResult;
 
   /** 从 API 获取全量订单 */
   fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;

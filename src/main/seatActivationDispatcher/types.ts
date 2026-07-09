@@ -1,15 +1,15 @@
-import type { MultiMonitorTradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
 
 /**
  * 席位激活 route key。
- * 类型用途：以 monitorSymbol + direction 记录 SWITCHING 到 ACTIVATING 之间的旧标的缓存。
+ * 类型用途：以 direction 记录 SWITCHING 到 ACTIVATING 之间的旧标的缓存。
  * 数据来源：SeatActivationDispatcher 监听 seat 状态事件时构造。
  * 使用范围：仅 SeatActivationDispatcher 模块内部使用。
  */
-export type SeatActivationRouteKey = `${string}:${'LONG' | 'SHORT'}`;
+export type SeatActivationRouteKey = 'LONG' | 'SHORT';
 
 /**
  * 待激活席位缓存。
@@ -29,7 +29,7 @@ export type PendingSeatActivation = Readonly<{
  * 使用范围：SeatActivationDispatcher 工厂。
  */
 export type SeatActivationDispatcherDeps = Readonly<{
-  tradingConfig: MultiMonitorTradingConfig;
+  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
 }>;

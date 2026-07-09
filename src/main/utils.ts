@@ -52,23 +52,23 @@ export async function refreshAccountAndPositions(
 /**
  * 收集运行时需要获取行情的标的代码集合（监控标的 + 席位占用标的 + 持仓标的 + 订单持有标的）。默认行为：合并去重后返回 Set。
  *
- * @param monitorConfigs 监控配置数组（monitorSymbol、longSymbol、shortSymbol）
+ * @param monitorConfig 唯一监控配置（monitorSymbol、longSymbol、shortSymbol）
  * @param symbolRegistry 标的注册表，用于解析席位当前占用标的
  * @param positions 当前持仓数组
  * @param orderHoldSymbols 订单持有标的集合
  * @returns 需要拉取行情的标的代码集合
  */
 export function collectRuntimeQuoteSymbols(
-  monitorConfigs: ReadonlyArray<{
+  monitorConfig: {
     readonly monitorSymbol: string;
     readonly longSymbol: string;
     readonly shortSymbol: string;
-  }>,
+  },
   symbolRegistry: SymbolRegistry,
   positions: ReadonlyArray<Position>,
   orderHoldSymbols: ReadonlySet<string>,
 ): Set<string> {
-  const symbols = collectAllQuoteSymbols(monitorConfigs, symbolRegistry);
+  const symbols = collectAllQuoteSymbols(monitorConfig, symbolRegistry);
   for (const position of positions) {
     if (position.symbol) {
       symbols.add(position.symbol);
@@ -87,35 +87,32 @@ export function collectRuntimeQuoteSymbols(
 /**
  * 收集所有需要获取行情的标的代码（监控标的 + 席位占用标的），供运行时快照与订阅链路批量拉取行情。
  *
- * @param monitorConfigs 监控配置数组（monitorSymbol、longSymbol、shortSymbol）
+ * @param monitorConfig 唯一监控配置（monitorSymbol、longSymbol、shortSymbol）
  * @param symbolRegistry 标的注册表，可选；传入时从席位状态解析做多/做空占用标的并加入集合
  * @returns 需要拉取行情的标的代码集合
  */
 function collectAllQuoteSymbols(
-  monitorConfigs: ReadonlyArray<{
+  monitorConfig: {
     readonly monitorSymbol: string;
     readonly longSymbol: string;
     readonly shortSymbol: string;
-  }>,
+  },
   symbolRegistry?: SymbolRegistry | null,
 ): Set<string> {
-  const symbols = new Set<string>();
-  for (const config of monitorConfigs) {
-    symbols.add(config.monitorSymbol);
-    if (!symbolRegistry) {
-      continue;
-    }
-
-    const longSeat = symbolRegistry.getSeatState(config.monitorSymbol, 'LONG');
-    const shortSeat = symbolRegistry.getSeatState(config.monitorSymbol, 'SHORT');
-    if (longSeat.symbol) {
-      symbols.add(longSeat.symbol);
-    }
-
-    if (shortSeat.symbol) {
-      symbols.add(shortSeat.symbol);
-    }
+  const symbols = [monitorConfig.monitorSymbol];
+  if (!symbolRegistry) {
+    return new Set(symbols);
   }
 
-  return symbols;
+  const longSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+  const shortSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+  if (longSeat.symbol) {
+    symbols.push(longSeat.symbol);
+  }
+
+  if (shortSeat.symbol) {
+    symbols.push(shortSeat.symbol);
+  }
+
+  return new Set(symbols);
 }

@@ -6,11 +6,13 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { createRiskDomain } from '../../../../src/main/lifecycle/cacheDomains/riskDomain.js';
-import type { MonitorContext } from '../../../../src/types/state.js';
 import type { DailyLossTracker } from '../../../../src/types/risk.js';
 import type { SignalProcessor } from '../../../../src/core/signalProcessor/types.js';
 import type { LiquidationCooldownTracker } from '../../../../src/services/liquidationCooldown/types.js';
-import { createProtectiveLiquidationEpisodeTrackerDouble } from '../../../helpers/testDoubles.js';
+import {
+  createMonitorContextDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+} from '../../../helpers/testDoubles.js';
 
 describe('createRiskDomain', () => {
   it('midnightClear 调用 signalProcessor.resetRiskCheckCooldown、dailyLossTracker.resetAll、clearMidnightEligible、各 riskChecker 清理', async () => {
@@ -23,28 +25,23 @@ describe('createRiskDomain', () => {
     let clearLongCount = 0;
     let clearShortCount = 0;
 
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: {
-            monitorSymbol: 'HSI.HK',
-            liquidationCooldown: { mode: 'half-day' },
-          },
-          riskChecker: {
-            clearUnrealizedLossData: () => {
-              clearUnrealizedCount += 1;
-            },
-            clearLongWarrantInfo: () => {
-              clearLongCount += 1;
-            },
-            clearShortWarrantInfo: () => {
-              clearShortCount += 1;
-            },
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
+    const monitorContext = createMonitorContextDouble({
+      config: {
+        monitorSymbol: 'HSI.HK',
+        liquidationCooldown: { mode: 'half-day' },
+      } as never,
+      riskChecker: {
+        clearUnrealizedLossData: () => {
+          clearUnrealizedCount += 1;
+        },
+        clearLongWarrantInfo: () => {
+          clearLongCount += 1;
+        },
+        clearShortWarrantInfo: () => {
+          clearShortCount += 1;
+        },
+      } as never,
+    });
     const signalProcessor: SignalProcessor = {
       resetRiskCheckCooldown: () => {
         resetRiskCheckCooldownCalled = true;
@@ -74,7 +71,7 @@ describe('createRiskDomain', () => {
       signalProcessor,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts,
+      monitorContext,
       liquidationCooldownTracker,
     });
     const now = new Date('2025-02-15T00:00:00Z');
@@ -97,22 +94,17 @@ describe('createRiskDomain', () => {
 
   it('liquidationCooldown 为 minutes 模式时不向 keysToClear 添加该监控标的 key', async () => {
     let clearMidnightEligibleKeys: Set<string> | null = null as Set<string> | null;
-    const monitorContexts = new Map<string, MonitorContext>([
-      [
-        'HSI.HK',
-        {
-          config: {
-            monitorSymbol: 'HSI.HK',
-            liquidationCooldown: { mode: 'minutes' },
-          },
-          riskChecker: {
-            clearUnrealizedLossData: () => {},
-            clearLongWarrantInfo: () => {},
-            clearShortWarrantInfo: () => {},
-          },
-        } as unknown as MonitorContext,
-      ],
-    ]);
+    const monitorContext = createMonitorContextDouble({
+      config: {
+        monitorSymbol: 'HSI.HK',
+        liquidationCooldown: { mode: 'minutes' },
+      } as never,
+      riskChecker: {
+        clearUnrealizedLossData: () => {},
+        clearLongWarrantInfo: () => {},
+        clearShortWarrantInfo: () => {},
+      } as never,
+    });
     const liquidationCooldownTracker: LiquidationCooldownTracker = {
       recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
       recordCooldown: () => {},
@@ -131,7 +123,7 @@ describe('createRiskDomain', () => {
         startNewProtectionEpisode: () => {},
       } as unknown as DailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts,
+      monitorContext,
       liquidationCooldownTracker,
     });
     await domain.midnightClear({
@@ -150,7 +142,7 @@ describe('createRiskDomain', () => {
         startNewProtectionEpisode: () => {},
       } as unknown as DailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContexts: new Map(),
+      monitorContext: createMonitorContextDouble(),
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
         recordCooldown: () => {},

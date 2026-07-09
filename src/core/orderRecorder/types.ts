@@ -235,7 +235,7 @@ export type OrderDailyLossAnalysisDeps = {
   readonly filteringEngine: OrderFilteringEngine;
   readonly resolveOrderOwnership: (
     order: RawOrderFromAPI,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
   ) => OrderOwnership | null;
   readonly classifyAndConvertOrders: (orders: ReadonlyArray<RawOrderFromAPI>) => {
     readonly buyOrders: ReadonlyArray<OrderRecord>;

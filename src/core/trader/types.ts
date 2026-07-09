@@ -10,7 +10,7 @@ import type {
 import type { ExecutableSignal, Signal, SignalType, OrderTypeConfig } from '../../types/signal.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
-import type { MonitorConfig, MultiMonitorTradingConfig } from '../../types/config.js';
+import type { MonitorConfig, TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type {
   PendingOrder,
@@ -74,15 +74,9 @@ export type TrackOrderParams = {
   /** 可选：恢复阶段保留快照中的 pending 状态，避免错误触发改单流程 */
   readonly initialStatus?: OrderStatus;
   readonly isLongSymbol: boolean;
-  readonly monitorSymbol: string | null;
+  readonly monitorSymbol: string;
   readonly isProtectiveLiquidation: boolean;
   readonly orderType: OrderType;
-
-  /** 触发买入冷却所需的保护性清仓次数（可选，默认 1） */
-  readonly liquidationTriggerLimit?: number;
-
-  /** 保护性清仓冷却配置（用于触发计数分段与冷却激活计算） */
-  readonly liquidationCooldownConfig?: MonitorConfig['liquidationCooldown'];
 };
 
 /**
@@ -135,7 +129,7 @@ export type SubmitOrderParams = {
   readonly overridePrice: number | undefined;
   readonly relatedBuyOrderIds?: ReadonlyArray<string> | null;
   readonly isShortSymbol: boolean;
-  readonly monitorConfig?: MonitorConfig | null;
+  readonly monitorConfig: MonitorConfig;
 };
 
 /**
@@ -264,7 +258,7 @@ export interface OrderMonitor {
  * 使用范围：仅在当前模块及其直接依赖方使用。
  */
 export interface OrderExecutor {
-  canTradeNow: (signalAction: SignalType, monitorConfig?: MonitorConfig | null) => TradeCheckResult;
+  canTradeNow: (signalAction: SignalType, monitorConfig: MonitorConfig) => TradeCheckResult;
   executeSignals: (
     signals: ReadonlyArray<ExecutableSignal>,
   ) => Promise<{ submittedCount: number; submittedOrderIds: ReadonlyArray<string> }>;
@@ -331,7 +325,7 @@ export type TrackedOrder = {
   readonly isLongSymbol: boolean;
 
   /** 监控标的代码（用于成交日志与冷却恢复） */
-  readonly monitorSymbol: string | null;
+  readonly monitorSymbol: string;
 
   /** 是否为保护性清仓订单（用于触发买入冷却） */
   readonly isProtectiveLiquidation: boolean;
@@ -535,7 +529,7 @@ export type OrderMonitorDeps = {
   readonly symbolRegistry: SymbolRegistry;
 
   /** 全局交易配置 */
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
 
   /** 成交后一致性运行时（负责收口成交后的最小补刷需求） */
   readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntimePort;
@@ -571,7 +565,7 @@ export type OrderExecutorDeps = {
   readonly orderRecorder: OrderRecorder;
 
   /** 全局交易配置 */
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
 
   /** 标的注册表（用于解析动态标的归属） */
   readonly symbolRegistry: SymbolRegistry;
@@ -588,7 +582,7 @@ export type OrderExecutorDeps = {
  */
 export type TraderDeps = {
   readonly config: Config;
-  readonly tradingConfig: MultiMonitorTradingConfig;
+  readonly tradingConfig: TradingConfig;
   readonly marketDataClient: MarketDataClient;
   readonly rateLimiterConfig?: RateLimiterConfig;
 

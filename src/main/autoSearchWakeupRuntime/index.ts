@@ -27,11 +27,21 @@ import type {
 const AUTO_SEARCH_DIRECTIONS: ReadonlyArray<'LONG' | 'SHORT'> = ['LONG', 'SHORT'];
 
 function buildRouteKey(params: {
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly seatVersion: number;
 }): AutoSearchRouteKey {
-  return `${params.monitorSymbol}:${params.direction}:${params.seatVersion}`;
+  return `${params.direction}:${params.seatVersion}`;
+}
+
+function assertAutoSearchMonitorSymbol(
+  actualMonitorSymbol: string,
+  expectedMonitorSymbol: string,
+): void {
+  if (actualMonitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[AutoSearchWakeupRuntime] 非唯一 monitorSymbol 输入: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
+    );
+  }
 }
 
 function resolveOpenDelayEndMs(currentTime: Date, delayMinutes: number): number | null {
@@ -81,6 +91,7 @@ export function createAutoSearchWakeupRuntime(
     readonly seatVersion: number;
     readonly atMs: number;
   }): void {
+    assertAutoSearchMonitorSymbol(params.monitorSymbol, deps.monitorContext.config.monitorSymbol);
     const routeKey = buildRouteKey(params);
     clearRouteTimer(routeKey);
     const timer = scheduleBoundedOneShotAt({
@@ -135,8 +146,8 @@ export function createAutoSearchWakeupRuntime(
       return;
     }
 
+    assertAutoSearchMonitorSymbol(monitorSymbol, deps.monitorContext.config.monitorSymbol);
     const routeKey = buildRouteKey({
-      monitorSymbol,
       direction,
       seatVersion:
         expectedSeatVersion ?? deps.symbolRegistry.getSeatVersion(monitorSymbol, direction),
@@ -165,10 +176,8 @@ export function createAutoSearchWakeupRuntime(
         return;
       }
 
-      const monitorContext = deps.monitorContexts.get(monitorSymbol);
-      if (monitorContext === undefined) {
-        return;
-      }
+      assertAutoSearchMonitorSymbol(monitorSymbol, deps.monitorContext.config.monitorSymbol);
+      const monitorContext = deps.monitorContext;
 
       if (!monitorContext.config.autoSearchConfig.autoSearchEnabled) {
         return;
@@ -176,7 +185,7 @@ export function createAutoSearchWakeupRuntime(
 
       const seatState = deps.symbolRegistry.getSeatState(monitorSymbol, direction);
       const seatVersion = deps.symbolRegistry.getSeatVersion(monitorSymbol, direction);
-      const routeKey = buildRouteKey({ monitorSymbol, direction, seatVersion });
+      const routeKey = buildRouteKey({ direction, seatVersion });
       if (expectedSeatVersion !== undefined && expectedSeatVersion !== seatVersion) {
         return;
       }
@@ -239,17 +248,16 @@ export function createAutoSearchWakeupRuntime(
   }
 
   function handleSeatStateChanged(event: SeatStateChangedEvent): void {
+    assertAutoSearchMonitorSymbol(event.monitorSymbol, deps.monitorContext.config.monitorSymbol);
     if (event.nextState.status !== 'EMPTY') {
       return;
     }
 
-    const monitorContext = deps.monitorContexts.get(event.monitorSymbol);
-    if (monitorContext?.config.autoSearchConfig.autoSearchEnabled !== true) {
+    if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
       return;
     }
 
     const routeKey = buildRouteKey({
-      monitorSymbol: event.monitorSymbol,
       direction: event.direction,
       seatVersion: event.nextVersion,
     });
@@ -261,37 +269,33 @@ export function createAutoSearchWakeupRuntime(
   }
 
   function handleGateStateChanged(event: TradingGateStateChangedEvent): void {
-    if (!event.nextCanTrade || event.previousCanTrade === true) {
+    if (!event.nextCanTrade || event.previousCanTrade) {
       return;
     }
 
-    for (const monitorConfig of deps.tradingConfig.monitors) {
-      for (const direction of AUTO_SEARCH_DIRECTIONS) {
-        const monitorContext = deps.monitorContexts.get(monitorConfig.monitorSymbol);
-        if (monitorContext?.config.autoSearchConfig.autoSearchEnabled !== true) {
-          continue;
-        }
+    const monitorConfig = deps.tradingConfig.monitor;
+    for (const direction of AUTO_SEARCH_DIRECTIONS) {
+      if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
+        continue;
+      }
 
-        const seatState = deps.symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
-        if (seatState.status === 'EMPTY') {
-          triggerSeat(monitorConfig.monitorSymbol, direction);
-        }
+      const seatState = deps.symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
+      if (seatState.status === 'EMPTY') {
+        triggerSeat(monitorConfig.monitorSymbol, direction);
       }
     }
   }
 
   function seedEmptySeats(): void {
-    for (const monitorConfig of deps.tradingConfig.monitors) {
-      for (const direction of AUTO_SEARCH_DIRECTIONS) {
-        const monitorContext = deps.monitorContexts.get(monitorConfig.monitorSymbol);
-        if (monitorContext?.config.autoSearchConfig.autoSearchEnabled !== true) {
-          continue;
-        }
+    const monitorConfig = deps.tradingConfig.monitor;
+    for (const direction of AUTO_SEARCH_DIRECTIONS) {
+      if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
+        continue;
+      }
 
-        const seatState = deps.symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
-        if (seatState.status === 'EMPTY') {
-          triggerSeat(monitorConfig.monitorSymbol, direction);
-        }
+      const seatState = deps.symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
+      if (seatState.status === 'EMPTY') {
+        triggerSeat(monitorConfig.monitorSymbol, direction);
       }
     }
   }

@@ -5,9 +5,9 @@
  * - historyOrders API 不包含当日订单
  * - todayOrders API 获取当日订单
  * - 本脚本合并两个 API 的结果以获取完整的订单记录
- * - 使用订单过滤算法识别当前仍持有的买入订单（多标的支持）
+ * - 使用订单过滤算法识别当前仍持有的买入订单（按交易标的分组）
  *
- * 使用: node tests/getHistoryOrders.js
+ * 使用: node utils/getHistoryOrders.js
  */
 import dotenv from 'dotenv';
 import path from 'node:path';
@@ -15,9 +15,12 @@ import { fileURLToPath } from 'node:url';
 import { TradeContext, OrderStatus, OrderSide } from 'longbridge';
 import { createSdkConfigFromAuth } from '../src/config/auth/index.js';
 
-// 加载环境变量
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.join(__dirname, '..', '.env.local') });
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function loadLocalEnv() {
+  dotenv.config({ path: path.join(__dirname, '..', '.env.local') });
+}
 
 // ==================== 工具函数 ====================
 
@@ -135,10 +138,56 @@ function printOrderList(orders, title) {
   console.log('');
 }
 
-// ==================== 订单过滤算法（多标的支持） ====================
+// ==================== 订单过滤算法（按交易标的分组） ====================
+
+/**
+ * @typedef {object} FilterSourceOrder
+ * @property {string} orderId
+ * @property {string} symbol
+ * @property {string} stockName
+ * @property {string | number} side
+ * @property {unknown} executedPrice
+ * @property {unknown} executedQuantity
+ * @property {Date | string | number} updatedAt
+ * @property {string=} currency
+ */
+
+/**
+ * @typedef {object} NormalizedOrder
+ * @property {string} orderId
+ * @property {string} symbol
+ * @property {string} stockName
+ * @property {string | number} side
+ * @property {number} executedPrice
+ * @property {number} executedQuantity
+ * @property {number} executedTime
+ * @property {string=} currency
+ * @property {FilterSourceOrder} _original
+ */
+
+/**
+ * @typedef {object} FilteringStat
+ * @property {string} symbol
+ * @property {string} stockName
+ * @property {number} originalBuyCount
+ * @property {number} originalBuyQuantity
+ * @property {number} sellCount
+ * @property {number} sellQuantity
+ * @property {number} filteredCount
+ * @property {number} filteredQuantity
+ */
+
+/**
+ * @typedef {object} SymbolGroupedFilteringResult
+ * @property {NormalizedOrder[]} filteredOrders
+ * @property {FilteringStat[]} filteringStats
+ */
 
 /**
  * 将 API 返回的订单转换为过滤算法所需的标准格式
+ *
+ * @param {FilterSourceOrder} order
+ * @returns {NormalizedOrder}
  */
 function normalizeOrder(order) {
   const executedTime =
@@ -168,41 +217,54 @@ function calculateTotalQuantityFromOrders(orders) {
 }
 
 /**
- * 按数量限制调整订单列表
- * 当按价格过滤后保留数量超过限制时，优先保留高价订单（亏损订单）
+ * 按生产订单记录口径从买入订单列表中扣减卖出数量。
+ *
+ * 扣减顺序固定为 executedPrice asc -> executedTime asc -> orderId asc，
+ * 卖出成交价不参与判定，且买入订单只做整笔消除、不拆分。
  */
-function adjustOrdersByQuantityLimit(orders, maxQuantity) {
-  if (maxQuantity <= 0) {
+function deductSellQuantityFromBuyOrders(candidateBuyOrders, sellQuantity) {
+  if (candidateBuyOrders.length === 0) {
     return [];
   }
 
-  const currentQuantity = calculateTotalQuantityFromOrders(orders);
-  if (currentQuantity <= maxQuantity) {
-    return orders;
+  if (sellQuantity <= 0 || !Number.isFinite(sellQuantity)) {
+    return [...candidateBuyOrders];
   }
 
-  // 按价格从高到低排序（保留高价订单，因为它们是亏损的，应该最后被卖出）
-  const sortedByPriceDesc = [...orders].sort((a, b) => b.executedPrice - a.executedPrice);
-
-  const result = [];
-  let accumulatedQuantity = 0;
-
-  for (const order of sortedByPriceDesc) {
-    if (accumulatedQuantity >= maxQuantity) {
-      break;
+  const sortedOrders = [...candidateBuyOrders].sort((left, right) => {
+    if (left.executedPrice !== right.executedPrice) {
+      return left.executedPrice - right.executedPrice;
     }
-    if (accumulatedQuantity + order.executedQuantity > maxQuantity) {
+
+    if (left.executedTime !== right.executedTime) {
+      return left.executedTime - right.executedTime;
+    }
+
+    return left.orderId.localeCompare(right.orderId);
+  });
+
+  const remainingOrders = [];
+  let remainingDeduction = sellQuantity;
+
+  for (const order of sortedOrders) {
+    if (remainingDeduction <= 0) {
+      remainingOrders.push(order);
       continue;
     }
-    result.push(order);
-    accumulatedQuantity += order.executedQuantity;
+
+    if (order.executedQuantity <= remainingDeduction) {
+      remainingDeduction -= order.executedQuantity;
+      continue;
+    }
+
+    remainingOrders.push(order);
   }
 
-  return result;
+  return remainingOrders;
 }
 
 /**
- * 应用单个卖出订单的过滤
+ * 应用单个卖出订单的过滤。
  */
 function applySingleSellOrderFilter(
   currentBuyOrders,
@@ -212,7 +274,6 @@ function applySingleSellOrderFilter(
   latestSellTime,
 ) {
   const sellTime = sellOrder.executedTime;
-  const sellPrice = sellOrder.executedPrice;
   const sellQuantity = sellOrder.executedQuantity;
 
   const nextSellTime = nextSellOrder ? nextSellOrder.executedTime : latestSellTime + 1;
@@ -230,24 +291,11 @@ function applySingleSellOrderFilter(
   );
 
   // 判断是否全部卖出
-  if (sellQuantity >= totalBuyQuantity) {
+  if (sellQuantity >= totalBuyQuantity || buyOrdersBeforeSell.length === 0) {
     return [...buyOrdersBetweenSells];
   }
 
-  if (buyOrdersBeforeSell.length === 0) {
-    return [...buyOrdersBetweenSells];
-  }
-
-  // 计算应该保留的最大数量
-  const maxRetainQuantity = totalBuyQuantity - sellQuantity;
-
-  // 按价格过滤 - 保留成交价 >= 卖出价的订单（亏损订单优先保留）
-  let filteredBuyOrders = buyOrdersBeforeSell.filter(
-    (buyOrder) => buyOrder.executedPrice >= sellPrice,
-  );
-
-  // 确保保留数量不超过应保留数量
-  filteredBuyOrders = adjustOrdersByQuantityLimit(filteredBuyOrders, maxRetainQuantity);
+  const filteredBuyOrders = deductSellQuantityFromBuyOrders(buyOrdersBeforeSell, sellQuantity);
 
   return [...filteredBuyOrders, ...buyOrdersBetweenSells];
 }
@@ -316,17 +364,17 @@ function applyFilteringAlgorithmForSymbol(allBuyOrders, filledSellOrders) {
 }
 
 /**
- * 多标的订单过滤算法
- * 将订单按标的分组，对每个标的分别应用过滤算法
+ * 交易标的分组订单过滤算法
+ * 将订单按交易标的代码分组，对每个交易标的代码分别应用过滤算法
  *
- * @param allOrders - 所有订单（包含买入和卖出）
- * @returns 所有标的当前仍持有的买入订单
+ * @param {ReadonlyArray<FilterSourceOrder>} allOrders - 所有订单（包含买入和卖出）
+ * @returns {SymbolGroupedFilteringResult} 所有交易标的代码当前仍持有的买入订单
  */
-function applyMultiSymbolFiltering(allOrders) {
+export function applySymbolGroupedFiltering(allOrders) {
   // 转换为标准格式
   const normalizedOrders = allOrders.map(normalizeOrder);
 
-  // 按标的分组
+  // 按交易标的代码分组
   const ordersBySymbol = new Map();
   for (const order of normalizedOrders) {
     if (!ordersBySymbol.has(order.symbol)) {
@@ -340,7 +388,7 @@ function applyMultiSymbolFiltering(allOrders) {
     }
   }
 
-  // 对每个标的应用过滤算法
+  // 对每个交易标的代码应用过滤算法
   const filteredOrders = [];
   const filteringStats = [];
 
@@ -375,7 +423,7 @@ function printFilteredOrderList(orders, title) {
     return;
   }
 
-  // 按标的分组
+  // 按交易标的代码分组
   const ordersBySymbol = new Map();
   for (const order of orders) {
     if (!ordersBySymbol.has(order.symbol)) {
@@ -384,7 +432,7 @@ function printFilteredOrderList(orders, title) {
     ordersBySymbol.get(order.symbol).push(order);
   }
 
-  console.log(`${title} (共 ${orders.length} 笔, ${ordersBySymbol.size} 个标的)\n`);
+  console.log(`${title} (共 ${orders.length} 笔, ${ordersBySymbol.size} 个交易标的代码)\n`);
   console.log('序号 | 名称 | 标的代码 | 数量 | 成交价 | 成交金额 | 成交时间');
   console.log('-'.repeat(100));
 
@@ -392,7 +440,7 @@ function printFilteredOrderList(orders, title) {
   let totalQuantity = 0;
   let index = 0;
 
-  // 按标的输出
+  // 按交易标的代码输出
   for (const [, symbolOrders] of ordersBySymbol) {
     for (const order of symbolOrders) {
       index++;
@@ -420,6 +468,8 @@ function printFilteredOrderList(orders, title) {
 // ==================== 主程序 ====================
 
 async function main() {
+  loadLocalEnv();
+
   console.log('\n====== 获取所有已成交订单（上限1000条） ======\n');
 
   // 初始化交易上下文
@@ -548,7 +598,7 @@ async function main() {
   console.log(`卖出订单: ${sellCount} 笔, 总金额: ${formatAmount(totalSellAmount)}`);
   console.log(`净买入金额: ${formatAmount(totalBuyAmount - totalSellAmount)}`);
 
-  // 按标的分组统计
+  // 按交易标的代码分组统计
   const symbolStats = {};
   for (const order of orders) {
     const symbol = order.symbol;
@@ -566,7 +616,7 @@ async function main() {
     }
   }
 
-  console.log('\n====== 按标的分组 ======\n');
+  console.log('\n====== 按交易标的代码分组 ======\n');
   console.log('标的代码 | 买入数量 | 卖出数量 | 买入金额 | 卖出金额');
   console.log('-'.repeat(70));
 
@@ -601,15 +651,15 @@ async function main() {
   console.log('\n====== 订单过滤算法（识别当前持仓） ======\n');
   console.log('过滤算法说明：');
   console.log('- 目标：识别未被完全卖出的买入订单');
-  console.log('- 按标的分组，对每个标的分别应用过滤');
+  console.log('- 按交易标的代码分组，对每个交易标的代码分别应用过滤');
   console.log('- 卖出订单按时间从旧到新处理');
-  console.log('- 优先保留高价买入订单（亏损订单）\n');
+  console.log('- 按低价优先、时间早优先、订单号字典序优先整笔扣减买入订单\n');
 
-  // 应用多标的过滤算法
-  const { filteredOrders, filteringStats } = applyMultiSymbolFiltering(orders);
+  // 应用按交易标的分组的过滤算法
+  const { filteredOrders, filteringStats } = applySymbolGroupedFiltering(orders);
 
   // 输出过滤统计
-  console.log('====== 过滤统计（按标的） ======\n');
+  console.log('====== 过滤统计（按交易标的代码） ======\n');
   console.log('标的代码 | 名称 | 买入笔数 | 买入数量 | 卖出笔数 | 卖出数量 | 持仓笔数 | 持仓数量');
   console.log('-'.repeat(120));
 
@@ -652,11 +702,13 @@ async function main() {
   };
 }
 
-try {
-  await main();
-  console.log('\n====== 完成 ======\n');
-  process.exit(0);
-} catch (e) {
-  console.error('错误:', e.message);
-  process.exit(1);
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  try {
+    await main();
+    console.log('\n====== 完成 ======\n');
+    process.exit(0);
+  } catch (e) {
+    console.error('错误:', e.message);
+    process.exit(1);
+  }
 }

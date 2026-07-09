@@ -51,11 +51,7 @@ function isMonitorTaskForDirection(
     return false;
   }
 
-  const isDirectionMatch = task.data['direction'] === direction;
-  const isSharedTask =
-    Object.hasOwn(task.data, 'seatSnapshots') ||
-    (Object.hasOwn(task.data, 'long') && Object.hasOwn(task.data, 'short'));
-  return isDirectionMatch || isSharedTask;
+  return task.data['direction'] === direction;
 }
 
 /**

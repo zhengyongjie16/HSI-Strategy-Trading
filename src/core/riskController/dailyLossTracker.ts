@@ -1,8 +1,8 @@
 /**
  * 当日亏损追踪器模块
  *
- * 功能/职责：按监控标的与方向累计已实现亏损偏移；内部基于当日成交订单与过滤算法（filteringEngine）计算未平仓买入成本。
- * 执行流程：调用方通过 recalculateFromAllOrders 或 recordFilledOrder 传入/增量订单，通过 getLossOffset(monitorSymbol, isLongSymbol) 获取当日亏损偏移；内部按 (monitorSymbol, direction) 分组维护订单与偏移。
+ * 功能/职责：按唯一监控标的的 LONG/SHORT 方向累计已实现亏损偏移；内部基于当日成交订单与过滤算法（filteringEngine）计算未平仓买入成本。
+ * 执行流程：调用方通过 recalculateFromAllOrders 或 recordFilledOrder 传入/增量订单，通过 getLossOffset(monitorSymbol, isLongSymbol) 获取当日亏损偏移；内部只维护唯一 monitor 的方向级状态。
  */
 import { OrderSide } from 'longbridge';
 import { logger } from '../../utils/logger/index.js';
@@ -21,8 +21,8 @@ import {
   decimalToNumberValue,
   toDecimalValue,
 } from '../../utils/numeric/index.js';
-import type { DailyLossState } from './types.js';
-import { buildCooldownKey } from '../../services/liquidationCooldown/utils.js';
+import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
+import type { DailyLossDirection, DailyLossDirectionStates, DailyLossState } from './types.js';
 import { collectOrderOwnershipDiagnostics, resolveHongKongDayKey, sumOrderCost } from './utils.js';
 
 /**
@@ -36,6 +36,48 @@ function createEmptyState(): DailyLossState {
     sellOrders: [],
     dailyLossOffset: 0,
   };
+}
+
+/**
+ * 构建唯一 monitor 的双方向空状态。
+ *
+ * @returns LONG/SHORT 均为空的状态集合
+ */
+function createEmptyDirectionStates(): DailyLossDirectionStates {
+  return {
+    long: createEmptyState(),
+    short: createEmptyState(),
+  };
+}
+
+/**
+ * 解析保护性清仓边界键，并校验其属于唯一 monitor。
+ * @param key 输入边界键，格式为 monitorSymbol:direction
+ * @param expectedMonitorSymbol 唯一 monitor 标的
+ * @returns 方向键
+ */
+function parseProtectionBoundaryDirectionKey(
+  key: string,
+  expectedMonitorSymbol: string,
+): DailyLossDirection {
+  const separatorIndex = key.lastIndexOf(':');
+  if (separatorIndex <= 0 || separatorIndex >= key.length - 1) {
+    throw new Error(`[DailyLossTracker] protection boundary key 非法: ${key}`);
+  }
+
+  const monitorSymbol = key.slice(0, separatorIndex);
+  const direction = key.slice(separatorIndex + 1);
+  if (monitorSymbol !== expectedMonitorSymbol) {
+    throw new Error(
+      `[DailyLossTracker] protection boundary monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${monitorSymbol}`,
+    );
+  }
+
+  if (direction !== 'LONG' && direction !== 'SHORT') {
+    throw new Error(`[DailyLossTracker] protection boundary direction 非法: ${key}`);
+  }
+
+  return direction;
 }
 
 /**
@@ -132,21 +174,57 @@ function createOrderRecordFromFill(input: DailyLossFilledOrderInput): OrderRecor
 }
 
 /**
+ * 判断 API 原始订单是否包含有效成交事实。
+ * @param order API 原始订单
+ * @returns 成交价与成交量均有效时返回 true
+ */
+function hasValidExecution(order: RawOrderFromAPI): boolean {
+  return (
+    isValidPositiveNumber(decimalToNumber(order.executedPrice)) &&
+    isValidPositiveNumber(decimalToNumber(order.executedQuantity))
+  );
+}
+
+/**
+ * 相关交易标的的当日成交订单无法归属时直接阻断恢复，避免低估风控偏移。
+ * @param params 订单、监控配置与相关交易标的集合
+ */
+function assertUnownedOrderIsNotRelevant(params: {
+  readonly order: RawOrderFromAPI;
+  readonly monitor: Pick<MonitorConfig, 'monitorSymbol'>;
+  readonly relatedTradingSymbols: ReadonlySet<string> | undefined;
+}): void {
+  const { order, monitor, relatedTradingSymbols } = params;
+  if (!relatedTradingSymbols?.has(order.symbol)) {
+    return;
+  }
+
+  if (!hasValidExecution(order)) {
+    return;
+  }
+
+  throw new Error(
+    `[DailyLossTracker] 相关成交订单无法归属: monitorSymbol=${monitor.monitorSymbol} symbol=${order.symbol} orderId=${order.orderId}`,
+  );
+}
+
+/**
  * 创建当日亏损追踪器实例。
- * 按 (monitorSymbol, direction) 维护当日买入/卖出订单与亏损偏移，支持 resetAll、recalculateFromAllOrders、recordFilledOrder、getLossOffset。
+ * 按唯一 monitor 的 LONG/SHORT 方向维护当日买入/卖出订单与亏损偏移，支持 resetAll、recalculateFromAllOrders、recordFilledOrder、getLossOffset。
  * 风控与浮亏计算依赖当日已实现盈亏偏移，需在跨日时重置、启动时从全量订单初始化、成交时增量更新。
  * @param deps 依赖（filteringEngine、resolveOrderOwnership、classifyAndConvertOrders、toHongKongTimeIso）
  * @returns 实现 DailyLossTracker 接口的实例
  */
 export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTracker {
   let dayKey: string | null = null;
-  const statesByMonitor = new Map<string, { long: DailyLossState; short: DailyLossState }>();
+  let statesByDirection = createEmptyDirectionStates();
+  let expectedMonitorSymbol: string | null = null;
 
   /** 最新已完成保护性清仓边界：仅计入 executedTimeMs > boundary 的成交。 */
-  const latestProtectionBoundaryByDirection = new Map<string, number>();
+  const latestProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
 
   /** 幂等保护：记录已应用边界，保证边界仅单向前进。 */
-  const lastAppliedProtectionBoundaryByDirection = new Map<string, number>();
+  const lastAppliedProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
 
   /**
    * 显式重置 dayKey、states 与分段元数据。
@@ -154,26 +232,28 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
   function resetAll(now: Date): void {
     const nextKey = resolveHongKongDayKey(deps.toHongKongTimeIso, now);
     dayKey = nextKey;
-    statesByMonitor.clear();
+    statesByDirection = createEmptyDirectionStates();
     latestProtectionBoundaryByDirection.clear();
     lastAppliedProtectionBoundaryByDirection.clear();
   }
 
   /**
    * 启动时根据历史成交订单初始化当日状态。
-   * protectionBoundaryByDirection 可选：按 "monitorSymbol:direction" 为键恢复保护性边界。
+   * protectionBoundaryByDirection 可选：按 "monitorSymbol:direction" 为输入键恢复唯一 monitor 的方向级保护性边界。
    */
   function initializeFromOrders(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<string, number>,
+    relatedTradingSymbols?: ReadonlySet<string>,
   ): void {
+    expectedMonitorSymbol = monitor.monitorSymbol;
     const nextKey = resolveHongKongDayKey(deps.toHongKongTimeIso, now);
     const previousDayKey = dayKey;
     const isSameTradingDay = previousDayKey !== null && previousDayKey === nextKey;
     dayKey = nextKey;
-    statesByMonitor.clear();
+    statesByDirection = createEmptyDirectionStates();
 
     // 边界来源优先级：
     // 1) 显式传入（启动恢复）；
@@ -187,8 +267,9 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
           continue;
         }
 
-        latestProtectionBoundaryByDirection.set(key, boundaryMs);
-        lastAppliedProtectionBoundaryByDirection.set(key, boundaryMs);
+        const direction = parseProtectionBoundaryDirectionKey(key, monitor.monitorSymbol);
+        latestProtectionBoundaryByDirection.set(direction, boundaryMs);
+        lastAppliedProtectionBoundaryByDirection.set(direction, boundaryMs);
       }
     } else if (!isSameTradingDay) {
       latestProtectionBoundaryByDirection.clear();
@@ -199,7 +280,10 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       return;
     }
 
-    const grouped = new Map<string, { long: RawOrderFromAPI[]; short: RawOrderFromAPI[] }>();
+    const grouped: { long: RawOrderFromAPI[]; short: RawOrderFromAPI[] } = {
+      long: [],
+      short: [],
+    };
     for (const order of allOrders) {
       if (!(order.updatedAt instanceof Date)) {
         continue;
@@ -210,14 +294,24 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         continue;
       }
 
-      const ownership = deps.resolveOrderOwnership(order, monitors);
+      const ownership = deps.resolveOrderOwnership(order, monitor);
       if (!ownership) {
+        assertUnownedOrderIsNotRelevant({
+          order,
+          monitor,
+          relatedTradingSymbols,
+        });
         continue;
       }
 
+      if (ownership.monitorSymbol !== monitor.monitorSymbol) {
+        throw new Error(
+          `[DailyLossTracker] order ownership monitorSymbol mismatch: expected=${monitor.monitorSymbol} actual=${ownership.monitorSymbol}`,
+        );
+      }
+
       // 边界过滤：仅计入 executedTime > latestProtectionBoundaryMs 的成交
-      const directionKey = buildCooldownKey(ownership.monitorSymbol, ownership.direction);
-      const protectionBoundary = latestProtectionBoundaryByDirection.get(directionKey);
+      const protectionBoundary = latestProtectionBoundaryByDirection.get(ownership.direction);
       if (protectionBoundary !== undefined) {
         const orderTimeMs = order.updatedAt.getTime();
         if (orderTimeMs <= protectionBoundary) {
@@ -225,22 +319,16 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         }
       }
 
-      const existing = grouped.get(ownership.monitorSymbol) ?? {
-        long: [],
-        short: [],
-      };
       if (ownership.direction === 'LONG') {
-        existing.long.push(order);
+        grouped.long.push(order);
       } else {
-        existing.short.push(order);
+        grouped.short.push(order);
       }
-
-      grouped.set(ownership.monitorSymbol, existing);
     }
 
     const diagnostics = collectOrderOwnershipDiagnostics({
       orders: allOrders,
-      monitors,
+      monitor,
       now,
       resolveOrderOwnership: deps.resolveOrderOwnership,
       toHongKongTimeIso: deps.toHongKongTimeIso,
@@ -256,15 +344,41 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       );
     }
 
-    for (const monitor of monitors) {
-      const group = grouped.get(monitor.monitorSymbol);
-      const longState = group ? buildStateFromOrders(group.long, deps) : createEmptyState();
-      const shortState = group ? buildStateFromOrders(group.short, deps) : createEmptyState();
-      statesByMonitor.set(monitor.monitorSymbol, {
-        long: longState,
-        short: shortState,
-      });
+    statesByDirection = {
+      long: buildStateFromOrders(grouped.long, deps),
+      short: buildStateFromOrders(grouped.short, deps),
+    };
+  }
+
+  function assertExpectedMonitorSymbol(monitorSymbol: string): void {
+    if (expectedMonitorSymbol !== null && monitorSymbol !== expectedMonitorSymbol) {
+      throw new Error(
+        `[DailyLossTracker] monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${monitorSymbol}`,
+      );
     }
+  }
+
+  function getDirectionState(direction: DailyLossDirection): DailyLossState {
+    return direction === 'LONG' ? statesByDirection.long : statesByDirection.short;
+  }
+
+  function setDirectionState(direction: DailyLossDirection, nextState: DailyLossState): void {
+    if (direction === 'LONG') {
+      statesByDirection = {
+        long: nextState,
+        short: statesByDirection.short,
+      };
+      return;
+    }
+
+    statesByDirection = {
+      long: statesByDirection.long,
+      short: nextState,
+    };
+  }
+
+  function resetDirectionState(direction: DailyLossDirection): void {
+    setDirectionState(direction, createEmptyState());
   }
 
   /**
@@ -273,11 +387,18 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
    */
   function recalculateFromAllOrders(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitors: ReadonlyArray<Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>>,
+    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<string, number>,
+    relatedTradingSymbols?: ReadonlySet<string>,
   ): void {
-    initializeFromOrders(allOrders, monitors, now, protectionBoundaryByDirection);
+    initializeFromOrders(
+      allOrders,
+      monitor,
+      now,
+      protectionBoundaryByDirection,
+      relatedTradingSymbols,
+    );
   }
 
   /**
@@ -290,6 +411,8 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       return;
     }
 
+    assertExpectedMonitorSymbol(input.monitorSymbol);
+
     const fillDayKey = resolveHongKongDayKey(
       deps.toHongKongTimeIso,
       new Date(input.executedTimeMs),
@@ -299,10 +422,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     }
 
     // 边界过滤：成交时间小于等于保护性边界的不纳入
-    const directionKey = buildCooldownKey(
-      input.monitorSymbol,
-      input.isLongSymbol ? 'LONG' : 'SHORT',
-    );
+    const directionKey = input.isLongSymbol ? 'LONG' : 'SHORT';
     const protectionBoundary = latestProtectionBoundaryByDirection.get(directionKey);
     if (protectionBoundary !== undefined && input.executedTimeMs <= protectionBoundary) {
       return;
@@ -317,11 +437,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       return;
     }
 
-    const existing = statesByMonitor.get(input.monitorSymbol) ?? {
-      long: createEmptyState(),
-      short: createEmptyState(),
-    };
-    const currentState = input.isLongSymbol ? existing.long : existing.short;
+    const currentState = getDirectionState(directionKey);
     const isBuy = input.side === OrderSide.Buy;
     const nextBuyOrders = isBuy ? [...currentState.buyOrders, record] : currentState.buyOrders;
     const nextSellOrders = isBuy ? currentState.sellOrders : [...currentState.sellOrders, record];
@@ -335,29 +451,18 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       ),
     };
 
-    if (input.isLongSymbol) {
-      statesByMonitor.set(input.monitorSymbol, {
-        long: nextState,
-        short: existing.short,
-      });
-    } else {
-      statesByMonitor.set(input.monitorSymbol, {
-        long: existing.long,
-        short: nextState,
-      });
-    }
+    setDirectionState(directionKey, nextState);
   }
 
   /**
    * 获取指定标的与方向的当日亏损偏移。
    */
   function getLossOffset(monitorSymbol: string, isLongSymbol: boolean): number {
-    const state = statesByMonitor.get(monitorSymbol);
-    if (!state) {
-      return 0;
-    }
+    assertExpectedMonitorSymbol(monitorSymbol);
 
-    return isLongSymbol ? state.long.dailyLossOffset : state.short.dailyLossOffset;
+    return isLongSymbol
+      ? statesByDirection.long.dailyLossOffset
+      : statesByDirection.short.dailyLossOffset;
   }
 
   /** 推进保护性边界并开启新周期。 */
@@ -370,33 +475,15 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       return;
     }
 
-    const key = buildCooldownKey(monitorSymbol, direction);
-    const lastAppliedBoundary = lastAppliedProtectionBoundaryByDirection.get(key);
+    assertExpectedMonitorSymbol(monitorSymbol);
+    const lastAppliedBoundary = lastAppliedProtectionBoundaryByDirection.get(direction);
     if (lastAppliedBoundary !== undefined && boundaryExecutedTimeMs <= lastAppliedBoundary) {
       return;
     }
 
-    lastAppliedProtectionBoundaryByDirection.set(key, boundaryExecutedTimeMs);
-    latestProtectionBoundaryByDirection.set(key, boundaryExecutedTimeMs);
-
-    // 清空该方向旧周期订单与偏移，进入新周期
-    const existing = statesByMonitor.get(monitorSymbol);
-    if (!existing) {
-      return;
-    }
-
-    const isLong = direction === 'LONG';
-    if (isLong) {
-      statesByMonitor.set(monitorSymbol, {
-        long: createEmptyState(),
-        short: existing.short,
-      });
-    } else {
-      statesByMonitor.set(monitorSymbol, {
-        long: existing.long,
-        short: createEmptyState(),
-      });
-    }
+    lastAppliedProtectionBoundaryByDirection.set(direction, boundaryExecutedTimeMs);
+    latestProtectionBoundaryByDirection.set(direction, boundaryExecutedTimeMs);
+    resetDirectionState(direction);
   }
 
   return {

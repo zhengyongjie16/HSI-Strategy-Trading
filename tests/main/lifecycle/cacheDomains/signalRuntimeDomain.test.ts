@@ -154,20 +154,15 @@ describe('createSignalRuntimeDomain', () => {
     const monitorTaskQueue = createMonitorTaskQueueDouble(() => {
       globalCalls.push('monitorTaskQueue.clearAll');
     });
-    const monitorContexts = new Map([
-      [
-        'HSI.HK',
-        createMonitorContextDouble({
-          delayedSignalVerifier: createDelayedSignalVerifierDouble({
-            cancelAll: () => {
-              cancelAllCount += 1;
-              globalCalls.push('delayedSignalVerifier.cancelAll');
-              return 3;
-            },
-          }),
-        }),
-      ],
-    ]);
+    const monitorContext = createMonitorContextDouble({
+      delayedSignalVerifier: createDelayedSignalVerifierDouble({
+        cancelAll: () => {
+          cancelAllCount += 1;
+          globalCalls.push('delayedSignalVerifier.cancelAll');
+          return 3;
+        },
+      }),
+    });
     const postTradeConsistencyRuntime: SignalRuntimeDomainDeps['postTradeConsistencyRuntime'] = {
       abortWaiting: () => {
         globalCalls.push('postTradeConsistencyRuntime.abortWaiting');
@@ -197,7 +192,7 @@ describe('createSignalRuntimeDomain', () => {
       },
     };
     const deps: SignalRuntimeDomainDeps = {
-      monitorContexts,
+      monitorContext,
       buyProcessor,
       sellProcessor,
       monitorTaskProcessor,
@@ -367,7 +362,7 @@ describe('createSignalRuntimeDomain', () => {
     };
 
     const deps: SignalRuntimeDomainDeps = {
-      monitorContexts: new Map(),
+      monitorContext: createMonitorContextDouble(),
       buyProcessor,
       sellProcessor,
       monitorTaskProcessor,

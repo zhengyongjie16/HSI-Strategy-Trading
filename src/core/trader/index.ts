@@ -181,10 +181,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
       // ==================== 订单执行相关方法 ====================
 
-      canTradeNow(
-        signalAction: SignalType,
-        monitorConfig?: MonitorConfig | null,
-      ): TradeCheckResult {
+      canTradeNow(signalAction: SignalType, monitorConfig: MonitorConfig): TradeCheckResult {
         return orderExecutor.canTradeNow(signalAction, monitorConfig);
       },
 

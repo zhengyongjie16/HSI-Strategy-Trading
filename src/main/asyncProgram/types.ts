@@ -36,6 +36,9 @@ export type BaseProcessorConfig<TType extends string> = {
   /** 处理单个任务的异步函数 */
   readonly processTask: (task: Task<TType>) => Promise<void>;
 
+  /** 可选：任务内部不变量校验，必须先于生命周期门禁执行 */
+  readonly validateTask?: (task: Task<TType>) => void;
+
   /** 可选：是否可处理任务的门禁，false 时仅跳过 */
   readonly getCanProcessTask?: () => boolean;
 

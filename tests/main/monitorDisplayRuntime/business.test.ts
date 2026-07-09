@@ -64,7 +64,7 @@ describe('monitorDisplayRuntime', () => {
           initialized: true,
         }),
       },
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble()]]),
+      monitorContext: createMonitorContextDouble(),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -115,7 +115,7 @@ describe('monitorDisplayRuntime', () => {
           initialized: true,
         }),
       },
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble()]]),
+      monitorContext: createMonitorContextDouble(),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -174,7 +174,7 @@ describe('monitorDisplayRuntime', () => {
           initialized: true,
         }),
       },
-      monitorContexts: new Map([['HSI.HK', createMonitorContextDouble()]]),
+      monitorContext: createMonitorContextDouble(),
       lastState: {
         isTradingEnabled: true,
         canTrade: true,
@@ -206,6 +206,38 @@ describe('monitorDisplayRuntime', () => {
 
     expect(warnLogs).toHaveLength(1);
     expect(infoLogs).toContain('render:HSI.HK:20100');
+    await runtime.stopAndDrain();
+  });
+
+  it('fails fast when internal render request carries foreign monitorSymbol', async () => {
+    const { createMonitorDisplayRuntime } =
+      await import('../../../src/main/monitorDisplayRuntime/index.js');
+    const runtime = createMonitorDisplayRuntime({
+      marketDataClient: {
+        getQuotes: async () => new Map(),
+        getCandlestickSnapshot: () => null,
+      },
+      monitorContext: createMonitorContextDouble(),
+      lastState: {
+        isTradingEnabled: true,
+        canTrade: true,
+      },
+      marketMonitor: {
+        renderMonitorIndicators: () => {
+          throw new Error('should not render foreign monitor request');
+        },
+      },
+    });
+
+    runtime.start();
+
+    expect(() => {
+      runtime.requestRender({
+        monitorSymbol: 'TECH.HK',
+        monitorSnapshot: createSnapshot(20_000),
+      });
+    }).toThrow('[monitorDisplayRuntime] requestRender monitorSymbol mismatch');
+
     await runtime.stopAndDrain();
   });
 });

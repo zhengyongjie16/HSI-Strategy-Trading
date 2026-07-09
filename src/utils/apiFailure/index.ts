@@ -38,6 +38,14 @@ const RETRYABLE_MESSAGE_HINTS = [
   'etimedout',
   'rate limit',
 ] as const;
+const RETRYABLE_STRUCTURED_ERROR_CODES = new Set(['econnreset', 'etimedout']);
+const STRUCTURED_ERROR_CODE_KEYS = ['code', 'errorCode', 'errno'] as const;
+const STRUCTURED_STATUS_KEYS = ['status', 'statusCode', 'httpStatus'] as const;
+const NESTED_ERROR_KEYS = ['cause', 'error'] as const;
+const UNCONFIRMED_ORDER_SUBMISSION_OPERATIONS: ReadonlySet<string> = new Set([
+  'TradeContext.submitOrder',
+  'TradeContext.submitOrder.timeoutMarketConversion',
+]);
 const externalApiRequestErrors = new WeakSet<Error>();
 
 /**
@@ -105,6 +113,18 @@ export function isExternalApiRequestError(error: unknown): error is ExternalApiR
 }
 
 /**
+ * 判断错误是否为下单提交结果不可确认。
+ *
+ * @param error 待判断错误对象
+ * @returns true 表示明确的 submitOrder 请求失败，远端订单事实不可直接判定
+ */
+export function isUnconfirmedOrderSubmissionError(error: unknown): boolean {
+  return (
+    isExternalApiRequestError(error) && UNCONFIRMED_ORDER_SUBMISSION_OPERATIONS.has(error.operation)
+  );
+}
+
+/**
  * 判断错误列表是否全部为外部 API 请求失败。
  *
  * @param errors 待判断错误列表
@@ -168,16 +188,46 @@ function extractStringProperty(error: unknown, key: string): string | null {
 }
 
 /**
+ * 从错误对象及其结构化 cause/error 字段读取可分类字段。
+ *
+ * @param error 待读取错误对象
+ * @param keys 字段名列表
+ * @param depth 当前递归深度
+ * @returns 可用于分类的字段文本列表
+ */
+function extractNestedStringProperties(
+  error: unknown,
+  keys: ReadonlyArray<string>,
+  depth: number = 0,
+): ReadonlyArray<string> {
+  if (depth > 2 || !isRecord(error)) {
+    return [];
+  }
+
+  const values: string[] = [];
+  for (const key of keys) {
+    const value = extractStringProperty(error, key);
+    if (value !== null) {
+      values.push(value);
+    }
+  }
+
+  for (const key of NESTED_ERROR_KEYS) {
+    values.push(...extractNestedStringProperties(error[key], keys, depth + 1));
+  }
+
+  return values;
+}
+
+/**
  * 从结构化错误字段读取 HTTP 状态码。
  *
  * @param error 待分类错误对象
  * @returns 三位状态码文本
  */
 function extractNumericStatusText(error: unknown): string | null {
-  const statusKeys = ['status', 'statusCode', 'httpStatus'] as const;
-  for (const key of statusKeys) {
-    const value = extractStringProperty(error, key);
-    if (value !== null && /^\d{3}$/.test(value)) {
+  for (const value of extractNestedStringProperties(error, STRUCTURED_STATUS_KEYS)) {
+    if (/^\d{3}$/.test(value)) {
       return value;
     }
   }
@@ -211,15 +261,25 @@ function extractStatusFromMessage(message: string): string | null {
  * @returns true 表示结构化字段或消息包含六位业务 code
  */
 function hasBusinessErrorCode(error: unknown, message: string): boolean {
-  const structuredCodeKeys = ['code', 'errorCode', 'errno'] as const;
-  for (const key of structuredCodeKeys) {
-    const structuredCode = extractStringProperty(error, key);
-    if (structuredCode !== null && /^\d{6}$/.test(structuredCode)) {
+  for (const structuredCode of extractNestedStringProperties(error, STRUCTURED_ERROR_CODE_KEYS)) {
+    if (/^\d{6}$/.test(structuredCode)) {
       return true;
     }
   }
 
   return /\b(?:code=)?\d{6}\b/i.test(message);
+}
+
+/**
+ * 判断结构化错误码是否为明确的暂态网络错误。
+ *
+ * @param error 待分类错误对象
+ * @returns true 表示 cause/error 中存在明确的网络暂态错误码
+ */
+function hasRetryableStructuredErrorCode(error: unknown): boolean {
+  return extractNestedStringProperties(error, STRUCTURED_ERROR_CODE_KEYS).some((code) =>
+    RETRYABLE_STRUCTURED_ERROR_CODES.has(code.toLowerCase()),
+  );
 }
 
 /**
@@ -244,6 +304,10 @@ function resolveExternalApiRetryDecision(error: unknown): ExternalApiRetryDecisi
 
   const statusText = extractNumericStatusText(error) ?? extractStatusFromMessage(message);
   if (statusText !== null && TRANSIENT_STATUS_CODES.has(statusText)) {
+    return 'RETRY';
+  }
+
+  if (hasRetryableStructuredErrorCode(error)) {
     return 'RETRY';
   }
 

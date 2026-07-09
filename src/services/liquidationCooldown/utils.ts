@@ -1,6 +1,5 @@
-import { TIME, TRADING } from '../../constants/index.js';
+import { TIME } from '../../constants/index.js';
 import { getHKTime } from '../../utils/time/index.js';
-import type { TradeRecord } from '../../types/trader.js';
 import type { LiquidationCooldownConfig } from '../../types/config.js';
 import type { CooldownCandidate } from './types.js';
 
@@ -150,63 +149,6 @@ export function toBooleanOrNull(value: unknown): boolean | null {
 }
 
 /**
- * 从成交记录中按监控标的和方向收集保护性清仓“完成事件”记录。
- * 仅识别 reason = PROTECTIVE_LIQUIDATION_COMPLETED 的日志。
- *
- * @param params.monitorSymbols 当前监控标的代码集合
- * @param params.tradeRecords 当日成交记录列表
- * @returns 按 monitorSymbol:direction 分组的保护性清仓记录（组内按时间升序）
- */
-export function collectLiquidationRecordsByMonitor({
-  monitorSymbols,
-  tradeRecords,
-}: {
-  readonly monitorSymbols: ReadonlySet<string>;
-  readonly tradeRecords: ReadonlyArray<TradeRecord>;
-}): ReadonlyMap<string, ReadonlyArray<CooldownCandidate>> {
-  if (monitorSymbols.size === 0 || tradeRecords.length === 0) {
-    return new Map();
-  }
-
-  const grouped = new Map<string, CooldownCandidate[]>();
-  for (const record of tradeRecords) {
-    if (record.reason !== TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON) {
-      continue;
-    }
-
-    const monitorSymbol = record.monitorSymbol;
-    const executedAtMs = record.executedAtMs;
-    if (!monitorSymbol || typeof executedAtMs !== 'number' || !Number.isFinite(executedAtMs)) {
-      continue;
-    }
-
-    if (!monitorSymbols.has(monitorSymbol)) {
-      continue;
-    }
-
-    const direction = resolveDirectionFromAction(record.action);
-    if (!direction) {
-      continue;
-    }
-
-    const key = buildCooldownKey(monitorSymbol, direction);
-    const list = grouped.get(key);
-    if (list) {
-      list.push({ monitorSymbol, direction, executedAtMs });
-      continue;
-    }
-
-    grouped.set(key, [{ monitorSymbol, direction, executedAtMs }]);
-  }
-
-  for (const list of grouped.values()) {
-    list.sort((a, b) => a.executedAtMs - b.executedAtMs);
-  }
-
-  return grouped;
-}
-
-/**
  * 模拟触发-冷却周期，计算当前周期计数、当前周期冷却激活时间、最近一次已过期冷却结束边界。
  * 当记录时间跨过冷却结束时间时，视为进入新周期并重置计数，同时记录该冷却结束边界。
  *
@@ -278,24 +220,6 @@ export function simulateTriggerCycle({
     cooldownExecutedTimeMs: lastCooldownTimeMs,
     lastExpiredCooldownEndMs,
   };
-}
-
-/**
- * 从信号 action 推导方向。
- *
- * @param action 信号 action
- * @returns LONG / SHORT / null
- */
-function resolveDirectionFromAction(action: string | null): 'LONG' | 'SHORT' | null {
-  if (action === 'SELLCALL') {
-    return 'LONG';
-  }
-
-  if (action === 'SELLPUT') {
-    return 'SHORT';
-  }
-
-  return null;
 }
 
 /**

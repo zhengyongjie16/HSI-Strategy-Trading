@@ -143,7 +143,7 @@ export type RiskCheckerDeps = {
 
 /**
  * 单监控标的单方向的当日亏损状态。
- * 类型用途：DailyLossTracker 内部状态，按 monitorSymbol + 方向分组存储。
+ * 类型用途：DailyLossTracker 内部的 LONG/SHORT 分方向状态。
  * 数据来源：由 DailyLossTracker 内部维护（买入/卖出订单与偏移）。
  * 使用范围：仅 riskController 模块内部使用。
  */
@@ -154,6 +154,25 @@ export type DailyLossState = {
   /** 当日偏移仅记录亏损，盈利按 0 处理，因此该值始终 <= 0 */
   readonly dailyLossOffset: number;
 };
+
+/**
+ * 当日亏损方向键。
+ * 类型用途：DailyLossTracker 内部用于索引唯一 monitor 的 LONG/SHORT 分段状态。
+ * 数据来源：订单归属解析、成交回报与保护性清仓边界。
+ * 使用范围：仅 riskController 模块内部使用。
+ */
+export type DailyLossDirection = 'LONG' | 'SHORT';
+
+/**
+ * 唯一 monitor 的双方向当日亏损状态集合。
+ * 类型用途：DailyLossTracker 内部保存 LONG/SHORT 两个方向的当前分段状态。
+ * 数据来源：recalculateFromAllOrders 全量重算或 recordFilledOrder 增量更新。
+ * 使用范围：仅 riskController 模块内部使用。
+ */
+export type DailyLossDirectionStates = Readonly<{
+  long: DailyLossState;
+  short: DailyLossState;
+}>;
 
 /**
  * 未归属订单诊断样例，用于日志输出。

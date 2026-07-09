@@ -1,6 +1,6 @@
 /**
  * K 线数据值类型。
- * 类型用途：兼容 Longbridge SDK 的 Decimal 与原始数值，作为 CandleData 各 OHLCV 字段的类型。
+ * 类型用途：承接 Longbridge SDK 的 Decimal 形态与原始数值，作为 CandleData 各 OHLCV 字段的类型。
  * 数据来源：Longbridge K 线 API 返回。
  * 使用范围：CandleData 字段内部复用，不作为跨模块公共类型导出。
  */
