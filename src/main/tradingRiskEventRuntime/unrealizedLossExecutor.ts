@@ -28,7 +28,6 @@ export async function executeDirectionalUnrealizedLoss(params: {
   const context: DirectionalUnrealizedLossMonitorContext = {
     symbol: route.tradingSymbol,
     isLong: route.direction === 'LONG',
-    monitorSymbol: route.monitorSymbol,
     seatVersion: route.seatVersion,
     quote: event.quote,
     riskChecker: route.monitorContext.riskChecker,

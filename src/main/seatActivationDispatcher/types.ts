@@ -1,4 +1,3 @@
-import type { TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
@@ -29,7 +28,6 @@ export type PendingSeatActivation = Readonly<{
  * 使用范围：SeatActivationDispatcher 工厂。
  */
 export type SeatActivationDispatcherDeps = Readonly<{
-  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
 }>;

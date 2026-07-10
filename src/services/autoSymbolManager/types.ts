@@ -6,7 +6,6 @@ import type {
   SeatState,
   SeatStateChangedEvent,
   SeatStatus,
-  SeatVersionChangedEvent,
   SymbolRegistry,
 } from '../../types/seat.js';
 import type {
@@ -62,14 +61,6 @@ export type SymbolSeatEntry = {
  * 使用范围：仅 autoSymbolManager 的 SymbolRegistry 实现使用。
  */
 export type SeatStateChangedListener = (event: SeatStateChangedEvent) => void;
-
-/**
- * 席位版本变化监听器。
- * 类型用途：SymbolRegistry 内部版本事件发射时保存 listener 集合。
- * 数据来源：由 onSeatVersionChanged 注册。
- * 使用范围：仅 autoSymbolManager 的 SymbolRegistry 实现使用。
- */
-export type SeatVersionChangedListener = (event: SeatVersionChangedEvent) => void;
 
 /**
  * 自动换标管理器的依赖注入参数。
@@ -392,33 +383,31 @@ type SignalSeatValidationFailureReason =
 
 /**
  * 信号席位绑定校验入参。
- * 类型用途：封装按 monitorSymbol 校验 signal 与当前 seat 绑定关系所需的最小依赖。
+ * 类型用途：封装校验 signal 与当前 seat 绑定关系所需的最小依赖。
  * 使用范围：autoSymbolManager/utils 与相关调用方使用。
  */
 export type ValidateSignalSeatParams = Readonly<{
-  monitorSymbol: string;
-  signal: Pick<Signal, 'action' | 'seatVersion' | 'symbol'>;
-  symbolRegistry: SymbolRegistry;
+  readonly signal: Pick<Signal, 'action' | 'seatVersion' | 'symbol'>;
+  readonly symbolRegistry: SymbolRegistry;
 }>;
 
 /**
  * 信号席位绑定校验结果。
- * 类型用途：表达 signal 与当前席位是否一致；成功时暴露收窄后的就绪 seatState，失败时暴露原因与当前 seatState。
+ * 类型用途：表达 signal 与当前席位是否一致；席位不可用时保留状态以生成具体失败原因。
  * 使用范围：延迟验证接线、买卖处理器等需要统一过滤旧席位信号的调用方。
  */
 export type SignalSeatValidationResult =
   | Readonly<{
       valid: true;
-      direction: 'LONG' | 'SHORT';
-      seatState: SeatState & { symbol: string };
-      seatVersion: number;
     }>
   | Readonly<{
       valid: false;
-      direction: 'LONG' | 'SHORT';
-      reason: SignalSeatValidationFailureReason;
+      reason: 'SEAT_UNAVAILABLE';
       seatState: SeatState;
-      seatVersion: number;
+    }>
+  | Readonly<{
+      valid: false;
+      reason: Exclude<SignalSeatValidationFailureReason, 'SEAT_UNAVAILABLE'>;
     }>;
 
 /**
@@ -585,7 +574,6 @@ export type SwitchStateMachineDeps = {
   readonly buildFindBestWarrantInput: BuildFindBestWarrantInput;
   readonly findBestWarrant: FindBestWarrant;
   readonly resolveDirectionSymbols: (direction: 'LONG' | 'SHORT') => {
-    readonly isBull: boolean;
     readonly buyAction: 'BUYCALL' | 'BUYPUT';
     readonly sellAction: 'SELLCALL' | 'SELLPUT';
   };

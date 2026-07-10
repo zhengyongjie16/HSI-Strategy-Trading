@@ -48,44 +48,35 @@ export type _SampleQueue = {
 
 /**
  * 指标缓存配置选项（创建缓存时的参数）。
- * 类型用途：控制单个标的的样本保留时间窗口。
+ * 类型用途：控制唯一 monitor 内延迟验证样本的保留时间窗口。
  * 数据来源：由创建 IndicatorCache 的调用方传入，未传则使用默认值。
  * 使用范围：仅 indicatorCache 模块内部使用。
  */
 export type IndicatorCacheOptions = {
   /** 样本保留时间窗口（毫秒），默认 100000 */
   readonly retentionWindowMs?: number;
-
-  /** 唯一监控标的代码；所有读写都必须匹配该代码 */
-  readonly monitorSymbol: string;
 };
 
 /**
  * 指标缓存行为契约。
- * 类型用途：供 DelayedSignalVerifier 等回溯历史指标（getClosest），由运行时按监控标的创建并注入。
+ * 类型用途：供 DelayedSignalVerifier 等回溯历史指标（getClosest），由唯一 monitor 运行时创建并注入。
  * 数据来源：运行时创建，indicatorCache 模块实现；push 数据来自上游业务事件采样链路。
  * 使用范围：上游业务事件采样链路、delayedSignalVerifier、lifecycle 等使用，仅内部使用。
  */
 export interface IndicatorCache {
   /**
    * 推送新的延迟验证样本。
-   * @param monitorSymbol 监控标的代码
    * @param values 延迟验证三态样本
    * @param sampleTimestampMs 采样时间戳（毫秒）
    */
-  push: (
-    monitorSymbol: string,
-    values: VerificationSampleValues,
-    sampleTimestampMs: number,
-  ) => void;
+  push: (values: VerificationSampleValues, sampleTimestampMs: number) => void;
 
   /**
    * 获取最接近目标时间的延迟验证样本条目。
-   * @param monitorSymbol 监控标的代码
    * @param targetTime 目标时间戳（毫秒）
    * @returns 最接近的样本条目，若无可用样本则返回 null
    */
-  getClosest: (monitorSymbol: string, targetTime: number) => IndicatorCacheEntry | null;
+  getClosest: (targetTime: number) => IndicatorCacheEntry | null;
 
   /**
    * 清除所有缓存

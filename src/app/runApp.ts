@@ -162,13 +162,6 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
       });
     }
 
-    postGateRuntime.postTradeConsistencyRuntime.bindBusinessDeps({
-      monitorContext,
-      dailyLossTracker: postGateRuntime.dailyLossTracker,
-      liquidationCooldownTracker: postGateRuntime.liquidationCooldownTracker,
-      protectiveLiquidationEpisodeTracker: postGateRuntime.protectiveLiquidationEpisodeTracker,
-    });
-
     const rebuildTradingDayState = buildRebuildTradingDayState({
       marketDataClient: preGateRuntime.marketDataClient,
       trader: postGateRuntime.trader,

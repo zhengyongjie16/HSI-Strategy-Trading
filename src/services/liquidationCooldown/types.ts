@@ -12,24 +12,22 @@ export type RawRecord = {
 
 /**
  * 记录清仓冷却的参数。
- * 类型用途：包含标的代码、方向与保护性清仓成交时间戳，由 recordCooldown 消费。
- * 数据来源：由 tradeLogHydrator 在启动恢复时传入。
+ * 类型用途：包含方向与保护性清仓成交时间戳，由 recordCooldown 消费。
+ * 数据来源：外部 monitorSymbol 已在恢复边界校验，内部只按方向写入。
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type RecordCooldownParams = {
-  readonly symbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly executedTimeMs: number;
 };
 
 /**
  * 记录保护性清仓触发的参数。
- * 类型用途：包含标的代码、方向、成交时间与触发上限，由 recordLiquidationTrigger 消费。
- * 数据来源：由成交后一致性运行时在保护性清仓完成确认后传入。
+ * 类型用途：包含方向、成交时间与触发上限，由 recordLiquidationTrigger 消费。
+ * 数据来源：由成交后一致性运行时在完成唯一 monitor 归因后传入。
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type RecordLiquidationTriggerParams = {
-  readonly symbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly executedTimeMs: number;
   readonly triggerLimit: number;
@@ -53,23 +51,21 @@ export type RecordLiquidationTriggerResult = {
 /**
  * 恢复触发计数器的参数。
  * 类型用途：启动恢复时将模拟得到的当前周期计数写入追踪器。
- * 数据来源：由 tradeLogHydrator 传入。
+ * 数据来源：外部 monitorSymbol 已在恢复边界校验，内部只按方向恢复。
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type RestoreTriggerCountParams = {
-  readonly symbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly count: number;
 };
 
 /**
  * 查询剩余冷却时间的参数。
- * 类型用途：包含标的代码、方向与冷却配置，由 getRemainingMs 消费。
+ * 类型用途：包含方向与冷却配置，由 getRemainingMs 消费。
  * 数据来源：由风控模块在判断是否允许买入前传入。
  * 使用范围：仅 liquidationCooldown 模块使用。
  */
 export type GetRemainingMsParams = {
-  readonly symbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly cooldownConfig: LiquidationCooldownConfig | null;
 
@@ -89,12 +85,12 @@ export type LiquidationCooldownTrackerDeps = {
 
 /**
  * 午夜按策略清理的参数。
- * 类型用途：包含需要清除的冷却键集合，由 clearMidnightEligible 消费；仅清理 half-day/one-day 模式条目。
+ * 类型用途：包含需要清除的方向集合，由 clearMidnightEligible 消费；仅清理 half-day/one-day 模式条目。
  * 使用范围：仅 liquidationCooldown 模块使用。
  * 数据来源：由当前模块的入参、返回值或运行时派生数据提供（如适用）。
  */
 export type ClearMidnightEligibleParams = {
-  readonly keysToClear: ReadonlySet<string>;
+  readonly directionsToClear: ReadonlySet<'LONG' | 'SHORT'>;
 };
 
 /**
@@ -153,7 +149,7 @@ export type TradeLogHydratorDeps = {
  * 使用范围：供主程序 startup 消费。
  */
 export interface TradeLogHydrator {
-  hydrate: () => ReadonlyMap<string, number>;
+  hydrate: () => ReadonlyMap<'LONG' | 'SHORT', number>;
 }
 
 /**

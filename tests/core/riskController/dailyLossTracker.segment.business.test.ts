@@ -99,31 +99,28 @@ describe('dailyLossTracker segment flow', () => {
       monitor,
       now,
     );
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
 
     tracker.startNewProtectionEpisode({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe(0);
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
       symbol: 'BULL.HK',
-      isLongSymbol: true,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:09:00.000Z'),
       orderId: 'buy-before-segment',
     });
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe(0);
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
       symbol: 'BULL.HK',
-      isLongSymbol: true,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
@@ -132,16 +129,15 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
       symbol: 'BULL.HK',
-      isLongSymbol: true,
       side: OrderSide.Sell,
       executedPrice: 9,
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderId: 'sell-new-segment',
     });
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
   });
 
   it('startNewProtectionEpisode resets only the SHORT segment and keeps LONG state intact', () => {
@@ -187,33 +183,30 @@ describe('dailyLossTracker segment flow', () => {
       monitor,
       now,
     );
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
-    expect(tracker.getLossOffset('HSI.HK', false)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('SHORT')).toBe(-10);
 
     tracker.startNewProtectionEpisode({
-      monitorSymbol: 'HSI.HK',
       direction: 'SHORT',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
-    expect(tracker.getLossOffset('HSI.HK', false)).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('SHORT')).toBe(0);
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'SHORT',
       symbol: 'BEAR.HK',
-      isLongSymbol: false,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:09:00.000Z'),
       orderId: 'short-buy-before-segment',
     });
-    expect(tracker.getLossOffset('HSI.HK', false)).toBe(0);
+    expect(tracker.getLossOffset('SHORT')).toBe(0);
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'SHORT',
       symbol: 'BEAR.HK',
-      isLongSymbol: false,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
@@ -222,9 +215,8 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'SHORT',
       symbol: 'BEAR.HK',
-      isLongSymbol: false,
       side: OrderSide.Sell,
       executedPrice: 9,
       executedQuantity: 10,
@@ -232,8 +224,8 @@ describe('dailyLossTracker segment flow', () => {
       orderId: 'short-sell-new-segment',
     });
 
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
-    expect(tracker.getLossOffset('HSI.HK', false)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('SHORT')).toBe(-10);
   });
 
   it('startNewProtectionEpisode is idempotent for the same protection boundary', () => {
@@ -245,15 +237,13 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders([], monitor, now);
 
     tracker.startNewProtectionEpisode({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: firstBoundaryMs,
     });
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
       symbol: 'BULL.HK',
-      isLongSymbol: true,
       side: OrderSide.Buy,
       executedPrice: 10,
       executedQuantity: 10,
@@ -262,30 +252,28 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordFilledOrder({
-      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
       symbol: 'BULL.HK',
-      isLongSymbol: true,
       side: OrderSide.Sell,
       executedPrice: 9,
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderId: 'sell-after-first-reset',
     });
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
 
     tracker.startNewProtectionEpisode({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: firstBoundaryMs,
     });
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
   });
 
   it('recalculateFromAllOrders respects external protectionBoundaryByDirection at startup', () => {
     const tracker = createSegmentTracker();
     const monitor = createMonitor();
-    const protectionBoundaryByDirection = new Map<string, number>([
-      ['HSI.HK:LONG', Date.parse('2026-03-03T01:10:00.000Z')],
+    const protectionBoundaryByDirection = new Map<'LONG', number>([
+      ['LONG', Date.parse('2026-03-03T01:10:00.000Z')],
     ]);
 
     tracker.recalculateFromAllOrders(
@@ -328,7 +316,7 @@ describe('dailyLossTracker segment flow', () => {
       protectionBoundaryByDirection,
     );
 
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
   });
 
   it('recalculateFromAllOrders keeps same-day in-memory protection boundary when no boundary is passed', () => {
@@ -358,14 +346,13 @@ describe('dailyLossTracker segment flow', () => {
       monitor,
       now,
     );
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
 
     tracker.startNewProtectionEpisode({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe(0);
 
     tracker.recalculateFromAllOrders(
       [
@@ -406,7 +393,7 @@ describe('dailyLossTracker segment flow', () => {
       now,
     );
 
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
   });
 
   it('recalculateFromAllOrders includes canceled order executed part to keep restart consistency', () => {
@@ -439,7 +426,7 @@ describe('dailyLossTracker segment flow', () => {
       now,
     );
 
-    expect(tracker.getLossOffset('HSI.HK', true)).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
   });
 
   it('recalculateFromAllOrders fails fast when a relevant in-day executed order cannot be owned', () => {

@@ -22,9 +22,10 @@ import { formatSymbolDisplay } from '../../utils/display/index.js';
  * 每次调用都基于当前权威 candlestick snapshot 推进增量 runtime。
  */
 export function runIndicatorPipeline(params: IndicatorPipelineParams): IndicatorSnapshot | null {
-  const { monitorSymbol, monitorContext, mainContext } = params;
+  const { monitorContext, mainContext } = params;
   const { marketDataClient } = mainContext;
   const { state, indicatorProfile } = monitorContext;
+  const monitorSymbol = monitorContext.config.monitorSymbol;
 
   const cacheSnapshot = marketDataClient.getCandlestickSnapshot(
     monitorSymbol,

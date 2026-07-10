@@ -54,7 +54,7 @@ export function captureSeatActivationCarryover(params: {
     }>
   >();
   for (const direction of ['LONG', 'SHORT'] as const) {
-    const seatState = symbolRegistry.getSeatState(tradingConfig.monitor.monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
       continue;
     }

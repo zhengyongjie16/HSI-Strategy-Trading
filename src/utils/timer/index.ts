@@ -62,6 +62,5 @@ export function scheduleBoundedOneShotAt<TTimerHandle>(
       cancelled = true;
       clearCurrentTimer();
     },
-    hasTimer: () => currentHandle !== null,
   };
 }

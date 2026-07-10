@@ -20,7 +20,6 @@ import type {
   SeatEntry,
   SeatStateChangedListener,
   SeatUnavailableReason,
-  SeatVersionChangedListener,
   SignalSeatValidationResult,
   SymbolSeatEntry,
   ValidateSignalSeatParams,
@@ -151,60 +150,44 @@ function resolveSignalDirection(
  * 校验信号是否仍绑定到当前席位。
  * 默认行为：按 action 推导方向后，依次校验席位 ACTIVE、席位版本匹配与席位标的一致性。
  *
- * @param params 校验所需的 monitorSymbol、signal 与 symbolRegistry
+ * @param params 校验所需的 signal 与 symbolRegistry
  * @returns 校验结果；成功时返回收窄后的就绪 seatState，失败时返回失败原因
  */
 export function validateSignalSeat(params: ValidateSignalSeatParams): SignalSeatValidationResult {
   const direction = resolveSignalDirection(params.signal.action);
   if (direction === null) {
-    const seatState = params.symbolRegistry.getSeatState(params.monitorSymbol, 'LONG');
-    const seatVersion = params.symbolRegistry.getSeatVersion(params.monitorSymbol, 'LONG');
     return {
       valid: false,
-      direction: 'LONG',
       reason: 'INVALID_SIGNAL_ACTION',
-      seatState,
-      seatVersion,
     };
   }
 
-  const seatState = params.symbolRegistry.getSeatState(params.monitorSymbol, direction);
-  const seatVersion = params.symbolRegistry.getSeatVersion(params.monitorSymbol, direction);
+  const seatState = params.symbolRegistry.getSeatState(direction);
+  const seatVersion = params.symbolRegistry.getSeatVersion(direction);
   if (!isSeatActive(seatState)) {
     return {
       valid: false,
-      direction,
       reason: 'SEAT_UNAVAILABLE',
       seatState,
-      seatVersion,
     };
   }
 
   if (!isSeatVersionMatch(params.signal.seatVersion, seatVersion)) {
     return {
       valid: false,
-      direction,
       reason: 'SEAT_VERSION_MISMATCH',
-      seatState,
-      seatVersion,
     };
   }
 
   if (params.signal.symbol !== seatState.symbol) {
     return {
       valid: false,
-      direction,
       reason: 'SEAT_SYMBOL_MISMATCH',
-      seatState,
-      seatVersion,
     };
   }
 
   return {
     valid: true,
-    direction,
-    seatState,
-    seatVersion,
   };
 }
 
@@ -236,7 +219,7 @@ export function describeSignalSeatValidationFailure(
     }
 
     default: {
-      throw new Error(`未知的信号席位校验失败原因: ${String(result.reason)}`);
+      throw new Error('未知的信号席位校验失败原因');
     }
   }
 }
@@ -342,37 +325,12 @@ function normalizeSeatState(nextState: SeatState): SeatState {
 }
 
 /**
- * 校验调用方传入的监控标的是否为唯一 monitor。
- * @param actualMonitorSymbol 调用方传入的监控标的代码
- * @param expectedMonitorSymbol 唯一监控标的代码
- * @throws 当监控标的不是唯一 monitor 时抛出错误
- */
-function requireExpectedMonitorSymbol(
-  actualMonitorSymbol: string,
-  expectedMonitorSymbol: string,
-): void {
-  if (actualMonitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(`SymbolRegistry 未找到监控标的: ${actualMonitorSymbol}`);
-  }
-}
-
-/**
  * 从唯一 monitor 席位存储中解析指定方向的席位条目（内部辅助函数）
  * @param seatStore 唯一 monitor 的席位存储
- * @param expectedMonitorSymbol 唯一监控标的代码
- * @param monitorSymbol 监控标的代码
  * @param direction 方向（LONG 或 SHORT）
  * @returns 对应方向的席位条目
- * @throws 当监控标的不是唯一 monitor 时抛出错误
  */
-function resolveSeatEntry(
-  seatStore: SymbolSeatEntry,
-  expectedMonitorSymbol: string,
-  monitorSymbol: string,
-  direction: 'LONG' | 'SHORT',
-): SeatEntry {
-  requireExpectedMonitorSymbol(monitorSymbol, expectedMonitorSymbol);
-
+function resolveSeatEntry(seatStore: SymbolSeatEntry, direction: 'LONG' | 'SHORT'): SeatEntry {
   return direction === 'LONG' ? seatStore.long : seatStore.short;
 }
 
@@ -384,7 +342,6 @@ function resolveSeatEntry(
 export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
   const expectedMonitorSymbol = monitor.monitorSymbol;
   const listeners = new Set<SeatStateChangedListener>();
-  const versionListeners = new Set<SeatVersionChangedListener>();
   const truthListeners = new Set<SeatTruthChangedListener>();
 
   const autoSearchEnabled = monitor.autoSearchConfig.autoSearchEnabled;
@@ -412,20 +369,6 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
   }
 
   /**
-   * 广播席位版本变化事件。
-   * 事件由 bumpSeatVersion 或原子状态版本更新发布，表达 seatVersion 隔离边界变化。
-   */
-  function emitSeatVersionChanged(event: Parameters<SeatVersionChangedListener>[0]): void {
-    for (const listener of versionListeners) {
-      try {
-        listener(event);
-      } catch (error) {
-        logger.error('SymbolRegistry 席位版本 listener 执行失败', formatError(error));
-      }
-    }
-  }
-
-  /**
    * 广播席位 truth 变化事件。
    * 事件在 public mutation 完整提交并完成细粒度事件发布后同步发出。
    */
@@ -440,11 +383,14 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
   }
 
   return {
-    getSeatState(monitorSymbol: string, direction: 'LONG' | 'SHORT'): SeatState {
-      return resolveSeatEntry(seatStore, expectedMonitorSymbol, monitorSymbol, direction).state;
+    getMonitorSymbol(): string {
+      return expectedMonitorSymbol;
     },
-    getSeatVersion(monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      return resolveSeatEntry(seatStore, expectedMonitorSymbol, monitorSymbol, direction).version;
+    getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
+      return resolveSeatEntry(seatStore, direction).state;
+    },
+    getSeatVersion(direction: 'LONG' | 'SHORT'): number {
+      return resolveSeatEntry(seatStore, direction).version;
     },
     resolveSeatBySymbol(symbol: string): {
       monitorSymbol: string;
@@ -476,95 +422,48 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
 
       return null;
     },
-    updateSeatState(
-      monitorSymbol: string,
-      direction: 'LONG' | 'SHORT',
-      nextState: SeatState,
-    ): SeatState {
-      const seatEntry = resolveSeatEntry(
-        seatStore,
-        expectedMonitorSymbol,
-        monitorSymbol,
-        direction,
-      );
+    updateSeatState(direction: 'LONG' | 'SHORT', nextState: SeatState): SeatState {
+      const seatEntry = resolveSeatEntry(seatStore, direction);
       const previousState = seatEntry.state;
       const previousVersion = seatEntry.lastEventVersion;
       seatEntry.state = normalizeSeatState(nextState);
       seatEntry.lastEventVersion = seatEntry.version;
       emitSeatStateChanged({
-        monitorSymbol,
+        monitorSymbol: expectedMonitorSymbol,
         direction,
         previousState,
         nextState: seatEntry.state,
         previousVersion,
         nextVersion: seatEntry.version,
       });
-      emitSeatTruthChanged({ monitorSymbol, direction });
+      emitSeatTruthChanged({ monitorSymbol: expectedMonitorSymbol, direction });
       return seatEntry.state;
     },
     updateSeatStateWithVersionBump(
-      monitorSymbol: string,
       direction: 'LONG' | 'SHORT',
       nextState: SeatState,
     ): { readonly seatState: SeatState; readonly seatVersion: number } {
-      const seatEntry = resolveSeatEntry(
-        seatStore,
-        expectedMonitorSymbol,
-        monitorSymbol,
-        direction,
-      );
+      const seatEntry = resolveSeatEntry(seatStore, direction);
       const previousState = seatEntry.state;
-      const previousVersion = seatEntry.version;
       const previousStateEventVersion = seatEntry.lastEventVersion;
       seatEntry.state = normalizeSeatState(nextState);
       seatEntry.version += 1;
       seatEntry.lastEventVersion = seatEntry.version;
-      emitSeatVersionChanged({
-        monitorSymbol,
-        direction,
-        previousVersion,
-        nextVersion: seatEntry.version,
-      });
-
       emitSeatStateChanged({
-        monitorSymbol,
+        monitorSymbol: expectedMonitorSymbol,
         direction,
         previousState,
         nextState: seatEntry.state,
         previousVersion: previousStateEventVersion,
         nextVersion: seatEntry.version,
       });
-      emitSeatTruthChanged({ monitorSymbol, direction });
+      emitSeatTruthChanged({ monitorSymbol: expectedMonitorSymbol, direction });
       return { seatState: seatEntry.state, seatVersion: seatEntry.version };
-    },
-    bumpSeatVersion(monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      const seatEntry = resolveSeatEntry(
-        seatStore,
-        expectedMonitorSymbol,
-        monitorSymbol,
-        direction,
-      );
-      const previousVersion = seatEntry.version;
-      seatEntry.version += 1;
-      emitSeatVersionChanged({
-        monitorSymbol,
-        direction,
-        previousVersion,
-        nextVersion: seatEntry.version,
-      });
-      emitSeatTruthChanged({ monitorSymbol, direction });
-      return seatEntry.version;
     },
     onSeatStateChanged(listener: SeatStateChangedListener): () => void {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
-      };
-    },
-    onSeatVersionChanged(listener: SeatVersionChangedListener): () => void {
-      versionListeners.add(listener);
-      return () => {
-        versionListeners.delete(listener);
       };
     },
     onSeatTruthChanged(listener: SeatTruthChangedListener): () => void {

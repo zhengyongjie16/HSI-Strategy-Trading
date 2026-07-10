@@ -12,18 +12,16 @@ import type { BuildOrderSignalParams, OrderSignal, OrderSignalBuilder } from './
 /**
  * 将方向映射到对应的买卖动作与牛熊方向（LONG→BUYCALL/SELLCALL，SHORT→BUYPUT/SELLPUT）。
  * @param direction - 'LONG' | 'SHORT'
- * @returns isBull、buyAction、sellAction
+ * @returns buyAction、sellAction
  */
 export function resolveDirectionSymbols(direction: 'LONG' | 'SHORT'): {
-  readonly isBull: boolean;
   readonly buyAction: 'BUYCALL' | 'BUYPUT';
   readonly sellAction: 'SELLCALL' | 'SELLPUT';
 } {
-  const isBull = direction === 'LONG';
+  const isLong = direction === 'LONG';
   return {
-    isBull,
-    buyAction: isBull ? 'BUYCALL' : 'BUYPUT',
-    sellAction: isBull ? 'SELLCALL' : 'SELLPUT',
+    buyAction: isLong ? 'BUYCALL' : 'BUYPUT',
+    sellAction: isLong ? 'SELLCALL' : 'SELLPUT',
   } as const;
 }
 

@@ -18,7 +18,6 @@ import type {
   CandlestickParams,
   PushCandlestickEventParams,
   PushQuoteEventParams,
-  TradingDaysResultParams,
   WarrantInfoParams,
   WarrantQuoteParams,
 } from './types.js';
@@ -161,47 +160,4 @@ export function createWarrantInfo(params: WarrantInfoParams): WarrantInfo {
   };
 
   return info as unknown as WarrantInfo;
-}
-
-/**
- * 构造交易日查询结果，供 tradingDays Mock 使用。
- */
-export function createTradingDaysResult(days: TradingDaysResultParams): {
-  readonly tradingDays: ReadonlyArray<string>;
-  readonly halfTradingDays: ReadonlyArray<string>;
-} {
-  const result = {
-    tradingDays: days.tradingDays,
-    halfTradingDays: days.halfTradingDays ?? [],
-  };
-  return result;
-}
-
-/**
- * 构造证券实时行情最小结构，供 quote 查询链路测试使用。
- *
- * 仅填充策略流程会读取的关键字段，避免测试被无关字段噪音干扰。
- */
-export function createSecurityQuote(symbol: string, price: number): unknown {
-  return {
-    symbol,
-    lastDone: toMockDecimal(price),
-    prevClose: toMockDecimal(price),
-    timestamp: new Date(),
-  };
-}
-
-/**
- * 构造证券静态信息最小结构，供 staticInfo 查询链路测试使用。
- *
- * 统一返回名称与手数信息，保证订阅初始化逻辑在测试中稳定复现。
- */
-export function createSecurityStaticInfo(symbol: string, name: string, lotSize: number): unknown {
-  return {
-    symbol,
-    nameCn: name,
-    nameHk: name,
-    nameEn: name,
-    lotSize,
-  };
 }

@@ -307,11 +307,12 @@ describe('timeWakeupEvaluationProgram', () => {
   });
 
   it('12:00 关闭连续交易门禁并取消普通延迟验证', async () => {
-    const cancelAllCalls: string[] = [];
+    let cancelAllCalls = 0;
     const verifier = createDelayedSignalVerifierDouble({
       getPendingCount: () => 2,
-      cancelAllForSymbol: (monitorSymbol) => {
-        cancelAllCalls.push(monitorSymbol);
+      cancelAll: () => {
+        cancelAllCalls += 1;
+        return 2;
       },
     });
     const context = createTimeWakeupEvaluationHarness({
@@ -323,7 +324,7 @@ describe('timeWakeupEvaluationProgram', () => {
     await timeWakeupEvaluationProgram(context);
 
     expect(context.lastState.canTrade).toBe(false);
-    expect(cancelAllCalls).toEqual(['700.HK']);
+    expect(cancelAllCalls).toBe(1);
   });
 
   it('返回包含 lifecycle 与 doomsday retry 候选的 planner 输出', async () => {

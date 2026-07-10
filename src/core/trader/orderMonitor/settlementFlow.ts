@@ -318,9 +318,8 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
 
     const orderSide = resolveOrderSideFromText(side);
     dailyLossTracker.recordFilledOrder({
-      monitorSymbol,
+      direction: isLongSymbol ? 'LONG' : 'SHORT',
       symbol,
-      isLongSymbol,
       side: orderSide,
       executedPrice,
       executedQuantity,
@@ -331,7 +330,6 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     if (isProtectiveLiquidation && orderSide === OrderSide.Sell) {
       const direction = isLongSymbol ? 'LONG' : 'SHORT';
       protectiveLiquidationEpisodeTracker.recordProtectiveFillProgress({
-        monitorSymbol,
         direction,
         symbol,
         executedTimeMs,
@@ -374,10 +372,9 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       kind: 'RELEASE',
     };
     if (recordedExecution !== null && !executionContextReady) {
-      return {
-        handled: false,
-        relatedBuyOrderIds: null,
-      };
+      throw new Error(
+        `[订单监控] 订单 ${orderId} 存在成交事实但缺少唯一 monitor/direction 归因，阻断结算`,
+      );
     }
 
     let relatedBuyOrderIds: ReadonlyArray<string> | null = null;

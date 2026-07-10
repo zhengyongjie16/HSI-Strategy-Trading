@@ -25,7 +25,6 @@ export type SeatSnapshot = Readonly<{
  * 使用范围：仅 monitorTaskProcessor 与周期换标任务 owner 内部使用。
  */
 export type AutoSymbolTickTaskData = Readonly<{
-  monitorSymbol: string;
   direction: 'LONG' | 'SHORT';
   seatVersion: number;
   symbol: string;
@@ -40,7 +39,6 @@ export type AutoSymbolTickTaskData = Readonly<{
  * 使用范围：仅 monitorTaskProcessor、SeatActivationDispatcher 内部使用。
  */
 export type SeatRefreshTaskData = Readonly<{
-  monitorSymbol: string;
   direction: 'LONG' | 'SHORT';
   seatVersion: number;
   previousSymbol: string | null;
@@ -103,7 +101,6 @@ export type MonitorTaskContext = Pick<
   | 'longSymbolName'
   | 'shortSymbolName'
   | 'monitorSymbolName'
-  | 'normalizedMonitorSymbol'
   | 'indicatorProfile'
   | 'strategy'
   | 'unrealizedLossMonitor'

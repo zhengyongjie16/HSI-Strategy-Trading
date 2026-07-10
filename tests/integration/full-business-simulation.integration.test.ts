@@ -46,7 +46,6 @@ import type {
 
 function createIndicatorCache(retentionWindowMs: number) {
   return createIndicatorCacheImpl({
-    monitorSymbol: 'HSI.HK',
     retentionWindowMs,
   });
 }
@@ -55,7 +54,6 @@ function createDelayedSignalVerifier(params: {
   readonly indicatorCache: ReturnType<typeof createIndicatorCacheImpl>;
 }) {
   return createDelayedSignalVerifierImpl({
-    monitorSymbol: 'HSI.HK',
     ...params,
   });
 }
@@ -708,7 +706,6 @@ describe('full business simulation integration', () => {
       },
     });
     const seatActivationDispatcher = createSeatActivationDispatcher({
-      tradingConfig,
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -813,32 +810,32 @@ describe('full business simulation integration', () => {
     monitorQuoteEventRuntime.start();
     try {
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return (
           seat.symbol === 'OLD_BULL.HK' &&
           (seat.status === 'ACTIVATING' || seat.status === 'ACTIVE')
         );
       }).catch((error: unknown) => {
         throw new Error(
-          `initial auto-search timeout: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `initial auto-search timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
-      const searchedSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+      const searchedSeat = symbolRegistry.getSeatState('LONG');
       expect(searchedSeat.symbol).toBe('OLD_BULL.HK');
       expect(['ACTIVATING', 'ACTIVE']).toContain(searchedSeat.status);
-      expect(symbolRegistry.getSeatVersion(monitorConfig.monitorSymbol, 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
 
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return seat.status === 'ACTIVE' && seat.symbol === 'OLD_BULL.HK';
       }).catch((error: unknown) => {
         throw new Error(
-          `seat activation timeout after second monitor cycle: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `seat activation timeout after second monitor cycle: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
-      const activatedSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+      const activatedSeat = symbolRegistry.getSeatState('LONG');
       expect(activatedSeat.status).toBe('ACTIVE');
       expect(activatedSeat.symbol).toBe('OLD_BULL.HK');
 
@@ -862,19 +859,19 @@ describe('full business simulation integration', () => {
 
       await waitUntil(() => executedActions.length > 1).catch((error: unknown) => {
         throw new Error(
-          `rebuy action timeout: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `rebuy action timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return (
           seat.symbol === 'NEW_BULL.HK' &&
           (seat.status === 'ACTIVATING' || seat.status === 'ACTIVE')
         );
       }).catch((error: unknown) => {
         throw new Error(
-          `rebuy seat transition timeout: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `rebuy seat transition timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
@@ -883,18 +880,18 @@ describe('full business simulation integration', () => {
       expect(executedActions).toHaveLength(2);
 
       await waitUntil(() => {
-        const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+        const seat = symbolRegistry.getSeatState('LONG');
         return seat.status === 'ACTIVE' && seat.symbol === 'NEW_BULL.HK';
       }).catch((error: unknown) => {
         throw new Error(
-          `final seat activation timeout: seat=${JSON.stringify(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `final seat activation timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
-      const finalSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+      const finalSeat = symbolRegistry.getSeatState('LONG');
       expect(finalSeat.status).toBe('ACTIVE');
       expect(finalSeat.symbol).toBe('NEW_BULL.HK');
-      expect(symbolRegistry.getSeatVersion(monitorConfig.monitorSymbol, 'LONG')).toBe(3);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(3);
     } finally {
       delayedSignalVerifier.destroy();
       await Promise.all([
@@ -983,7 +980,7 @@ describe('full business simulation integration', () => {
     let cancelAllCalls = 0;
     const delayedSignalVerifier = {
       addSignal: () => {},
-      cancelAllForSymbol: () => {},
+      cancelAllForSymbol: () => 0,
       cancelAllForDirection: () => 0,
       cancelAll: () => {
         cancelAllCalls += 1;
@@ -1224,7 +1221,6 @@ describe('full business simulation integration', () => {
 
     buyTaskQueue.push({
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: monitorConfig.monitorSymbol,
       data: createSignal({
         symbol: 'BULL.HK',
         action: 'BUYCALL',
@@ -1235,7 +1231,6 @@ describe('full business simulation integration', () => {
 
     sellTaskQueue.push({
       type: 'IMMEDIATE_SELL',
-      monitorSymbol: monitorConfig.monitorSymbol,
       data: createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
@@ -1310,7 +1305,6 @@ describe('full business simulation integration', () => {
 
       sellTaskQueue.push({
         type: 'IMMEDIATE_SELL',
-        monitorSymbol: monitorConfig.monitorSymbol,
         data: createSignal({
           symbol: 'BULL.HK',
           action: 'SELLCALL',

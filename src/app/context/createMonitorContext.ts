@@ -55,7 +55,6 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     autoSymbolManager,
   } = deps;
   const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
-    config.monitorSymbol,
     symbolRegistry,
     quotesMap ?? new Map<string, null>(),
   );
@@ -80,7 +79,6 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     longSymbolName: runtimeSnapshot.longSymbolName,
     shortSymbolName: runtimeSnapshot.shortSymbolName,
     monitorSymbolName: runtimeSnapshot.monitorSymbolName,
-    normalizedMonitorSymbol: config.monitorSymbol,
     indicatorProfile,
   };
 }
@@ -98,7 +96,6 @@ export function syncMonitorContextRuntimeSnapshot(params: {
   readonly quotesMap: MonitorContextFactoryDeps['quotesMap'];
 }): void {
   const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
-    params.monitorContext.config.monitorSymbol,
     params.symbolRegistry,
     params.quotesMap ?? new Map<string, null>(),
   );
@@ -165,7 +162,6 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
       maxUnrealizedLossPerSymbol: monitorConfig.maxUnrealizedLossPerSymbol,
     }),
     delayedSignalVerifier: createDelayedSignalVerifier({
-      monitorSymbol: monitorConfig.monitorSymbol,
       indicatorCache: postGateRuntime.indicatorCache,
     }),
     autoSymbolManager,

@@ -22,10 +22,7 @@ export type MonitorDisplayRouteState = {
  */
 export interface MonitorDisplayRuntime {
   readonly start: () => void;
-  readonly requestRender: (params: {
-    readonly monitorSymbol: string;
-    readonly monitorSnapshot: IndicatorSnapshot;
-  }) => void;
+  readonly requestRender: (params: { readonly monitorSnapshot: IndicatorSnapshot }) => void;
   readonly stopAndDrain: () => Promise<void>;
 }
 

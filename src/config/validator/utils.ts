@@ -1,7 +1,12 @@
 import { logger } from '../../utils/logger/index.js';
 import type { LiquidationCooldownConfig, MonitorConfig, NumberRange } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
-import { getStringConfig, isSymbolWithRegion } from '../utils.js';
+import {
+  getBooleanConfig,
+  getStringConfig,
+  isSymbolWithRegion,
+  parseVerificationIndicators,
+} from '../utils.js';
 import { validateLongbridgeConfig } from '../auth/utils.js';
 import type { SignalConfigKey, SymbolValidationContext, ValidationResult } from './types.js';
 
@@ -131,7 +136,6 @@ export function validateLongbridgeAuthConfig(env: NodeJS.ProcessEnv): Validation
   const issues = validateLongbridgeConfig(env);
 
   return {
-    valid: issues.length === 0,
     errors: issues.map((issue) => issue.message),
     missingFields: issues.map((issue) => issue.envKey),
   };
@@ -191,6 +195,46 @@ function validateCriticalMinimumNumberConfig({
   }
 
   return null;
+}
+
+/**
+ * 校验显式布尔配置只能为 true/false。
+ * @param options 校验参数
+ * @returns 缺失时返回 null；显式配置但非法时返回错误信息
+ */
+export function validateExplicitBooleanConfig({
+  env,
+  envKey,
+}: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly envKey: string;
+}): string | null {
+  try {
+    getBooleanConfig(env, envKey, false);
+    return null;
+  } catch {
+    return `${envKey} 无效（必须为 true 或 false）`;
+  }
+}
+
+/**
+ * 校验显式延迟验证指标配置不能包含非法项。
+ * @param options 校验参数
+ * @returns 缺失或空列表时返回 null；显式配置但非法时返回错误信息
+ */
+function validateVerificationIndicatorsConfig({
+  env,
+  envKey,
+}: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly envKey: string;
+}): string | null {
+  try {
+    parseVerificationIndicators(env, envKey);
+    return null;
+  } catch {
+    return `${envKey} 无效（必须为 K/D/J/MACD/DIF/DEA/ADX/EMA:N/PSY:N）`;
+  }
 }
 
 /**
@@ -259,6 +303,14 @@ export function validateMonitorConfig(
   missingFields = result1.missingFields;
 
   const autoSearchEnabled = config.autoSearchConfig.autoSearchEnabled;
+  const autoSearchEnabledValidationError = validateExplicitBooleanConfig({
+    env,
+    envKey: 'AUTO_SEARCH_ENABLED',
+  });
+  if (autoSearchEnabledValidationError !== null) {
+    errors = [...errors, `${prefix}: ${autoSearchEnabledValidationError}`];
+    missingFields = [...missingFields, 'AUTO_SEARCH_ENABLED'];
+  }
 
   if (config.orderOwnershipMapping.length === 0) {
     errors = [
@@ -331,6 +383,25 @@ export function validateMonitorConfig(
     missingFields = [...missingFields, maxPositionNotionalEnvKey];
   }
 
+  const maxUnrealizedLossEnvKey = 'MAX_UNREALIZED_LOSS_PER_SYMBOL';
+  const maxUnrealizedLossValidationError = validateCriticalMinimumNumberConfig({
+    env,
+    envKey: maxUnrealizedLossEnvKey,
+    min: 0,
+  });
+  if (maxUnrealizedLossValidationError !== null) {
+    errors = [...errors, `${prefix}: ${maxUnrealizedLossValidationError}`];
+    missingFields = [...missingFields, maxUnrealizedLossEnvKey];
+  }
+
+  if (
+    !Number.isFinite(config.maxUnrealizedLossPerSymbol) ||
+    config.maxUnrealizedLossPerSymbol < 0
+  ) {
+    errors = [...errors, `${prefix}: ${maxUnrealizedLossEnvKey} 无效（必须为非负数）`];
+    missingFields = [...missingFields, maxUnrealizedLossEnvKey];
+  }
+
   const buyIntervalEnvKey = 'BUY_INTERVAL_SECONDS';
   const buyIntervalValidationError = validateCriticalBoundedNumberConfig({
     env,
@@ -367,12 +438,62 @@ export function validateMonitorConfig(
     ];
   }
 
-  if (config.liquidationCooldown) {
-    const triggerLimit = config.liquidationTriggerLimit;
-    if (!Number.isInteger(triggerLimit) || triggerLimit < 1 || triggerLimit > 10) {
-      errors = [...errors, `${prefix}: LIQUIDATION_TRIGGER_LIMIT 无效（范围 1-10）`];
-      missingFields = [...missingFields, 'LIQUIDATION_TRIGGER_LIMIT'];
+  const liquidationTriggerLimitValidationError = validateCriticalBoundedNumberConfig({
+    env,
+    envKey: 'LIQUIDATION_TRIGGER_LIMIT',
+    min: 1,
+    max: 10,
+  });
+  if (liquidationTriggerLimitValidationError !== null) {
+    errors = [...errors, `${prefix}: ${liquidationTriggerLimitValidationError}`];
+    missingFields = [...missingFields, 'LIQUIDATION_TRIGGER_LIMIT'];
+  }
+
+  const triggerLimit = config.liquidationTriggerLimit;
+  if (!Number.isInteger(triggerLimit) || triggerLimit < 1 || triggerLimit > 10) {
+    errors = [...errors, `${prefix}: LIQUIDATION_TRIGGER_LIMIT 无效（必须为整数，范围 1-10）`];
+    missingFields = [...missingFields, 'LIQUIDATION_TRIGGER_LIMIT'];
+  }
+
+  const verificationDelayEnvKeys = [
+    'VERIFICATION_DELAY_SECONDS_BUY',
+    'VERIFICATION_DELAY_SECONDS_SELL',
+  ] as const;
+  for (const envKey of verificationDelayEnvKeys) {
+    const verificationDelayValidationError = validateCriticalBoundedNumberConfig({
+      env,
+      envKey,
+      min: 0,
+      max: 120,
+    });
+    if (verificationDelayValidationError !== null) {
+      errors = [...errors, `${prefix}: ${verificationDelayValidationError}`];
+      missingFields = [...missingFields, envKey];
     }
+  }
+
+  const verificationIndicatorEnvKeys = [
+    'VERIFICATION_INDICATORS_BUY',
+    'VERIFICATION_INDICATORS_SELL',
+  ] as const;
+  for (const envKey of verificationIndicatorEnvKeys) {
+    const verificationIndicatorsValidationError = validateVerificationIndicatorsConfig({
+      env,
+      envKey,
+    });
+    if (verificationIndicatorsValidationError !== null) {
+      errors = [...errors, `${prefix}: ${verificationIndicatorsValidationError}`];
+      missingFields = [...missingFields, envKey];
+    }
+  }
+
+  const smartCloseEnabledValidationError = validateExplicitBooleanConfig({
+    env,
+    envKey: 'SMART_CLOSE_ENABLED',
+  });
+  if (smartCloseEnabledValidationError !== null) {
+    errors = [...errors, `${prefix}: ${smartCloseEnabledValidationError}`];
+    missingFields = [...missingFields, 'SMART_CLOSE_ENABLED'];
   }
 
   const smartCloseTimeoutEnvKey = 'SMART_CLOSE_TIMEOUT_MINUTES';
@@ -414,6 +535,46 @@ export function validateMonitorConfig(
     }
   }
 
+  const autoSearchExpiryValidationError = validateCriticalBoundedNumberConfig({
+    env,
+    envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
+    min: 1,
+    max: 120,
+  });
+  if (autoSearchExpiryValidationError !== null) {
+    errors = [...errors, `${prefix}: ${autoSearchExpiryValidationError}`];
+    missingFields = [...missingFields, 'AUTO_SEARCH_EXPIRY_MIN_MONTHS'];
+  }
+
+  if (
+    !Number.isFinite(config.autoSearchConfig.autoSearchExpiryMinMonths) ||
+    config.autoSearchConfig.autoSearchExpiryMinMonths < 1 ||
+    config.autoSearchConfig.autoSearchExpiryMinMonths > 120
+  ) {
+    errors = [...errors, `${prefix}: AUTO_SEARCH_EXPIRY_MIN_MONTHS 无效（范围 1-120）`];
+    missingFields = [...missingFields, 'AUTO_SEARCH_EXPIRY_MIN_MONTHS'];
+  }
+
+  const autoSearchOpenDelayValidationError = validateCriticalBoundedNumberConfig({
+    env,
+    envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
+    min: 0,
+    max: 60,
+  });
+  if (autoSearchOpenDelayValidationError !== null) {
+    errors = [...errors, `${prefix}: ${autoSearchOpenDelayValidationError}`];
+    missingFields = [...missingFields, 'AUTO_SEARCH_OPEN_DELAY_MINUTES'];
+  }
+
+  if (
+    !Number.isFinite(config.autoSearchConfig.autoSearchOpenDelayMinutes) ||
+    config.autoSearchConfig.autoSearchOpenDelayMinutes < 0 ||
+    config.autoSearchConfig.autoSearchOpenDelayMinutes > 60
+  ) {
+    errors = [...errors, `${prefix}: AUTO_SEARCH_OPEN_DELAY_MINUTES 无效（范围 0-60）`];
+    missingFields = [...missingFields, 'AUTO_SEARCH_OPEN_DELAY_MINUTES'];
+  }
+
   if (autoSearchEnabled) {
     const autoSearchConfig = config.autoSearchConfig;
     const switchIntervalEnvKey = 'SWITCH_INTERVAL_MINUTES';
@@ -441,22 +602,6 @@ export function validateMonitorConfig(
         errors = [...errors, `${prefix}: ${field.envKey} 未配置或无效`];
         missingFields = [...missingFields, field.envKey];
       }
-    }
-
-    if (
-      !Number.isFinite(autoSearchConfig.autoSearchExpiryMinMonths) ||
-      autoSearchConfig.autoSearchExpiryMinMonths < 1
-    ) {
-      errors = [...errors, `${prefix}: AUTO_SEARCH_EXPIRY_MIN_MONTHS 无效（必须 >= 1）`];
-      missingFields = [...missingFields, 'AUTO_SEARCH_EXPIRY_MIN_MONTHS'];
-    }
-
-    if (
-      !Number.isFinite(autoSearchConfig.autoSearchOpenDelayMinutes) ||
-      autoSearchConfig.autoSearchOpenDelayMinutes < 0
-    ) {
-      errors = [...errors, `${prefix}: AUTO_SEARCH_OPEN_DELAY_MINUTES 无效（必须 >= 0）`];
-      missingFields = [...missingFields, 'AUTO_SEARCH_OPEN_DELAY_MINUTES'];
     }
 
     const switchIntervalValidationError = validateCriticalBoundedNumberConfig({
@@ -535,7 +680,6 @@ export function validateMonitorConfig(
   }
 
   return {
-    valid: errors.length === 0,
     errors,
     missingFields,
   };

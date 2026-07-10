@@ -46,11 +46,9 @@ function assertNeverTask(_task: never): never {
 
 function buildPeriodicBaseline(
   task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
-  monitorSymbol: string,
 ): PeriodicSwitchRouteBaseline {
   const data = task.data;
   return {
-    monitorSymbol,
     direction: data.direction,
     symbol: data.symbol,
     seatVersion: data.seatVersion,
@@ -81,27 +79,10 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     onFatalError,
     onProcessed,
   } = deps;
-  const expectedMonitorSymbol = monitorContext.config.monitorSymbol;
+  const monitorSymbol = monitorContext.config.monitorSymbol;
 
-  function requireExpectedMonitorSymbol(actualMonitorSymbol: string, source: string): string {
-    if (actualMonitorSymbol !== expectedMonitorSymbol) {
-      throw new Error(
-        `[MonitorTaskProcessor] ${source} 不匹配唯一监控标的: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
-      );
-    }
-
-    return expectedMonitorSymbol;
-  }
-
-  function requireTaskMonitorSymbol(task: MonitorTask<MonitorTaskDataMap>): string {
-    const monitorSymbol = requireExpectedMonitorSymbol(task.monitorSymbol, 'task.monitorSymbol');
-    requireExpectedMonitorSymbol(task.data.monitorSymbol, 'task.data.monitorSymbol');
-    return monitorSymbol;
-  }
-
-  /** 校验唯一 monitorSymbol 后返回唯一监控上下文；不匹配时直接抛错进入 fatal 通道。 */
-  function requireContext(monitorSymbol: string): MonitorTaskContext {
-    requireExpectedMonitorSymbol(monitorSymbol, 'handler monitorSymbol');
+  /** 当前处理器只服务唯一 monitor 上下文，内部任务直接复用同一上下文。 */
+  function requireContext(): MonitorTaskContext {
     return monitorContext;
   }
   const { handleAutoSymbolTick } = createAutoSymbolHandlers({
@@ -126,7 +107,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return;
     }
 
-    const baseline = buildPeriodicBaseline(task, requireTaskMonitorSymbol(task));
+    const baseline = buildPeriodicBaseline(task);
     periodicSwitchWakeupRuntime.replanRouteAfterTask({
       ...baseline,
       taskTimeMs: task.data.currentTimeMs,
@@ -143,7 +124,6 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return false;
     }
 
-    const monitorSymbol = requireTaskMonitorSymbol(task);
     const apiRetryAttempt = task.data.apiRetryAttempt ?? 0;
     if (apiRetryAttempt >= 1) {
       return false;
@@ -165,14 +145,8 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
 
     const retryTimer = setTimeout(() => {
       seatRefreshRetryTimers.delete(task.dedupeKey);
-      const currentSeat = monitorContext.symbolRegistry.getSeatState(
-        monitorSymbol,
-        task.data.direction,
-      );
-      const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(
-        monitorSymbol,
-        task.data.direction,
-      );
+      const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
+      const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(task.data.direction);
       if (
         currentSeatVersion !== task.data.seatVersion ||
         currentSeat.symbol !== task.data.nextSymbol ||
@@ -184,10 +158,8 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       monitorTaskQueue.scheduleLatest({
         type: 'SEAT_REFRESH',
         dedupeKey: task.dedupeKey,
-        monitorSymbol,
         data: {
           ...task.data,
-          monitorSymbol,
           apiRetryAttempt: apiRetryAttempt + 1,
         },
       });
@@ -207,15 +179,8 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return;
     }
 
-    const monitorSymbol = requireTaskMonitorSymbol(task);
-    const currentSeat = monitorContext.symbolRegistry.getSeatState(
-      monitorSymbol,
-      task.data.direction,
-    );
-    const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(
-      monitorSymbol,
-      task.data.direction,
-    );
+    const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
+    const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(task.data.direction);
     if (
       currentSeatVersion !== task.data.seatVersion ||
       currentSeat.symbol !== task.data.nextSymbol ||
@@ -225,20 +190,16 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     }
 
     const nowMs = Date.now();
-    monitorContext.symbolRegistry.updateSeatStateWithVersionBump(
-      monitorSymbol,
-      task.data.direction,
-      {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: nowMs,
-        lastSearchAt: currentSeat.lastSearchAt ?? nowMs,
-        lastSeatActivatedAt: null,
-        callPrice: null,
-        searchFailCountToday: currentSeat.searchFailCountToday,
-        frozenTradingDayKey: currentSeat.frozenTradingDayKey,
-      },
-    );
+    monitorContext.symbolRegistry.updateSeatStateWithVersionBump(task.data.direction, {
+      symbol: null,
+      status: 'EMPTY',
+      lastSwitchAt: nowMs,
+      lastSearchAt: currentSeat.lastSearchAt ?? nowMs,
+      lastSeatActivatedAt: null,
+      callPrice: null,
+      searchFailCountToday: currentSeat.searchFailCountToday,
+      frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+    });
   }
 
   /** 清理尚未触发的 SEAT_REFRESH 延迟重试，保证 stop/restart 后没有隐藏 timer。 */
@@ -278,10 +239,9 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
         break;
       }
 
-      requireTaskMonitorSymbol(task);
       if (getCanProcessTask && !getCanProcessTask()) {
         logger.debug(
-          `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+          `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${monitorSymbol} dedupe=${task.dedupeKey}`,
         );
         handoffPeriodicTaskOutcome(task, 'skipped');
         onProcessed?.(task, 'skipped');
@@ -294,7 +254,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
         }
 
         logger.error(
-          `[MonitorTaskProcessor] 处理任务失败 type=${task.type} monitor=${task.monitorSymbol} dedupe=${task.dedupeKey}`,
+          `[MonitorTaskProcessor] 处理任务失败 type=${task.type} monitor=${monitorSymbol} dedupe=${task.dedupeKey}`,
           formatError(err),
         );
         const retryScheduled = retrySeatRefreshOnce(task);

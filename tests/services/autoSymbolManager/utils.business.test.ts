@@ -29,35 +29,27 @@ describe('autoSymbolManager utils business flow', () => {
       }),
     );
     const observed: Array<{
-      readonly eventKind: 'version' | 'state' | 'truth';
+      readonly eventKind: 'state' | 'truth';
       readonly status: string;
       readonly version: number;
     }> = [];
-    symbolRegistry.onSeatVersionChanged(() => {
-      observed.push({
-        eventKind: 'version',
-        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
-        version: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
-      });
-    });
-
     symbolRegistry.onSeatStateChanged(() => {
       observed.push({
         eventKind: 'state',
-        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
-        version: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
+        status: symbolRegistry.getSeatState('LONG').status,
+        version: symbolRegistry.getSeatVersion('LONG'),
       });
     });
 
     symbolRegistry.onSeatTruthChanged(() => {
       observed.push({
         eventKind: 'truth',
-        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
-        version: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
+        status: symbolRegistry.getSeatState('LONG').status,
+        version: symbolRegistry.getSeatVersion('LONG'),
       });
     });
 
-    const result = symbolRegistry.updateSeatStateWithVersionBump('HSI.HK', 'LONG', {
+    const result = symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       symbol: 'NEW_BULL.HK',
       status: 'ACTIVATING',
       lastSwitchAt: 100,
@@ -70,16 +62,15 @@ describe('autoSymbolManager utils business flow', () => {
 
     expect(result.seatVersion).toBe(2);
     expect(result.seatState.status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
     expect(observed).toEqual([
-      { eventKind: 'version', status: 'ACTIVATING', version: 2 },
       { eventKind: 'state', status: 'ACTIVATING', version: 2 },
       { eventKind: 'truth', status: 'ACTIVATING', version: 2 },
     ]);
   });
 
-  it('updates seat state without bumping version or publishing version events', () => {
+  it('updates seat state without bumping version', () => {
     const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
@@ -92,7 +83,6 @@ describe('autoSymbolManager utils business flow', () => {
       readonly observedVersion: number;
       readonly status: string;
     }> = [];
-    const versionEvents: Array<unknown> = [];
     const truthEvents: Array<{
       readonly monitorSymbol: string;
       readonly direction: 'LONG' | 'SHORT';
@@ -103,25 +93,21 @@ describe('autoSymbolManager utils business flow', () => {
       stateEvents.push({
         previousVersion: event.previousVersion,
         nextVersion: event.nextVersion,
-        observedVersion: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
-        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
+        observedVersion: symbolRegistry.getSeatVersion('LONG'),
+        status: symbolRegistry.getSeatState('LONG').status,
       });
-    });
-
-    symbolRegistry.onSeatVersionChanged((event) => {
-      versionEvents.push(event);
     });
 
     symbolRegistry.onSeatTruthChanged((event) => {
       truthEvents.push({
         monitorSymbol: event.monitorSymbol,
         direction: event.direction,
-        observedVersion: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
-        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
+        observedVersion: symbolRegistry.getSeatVersion('LONG'),
+        status: symbolRegistry.getSeatState('LONG').status,
       });
     });
 
-    const nextState = symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+    const nextState = symbolRegistry.updateSeatState('LONG', {
       symbol: 'OLD_BULL.HK',
       status: 'ACTIVATING',
       lastSwitchAt: 100,
@@ -133,7 +119,7 @@ describe('autoSymbolManager utils business flow', () => {
     });
 
     expect(nextState.status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(1);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
     expect(stateEvents).toEqual([
       {
         previousVersion: 1,
@@ -142,84 +128,13 @@ describe('autoSymbolManager utils business flow', () => {
         status: 'ACTIVATING',
       },
     ]);
-    expect(versionEvents).toEqual([]);
+
     expect(truthEvents).toEqual([
       {
         monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         observedVersion: 1,
         status: 'ACTIVATING',
-      },
-    ]);
-  });
-
-  it('bumps seat version without publishing state events', () => {
-    const symbolRegistry = createSymbolRegistry(
-      createMonitorConfigDouble({
-        monitorSymbol: 'HSI.HK',
-        longSymbol: 'OLD_BULL.HK',
-      }),
-    );
-    const stateEvents: Array<unknown> = [];
-    const versionEvents: Array<{
-      readonly previousVersion: number;
-      readonly nextVersion: number;
-      readonly observedSymbol: string | null;
-      readonly observedStatus: string;
-    }> = [];
-    const truthEvents: Array<{
-      readonly monitorSymbol: string;
-      readonly direction: 'LONG' | 'SHORT';
-      readonly observedVersion: number;
-      readonly observedSymbol: string | null;
-      readonly observedStatus: string;
-    }> = [];
-    symbolRegistry.onSeatStateChanged((event) => {
-      stateEvents.push(event);
-    });
-
-    symbolRegistry.onSeatVersionChanged((event) => {
-      const seatState = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-      versionEvents.push({
-        previousVersion: event.previousVersion,
-        nextVersion: event.nextVersion,
-        observedSymbol: seatState.symbol,
-        observedStatus: seatState.status,
-      });
-    });
-
-    symbolRegistry.onSeatTruthChanged((event) => {
-      const seatState = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-      truthEvents.push({
-        monitorSymbol: event.monitorSymbol,
-        direction: event.direction,
-        observedVersion: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
-        observedSymbol: seatState.symbol,
-        observedStatus: seatState.status,
-      });
-    });
-
-    const nextVersion = symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-
-    expect(nextVersion).toBe(2);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('OLD_BULL.HK');
-    expect(versionEvents).toEqual([
-      {
-        previousVersion: 1,
-        nextVersion: 2,
-        observedSymbol: 'OLD_BULL.HK',
-        observedStatus: 'ACTIVE',
-      },
-    ]);
-    expect(stateEvents).toEqual([]);
-    expect(truthEvents).toEqual([
-      {
-        monitorSymbol: 'HSI.HK',
-        direction: 'LONG',
-        observedVersion: 2,
-        observedSymbol: 'OLD_BULL.HK',
-        observedStatus: 'ACTIVE',
       },
     ]);
   });
@@ -237,15 +152,6 @@ describe('autoSymbolManager utils business flow', () => {
       }),
     );
     const events: string[] = [];
-    symbolRegistry.onSeatVersionChanged(() => {
-      events.push('version:first');
-      throw new Error('version listener failed');
-    });
-
-    symbolRegistry.onSeatVersionChanged(() => {
-      events.push('version:second');
-    });
-
     symbolRegistry.onSeatStateChanged(() => {
       events.push('state:first');
       throw new Error('state listener failed');
@@ -265,7 +171,7 @@ describe('autoSymbolManager utils business flow', () => {
     });
 
     try {
-      const result = symbolRegistry.updateSeatStateWithVersionBump('HSI.HK', 'LONG', {
+      const result = symbolRegistry.updateSeatStateWithVersionBump('LONG', {
         symbol: 'NEW_BULL.HK',
         status: 'ACTIVE',
         lastSwitchAt: 100,
@@ -278,22 +184,11 @@ describe('autoSymbolManager utils business flow', () => {
 
       expect(result.seatVersion).toBe(2);
       expect(result.seatState.symbol).toBe('NEW_BULL.HK');
-      expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
-      expect(events).toEqual([
-        'version:first',
-        'version:second',
-        'state:first',
-        'state:second',
-        'truth:first',
-        'truth:second',
-      ]);
+      expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
+      expect(events).toEqual(['state:first', 'state:second', 'truth:first', 'truth:second']);
 
       expect(errorLogs).toEqual([
-        {
-          message: 'SymbolRegistry 席位版本 listener 执行失败',
-          extra: 'version listener failed',
-        },
         {
           message: 'SymbolRegistry 席位状态 listener 执行失败',
           extra: 'state listener failed',
@@ -330,7 +225,7 @@ describe('autoSymbolManager utils business flow', () => {
     });
 
     try {
-      const result = symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+      const result = symbolRegistry.updateSeatState('LONG', {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVATING',
         lastSwitchAt: 100,
@@ -342,54 +237,12 @@ describe('autoSymbolManager utils business flow', () => {
       });
 
       expect(result.status).toBe('ACTIVATING');
-      expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(1);
+      expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
       expect(errorLogs).toEqual([
         {
           message: 'SymbolRegistry 席位状态 listener 执行失败',
           extra: 'state listener failed',
-        },
-        {
-          message: 'SymbolRegistry 席位 truth listener 执行失败',
-          extra: 'truth listener failed',
-        },
-      ]);
-    } finally {
-      logger.error = originalErrorLogger;
-    }
-  });
-
-  it('logs version listener errors without failing version-only mutations', () => {
-    const originalErrorLogger = logger.error;
-    const errorLogs: Array<{ readonly message: string; readonly extra: unknown }> = [];
-    logger.error = ((message: string, extra?: unknown) => {
-      errorLogs.push({ message, extra });
-    }) satisfies Logger['error'];
-    const symbolRegistry = createSymbolRegistry(
-      createMonitorConfigDouble({
-        monitorSymbol: 'HSI.HK',
-        longSymbol: 'OLD_BULL.HK',
-      }),
-    );
-
-    symbolRegistry.onSeatVersionChanged(() => {
-      throw new Error('version listener failed');
-    });
-
-    symbolRegistry.onSeatTruthChanged(() => {
-      throw new Error('truth listener failed');
-    });
-
-    try {
-      const nextVersion = symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-
-      expect(nextVersion).toBe(2);
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
-      expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('OLD_BULL.HK');
-      expect(errorLogs).toEqual([
-        {
-          message: 'SymbolRegistry 席位版本 listener 执行失败',
-          extra: 'version listener failed',
         },
         {
           message: 'SymbolRegistry 席位 truth listener 执行失败',
@@ -419,16 +272,11 @@ describe('autoSymbolManager utils business flow', () => {
     signal = { ...signal, seatVersion: 2 };
 
     const result = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
 
     expect(result.valid).toBe(true);
-    if (result.valid) {
-      expect(result.direction).toBe('LONG');
-      expect(result.seatState.symbol).toBe('BULL.HK');
-    }
   });
 
   it('reports seat-unavailable reason when seat is not ready', () => {
@@ -448,7 +296,6 @@ describe('autoSymbolManager utils business flow', () => {
     signal = { ...signal, seatVersion: 1 };
 
     const result = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
@@ -478,7 +325,6 @@ describe('autoSymbolManager utils business flow', () => {
     signal = { ...signal, seatVersion: 4 };
 
     const versionMismatch = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
@@ -491,7 +337,6 @@ describe('autoSymbolManager utils business flow', () => {
 
     signal = { ...signal, seatVersion: 5 };
     const symbolMismatch = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });
@@ -521,7 +366,6 @@ describe('autoSymbolManager utils business flow', () => {
     signal = { ...signal, seatVersion: 2 };
 
     const result = validateSignalSeat({
-      monitorSymbol: 'HSI.HK',
       signal,
       symbolRegistry,
     });

@@ -176,7 +176,7 @@ describe('auto search policy consistency integration', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    const startupSeat = startupRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const startupSeat = startupRegistry.getSeatState('LONG');
     expect(startupSeat.status).toBe('ACTIVATING');
     expect(startupSeat.symbol).toBe('BEST_BULL.HK');
     expect(
@@ -244,7 +244,7 @@ describe('auto search policy consistency integration', () => {
       canTradeNow: true,
     });
 
-    const runtimeSeat = runtimeRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const runtimeSeat = runtimeRegistry.getSeatState('LONG');
     expect(runtimeSeat.status).toBe('ACTIVATING');
     expect(runtimeSeat.symbol).toBe('BEST_BULL.HK');
     expect(
@@ -342,7 +342,7 @@ describe('auto search policy consistency integration', () => {
       positions: [],
     });
 
-    const switchedSeat = switchRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const switchedSeat = switchRegistry.getSeatState('LONG');
     expect(switchedSeat.status).toBe('ACTIVATING');
     expect(switchedSeat.symbol).toBe('BEST_BULL.HK');
     expect(
@@ -426,7 +426,7 @@ describe('auto search policy consistency integration', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    const startupSeat = startupRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+    const startupSeat = startupRegistry.getSeatState('SHORT');
     expect(startupSeat.status).toBe('ACTIVATING');
     expect(startupSeat.symbol).toBe('BEST_BEAR.HK');
     expect(
@@ -494,7 +494,7 @@ describe('auto search policy consistency integration', () => {
       canTradeNow: true,
     });
 
-    const runtimeSeat = runtimeRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+    const runtimeSeat = runtimeRegistry.getSeatState('SHORT');
     expect(runtimeSeat.status).toBe('ACTIVATING');
     expect(runtimeSeat.symbol).toBe('BEST_BEAR.HK');
     expect(
@@ -592,7 +592,7 @@ describe('auto search policy consistency integration', () => {
       positions: [],
     });
 
-    const switchedSeat = switchRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+    const switchedSeat = switchRegistry.getSeatState('SHORT');
     expect(switchedSeat.status).toBe('ACTIVATING');
     expect(switchedSeat.symbol).toBe('BEST_BEAR.HK');
     expect(
@@ -697,7 +697,7 @@ describe('auto search policy consistency integration', () => {
       currentTime,
       canTradeNow: true,
     });
-    const runtimeSeat = runtimeRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const runtimeSeat = runtimeRegistry.getSeatState('LONG');
     expect(runtimeSeat.symbol).toBe('BEST_BULL.HK');
 
     const safeLogger = createLoggerRecorder();
@@ -876,8 +876,8 @@ describe('auto search policy consistency integration', () => {
       positions: [],
     });
 
-    const safeSeat = safeRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
-    const dangerSeat = dangerRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const safeSeat = safeRegistry.getSeatState('LONG');
+    const dangerSeat = dangerRegistry.getSeatState('LONG');
     expect(safeSeat.status).toBe('ACTIVE');
     expect(dangerSeat.status).toBe('ACTIVE');
     expect(safeSeat.symbol).toBe('BEST_BULL.HK');

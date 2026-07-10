@@ -149,7 +149,6 @@ describe('tradeLogHydrator business flow', () => {
     const boundaries = hydrator.hydrate();
 
     const next = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: nowMs,
       triggerLimit: 2,
@@ -159,7 +158,7 @@ describe('tradeLogHydrator business flow', () => {
       currentCount: 2,
       cooldownActivated: true,
     });
-    expect(boundaries.get('HSI.HK:LONG')).toBe(nowMs - 10_000);
+    expect(boundaries.get('LONG')).toBe(nowMs - 10_000);
   });
 
   it('restores active cooldown from completed events', () => {
@@ -200,13 +199,12 @@ describe('tradeLogHydrator business flow', () => {
     const boundaries = hydrator.hydrate();
 
     const remainingMs = tracker.getRemainingMs({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       cooldownConfig: { mode: 'minutes', minutes: 5 },
       currentTimeMs: nowMs,
     });
     expect(remainingMs).toBe(270_000);
-    expect(boundaries.get('HSI.HK:LONG')).toBe(executedAtMs);
+    expect(boundaries.get('LONG')).toBe(executedAtMs);
   });
 
   it('fails fast when protective clearance record monitorSymbol mismatches configured monitor', () => {

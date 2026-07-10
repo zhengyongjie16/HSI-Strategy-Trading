@@ -184,11 +184,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       canTradeNow: true,
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('EMPTY');
     expect(seat.symbol).toBeNull();
     expect(seat.searchFailCountToday).toBe(1);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     expect(periodicSwitchPending.has('LONG')).toBeFalse();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
     expect(infoMessages.some((message) => message.includes('周期换标无候选，清空席位'))).toBeTrue();
@@ -274,7 +274,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     const suppression = seatStateManager.resolveSuppression(
@@ -362,7 +362,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(
@@ -544,9 +544,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const latestSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-    symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+    const latestSeat = symbolRegistry.getSeatState('LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       ...latestSeat,
       symbol: 'MANUAL_BULL.HK',
       status: 'ACTIVE',
@@ -555,7 +554,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     resolveCandidate(createWarrantCandidate('NEW_BULL.HK'));
     await switchPromise;
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('MANUAL_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -643,11 +642,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BULL.HK');
     expect(seat.callPrice).toBe(21_000);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     expect(executeCalls).toBe(0);
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
   });
@@ -820,7 +819,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     expect(executedActions[1]?.action).toBe('BUYCALL');
     expect(executedActions[1]?.symbol).toBe('NEW_BULL.HK');
     expect(executedActions[1]?.quantity).toBe(200);
-    const finalSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const finalSeat = symbolRegistry.getSeatState('LONG');
     expect(finalSeat.status).toBe('ACTIVATING');
     expect(finalSeat.symbol).toBe('NEW_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -1106,7 +1105,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     expect(quoteRequests[0]).toEqual(['OLD_BULL.HK']);
     expect(quoteRequests.slice(1).every((symbols) => symbols[0] === 'NEW_BULL.HK')).toBeTrue();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
-    const finalSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const finalSeat = symbolRegistry.getSeatState('LONG');
     expect(finalSeat.status).toBe('EMPTY');
   });
 
@@ -1213,7 +1212,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorPrice: 20_000,
       positions: [],
     });
-    const longSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const longSeat = symbolRegistry.getSeatState('LONG');
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.symbol).toBeNull();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -1343,7 +1342,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
     expect(executeCalls).toBe(0);
 
     await runDistanceSwitch(machine, {
@@ -1353,8 +1352,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
 
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
     expect(executeCalls).toBe(0);
   });
 
@@ -1487,7 +1486,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
@@ -1607,7 +1606,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('SWITCHING');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
 
     await runDistanceSwitch(machine, {
       direction: 'LONG',
@@ -1616,8 +1615,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
 
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
     expect(executeCalls).toBe(0);
   });
 
@@ -1788,8 +1787,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
     expect(executedActions).toEqual(['SELLCALL', 'BUYCALL']);
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
   });
 
   it('stops pending distance switch when seat version changes during SELL_OUT quote fetch', async () => {
@@ -1832,9 +1831,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const marketDataClient = createMarketDataClientDouble({
       getQuotes: async (symbols) => {
-        const currentSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-        symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-        symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+        const currentSeat = symbolRegistry.getSeatState('LONG');
+        symbolRegistry.updateSeatStateWithVersionBump('LONG', {
           ...currentSeat,
           symbol: 'MANUAL_BULL.HK',
           status: 'ACTIVE',
@@ -1907,7 +1905,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     expect(executeCalls).toBe(0);
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('MANUAL_BULL.HK');
   });
@@ -1951,9 +1949,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           return [];
         }
 
-        const currentSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-        symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-        symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+        const currentSeat = symbolRegistry.getSeatState('LONG');
+        symbolRegistry.updateSeatStateWithVersionBump('LONG', {
           ...currentSeat,
           symbol: 'MANUAL_BULL.HK',
           status: 'ACTIVE',
@@ -2047,7 +2044,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     expect(executeCalls).toBe(0);
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('MANUAL_BULL.HK');
   });
@@ -2190,7 +2187,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         wakeups: [{ kind: 'SYMBOL_QUOTE', symbol: 'NEW_BULL.HK' }],
       },
     });
-    expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').symbol).toBe('NEW_BULL.HK');
+    expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
   });
 
@@ -2480,7 +2477,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
     expect(executedActions).toEqual(['SELLCALL', 'BUYCALL']);
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('NEW_BULL.HK');
   });
@@ -2733,7 +2730,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
     expect(executedActions).toEqual(['SELLCALL']);
-    const longSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const longSeat = symbolRegistry.getSeatState('LONG');
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.symbol).toBeNull();
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -2817,7 +2814,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(findCalls).toBe(0);
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
@@ -2912,11 +2909,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'SHORT');
+    const seat = symbolRegistry.getSeatState('SHORT');
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BEAR.HK');
     expect(seat.callPrice).toBe(19_500);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'SHORT')).toBe(2);
+    expect(symbolRegistry.getSeatVersion('SHORT')).toBe(2);
     expect(executeCalls).toBe(0);
     expect(machine.hasPendingSwitch('SHORT')).toBeFalse();
   });
@@ -3000,7 +2997,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'SHORT');
+    const seat = symbolRegistry.getSeatState('SHORT');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BEAR.HK');
     expect(
@@ -3088,7 +3085,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       positions: [],
     });
 
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'SHORT');
+    const seat = symbolRegistry.getSeatState('SHORT');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BEAR.HK');
     expect(

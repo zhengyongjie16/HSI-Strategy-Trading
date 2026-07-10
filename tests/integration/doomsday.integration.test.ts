@@ -89,12 +89,12 @@ function createMonitorContext(
     },
     symbolRegistry,
     seatState: {
-      long: symbolRegistry.getSeatState(config.monitorSymbol, 'LONG'),
-      short: symbolRegistry.getSeatState(config.monitorSymbol, 'SHORT'),
+      long: symbolRegistry.getSeatState('LONG'),
+      short: symbolRegistry.getSeatState('SHORT'),
     },
     seatVersion: {
-      long: symbolRegistry.getSeatVersion(config.monitorSymbol, 'LONG'),
-      short: symbolRegistry.getSeatVersion(config.monitorSymbol, 'SHORT'),
+      long: symbolRegistry.getSeatVersion('LONG'),
+      short: symbolRegistry.getSeatVersion('SHORT'),
     },
     autoSymbolManager: {
       maybeSearchOnEvent: async () => {},
@@ -161,7 +161,6 @@ function createMonitorContext(
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
     monitorSymbolName: config.monitorSymbol,
-    normalizedMonitorSymbol: config.monitorSymbol,
     indicatorProfile: createIndicatorUsageProfileDouble(),
     longQuote: createQuoteDouble('BULL.HK', 1.1, 100),
     shortQuote: createQuoteDouble('BEAR.HK', 0.9, 100),
@@ -410,6 +409,75 @@ describe('doomsday integration', () => {
     expect(lastState.cachedAccount).toBeNull();
     expect(lastState.cachedPositions).toHaveLength(0);
     expect(lastState.positionCache.get('BULL.HK')).toBeNull();
+  });
+
+  it('fails fast when close-5 window sees positive positions outside current seat symbols', async () => {
+    const doomsday = createDoomsdayProtection();
+    const monitorConfig = createMonitorConfigDouble();
+    const lastState = createLastState();
+    lastState.cachedPositions = [
+      ...lastState.cachedPositions,
+      createPositionDouble({
+        symbol: 'OLD_BULL.HK',
+        quantity: 200,
+        availableQuantity: 200,
+      }),
+    ];
+    lastState.positionCache.update(lastState.cachedPositions);
+
+    let quoteCalls = 0;
+    const marketDataClient = createMarketDataClientDouble({
+      getQuotes: async () => {
+        quoteCalls += 1;
+        return new Map([
+          ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
+          ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+        ]);
+      },
+    });
+
+    let executeCalls = 0;
+    const trader = createTraderDouble({
+      executeSignals: async (signals) => {
+        executeCalls += 1;
+        return { submittedCount: signals.length, submittedOrderIds: [] };
+      },
+    });
+
+    let clearCalls = 0;
+    const monitorContext = createMonitorContext(
+      monitorConfig,
+      createOrderRecorderDouble({
+        clearBuyOrders: () => {
+          clearCalls += 1;
+        },
+      }),
+    );
+
+    let error: unknown = null;
+    try {
+      await doomsday.executeClearance({
+        currentTime: new Date('2026-02-16T07:56:00.000Z'),
+        isHalfDay: false,
+        positions: lastState.cachedPositions,
+        monitorContext,
+        trader,
+        marketDataClient,
+        lastState,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('非当前席位持仓');
+    expect((error as Error).message).toContain('OLD_BULL.HK');
+    expect(quoteCalls).toBe(0);
+    expect(executeCalls).toBe(0);
+    expect(clearCalls).toBe(0);
+    expect(lastState.cachedAccount).not.toBeNull();
+    expect(lastState.cachedPositions).toHaveLength(3);
+    expect(lastState.positionCache.get('OLD_BULL.HK')).not.toBeNull();
   });
 
   it('keeps caches and order records when close-5 liquidation signals are not actually submitted', async () => {

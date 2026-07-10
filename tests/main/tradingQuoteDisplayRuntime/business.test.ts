@@ -151,7 +151,7 @@ describe('tradingQuoteDisplayRuntime', () => {
 
     runtime.start();
 
-    symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'NEXT_BULL.HK',
       status: 'ACTIVE',
       lastSwitchAt: null,
@@ -264,7 +264,7 @@ describe('tradingQuoteDisplayRuntime', () => {
 
     runtime.start();
 
-    symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+    symbolRegistry.updateSeatState('SHORT', {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
       lastSwitchAt: null,
@@ -479,7 +479,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       symbol: 'BULL.HK',
       quote: createQuoteDouble('BULL.HK', 1.01),
     });
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
     resolveQuotes?.();
     await waitTick();
     await waitTick();

@@ -40,23 +40,15 @@ describe('autoSymbolManager seatStateManager business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const observed: Array<{
-      readonly eventKind: 'version' | 'state';
+      readonly eventKind: 'state';
       readonly status: string;
       readonly version: number;
     }> = [];
-    symbolRegistry.onSeatVersionChanged(() => {
-      observed.push({
-        eventKind: 'version',
-        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
-        version: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
-      });
-    });
-
     symbolRegistry.onSeatStateChanged(() => {
       observed.push({
         eventKind: 'state',
-        status: symbolRegistry.getSeatState('HSI.HK', 'LONG').status,
-        version: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
+        status: symbolRegistry.getSeatState('LONG').status,
+        version: symbolRegistry.getSeatVersion('LONG'),
       });
     });
     const manager = createSeatStateManager({
@@ -74,10 +66,7 @@ describe('autoSymbolManager seatStateManager business flow', () => {
       reason: 'test-enter-switching-seat',
     });
 
-    expect(observed).toEqual([
-      { eventKind: 'version', status: 'SWITCHING', version: 2 },
-      { eventKind: 'state', status: 'SWITCHING', version: 2 },
-    ]);
+    expect(observed).toEqual([{ eventKind: 'state', status: 'SWITCHING', version: 2 }]);
   });
 
   it('enterSwitchingSeat bumps seat version and puts seat into SWITCHING with switch state snapshot', () => {
@@ -110,8 +99,8 @@ describe('autoSymbolManager seatStateManager business flow', () => {
       reason: 'test-enter-switching-seat',
     });
     expect(nextVersion).toBe(2);
-    expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
-    const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('SWITCHING');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     const switchState = switchStates.get('LONG');

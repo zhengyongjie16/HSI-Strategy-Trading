@@ -12,19 +12,16 @@ import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monit
 
 function createAutoSymbolTickTask(params: {
   readonly dedupeKey: string;
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly seatVersion: number;
 }): Parameters<ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>['scheduleLatest']>[0] {
   return {
     type: 'AUTO_SYMBOL_TICK',
     dedupeKey: params.dedupeKey,
-    monitorSymbol: params.monitorSymbol,
     data: {
-      monitorSymbol: params.monitorSymbol,
       direction: params.direction,
       seatVersion: params.seatVersion,
-      symbol: `${params.monitorSymbol}:${params.direction}`,
+      symbol: `HSI.HK:${params.direction}`,
       lastSeatActivatedAt: params.seatVersion,
       currentTimeMs: params.seatVersion,
     },
@@ -38,7 +35,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -47,7 +43,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 2,
       }),
@@ -66,7 +61,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -75,7 +69,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),
@@ -84,7 +77,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG:3',
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 3,
       }),
@@ -107,9 +99,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'SEAT_REFRESH',
       dedupeKey: 'SEAT_REFRESH:LONG',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
         previousSymbol: 'OLD_BULL.HK',
@@ -122,9 +112,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'SEAT_REFRESH',
       dedupeKey: 'SEAT_REFRESH:LONG',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 2,
         previousSymbol: 'BULL.HK',
@@ -139,9 +127,7 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest({
       type: 'SEAT_REFRESH',
       dedupeKey: 'SEAT_REFRESH:LONG:2',
-      monitorSymbol: 'HSI.HK',
       data: {
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
         previousSymbol: 'OLD_BEAR.HK',
@@ -160,7 +146,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -169,7 +154,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),
@@ -202,7 +186,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -211,7 +194,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),
@@ -231,7 +213,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG:1',
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 1,
       }),
@@ -240,7 +221,6 @@ describe('monitorTaskQueue business behavior', () => {
     queue.scheduleLatest(
       createAutoSymbolTickTask({
         dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:2',
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         seatVersion: 2,
       }),

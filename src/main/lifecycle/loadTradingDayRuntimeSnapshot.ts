@@ -33,7 +33,6 @@ import { collectRuntimeQuoteSymbols, refreshAccountAndPositions } from '../utils
 import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { resolveOrderOwnership } from '../../core/orderRecorder/index.js';
 import { hasProtectiveLiquidationRemark } from '../../core/trader/utils.js';
-import { buildCooldownKey } from '../../services/liquidationCooldown/utils.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
@@ -41,69 +40,24 @@ import type {
 } from './types.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
 
-function resolveDirectionFromKey(
-  key: string,
-): { monitorSymbol: string; direction: ProtectiveLiquidationDirection } | null {
-  const separatorIndex = key.lastIndexOf(':');
-  if (separatorIndex <= 0 || separatorIndex >= key.length - 1) {
-    return null;
-  }
-
-  const monitorSymbol = key.slice(0, separatorIndex);
-  const directionText = key.slice(separatorIndex + 1);
-  if (directionText !== 'LONG' && directionText !== 'SHORT') {
-    return null;
-  }
-
-  return {
-    monitorSymbol,
-    direction: directionText,
-  };
-}
-
-function parseDirectionKeyOrThrow(params: {
-  readonly directionKey: string;
-  readonly expectedMonitorSymbol: string;
-  readonly source: string;
-}): { readonly monitorSymbol: string; readonly direction: ProtectiveLiquidationDirection } {
-  const parsed = resolveDirectionFromKey(params.directionKey);
-  if (parsed === null) {
-    throw new Error(`[loadTradingDayRuntimeSnapshot] ${params.source} directionKey 非法`);
-  }
-
-  if (parsed.monitorSymbol !== params.expectedMonitorSymbol) {
-    throw new Error(
-      `[loadTradingDayRuntimeSnapshot] ${params.source} monitorSymbol 不匹配唯一配置: ` +
-        `${parsed.monitorSymbol} !== ${params.expectedMonitorSymbol}`,
-    );
-  }
-
-  return parsed;
-}
-
 function restoreCompletedBoundary(params: {
   readonly protectiveLiquidationEpisodeTracker: LoadTradingDayRuntimeSnapshotDeps['protectiveLiquidationEpisodeTracker'];
-  readonly restoredBoundaryByDirection: Map<string, number>;
-  readonly directionKey: string;
-  readonly monitorSymbol: string;
+  readonly restoredBoundaryByDirection: Map<ProtectiveLiquidationDirection, number>;
   readonly direction: ProtectiveLiquidationDirection;
   readonly boundaryExecutedTimeMs: number;
 }): void {
   const {
     protectiveLiquidationEpisodeTracker,
     restoredBoundaryByDirection,
-    directionKey,
-    monitorSymbol,
     direction,
     boundaryExecutedTimeMs,
   } = params;
 
   protectiveLiquidationEpisodeTracker.restoreCompletedBoundary({
-    monitorSymbol,
     direction,
     boundaryExecutedTimeMs,
   });
-  restoredBoundaryByDirection.set(directionKey, boundaryExecutedTimeMs);
+  restoredBoundaryByDirection.set(direction, boundaryExecutedTimeMs);
 }
 
 /**
@@ -199,18 +153,18 @@ export function createLoadTradingDayRuntimeSnapshot(
     protectiveLiquidationEpisodeTracker.resetAll();
     const completedBoundaryByDirection = hydrateCooldownFromTradeLog
       ? tradeLogHydrator.hydrate()
-      : new Map<string, number>();
+      : new Map<ProtectiveLiquidationDirection, number>();
 
     const currentDayKey = getHKDateKey(now);
     const protectiveLatestFillByDirection = new Map<
-      string,
+      ProtectiveLiquidationDirection,
       Readonly<{ latestExecutedTimeMs: number; symbol: string }>
     >();
     const pendingProtectiveLatestFillByDirection = new Map<
-      string,
+      ProtectiveLiquidationDirection,
       Readonly<{ latestExecutedTimeMs: number; symbol: string }>
     >();
-    const pendingProtectiveDirectionKeys = new Set<string>();
+    const pendingProtectiveDirectionKeys = new Set<ProtectiveLiquidationDirection>();
     for (const order of allOrders) {
       if (!hasProtectiveLiquidationRemark(order.remark)) {
         continue;
@@ -229,7 +183,14 @@ export function createLoadTradingDayRuntimeSnapshot(
         throw new Error('[loadTradingDayRuntimeSnapshot] 保护性清仓订单无法归属到唯一监控标的');
       }
 
-      const directionKey = buildCooldownKey(ownership.monitorSymbol, ownership.direction);
+      if (ownership.monitorSymbol !== expectedMonitorSymbol) {
+        throw new Error(
+          `[loadTradingDayRuntimeSnapshot] 保护性清仓订单 monitorSymbol 不匹配唯一配置: ` +
+            `${ownership.monitorSymbol} !== ${expectedMonitorSymbol}`,
+        );
+      }
+
+      const direction = ownership.direction;
       const executedTimeMs = order.updatedAt.getTime();
       const executedQuantity = decimalToNumber(order.executedQuantity);
       const hasProtectiveExecution =
@@ -237,9 +198,9 @@ export function createLoadTradingDayRuntimeSnapshot(
         isValidPositiveNumber(executedTimeMs) &&
         isValidPositiveNumber(executedQuantity);
       if (hasProtectiveExecution) {
-        const existing = protectiveLatestFillByDirection.get(directionKey);
+        const existing = protectiveLatestFillByDirection.get(direction);
         if (existing === undefined || executedTimeMs > existing.latestExecutedTimeMs) {
-          protectiveLatestFillByDirection.set(directionKey, {
+          protectiveLatestFillByDirection.set(direction, {
             latestExecutedTimeMs: executedTimeMs,
             symbol: order.symbol,
           });
@@ -247,14 +208,14 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
 
       if (PENDING_ORDER_STATUSES.has(order.status)) {
-        pendingProtectiveDirectionKeys.add(directionKey);
+        pendingProtectiveDirectionKeys.add(direction);
         if (hasProtectiveExecution) {
-          const existingPending = pendingProtectiveLatestFillByDirection.get(directionKey);
+          const existingPending = pendingProtectiveLatestFillByDirection.get(direction);
           if (
             existingPending === undefined ||
             executedTimeMs > existingPending.latestExecutedTimeMs
           ) {
-            pendingProtectiveLatestFillByDirection.set(directionKey, {
+            pendingProtectiveLatestFillByDirection.set(direction, {
               latestExecutedTimeMs: executedTimeMs,
               symbol: order.symbol,
             });
@@ -263,37 +224,23 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
     }
 
-    const restoredBoundaryByDirection = new Map<string, number>();
-    for (const [directionKey, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
-      const parsed = parseDirectionKeyOrThrow({
-        directionKey,
-        expectedMonitorSymbol,
-        source: 'hydrated protective boundary',
-      });
-
+    const restoredBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
+    for (const [direction, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
       restoreCompletedBoundary({
         protectiveLiquidationEpisodeTracker,
         restoredBoundaryByDirection,
-        directionKey,
-        monitorSymbol: parsed.monitorSymbol,
-        direction: parsed.direction,
+        direction,
         boundaryExecutedTimeMs,
       });
     }
 
-    for (const [directionKey, protectiveFill] of protectiveLatestFillByDirection) {
+    for (const [direction, protectiveFill] of protectiveLatestFillByDirection) {
       if (
-        restoredBoundaryByDirection.has(directionKey) ||
-        pendingProtectiveDirectionKeys.has(directionKey)
+        restoredBoundaryByDirection.has(direction) ||
+        pendingProtectiveDirectionKeys.has(direction)
       ) {
         continue;
       }
-
-      const parsed = parseDirectionKeyOrThrow({
-        directionKey,
-        expectedMonitorSymbol,
-        source: 'protective latest fill',
-      });
 
       const position = lastState.positionCache.get(protectiveFill.symbol);
       const isDirectionFlat = position === null || position.quantity <= 0;
@@ -304,33 +251,23 @@ export function createLoadTradingDayRuntimeSnapshot(
       restoreCompletedBoundary({
         protectiveLiquidationEpisodeTracker,
         restoredBoundaryByDirection,
-        directionKey,
-        monitorSymbol: parsed.monitorSymbol,
-        direction: parsed.direction,
+        direction,
         boundaryExecutedTimeMs: protectiveFill.latestExecutedTimeMs,
       });
     }
 
-    for (const [directionKey, protectiveFill] of protectiveLatestFillByDirection) {
-      const parsed = parseDirectionKeyOrThrow({
-        directionKey,
-        expectedMonitorSymbol,
-        source: 'protective episode rebuild',
-      });
-
-      const boundaryExecutedTimeMs = restoredBoundaryByDirection.get(directionKey);
-      const hasPendingProtective = pendingProtectiveDirectionKeys.has(directionKey);
+    for (const [direction, protectiveFill] of protectiveLatestFillByDirection) {
+      const boundaryExecutedTimeMs = restoredBoundaryByDirection.get(direction);
+      const hasPendingProtective = pendingProtectiveDirectionKeys.has(direction);
       if (hasPendingProtective) {
-        const pendingLatestExecutedTimeMs =
-          pendingProtectiveLatestFillByDirection.get(directionKey);
+        const pendingLatestExecutedTimeMs = pendingProtectiveLatestFillByDirection.get(direction);
         if (
           pendingLatestExecutedTimeMs !== undefined &&
           (boundaryExecutedTimeMs === undefined ||
             pendingLatestExecutedTimeMs.latestExecutedTimeMs > boundaryExecutedTimeMs)
         ) {
           protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
-            monitorSymbol: parsed.monitorSymbol,
-            direction: parsed.direction,
+            direction,
             symbol: pendingLatestExecutedTimeMs.symbol,
             latestExecutedTimeMs: pendingLatestExecutedTimeMs.latestExecutedTimeMs,
           });
@@ -352,17 +289,14 @@ export function createLoadTradingDayRuntimeSnapshot(
         restoreCompletedBoundary({
           protectiveLiquidationEpisodeTracker,
           restoredBoundaryByDirection,
-          directionKey,
-          monitorSymbol: parsed.monitorSymbol,
-          direction: parsed.direction,
+          direction,
           boundaryExecutedTimeMs: protectiveFill.latestExecutedTimeMs,
         });
         continue;
       }
 
       protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
-        monitorSymbol: parsed.monitorSymbol,
-        direction: parsed.direction,
+        direction,
         symbol: protectiveFill.symbol,
         latestExecutedTimeMs: protectiveFill.latestExecutedTimeMs,
       });

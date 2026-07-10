@@ -20,7 +20,9 @@ describe('createRiskDomain', () => {
     let resetAllCalled = false;
     let resetAllNow: Date | null = null as Date | null;
     let resetAllTriggerCountsCalled = false;
-    let clearMidnightEligibleKeys: Set<string> | null = null as Set<string> | null;
+    let clearMidnightEligibleDirections: Set<'LONG' | 'SHORT'> | null = null as Set<
+      'LONG' | 'SHORT'
+    > | null;
     let clearUnrealizedCount = 0;
     let clearLongCount = 0;
     let clearShortCount = 0;
@@ -60,7 +62,7 @@ describe('createRiskDomain', () => {
       restoreTriggerCount: () => {},
       getRemainingMs: () => 0,
       clearMidnightEligible: (params) => {
-        clearMidnightEligibleKeys = new Set(params.keysToClear);
+        clearMidnightEligibleDirections = new Set(params.directionsToClear);
       },
       resetAllTriggerCounts: () => {
         resetAllTriggerCountsCalled = true;
@@ -84,16 +86,18 @@ describe('createRiskDomain', () => {
     expect(resetAllCalled).toBe(true);
     expect(resetAllNow?.getTime()).toBe(now.getTime());
     expect(resetAllTriggerCountsCalled).toBe(true);
-    expect(clearMidnightEligibleKeys).not.toBe(null);
-    expect(clearMidnightEligibleKeys?.has('HSI.HK:LONG')).toBe(true);
-    expect(clearMidnightEligibleKeys?.has('HSI.HK:SHORT')).toBe(true);
+    expect(clearMidnightEligibleDirections).not.toBe(null);
+    expect(clearMidnightEligibleDirections?.has('LONG')).toBe(true);
+    expect(clearMidnightEligibleDirections?.has('SHORT')).toBe(true);
     expect(clearUnrealizedCount).toBe(1);
     expect(clearLongCount).toBe(1);
     expect(clearShortCount).toBe(1);
   });
 
-  it('liquidationCooldown 为 minutes 模式时不向 keysToClear 添加该监控标的 key', async () => {
-    let clearMidnightEligibleKeys: Set<string> | null = null as Set<string> | null;
+  it('liquidationCooldown 为 minutes 模式时不向 directionsToClear 添加方向', async () => {
+    let clearMidnightEligibleDirections: Set<'LONG' | 'SHORT'> | null = null as Set<
+      'LONG' | 'SHORT'
+    > | null;
     const monitorContext = createMonitorContextDouble({
       config: {
         monitorSymbol: 'HSI.HK',
@@ -111,7 +115,7 @@ describe('createRiskDomain', () => {
       restoreTriggerCount: () => {},
       getRemainingMs: () => 0,
       clearMidnightEligible: (params) => {
-        clearMidnightEligibleKeys = new Set(params.keysToClear);
+        clearMidnightEligibleDirections = new Set(params.directionsToClear);
       },
       resetAllTriggerCounts: () => {},
     };
@@ -131,7 +135,9 @@ describe('createRiskDomain', () => {
       runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
-    expect(clearMidnightEligibleKeys === null ? 0 : clearMidnightEligibleKeys.size).toBe(0);
+    expect(
+      clearMidnightEligibleDirections === null ? 0 : clearMidnightEligibleDirections.size,
+    ).toBe(0);
   });
 
   it('openRebuild 为空操作，不抛错', async () => {

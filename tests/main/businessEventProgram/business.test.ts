@@ -77,22 +77,19 @@ function createMonitorContext(overrides: Partial<MonitorContext> = {}): MonitorC
 function createIndicatorCacheRecorder(): {
   readonly indicatorCache: IndicatorCache;
   readonly pushes: Array<{
-    readonly monitorSymbol: string;
     readonly values: VerificationSampleValues;
     readonly observedAtMs: number;
   }>;
 } {
   const pushes: Array<{
-    readonly monitorSymbol: string;
     readonly values: VerificationSampleValues;
     readonly observedAtMs: number;
   }> = [];
 
   return {
     indicatorCache: {
-      push: (monitorSymbol, values, observedAtMs) => {
+      push: (values, observedAtMs) => {
         pushes.push({
-          monitorSymbol,
           values,
           observedAtMs,
         });
@@ -155,10 +152,7 @@ describe('businessEventProgram business flow', () => {
     );
     const monitorContext = createMonitorContext();
     const { indicatorCache, pushes } = createIndicatorCacheRecorder();
-    const renderRequests: Array<{
-      readonly monitorSymbol: string;
-      readonly monitorSnapshot: IndicatorSnapshot;
-    }> = [];
+    const renderRequests: Array<{ readonly monitorSnapshot: IndicatorSnapshot }> = [];
     const program = createBusinessEventProgram({
       marketDataClient,
       monitorContext,
@@ -168,10 +162,7 @@ describe('businessEventProgram business flow', () => {
       sellTaskQueue: createSellTaskQueue(),
       indicatorCache,
       monitorDisplayRuntime: {
-        requestRender: (params: {
-          readonly monitorSymbol: string;
-          readonly monitorSnapshot: IndicatorSnapshot;
-        }) => {
+        requestRender: (params: { readonly monitorSnapshot: IndicatorSnapshot }) => {
           renderRequests.push(params);
         },
       },
@@ -230,13 +221,13 @@ describe('businessEventProgram business flow', () => {
     const delayedCancelCalls: string[] = [];
     const monitorContext = createMonitorContext({
       delayedSignalVerifier: createDelayedSignalVerifierDouble({
-        cancelAllForDirection: (_monitorSymbol, direction) => {
+        cancelAllForDirection: (direction) => {
           delayedCancelCalls.push(direction);
           return 1;
         },
       }),
     });
-    monitorContext.symbolRegistry.updateSeatStateWithVersionBump('HSI.HK', 'LONG', {
+    monitorContext.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       symbol: null,
       status: 'EMPTY',
       lastSwitchAt: null,
@@ -249,7 +240,6 @@ describe('businessEventProgram business flow', () => {
     const buyTaskQueue = createBuyTaskQueue();
     buyTaskQueue.push({
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       data: createSignalDouble('BUYCALL', 'OLD_BULL.HK'),
     });
     const program = createBusinessEventProgram({
@@ -316,10 +306,7 @@ describe('businessEventProgram business flow', () => {
       }),
     );
     const monitorContext = createMonitorContext();
-    const renderRequests: Array<{
-      readonly monitorSymbol: string;
-      readonly monitorSnapshot: IndicatorSnapshot;
-    }> = [];
+    const renderRequests: Array<{ readonly monitorSnapshot: IndicatorSnapshot }> = [];
 
     const program = createBusinessEventProgram({
       marketDataClient,
@@ -330,10 +317,7 @@ describe('businessEventProgram business flow', () => {
       sellTaskQueue: createSellTaskQueue(),
       indicatorCache: createIndicatorCacheRecorder().indicatorCache,
       monitorDisplayRuntime: {
-        requestRender: (params: {
-          readonly monitorSymbol: string;
-          readonly monitorSnapshot: IndicatorSnapshot;
-        }) => {
+        requestRender: (params: { readonly monitorSnapshot: IndicatorSnapshot }) => {
           renderRequests.push(params);
         },
       },
@@ -353,7 +337,6 @@ describe('businessEventProgram business flow', () => {
       });
 
       await waitUntil(() => renderRequests.length === 1);
-      expect(renderRequests[0]?.monitorSymbol).toBe('HSI.HK');
       const latestMonitorSnapshot = monitorContext.state.lastMonitorSnapshot;
       expect(latestMonitorSnapshot).not.toBeNull();
       if (latestMonitorSnapshot === null) {
@@ -442,7 +425,6 @@ describe('businessEventProgram business flow', () => {
 
       expect(pushes).toEqual([
         {
-          monitorSymbol: 'HSI.HK',
           values: projectVerificationSampleValues(monitorSnapshot, ['K', 'D', 'J']),
           observedAtMs: 1_710_000_000_123,
         },
@@ -711,7 +693,6 @@ describe('businessEventProgram business flow', () => {
 
     const queuedTask = buyTaskQueue.pop();
     expect(queuedTask?.type).toBe('IMMEDIATE_BUY');
-    expect(queuedTask?.monitorSymbol).toBe('HSI.HK');
 
     await program.stopAndDrain();
   });
@@ -775,7 +756,6 @@ describe('businessEventProgram business flow', () => {
     const tradingConfig = createOrdinarySignalTradingConfig();
     const lastState = createLastState();
     const seatActivationDispatcher = createSeatActivationDispatcher({
-      tradingConfig,
       symbolRegistry: monitorContext.symbolRegistry,
       monitorTaskQueue,
     });
@@ -812,8 +792,8 @@ describe('businessEventProgram business flow', () => {
 
     try {
       seatActivationDispatcher.start();
-      monitorContext.symbolRegistry.updateSeatStateWithVersionBump('HSI.HK', 'LONG', {
-        ...monitorContext.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+      monitorContext.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+        ...monitorContext.symbolRegistry.getSeatState('LONG'),
         symbol: 'BULL.HK',
         status: 'ACTIVATING',
         callPrice: 20_000,
@@ -837,9 +817,7 @@ describe('businessEventProgram business flow', () => {
       expect(monitorTaskQueue.isEmpty()).toBeFalse();
 
       monitorTaskProcessor.start();
-      await waitUntil(
-        () => monitorContext.symbolRegistry.getSeatState('HSI.HK', 'LONG').status === 'ACTIVE',
-      );
+      await waitUntil(() => monitorContext.symbolRegistry.getSeatState('LONG').status === 'ACTIVE');
       expect(addedSignals).toHaveLength(0);
 
       snapshotVersion += 1;

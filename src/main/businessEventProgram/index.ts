@@ -127,7 +127,6 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
         };
 
         const monitorSnapshot = runIndicatorPipeline({
-          monitorSymbol,
           monitorContext,
           mainContext: pipelineContext,
         });
@@ -140,23 +139,19 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
           ...monitorContext.indicatorProfile.verificationIndicatorsBySide.sell,
         ]);
         indicatorCache.push(
-          monitorSymbol,
           projectVerificationSampleValues(monitorSnapshot, [...verificationIndicators]),
           observedAtMs,
         );
 
         const seatInfo = resolveSignalSeatInfo({
-          monitorSymbol,
           monitorContext,
         });
 
         monitorDisplayRuntime.requestRender({
-          monitorSymbol,
           monitorSnapshot,
         });
 
         runSignalPipeline({
-          monitorSymbol,
           monitorContext,
           mainContext: pipelineContext,
           runtimeFlags: {

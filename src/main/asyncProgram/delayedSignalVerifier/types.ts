@@ -12,9 +12,6 @@ export type PendingSignalEntry = {
   /** 待验证的信号对象 */
   readonly signal: Signal;
 
-  /** 监控标的代码 */
-  readonly monitorSymbol: string;
-
   /** 信号触发时间戳（毫秒） */
   readonly triggerTime: number;
 
@@ -60,7 +57,6 @@ export type VerifiedCallback = (signal: Signal) => void;
  * 使用范围：仅创建 DelayedSignalVerifier 的调用方使用，内部使用。
  */
 export type DelayedSignalVerifierDeps = {
-  readonly monitorSymbol: string;
   readonly indicatorCache: IndicatorCache;
   readonly onFatalError?: (error: unknown) => void;
 };

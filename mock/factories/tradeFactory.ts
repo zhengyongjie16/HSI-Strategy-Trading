@@ -10,7 +10,6 @@ import {
   OrderStatus,
   OrderType,
   type AccountBalance,
-  type Execution,
   type Order,
   type PushOrderChanged,
   type StockPositionsResponse,
@@ -96,26 +95,6 @@ export function createPushOrderChanged(params: PushOrderChangedParams): PushOrde
   };
 
   return event as unknown as PushOrderChanged;
-}
-
-/**
- * 构造成交记录，供今日成交查询等 Mock 使用。
- */
-export function createExecution(
-  orderId: string,
-  symbol: string,
-  quantity: number,
-  price: number,
-): Execution {
-  const execution = {
-    orderId,
-    tradeId: `${orderId}-E`,
-    symbol,
-    tradeDoneAt: new Date(),
-    quantity: toMockDecimal(quantity),
-    price: toMockDecimal(price),
-  };
-  return execution as unknown as Execution;
 }
 
 /**

@@ -91,19 +91,13 @@ function shouldFail(
 function recordCall(params: {
   readonly callRecords: MockCallRecord[];
   readonly method: MockMethodName;
-  readonly callIndex: number;
-  readonly nowMs: number;
   readonly args: ReadonlyArray<unknown>;
-  readonly result: unknown;
   readonly error: Error | null;
 }): void {
-  const { callRecords, method, callIndex, nowMs, args, result, error } = params;
+  const { callRecords, method, args, error } = params;
   callRecords.push({
     method,
-    callIndex,
-    calledAtMs: nowMs,
     args,
-    result,
     error,
   });
 }
@@ -119,20 +113,16 @@ export async function withMockCall<T>(params: {
   readonly callRecords: MockCallRecord[];
   readonly method: MockMethodName;
   readonly args: ReadonlyArray<unknown>;
-  readonly now: () => number;
   readonly action: () => Promise<T> | T;
 }): Promise<T> {
-  const { state, callRecords, method, args, now, action } = params;
+  const { state, callRecords, method, args, action } = params;
   const callIndex = nextCallIndex(state, method);
   const injectedError = shouldFail(state, method, callIndex, args);
   if (injectedError) {
     recordCall({
       callRecords,
       method,
-      callIndex,
-      nowMs: now(),
       args,
-      result: null,
       error: injectedError,
     });
     throw injectedError;
@@ -143,10 +133,7 @@ export async function withMockCall<T>(params: {
     recordCall({
       callRecords,
       method,
-      callIndex,
-      nowMs: now(),
       args,
-      result,
       error: null,
     });
     return result;
@@ -155,10 +142,7 @@ export async function withMockCall<T>(params: {
     recordCall({
       callRecords,
       method,
-      callIndex,
-      nowMs: now(),
       args,
-      result: null,
       error,
     });
     throw error;

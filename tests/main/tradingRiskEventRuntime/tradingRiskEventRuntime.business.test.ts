@@ -34,7 +34,6 @@ type TestTradingRiskConsistencyStatus = ReturnType<
 
 interface TestSymbolRegistry extends SymbolRegistry {
   getSeatStateChangedListenerCount: () => number;
-  getSeatVersionChangedListenerCount: () => number;
   getSeatTruthChangedListenerCount: () => number;
 }
 
@@ -145,8 +144,9 @@ describe('tradingRiskEventRuntime routing', () => {
     });
 
     const longRoute = resolveTradingRiskRoute(routingIndex, 'BULL.HK');
-    expect(longRoute?.monitorSymbol).toBe('HSI.HK');
+    expect(longRoute?.routeKey).toBe('LONG');
     expect(longRoute?.direction).toBe('LONG');
+    expect(longRoute?.tradingSymbol).toBe('BULL.HK');
     expect(longRoute?.seatVersion).toBe(1);
   });
 });
@@ -415,13 +415,13 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const symbolRegistry: TestSymbolRegistry = {
       ...baseRegistry,
-      getSeatState: (monitorSymbol, direction) => {
+      getSeatState: (direction) => {
         getSeatStateCalls += 1;
-        return baseRegistry.getSeatState(monitorSymbol, direction);
+        return baseRegistry.getSeatState(direction);
       },
-      getSeatVersion: (monitorSymbol, direction) => {
+      getSeatVersion: (direction) => {
         getSeatVersionCalls += 1;
-        return baseRegistry.getSeatVersion(monitorSymbol, direction);
+        return baseRegistry.getSeatVersion(direction);
       },
     };
     const executedPrices: number[] = [];
@@ -473,13 +473,13 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const symbolRegistry: TestSymbolRegistry = {
       ...baseRegistry,
-      getSeatState: (monitorSymbol, direction) => {
+      getSeatState: (direction) => {
         getSeatStateCalls += 1;
-        return baseRegistry.getSeatState(monitorSymbol, direction);
+        return baseRegistry.getSeatState(direction);
       },
-      getSeatVersion: (monitorSymbol, direction) => {
+      getSeatVersion: (direction) => {
         getSeatVersionCalls += 1;
-        return baseRegistry.getSeatVersion(monitorSymbol, direction);
+        return baseRegistry.getSeatVersion(direction);
       },
     };
     const consistencyPort = createConsistencyPort({
@@ -508,7 +508,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     expect(getSeatStateCalls).toBe(stateCallsAfterStart);
     expect(getSeatVersionCalls).toBe(versionCallsAfterStart);
 
-    symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'BULL2.HK',
       status: 'ACTIVE',
       lastSwitchAt: null,
@@ -547,9 +547,9 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const symbolRegistry: TestSymbolRegistry = {
       ...baseRegistry,
-      getSeatState: (monitorSymbol, direction) => {
+      getSeatState: (direction) => {
         getSeatStateCalls += 1;
-        return baseRegistry.getSeatState(monitorSymbol, direction);
+        return baseRegistry.getSeatState(direction);
       },
     };
     const { deps } = createRuntimeDeps({ symbolRegistry });
@@ -558,7 +558,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     runtime.start();
     const stateCallsAfterStart = getSeatStateCalls;
 
-    symbolRegistry.updateSeatStateWithVersionBump('HSI.HK', 'LONG', {
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       symbol: 'BULL2.HK',
       status: 'ACTIVE',
       lastSwitchAt: null,
@@ -572,7 +572,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     await runtime.stopAndDrain();
   });
 
-  it('uses the refreshed seat version for quotes after a version-only bump', async () => {
+  it('uses the refreshed seat version for quotes after an atomic seat update', async () => {
     const executedSeatVersions: number[] = [];
     const symbolRegistry = createSymbolRegistryDouble({
       longSeat: {
@@ -606,7 +606,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     const runtime = createTradingRiskEventRuntime(deps);
 
     runtime.start();
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
     emitQuoteUpdated('BULL.HK', 1.23);
     await waitTick();
 
@@ -638,9 +638,9 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const symbolRegistry: TestSymbolRegistry = {
       ...baseRegistry,
-      getSeatState: (monitorSymbol, direction) => {
+      getSeatState: (direction) => {
         getSeatStateCalls += 1;
-        return baseRegistry.getSeatState(monitorSymbol, direction);
+        return baseRegistry.getSeatState(direction);
       },
     };
     const { deps } = createRuntimeDeps({ symbolRegistry });
@@ -648,12 +648,11 @@ describe('tradingRiskEventRuntime runtime flow', () => {
 
     runtime.start();
     expect(symbolRegistry.getSeatStateChangedListenerCount()).toBe(0);
-    expect(symbolRegistry.getSeatVersionChangedListenerCount()).toBe(0);
     expect(symbolRegistry.getSeatTruthChangedListenerCount()).toBe(1);
 
     await runtime.stopAndDrain();
     const stateCallsAfterStop = getSeatStateCalls;
-    symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'BULL2.HK',
       status: 'ACTIVE',
       lastSwitchAt: null,
@@ -721,7 +720,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     subscribeQuoteProbe(probeSymbols);
 
     expect(() => {
-      symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+      symbolRegistry.updateSeatState('SHORT', {
         ...hsiShort,
         symbol: 'BULL.HK',
       });
@@ -736,7 +735,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     expect(executedSymbols).toEqual([]);
     expect(probeSymbols).toEqual(['BULL.HK']);
 
-    symbolRegistry.updateSeatStateWithVersionBump('HSI.HK', 'SHORT', {
+    symbolRegistry.updateSeatStateWithVersionBump('SHORT', {
       ...hsiShort,
       symbol: 'BEAR2.HK',
     });
@@ -809,7 +808,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       await waitTick();
 
       expect(() => {
-        symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
+        symbolRegistry.updateSeatState('SHORT', {
           ...hsiShort,
           symbol: 'BULL.HK',
         });
@@ -955,7 +954,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     emitQuoteUpdated('BULL.HK', 1.23);
     await waitTick();
 
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
     consistencyPort.resolveFresh();
     await waitTick();
 
@@ -1119,7 +1118,6 @@ describe('unrealizedLossMonitor directional execution', () => {
     await monitor.monitorDirectionalUnrealizedLoss({
       symbol: 'BULL.HK',
       isLong: true,
-      monitorSymbol: 'HSI.HK',
       seatVersion: 7,
       quote: createQuoteDouble('BULL.HK', 1.23, 100),
       riskChecker,

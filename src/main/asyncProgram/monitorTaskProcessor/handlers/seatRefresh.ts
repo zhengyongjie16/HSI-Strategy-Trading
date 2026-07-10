@@ -27,13 +27,11 @@ function logSeatRefreshSkipped(params: {
   readonly reason: string;
 }): void {
   const { context, data, reason } = params;
-  const currentSeat = context.symbolRegistry.getSeatState(data.monitorSymbol, data.direction);
-  const currentSeatVersion = context.symbolRegistry.getSeatVersion(
-    data.monitorSymbol,
-    data.direction,
-  );
+  const monitorSymbol = context.config.monitorSymbol;
+  const currentSeat = context.symbolRegistry.getSeatState(data.direction);
+  const currentSeatVersion = context.symbolRegistry.getSeatVersion(data.direction);
   logger.debug(
-    `[SEAT_REFRESH skipped] monitorSymbol=${data.monitorSymbol} direction=${data.direction} taskSeatVersion=${data.seatVersion} currentSeatVersion=${currentSeatVersion} currentStatus=${currentSeat.status} currentSymbol=${currentSeat.symbol ?? 'null'} reason=${reason}`,
+    `[SEAT_REFRESH skipped] monitorSymbol=${monitorSymbol} direction=${data.direction} taskSeatVersion=${data.seatVersion} currentSeatVersion=${currentSeatVersion} currentStatus=${currentSeat.status} currentSymbol=${currentSeat.symbol ?? 'null'} reason=${reason}`,
   );
 }
 
@@ -45,7 +43,7 @@ function logSeatRefreshProcessed(params: {
   const { data, result, reason } = params;
   const reasonSuffix = reason ? ` reason=${reason}` : '';
   logger.debug(
-    `[SEAT_REFRESH processed] monitorSymbol=${data.monitorSymbol} direction=${data.direction} seatVersion=${data.seatVersion} previousSymbol=${data.previousSymbol ?? 'null'} nextSymbol=${data.nextSymbol} result=${result}${reasonSuffix}`,
+    `[SEAT_REFRESH processed] direction=${data.direction} seatVersion=${data.seatVersion} previousSymbol=${data.previousSymbol ?? 'null'} nextSymbol=${data.nextSymbol} result=${result}${reasonSuffix}`,
   );
 }
 
@@ -76,8 +74,8 @@ function collectSeatRefreshRelatedTradingSymbols(
     symbols.add(data.previousSymbol);
   }
 
-  const longSeat = context.symbolRegistry.getSeatState(data.monitorSymbol, 'LONG');
-  const shortSeat = context.symbolRegistry.getSeatState(data.monitorSymbol, 'SHORT');
+  const longSeat = context.symbolRegistry.getSeatState('LONG');
+  const shortSeat = context.symbolRegistry.getSeatState('SHORT');
   if (longSeat.symbol !== null) {
     symbols.add(longSeat.symbol);
   }
@@ -101,12 +99,12 @@ function collectSeatRefreshRelatedTradingSymbols(
  * @returns 无返回值
  */
 function markSeatAsEmpty(
-  monitorSymbol: string,
   direction: 'LONG' | 'SHORT',
   reason: string,
   context: MonitorTaskContext,
 ): void {
-  const currentSeat = context.symbolRegistry.getSeatState(monitorSymbol, direction);
+  const monitorSymbol = context.config.monitorSymbol;
+  const currentSeat = context.symbolRegistry.getSeatState(direction);
   const nowMs = Date.now();
   const nextState = {
     symbol: null,
@@ -120,7 +118,6 @@ function markSeatAsEmpty(
   } as const;
   setDirectionSymbolName(context, direction, '');
   const { seatVersion: nextVersion } = context.symbolRegistry.updateSeatStateWithVersionBump(
-    monitorSymbol,
     direction,
     nextState,
   );
@@ -139,8 +136,8 @@ function resolveActivatingSeatSnapshot(
   context: MonitorTaskContext,
   data: SeatRefreshTaskData,
 ): ReturnType<MonitorTaskContext['symbolRegistry']['getSeatState']> | null {
-  const seatState = context.symbolRegistry.getSeatState(data.monitorSymbol, data.direction);
-  const seatVersion = context.symbolRegistry.getSeatVersion(data.monitorSymbol, data.direction);
+  const seatState = context.symbolRegistry.getSeatState(data.direction);
+  const seatVersion = context.symbolRegistry.getSeatVersion(data.direction);
   if (!isSeatVersionMatch(data.seatVersion, seatVersion)) {
     return null;
   }
@@ -165,7 +162,7 @@ export function createSeatRefreshHandler({
   marketDataClient,
   quoteSubscriptionRuntime,
 }: {
-  readonly requireContext: (monitorSymbol: string) => MonitorTaskContext;
+  readonly requireContext: () => MonitorTaskContext;
   readonly tradingConfig: TradingConfig;
   readonly marketDataClient: MarketDataClient;
   readonly quoteSubscriptionRuntime: Pick<
@@ -181,7 +178,7 @@ export function createSeatRefreshHandler({
     helpers: RefreshHelpers,
   ): Promise<MonitorTaskStatus> {
     const data: SeatRefreshTaskData = task.data;
-    const context = requireContext(data.monitorSymbol);
+    const context = requireContext();
 
     const entrySeatState = resolveActivatingSeatSnapshot(context, data);
     if (!entrySeatState) {
@@ -203,7 +200,7 @@ export function createSeatRefreshHandler({
 
     if (!callPriceValid) {
       const reason = '未提供有效回收价(callPrice)，无法刷新牛熊证信息';
-      markSeatAsEmpty(data.monitorSymbol, data.direction, reason, context);
+      markSeatAsEmpty(data.direction, reason, context);
       logSeatRefreshProcessed({
         data,
         result: 'marked_empty',
@@ -220,7 +217,7 @@ export function createSeatRefreshHandler({
       }
 
       releaseSeatRefreshRetain = await quoteSubscriptionRuntime.retainSymbols({
-        ownerKey: `${data.monitorSymbol}:${data.direction}:${data.seatVersion}`,
+        ownerKey: `SEAT_REFRESH_WAIT:${data.direction}:${data.seatVersion}`,
         reason: 'SEAT_REFRESH_WAIT',
         symbols: quoteSymbols,
       });
@@ -230,6 +227,16 @@ export function createSeatRefreshHandler({
       const nextExecutionQuote = executionQuotes.get(data.nextSymbol) ?? null;
 
       const allOrders = await helpers.ensureAllOrders();
+      const preWriteSeatState = resolveActivatingSeatSnapshot(context, data);
+      if (!preWriteSeatState) {
+        logSeatRefreshSkipped({
+          context,
+          data,
+          reason: 'seat snapshot changed before shared cache rebuild',
+        });
+        return 'skipped';
+      }
+
       context.dailyLossTracker.recalculateFromAllOrders(
         allOrders,
         tradingConfig.monitor,
@@ -252,7 +259,7 @@ export function createSeatRefreshHandler({
 
       await helpers.refreshAccountCaches();
 
-      const dailyLossOffset = context.dailyLossTracker.getLossOffset(data.monitorSymbol, isLong);
+      const dailyLossOffset = context.dailyLossTracker.getLossOffset(isLong ? 'LONG' : 'SHORT');
       await context.riskChecker.refreshUnrealizedLossData(
         context.orderRecorder,
         data.nextSymbol,
@@ -288,7 +295,7 @@ export function createSeatRefreshHandler({
       );
       if (warrantRefreshResult.status === 'error') {
         const reason = `设置牛熊证信息失败：${warrantRefreshResult.reason}`;
-        markSeatAsEmpty(data.monitorSymbol, data.direction, reason, context);
+        markSeatAsEmpty(data.direction, reason, context);
         logSeatRefreshProcessed({
           data,
           result: 'marked_empty',
@@ -303,7 +310,7 @@ export function createSeatRefreshHandler({
         nextExecutionQuote?.name ?? data.symbolName ?? data.nextSymbol,
       );
 
-      context.symbolRegistry.updateSeatState(data.monitorSymbol, data.direction, {
+      context.symbolRegistry.updateSeatState(data.direction, {
         ...latestSeatState,
         status: 'ACTIVE',
         lastSeatActivatedAt: Date.now(),

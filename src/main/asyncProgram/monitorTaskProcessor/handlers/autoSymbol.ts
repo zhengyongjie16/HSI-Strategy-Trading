@@ -27,7 +27,6 @@ import { isSeatSnapshotValid } from '../helpers/seatSnapshot.js';
 
 function buildPeriodicBaseline(data: AutoSymbolTickTaskData): PeriodicSwitchRouteBaseline {
   return {
-    monitorSymbol: data.monitorSymbol,
     direction: data.direction,
     symbol: data.symbol,
     seatVersion: data.seatVersion,
@@ -73,7 +72,7 @@ export function createAutoSymbolHandlers({
   periodicSwitchWakeupRuntime,
   getCanTradeNow,
 }: {
-  readonly requireContext: (monitorSymbol: string) => MonitorTaskContext;
+  readonly requireContext: () => MonitorTaskContext;
   readonly switchWakeupRuntime: Pick<SwitchWakeupRuntime, 'handoffPendingSwitch'>;
   readonly periodicSwitchWakeupRuntime: Pick<
     PeriodicSwitchWakeupRuntime,
@@ -87,7 +86,6 @@ export function createAutoSymbolHandlers({
 }> {
   function handoffPendingWakeup(params: {
     readonly context: MonitorTaskContext;
-    readonly monitorSymbol: string;
     readonly direction: 'LONG' | 'SHORT';
     readonly result: SwitchDriveResult | StartSwitchOnDistanceResult | AdvancePendingSwitchResult;
   }): void {
@@ -99,7 +97,6 @@ export function createAutoSymbolHandlers({
       }
 
       switchWakeupRuntime.handoffPendingSwitch({
-        monitorSymbol: params.monitorSymbol,
         direction: params.direction,
         monitorContext: params.context,
         driveResult: result,
@@ -113,7 +110,6 @@ export function createAutoSymbolHandlers({
       }
 
       switchWakeupRuntime.handoffPendingSwitch({
-        monitorSymbol: params.monitorSymbol,
         direction: params.direction,
         monitorContext: params.context,
         driveResult: result.driveResult,
@@ -130,7 +126,6 @@ export function createAutoSymbolHandlers({
     }
 
     switchWakeupRuntime.handoffPendingSwitch({
-      monitorSymbol: params.monitorSymbol,
       direction: params.direction,
       monitorContext: params.context,
       driveResult: result.driveResult,
@@ -141,10 +136,9 @@ export function createAutoSymbolHandlers({
     task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
   ): Promise<MonitorTaskStatus> {
     const data: AutoSymbolTickTaskData = task.data;
-    const context = requireContext(data.monitorSymbol);
+    const context = requireContext();
 
     const isSnapshotValid = isSeatSnapshotValid(
-      data.monitorSymbol,
       data.direction,
       {
         seatVersion: data.seatVersion,
@@ -155,7 +149,7 @@ export function createAutoSymbolHandlers({
     );
     if (!isSnapshotValid) {
       logger.debug(
-        `[MonitorTaskProcessor] AUTO_SYMBOL_TICK 快照失效，跳过 type=${task.type} monitor=${task.monitorSymbol} direction=${data.direction} dedupe=${task.dedupeKey}`,
+        `[MonitorTaskProcessor] AUTO_SYMBOL_TICK 快照失效，跳过 type=${task.type} direction=${data.direction} dedupe=${task.dedupeKey}`,
       );
       return 'skipped';
     }
@@ -172,7 +166,6 @@ export function createAutoSymbolHandlers({
     });
     handoffPendingWakeup({
       context,
-      monitorSymbol: data.monitorSymbol,
       direction: data.direction,
       result: dueResult,
     });

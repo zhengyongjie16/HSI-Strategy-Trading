@@ -324,7 +324,6 @@ export function createPostGateRuntimeFactory(
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const seatActivationDispatcher = createSeatActivationDispatcher({
-      tradingConfig,
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -379,7 +378,6 @@ export function createPostGateRuntimeFactory(
     // 额外保留缓存安全余量，确保延迟验证读取最近样本时窗口充足。
     const indicatorCache = createIndicatorCache({
       retentionWindowMs: indicatorCacheRetentionSeconds * TIME.MILLISECONDS_PER_SECOND,
-      monitorSymbol: tradingConfig.monitor.monitorSymbol,
     });
     const monitorContext = createMonitorContext({
       preGateRuntime,
@@ -390,6 +388,12 @@ export function createPostGateRuntimeFactory(
         lastState,
       },
       quotesMap: null,
+    });
+    postTradeConsistencyRuntime.bindBusinessDeps({
+      monitorContext,
+      dailyLossTracker,
+      liquidationCooldownTracker,
+      protectiveLiquidationEpisodeTracker,
     });
 
     const tradingRiskEventRuntime = createTradingRiskEventRuntime({
@@ -445,12 +449,6 @@ export function createPostGateRuntimeFactory(
       monitorContext,
       lastState,
       renderTradingQuote: (renderParams) => {
-        if (renderParams.monitorSymbol !== monitorContext.config.monitorSymbol) {
-          throw new Error(
-            `[createPostGateRuntime] trading quote route monitorSymbol mismatch: expected=${monitorContext.config.monitorSymbol} actual=${renderParams.monitorSymbol}`,
-          );
-        }
-
         const displayInfo = buildPriceDisplayInfo({
           seatActive: true,
           symbol: renderParams.tradingSymbol,
@@ -462,6 +460,7 @@ export function createPostGateRuntimeFactory(
         });
         marketMonitor.renderTradingQuote({
           ...renderParams,
+          monitorSymbol: monitorContext.config.monitorSymbol,
           displayInfo,
         });
       },

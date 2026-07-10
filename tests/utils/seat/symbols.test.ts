@@ -3,10 +3,7 @@ import {
   collectBoundSeatSymbols,
   resolveBoundSeatSymbol,
 } from '../../../src/utils/seat/symbols.js';
-import {
-  createMonitorConfigDouble,
-  createSymbolRegistryDouble,
-} from '../../helpers/testDoubles.js';
+import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
 
 describe('seat symbol helpers', () => {
   it('returns symbol only when seat has a bound symbol', () => {
@@ -32,8 +29,8 @@ describe('seat symbol helpers', () => {
       },
     });
 
-    expect(resolveBoundSeatSymbol(registry, 'HSI.HK', 'LONG')).toBe('BULL.HK');
-    expect(resolveBoundSeatSymbol(registry, 'HSI.HK', 'SHORT')).toBeNull();
+    expect(resolveBoundSeatSymbol(registry, 'LONG')).toBe('BULL.HK');
+    expect(resolveBoundSeatSymbol(registry, 'SHORT')).toBeNull();
   });
 
   it('collects only currently bound seat symbols', () => {
@@ -58,11 +55,7 @@ describe('seat symbol helpers', () => {
         frozenTradingDayKey: null,
       },
     });
-    const monitor = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-
-    expect(
-      collectBoundSeatSymbols({ monitorSymbol: monitor.monitorSymbol, symbolRegistry: registry }),
-    ).toEqual([
+    expect(collectBoundSeatSymbols({ symbolRegistry: registry })).toEqual([
       { monitorSymbol: 'HSI.HK', direction: 'LONG', symbol: 'BULL.HK' },
       { monitorSymbol: 'HSI.HK', direction: 'SHORT', symbol: 'BEAR.HK' },
     ]);

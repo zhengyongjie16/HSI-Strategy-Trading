@@ -356,10 +356,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         continue;
       }
 
-      if (
-        routeState.route.monitorSymbol === nextRoute.monitorSymbol &&
-        routeState.route.direction === nextRoute.direction
-      ) {
+      if (routeState.route.direction === nextRoute.direction) {
         deleteRoute(routeKey);
       }
     }
@@ -373,11 +370,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    */
   function isRouteCurrent(route: SwitchWakeupRoute): boolean {
     const monitorContext = deps.monitorContext;
-    if (monitorContext.config.monitorSymbol !== route.monitorSymbol) {
-      return false;
-    }
-
-    const seatVersion = deps.symbolRegistry.getSeatVersion(route.monitorSymbol, route.direction);
+    const seatVersion = deps.symbolRegistry.getSeatVersion(route.direction);
     if (seatVersion !== route.seatVersion) {
       return false;
     }
@@ -397,14 +390,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    */
   function resolveAuthoritativeRoute(routeState: SwitchWakeupRouteState): SwitchWakeupRoute | null {
     const monitorContext = deps.monitorContext;
-    if (monitorContext.config.monitorSymbol !== routeState.route.monitorSymbol) {
-      return null;
-    }
-
-    const seatVersion = deps.symbolRegistry.getSeatVersion(
-      routeState.route.monitorSymbol,
-      routeState.route.direction,
-    );
+    const seatVersion = deps.symbolRegistry.getSeatVersion(routeState.route.direction);
     if (seatVersion !== routeState.route.seatVersion) {
       return null;
     }
@@ -415,7 +401,6 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
 
     return {
       routeKey: routeState.route.routeKey,
-      monitorSymbol: routeState.route.monitorSymbol,
       direction: routeState.route.direction,
       seatVersion: routeState.route.seatVersion,
       monitorContext,
@@ -708,32 +693,16 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       return;
     }
 
-    if (deps.monitorContext.config.monitorSymbol !== params.monitorSymbol) {
-      throw new Error(
-        `[SwitchWakeupRuntime] handoff monitorSymbol mismatch: expected=${deps.monitorContext.config.monitorSymbol} actual=${params.monitorSymbol}`,
-      );
-    }
-
-    if (params.monitorContext.config.monitorSymbol !== params.monitorSymbol) {
-      throw new Error(
-        `[SwitchWakeupRuntime] handoff context monitorSymbol mismatch: context=${params.monitorContext.config.monitorSymbol} actual=${params.monitorSymbol}`,
-      );
-    }
-
     if (deps.monitorContext !== params.monitorContext) {
       throw new Error('[SwitchWakeupRuntime] handoff monitorContext identity mismatch');
     }
 
-    const seatVersion = params.monitorContext.symbolRegistry.getSeatVersion(
-      params.monitorSymbol,
-      params.direction,
-    );
+    const seatVersion = params.monitorContext.symbolRegistry.getSeatVersion(params.direction);
     const route: SwitchWakeupRoute = {
       routeKey: buildRouteKey({
         direction: params.direction,
         seatVersion,
       }),
-      monitorSymbol: params.monitorSymbol,
       direction: params.direction,
       seatVersion,
       monitorContext: params.monitorContext,

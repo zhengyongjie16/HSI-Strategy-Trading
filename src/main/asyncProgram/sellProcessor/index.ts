@@ -50,19 +50,6 @@ import type { Task, SellTaskType } from '../tradeTaskQueue/types.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import type { SellSignal, Signal } from '../../../types/signal.js';
 
-function requireExpectedMonitorSymbol(
-  expectedMonitorSymbol: string,
-  actualMonitorSymbol: string,
-): string {
-  if (actualMonitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[SellProcessor] task.monitorSymbol 不匹配唯一监控标的: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
-    );
-  }
-
-  return expectedMonitorSymbol;
-}
-
 /**
  * 复制卖出信号，用于 quote retry 的 delayed re-enqueue。
  *
@@ -101,15 +88,11 @@ function toExecutableSellSignal(signal: Signal): SellSignal | null {
  * 同一标的同方向的不同业务动作（原因、数量、订单类型等）必须独立重试，
  * 避免被错误合并导致语义丢失。
  */
-function buildSellRetryKey(params: {
-  readonly monitorSymbol: string;
-  readonly signal: SellSignal;
-}): string {
-  const { monitorSymbol, signal } = params;
+function buildSellRetryKey(params: { readonly signal: SellSignal }): string {
+  const { signal } = params;
   const relatedOrderIds = signal.relatedBuyOrderIds?.join(',') ?? '';
   const triggerTimeMs = signal.triggerTime instanceof Date ? signal.triggerTime.getTime() : -1;
   return [
-    monitorSymbol,
     signal.action,
     signal.symbol,
     String(signal.seatVersion),
@@ -143,7 +126,6 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     getCanProcessTask,
     onFatalError,
   } = deps;
-  const expectedMonitorSymbol = monitorContext.config.monitorSymbol;
   const retryStates = new Map<string, SellRetryState>();
   let lifecycleActive = true;
   const schedule =
@@ -181,7 +163,6 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
    */
   async function processTask(task: Task<SellTaskType>): Promise<void> {
     const signal = task.data;
-    const monitorSymbol = requireExpectedMonitorSymbol(expectedMonitorSymbol, task.monitorSymbol);
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
     try {
       try {
@@ -198,7 +179,6 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       const { config, orderRecorder, symbolRegistry } = ctx;
       const lastState = getLastState();
       const seatValidation = validateSignalSeat({
-        monitorSymbol,
         signal,
         symbolRegistry,
       });
@@ -210,8 +190,8 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       }
 
       // 获取持仓数据（从 positionCache 获取）
-      const longSeatState = symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-      const shortSeatState = symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+      const longSeatState = symbolRegistry.getSeatState('LONG');
+      const shortSeatState = symbolRegistry.getSeatState('SHORT');
       const longPosition = isSeatActive(longSeatState)
         ? lastState.positionCache.get(longSeatState.symbol)
         : null;
@@ -234,7 +214,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       const shortQuote = isSeatActive(shortSeatState)
         ? (executionQuotes.get(shortSeatState.symbol) ?? null)
         : null;
-      const retryKey = buildSellRetryKey({ monitorSymbol, signal });
+      const retryKey = buildSellRetryKey({ signal });
       const retryState = retryStates.get(retryKey);
       const targetQuote = signal.action === 'SELLCALL' ? longQuote : shortQuote;
       const quoteReadiness = resolveQuoteReadinessForRequirement({
@@ -283,7 +263,6 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
               pendingRetryState.retrySignal = null;
               taskQueue.push({
                 type: task.type,
-                monitorSymbol,
                 data: queuedRetrySignal,
               });
             }, ORDER_QUOTE_RETRY.INTERVAL_MS);
@@ -332,7 +311,6 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       }
 
       const executionSeatValidation = validateSignalSeat({
-        monitorSymbol,
         signal: executionSignal,
         symbolRegistry,
       });
@@ -369,9 +347,6 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     loggerPrefix: 'SellProcessor',
     taskQueue,
     processTask,
-    validateTask: (task) => {
-      requireExpectedMonitorSymbol(expectedMonitorSymbol, task.monitorSymbol);
-    },
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
     ...(onFatalError ? { onFatalError } : {}),
   });

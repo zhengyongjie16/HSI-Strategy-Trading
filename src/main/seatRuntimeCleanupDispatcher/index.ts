@@ -16,19 +16,10 @@ function shouldCleanupDirectionRuntime(event: SeatStateChangedEvent): boolean {
   return event.previousState.status === 'ACTIVE' && event.nextState.status !== 'ACTIVE';
 }
 
-function assertCleanupMonitorSymbol(monitorSymbol: string, expectedMonitorSymbol: string): void {
-  if (monitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[SeatRuntimeCleanupDispatcher] 非唯一 monitorSymbol 事件: expected=${expectedMonitorSymbol} actual=${monitorSymbol}`,
-    );
-  }
-}
-
 function cleanupDirectionRuntime(
   deps: SeatRuntimeCleanupDispatcherDeps,
   event: SeatStateChangedEvent,
 ): void {
-  assertCleanupMonitorSymbol(event.monitorSymbol, deps.monitorContext.config.monitorSymbol);
   const monitorContext = deps.monitorContext;
 
   if (event.direction === 'LONG') {
@@ -38,7 +29,6 @@ function cleanupDirectionRuntime(
   }
 
   const result = clearMonitorDirectionQueues({
-    monitorSymbol: event.monitorSymbol,
     direction: event.direction,
     delayedSignalVerifier: monitorContext.delayedSignalVerifier,
     buyTaskQueue: deps.buyTaskQueue,
@@ -47,7 +37,6 @@ function cleanupDirectionRuntime(
   });
   logDirectionQueueCleanup({
     source: '席位事件',
-    monitorSymbol: event.monitorSymbol,
     direction: event.direction,
     result,
     logger,

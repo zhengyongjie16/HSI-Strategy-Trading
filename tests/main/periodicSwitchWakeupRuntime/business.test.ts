@@ -266,8 +266,6 @@ function expectTickTask(
 
   expect(task.type).toBe('AUTO_SYMBOL_TICK');
   expect(task.dedupeKey).toBe(`AUTO_SYMBOL_TICK:${expected.direction}`);
-  expect(task.monitorSymbol).toBe(expected.monitorSymbol);
-  expect(task.data.monitorSymbol).toBe(expected.monitorSymbol);
   expect(task.data.direction).toBe(expected.direction);
   expect(task.data.seatVersion).toBe(expected.seatVersion);
   expect(task.data.symbol).toBe(expected.symbol);
@@ -283,7 +281,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
 
     expect(harness.tasks).toHaveLength(2);
     expectTickTask(harness.tasks[0], {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -291,7 +288,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     });
 
     expectTickTask(harness.tasks[1], {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'SHORT',
       symbol: 'BEAR.HK',
       seatVersion: 2,
@@ -423,7 +419,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     expect(harness.timers.getPendingTimerCount()).toBe(2);
 
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'LONG',
       createActiveSeat('BULL2.HK', 100_000),
     );
@@ -449,7 +444,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     const harness = createHarness({ nowMs: 100_000 });
     harness.runtime.start();
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -477,7 +471,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const staleBaseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -486,13 +479,11 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.markWaitingEmpty(staleBaseline);
 
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'LONG',
       createActiveSeat('BULL2.HK', 400_000),
     );
 
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'SHORT',
       createActiveSeat('BEAR2.HK', 1_500),
     );
@@ -506,7 +497,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -527,7 +517,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -551,7 +540,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -572,7 +560,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -590,7 +577,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -608,7 +594,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -623,7 +608,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitGate({
       previousCanTrade: null,
       nextCanTrade: true,
-      timestampMs: 400_000,
     });
 
     expect(harness.tasks).toHaveLength(2);
@@ -640,7 +624,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -658,7 +641,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitGate({
       previousCanTrade: false,
       nextCanTrade: true,
-      timestampMs: 400_000,
     });
 
     expect(harness.tasks).toHaveLength(2);
@@ -675,7 +657,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -692,7 +673,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitGate({
       previousCanTrade: false,
       nextCanTrade: true,
-      timestampMs: 401_000,
     });
 
     expect(
@@ -708,7 +688,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -728,7 +707,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitGate({
       previousCanTrade: false,
       nextCanTrade: true,
-      timestampMs: 401_000,
     });
 
     expect(
@@ -744,7 +722,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -756,7 +733,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitGate({
       previousCanTrade: false,
       nextCanTrade: true,
-      timestampMs: 401_000,
     });
 
     expect(
@@ -773,7 +749,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -802,7 +777,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -811,7 +785,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
 
     harness.runtime.replanRouteAfterTask({ ...baseline, taskTimeMs: 400_000, status: 'failed' });
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'LONG',
       createActiveSeat('BULL2.HK', 500_000),
     );
@@ -829,7 +802,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -849,7 +821,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -871,7 +842,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -879,7 +849,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     };
 
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'LONG',
       createActiveSeat('BULL2.HK', 500_000),
     );
@@ -908,7 +877,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     const staleCallback = harness.timers.captureNextCallback();
 
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'LONG',
       createActiveSeat('BULL2.HK', 600_000),
     );
@@ -927,7 +895,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -938,7 +905,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     expect(harness.timers.getPendingTimerCount()).toBe(0);
 
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'LONG',
       createActiveSeat('BULL2.HK', 500_000),
     );
@@ -957,14 +923,12 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     });
     harness.runtime.start();
     const staleBaseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
       lastSeatActivatedAt: 1_000,
     };
     harness.symbolRegistry.updateSeatStateWithVersionBump(
-      harness.monitorConfig.monitorSymbol,
       'LONG',
       createActiveSeat('BULL2.HK', 600_000),
     );
@@ -988,7 +952,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.runtime.start();
     harness.tasks.length = 0;
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: harness.monitorConfig.monitorSymbol,
       direction: 'LONG',
       symbol: 'BULL.HK',
       seatVersion: 1,
@@ -999,13 +962,11 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitGate({
       previousCanTrade: false,
       nextCanTrade: true,
-      timestampMs: 400_000,
     });
 
     harness.subscriptions.emitGate({
       previousCanTrade: true,
       nextCanTrade: true,
-      timestampMs: 401_000,
     });
 
     expect(harness.tasks).toHaveLength(1);
@@ -1019,12 +980,13 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     expect(harness.tasks[2]?.data).toMatchObject(baseline);
   });
 
-  it('seat truth 事件携带非唯一 monitorSymbol 时 fail-fast', () => {
+  it('seat truth 事件只按 direction route 重算，不要求 monitorSymbol fail-fast', () => {
     const harness = createHarness({ nowMs: 400_000 });
     harness.runtime.start();
+    harness.tasks.length = 0;
 
     expect(() => {
-      harness.symbolRegistry.updateSeatStateWithVersionBump('TECH.HK', 'LONG', {
+      harness.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
         symbol: 'BULL2.HK',
         status: 'ACTIVE',
         lastSwitchAt: null,
@@ -1034,8 +996,9 @@ describe('PeriodicSwitchWakeupRuntime', () => {
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });
-    }).toThrow(AggregateError);
+    }).not.toThrow();
 
-    expect(harness.tasks).toHaveLength(2);
+    expect(harness.tasks).toHaveLength(0);
+    expect(harness.timers.getPendingTimerAts()).toContain(800_000);
   });
 });

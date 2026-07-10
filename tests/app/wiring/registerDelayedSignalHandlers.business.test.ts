@@ -120,7 +120,7 @@ describe('registerDelayedSignalHandlers business flow', () => {
     expect(harness.sellTasks).toHaveLength(0);
   });
 
-  it('enqueues verified buy signal while opening protection remains active in runtime state', () => {
+  it('drops verified ordinary signal while opening protection remains active in runtime state', () => {
     const harness = createHarness();
 
     registerDelayedSignalHandlers({
@@ -143,10 +143,37 @@ describe('registerDelayedSignalHandlers business flow', () => {
 
     harness.callbackRef.current(createSignalDouble('BUYCALL', 'BULL.HK'));
 
-    expect(harness.buyTasks).toHaveLength(1);
-    expect(harness.buyTasks[0]?.monitorSymbol).toBe(harness.monitorSymbol);
-    expect(harness.buyTasks[0]?.data.symbol).toBe('BULL.HK');
+    expect(harness.buyTasks).toHaveLength(0);
     expect(harness.sellTasks).toHaveLength(0);
+  });
+
+  it('enqueues verified sell signal without monitorSymbol in task payload', () => {
+    const harness = createHarness();
+
+    registerDelayedSignalHandlers({
+      monitorContext: harness.monitorContext,
+      lastState: createLastState({
+        isTradingEnabled: true,
+        canTrade: true,
+        isHalfDay: false,
+      }),
+      buyTaskQueue: harness.buyTaskQueue,
+      sellTaskQueue: harness.sellTaskQueue,
+      logger: {
+        debug: () => {},
+        warn: () => {},
+      },
+      doomsdayProtectionEnabled: false,
+      now: () => new Date('2026-03-09T09:35:00+08:00'),
+    });
+
+    harness.callbackRef.current(createSignalDouble('SELLPUT', 'BEAR.HK'));
+
+    expect(harness.buyTasks).toHaveLength(0);
+    expect(harness.sellTasks).toHaveLength(1);
+    expect('monitorSymbol' in (harness.sellTasks[0] ?? {})).toBeFalse();
+    expect('monitorSymbol' in (harness.sellTasks[0]?.data ?? {})).toBeFalse();
+    expect(harness.sellTasks[0]?.data.symbol).toBe('BEAR.HK');
   });
 
   it('drops verified ordinary signal during doomsday clearance takeover window', () => {

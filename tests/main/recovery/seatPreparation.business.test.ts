@@ -184,8 +184,8 @@ describe('recovery seat preparation business flow', () => {
       { monitorSymbol: 'HSI.HK', direction: 'LONG', symbol: 'BULL.HK' },
       { monitorSymbol: 'HSI.HK', direction: 'SHORT', symbol: 'BEAR.HK' },
     ]);
-    const longSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
-    const shortSeat = symbolRegistry.getSeatState('HSI.HK', 'SHORT');
+    const longSeat = symbolRegistry.getSeatState('LONG');
+    const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(longSeat.lastSeatActivatedAt).toBeNull();
     expect(shortSeat.lastSeatActivatedAt).toBeNull();
   });
@@ -246,8 +246,8 @@ describe('recovery seat preparation business flow', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    const longSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG');
-    const shortSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'SHORT');
+    const longSeat = symbolRegistry.getSeatState('LONG');
+    const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.searchFailCountToday).toBe(1);
     expect(shortSeat.status).toBe('EMPTY');
@@ -297,13 +297,9 @@ describe('recovery seat preparation business flow', () => {
     });
 
     expect(prepared.seatSymbols).toEqual([]);
-    expect(symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG').frozenTradingDayKey).toBe(
-      '2026-02-15',
-    );
+    expect(symbolRegistry.getSeatState('LONG').frozenTradingDayKey).toBe('2026-02-15');
 
-    expect(symbolRegistry.getSeatState(monitor.monitorSymbol, 'SHORT').frozenTradingDayKey).toBe(
-      '2026-02-15',
-    );
+    expect(symbolRegistry.getSeatState('SHORT').frozenTradingDayKey).toBe('2026-02-15');
   });
 
   it('rethrows ExternalApiRequestError during startup recovery search and preserves prior failure state', async () => {
@@ -359,7 +355,7 @@ describe('recovery seat preparation business flow', () => {
       operation: 'QuoteContext.warrantList',
     });
 
-    const longSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG');
+    const longSeat = symbolRegistry.getSeatState('LONG');
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.searchFailCountToday).toBe(2);
     expect(longSeat.frozenTradingDayKey).toBe('2026-02-15');
@@ -416,7 +412,7 @@ describe('recovery seat preparation business flow', () => {
     expect(error).toBeInstanceOf(TypeError);
     expect(error).toMatchObject({ message: 'warrant payload contract broken' });
 
-    const longSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG');
+    const longSeat = symbolRegistry.getSeatState('LONG');
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.searchFailCountToday).toBe(1);
     expect(longSeat.frozenTradingDayKey).toBe('2026-02-14');
@@ -460,7 +456,7 @@ describe('recovery seat preparation business flow', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    const longSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG');
+    const longSeat = symbolRegistry.getSeatState('LONG');
     expect(prepared.seatSymbols).toEqual([]);
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.searchFailCountToday).toBe(AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY);
@@ -568,8 +564,8 @@ describe('recovery seat preparation business flow', () => {
     });
 
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(0);
-    expect(symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG').status).toBe('EMPTY');
-    expect(symbolRegistry.getSeatState(monitor.monitorSymbol, 'SHORT').status).toBe('EMPTY');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('EMPTY');
+    expect(symbolRegistry.getSeatState('SHORT').status).toBe('EMPTY');
     expect(prepared.seatSymbols).toEqual([]);
   });
 
@@ -593,8 +589,8 @@ describe('recovery seat preparation business flow', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    const longSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG');
-    const shortSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'SHORT');
+    const longSeat = symbolRegistry.getSeatState('LONG');
+    const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(2);
     expect(longSeat.status).toBe('ACTIVATING');
     expect(longSeat.symbol).toBe('AUTO_BULL.HK');
@@ -626,8 +622,8 @@ describe('recovery seat preparation business flow', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    const longSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'LONG');
-    const shortSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'SHORT');
+    const longSeat = symbolRegistry.getSeatState('LONG');
+    const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(2);
     expect(longSeat.status).toBe('ACTIVATING');
     expect(shortSeat.status).toBe('ACTIVATING');
@@ -706,7 +702,7 @@ describe('recovery seat preparation business flow', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    const shortSeat = symbolRegistry.getSeatState(monitor.monitorSymbol, 'SHORT');
+    const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(shortSeat.status).toBe('ACTIVATING');
     expect(shortSeat.symbol).toBe('AUTO_BEAR_BEST.HK');
     expect(shortSeat.callPrice).toBe(19_500);

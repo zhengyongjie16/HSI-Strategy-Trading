@@ -156,7 +156,7 @@ export const performVerification = (
   indicatorCache: IndicatorCache,
   entry: PendingSignalEntry,
 ): VerificationResult => {
-  const { signal, monitorSymbol, triggerTime, initialIndicators, indicatorNames } = entry;
+  const { signal, triggerTime, initialIndicators, indicatorNames } = entry;
 
   // 安全检查：指标配置
   if (indicatorNames.length === 0) {
@@ -172,9 +172,9 @@ export const performVerification = (
   const t2 = triggerTime + VERIFICATION.TIME_OFFSET_2_SECONDS * TIME.MILLISECONDS_PER_SECOND;
 
   // 从 IndicatorCache 获取3个时间点的数据
-  const entry0 = indicatorCache.getClosest(monitorSymbol, t0);
-  const entry1 = indicatorCache.getClosest(monitorSymbol, t1);
-  const entry2 = indicatorCache.getClosest(monitorSymbol, t2);
+  const entry0 = indicatorCache.getClosest(t0);
+  const entry1 = indicatorCache.getClosest(t1);
+  const entry2 = indicatorCache.getClosest(t2);
 
   // 检查是否所有时间点都有数据
   if (!entry0 || !entry1 || !entry2) {

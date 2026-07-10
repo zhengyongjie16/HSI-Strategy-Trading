@@ -66,6 +66,8 @@ async function validateWithEnv(
 }
 
 const invalidMonitorEnvCases = [
+  { envKey: 'MAX_UNREALIZED_LOSS_PER_SYMBOL', value: '-1' },
+  { envKey: 'MAX_UNREALIZED_LOSS_PER_SYMBOL', value: 'abc' },
   { envKey: 'TARGET_NOTIONAL', value: '0' },
   { envKey: 'TARGET_NOTIONAL', value: 'abc' },
   { envKey: 'MAX_POSITION_NOTIONAL', value: '-1' },
@@ -88,6 +90,46 @@ const invalidMonitorEnvCases = [
     value: 'abc',
     extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
   },
+  {
+    envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
+    value: '0',
+    extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
+  },
+  {
+    envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
+    value: '121',
+    extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
+  },
+  {
+    envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
+    value: 'abc',
+    extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
+  },
+  {
+    envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
+    value: '-1',
+    extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
+  },
+  {
+    envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
+    value: '61',
+    extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
+  },
+  {
+    envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
+    value: 'abc',
+    extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
+  },
+  { envKey: 'VERIFICATION_DELAY_SECONDS_BUY', value: '-1' },
+  { envKey: 'VERIFICATION_DELAY_SECONDS_BUY', value: '121' },
+  { envKey: 'VERIFICATION_DELAY_SECONDS_BUY', value: 'abc' },
+  { envKey: 'VERIFICATION_DELAY_SECONDS_SELL', value: '-1' },
+  { envKey: 'VERIFICATION_DELAY_SECONDS_SELL', value: '121' },
+  { envKey: 'VERIFICATION_DELAY_SECONDS_SELL', value: 'abc' },
+  { envKey: 'VERIFICATION_INDICATORS_BUY', value: 'K,INVALID' },
+  { envKey: 'VERIFICATION_INDICATORS_BUY', value: 'INVALID' },
+  { envKey: 'VERIFICATION_INDICATORS_SELL', value: 'MACD,INVALID' },
+  { envKey: 'VERIFICATION_INDICATORS_SELL', value: 'INVALID' },
 ] as const;
 
 const invalidGlobalNumberEnvCases = [
@@ -130,6 +172,10 @@ const invalidOrderTypeEnvCases = [
   { envKey: 'TRADING_ORDER_TYPE', value: 'bad' },
   { envKey: 'LIQUIDATION_ORDER_TYPE', value: 'bad' },
 ] as const;
+
+const invalidMonitorBooleanEnvCases = [{ envKey: 'AUTO_SEARCH_ENABLED', value: 'yes' }] as const;
+
+const invalidGlobalBooleanEnvCases = [{ envKey: 'DOOMSDAY_PROTECTION', value: 'yes' }] as const;
 
 function createAutoSearchEnabledTradingConfig() {
   return createTradingConfig({
@@ -289,12 +335,38 @@ describe('trading config fail-fast parsing', () => {
     }
   });
 
+  it('fails fast when LIQUIDATION_TRIGGER_LIMIT is explicitly invalid or out of range', () => {
+    const invalidValues = ['0', '1.5', '11', 'abc'];
+
+    for (const value of invalidValues) {
+      expect(() =>
+        parseTradingConfig({
+          env: createBaseEnv({
+            LIQUIDATION_TRIGGER_LIMIT: value,
+          }),
+        }),
+      ).toThrow(/LIQUIDATION_TRIGGER_LIMIT/);
+    }
+  });
+
   it('fails fast when critical global keys are explicitly invalid or out of range', () => {
     for (const testCase of [...invalidGlobalNumberEnvCases, ...invalidOrderTypeEnvCases]) {
       expect(() =>
         parseTradingConfig({
           env: createBaseEnv({
             ...('extraEnv' in testCase ? testCase.extraEnv : {}),
+            [testCase.envKey]: testCase.value,
+          }),
+        }),
+      ).toThrow(new RegExp(testCase.envKey));
+    }
+  });
+
+  it('fails fast when monitor or global boolean keys are explicitly invalid', () => {
+    for (const testCase of [...invalidMonitorBooleanEnvCases, ...invalidGlobalBooleanEnvCases]) {
+      expect(() =>
+        parseTradingConfig({
+          env: createBaseEnv({
             [testCase.envKey]: testCase.value,
           }),
         }),
@@ -358,5 +430,87 @@ describe('trading config fail-fast validator consistency', () => {
       );
       expect(missingFields).toContain(testCase.envKey);
     }
+  });
+
+  it('matches parser semantics for explicit invalid boolean env keys', async () => {
+    for (const testCase of [...invalidMonitorBooleanEnvCases, ...invalidGlobalBooleanEnvCases]) {
+      const missingFields = await validateWithEnv(
+        createBaseEnv({
+          [testCase.envKey]: testCase.value,
+        }),
+      );
+      expect(missingFields).toContain(testCase.envKey);
+    }
+  });
+
+  it('flags explicit bounded monitor values that violate the business upper and lower bounds', async () => {
+    const autoSearchEnabledTradingConfig = createAutoSearchEnabledTradingConfig();
+    const liquidationBoundedTradingConfig = createTradingConfig({
+      monitor: createMonitorConfigDouble({
+        liquidationCooldown: {
+          mode: 'minutes',
+          minutes: 10,
+        },
+        liquidationTriggerLimit: 11,
+        orderOwnershipMapping: ['HSI'],
+        signalConfig: {
+          buycall: createSignalConfig(),
+          sellcall: createSignalConfig(),
+          buyput: createSignalConfig(),
+          sellput: createSignalConfig(),
+        },
+      }),
+    });
+
+    const autoSearchExpiryMissingFields = await validateWithEnv(
+      createBaseEnv({
+        AUTO_SEARCH_ENABLED: 'true',
+        AUTO_SEARCH_EXPIRY_MIN_MONTHS: '121',
+      }),
+      {
+        ...autoSearchEnabledTradingConfig,
+        monitor: {
+          ...autoSearchEnabledTradingConfig.monitor,
+          autoSearchConfig: {
+            ...autoSearchEnabledTradingConfig.monitor.autoSearchConfig,
+            autoSearchExpiryMinMonths: 121,
+          },
+        },
+      },
+    );
+    expect(autoSearchExpiryMissingFields).toContain('AUTO_SEARCH_EXPIRY_MIN_MONTHS');
+
+    const autoSearchOpenDelayMissingFields = await validateWithEnv(
+      createBaseEnv({
+        AUTO_SEARCH_ENABLED: 'true',
+        AUTO_SEARCH_OPEN_DELAY_MINUTES: '61',
+      }),
+      {
+        ...autoSearchEnabledTradingConfig,
+        monitor: {
+          ...autoSearchEnabledTradingConfig.monitor,
+          autoSearchConfig: {
+            ...autoSearchEnabledTradingConfig.monitor.autoSearchConfig,
+            autoSearchOpenDelayMinutes: 61,
+          },
+        },
+      },
+    );
+    expect(autoSearchOpenDelayMissingFields).toContain('AUTO_SEARCH_OPEN_DELAY_MINUTES');
+
+    const liquidationTriggerLimitMissingFields = await validateWithEnv(
+      createBaseEnv({
+        LIQUIDATION_COOLDOWN_MINUTES: '10',
+        LIQUIDATION_TRIGGER_LIMIT: '1.5',
+      }),
+      {
+        ...liquidationBoundedTradingConfig,
+        monitor: {
+          ...liquidationBoundedTradingConfig.monitor,
+          liquidationTriggerLimit: 1.5,
+        },
+      },
+    );
+    expect(liquidationTriggerLimitMissingFields).toContain('LIQUIDATION_TRIGGER_LIMIT');
   });
 });

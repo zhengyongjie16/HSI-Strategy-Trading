@@ -67,26 +67,6 @@ export type SeatStateChangedEvent = Readonly<{
 }>;
 
 /**
- * 席位版本变化事件。
- * 类型用途：表达 SymbolRegistry 权威席位版本号发生变化，供依赖 seatVersion 隔离语义的 runtime 刷新派生状态。
- * 数据来源：由 SymbolRegistry.bumpSeatVersion 或 updateSeatStateWithVersionBump 在版本递增完成后发布。
- * 使用范围：TradingRiskEventRuntime 等需要响应 seatVersion 隔离边界变化的事件驱动链路。
- */
-export type SeatVersionChangedEvent = Readonly<{
-  /** 监控标的代码 */
-  monitorSymbol: string;
-
-  /** 席位方向 */
-  direction: 'LONG' | 'SHORT';
-
-  /** 递增前版本号 */
-  previousVersion: number;
-
-  /** 递增后版本号 */
-  nextVersion: number;
-}>;
-
-/**
  * 席位 truth 变化事件。
  * 类型用途：表达 SymbolRegistry 已完成一次席位权威状态 mutation，监听方可同步读取最新 state/version 快照。
  * 数据来源：由 SymbolRegistry 的 public mutation 在本次对应的状态或版本事件发布完成后发布。
@@ -115,30 +95,28 @@ export type SeatTruthChangedListener = (event: SeatTruthChangedEvent) => void;
  * 使用范围：主程序、MonitorContext、autoSymbolManager、orderRecorder 等；全项目可引用。
  */
 export interface SymbolRegistry {
+  /** 获取唯一监控标的代码 */
+  getMonitorSymbol: () => string;
+
   /** 获取席位状态 */
-  getSeatState: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => SeatState;
+  getSeatState: (direction: 'LONG' | 'SHORT') => SeatState;
 
   /** 获取席位版本号 */
-  getSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => number;
+  getSeatVersion: (direction: 'LONG' | 'SHORT') => number;
 
   /** 根据标的代码解析所属席位 */
-  resolveSeatBySymbol: (symbol: string) => {
+  resolveSeatBySymbol: (symbol: string) => Readonly<{
     monitorSymbol: string;
     direction: 'LONG' | 'SHORT';
     seatState: SeatState;
     seatVersion: number;
-  } | null;
+  }> | null;
 
   /** 更新席位状态 */
-  updateSeatState: (
-    monitorSymbol: string,
-    direction: 'LONG' | 'SHORT',
-    nextState: SeatState,
-  ) => SeatState;
+  updateSeatState: (direction: 'LONG' | 'SHORT', nextState: SeatState) => SeatState;
 
   /** 原子更新席位状态并递增席位版本号 */
   updateSeatStateWithVersionBump: (
-    monitorSymbol: string,
     direction: 'LONG' | 'SHORT',
     nextState: SeatState,
   ) => {
@@ -146,14 +124,8 @@ export interface SymbolRegistry {
     readonly seatVersion: number;
   };
 
-  /** 递增席位版本号 */
-  bumpSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => number;
-
   /** 订阅席位状态变化事件 */
   onSeatStateChanged: (listener: (event: SeatStateChangedEvent) => void) => Unsubscribe;
-
-  /** 订阅席位版本变化事件 */
-  onSeatVersionChanged: (listener: (event: SeatVersionChangedEvent) => void) => Unsubscribe;
 
   /** 订阅席位 truth 变化事件 */
   onSeatTruthChanged: (listener: SeatTruthChangedListener) => Unsubscribe;

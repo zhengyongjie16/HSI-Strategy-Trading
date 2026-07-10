@@ -60,28 +60,19 @@ function createSymbolRegistry(
         }
       : emptySeatState;
   return {
-    getSeatState: () => readySeatState,
+    getMonitorSymbol: () => 'HSI.HK',
+    getSeatState: (_direction: 'LONG' | 'SHORT') => readySeatState,
     getSeatVersion: () => 1,
     resolveSeatBySymbol: () => null,
-    updateSeatState: (
-      _monitorSymbol: string,
-      _direction: 'LONG' | 'SHORT',
-      nextState: SeatState,
-    ) => {
+    updateSeatState: (_direction: 'LONG' | 'SHORT', nextState: SeatState) => {
       readySeatState = nextState;
       return readySeatState;
     },
-    updateSeatStateWithVersionBump: (
-      _monitorSymbol: string,
-      _direction: 'LONG' | 'SHORT',
-      nextState: SeatState,
-    ) => {
+    updateSeatStateWithVersionBump: (_direction: 'LONG' | 'SHORT', nextState: SeatState) => {
       readySeatState = nextState;
       return { seatState: readySeatState, seatVersion: 2 };
     },
-    bumpSeatVersion: () => 1,
     onSeatStateChanged: () => () => {},
-    onSeatVersionChanged: () => () => {},
     onSeatTruthChanged: () => {
       throw new Error('rebuildTradingDayState test must not subscribe to seat truth events');
     },
@@ -401,7 +392,7 @@ describe('createRebuildTradingDayState', () => {
       symbolRegistry: registry,
     });
 
-    registry.updateSeatState('HSI.HK', 'LONG', {
+    registry.updateSeatState('LONG', {
       ...emptySeatState,
       symbol: 'OLD_BULL.HK',
       status: 'ACTIVATING',
@@ -424,7 +415,7 @@ describe('createRebuildTradingDayState', () => {
       now: rebuildNow,
     });
 
-    expect(registry.getSeatState('HSI.HK', 'LONG').lastSeatActivatedAt).toBe(carriedActivatedAt);
+    expect(registry.getSeatState('LONG').lastSeatActivatedAt).toBe(carriedActivatedAt);
     clearSeatActivationCarryover(registry);
   });
 
@@ -446,7 +437,7 @@ describe('createRebuildTradingDayState', () => {
       symbolRegistry: registry,
     });
 
-    registry.updateSeatState('HSI.HK', 'LONG', {
+    registry.updateSeatState('LONG', {
       ...emptySeatState,
       symbol: 'NEW_BULL.HK',
       status: 'ACTIVATING',
@@ -469,10 +460,8 @@ describe('createRebuildTradingDayState', () => {
       now: rebuildNow,
     });
 
-    expect(registry.getSeatState('HSI.HK', 'LONG').lastSeatActivatedAt).toBe(rebuildNow.getTime());
-    expect(registry.getSeatState('HSI.HK', 'LONG').lastSeatActivatedAt).not.toBe(
-      carriedActivatedAt,
-    );
+    expect(registry.getSeatState('LONG').lastSeatActivatedAt).toBe(rebuildNow.getTime());
+    expect(registry.getSeatState('LONG').lastSeatActivatedAt).not.toBe(carriedActivatedAt);
 
     clearSeatActivationCarryover(registry);
   });
@@ -496,7 +485,7 @@ describe('createRebuildTradingDayState', () => {
       symbolRegistry: registry,
     });
 
-    registry.updateSeatState('HSI.HK', 'LONG', {
+    registry.updateSeatState('LONG', {
       ...emptySeatState,
       status: 'EMPTY',
       symbol: null,
@@ -513,7 +502,7 @@ describe('createRebuildTradingDayState', () => {
       symbolRegistry: registry,
     });
 
-    registry.updateSeatState('HSI.HK', 'LONG', {
+    registry.updateSeatState('LONG', {
       ...emptySeatState,
       symbol: 'OLD_BULL.HK',
       status: 'ACTIVATING',
@@ -536,7 +525,7 @@ describe('createRebuildTradingDayState', () => {
       now: rebuildNow,
     });
 
-    expect(registry.getSeatState('HSI.HK', 'LONG').lastSeatActivatedAt).toBe(carriedActivatedAt);
+    expect(registry.getSeatState('LONG').lastSeatActivatedAt).toBe(carriedActivatedAt);
     clearSeatActivationCarryover(registry);
   });
 });

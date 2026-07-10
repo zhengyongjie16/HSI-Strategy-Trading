@@ -78,16 +78,8 @@ export function collectRuntimeValidationSymbols(
     collector,
   });
 
-  const longSeatSymbol = resolveBoundSeatSymbol(
-    symbolRegistry,
-    monitorConfig.monitorSymbol,
-    'LONG',
-  );
-  const shortSeatSymbol = resolveBoundSeatSymbol(
-    symbolRegistry,
-    monitorConfig.monitorSymbol,
-    'SHORT',
-  );
+  const longSeatSymbol = resolveBoundSeatSymbol(symbolRegistry, 'LONG');
+  const shortSeatSymbol = resolveBoundSeatSymbol(symbolRegistry, 'SHORT');
   const autoSearchEnabled = monitorConfig.autoSearchConfig.autoSearchEnabled;
   pushRuntimeValidationSymbol({
     symbol: longSeatSymbol,

@@ -56,7 +56,7 @@ export type EventPublishOptions = {
   readonly sequence?: number;
 };
 
-export interface LongportEventBus {
+interface LongportEventBus {
   subscribe: <TTopic extends LongportEventTopic>(
     topic: TTopic,
     subscriber: Subscriber<TTopic>,
@@ -68,7 +68,6 @@ export interface LongportEventBus {
   ) => void;
   flushDue: (nowMs?: number) => number;
   flushAll: () => number;
-  getQueueSize: () => number;
 }
 
 type EventSubscribers = {
@@ -203,15 +202,10 @@ export function createLongportEventBus(
     return total;
   }
 
-  function getQueueSize(): number {
-    return queue.length;
-  }
-
   return {
     subscribe,
     publish,
     flushDue,
     flushAll,
-    getQueueSize,
   };
 }

@@ -24,6 +24,7 @@ import type {
   RouteExecutionState,
   TradingRiskEventRuntime,
   TradingRiskEventRuntimeDeps,
+  TradingRiskRouteKey,
   TradingRiskRoutingIndex,
 } from './types.js';
 
@@ -59,7 +60,7 @@ export function createTradingRiskEventRuntime(
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
   let routingIndexFatalError: Error | null = null;
-  const routeStates = new Map<string, RouteExecutionState>();
+  const routeStates = new Map<TradingRiskRouteKey, RouteExecutionState>();
   const activeRoutePromises = new Set<Promise<void>>();
 
   /**
@@ -68,7 +69,7 @@ export function createTradingRiskEventRuntime(
    * @param routeKey 路由键
    * @returns 对应的执行状态
    */
-  function getRouteState(routeKey: string): RouteExecutionState {
+  function getRouteState(routeKey: TradingRiskRouteKey): RouteExecutionState {
     const existing = routeStates.get(routeKey);
     if (existing) {
       return existing;
@@ -84,7 +85,7 @@ export function createTradingRiskEventRuntime(
    *
    * @param activeRouteKeys 当前 symbolRegistry 快照下的活跃 routeKey 集合
    */
-  function pruneRouteStates(activeRouteKeys: ReadonlySet<string>): void {
+  function pruneRouteStates(activeRouteKeys: ReadonlySet<TradingRiskRouteKey>): void {
     for (const [routeKey, state] of routeStates) {
       if (state.inFlight) {
         continue;
@@ -188,7 +189,7 @@ export function createTradingRiskEventRuntime(
    *
    * @param routeKey 路由键
    */
-  function launchRouteProcessing(routeKey: string): void {
+  function launchRouteProcessing(routeKey: TradingRiskRouteKey): void {
     const processingPromise = processRouteQueue(routeKey).catch((error: unknown) => {
       logger.error('[TradingRiskEventRuntime] 风险事件处理失败', formatError(error));
       if (shouldExposeRouteProcessingError(error)) {
@@ -266,7 +267,7 @@ export function createTradingRiskEventRuntime(
    *
    * @param routeKey 路由键
    */
-  async function processRouteQueue(routeKey: string): Promise<void> {
+  async function processRouteQueue(routeKey: TradingRiskRouteKey): Promise<void> {
     const routeState = getRouteState(routeKey);
 
     try {

@@ -23,11 +23,7 @@ import {
   type SubmitOrderResponse,
   type TopicType,
 } from 'longbridge';
-import {
-  createLongportEventBus,
-  type EventPublishOptions,
-  type LongportEventBus,
-} from './eventBus.js';
+import { createLongportEventBus, type EventPublishOptions } from './eventBus.js';
 import type {
   MockCallRecord,
   MockFailureRule,
@@ -58,7 +54,6 @@ const TRADE_METHODS: ReadonlySet<MockMethodName> = new Set([
 ]);
 
 type TradeContextMockOptions = {
-  readonly eventBus?: LongportEventBus;
   readonly now?: () => number;
 };
 
@@ -121,6 +116,143 @@ function cloneOrder(order: MinimalOrder): MinimalOrder {
     submittedAt: new Date(order.submittedAt),
     updatedAt: new Date(order.updatedAt),
   };
+}
+
+type DataPropertyDescriptorWithUnknownValue = Omit<PropertyDescriptor, 'value'> & {
+  readonly value: unknown;
+};
+
+type ExecutionFieldKey = 'orderId' | 'tradeId' | 'symbol' | 'tradeDoneAt' | 'quantity' | 'price';
+
+const EXECUTION_FIELD_KEYS: ReadonlyArray<ExecutionFieldKey> = [
+  'orderId',
+  'tradeId',
+  'symbol',
+  'tradeDoneAt',
+  'quantity',
+  'price',
+];
+
+const EXECUTION_FIELD_READERS: Readonly<
+  Record<ExecutionFieldKey, (execution: Execution) => unknown>
+> = {
+  orderId: (execution) => execution.orderId,
+  tradeId: (execution) => execution.tradeId,
+  symbol: (execution) => execution.symbol,
+  tradeDoneAt: (execution) => execution.tradeDoneAt,
+  quantity: (execution) => execution.quantity,
+  price: (execution) => execution.price,
+};
+
+function createCloneObject(source: object): object {
+  return Object.create(Reflect.getPrototypeOf(source)) as object;
+}
+
+function cloneDescriptor(
+  descriptor: PropertyDescriptor,
+  seen: Map<object, unknown>,
+): PropertyDescriptor {
+  if (!('value' in descriptor)) {
+    return descriptor;
+  }
+
+  const dataDescriptor = descriptor as DataPropertyDescriptorWithUnknownValue;
+  return { ...descriptor, value: cloneMutableValue(dataDescriptor.value, seen) };
+}
+
+function defineClonedOwnProperties(
+  source: object,
+  clone: object,
+  seen: Map<object, unknown>,
+): void {
+  for (const key of Reflect.ownKeys(source)) {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (!descriptor) {
+      continue;
+    }
+
+    Object.defineProperty(clone, key, cloneDescriptor(descriptor, seen));
+  }
+}
+
+function getExecutionFieldValue(execution: Execution, key: ExecutionFieldKey): unknown {
+  return EXECUTION_FIELD_READERS[key](execution);
+}
+
+function defineMissingExecutionField(
+  clone: object,
+  execution: Execution,
+  key: ExecutionFieldKey,
+  seen: Map<object, unknown>,
+): void {
+  if (Object.hasOwn(clone, key)) {
+    return;
+  }
+
+  Object.defineProperty(clone, key, {
+    configurable: true,
+    enumerable: true,
+    value: cloneMutableValue(getExecutionFieldValue(execution, key), seen),
+    writable: true,
+  });
+}
+
+/**
+ * 递归克隆可变值，同时保留原型和访问器描述符。
+ *
+ * 通过 seen 记录处理循环引用；函数和访问器描述符保留原引用，避免改变 SDK 方法语义。
+ */
+function cloneMutableValue(
+  value: unknown,
+  seen: Map<object, unknown> = new Map<object, unknown>(),
+): unknown {
+  if (!(typeof value === 'object' && value !== null)) {
+    return value;
+  }
+
+  const source = value;
+  if (seen.has(source)) {
+    return seen.get(source);
+  }
+
+  if (source instanceof Date) {
+    const clone = new Date(source);
+    seen.set(source, clone);
+    return clone;
+  }
+
+  if (source instanceof Decimal) {
+    const clone = new Decimal(source.toString());
+    seen.set(source, clone);
+    return clone;
+  }
+
+  const clone: object = Array.isArray(source) ? [] : createCloneObject(source);
+  seen.set(source, clone);
+
+  defineClonedOwnProperties(source, clone, seen);
+
+  return clone;
+}
+
+/**
+ * 深拷贝 SDK Execution 的公开与附加可变字段。
+ *
+ * 保留原型、访问器和未知自有描述符；Date、Decimal 与嵌套数据属性通过
+ * 同一递归上下文克隆，避免注入方或读取方修改同一份可变数据。
+ */
+function cloneExecution(execution: Execution): Execution {
+  const seen = new Map<object, unknown>();
+  const clone = createCloneObject(execution);
+  seen.set(execution, clone);
+  defineClonedOwnProperties(execution, clone, seen);
+
+  for (const key of EXECUTION_FIELD_KEYS) {
+    defineMissingExecutionField(clone, execution, key, seen);
+  }
+
+  // 信任边界：SDK 未暴露 Execution 构造器；已按其公开字段和原型重建实例。
+  return clone as Execution;
 }
 
 /**
@@ -215,14 +347,14 @@ interface TradeContextMock extends TradeContextContract {
  */
 export function createTradeContextMock(options: TradeContextMockOptions = {}): TradeContextMock {
   const now = options.now ?? (() => Date.now());
-  const bus = options.eventBus ?? createLongportEventBus(now);
+  const bus = createLongportEventBus(now);
 
   const failureState = createFailureState();
   const callRecords: MockCallRecord[] = [];
 
   let todayOrdersStore: MinimalOrder[] = [];
   let historyOrdersStore: MinimalOrder[] = [];
-  let executionsStore: ReadonlyArray<Execution> = [];
+  let todayExecutionsStore: ReadonlyArray<Execution> = [];
   let balancesStore: ReadonlyArray<AccountBalance> = [];
   let stockPositionsStore: StockPositionsResponse = {
     channels: [],
@@ -247,7 +379,6 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
       callRecords,
       method,
       args,
-      now,
       action,
     });
   }
@@ -331,7 +462,9 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
   function todayExecutions(
     _options?: GetTodayExecutionsOptions,
   ): Promise<ReadonlyArray<Execution>> {
-    return withCall('todayExecutions', [_options], () => [...executionsStore]);
+    return withCall('todayExecutions', [_options], () =>
+      todayExecutionsStore.map((execution) => cloneExecution(execution)),
+    );
   }
 
   function accountBalance(currency?: string): Promise<ReadonlyArray<AccountBalance>> {
@@ -413,7 +546,7 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
   }
 
   function seedTodayExecutions(executions: ReadonlyArray<Execution>): void {
-    executionsStore = [...executions];
+    todayExecutionsStore = executions.map((execution) => cloneExecution(execution));
   }
 
   function seedAccountBalances(balances: ReadonlyArray<AccountBalance>): void {

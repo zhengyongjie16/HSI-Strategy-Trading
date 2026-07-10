@@ -5,6 +5,7 @@
  * - 收盘前的风险控制
  * - 买入截止窗口内拒绝买入新订单并撤销未成交买入订单
  * - 清仓接管窗口内对当前监控席位可归属且行情可执行的持仓发起自动清仓
+ * - 若发现非当前席位仍有正持仓，则直接抛错暴露席位归属不变量破坏
  *
  * 时间规则：
  * - 窗口长度由 `src/constants/index.ts` 中的 `DOOMSDAY` 常量统一定义
@@ -81,7 +82,7 @@ function resolveSeatSymbol(
   monitorSymbol: string,
   direction: 'LONG' | 'SHORT',
 ): string | null {
-  const seatState = context.symbolRegistry.getSeatState(monitorSymbol, direction);
+  const seatState = context.symbolRegistry.getSeatState(direction);
   if (!isSeatActive(seatState)) {
     logger.debug(`[末日保护程序] 席位未就绪，跳过: ${monitorSymbol} ${direction}`);
     return null;
@@ -90,17 +91,13 @@ function resolveSeatSymbol(
   return seatState.symbol;
 }
 
-function resolveSeatVersion(
-  context: MonitorContext,
-  monitorSymbol: string,
-  direction: 'LONG' | 'SHORT',
-): number | null {
-  const seatState = context.symbolRegistry.getSeatState(monitorSymbol, direction);
+function resolveSeatVersion(context: MonitorContext, direction: 'LONG' | 'SHORT'): number | null {
+  const seatState = context.symbolRegistry.getSeatState(direction);
   if (!isSeatActive(seatState)) {
     return null;
   }
 
-  return context.symbolRegistry.getSeatVersion(monitorSymbol, direction);
+  return context.symbolRegistry.getSeatVersion(direction);
 }
 
 /**
@@ -120,9 +117,19 @@ function resolveMonitorSymbols(monitorContext: MonitorContext): {
   return {
     longSymbol: resolveSeatSymbol(monitorContext, monitorSymbol, 'LONG'),
     shortSymbol: resolveSeatSymbol(monitorContext, monitorSymbol, 'SHORT'),
-    longSeatVersion: resolveSeatVersion(monitorContext, monitorSymbol, 'LONG'),
-    shortSeatVersion: resolveSeatVersion(monitorContext, monitorSymbol, 'SHORT'),
+    longSeatVersion: resolveSeatVersion(monitorContext, 'LONG'),
+    shortSeatVersion: resolveSeatVersion(monitorContext, 'SHORT'),
   };
+}
+
+function hasPositiveAvailableQuantity(position: Position): boolean {
+  const availableQty = position.availableQuantity || 0;
+  return (
+    typeof position.symbol === 'string' &&
+    position.symbol.length > 0 &&
+    Number.isFinite(availableQty) &&
+    availableQty > 0
+  );
 }
 
 /**
@@ -207,6 +214,7 @@ function processPositionForClearance(
 /**
  * 创建末日保护程序（生命周期/风控：买入截止与自动清仓）
  * 买入截止窗口内拒绝买入并撤销未成交买入单，清仓接管窗口内对当前监控席位可归属且行情可执行的持仓发起自动清仓。
+ * 若存在无法归属到当前席位的正持仓，则直接抛错而不是按正常“无信号”跳过。
  * @returns DoomsdayProtection 接口实例（isBuyCutoffWindowActive、executeClearance、cancelPendingBuyOrders）
  */
 export function createDoomsdayProtection(deps?: {
@@ -309,6 +317,19 @@ export function createDoomsdayProtection(deps?: {
       allTradingSymbols.add(shortSymbol);
     }
 
+    const unmatchedPositions = positions.filter(
+      (position) =>
+        hasPositiveAvailableQuantity(position) && !allTradingSymbols.has(position.symbol),
+    );
+    if (unmatchedPositions.length > 0) {
+      const unmatchedSummary = unmatchedPositions
+        .map((position) => `${position.symbol}:${position.availableQuantity || 0}`)
+        .join(',');
+      throw new Error(
+        `[末日保护程序] 清仓接管窗口发现非当前席位持仓，无法安全自动清仓: symbols=${unmatchedSummary} currentLong=${longSymbol ?? 'null'} currentShort=${shortSymbol ?? 'null'}`,
+      );
+    }
+
     const quoteMap = await batchGetQuotes(marketDataClient, allTradingSymbols);
     const allClearanceSignals: SellSignal[] = [];
     const unresolvedSymbols = new Set<string>();
@@ -405,15 +426,10 @@ export function createDoomsdayProtection(deps?: {
         );
       }
     } else {
-      const availablePositions = processingPositions.filter((pos) => {
-        const availableQty = pos.availableQuantity || 0;
-        return typeof pos.symbol === 'string' && Number.isFinite(availableQty) && availableQty > 0;
-      });
-      const seatSymbolSet = new Set(allTradingSymbols);
-      const unmatchedPositions = availablePositions.filter((pos) => !seatSymbolSet.has(pos.symbol));
+      const availablePositions = processingPositions.filter(hasPositiveAvailableQuantity);
       logClearanceNotice(
-        `no-signals:${todayKey}:${positions.length}:${availablePositions.length}:${unmatchedPositions.length}`,
-        `[末日保护程序] 清仓跳过：未生成清仓信号（处理持仓=${processingPositions.length}, 可用持仓=${availablePositions.length}, 非席位持仓=${unmatchedPositions.length}）`,
+        `no-signals:${todayKey}:${positions.length}:${availablePositions.length}`,
+        `[末日保护程序] 清仓跳过：未生成清仓信号（处理持仓=${processingPositions.length}, 可用持仓=${availablePositions.length}）`,
       );
     }
 

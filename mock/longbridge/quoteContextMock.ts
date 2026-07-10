@@ -15,11 +15,7 @@ import {
   type WarrantQuote,
   WarrantType,
 } from 'longbridge';
-import {
-  createLongportEventBus,
-  type EventPublishOptions,
-  type LongportEventBus,
-} from './eventBus.js';
+import { createLongportEventBus, type EventPublishOptions } from './eventBus.js';
 import type {
   MockWarrantListItem,
   MockCallRecord,
@@ -48,11 +44,6 @@ const QUOTE_METHODS: ReadonlySet<MockMethodName> = new Set([
   'warrantQuote',
   'warrantList',
 ]);
-
-type QuoteContextMockOptions = {
-  readonly eventBus?: LongportEventBus;
-  readonly now?: () => number;
-};
 
 /**
  * 生成 K 线订阅缓存键。
@@ -102,8 +93,6 @@ interface QuoteContextMock extends QuoteContextContract {
   emitCandlestick: (event: PushCandlestickEvent, options?: EventPublishOptions) => void;
   flushEvents: (nowMs?: number) => number;
   flushAllEvents: () => number;
-  getSubscribedSymbols: () => ReadonlySet<string>;
-  getSubscribedCandlestickKeys: () => ReadonlySet<string>;
 }
 
 /**
@@ -121,9 +110,8 @@ function getTradingDaysKey(market: Market, begin: unknown, end: unknown): string
  * 通过内存存储、失败注入和事件总线回放，模拟真实行情上下文在查询、订阅和推送上的行为，
  * 以支撑流程测试与异常恢复测试。
  */
-export function createQuoteContextMock(options: QuoteContextMockOptions = {}): QuoteContextMock {
-  const now = options.now ?? (() => Date.now());
-  const bus = options.eventBus ?? createLongportEventBus(now);
+export function createQuoteContextMock(): QuoteContextMock {
+  const bus = createLongportEventBus();
 
   const failureState = createFailureState();
   const callRecords: MockCallRecord[] = [];
@@ -142,9 +130,7 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     }
   >();
 
-  const subscribedSymbols = new Set<string>();
   const subscribedByType = new Map<string, Set<SubType>>();
-  const subscribedCandlestickKeys = new Set<string>();
 
   let quoteSubscriptionDisposer: (() => void) | null = null;
   let candlestickSubscriptionDisposer: (() => void) | null = null;
@@ -164,7 +150,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
       callRecords,
       method,
       args,
-      now,
       action,
     });
   }
@@ -189,7 +174,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   ): Promise<void> {
     return withCall('subscribe', [symbols, subTypes], () => {
       for (const symbol of symbols) {
-        subscribedSymbols.add(symbol);
         const current = subscribedByType.get(symbol) ?? new Set<SubType>();
         for (const subType of subTypes) {
           current.add(subType);
@@ -217,7 +201,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
 
         if (current.size === 0) {
           subscribedByType.delete(symbol);
-          subscribedSymbols.delete(symbol);
           quoteBySymbol.delete(symbol);
           staticInfoBySymbol.delete(symbol);
         }
@@ -240,7 +223,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   ): Promise<ReadonlyArray<unknown>> {
     return withCall('subscribeCandlesticks', [symbol, period, tradeSessions], () => {
       const key = createCandleKey(symbol, period);
-      subscribedCandlestickKeys.add(key);
       return candlesticksByKey.get(key) ?? [];
     });
   }
@@ -248,7 +230,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
   function unsubscribeCandlesticks(symbol: string, period: Period): Promise<void> {
     return withCall('unsubscribeCandlesticks', [symbol, period], () => {
       const key = createCandleKey(symbol, period);
-      subscribedCandlestickKeys.delete(key);
       candlesticksByKey.delete(key);
     });
   }
@@ -420,14 +401,6 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     return bus.flushAll();
   }
 
-  function getSubscribedSymbols(): ReadonlySet<string> {
-    return new Set(subscribedSymbols);
-  }
-
-  function getSubscribedCandlestickKeys(): ReadonlySet<string> {
-    return new Set(subscribedCandlestickKeys);
-  }
-
   return {
     quote,
     staticInfo,
@@ -456,7 +429,5 @@ export function createQuoteContextMock(options: QuoteContextMockOptions = {}): Q
     emitCandlestick,
     flushEvents,
     flushAllEvents,
-    getSubscribedSymbols,
-    getSubscribedCandlestickKeys,
   };
 }

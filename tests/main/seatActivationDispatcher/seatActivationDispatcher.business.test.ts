@@ -8,9 +8,7 @@ import { createSeatActivationDispatcher } from '../../../src/main/seatActivation
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
-import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createMonitorConfigDouble } from '../../helpers/testDoubles.js';
-import type { SeatStateChangedEvent, SymbolRegistry } from '../../../src/types/seat.js';
 
 describe('SeatActivationDispatcher', () => {
   it('在 SWITCHING -> ACTIVATING 正常换标链路中写入真实旧标的', () => {
@@ -21,14 +19,12 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorTaskQueue,
     });
 
     dispatcher.start();
-    const nextVersion = symbolRegistry.bumpSeatVersion(monitorConfig.monitorSymbol, 'LONG');
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    const { seatVersion: nextVersion } = symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       symbol: 'NEW_BULL.HK',
       status: 'SWITCHING',
       lastSwitchAt: 123,
@@ -39,7 +35,7 @@ describe('SeatActivationDispatcher', () => {
       frozenTradingDayKey: null,
     });
 
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'NEW_BULL.HK',
       status: 'ACTIVATING',
       lastSwitchAt: 789,
@@ -57,7 +53,6 @@ describe('SeatActivationDispatcher', () => {
       throw new Error('expected SEAT_REFRESH task');
     }
 
-    expect(task.data.monitorSymbol).toBe('HSI.HK');
     expect(task.data.direction).toBe('LONG');
     expect(task.data.nextSymbol).toBe('NEW_BULL.HK');
     expect(task.data.previousSymbol).toBe('OLD_BULL.HK');
@@ -73,13 +68,11 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorTaskQueue,
     });
 
-    symbolRegistry.bumpSeatVersion(monitorConfig.monitorSymbol, 'LONG');
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       symbol: 'NEW_BULL.HK',
       status: 'ACTIVATING',
       lastSwitchAt: 123,
@@ -104,14 +97,12 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorTaskQueue,
     });
 
     dispatcher.start();
-    const nextVersion = symbolRegistry.bumpSeatVersion(monitorConfig.monitorSymbol, 'LONG');
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    const { seatVersion: nextVersion } = symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       symbol: 'NEW_BULL.HK',
       status: 'SWITCHING',
       lastSwitchAt: 123,
@@ -122,7 +113,7 @@ describe('SeatActivationDispatcher', () => {
       frozenTradingDayKey: null,
     });
 
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'NEW_BULL.HK',
       status: 'ACTIVATING',
       lastSwitchAt: 789,
@@ -142,7 +133,6 @@ describe('SeatActivationDispatcher', () => {
       throw new Error('expected SEAT_REFRESH task');
     }
 
-    expect(task.data.monitorSymbol).toBe('HSI.HK');
     expect(task.data.direction).toBe('LONG');
     expect(task.data.nextSymbol).toBe('NEW_BULL.HK');
     expect(task.data.previousSymbol).toBe('OLD_BULL.HK');
@@ -158,7 +148,6 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -166,7 +155,7 @@ describe('SeatActivationDispatcher', () => {
     dispatcher.start();
     let caught: unknown = null;
     try {
-      symbolRegistry.updateSeatStateWithVersionBump(monitorConfig.monitorSymbol, 'LONG', {
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', {
         symbol: null,
         status: 'ACTIVATING',
         lastSwitchAt: 123,
@@ -184,69 +173,7 @@ describe('SeatActivationDispatcher', () => {
 
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toContain('ACTIVATING 必须绑定标的');
-    expect(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG').status).toBe('ACTIVE');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(monitorTaskQueue.isEmpty()).toBeTrue();
-  });
-
-  it('非唯一 monitorSymbol 的 seat event 直接 fail-fast', () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
-    });
-    let listener: ((event: SeatStateChangedEvent) => void) | null = null;
-    const symbolRegistry = {
-      onSeatStateChanged: (nextListener: (event: SeatStateChangedEvent) => void) => {
-        listener = nextListener;
-        return () => {
-          listener = null;
-        };
-      },
-      getSeatState: () => {
-        throw new Error('should not read seat state for foreign monitor');
-      },
-      getSeatVersion: () => {
-        throw new Error('should not read seat version for foreign monitor');
-      },
-    } as unknown as SymbolRegistry;
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const dispatcher = createSeatActivationDispatcher({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
-      symbolRegistry,
-      monitorTaskQueue,
-    });
-
-    dispatcher.start();
-    expect(listener).not.toBeNull();
-
-    expect(() =>
-      listener?.({
-        monitorSymbol: 'TECH.HK',
-        direction: 'LONG',
-        previousState: {
-          symbol: 'OLD.HK',
-          status: 'SWITCHING',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          callPrice: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-        nextState: {
-          symbol: 'NEW.HK',
-          status: 'ACTIVATING',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          callPrice: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-        previousVersion: 1,
-        nextVersion: 2,
-      }),
-    ).toThrow('[SeatActivationDispatcher] 非唯一 monitorSymbol 输入');
-
-    expect(monitorTaskQueue.isEmpty()).toBeTrue();
-    dispatcher.stop();
   });
 });

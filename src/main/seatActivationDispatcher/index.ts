@@ -21,17 +21,6 @@ function buildSeatActivationRouteKey(params: {
   return params.direction;
 }
 
-function assertSeatActivationMonitorSymbol(
-  actualMonitorSymbol: string,
-  expectedMonitorSymbol: string,
-): void {
-  if (actualMonitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[SeatActivationDispatcher] 非唯一 monitorSymbol 输入: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
-    );
-  }
-}
-
 function resolveNextSymbol(seatState: SeatState): string | null {
   if (seatState.status !== 'ACTIVATING' || !seatState.symbol) {
     return null;
@@ -42,19 +31,17 @@ function resolveNextSymbol(seatState: SeatState): string | null {
 
 function dispatchCurrentActivatingSeat(params: {
   readonly deps: SeatActivationDispatcherDeps;
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
 }): void {
-  const nextState = params.deps.symbolRegistry.getSeatState(params.monitorSymbol, params.direction);
+  const nextState = params.deps.symbolRegistry.getSeatState(params.direction);
   if (nextState.status !== 'ACTIVATING') {
     return;
   }
 
   scheduleSeatRefresh({
     deps: params.deps,
-    monitorSymbol: params.monitorSymbol,
     direction: params.direction,
-    seatVersion: params.deps.symbolRegistry.getSeatVersion(params.monitorSymbol, params.direction),
+    seatVersion: params.deps.symbolRegistry.getSeatVersion(params.direction),
     previousSymbol: null,
     nextState,
   });
@@ -62,7 +49,6 @@ function dispatchCurrentActivatingSeat(params: {
 
 function scheduleSeatRefresh(params: {
   readonly deps: SeatActivationDispatcherDeps;
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly seatVersion: number;
   readonly previousSymbol: string | null;
@@ -71,7 +57,7 @@ function scheduleSeatRefresh(params: {
   const nextSymbol = resolveNextSymbol(params.nextState);
   if (nextSymbol === null) {
     throw new Error(
-      `[SeatActivationDispatcher] ACTIVATING 席位缺少标的: monitorSymbol=${params.monitorSymbol} direction=${params.direction} seatVersion=${params.seatVersion}`,
+      `[SeatActivationDispatcher] ACTIVATING 席位缺少标的: direction=${params.direction} seatVersion=${params.seatVersion}`,
     );
   }
 
@@ -79,9 +65,7 @@ function scheduleSeatRefresh(params: {
   params.deps.monitorTaskQueue.scheduleLatest({
     type: 'SEAT_REFRESH',
     dedupeKey,
-    monitorSymbol: params.monitorSymbol,
     data: {
-      monitorSymbol: params.monitorSymbol,
       direction: params.direction,
       seatVersion: params.seatVersion,
       previousSymbol: params.previousSymbol,
@@ -92,7 +76,7 @@ function scheduleSeatRefresh(params: {
   });
 
   logger.debug(
-    `[SEAT_REFRESH scheduled] monitorSymbol=${params.monitorSymbol} direction=${params.direction} seatVersion=${params.seatVersion} previousSymbol=${params.previousSymbol ?? 'null'} nextSymbol=${nextSymbol} dedupeKey=${dedupeKey}`,
+    `[SEAT_REFRESH scheduled] direction=${params.direction} seatVersion=${params.seatVersion} previousSymbol=${params.previousSymbol ?? 'null'} nextSymbol=${nextSymbol} dedupeKey=${dedupeKey}`,
   );
 }
 
@@ -137,11 +121,6 @@ export function createSeatActivationDispatcher(
   }
 
   function handleSeatStateChanged(event: SeatStateChangedEvent): void {
-    assertSeatActivationMonitorSymbol(
-      event.monitorSymbol,
-      deps.tradingConfig.monitor.monitorSymbol,
-    );
-
     if (event.nextState.status === 'SWITCHING') {
       rememberPendingActivation(event);
       return;
@@ -157,7 +136,6 @@ export function createSeatActivationDispatcher(
 
     scheduleSeatRefresh({
       deps,
-      monitorSymbol: event.monitorSymbol,
       direction: event.direction,
       seatVersion: event.nextVersion,
       previousSymbol,
@@ -172,13 +150,11 @@ export function createSeatActivationDispatcher(
 
     dispatchCurrentActivatingSeat({
       deps,
-      monitorSymbol: deps.tradingConfig.monitor.monitorSymbol,
       direction: 'LONG',
     });
 
     dispatchCurrentActivatingSeat({
       deps,
-      monitorSymbol: deps.tradingConfig.monitor.monitorSymbol,
       direction: 'SHORT',
     });
   }

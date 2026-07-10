@@ -32,21 +32,18 @@ function getRiskCheckCooldownKey(symbol: string, action: Signal['action']): stri
   return `${symbol}_SELL`;
 }
 
-function getMonitorCooldownRemainingMs(params: {
+function getMaximumCooldownRemainingMs(params: {
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
-  readonly monitorSymbol: string;
   readonly cooldownConfig: LiquidationCooldownConfig | null;
   readonly currentTimeMs: number;
 }): number {
-  const { liquidationCooldownTracker, monitorSymbol, cooldownConfig, currentTimeMs } = params;
+  const { liquidationCooldownTracker, cooldownConfig, currentTimeMs } = params;
   const longRemainingMs = liquidationCooldownTracker.getRemainingMs({
-    symbol: monitorSymbol,
     direction: 'LONG',
     cooldownConfig,
     currentTimeMs,
   });
   const shortRemainingMs = liquidationCooldownTracker.getRemainingMs({
-    symbol: monitorSymbol,
     direction: 'SHORT',
     cooldownConfig,
     currentTimeMs,
@@ -190,9 +187,8 @@ export const createRiskCheckPipeline = ({
           continue;
         }
 
-        const remainingMs = getMonitorCooldownRemainingMs({
+        const remainingMs = getMaximumCooldownRemainingMs({
           liquidationCooldownTracker,
-          monitorSymbol: context.config.monitorSymbol,
           cooldownConfig: context.config.liquidationCooldown,
           currentTimeMs,
         });

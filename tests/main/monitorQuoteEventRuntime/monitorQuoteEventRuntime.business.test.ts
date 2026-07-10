@@ -220,7 +220,6 @@ function createDefaultDistanceSwitchHarness(
   Readonly<{
     startSwitchDirections: ReadonlyArray<'LONG' | 'SHORT'>;
     switchWakeupHandoffs: ReadonlyArray<{
-      readonly monitorSymbol: string;
       readonly direction: 'LONG' | 'SHORT';
       readonly driveResultKind: string;
     }>;
@@ -228,7 +227,6 @@ function createDefaultDistanceSwitchHarness(
   let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | null = null;
   const startSwitchDirections: Array<'LONG' | 'SHORT'> = [];
   const switchWakeupHandoffs: Array<{
-    readonly monitorSymbol: string;
     readonly direction: 'LONG' | 'SHORT';
     readonly driveResultKind: string;
   }> = [];
@@ -324,7 +322,6 @@ function createDefaultDistanceSwitchHarness(
     ...(params.onFatalError ? { onFatalError: params.onFatalError } : {}),
     handoffPendingSwitch: (handoffParams) => {
       switchWakeupHandoffs.push({
-        monitorSymbol: handoffParams.monitorSymbol,
         direction: handoffParams.direction,
         driveResultKind: handoffParams.driveResult.kind,
       });
@@ -561,7 +558,7 @@ function createDefaultStaticWaitHarness(
       longQuoteAvailable = available;
     },
     switchLongSeatToNextSymbol(): void {
-      symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+      symbolRegistry.updateSeatState('LONG', {
         symbol: 'NEXT_BULL.HK',
         status: 'ACTIVE',
         lastSwitchAt: null,
@@ -865,12 +862,10 @@ describe('monitorQuoteEventRuntime contract', () => {
     expect(harness.startSwitchDirections).toEqual(['LONG', 'SHORT']);
     expect(harness.switchWakeupHandoffs).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         driveResultKind: 'WAIT',
       },
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         driveResultKind: 'WAIT',
       },

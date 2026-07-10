@@ -65,13 +65,13 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     nextState,
     bumpOnSymbolChange,
   ): void => {
-    const current = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const current = symbolRegistry.getSeatState(direction);
     if (bumpOnSymbolChange && current.symbol !== nextState.symbol) {
-      symbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, direction, nextState);
+      symbolRegistry.updateSeatStateWithVersionBump(direction, nextState);
       return;
     }
 
-    symbolRegistry.updateSeatState(monitorSymbol, direction, nextState);
+    symbolRegistry.updateSeatState(direction, nextState);
   };
 
   /**
@@ -142,10 +142,9 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     reason: string;
   }): number {
     const timestamp = now().getTime();
-    const currentState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const currentState = symbolRegistry.getSeatState(direction);
     const currentSymbol = currentState.symbol;
     const { seatVersion: nextVersion } = symbolRegistry.updateSeatStateWithVersionBump(
-      monitorSymbol,
       direction,
       buildSeatState({
         symbol: currentState.symbol ?? null,

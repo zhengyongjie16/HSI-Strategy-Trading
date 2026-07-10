@@ -17,11 +17,8 @@ import type { SignalSeatInfo, SignalSeatProjectionParams } from './types.js';
  * @returns 普通信号入队所需的席位信息
  */
 export function resolveSignalSeatInfo(params: SignalSeatProjectionParams): SignalSeatInfo {
-  const { monitorSymbol, monitorContext } = params;
-  const seatSnapshot = resolveMonitorContextSeatSnapshot(
-    monitorSymbol,
-    monitorContext.symbolRegistry,
-  );
+  const { monitorContext } = params;
+  const seatSnapshot = resolveMonitorContextSeatSnapshot(monitorContext.symbolRegistry);
 
   monitorContext.seatState = seatSnapshot.seatState;
   monitorContext.seatVersion = seatSnapshot.seatVersion;

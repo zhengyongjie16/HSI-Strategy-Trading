@@ -112,13 +112,9 @@ export async function prepareSeatsForRuntime(
     snapshotMap.set(`${entry.monitorSymbol}:${entry.direction}`, entry.symbol);
   }
 
-  function updateSeatOnRuntimeRecovery(
-    monitorSymbol: string,
-    direction: 'LONG' | 'SHORT',
-    symbol: string | null,
-  ): void {
-    const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+  function updateSeatOnRuntimeRecovery(direction: 'LONG' | 'SHORT', symbol: string | null): void {
+    const currentSeat = symbolRegistry.getSeatState(direction);
+    symbolRegistry.updateSeatState(direction, {
       symbol,
       status: symbol ? 'ACTIVATING' : 'EMPTY',
       lastSwitchAt: null,
@@ -132,17 +128,9 @@ export async function prepareSeatsForRuntime(
 
   const longKey = `${tradingConfig.monitor.monitorSymbol}:LONG`;
   const shortKey = `${tradingConfig.monitor.monitorSymbol}:SHORT`;
-  updateSeatOnRuntimeRecovery(
-    tradingConfig.monitor.monitorSymbol,
-    'LONG',
-    snapshotMap.get(longKey) ?? null,
-  );
+  updateSeatOnRuntimeRecovery('LONG', snapshotMap.get(longKey) ?? null);
 
-  updateSeatOnRuntimeRecovery(
-    tradingConfig.monitor.monitorSymbol,
-    'SHORT',
-    snapshotMap.get(shortKey) ?? null,
-  );
+  updateSeatOnRuntimeRecovery('SHORT', snapshotMap.get(shortKey) ?? null);
 
   let quoteContextPromise: ReturnType<typeof marketDataClient.getQuoteContext> | null = null;
 
@@ -168,9 +156,9 @@ export async function prepareSeatsForRuntime(
       return null;
     }
 
-    const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const currentSeat = symbolRegistry.getSeatState(direction);
     const nowMs = currentTime.getTime();
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    symbolRegistry.updateSeatState(direction, {
       symbol: null,
       status: 'SEARCHING',
       lastSwitchAt: currentSeat.lastSwitchAt ?? null,
@@ -194,7 +182,7 @@ export async function prepareSeatsForRuntime(
       }),
     );
     if (!best) {
-      const updatedSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const updatedSeat = symbolRegistry.getSeatState(direction);
       const hkDateKey = getHKDateKey(currentTime);
       const { nextFailCount, frozenTradingDayKey, shouldFreeze } = resolveNextSearchFailureState({
         currentSeat: updatedSeat,
@@ -207,7 +195,7 @@ export async function prepareSeatsForRuntime(
         );
       }
 
-      symbolRegistry.updateSeatState(monitorSymbol, direction, {
+      symbolRegistry.updateSeatState(direction, {
         symbol: null,
         status: 'EMPTY',
         lastSwitchAt: updatedSeat.lastSwitchAt ?? null,
@@ -220,7 +208,7 @@ export async function prepareSeatsForRuntime(
       return null;
     }
 
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    symbolRegistry.updateSeatState(direction, {
       symbol: best.symbol,
       status: 'ACTIVATING',
       lastSwitchAt: nowMs,
@@ -233,17 +221,13 @@ export async function prepareSeatsForRuntime(
     return best.symbol;
   }
 
-  function resetSearchingSeatAfterException(
-    monitorSymbol: string,
-    direction: 'LONG' | 'SHORT',
-    currentTime: Date,
-  ): void {
-    const stuckSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+  function resetSearchingSeatAfterException(direction: 'LONG' | 'SHORT', currentTime: Date): void {
+    const stuckSeat = symbolRegistry.getSeatState(direction);
     if (stuckSeat.status !== 'SEARCHING') {
       return;
     }
 
-    symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    symbolRegistry.updateSeatState(direction, {
       symbol: null,
       status: 'EMPTY',
       lastSwitchAt: stuckSeat.lastSwitchAt ?? null,
@@ -284,7 +268,7 @@ export async function prepareSeatsForRuntime(
     }
 
     for (const direction of ['LONG', 'SHORT'] as const) {
-      const seatState = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
+      const seatState = symbolRegistry.getSeatState(direction);
       const openDelayMinutes = monitorConfig.autoSearchConfig.autoSearchOpenDelayMinutes;
       if (shouldSkipRuntimeRecoverySearch(seatState, openDelayMinutes, currentTime)) {
         continue;
@@ -303,7 +287,7 @@ export async function prepareSeatsForRuntime(
           );
         }
       } catch (err) {
-        resetSearchingSeatAfterException(monitorConfig.monitorSymbol, direction, currentTime);
+        resetSearchingSeatAfterException(direction, currentTime);
         if (isExternalApiRequestError(err)) {
           logger.warn(
             `[席位恢复] ${monitorConfig.monitorSymbol} ${direction} 寻标 API 请求失败，等待恢复链路重试: ${err.message}`,
@@ -319,7 +303,6 @@ export async function prepareSeatsForRuntime(
 
   return {
     seatSymbols: collectBoundSeatSymbols({
-      monitorSymbol: tradingConfig.monitor.monitorSymbol,
       symbolRegistry,
     }),
   };

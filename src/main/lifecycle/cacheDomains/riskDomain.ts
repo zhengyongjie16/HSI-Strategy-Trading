@@ -13,7 +13,6 @@
  */
 import { logger } from '../../../utils/logger/index.js';
 import type { MonitorContext } from '../../../types/state.js';
-import { buildCooldownKey } from '../../../services/liquidationCooldown/utils.js';
 import type { CacheDomain, LifecycleContext } from '../types.js';
 import type { RiskDomainDeps } from './types.js';
 
@@ -29,22 +28,23 @@ function clearRiskCaches(monitorContext: MonitorContext): void {
 }
 
 /**
- * 收集需要在午夜清除的清仓冷却键，仅包含跨日模式（非 minutes 模式）的唯一监控标的。
+ * 收集需要在午夜清除的清仓冷却方向，仅包含跨日模式（非 minutes 模式）。
  *
  * @param monitorContext 监控上下文
- * @returns 待清除的冷却键集合
+ * @returns 待清除的冷却方向集合
  */
-function collectMidnightEligibleCooldownKeys(monitorContext: MonitorContext): Set<string> {
-  const keysToClear = new Set<string>();
+function collectMidnightEligibleCooldownDirections(
+  monitorContext: MonitorContext,
+): Set<'LONG' | 'SHORT'> {
+  const directionsToClear = new Set<'LONG' | 'SHORT'>();
   const cfg = monitorContext.config.liquidationCooldown;
   if (!cfg || cfg.mode === 'minutes') {
-    return keysToClear;
+    return directionsToClear;
   }
 
-  const monitorSymbol = monitorContext.config.monitorSymbol;
-  keysToClear.add(buildCooldownKey(monitorSymbol, 'LONG'));
-  keysToClear.add(buildCooldownKey(monitorSymbol, 'SHORT'));
-  return keysToClear;
+  directionsToClear.add('LONG');
+  directionsToClear.add('SHORT');
+  return directionsToClear;
 }
 
 /**
@@ -65,8 +65,8 @@ function runMidnightRiskClear(deps: RiskDomainDeps, ctx: LifecycleContext): void
   signalProcessor.resetRiskCheckCooldown();
   dailyLossTracker.resetAll(ctx.now);
   protectiveLiquidationEpisodeTracker.resetAll();
-  const keysToClear = collectMidnightEligibleCooldownKeys(monitorContext);
-  liquidationCooldownTracker.clearMidnightEligible({ keysToClear });
+  const directionsToClear = collectMidnightEligibleCooldownDirections(monitorContext);
+  liquidationCooldownTracker.clearMidnightEligible({ directionsToClear });
   liquidationCooldownTracker.resetAllTriggerCounts();
   clearRiskCaches(monitorContext);
   logger.debug('[Lifecycle][risk] 午夜清理完成: monitor=1');

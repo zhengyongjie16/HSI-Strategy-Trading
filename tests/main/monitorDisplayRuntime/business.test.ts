@@ -3,7 +3,7 @@
  *
  * 功能：
  * - 验证 monitor display runtime 在门禁打开时按请求渲染监控标的
- * - 验证同一 monitorSymbol 的 latest-only collapse 只渲染最新快照
+ * - 验证单 route 的 latest-only collapse 只渲染最新快照
  */
 import { describe, expect, it, mock } from 'bun:test';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
@@ -81,7 +81,6 @@ describe('monitorDisplayRuntime', () => {
 
     runtime.start();
     runtime.requestRender({
-      monitorSymbol: 'HSI.HK',
       monitorSnapshot: createSnapshot(20_000),
     });
     await waitTick();
@@ -132,12 +131,10 @@ describe('monitorDisplayRuntime', () => {
 
     runtime.start();
     runtime.requestRender({
-      monitorSymbol: 'HSI.HK',
       monitorSnapshot: createSnapshot(20_000),
     });
 
     runtime.requestRender({
-      monitorSymbol: 'HSI.HK',
       monitorSnapshot: createSnapshot(20_100),
     });
     resolveQuotes?.();
@@ -191,14 +188,12 @@ describe('monitorDisplayRuntime', () => {
 
     runtime.start();
     runtime.requestRender({
-      monitorSymbol: 'HSI.HK',
       monitorSnapshot: createSnapshot(20_000),
     });
     await waitTick();
     await waitTick();
 
     runtime.requestRender({
-      monitorSymbol: 'HSI.HK',
       monitorSnapshot: createSnapshot(20_100),
     });
     await waitTick();
@@ -206,38 +201,6 @@ describe('monitorDisplayRuntime', () => {
 
     expect(warnLogs).toHaveLength(1);
     expect(infoLogs).toContain('render:HSI.HK:20100');
-    await runtime.stopAndDrain();
-  });
-
-  it('fails fast when internal render request carries foreign monitorSymbol', async () => {
-    const { createMonitorDisplayRuntime } =
-      await import('../../../src/main/monitorDisplayRuntime/index.js');
-    const runtime = createMonitorDisplayRuntime({
-      marketDataClient: {
-        getQuotes: async () => new Map(),
-        getCandlestickSnapshot: () => null,
-      },
-      monitorContext: createMonitorContextDouble(),
-      lastState: {
-        isTradingEnabled: true,
-        canTrade: true,
-      },
-      marketMonitor: {
-        renderMonitorIndicators: () => {
-          throw new Error('should not render foreign monitor request');
-        },
-      },
-    });
-
-    runtime.start();
-
-    expect(() => {
-      runtime.requestRender({
-        monitorSymbol: 'TECH.HK',
-        monitorSnapshot: createSnapshot(20_000),
-      });
-    }).toThrow('[monitorDisplayRuntime] requestRender monitorSymbol mismatch');
-
     await runtime.stopAndDrain();
   });
 });

@@ -164,12 +164,12 @@ describe('auto-symbol-switch integration', () => {
       canTradeNow: true,
     });
 
-    const searchedSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const searchedSeat = symbolRegistry.getSeatState('LONG');
     expect(searchedSeat.status).toBe('ACTIVATING');
     expect(searchedSeat.symbol).toBe('OLD_BULL.HK');
-    expect(symbolRegistry.getSeatVersion(monitorConfig.monitorSymbol, 'LONG')).toBe(2);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
 
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       ...searchedSeat,
       status: 'ACTIVE',
       lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
@@ -216,11 +216,11 @@ describe('auto-symbol-switch integration', () => {
     expect(executedActions[1]?.symbol).toBe('NEW_BULL.HK');
     expect(executedActions[1]?.quantity).toBe(200);
 
-    const finalSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const finalSeat = symbolRegistry.getSeatState('LONG');
     expect(finalSeat.status).toBe('ACTIVATING');
     expect(finalSeat.symbol).toBe('NEW_BULL.HK');
     expect(finalSeat.callPrice).toBe(21_000);
-    expect(symbolRegistry.getSeatVersion(monitorConfig.monitorSymbol, 'LONG')).toBe(3);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(3);
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
   });
 
@@ -378,10 +378,10 @@ describe('auto-symbol-switch integration', () => {
       canTradeNow: true,
     });
 
-    const searchedSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const searchedSeat = symbolRegistry.getSeatState('LONG');
     expect(searchedSeat.status).toBe('ACTIVATING');
     expect(searchedSeat.symbol).toBe('OLD_BULL.HK');
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       ...searchedSeat,
       status: 'ACTIVE',
       lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
@@ -434,7 +434,7 @@ describe('auto-symbol-switch integration', () => {
     expect(Number(sellPayload.submittedQuantity.toString())).toBe(100);
     expect(Number(rebuyPayload.submittedQuantity.toString())).toBe(200);
 
-    const finalSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const finalSeat = symbolRegistry.getSeatState('LONG');
     expect(finalSeat.status).toBe('ACTIVATING');
     expect(finalSeat.symbol).toBe('NEW_BULL.HK');
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
@@ -531,7 +531,7 @@ describe('auto-symbol-switch integration', () => {
     });
 
     expect(findBestCalls).toBe(2);
-    const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
@@ -627,7 +627,7 @@ describe('auto-symbol-switch integration', () => {
     });
 
     expect(findBestCalls).toBe(2);
-    const seat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const seat = symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
@@ -703,7 +703,7 @@ describe('auto-symbol-switch integration', () => {
       positions: [],
     });
 
-    const emptySeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const emptySeat = symbolRegistry.getSeatState('LONG');
     expect(emptySeat.status).toBe('EMPTY');
     expect(emptySeat.symbol).toBeNull();
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
@@ -714,7 +714,7 @@ describe('auto-symbol-switch integration', () => {
       canTradeNow: true,
     });
 
-    const recoveredSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
+    const recoveredSeat = symbolRegistry.getSeatState('LONG');
     expect(recoveredSeat.status).toBe('ACTIVATING');
     expect(recoveredSeat.symbol).toBe('RECOVER_BULL.HK');
   });

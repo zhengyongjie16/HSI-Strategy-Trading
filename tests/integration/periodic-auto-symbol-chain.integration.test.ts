@@ -69,13 +69,12 @@ function schedulePeriodicTick(
   params: Readonly<{
     monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
     monitorContext: MonitorContext;
-    monitorSymbol: string;
     direction: 'LONG' | 'SHORT';
     currentTimeMs: number;
   }>,
 ): void {
-  const { monitorTaskQueue, monitorContext, monitorSymbol, direction, currentTimeMs } = params;
-  const seatSnapshot = monitorContext.symbolRegistry.getSeatState(monitorSymbol, direction);
+  const { monitorTaskQueue, monitorContext, direction, currentTimeMs } = params;
+  const seatSnapshot = monitorContext.symbolRegistry.getSeatState(direction);
   if (
     seatSnapshot.status !== 'ACTIVE' ||
     seatSnapshot.symbol === null ||
@@ -87,11 +86,9 @@ function schedulePeriodicTick(
   monitorTaskQueue.scheduleLatest({
     type: 'AUTO_SYMBOL_TICK',
     dedupeKey: `AUTO_SYMBOL_TICK:${direction}`,
-    monitorSymbol,
     data: {
-      monitorSymbol,
       direction,
-      seatVersion: monitorContext.symbolRegistry.getSeatVersion(monitorSymbol, direction),
+      seatVersion: monitorContext.symbolRegistry.getSeatVersion(direction),
       symbol: seatSnapshot.symbol,
       lastSeatActivatedAt: seatSnapshot.lastSeatActivatedAt,
       currentTimeMs,
@@ -231,7 +228,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         currentTimeMs: currentNowMs,
       });
@@ -239,7 +235,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         currentTimeMs: currentNowMs,
       });
@@ -247,11 +242,11 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length > 0);
       expect(statuses).toEqual(['processed']);
 
-      const seatAfterPeriodicMiss = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seatAfterPeriodicMiss = symbolRegistry.getSeatState('LONG');
       expect(seatAfterPeriodicMiss.status).toBe('EMPTY');
       expect(seatAfterPeriodicMiss.symbol).toBeNull();
       expect(seatAfterPeriodicMiss.searchFailCountToday).toBe(1);
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
 
       statuses.length = 0;
@@ -260,7 +255,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         currentTimeMs: currentNowMs,
       });
@@ -268,19 +262,18 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         currentTimeMs: currentNowMs,
       });
 
       expect(statuses).toEqual([]);
 
-      const seatAfterAutoSearch = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seatAfterAutoSearch = symbolRegistry.getSeatState('LONG');
       expect(seatAfterAutoSearch.status).toBe('EMPTY');
       expect(seatAfterAutoSearch.symbol).toBeNull();
       expect(seatAfterAutoSearch.searchFailCountToday).toBe(1);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();
     }
@@ -415,7 +408,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         currentTimeMs: currentNowMs,
       });
@@ -423,17 +415,16 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         currentTimeMs: currentNowMs,
       });
 
       await waitUntil(() => statuses.length > 0);
       expect(statuses).toEqual(['processed']);
-      const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seat = symbolRegistry.getSeatState('LONG');
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(1);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
@@ -569,7 +560,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         currentTimeMs: currentNowMs,
       });
@@ -577,17 +567,16 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         currentTimeMs: currentNowMs,
       });
 
       await waitUntil(() => statuses.length > 0);
       expect(statuses).toEqual(['processed']);
-      const seat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const seat = symbolRegistry.getSeatState('LONG');
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(1);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
@@ -723,7 +712,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         currentTimeMs: currentNowMs,
       });
@@ -731,14 +719,13 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         currentTimeMs: currentNowMs,
       });
 
       await waitUntil(() => statuses.length > 0);
       expect(statuses).toEqual(['processed']);
-      expect(symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+      expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
 
       statuses.length = 0;
@@ -747,7 +734,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         currentTimeMs: currentNowMs,
       });
@@ -755,7 +741,6 @@ describe('periodic auto-symbol full chain integration', () => {
       schedulePeriodicTick({
         monitorTaskQueue,
         monitorContext,
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         currentTimeMs: currentNowMs,
       });
@@ -763,11 +748,11 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => statuses.length > 0);
       expect(statuses).toEqual(['processed']);
 
-      const switchingSeat = symbolRegistry.getSeatState('HSI.HK', 'LONG');
+      const switchingSeat = symbolRegistry.getSeatState('LONG');
       expect(switchingSeat.status).toBe('ACTIVATING');
       expect(switchingSeat.symbol).toBe('NEW_BULL.HK');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
-      expect(symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();
     }

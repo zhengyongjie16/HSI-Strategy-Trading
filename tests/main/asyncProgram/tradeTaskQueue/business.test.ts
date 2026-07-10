@@ -25,15 +25,31 @@ function createSignal(symbol: string): BuySignal {
 function pushBuyTask(params: {
   readonly queue: TaskQueue<BuyTaskType>;
   readonly type: BuyTaskType;
-  readonly monitorSymbol: string;
   readonly symbol: string;
 }): void {
   params.queue.push({
     type: params.type,
-    monitorSymbol: params.monitorSymbol,
     data: createSignal(params.symbol),
   });
 }
+
+type BuyTaskPushPayload = Parameters<TaskQueue<BuyTaskType>['push']>[0];
+
+const validSingleMonitorPushPayload: BuyTaskPushPayload = {
+  type: 'IMMEDIATE_BUY',
+  data: createSignal('TYPE-CHECK.HK'),
+};
+
+void validSingleMonitorPushPayload;
+
+const invalidSingleMonitorPushPayload: BuyTaskPushPayload = {
+  type: 'IMMEDIATE_BUY',
+  data: createSignal('TYPE-CHECK.HK'),
+  // @ts-expect-error 单 monitor 队列负载不再接受 monitorSymbol。
+  monitorSymbol: 'HSI.HK',
+};
+
+void invalidSingleMonitorPushPayload;
 
 describe('tradeTaskQueue business behavior', () => {
   it('pops buy tasks in FIFO order', () => {
@@ -42,68 +58,62 @@ describe('tradeTaskQueue business behavior', () => {
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-1.HK',
     });
 
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-2.HK',
     });
 
     pushBuyTask({
       queue,
       type: 'VERIFIED_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-3.HK',
     });
 
-    expect(queue.pop()?.data.symbol).toBe('BULL-1.HK');
+    const firstTask = queue.pop();
+    expect(firstTask?.data.symbol).toBe('BULL-1.HK');
+    expect('monitorSymbol' in (firstTask ?? {})).toBeFalse();
     expect(queue.pop()?.data.symbol).toBe('BULL-2.HK');
     expect(queue.pop()?.data.symbol).toBe('BULL-3.HK');
     expect(queue.pop()).toBeNull();
     expect(queue.isEmpty()).toBeTrue();
   });
 
-  it('removeTasks removes only matched active tasks and calls onRemove once per task', () => {
+  it('removeTasks removes only matched active tasks and calls onRemove in active queue order', () => {
     const queue = createBuyTaskQueue();
     const removedSymbols: string[] = [];
 
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-1.HK',
     });
 
     pushBuyTask({
       queue,
       type: 'VERIFIED_BUY',
-      monitorSymbol: 'TECH.HK',
-      symbol: 'TECH-BULL.HK',
+      symbol: 'BEAR-1.HK',
     });
 
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-2.HK',
     });
 
     const removed = queue.removeTasks(
-      (task) => task.monitorSymbol === 'HSI.HK',
+      (task) => task.data.action === 'BUYCALL' && task.data.symbol.startsWith('BULL-'),
       (task) => {
         removedSymbols[removedSymbols.length] = task.data.symbol;
       },
     );
 
     expect(removed).toBe(2);
-    expect(removedSymbols).toHaveLength(2);
-    expect(removedSymbols).toContain('BULL-1.HK');
-    expect(removedSymbols).toContain('BULL-2.HK');
-    expect(queue.pop()?.data.symbol).toBe('TECH-BULL.HK');
+    expect(removedSymbols).toEqual(['BULL-1.HK', 'BULL-2.HK']);
+    expect(queue.pop()?.data.symbol).toBe('BEAR-1.HK');
     expect(queue.isEmpty()).toBeTrue();
   });
 
@@ -114,14 +124,12 @@ describe('tradeTaskQueue business behavior', () => {
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-1.HK',
     });
 
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-2.HK',
     });
 
@@ -146,7 +154,6 @@ describe('tradeTaskQueue business behavior', () => {
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-1.HK',
     });
 
@@ -155,7 +162,6 @@ describe('tradeTaskQueue business behavior', () => {
     pushBuyTask({
       queue,
       type: 'IMMEDIATE_BUY',
-      monitorSymbol: 'HSI.HK',
       symbol: 'BULL-2.HK',
     });
 

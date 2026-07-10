@@ -38,7 +38,7 @@ export type TaskSignal<TType extends string> = TType extends BuyTaskType
 
 /**
  * 通用任务类型（队列元素）。
- * 类型用途：买卖任务队列中的单项，携带 id、type、data（按任务类型约束的 Signal）、monitorSymbol、createdAt；泛型 TType 为 BuyTaskType 或 SellTaskType。
+ * 类型用途：买卖任务队列中的单项，携带 id、type、data（按任务类型约束的 Signal）、createdAt；泛型 TType 为 BuyTaskType 或 SellTaskType。
  * 数据来源：由调用方通过 TaskQueue.push() 入队（id、createdAt 由队列生成），由处理器 pop() 消费。
  * 使用范围：tradeTaskQueue、buyProcessor、sellProcessor、业务 runtime 等，仅内部使用。
  */
@@ -52,11 +52,22 @@ export type Task<TType extends string> = {
   /** 任务数据（信号对象） */
   readonly data: TaskSignal<TType>;
 
-  /** 监控标的代码 */
-  readonly monitorSymbol: string;
-
   /** 任务创建时间戳（毫秒） */
   readonly createdAt: number;
+};
+
+/**
+ * 任务入队负载类型。
+ * 类型用途：描述调用方传入 TaskQueue.push() 的单 monitor 任务负载，仅包含业务决定的 type 与 data；id、createdAt 由队列内部生成。
+ * 数据来源：由 signal pipeline、延迟验证回调等调用方构造并传入 push()。
+ * 使用范围：tradeTaskQueue、buyProcessor、sellProcessor、业务 runtime 等，仅内部使用。
+ */
+export type TaskInput<TType extends string> = {
+  /** 任务类型 */
+  readonly type: TType;
+
+  /** 任务数据（信号对象） */
+  readonly data: TaskSignal<TType>;
 };
 
 /**
@@ -67,7 +78,7 @@ export type Task<TType extends string> = {
  */
 export interface TaskQueue<TType extends string> {
   /** 入队任务（自动生成 id 和 createdAt） */
-  push: (task: Omit<Task<TType>, 'id' | 'createdAt'>) => void;
+  push: (task: TaskInput<TType>) => void;
 
   /** 出队任务（返回并移除队首） */
   pop: () => Task<TType> | null;

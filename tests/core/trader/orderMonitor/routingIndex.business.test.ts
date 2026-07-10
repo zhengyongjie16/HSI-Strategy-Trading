@@ -28,7 +28,6 @@ function createCancellableTimer(callback: () => void, delayMs: number) {
       clearTimeout(handle);
       handle = null;
     },
-    hasTimer: () => handle !== null,
   };
 }
 

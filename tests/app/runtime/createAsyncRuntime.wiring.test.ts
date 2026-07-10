@@ -180,9 +180,7 @@ describe('app createAsyncRuntime wiring', () => {
         monitorTaskQueue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 7,
             symbol: 'BULL.HK',
@@ -196,7 +194,6 @@ describe('app createAsyncRuntime wiring', () => {
 
     expect(replanCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 7,
         symbol: 'BULL.HK',
@@ -259,9 +256,7 @@ describe('app createAsyncRuntime wiring', () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
             dedupeKey: 'AUTO_SYMBOL_TICK:LONG:DOOMSDAY',
-            monitorSymbol: 'HSI.HK',
             data: {
-              monitorSymbol: 'HSI.HK',
               direction: 'LONG',
               seatVersion: 2,
               symbol: 'BULL.HK',
@@ -276,7 +271,6 @@ describe('app createAsyncRuntime wiring', () => {
       expect(periodicDueCalls).toBe(0);
       expect(replanCalls).toEqual([
         {
-          monitorSymbol: 'HSI.HK',
           direction: 'LONG',
           seatVersion: 2,
           symbol: 'BULL.HK',
@@ -344,9 +338,7 @@ describe('app createAsyncRuntime wiring', () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
             dedupeKey: 'AUTO_SYMBOL_TICK:LONG:API_FAIL',
-            monitorSymbol: 'HSI.HK',
             data: {
-              monitorSymbol: 'HSI.HK',
               direction: 'LONG',
               seatVersion: 2,
               symbol: 'BULL.HK',
@@ -360,7 +352,6 @@ describe('app createAsyncRuntime wiring', () => {
 
       expect(replanCalls).toEqual([
         {
-          monitorSymbol: 'HSI.HK',
           direction: 'LONG',
           seatVersion: 2,
           symbol: 'BULL.HK',
@@ -425,9 +416,7 @@ describe('app createAsyncRuntime wiring', () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
             dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FAIL',
-            monitorSymbol: 'HSI.HK',
             data: {
-              monitorSymbol: 'HSI.HK',
               direction: 'LONG',
               seatVersion: 2,
               symbol: 'BULL.HK',

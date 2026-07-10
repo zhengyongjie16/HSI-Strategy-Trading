@@ -2,7 +2,7 @@
  * 当日亏损追踪器模块
  *
  * 功能/职责：按唯一监控标的的 LONG/SHORT 方向累计已实现亏损偏移；内部基于当日成交订单与过滤算法（filteringEngine）计算未平仓买入成本。
- * 执行流程：调用方通过 recalculateFromAllOrders 或 recordFilledOrder 传入/增量订单，通过 getLossOffset(monitorSymbol, isLongSymbol) 获取当日亏损偏移；内部只维护唯一 monitor 的方向级状态。
+ * 执行流程：调用方通过 recalculateFromAllOrders 或 recordFilledOrder 传入/增量订单，通过 getLossOffset(direction) 获取当日亏损偏移；内部只维护唯一 monitor 的方向级状态。
  */
 import { OrderSide } from 'longbridge';
 import { logger } from '../../utils/logger/index.js';
@@ -51,33 +51,16 @@ function createEmptyDirectionStates(): DailyLossDirectionStates {
 }
 
 /**
- * 解析保护性清仓边界键，并校验其属于唯一 monitor。
- * @param key 输入边界键，格式为 monitorSymbol:direction
- * @param expectedMonitorSymbol 唯一 monitor 标的
+ * 解析保护性清仓边界方向键。
+ * @param key 输入边界键，格式为 LONG 或 SHORT
  * @returns 方向键
  */
-function parseProtectionBoundaryDirectionKey(
-  key: string,
-  expectedMonitorSymbol: string,
-): DailyLossDirection {
-  const separatorIndex = key.lastIndexOf(':');
-  if (separatorIndex <= 0 || separatorIndex >= key.length - 1) {
-    throw new Error(`[DailyLossTracker] protection boundary key 非法: ${key}`);
-  }
-
-  const monitorSymbol = key.slice(0, separatorIndex);
-  const direction = key.slice(separatorIndex + 1);
-  if (monitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[DailyLossTracker] protection boundary monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${monitorSymbol}`,
-    );
-  }
-
-  if (direction !== 'LONG' && direction !== 'SHORT') {
+function parseProtectionBoundaryDirectionKey(key: string): DailyLossDirection {
+  if (key !== 'LONG' && key !== 'SHORT') {
     throw new Error(`[DailyLossTracker] protection boundary direction 非法: ${key}`);
   }
 
-  return direction;
+  return key;
 }
 
 /**
@@ -218,7 +201,6 @@ function assertUnownedOrderIsNotRelevant(params: {
 export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTracker {
   let dayKey: string | null = null;
   let statesByDirection = createEmptyDirectionStates();
-  let expectedMonitorSymbol: string | null = null;
 
   /** 最新已完成保护性清仓边界：仅计入 executedTimeMs > boundary 的成交。 */
   const latestProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
@@ -239,16 +221,15 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
 
   /**
    * 启动时根据历史成交订单初始化当日状态。
-   * protectionBoundaryByDirection 可选：按 "monitorSymbol:direction" 为输入键恢复唯一 monitor 的方向级保护性边界。
+   * protectionBoundaryByDirection 可选：按方向键恢复唯一 monitor 的方向级保护性边界。
    */
   function initializeFromOrders(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
     now: Date,
-    protectionBoundaryByDirection?: ReadonlyMap<string, number>,
+    protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
   ): void {
-    expectedMonitorSymbol = monitor.monitorSymbol;
     const nextKey = resolveHongKongDayKey(deps.toHongKongTimeIso, now);
     const previousDayKey = dayKey;
     const isSameTradingDay = previousDayKey !== null && previousDayKey === nextKey;
@@ -267,7 +248,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
           continue;
         }
 
-        const direction = parseProtectionBoundaryDirectionKey(key, monitor.monitorSymbol);
+        const direction = parseProtectionBoundaryDirectionKey(key);
         latestProtectionBoundaryByDirection.set(direction, boundaryMs);
         lastAppliedProtectionBoundaryByDirection.set(direction, boundaryMs);
       }
@@ -350,14 +331,6 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     };
   }
 
-  function assertExpectedMonitorSymbol(monitorSymbol: string): void {
-    if (expectedMonitorSymbol !== null && monitorSymbol !== expectedMonitorSymbol) {
-      throw new Error(
-        `[DailyLossTracker] monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${monitorSymbol}`,
-      );
-    }
-  }
-
   function getDirectionState(direction: DailyLossDirection): DailyLossState {
     return direction === 'LONG' ? statesByDirection.long : statesByDirection.short;
   }
@@ -389,7 +362,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
     now: Date,
-    protectionBoundaryByDirection?: ReadonlyMap<string, number>,
+    protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
   ): void {
     initializeFromOrders(
@@ -411,8 +384,6 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       return;
     }
 
-    assertExpectedMonitorSymbol(input.monitorSymbol);
-
     const fillDayKey = resolveHongKongDayKey(
       deps.toHongKongTimeIso,
       new Date(input.executedTimeMs),
@@ -422,7 +393,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     }
 
     // 边界过滤：成交时间小于等于保护性边界的不纳入
-    const directionKey = input.isLongSymbol ? 'LONG' : 'SHORT';
+    const directionKey = input.direction;
     const protectionBoundary = latestProtectionBoundaryByDirection.get(directionKey);
     if (protectionBoundary !== undefined && input.executedTimeMs <= protectionBoundary) {
       return;
@@ -457,17 +428,14 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
   /**
    * 获取指定标的与方向的当日亏损偏移。
    */
-  function getLossOffset(monitorSymbol: string, isLongSymbol: boolean): number {
-    assertExpectedMonitorSymbol(monitorSymbol);
-
-    return isLongSymbol
+  function getLossOffset(direction: 'LONG' | 'SHORT'): number {
+    return direction === 'LONG'
       ? statesByDirection.long.dailyLossOffset
       : statesByDirection.short.dailyLossOffset;
   }
 
   /** 推进保护性边界并开启新周期。 */
   function startNewProtectionEpisode({
-    monitorSymbol,
     direction,
     boundaryExecutedTimeMs,
   }: StartNewProtectionEpisodeParams): void {
@@ -475,7 +443,6 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       return;
     }
 
-    assertExpectedMonitorSymbol(monitorSymbol);
     const lastAppliedBoundary = lastAppliedProtectionBoundaryByDirection.get(direction);
     if (lastAppliedBoundary !== undefined && boundaryExecutedTimeMs <= lastAppliedBoundary) {
       return;

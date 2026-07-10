@@ -108,7 +108,6 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
 
     const monitorContext = createMonitorContext();
     const result = await runIndicatorPipeline({
-      monitorSymbol: 'HSI.HK',
       monitorContext,
       mainContext: {
         marketDataClient: {
@@ -139,7 +138,6 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
     });
 
     const result = await runIndicatorPipeline({
-      monitorSymbol: 'HSI.HK',
       monitorContext,
       mainContext: {
         marketDataClient: {
@@ -175,7 +173,6 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
     });
 
     await runIndicatorPipeline({
-      monitorSymbol: 'HSI.HK',
       monitorContext,
       mainContext: {
         marketDataClient: {
@@ -200,7 +197,6 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
     const monitorContext = createMonitorContext();
 
     const result = await runIndicatorPipeline({
-      monitorSymbol: 'HSI.HK',
       monitorContext,
       mainContext: {
         marketDataClient: {

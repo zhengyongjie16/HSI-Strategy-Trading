@@ -333,7 +333,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     });
 
     if (bumpVersion) {
-      symbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, direction, nextState);
+      symbolRegistry.updateSeatStateWithVersionBump(direction, nextState);
     } else {
       updateSeatState(direction, nextState, false);
     }
@@ -352,7 +352,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   function clearSeatOnPeriodicNoCandidate(direction: 'LONG' | 'SHORT'): void {
     const nowDate = now();
     const nowMs = nowDate.getTime();
-    const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const currentSeat = symbolRegistry.getSeatState(direction);
 
     clearSeatWithSearchFailure({
       direction,
@@ -375,13 +375,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return false;
     }
 
-    const currentVersion = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const currentVersion = symbolRegistry.getSeatVersion(direction);
     if (currentVersion !== switchState.seatVersion) {
       switchStates.delete(direction);
       return false;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     const symbolMatches =
       seatState.symbol === switchState.oldSymbol || seatState.symbol === switchState.nextSymbol;
     if (seatState.status !== 'SWITCHING' || !symbolMatches) {
@@ -407,7 +407,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return false;
     }
 
-    const currentVersion = symbolRegistry.getSeatVersion(monitorSymbol, state.direction);
+    const currentVersion = symbolRegistry.getSeatVersion(state.direction);
     if (currentVersion !== state.seatVersion) {
       if (currentState === state) {
         switchStates.delete(state.direction);
@@ -416,7 +416,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return false;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, state.direction);
+    const seatState = symbolRegistry.getSeatState(state.direction);
     const symbolMatches =
       seatState.symbol === state.oldSymbol || seatState.symbol === state.nextSymbol;
     if (seatState.status !== 'SWITCHING' || !symbolMatches) {
@@ -483,13 +483,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
       clearPeriodicPending(direction);
       return createNoopDriveResult();
     }
 
-    const seatVersionAtStart = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const seatVersionAtStart = symbolRegistry.getSeatVersion(direction);
     const seatSymbol = seatState.symbol;
     if (
       suppressionTriggerKind !== null &&
@@ -499,8 +499,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     }
 
     const next = await findSwitchCandidate(direction);
-    const latestSeatState = symbolRegistry.getSeatState(monitorSymbol, direction);
-    const latestSeatVersion = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const latestSeatState = symbolRegistry.getSeatState(direction);
+    const latestSeatVersion = symbolRegistry.getSeatVersion(direction);
     if (!isSeatActive(latestSeatState)) {
       clearPeriodicPending(direction);
       return createNoopDriveResult();
@@ -589,7 +589,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   ): Promise<SwitchDriveResult> {
     const { direction, positions } = params;
     const { sellAction, buyAction } = resolveDirectionSymbols(direction);
-    const seatVersion = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    const seatVersion = symbolRegistry.getSeatVersion(direction);
     let cachedNextQuote: Quote | null | undefined;
 
     function stopIfSwitchInvalid(): SwitchDriveResult | null {
@@ -635,7 +635,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           `nextSymbol=${state.nextSymbol ?? 'null'} stage=${state.stage} reason=${reason}`,
       );
       state.stage = 'FAILED';
-      const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const currentSeat = symbolRegistry.getSeatState(direction);
       const nowDate = now();
       const nowMs = nowDate.getTime();
       if (state.nextSymbol === null) {
@@ -837,7 +837,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
 
       const bindNowMs = now().getTime();
-      const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const currentSeat = symbolRegistry.getSeatState(direction);
       updateSeatState(
         direction,
         buildSeatState({
@@ -1023,7 +1023,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
       clearPeriodicPending(direction);
       return createNoopDriveResult();
@@ -1165,7 +1165,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       };
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
       clearPeriodicPending(direction);
       return {

@@ -347,7 +347,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
@@ -442,7 +441,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext: firstMonitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
@@ -508,31 +506,6 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.runtime.stopAndDrain();
   });
 
-  it('fails fast when handoff monitorSymbol does not match the unique monitor', async () => {
-    const runtimeHarness = createBaseHarness();
-    const foreignMonitorContext = createMonitorContextDouble({
-      config: createMonitorConfig({ monitorSymbol: 'TECH.HK' }),
-      symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'TECH.HK',
-      }),
-    });
-
-    runtimeHarness.runtime.start();
-
-    expect(() => {
-      runtimeHarness.runtime.handoffPendingSwitch({
-        monitorSymbol: 'TECH.HK',
-        direction: 'LONG',
-        monitorContext: foreignMonitorContext,
-        driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
-      });
-    }).toThrow(
-      '[SwitchWakeupRuntime] handoff monitorSymbol mismatch: expected=HSI.HK actual=TECH.HK',
-    );
-
-    await runtimeHarness.runtime.stopAndDrain();
-  });
-
   it('naturally invalidates old seatVersion registrations before and after freshness wait', async () => {
     const advanceCalls: number[] = [];
     const symbolRegistry = createSymbolRegistryDouble({
@@ -557,7 +530,7 @@ describe('switchWakeupRuntime', () => {
           driveResult: { kind: 'NOOP' },
         }),
         advancePendingSwitch: async (params) => {
-          advanceCalls.push(symbolRegistry.getSeatVersion('HSI.HK', params.direction));
+          advanceCalls.push(symbolRegistry.getSeatVersion(params.direction));
           return {
             advanced: true,
             direction: params.direction,
@@ -613,33 +586,29 @@ describe('switchWakeupRuntime', () => {
 
     runtime.start();
     runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
     });
 
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
     emitOrderStateChanged('BULL.HK');
     await waitTick();
     expect(advanceCalls).toEqual([]);
 
     runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
 
     runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
 
     runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
@@ -647,7 +616,7 @@ describe('switchWakeupRuntime', () => {
     emitOrderStateChanged('BULL.HK');
     await waitTick();
 
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
     consistencyHarness.setStatus({
       started: true,
       currentVersion: 2,
@@ -693,7 +662,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
@@ -745,7 +713,6 @@ describe('switchWakeupRuntime', () => {
     runtimeHarness.consistencyHarness.blockFreshWait();
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
@@ -804,7 +771,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
@@ -860,7 +826,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
@@ -869,7 +834,7 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
     expect(advanceCalls).toBe(0);
 
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
     retainDeferred.resolve(() => {});
     await waitTick();
     await waitTick();
@@ -933,14 +898,12 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
     });
 
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BEAR.HK' }]),
@@ -1002,7 +965,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
@@ -1034,7 +996,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
@@ -1087,7 +1048,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
@@ -1145,7 +1105,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
@@ -1194,7 +1153,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
@@ -1209,7 +1167,7 @@ describe('switchWakeupRuntime', () => {
 
   it('fails fast when handoff monitorContext identity does not match the unique context', async () => {
     const runtimeHarness = createBaseHarness();
-    const foreignMonitorContext = createMonitorContextDouble({
+    const detachedMonitorContext = createMonitorContextDouble({
       config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
       symbolRegistry: runtimeHarness.symbolRegistry,
     });
@@ -1218,9 +1176,8 @@ describe('switchWakeupRuntime', () => {
 
     expect(() => {
       runtimeHarness.runtime.handoffPendingSwitch({
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
-        monitorContext: foreignMonitorContext,
+        monitorContext: detachedMonitorContext,
         driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
       });
     }).toThrow('[SwitchWakeupRuntime] handoff monitorContext identity mismatch');
@@ -1245,7 +1202,7 @@ describe('switchWakeupRuntime', () => {
         }),
         advancePendingSwitch: async (params) => {
           advanceCalls[advanceCalls.length] =
-            `${params.direction}:${symbolRegistry.getSeatVersion('HSI.HK', params.direction)}`;
+            `${params.direction}:${symbolRegistry.getSeatVersion(params.direction)}`;
           return {
             advanced: true,
             direction: params.direction,
@@ -1265,7 +1222,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([
@@ -1275,9 +1231,8 @@ describe('switchWakeupRuntime', () => {
       ]),
     });
 
-    symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BEAR.HK' }]),
@@ -1330,7 +1285,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext: stopMonitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
@@ -1390,7 +1344,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
@@ -1454,7 +1407,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
@@ -1527,7 +1479,6 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       monitorContext,
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),

@@ -10,7 +10,14 @@
  */
 import { randomUUID } from 'node:crypto';
 import { notifyTaskAddedCallbacks, registerTaskAddedCallback } from '../utils.js';
-import type { Task, TaskQueue, TaskAddedCallback, BuyTaskType, SellTaskType } from './types.js';
+import type {
+  Task,
+  TaskInput,
+  TaskQueue,
+  TaskAddedCallback,
+  BuyTaskType,
+  SellTaskType,
+} from './types.js';
 
 /**
  * 创建通用任务队列
@@ -39,12 +46,11 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
   }
 
   return {
-    push(task: Omit<Task<TType>, 'id' | 'createdAt'>): void {
+    push(task: TaskInput<TType>): void {
       const fullTask: Task<TType> = {
         id: randomUUID(),
         type: task.type,
         data: task.data,
-        monitorSymbol: task.monitorSymbol,
         createdAt: Date.now(),
       };
       items.push(fullTask);
@@ -89,11 +95,8 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
         nextItems.push(task);
       }
 
-      for (let index = removedTasks.length - 1; index >= 0; index -= 1) {
-        const task = removedTasks[index];
-        if (task !== undefined) {
-          onRemove?.(task);
-        }
+      for (const task of removedTasks) {
+        onRemove?.(task);
       }
 
       items = nextItems;

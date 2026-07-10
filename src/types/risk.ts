@@ -17,9 +17,8 @@ import type { OrderFilteringEngine, OrderOwnership } from './orderRecorder.js';
  * 使用范围：风险控制与订单监控链路；全项目可引用。
  */
 export type DailyLossFilledOrderInput = {
-  readonly monitorSymbol: string;
+  readonly direction: 'LONG' | 'SHORT';
   readonly symbol: string;
-  readonly isLongSymbol: boolean;
   readonly side: OrderSide;
   readonly executedPrice: number;
   readonly executedQuantity: number;
@@ -34,7 +33,6 @@ export type DailyLossFilledOrderInput = {
  * 使用范围：风险控制链路；全项目可引用。
  */
 export type StartNewProtectionEpisodeParams = {
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
 
   /** 最近一次已完成保护性清仓事件边界（毫秒） */
@@ -56,15 +54,15 @@ export interface DailyLossTracker {
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
     now: Date,
-    protectionBoundaryByDirection?: ReadonlyMap<string, number>,
+    protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
   ) => void;
 
   /** 增量记录单笔成交，仅接受 executedTimeMs > 当前保护性边界 且 当日日键匹配的订单 */
   recordFilledOrder: (input: DailyLossFilledOrderInput) => void;
 
-  /** 获取指定标的与方向的当日亏损偏移（仅亏损，<=0），未初始化时返回 0 */
-  getLossOffset: (monitorSymbol: string, isLongSymbol: boolean) => number;
+  /** 获取指定方向的当日亏损偏移（仅亏损，<=0），未初始化时返回 0 */
+  getLossOffset: (direction: 'LONG' | 'SHORT') => number;
 
   /** 推进保护性边界并开启新周期（幂等且只允许边界单向前进）。 */
   startNewProtectionEpisode: (params: StartNewProtectionEpisodeParams) => void;
@@ -79,7 +77,6 @@ export interface DailyLossTracker {
 export type DirectionalUnrealizedLossMonitorContext = {
   readonly symbol: string;
   readonly isLong: boolean;
-  readonly monitorSymbol: string;
   readonly seatVersion: number;
   readonly quote: Quote;
   readonly riskChecker: RiskChecker;

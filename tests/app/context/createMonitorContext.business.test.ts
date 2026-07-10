@@ -151,7 +151,7 @@ function createRuntime(
 }
 
 describe('createMonitorContext strategy factory behavior', () => {
-  it('hydrates seat names, seat versions and normalized monitor symbol for ACTIVE seats', () => {
+  it('hydrates seat names and seat versions for ACTIVE seats', () => {
     const monitorConfig = createMonitorConfigDouble({
       monitorSymbol: 'HSI.HK',
       signalConfig: {
@@ -211,7 +211,6 @@ describe('createMonitorContext strategy factory behavior', () => {
     expect(context.monitorSymbolName).toBe('HangSeng');
     expect(context.seatVersion.long).toBe(3);
     expect(context.seatVersion.short).toBe(4);
-    expect(context.normalizedMonitorSymbol).toBe('HSI.HK');
   });
 
   it('keeps inactive seat name empty, falls back to symbol names and compiles indicatorProfile', () => {

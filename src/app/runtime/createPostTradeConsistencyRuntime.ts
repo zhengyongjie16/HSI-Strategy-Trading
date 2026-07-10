@@ -158,9 +158,8 @@ function buildAttributedSeatSymbols(monitorContext: MonitorContext): ReadonlyArr
       readonly direction: ProtectiveLiquidationDirection;
     }>
   > = [];
-  const monitorSymbol = monitorContext.config.monitorSymbol;
-  const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-  const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+  const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
+  const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
 
   if (isSeatActive(longSeatState)) {
     registerAttributedSeatSymbolOrThrow(
@@ -197,23 +196,16 @@ function settleProtectiveLiquidationEpisodes(
   businessDeps: PostTradeConsistencyRuntimeBusinessDeps,
   getQuantityBySymbol: (symbol: string) => { quantity: number } | null,
 ): void {
-  const expectedMonitorSymbol = businessDeps.monitorContext.config.monitorSymbol;
+  const monitorSymbol = businessDeps.monitorContext.config.monitorSymbol;
 
   for (const episode of businessDeps.protectiveLiquidationEpisodeTracker.getInProgressEpisodes()) {
-    if (episode.monitorSymbol !== expectedMonitorSymbol) {
-      throw new Error(
-        `[PostTradeConsistencyRuntime] protective episode monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${episode.monitorSymbol}`,
-      );
-    }
-
     const monitorContext = businessDeps.monitorContext;
     const isDirectionFlat = isSymbolFlatByPositionCache(episode.symbol, getQuantityBySymbol);
     const hasPendingProtectiveOrders = trader.hasPendingProtectiveLiquidationOrders(
-      episode.monitorSymbol,
+      monitorSymbol,
       episode.direction,
     );
     const completedEvent = businessDeps.protectiveLiquidationEpisodeTracker.completeIfEligible({
-      monitorSymbol: episode.monitorSymbol,
       direction: episode.direction,
       isDirectionFlat,
       hasPendingProtectiveOrders,
@@ -223,13 +215,11 @@ function settleProtectiveLiquidationEpisodes(
     }
 
     businessDeps.dailyLossTracker.startNewProtectionEpisode({
-      monitorSymbol: completedEvent.monitorSymbol,
       direction: completedEvent.direction,
       boundaryExecutedTimeMs: completedEvent.boundaryExecutedTimeMs,
     });
 
     businessDeps.liquidationCooldownTracker.recordLiquidationTrigger({
-      symbol: completedEvent.monitorSymbol,
       direction: completedEvent.direction,
       executedTimeMs: completedEvent.boundaryExecutedTimeMs,
       triggerLimit: monitorContext.config.liquidationTriggerLimit,
@@ -255,10 +245,7 @@ async function refreshAttributedUnrealizedLossData(
   for (const attributedSymbol of attributedSymbols) {
     const { symbol, direction } = attributedSymbol;
     const isLongSymbol = direction === 'LONG';
-    const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(
-      monitorContext.config.monitorSymbol,
-      isLongSymbol,
-    );
+    const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(direction);
 
     try {
       const refreshResult = await monitorContext.riskChecker.refreshUnrealizedLossData(
@@ -502,11 +489,15 @@ export function createPostTradeConsistencyRuntime(
    * 绑定唯一 monitorContext 与风险协作者。
    *
    * 运行时先于唯一 monitorContext 创建，因此业务依赖需要在顶层装配完成后显式绑定。
-   * 重复绑定视为用最新依赖替换旧依赖。
+   * 业务依赖只允许绑定一次，重复绑定说明装配链路存在归属漂移风险，必须立即失败。
    *
    * @param deps 业务依赖集合
    */
   function bindBusinessDeps(runtimeBusinessDeps: PostTradeConsistencyRuntimeBusinessDeps): void {
+    if (businessDeps !== null) {
+      throw new Error('[postTradeConsistencyRuntime] businessDeps 已绑定，禁止重复绑定');
+    }
+
     buildAttributedSeatSymbols(runtimeBusinessDeps.monitorContext);
     businessDeps = runtimeBusinessDeps;
   }

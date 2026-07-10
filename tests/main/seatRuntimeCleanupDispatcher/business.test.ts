@@ -64,7 +64,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
       },
     });
     const delayedSignalVerifier = createDelayedSignalVerifierDouble({
-      cancelAllForDirection: (_symbol, direction) => {
+      cancelAllForDirection: (direction) => {
         if (direction !== 'LONG') {
           return 0;
         }
@@ -86,12 +86,10 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     for (const task of [
       {
         type: 'IMMEDIATE_BUY',
-        monitorSymbol,
         data: createSignalDouble('BUYCALL', 'BULL.HK'),
       },
       {
         type: 'IMMEDIATE_BUY',
-        monitorSymbol,
         data: createSignalDouble('BUYPUT', 'BEAR.HK'),
       },
     ] as const) {
@@ -100,16 +98,13 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     sellTaskQueue.push({
       type: 'IMMEDIATE_SELL',
-      monitorSymbol,
       data: createSignalDouble('SELLCALL', 'BULL.HK'),
     });
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-      monitorSymbol,
       data: {
-        monitorSymbol,
         direction: 'LONG',
         seatVersion: 1,
         symbol: 'BULL.HK',
@@ -121,9 +116,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     monitorTaskQueue.scheduleLatest({
       type: 'SEAT_REFRESH',
       dedupeKey: 'SEAT_REFRESH:LONG',
-      monitorSymbol,
       data: {
-        monitorSymbol,
         direction: 'LONG',
         seatVersion: 1,
         previousSymbol: 'OLD_BULL.HK',
@@ -136,9 +129,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'AUTO_SYMBOL_TICK:SHORT',
-      monitorSymbol,
       data: {
-        monitorSymbol,
         direction: 'SHORT',
         seatVersion: 1,
         symbol: 'BEAR.HK',
@@ -156,7 +147,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     });
 
     dispatcher.start();
-    symbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, 'LONG', createEmptySeatState());
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', createEmptySeatState());
     dispatcher.stop();
 
     expect(clearLongCalls).toBe(1);
@@ -199,7 +190,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
         },
       }),
       delayedSignalVerifier: createDelayedSignalVerifierDouble({
-        cancelAllForDirection: (_symbol, direction) => {
+        cancelAllForDirection: (direction) => {
           if (direction !== 'SHORT') {
             return 0;
           }
@@ -215,22 +206,18 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     buyTaskQueue.push({
       type: 'IMMEDIATE_BUY',
-      monitorSymbol,
       data: createSignalDouble('BUYPUT', 'BEAR.HK'),
     });
 
     sellTaskQueue.push({
       type: 'IMMEDIATE_SELL',
-      monitorSymbol,
       data: createSignalDouble('SELLPUT', 'BEAR.HK'),
     });
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'AUTO_SYMBOL_TICK:SHORT',
-      monitorSymbol,
       data: {
-        monitorSymbol,
         direction: 'SHORT',
         seatVersion: 1,
         symbol: 'BEAR.HK',
@@ -248,7 +235,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     });
 
     dispatcher.start();
-    symbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, 'SHORT', createEmptySeatState());
+    symbolRegistry.updateSeatStateWithVersionBump('SHORT', createEmptySeatState());
     dispatcher.stop();
 
     expect(clearShortCalls).toBe(1);
@@ -284,18 +271,18 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     });
 
     dispatcher.start();
-    symbolRegistry.updateSeatState(monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       ...createEmptySeatState({ symbol: 'BULL.HK' }),
       status: 'SEARCHING',
     });
 
-    symbolRegistry.updateSeatState(monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       ...createEmptySeatState({ symbol: 'BULL.HK', callPrice: 20_000 }),
       status: 'ACTIVATING',
     });
-    symbolRegistry.updateSeatState(monitorSymbol, 'LONG', createActiveSeatState('BULL.HK'));
-    symbolRegistry.updateSeatState(monitorSymbol, 'LONG', createActiveSeatState('BULL.HK'));
-    symbolRegistry.updateSeatState(monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', createActiveSeatState('BULL.HK'));
+    symbolRegistry.updateSeatState('LONG', createActiveSeatState('BULL.HK'));
+    symbolRegistry.updateSeatState('LONG', {
       ...createEmptySeatState({ symbol: 'BULL.HK' }),
       status: 'SWITCHING',
     });
@@ -304,7 +291,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     expect(clearLongCalls).toBe(1);
   });
 
-  it('seat 事件携带非唯一 monitorSymbol 时 fail-fast', () => {
+  it('seat truth 事件只按方向处理，不再要求 monitorSymbol fail-fast', () => {
     const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
       monitorSymbol,
@@ -320,20 +307,12 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     });
 
     dispatcher.start();
-    let caught: unknown = null;
-    try {
-      symbolRegistry.updateSeatStateWithVersionBump('TECH.HK', 'LONG', createEmptySeatState());
-    } catch (err) {
-      caught = err;
-    } finally {
-      dispatcher.stop();
-    }
+    expect(() => {
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', createEmptySeatState());
+    }).not.toThrow();
+    dispatcher.stop();
 
-    expect(caught).toBeInstanceOf(AggregateError);
-    expect(symbolRegistry.getSeatStateListenerErrors()).toHaveLength(1);
-    const error = symbolRegistry.getSeatStateListenerErrors()[0];
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('非唯一 monitorSymbol 事件');
+    expect(symbolRegistry.getSeatStateListenerErrors()).toHaveLength(0);
     expect(symbolRegistry.getSeatStateChangedListenerCount()).toBe(0);
   });
 
@@ -353,7 +332,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     let caught: unknown = null;
     try {
-      symbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, 'LONG', createEmptySeatState());
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', createEmptySeatState());
     } catch (err) {
       caught = err;
     } finally {
@@ -398,7 +377,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     dispatcher.stop();
     expect(symbolRegistry.getSeatStateChangedListenerCount()).toBe(0);
 
-    symbolRegistry.updateSeatStateWithVersionBump(monitorSymbol, 'LONG', createEmptySeatState());
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', createEmptySeatState());
 
     expect(clearLongCalls).toBe(0);
   });

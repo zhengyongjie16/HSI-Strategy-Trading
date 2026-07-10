@@ -63,17 +63,6 @@ export type WarrantInfoParams = {
 };
 
 /**
- * 交易日结果构造参数。
- * 类型用途：为 createTradingDaysResult 提供交易日与半日市字段约束。
- * 数据来源：测试场景下手工构造的交易日输入。
- * 使用范围：mock/factories/quoteFactory.ts。
- */
-export type TradingDaysResultParams = {
-  readonly tradingDays: ReadonlyArray<string>;
-  readonly halfTradingDays?: ReadonlyArray<string>;
-};
-
-/**
  * 信号构造参数。
  * 类型用途：为 createSignal 提供可选字段与必填行为字段约束。
  * 数据来源：测试场景下手工构造的策略信号输入。

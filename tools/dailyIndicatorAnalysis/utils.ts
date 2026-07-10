@@ -25,15 +25,8 @@ import type {
 
 const ROW_COLOR_KEYS: ReadonlyArray<RowColorIndicatorKey> = [
   'rsi6',
-  'k',
   'd',
   'j',
-  'mfi',
-  'adx',
-  'ema5',
-  'poc',
-  'vah',
-  'val',
   'vaPositionInValueArea',
 ];
 
@@ -468,40 +461,12 @@ function getIndicatorValue(row: MinuteIndicatorRow, key: RowColorIndicatorKey): 
       return row.rsi6 !== null && Number.isFinite(row.rsi6) ? row.rsi6 : null;
     }
 
-    case 'k': {
-      return row.kdj !== null && Number.isFinite(row.kdj.k) ? row.kdj.k : null;
-    }
-
     case 'd': {
       return row.kdj !== null && Number.isFinite(row.kdj.d) ? row.kdj.d : null;
     }
 
     case 'j': {
       return row.kdj !== null && Number.isFinite(row.kdj.j) ? row.kdj.j : null;
-    }
-
-    case 'mfi': {
-      return row.mfi !== null && Number.isFinite(row.mfi) ? row.mfi : null;
-    }
-
-    case 'adx': {
-      return row.adx !== null && Number.isFinite(row.adx) ? row.adx : null;
-    }
-
-    case 'ema5': {
-      return row.ema5 !== null && Number.isFinite(row.ema5) ? row.ema5 : null;
-    }
-
-    case 'poc': {
-      return row.vp !== null && Number.isFinite(row.vp.poc) ? row.vp.poc : null;
-    }
-
-    case 'vah': {
-      return row.vp !== null && Number.isFinite(row.vp.vah) ? row.vp.vah : null;
-    }
-
-    case 'val': {
-      return row.vp !== null && Number.isFinite(row.vp.val) ? row.vp.val : null;
     }
 
     case 'vaPositionInValueArea': {
@@ -666,9 +631,6 @@ export function computeMinuteRows(
     const rowHigh: MinuteIndicatorRow = {
       time,
       variant: 'high',
-      open: parsed.open,
-      high: parsed.high,
-      low: parsed.low,
       close: parsed.close,
       changePercent,
       volume: parsed.volume,
@@ -684,9 +646,6 @@ export function computeMinuteRows(
     const rowLow: MinuteIndicatorRow = {
       time,
       variant: 'low',
-      open: parsed.open,
-      high: parsed.high,
-      low: parsed.low,
       close: parsed.close,
       changePercent,
       volume: parsed.volume,

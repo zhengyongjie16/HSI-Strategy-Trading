@@ -138,9 +138,8 @@ function createDefaultStartDistanceSwitchExecutor(
     readonly canContinue: () => boolean;
   }): Promise<ReadonlyArray<StartSwitchOnDistanceResult>> {
     const { monitorContext, event } = params;
-    const monitorSymbol = monitorContext.config.monitorSymbol;
-    const longSeat = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-    const shortSeat = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+    const longSeat = monitorContext.symbolRegistry.getSeatState('LONG');
+    const shortSeat = monitorContext.symbolRegistry.getSeatState('SHORT');
     const monitorPrice = event.quote.price;
     const positions = deps.lastState.cachedPositions;
     const results: StartSwitchOnDistanceResult[] = [];
@@ -580,7 +579,6 @@ function createMonitorQuoteEventRuntime(
               result.driveResult.kind === 'WAIT'
             ) {
               handoffPendingSwitch({
-                monitorSymbol: runtimeMonitorSymbol,
                 direction: result.direction,
                 monitorContext,
                 driveResult: result.driveResult,

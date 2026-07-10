@@ -71,7 +71,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
    * @returns true 表示席位匹配
    */
   function isSeatMatchedForOrder(order: RawOrderFromAPI, ownership: OrderSeatOwnership): boolean {
-    const seatState = symbolRegistry.getSeatState(ownership.monitorSymbol, ownership.direction);
+    const seatState = symbolRegistry.getSeatState(ownership.direction);
     if (!isSeatActive(seatState)) {
       return false;
     }

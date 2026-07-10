@@ -132,10 +132,7 @@ export function createQuoteSubscriptionRuntime(
   function projectAllSeatBound(): void {
     const seatSymbols: string[] = [];
     for (const direction of ['LONG', 'SHORT'] as const) {
-      const seatState = deps.symbolRegistry.getSeatState(
-        deps.tradingConfig.monitor.monitorSymbol,
-        direction,
-      );
+      const seatState = deps.symbolRegistry.getSeatState(direction);
       if (
         seatState.symbol &&
         (seatState.status === 'SWITCHING' ||

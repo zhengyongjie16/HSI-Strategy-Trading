@@ -28,23 +28,13 @@ import { formatSymbolDisplay } from '../../../utils/display/index.js';
 export function createDelayedSignalVerifier(
   deps: DelayedSignalVerifierDeps,
 ): DelayedSignalVerifierPort {
-  const { monitorSymbol: expectedMonitorSymbol, indicatorCache, onFatalError } = deps;
+  const { indicatorCache, onFatalError } = deps;
 
   // 待验证信号 Map（signalId -> entry）
   const pendingSignals = new Map<string, PendingSignalEntry>();
 
   // 回调函数列表
   const verifiedCallbacks: VerifiedCallback[] = [];
-
-  function requireExpectedMonitorSymbol(actualMonitorSymbol: string, source: string): string {
-    if (actualMonitorSymbol !== expectedMonitorSymbol) {
-      throw new Error(
-        `[DelayedSignalVerifier] ${source} 不匹配唯一监控标的: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
-      );
-    }
-
-    return expectedMonitorSymbol;
-  }
 
   /**
    * 执行延迟验证。
@@ -60,8 +50,7 @@ export function createDelayedSignalVerifier(
 
       // 从待验证列表中移除
       pendingSignals.delete(signalId);
-      const { signal, monitorSymbol } = entry;
-      requireExpectedMonitorSymbol(monitorSymbol, 'pending signal monitorSymbol');
+      const { signal } = entry;
 
       // 执行验证
       const result = performVerification(indicatorCache, entry);
@@ -110,11 +99,9 @@ export function createDelayedSignalVerifier(
      */
     addSignal(params: {
       readonly signal: Signal;
-      readonly monitorSymbol: string;
       readonly verificationIndicators: ReadonlyArray<VerificationIndicator>;
     }): void {
-      const { signal, monitorSymbol, verificationIndicators } = params;
-      requireExpectedMonitorSymbol(monitorSymbol, 'addSignal monitorSymbol');
+      const { signal, verificationIndicators } = params;
       // 验证 triggerTime
       const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
       if (!signal.triggerTime) {
@@ -164,7 +151,6 @@ export function createDelayedSignalVerifier(
       // 添加到待验证列表
       const entry: PendingSignalEntry = {
         signal,
-        monitorSymbol,
         triggerTime,
         initialIndicators,
         indicatorNames: [...verificationIndicators],
@@ -174,41 +160,12 @@ export function createDelayedSignalVerifier(
     },
 
     /**
-     * 取消指定标的的所有待验证信号，并清除对应定时器。
-     */
-    cancelAllForSymbol(monitorSymbol: string): void {
-      requireExpectedMonitorSymbol(monitorSymbol, 'cancelAllForSymbol monitorSymbol');
-      const entriesToRemove: string[] = [];
-      for (const [signalId, entry] of pendingSignals) {
-        if (entry.monitorSymbol === monitorSymbol) {
-          clearTimeout(entry.timerId);
-          entriesToRemove.push(signalId);
-        }
-      }
-
-      for (const signalId of entriesToRemove) {
-        pendingSignals.delete(signalId);
-      }
-
-      if (entriesToRemove.length > 0) {
-        logger.debug(
-          `[延迟验证] 已取消 ${monitorSymbol} 的 ${entriesToRemove.length} 个待验证信号`,
-        );
-      }
-    },
-
-    /**
-     * 取消指定标的指定方向的所有待验证信号
+     * 取消当前单实例指定方向的所有待验证信号
      * LONG 方向对应 BUYCALL/SELLCALL，SHORT 方向对应 BUYPUT/SELLPUT
      */
-    cancelAllForDirection(monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      requireExpectedMonitorSymbol(monitorSymbol, 'cancelAllForDirection monitorSymbol');
+    cancelAllForDirection(direction: 'LONG' | 'SHORT'): number {
       const entriesToRemove: string[] = [];
       for (const [signalId, entry] of pendingSignals) {
-        if (entry.monitorSymbol !== monitorSymbol) {
-          continue;
-        }
-
         const action = entry.signal.action;
         const isLongSignal = action === 'BUYCALL' || action === 'SELLCALL';
         const signalDirection = isLongSignal ? 'LONG' : 'SHORT';
@@ -225,9 +182,7 @@ export function createDelayedSignalVerifier(
       }
 
       if (entriesToRemove.length > 0) {
-        logger.debug(
-          `[延迟验证] 已取消 ${monitorSymbol} ${direction} 的 ${entriesToRemove.length} 个待验证信号`,
-        );
+        logger.debug(`[延迟验证] 已取消 ${direction} 的 ${entriesToRemove.length} 个待验证信号`);
       }
 
       return entriesToRemove.length;

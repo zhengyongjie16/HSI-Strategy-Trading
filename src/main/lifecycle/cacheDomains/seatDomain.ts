@@ -13,7 +13,6 @@
 import { logger } from '../../../utils/logger/index.js';
 import { resolveMonitorContextSeatSnapshot } from '../../../utils/seat/snapshots.js';
 import type { MonitorContext } from '../../../types/state.js';
-import type { TradingConfig } from '../../../types/config.js';
 import type { SeatState, SymbolRegistry } from '../../../types/seat.js';
 import type { CacheDomain, LifecycleContext } from '../types.js';
 import {
@@ -37,19 +36,12 @@ function buildEmptySeatState(previous: SeatState): SeatState {
 }
 
 /** 清空所有监控标的的多空席位绑定，并刷新席位版本号，返回变更的席位数量 */
-function clearAllSeatBindings(
-  tradingConfig: TradingConfig,
-  symbolRegistry: SymbolRegistry,
-): number {
+function clearAllSeatBindings(symbolRegistry: SymbolRegistry): number {
   let changed = 0;
 
   for (const direction of ['LONG', 'SHORT'] as const) {
-    const previous = symbolRegistry.getSeatState(tradingConfig.monitor.monitorSymbol, direction);
-    symbolRegistry.updateSeatStateWithVersionBump(
-      tradingConfig.monitor.monitorSymbol,
-      direction,
-      buildEmptySeatState(previous),
-    );
+    const previous = symbolRegistry.getSeatState(direction);
+    symbolRegistry.updateSeatStateWithVersionBump(direction, buildEmptySeatState(previous));
     changed += 1;
   }
 
@@ -61,10 +53,7 @@ function syncMonitorSeatSnapshot(
   monitorContext: MonitorContext,
   symbolRegistry: SymbolRegistry,
 ): void {
-  const seatSnapshot = resolveMonitorContextSeatSnapshot(
-    monitorContext.config.monitorSymbol,
-    symbolRegistry,
-  );
+  const seatSnapshot = resolveMonitorContextSeatSnapshot(symbolRegistry);
   monitorContext.seatState = seatSnapshot.seatState;
   monitorContext.seatVersion = seatSnapshot.seatVersion;
 }
@@ -91,7 +80,7 @@ export function createSeatDomain(deps: SeatDomainDeps): CacheDomain {
 
       monitorContext.autoSymbolManager.resetAllState();
       warrantListCache.clear();
-      const changedSeats = clearAllSeatBindings(tradingConfig, symbolRegistry);
+      const changedSeats = clearAllSeatBindings(symbolRegistry);
       syncMonitorSeatSnapshot(monitorContext, symbolRegistry);
 
       logger.debug(`[Lifecycle][seat] 午夜清理完成: seats=${changedSeats}`);

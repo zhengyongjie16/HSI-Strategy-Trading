@@ -42,36 +42,6 @@ function parseSignalConfigFromEnv(env: NodeJS.ProcessEnv, envKey: string): Signa
 }
 
 /**
- * 解析带上下限的数值配置。
- * @param options 包含 env、envKey、defaultValue、min、max 的配置对象
- * @returns 未配置或非法时返回 defaultValue；可解析但低于 min 时收敛到 min；高于 max 时收敛到 max
- */
-function parseBoundedNumberConfig({
-  env,
-  envKey,
-  defaultValue,
-  min,
-  max,
-}: BoundedNumberConfig): number {
-  const value = getNumberConfig(env, envKey, 0);
-  if (value === null) {
-    return defaultValue;
-  }
-
-  if (value < min) {
-    logger.warn(`[配置警告] ${envKey} 不能小于 ${min}，已设置为 ${min}`);
-    return min;
-  }
-
-  if (value > max) {
-    logger.warn(`[配置警告] ${envKey} 不能大于 ${max}，已设置为 ${max}`);
-    return max;
-  }
-
-  return value;
-}
-
-/**
  * 解析关键数值配置：未配置时使用默认值，显式配置非法或越界时立即失败。
  * @param options 包含 env、envKey、defaultValue、min、max 的配置对象
  * @returns 合法范围内的数值
@@ -92,6 +62,34 @@ export function parseFailFastBoundedNumberConfig({
   if (!Number.isFinite(value) || value < min || value > max) {
     throw createConfigValidationError(
       `[配置错误] ${envKey} 无效（必须为数字，范围 ${min}-${max}）`,
+      [envKey],
+    );
+  }
+
+  return value;
+}
+
+/**
+ * 解析关键整数配置：未配置时使用默认值，显式配置非法、非整数或越界时立即失败。
+ * @param options 包含 env、envKey、defaultValue、min、max 的配置对象
+ * @returns 合法范围内的整数数值
+ */
+function parseFailFastIntegerBoundedNumberConfig({
+  env,
+  envKey,
+  defaultValue,
+  min,
+  max,
+}: BoundedNumberConfig): number {
+  const raw = env[envKey];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultValue;
+  }
+
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw createConfigValidationError(
+      `[配置错误] ${envKey} 无效（必须为整数，范围 ${min}-${max}）`,
       [envKey],
     );
   }
@@ -188,14 +186,14 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
     'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR',
     0,
   );
-  const autoSearchExpiryMinMonths = parseBoundedNumberConfig({
+  const autoSearchExpiryMinMonths = parseFailFastBoundedNumberConfig({
     env,
     envKey: 'AUTO_SEARCH_EXPIRY_MIN_MONTHS',
     defaultValue: 3,
     min: 1,
     max: 120,
   });
-  const autoSearchOpenDelayMinutes = parseBoundedNumberConfig({
+  const autoSearchOpenDelayMinutes = parseFailFastBoundedNumberConfig({
     env,
     envKey: 'AUTO_SEARCH_OPEN_DELAY_MINUTES',
     defaultValue: 5,
@@ -226,7 +224,12 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
     defaultValue: 100000,
     min: 1,
   });
-  const maxUnrealizedLossPerSymbol = getNumberConfig(env, 'MAX_UNREALIZED_LOSS_PER_SYMBOL', 0) ?? 0;
+  const maxUnrealizedLossPerSymbol = parseFailFastMinimumNumberConfig({
+    env,
+    envKey: 'MAX_UNREALIZED_LOSS_PER_SYMBOL',
+    defaultValue: 0,
+    min: 0,
+  });
   const buyIntervalSeconds = parseFailFastBoundedNumberConfig({
     env,
     envKey: 'BUY_INTERVAL_SECONDS',
@@ -235,7 +238,7 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
     max: 600,
   });
   const liquidationCooldown = parseLiquidationCooldownConfig(env, 'LIQUIDATION_COOLDOWN_MINUTES');
-  const liquidationTriggerLimit = parseBoundedNumberConfig({
+  const liquidationTriggerLimit = parseFailFastIntegerBoundedNumberConfig({
     env,
     envKey: 'LIQUIDATION_TRIGGER_LIMIT',
     defaultValue: 1,

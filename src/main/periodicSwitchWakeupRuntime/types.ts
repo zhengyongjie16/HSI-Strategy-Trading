@@ -40,9 +40,6 @@ export type PeriodicSwitchDirection = PeriodicSwitchRoute['direction'];
  * 使用范围：AUTO_SYMBOL_TICK 入队、waiting-empty 标记和任务完成后重排校验。
  */
 export type PeriodicSwitchRouteBaseline = Readonly<{
-  /** 监控标的代码 */
-  monitorSymbol: string;
-
   /** 席位方向 */
   direction: 'LONG' | 'SHORT';
 

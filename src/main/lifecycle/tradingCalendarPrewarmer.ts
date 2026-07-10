@@ -85,9 +85,8 @@ export async function prewarmTradingCalendarSnapshotForRebuild(
  */
 function resolveEarliestOpenOrderExecutedMs(monitorContext: MonitorContext): number | null {
   let earliestMs: number | null = null;
-  const monitorSymbol = monitorContext.config.monitorSymbol;
-  const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-  const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+  const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
+  const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
   if (hasSeatSymbol(longSeatState)) {
     const longOrders = monitorContext.orderRecorder.getBuyOrdersForSymbol(
       longSeatState.symbol,

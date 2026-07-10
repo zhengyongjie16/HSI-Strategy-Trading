@@ -127,12 +127,12 @@ function buildMonitorContextBase(
     state,
     symbolRegistry,
     seatState: {
-      long: symbolRegistry.getSeatState('HSI.HK', 'LONG'),
-      short: symbolRegistry.getSeatState('HSI.HK', 'SHORT'),
+      long: symbolRegistry.getSeatState('LONG'),
+      short: symbolRegistry.getSeatState('SHORT'),
     },
     seatVersion: {
-      long: symbolRegistry.getSeatVersion('HSI.HK', 'LONG'),
-      short: symbolRegistry.getSeatVersion('HSI.HK', 'SHORT'),
+      long: symbolRegistry.getSeatVersion('LONG'),
+      short: symbolRegistry.getSeatVersion('SHORT'),
     },
     monitorSymbolName,
     longSymbolName: 'BULL.HK',

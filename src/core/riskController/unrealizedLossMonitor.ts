@@ -22,6 +22,20 @@ import type { OrderRecorder, RiskChecker, Trader } from '../../types/services.js
 import type { UnrealizedLossMonitorDeps } from './types.js';
 
 /**
+ * 判断是否属于“远端订单已提交成功，但本地跟踪同步失败”。
+ *
+ * 这类错误会让真实保护性清仓订单脱离本地状态机，必须立即上抛，由上层进入 fail-fast 处置。
+ *
+ * @param error 待分类错误
+ * @returns true 表示命中了 submitFlow 的本地同步失败契约
+ */
+function isSubmittedOrderLocalSyncFailure(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.startsWith('order submitted but local sync failed:')
+  );
+}
+
+/**
  * 创建浮亏监控器。
  * 封装「检查浮亏 -> 超阈值则生成保护性清仓信号并提交」的流程，供 TradingRiskEventRuntime 按单方向调用。
  *
@@ -43,7 +57,6 @@ export const createUnrealizedLossMonitor = (
     readonly symbol: string;
     readonly currentPrice: number;
     readonly isLong: boolean;
-    readonly monitorSymbol: string;
     readonly seatVersion: number;
     readonly riskChecker: RiskChecker;
     readonly trader: Trader;
@@ -55,7 +68,6 @@ export const createUnrealizedLossMonitor = (
       symbol,
       currentPrice,
       isLong,
-      monitorSymbol,
       seatVersion,
       riskChecker,
       trader,
@@ -99,7 +111,7 @@ export const createUnrealizedLossMonitor = (
       const executionResult = await trader.executeSignals([liquidationSignal]);
       submittedCount = executionResult.submittedCount;
     } catch (error) {
-      if (isUnconfirmedOrderSubmissionError(error)) {
+      if (isUnconfirmedOrderSubmissionError(error) || isSubmittedOrderLocalSyncFailure(error)) {
         throw error;
       }
 
@@ -119,7 +131,7 @@ export const createUnrealizedLossMonitor = (
       symbol,
       isLong,
       quote,
-      dailyLossTracker.getLossOffset(monitorSymbol, isLong),
+      dailyLossTracker.getLossOffset(isLong ? 'LONG' : 'SHORT'),
     );
     return true;
   };
@@ -145,7 +157,6 @@ export const createUnrealizedLossMonitor = (
       symbol: context.symbol,
       currentPrice: context.quote.price,
       isLong: context.isLong,
-      monitorSymbol: context.monitorSymbol,
       seatVersion: context.seatVersion,
       riskChecker: context.riskChecker,
       trader: context.trader,

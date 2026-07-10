@@ -38,7 +38,6 @@ describe('seat snapshots business flow', () => {
     });
 
     const snapshot = resolveMonitorContextRuntimeSnapshot(
-      'HSI.HK',
       symbolRegistry,
       new Map([
         ['LONG_READY.HK', { ...createQuoteDouble('LONG_READY.HK', 1.1), name: 'LongReady' }],
@@ -78,9 +77,8 @@ describe('seat snapshots business flow', () => {
       },
     });
 
-    const seatSnapshot = resolveMonitorContextSeatSnapshot('HSI.HK', symbolRegistry);
+    const seatSnapshot = resolveMonitorContextSeatSnapshot(symbolRegistry);
     const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
-      'HSI.HK',
       symbolRegistry,
       new Map([
         ['SHORT_READY.HK', { ...createQuoteDouble('SHORT_READY.HK', 0.9), name: 'ShortReady' }],
@@ -117,9 +115,8 @@ describe('seat snapshots business flow', () => {
       },
     });
 
-    const seatSnapshot = resolveMonitorContextSeatSnapshot('HSI.HK', symbolRegistry);
+    const seatSnapshot = resolveMonitorContextSeatSnapshot(symbolRegistry);
     const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
-      'HSI.HK',
       symbolRegistry,
       new Map([
         [

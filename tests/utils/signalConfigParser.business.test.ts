@@ -41,15 +41,14 @@ describe('signalConfigParser business flow', () => {
     expect(group2Result.reason).toContain('满足条件2');
   });
 
-  it('rejects invalid condition syntax and limits parsing to first three groups', () => {
+  it('rejects invalid condition syntax and invalid N-of-M requirements', () => {
     expect(parseSignalConfig('MACD>0')).toBeNull();
     expect(parseSignalConfig('(RSI:0<20)')).toBeNull();
+    expect(parseSignalConfig('(K>1,D>1)/5')).toBeNull();
+  });
 
-    const clamped = parseSignalConfig('(K>1,D>1)/5');
-    expect(clamped?.conditionGroups[0]?.requiredCount).toBe(2);
-
-    const maxGroups = parseSignalConfig('(K>1)|(D>1)|(J>1)|(MFI>1)');
-    expect(maxGroups?.conditionGroups).toHaveLength(3);
+  it('rejects more than three condition groups instead of truncating hidden groups', () => {
+    expect(parseSignalConfig('(K>1)|(D>1)|(J>1)|(MFI>1)')).toBeNull();
   });
 
   it('rejects ADX in signal conditions because ADX is verification-only', () => {

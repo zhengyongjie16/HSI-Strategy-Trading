@@ -108,7 +108,9 @@ function createBaseDeps(
     protectiveLiquidationEpisodeTracker:
       overrides.protectiveLiquidationEpisodeTracker ??
       createProtectiveLiquidationEpisodeTrackerDouble(),
-    tradeLogHydrator: overrides.tradeLogHydrator ?? { hydrate: () => new Map<string, number>() },
+    tradeLogHydrator: overrides.tradeLogHydrator ?? {
+      hydrate: () => new Map<'LONG' | 'SHORT', number>(),
+    },
     warrantListCacheConfig: overrides.warrantListCacheConfig ?? createWarrantListCacheConfig(),
     seatActivationDispatcher:
       overrides.seatActivationDispatcher ?? createSeatActivationDispatcherDouble(),
@@ -239,7 +241,7 @@ function createProtectiveTrackerRecorder(): {
     Parameters<ProtectiveLiquidationEpisodeTracker['restoreInProgressEpisode']>[0]
   >;
 } {
-  const boundaryByDirection = new Map<string, number>();
+  const boundaryByDirection = new Map<'LONG' | 'SHORT', number>();
   const restoreCompletedCalls: Array<
     Parameters<ProtectiveLiquidationEpisodeTracker['restoreCompletedBoundary']>[0]
   > = [];
@@ -251,15 +253,13 @@ function createProtectiveTrackerRecorder(): {
     tracker: createProtectiveLiquidationEpisodeTrackerDouble({
       restoreCompletedBoundary: (params) => {
         restoreCompletedCalls.push(params);
-        boundaryByDirection.set(
-          `${params.monitorSymbol}:${params.direction}`,
-          params.boundaryExecutedTimeMs,
-        );
+        boundaryByDirection.set(params.direction, params.boundaryExecutedTimeMs);
       },
       restoreInProgressEpisode: (params) => {
         restoreInProgressCalls.push(params);
       },
-      getLatestProtectionBoundaryByDirection: () => new Map(boundaryByDirection),
+      getLatestProtectionBoundaryByDirection: () =>
+        new Map<'LONG' | 'SHORT', number>(boundaryByDirection),
       resetAll: () => {
         boundaryByDirection.clear();
       },
@@ -436,8 +436,8 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(isTradingDayCalls).toBe(0);
     expect(quoteContext.getCalls('warrantList')).toHaveLength(2);
-    expect(allowedDeps.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
-    expect(allowedDeps.symbolRegistry.getSeatState('HSI.HK', 'SHORT').status).toBe('ACTIVATING');
+    expect(allowedDeps.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(allowedDeps.symbolRegistry.getSeatState('SHORT').status).toBe('ACTIVATING');
   });
 
   it('schedules SEAT_REFRESH for ACTIVATING seats restored during recovery', async () => {
@@ -472,7 +472,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const seatActivationDispatcher = createSeatActivationDispatcher({
-      tradingConfig,
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -497,9 +496,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(queueItems).toContainEqual(
       expect.objectContaining({
         type: 'SEAT_REFRESH',
-        monitorSymbol: 'HSI.HK',
         data: expect.objectContaining({
-          monitorSymbol: 'HSI.HK',
           direction: 'LONG',
           nextSymbol: 'AUTO_BULL.HK',
         }),
@@ -670,12 +667,11 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreCompletedCalls).toHaveLength(1);
     expect(restoreCompletedCalls[0]).toEqual({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       boundaryExecutedTimeMs: executedAtMs,
     });
     expect(restoreInProgressCalls).toHaveLength(0);
-    expect(receivedBoundaryMap?.get('HSI.HK:LONG')).toBe(executedAtMs);
+    expect(receivedBoundaryMap?.get('LONG')).toBe(executedAtMs);
   });
 
   it('restores in-progress protective episode for partial-filled pending order', async () => {
@@ -716,7 +712,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(restoreCompletedCalls).toHaveLength(0);
     expect(restoreInProgressCalls).toHaveLength(1);
     expect(restoreInProgressCalls[0]).toEqual({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       symbol: 'BULL.HK',
       latestExecutedTimeMs: executedAtMs,
@@ -764,7 +759,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map([['HSI.HK:LONG', completedBoundaryMs]]),
+        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', completedBoundaryMs]]),
       },
     });
 
@@ -778,7 +773,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreCompletedCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         boundaryExecutedTimeMs: completedBoundaryMs,
       },
@@ -786,41 +780,42 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreInProgressCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'BULL.HK',
         latestExecutedTimeMs: pendingLatestExecutedMs,
       },
     ]);
-    expect(receivedBoundaryMap?.get('HSI.HK:LONG')).toBe(completedBoundaryMs);
+    expect(receivedBoundaryMap?.get('LONG')).toBe(completedBoundaryMs);
   });
 
-  it('fails fast when hydrated protective boundary key belongs to a non-configured monitor', async () => {
+  it('restores hydrated protective boundary from direction-only key', async () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
+    const completedBoundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
     const monitor = createProtectiveMonitor();
+    const { tracker, restoreCompletedCalls } = createProtectiveTrackerRecorder();
     const deps = createBaseDeps({
       tradingConfig: createTradingConfig(monitor),
       trader: createReadyTrader(),
+      protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map([['HSCEI.HK:LONG', Date.parse('2026-03-13T02:20:00.000Z')]]),
+        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', completedBoundaryMs]]),
       },
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
+    await load(
+      createLoadParams({
+        now,
+        hydrateCooldownFromTradeLog: true,
+      }),
+    );
 
-    try {
-      await load(
-        createLoadParams({
-          now,
-          hydrateCooldownFromTradeLog: true,
-        }),
-      );
-      throw new Error('expected loadTradingDayRuntimeSnapshot to reject');
-    } catch (error) {
-      expect((error as Error).message).toContain(
-        'hydrated protective boundary monitorSymbol 不匹配唯一配置',
-      );
-    }
+    expect(restoreCompletedCalls).toEqual([
+      {
+        direction: 'LONG',
+        boundaryExecutedTimeMs: completedBoundaryMs,
+      },
+    ]);
   });
 
   it('fails fast when protective order ownership cannot be resolved to the unique monitor', async () => {
@@ -916,7 +911,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map([['HSI.HK:LONG', hydratedBoundaryMs]]),
+        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', hydratedBoundaryMs]]),
       },
     });
 
@@ -930,16 +925,14 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(restoreCompletedCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         boundaryExecutedTimeMs: hydratedBoundaryMs,
       },
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         boundaryExecutedTimeMs: newerCompletedFillMs,
       },
     ]);
-    expect(receivedBoundaryMap?.get('HSI.HK:LONG')).toBe(newerCompletedFillMs);
+    expect(receivedBoundaryMap?.get('LONG')).toBe(newerCompletedFillMs);
   });
 });

@@ -199,9 +199,6 @@ export type SwitchWakeupRoute = Readonly<{
   /** 路由键 */
   routeKey: SwitchWakeupRouteKey;
 
-  /** 监控标的 */
-  monitorSymbol: string;
-
   /** 方向 */
   direction: 'LONG' | 'SHORT';
 
@@ -248,9 +245,6 @@ export type SwitchWakeupRouteState = {
  * 使用范围：仅 app/main 顶层事件接线与相关测试使用。
  */
 export type SwitchWakeupHandoffParams = Readonly<{
-  /** 监控标的 */
-  monitorSymbol: string;
-
   /** 方向 */
   direction: 'LONG' | 'SHORT';
 

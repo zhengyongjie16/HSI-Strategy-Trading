@@ -174,7 +174,7 @@ describe('QuoteSubscriptionRuntime', () => {
 
     await runtime.reconcileFromCurrentTruth();
     runtime.start();
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: null,
       status: 'EMPTY',
       lastSwitchAt: Date.now(),
@@ -215,7 +215,7 @@ describe('QuoteSubscriptionRuntime', () => {
     });
 
     const release = await runtime.retainSymbols({
-      ownerKey: 'HSI.HK:LONG:2',
+      ownerKey: 'SEAT_REFRESH_WAIT:LONG:2',
       reason: 'SEAT_REFRESH_WAIT',
       symbols: ['NEXT.HK', 'PREV.HK'],
     });
@@ -251,7 +251,7 @@ describe('QuoteSubscriptionRuntime', () => {
     });
 
     const release = await runtime.retainSymbols({
-      ownerKey: 'HSI.HK:LONG:2',
+      ownerKey: 'SEAT_REFRESH_WAIT:LONG:2',
       reason: 'SEAT_REFRESH_WAIT',
       symbols: ['NEXT.HK'],
     });
@@ -396,7 +396,7 @@ describe('QuoteSubscriptionRuntime', () => {
 
     await runtime.reconcileFromCurrentTruth();
     runtime.start();
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'NEXT_BULL.HK',
       status: 'ACTIVE',
       lastSwitchAt: Date.now(),

@@ -16,7 +16,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     const result = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now,
       triggerLimit: 1,
@@ -30,7 +29,6 @@ describe('liquidationCooldown business flow', () => {
 
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 5 },
       }),
@@ -44,7 +42,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     const first = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now,
       triggerLimit: 3,
@@ -57,14 +54,12 @@ describe('liquidationCooldown business flow', () => {
 
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 5 },
       }),
     ).toBe(0);
 
     const second = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now + 1_000,
       triggerLimit: 3,
@@ -77,14 +72,12 @@ describe('liquidationCooldown business flow', () => {
 
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 5 },
       }),
     ).toBe(0);
 
     const third = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now + 2_000,
       triggerLimit: 3,
@@ -97,7 +90,6 @@ describe('liquidationCooldown business flow', () => {
 
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 5 },
       }),
@@ -111,7 +103,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now,
       triggerLimit: 3,
@@ -119,7 +110,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now + 1_000,
       triggerLimit: 3,
@@ -127,7 +117,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now + 2_000,
       triggerLimit: 3,
@@ -137,14 +126,12 @@ describe('liquidationCooldown business flow', () => {
     now += 62_001;
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 1 },
       }),
     ).toBe(0);
 
     const next = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now,
       triggerLimit: 3,
@@ -164,7 +151,6 @@ describe('liquidationCooldown business flow', () => {
 
     const oneDayExecutedAt = Date.parse('2026-02-16T10:00:00+08:00');
     tracker.recordCooldown({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: oneDayExecutedAt,
     });
@@ -172,7 +158,6 @@ describe('liquidationCooldown business flow', () => {
     now = Date.parse('2026-02-16T23:59:59+08:00');
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'one-day' },
       }),
@@ -180,14 +165,12 @@ describe('liquidationCooldown business flow', () => {
 
     const morningExecutedAt = Date.parse('2026-02-16T11:00:00+08:00');
     tracker.recordCooldown({
-      symbol: 'HSI.HK',
       direction: 'SHORT',
       executedTimeMs: morningExecutedAt,
     });
     now = Date.parse('2026-02-16T12:30:00+08:00');
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'SHORT',
         cooldownConfig: { mode: 'half-day' },
       }),
@@ -195,14 +178,12 @@ describe('liquidationCooldown business flow', () => {
 
     const afternoonExecutedAt = Date.parse('2026-02-16T13:30:00+08:00');
     tracker.recordCooldown({
-      symbol: 'HSI.HK',
       direction: 'SHORT',
       executedTimeMs: afternoonExecutedAt,
     });
     now = Date.parse('2026-02-16T23:00:00+08:00');
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'SHORT',
         cooldownConfig: { mode: 'half-day' },
       }),
@@ -216,7 +197,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now,
       triggerLimit: 2,
@@ -224,7 +204,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now + 1_000,
       triggerLimit: 2,
@@ -232,7 +211,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'SHORT',
       executedTimeMs: now,
       triggerLimit: 2,
@@ -240,19 +218,17 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.clearMidnightEligible({
-      keysToClear: new Set(['HSI.HK:LONG']),
+      directionsToClear: new Set(['LONG']),
     });
 
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 10 },
       }),
     ).toBe(0);
 
     const longAfterClear = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now + 2_000,
       triggerLimit: 2,
@@ -264,7 +240,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     const shortSecondTrigger = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'SHORT',
       executedTimeMs: now + 2_000,
       triggerLimit: 2,
@@ -282,7 +257,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: 1_000,
       triggerLimit: 2,
@@ -290,7 +264,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'SHORT',
       executedTimeMs: 1_000,
       triggerLimit: 2,
@@ -299,7 +272,6 @@ describe('liquidationCooldown business flow', () => {
     tracker.resetAllTriggerCounts();
 
     const result = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: 2_000,
       triggerLimit: 2,
@@ -317,12 +289,10 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.restoreTriggerCount({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       count: 2,
     });
     const result = tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: 2_000,
       triggerLimit: 3,
@@ -342,7 +312,6 @@ describe('liquidationCooldown business flow', () => {
     });
 
     tracker.recordLiquidationTrigger({
-      symbol: 'HSI.HK',
       direction: 'LONG',
       executedTimeMs: now,
       triggerLimit: 1,
@@ -352,7 +321,6 @@ describe('liquidationCooldown business flow', () => {
     now = 30_000;
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 1 },
       }),
@@ -361,7 +329,6 @@ describe('liquidationCooldown business flow', () => {
     now = 61_001;
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: { mode: 'minutes', minutes: 1 },
       }),

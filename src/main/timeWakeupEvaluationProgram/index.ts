@@ -26,7 +26,7 @@ import type { TimeWakeupEvaluationContext, TimeWakeupEvaluationResult } from './
 const takeoverStateByLastState = new WeakMap<TimeWakeupEvaluationContext['lastState'], boolean>();
 
 /**
- * 取消唯一监控标的的普通延迟验证信号。
+ * 取消当前单实例中的普通延迟验证信号。
  *
  * @param monitorContext 监控上下文
  * @returns 取消的信号总数
@@ -39,8 +39,7 @@ function cancelAllDelayedSignals(
     return 0;
   }
 
-  monitorContext.delayedSignalVerifier.cancelAllForSymbol(monitorContext.config.monitorSymbol);
-  return pendingCount;
+  return monitorContext.delayedSignalVerifier.cancelAll();
 }
 
 function createEvaluationResult(
@@ -403,7 +402,6 @@ export async function timeWakeupEvaluationProgram({
     tradingGateEventRuntime.emitGateStateChanged({
       previousCanTrade,
       nextCanTrade,
-      timestampMs: currentTime.getTime(),
     });
   }
 

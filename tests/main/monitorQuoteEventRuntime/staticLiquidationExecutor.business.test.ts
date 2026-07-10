@@ -86,11 +86,14 @@ function createExecutorHarness(
   let shouldBumpLongSeatVersionOnNextRead = params.bumpLongSeatVersionAfterSignalBuild ?? false;
   const symbolRegistryWithVersionRace = {
     ...symbolRegistry,
-    getSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
-      const version = symbolRegistry.getSeatVersion(monitorSymbol, direction);
+    getSeatVersion: (direction: 'LONG' | 'SHORT') => {
+      const version = symbolRegistry.getSeatVersion(direction);
       if (direction === 'LONG' && shouldBumpLongSeatVersionOnNextRead) {
         shouldBumpLongSeatVersionOnNextRead = false;
-        symbolRegistry.bumpSeatVersion(monitorSymbol, direction);
+        symbolRegistry.updateSeatStateWithVersionBump(
+          direction,
+          symbolRegistry.getSeatState(direction),
+        );
       }
 
       return version;
@@ -156,7 +159,7 @@ function createExecutorHarness(
       }
 
       if (params.bumpLongSeatVersionAfterSubmission) {
-        symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
+        symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
       }
 
       return {

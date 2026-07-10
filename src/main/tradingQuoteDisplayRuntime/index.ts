@@ -123,8 +123,9 @@ export function createTradingQuoteDisplayRuntime(
         let quotesMap: Awaited<
           ReturnType<TradingQuoteDisplayRuntimeDeps['marketDataClient']['getQuotes']>
         >;
+        const monitorSymbol = route.monitorContext.config.monitorSymbol;
         try {
-          quotesMap = await deps.marketDataClient.getQuotes([route.monitorSymbol]);
+          quotesMap = await deps.marketDataClient.getQuotes([monitorSymbol]);
         } catch (error) {
           if (!isExternalApiRequestError(error)) {
             enterFatalState(
@@ -159,9 +160,8 @@ export function createTradingQuoteDisplayRuntime(
           deps.renderTradingQuote({
             event,
             tradingSymbol: route.tradingSymbol,
-            monitorSymbol: route.monitorSymbol,
             direction: route.direction,
-            monitorQuote: quotesMap.get(route.monitorSymbol) ?? null,
+            monitorQuote: quotesMap.get(monitorSymbol) ?? null,
           });
         } catch (error) {
           enterFatalState(error, '[tradingQuoteDisplayRuntime] render entered fatal state');

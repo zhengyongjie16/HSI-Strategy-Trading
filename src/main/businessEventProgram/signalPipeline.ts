@@ -60,8 +60,7 @@ function toBuySignal(signal: Signal): BuySignal | null {
  * 再按信号类型分流：立即信号入买卖队列，延迟信号交由 delayedSignalVerifier 管理。
  */
 export function runSignalPipeline(params: SignalPipelineParams): void {
-  const { monitorSymbol, monitorSnapshot, monitorContext, mainContext, runtimeFlags, seatInfo } =
-    params;
+  const { monitorSnapshot, monitorContext, mainContext, runtimeFlags, seatInfo } = params;
   const { currentTime, openProtectionActive } = runtimeFlags;
   const { strategy, orderRecorder, delayedSignalVerifier, indicatorProfile } = monitorContext;
   const { lastState, buyTaskQueue, sellTaskQueue, tradingConfig } = mainContext;
@@ -157,7 +156,6 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
       sellTaskQueue.push({
         type: 'IMMEDIATE_SELL',
         data: sellSignal,
-        monitorSymbol,
       });
     } else {
       const buySignal = toBuySignal(prepared);
@@ -168,7 +166,6 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
       buyTaskQueue.push({
         type: 'IMMEDIATE_BUY',
         data: buySignal,
-        monitorSymbol,
       });
     }
   }
@@ -185,7 +182,6 @@ export function runSignalPipeline(params: SignalPipelineParams): void {
       : indicatorProfile.verificationIndicatorsBySide.sell;
     delayedSignalVerifier.addSignal({
       signal: prepared,
-      monitorSymbol,
       verificationIndicators,
     });
   }

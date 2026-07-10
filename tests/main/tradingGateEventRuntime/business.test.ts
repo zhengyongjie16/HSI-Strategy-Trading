@@ -24,7 +24,6 @@ describe('tradingGateEventRuntime', () => {
       runtime.emitGateStateChanged({
         previousCanTrade: false,
         nextCanTrade: true,
-        timestampMs: 1_000,
       });
     }).not.toThrow();
     expect(calls).toEqual(['first', 'second']);

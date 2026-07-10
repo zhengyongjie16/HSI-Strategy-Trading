@@ -96,10 +96,10 @@ export function getNumberConfig(
 }
 
 /**
- * 读取布尔配置，仅识别 'true'/'false'，其他值返回默认值。
+ * 读取布尔配置，仅识别 'true'/'false'；缺失或空值返回默认值，显式非法值立即失败。
  * @param env - 进程环境变量对象
  * @param envKey - 环境变量键名
- * @param defaultValue - 未设置或无法识别时的默认值，默认为 false
+ * @param defaultValue - 未设置或空值时的默认值，默认为 false
  * @returns 解析后的布尔值
  */
 export function getBooleanConfig(
@@ -121,7 +121,7 @@ export function getBooleanConfig(
     return false;
   }
 
-  return defaultValue;
+  throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为 true 或 false）`, [envKey]);
 }
 
 /**
@@ -257,10 +257,10 @@ export function parseOrderOwnershipMapping(
 }
 
 /**
- * 解析延迟验证时间（秒），范围 0-120，超出上限时截断为 120。
+ * 解析延迟验证时间（秒），范围 0-120；缺失时使用默认值，显式非法值立即失败。
  * @param env - 进程环境变量对象
  * @param envKey - 环境变量键名
- * @param defaultValue - 未设置或无效时的默认值
+ * @param defaultValue - 未设置时的默认值
  * @returns 解析后的延迟秒数
  */
 export function parseVerificationDelay(
@@ -268,25 +268,26 @@ export function parseVerificationDelay(
   envKey: string,
   defaultValue: number,
 ): number {
-  // getNumberConfig(env, envKey, 0) 已拒绝负值（minValue=0），此处仅需检查上限
-  const delay = getNumberConfig(env, envKey, 0);
-  if (delay === null) {
+  const raw = env[envKey];
+  if (raw === undefined || raw.trim() === '') {
     return defaultValue;
   }
 
-  if (delay > 120) {
-    logger.warn(`[配置警告] ${envKey} 不能大于 120，已设置为 120`);
-    return 120;
+  const delay = Number(raw);
+  if (!Number.isFinite(delay) || delay < 0 || delay > 120) {
+    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为数字，范围 0-120）`, [
+      envKey,
+    ]);
   }
 
   return delay;
 }
 
 /**
- * 解析延迟验证指标列表，支持 K/D/J/MACD/DIF/DEA/ADX/EMA:N/PSY:N，无效项记录警告后跳过。
+ * 解析延迟验证指标列表，支持 K/D/J/MACD/DIF/DEA/ADX/EMA:N/PSY:N；显式非法项立即失败。
  * @param env - 进程环境变量对象
  * @param envKey - 环境变量键名
- * @returns 有效指标字符串数组，未设置或全部无效时返回 null
+ * @returns 有效指标字符串数组，未设置或空列表时返回 null
  */
 export function parseVerificationIndicators(
   env: NodeJS.ProcessEnv,
@@ -307,14 +308,13 @@ export function parseVerificationIndicators(
   }
 
   const validItems: string[] = [];
-  const invalidItems: string[] = [];
 
   /**
-   * 解析带周期的指标并加入有效列表，无效时加入 invalidItems。
+   * 解析带周期的指标并加入有效列表。
    * @param item - 原始指标字符串（如 'EMA:12'、'PSY:12'）
    * @param prefix - 指标前缀（'PSY:' 或 'EMA:'）
    * @param validator - 周期校验函数，通过则视为有效
-   * @returns 是否已处理该 item（true 表示匹配前缀并已加入 validItems 或 invalidItems）
+   * @returns 是否已处理该 item（true 表示匹配前缀并已加入 validItems 或抛出错误）
    */
   function tryParseIndicatorWithPeriod(
     item: string,
@@ -331,8 +331,7 @@ export function parseVerificationIndicators(
       return true;
     }
 
-    invalidItems.push(item);
-    return true;
+    throw createConfigValidationError(`[配置错误] ${envKey} 包含无效值: ${item}`, [envKey]);
   }
 
   for (const item of items) {
@@ -349,11 +348,7 @@ export function parseVerificationIndicators(
       continue;
     }
 
-    invalidItems.push(item);
-  }
-
-  if (invalidItems.length > 0) {
-    logger.warn(`[配置警告] ${envKey} 包含无效值: ${invalidItems.join(', ')}`);
+    throw createConfigValidationError(`[配置错误] ${envKey} 包含无效值: ${item}`, [envKey]);
   }
 
   return validItems.length > 0 ? validItems : null;
@@ -526,7 +521,7 @@ function parseConditionGroup(groupStr: string): ParsedConditionGroup | null {
 
   minSatisfied ??= conditions.length;
   if (minSatisfied < 1 || minSatisfied > conditions.length) {
-    minSatisfied = Math.max(1, Math.min(minSatisfied, conditions.length));
+    return null;
   }
 
   return {
@@ -536,7 +531,7 @@ function parseConditionGroup(groupStr: string): ParsedConditionGroup | null {
 }
 
 /**
- * 将配置字符串解析为 SignalConfig。默认行为：空字符串或非字符串返回 null；最多解析 3 个条件组（| 分隔）；任一条件组解析失败则整体返回 null。
+ * 将配置字符串解析为 SignalConfig。默认行为：空字符串或非字符串返回 null；超过 3 个条件组或任一条件组解析失败则整体返回 null。
  *
  * @param configStr 配置字符串，如 "(RSI:6<20,MFI<15,D<20,J<-1)/3|(J<-20)"
  * @returns 解析后的 SignalConfig，无效时返回 null
@@ -552,10 +547,13 @@ export function parseSignalConfig(configStr: string | null | undefined): SignalC
   }
 
   const groupStrs = trimmed.split('|');
+  if (groupStrs.length > 3) {
+    return null;
+  }
+
   const conditionGroups: ConditionGroup[] = [];
 
-  for (let i = 0; i < Math.min(groupStrs.length, 3); i++) {
-    const groupStr = groupStrs[i];
+  for (const groupStr of groupStrs) {
     if (!groupStr) {
       continue;
     }

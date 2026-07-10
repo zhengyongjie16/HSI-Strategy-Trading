@@ -30,7 +30,6 @@ function baselineMatches(
   right: PeriodicSwitchRouteBaseline,
 ): boolean {
   return (
-    left.monitorSymbol === right.monitorSymbol &&
     left.direction === right.direction &&
     left.symbol === right.symbol &&
     left.seatVersion === right.seatVersion &&
@@ -50,17 +49,6 @@ function isFailedBaseline(
 }
 
 const PERIODIC_SWITCH_DIRECTIONS: ReadonlyArray<PeriodicSwitchDirection> = ['LONG', 'SHORT'];
-
-function assertPeriodicSwitchMonitorSymbol(
-  actualMonitorSymbol: string,
-  expectedMonitorSymbol: string,
-): void {
-  if (actualMonitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[PeriodicSwitchWakeupRuntime] 非唯一 monitorSymbol 输入: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
-    );
-  }
-}
 
 /**
  * 创建周期换标唤醒 runtime。
@@ -106,14 +94,13 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function readCurrentBaseline(route: PeriodicSwitchRoute): PeriodicSwitchRouteBaseline | null {
-    const monitorSymbol = deps.tradingConfig.monitor.monitorSymbol;
     const autoSearchConfig = deps.monitorContext.config.autoSearchConfig;
     if (!autoSearchConfig.autoSearchEnabled || autoSearchConfig.switchIntervalMinutes <= 0) {
       return null;
     }
 
-    const seatState = deps.symbolRegistry.getSeatState(monitorSymbol, route.direction);
-    const seatVersion = deps.symbolRegistry.getSeatVersion(monitorSymbol, route.direction);
+    const seatState = deps.symbolRegistry.getSeatState(route.direction);
+    const seatVersion = deps.symbolRegistry.getSeatVersion(route.direction);
     if (
       seatState.status !== 'ACTIVE' ||
       seatState.symbol === null ||
@@ -125,7 +112,6 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     return {
-      monitorSymbol,
       direction: route.direction,
       symbol: seatState.symbol,
       seatVersion,
@@ -145,7 +131,6 @@ export function createPeriodicSwitchWakeupRuntime(
   function dispatchAutoSymbolTick(baseline: PeriodicSwitchRouteBaseline): void {
     const currentTimeMs = deps.now().getTime();
     const data: PeriodicSwitchAutoSymbolTickTaskData = {
-      monitorSymbol: baseline.monitorSymbol,
       direction: baseline.direction,
       seatVersion: baseline.seatVersion,
       symbol: baseline.symbol,
@@ -155,7 +140,6 @@ export function createPeriodicSwitchWakeupRuntime(
     const task: MonitorTaskInput<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'> = {
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: `AUTO_SYMBOL_TICK:${baseline.direction}`,
-      monitorSymbol: baseline.monitorSymbol,
       data,
     };
 
@@ -254,10 +238,6 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   const handleSeatTruthChanged: SeatTruthChangedListener = (event) => {
-    assertPeriodicSwitchMonitorSymbol(
-      event.monitorSymbol,
-      deps.tradingConfig.monitor.monitorSymbol,
-    );
     planRoute({ direction: event.direction });
   };
 
@@ -347,7 +327,6 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     const baseline: PeriodicSwitchRouteBaseline = {
-      monitorSymbol: params.monitorSymbol,
       direction: params.direction,
       symbol: params.symbol,
       seatVersion: params.seatVersion,

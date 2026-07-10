@@ -29,22 +29,14 @@ function createRouteKey(direction: 'LONG' | 'SHORT'): TradingRiskRouteKey {
  */
 function registerRoute(params: {
   readonly routesBySymbol: Map<string, TradingRiskRoute>;
-  readonly routesByKey: Map<string, TradingRiskRoute>;
+  readonly routesByKey: Map<TradingRiskRouteKey, TradingRiskRoute>;
   readonly monitorContext: MonitorContext;
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly tradingSymbol: string;
   readonly seatVersion: number;
 }): void {
-  const {
-    routesBySymbol,
-    routesByKey,
-    monitorContext,
-    monitorSymbol,
-    direction,
-    tradingSymbol,
-    seatVersion,
-  } = params;
+  const { routesBySymbol, routesByKey, monitorContext, direction, tradingSymbol, seatVersion } =
+    params;
   if (tradingSymbol.length === 0) {
     return;
   }
@@ -52,7 +44,6 @@ function registerRoute(params: {
   const routeKey = createRouteKey(direction);
   const nextRoute: TradingRiskRoute = {
     routeKey,
-    monitorSymbol,
     direction,
     tradingSymbol,
     seatVersion,
@@ -61,8 +52,9 @@ function registerRoute(params: {
 
   const existingRoute = routesBySymbol.get(tradingSymbol);
   if (existingRoute) {
+    const monitorSymbol = monitorContext.config.monitorSymbol;
     throw new Error(
-      `[TradingRiskEventRuntime] 标的重复归属: ${formatSymbolDisplay(tradingSymbol)} 同时归属 ${existingRoute.monitorSymbol}:${existingRoute.direction} 与 ${monitorSymbol}:${direction}`,
+      `[TradingRiskEventRuntime] 标的重复归属: ${formatSymbolDisplay(tradingSymbol)} 同时归属 ${existingRoute.monitorContext.config.monitorSymbol}:${existingRoute.direction} 与 ${monitorSymbol}:${direction}`,
     );
   }
 
@@ -82,17 +74,15 @@ export function buildTradingRiskRoutingIndex(params: {
   readonly symbolRegistry: SymbolRegistry;
 }): TradingRiskRoutingIndex {
   const routesBySymbol = new Map<string, TradingRiskRoute>();
-  const routesByKey = new Map<string, TradingRiskRoute>();
+  const routesByKey = new Map<TradingRiskRouteKey, TradingRiskRoute>();
   const { monitorContext, symbolRegistry } = params;
-  const monitorSymbol = monitorContext.config.monitorSymbol;
 
-  const seatSnapshot = resolveMonitorContextSeatSnapshot(monitorSymbol, symbolRegistry);
+  const seatSnapshot = resolveMonitorContextSeatSnapshot(symbolRegistry);
   if (seatSnapshot.longSymbol !== null) {
     registerRoute({
       routesBySymbol,
       routesByKey,
       monitorContext,
-      monitorSymbol,
       direction: 'LONG',
       tradingSymbol: seatSnapshot.longSymbol,
       seatVersion: seatSnapshot.seatVersion.long,
@@ -104,7 +94,6 @@ export function buildTradingRiskRoutingIndex(params: {
       routesBySymbol,
       routesByKey,
       monitorContext,
-      monitorSymbol,
       direction: 'SHORT',
       tradingSymbol: seatSnapshot.shortSymbol,
       seatVersion: seatSnapshot.seatVersion.short,

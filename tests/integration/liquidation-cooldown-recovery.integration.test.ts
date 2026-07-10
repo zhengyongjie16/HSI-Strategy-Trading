@@ -102,7 +102,7 @@ function createRiskContext(params: {
 async function assertDualDirectionBuyBlockedAfterHydration(params: {
   readonly nowMs: number;
   readonly recordAction: 'SELLCALL' | 'SELLPUT';
-  readonly expectedBoundaryKey: 'HSI.HK:LONG' | 'HSI.HK:SHORT';
+  readonly expectedBoundaryKey: 'LONG' | 'SHORT';
 }): Promise<void> {
   const monitorConfig = createMonitorConfig({
     monitorSymbol: 'HSI.HK',
@@ -237,7 +237,7 @@ describe('liquidation-cooldown-recovery integration', () => {
     await assertDualDirectionBuyBlockedAfterHydration({
       nowMs,
       recordAction: 'SELLCALL',
-      expectedBoundaryKey: 'HSI.HK:LONG',
+      expectedBoundaryKey: 'LONG',
     });
   });
 
@@ -246,7 +246,7 @@ describe('liquidation-cooldown-recovery integration', () => {
     await assertDualDirectionBuyBlockedAfterHydration({
       nowMs,
       recordAction: 'SELLPUT',
-      expectedBoundaryKey: 'HSI.HK:SHORT',
+      expectedBoundaryKey: 'SHORT',
     });
   });
 

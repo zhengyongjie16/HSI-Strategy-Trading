@@ -95,7 +95,6 @@ function createTaskQueueDouble<TType extends string>(
           id: `${signal.symbol}-${signal.action}`,
           type: 'TEST' as TType,
           data: signal,
-          monitorSymbol: signal.symbol,
           createdAt: 0,
         });
       }

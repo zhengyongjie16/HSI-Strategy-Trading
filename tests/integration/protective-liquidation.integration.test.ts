@@ -23,7 +23,6 @@ describe('protective-liquidation integration', () => {
     let recordLocalSellCount = 0;
     let markSellFilledCount = 0;
     const episodeProgressPayloads: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       symbol: string;
       executedTimeMs: number;
@@ -120,7 +119,6 @@ describe('protective-liquidation integration', () => {
     expect(markSellFilledCount).toBe(1);
     expect(episodeProgressPayloads).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'BULL.HK',
         executedTimeMs: expect.any(Number),

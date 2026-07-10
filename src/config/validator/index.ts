@@ -14,6 +14,7 @@ import type { ValidationResult } from './types.js';
 import {
   formatLiquidationCooldownConfig,
   validateCriticalBoundedNumberConfig,
+  validateExplicitBooleanConfig,
   validateLongbridgeAuthConfig,
   validateMonitorConfig,
   validateSymbolFromQuote,
@@ -39,6 +40,15 @@ function validateTradingConfig(
   const monitorResult = validateMonitorConfig(tradingConfig.monitor, env);
   errors = [...errors, ...monitorResult.errors];
   missingFields = [...missingFields, ...monitorResult.missingFields];
+
+  const doomsdayProtectionValidationError = validateExplicitBooleanConfig({
+    env,
+    envKey: 'DOOMSDAY_PROTECTION',
+  });
+  if (doomsdayProtectionValidationError !== null) {
+    errors = [...errors, doomsdayProtectionValidationError];
+    missingFields = [...missingFields, 'DOOMSDAY_PROTECTION'];
+  }
 
   if (tradingConfig.global.buyOrderTimeout.enabled) {
     const buyOrderTimeoutValidationError = validateCriticalBoundedNumberConfig({
@@ -130,7 +140,6 @@ function validateTradingConfig(
   }
 
   return {
-    valid: errors.length === 0,
     errors,
     missingFields,
   };

@@ -20,17 +20,6 @@ function isGateOpen(lastState: MonitorDisplayRuntimeDeps['lastState']): boolean 
   return lastState.isTradingEnabled && lastState.canTrade === true;
 }
 
-function requireExpectedMonitorSymbol(
-  actualMonitorSymbol: string,
-  expectedMonitorSymbol: string,
-): void {
-  if (actualMonitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[monitorDisplayRuntime] requestRender monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
-    );
-  }
-}
-
 export function createMonitorDisplayRuntime(
   deps: MonitorDisplayRuntimeDeps,
 ): MonitorDisplayRuntime {
@@ -107,15 +96,10 @@ export function createMonitorDisplayRuntime(
     running = true;
   }
 
-  function requestRender(params: {
-    readonly monitorSymbol: string;
-    readonly monitorSnapshot: IndicatorSnapshot;
-  }): void {
+  function requestRender(params: { readonly monitorSnapshot: IndicatorSnapshot }): void {
     if (!running) {
       return;
     }
-
-    requireExpectedMonitorSymbol(params.monitorSymbol, deps.monitorContext.config.monitorSymbol);
 
     routeState.latestMonitorSnapshot = params.monitorSnapshot;
     routeState.dirty = true;

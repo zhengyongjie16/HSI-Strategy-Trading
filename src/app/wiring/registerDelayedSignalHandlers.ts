@@ -78,13 +78,17 @@ export function registerDelayedSignalHandlers(params: RegisterDelayedSignalHandl
       return;
     }
 
+    if (lastState.openProtectionActive) {
+      discardSignal('[延迟验证通过] 开盘保护激活，丢弃信号');
+      return;
+    }
+
     if (!isBuyAction(signal.action) && !isSellAction(signal.action)) {
       discardSignal('[延迟验证通过] 非买卖动作信号，丢弃信号');
       return;
     }
 
     const seatValidation = validateSignalSeat({
-      monitorSymbol,
       signal,
       symbolRegistry: monitorContext.symbolRegistry,
     });
@@ -102,7 +106,6 @@ export function registerDelayedSignalHandlers(params: RegisterDelayedSignalHandl
       sellTaskQueue.push({
         type: 'VERIFIED_SELL',
         data: sellSignal,
-        monitorSymbol,
       });
       return;
     }
@@ -116,7 +119,6 @@ export function registerDelayedSignalHandlers(params: RegisterDelayedSignalHandl
     buyTaskQueue.push({
       type: 'VERIFIED_BUY',
       data: buySignal,
-      monitorSymbol,
     });
   });
 

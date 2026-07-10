@@ -28,12 +28,7 @@ import type {
   WarrantRefreshResult,
   CandlestickCacheSnapshot,
 } from '../../src/types/services.js';
-import type {
-  SymbolRegistry,
-  SeatState,
-  SeatStateChangedEvent,
-  SeatVersionChangedEvent,
-} from '../../src/types/seat.js';
+import type { SymbolRegistry, SeatState, SeatStateChangedEvent } from '../../src/types/seat.js';
 import type { Candlestick, Config, Period, TradeContext } from 'longbridge';
 import type { TradingSignalStrategy } from '../../src/core/strategy/types.js';
 import type {
@@ -358,7 +353,6 @@ export function createDelayedSignalVerifierDouble(
     addSignal: () => {},
     onVerified: () => {},
     cancelAll: () => 0,
-    cancelAllForSymbol: () => {},
     cancelAllForDirection: () => 0,
     getPendingCount: () => 0,
     destroy: () => {},
@@ -765,7 +759,7 @@ export function createProtectiveLiquidationEpisodeTrackerDouble(
     completeIfEligible: () => null,
     restoreCompletedBoundary: () => {},
     restoreInProgressEpisode: () => {},
-    getLatestProtectionBoundaryByDirection: () => new Map<string, number>(),
+    getLatestProtectionBoundaryByDirection: () => new Map<'LONG' | 'SHORT', number>(),
     getInProgressEpisodes: () => [],
     resetAll: () => {},
   };
@@ -779,7 +773,6 @@ export function createProtectiveLiquidationEpisodeTrackerDouble(
 type SymbolRegistryDouble = SymbolRegistry &
   Readonly<{
     getSeatStateChangedListenerCount: () => number;
-    getSeatVersionChangedListenerCount: () => number;
     getSeatTruthChangedListenerCount: () => number;
     getSeatStateListenerErrors: () => ReadonlyArray<unknown>;
   }>;
@@ -820,7 +813,6 @@ export function createSymbolRegistryDouble(params?: {
   let longLastEventVersion = longVersion;
   let shortLastEventVersion = shortVersion;
   const seatStateChangedListeners = new Set<(event: SeatStateChangedEvent) => void>();
-  const seatVersionChangedListeners = new Set<(event: SeatVersionChangedEvent) => void>();
   const seatTruthChangedListeners = new Set<(event: TestSeatTruthChangedEvent) => void>();
   const seatStateListenerErrors: unknown[] = [];
 
@@ -832,19 +824,6 @@ export function createSymbolRegistryDouble(params?: {
       } catch (error) {
         errors.push(error);
         seatStateListenerErrors.push(error);
-      }
-    }
-
-    return errors;
-  }
-
-  function emitSeatVersionChanged(event: SeatVersionChangedEvent): unknown[] {
-    const errors: unknown[] = [];
-    for (const listener of seatVersionChangedListeners) {
-      try {
-        listener(event);
-      } catch (error) {
-        errors.push(error);
       }
     }
 
@@ -895,10 +874,13 @@ export function createSymbolRegistryDouble(params?: {
   assertSeatStateInvariant(shortSeat);
 
   return {
-    getSeatState(_monitorSymbol: string, direction: 'LONG' | 'SHORT'): SeatState {
+    getMonitorSymbol(): string {
+      return monitorSymbol;
+    },
+    getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
       return direction === 'LONG' ? longSeat : shortSeat;
     },
-    getSeatVersion(_monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
+    getSeatVersion(direction: 'LONG' | 'SHORT'): number {
       return direction === 'LONG' ? longVersion : shortVersion;
     },
     resolveSeatBySymbol(symbol: string) {
@@ -922,11 +904,7 @@ export function createSymbolRegistryDouble(params?: {
 
       return null;
     },
-    updateSeatState(
-      _monitorSymbol: string,
-      direction: 'LONG' | 'SHORT',
-      nextState: SeatState,
-    ): SeatState {
+    updateSeatState(direction: 'LONG' | 'SHORT', nextState: SeatState): SeatState {
       const normalizedNextState = normalizeSeatState(nextState);
 
       if (direction === 'LONG') {
@@ -936,14 +914,14 @@ export function createSymbolRegistryDouble(params?: {
         longLastEventVersion = longVersion;
         const listenerErrors = [
           ...emitSeatStateChanged({
-            monitorSymbol: _monitorSymbol,
+            monitorSymbol,
             direction,
             previousState,
             nextState: longSeat,
             previousVersion,
             nextVersion: longVersion,
           }),
-          ...emitSeatTruthChanged({ monitorSymbol: _monitorSymbol, direction }),
+          ...emitSeatTruthChanged({ monitorSymbol, direction }),
         ];
         throwIfListenerErrors(listenerErrors);
         return longSeat;
@@ -955,20 +933,19 @@ export function createSymbolRegistryDouble(params?: {
       shortLastEventVersion = shortVersion;
       const listenerErrors = [
         ...emitSeatStateChanged({
-          monitorSymbol: _monitorSymbol,
+          monitorSymbol,
           direction,
           previousState,
           nextState: shortSeat,
           previousVersion,
           nextVersion: shortVersion,
         }),
-        ...emitSeatTruthChanged({ monitorSymbol: _monitorSymbol, direction }),
+        ...emitSeatTruthChanged({ monitorSymbol, direction }),
       ];
       throwIfListenerErrors(listenerErrors);
       return shortSeat;
     },
     updateSeatStateWithVersionBump(
-      _monitorSymbol: string,
       direction: 'LONG' | 'SHORT',
       nextState: SeatState,
     ): { readonly seatState: SeatState; readonly seatVersion: number } {
@@ -976,99 +953,48 @@ export function createSymbolRegistryDouble(params?: {
 
       if (direction === 'LONG') {
         const previousState = longSeat;
-        const previousVersion = longVersion;
         const previousStateEventVersion = longLastEventVersion;
         longSeat = normalizedNextState;
         longVersion += 1;
         longLastEventVersion = longVersion;
         const listenerErrors = [
-          ...emitSeatVersionChanged({
-            monitorSymbol: _monitorSymbol,
-            direction,
-            previousVersion,
-            nextVersion: longVersion,
-          }),
           ...emitSeatStateChanged({
-            monitorSymbol: _monitorSymbol,
+            monitorSymbol,
             direction,
             previousState,
             nextState: longSeat,
             previousVersion: previousStateEventVersion,
             nextVersion: longVersion,
           }),
-          ...emitSeatTruthChanged({ monitorSymbol: _monitorSymbol, direction }),
+          ...emitSeatTruthChanged({ monitorSymbol, direction }),
         ];
         throwIfListenerErrors(listenerErrors);
         return { seatState: longSeat, seatVersion: longVersion };
       }
 
       const previousState = shortSeat;
-      const previousVersion = shortVersion;
       const previousStateEventVersion = shortLastEventVersion;
       shortSeat = normalizedNextState;
       shortVersion += 1;
       shortLastEventVersion = shortVersion;
       const listenerErrors = [
-        ...emitSeatVersionChanged({
-          monitorSymbol: _monitorSymbol,
-          direction,
-          previousVersion,
-          nextVersion: shortVersion,
-        }),
         ...emitSeatStateChanged({
-          monitorSymbol: _monitorSymbol,
+          monitorSymbol,
           direction,
           previousState,
           nextState: shortSeat,
           previousVersion: previousStateEventVersion,
           nextVersion: shortVersion,
         }),
-        ...emitSeatTruthChanged({ monitorSymbol: _monitorSymbol, direction }),
+        ...emitSeatTruthChanged({ monitorSymbol, direction }),
       ];
       throwIfListenerErrors(listenerErrors);
       return { seatState: shortSeat, seatVersion: shortVersion };
-    },
-    bumpSeatVersion(_monitorSymbol: string, direction: 'LONG' | 'SHORT'): number {
-      if (direction === 'LONG') {
-        const previousVersion = longVersion;
-        longVersion += 1;
-        const listenerErrors = [
-          ...emitSeatVersionChanged({
-            monitorSymbol: _monitorSymbol,
-            direction,
-            previousVersion,
-            nextVersion: longVersion,
-          }),
-          ...emitSeatTruthChanged({ monitorSymbol: _monitorSymbol, direction }),
-        ];
-        throwIfListenerErrors(listenerErrors);
-        return longVersion;
-      }
-
-      const previousVersion = shortVersion;
-      shortVersion += 1;
-      const listenerErrors = [
-        ...emitSeatVersionChanged({
-          monitorSymbol: _monitorSymbol,
-          direction,
-          previousVersion,
-          nextVersion: shortVersion,
-        }),
-        ...emitSeatTruthChanged({ monitorSymbol: _monitorSymbol, direction }),
-      ];
-      throwIfListenerErrors(listenerErrors);
-      return shortVersion;
     },
     onSeatStateChanged: (listener) => {
       seatStateChangedListeners.add(listener);
       return () => {
         seatStateChangedListeners.delete(listener);
-      };
-    },
-    onSeatVersionChanged: (listener) => {
-      seatVersionChangedListeners.add(listener);
-      return () => {
-        seatVersionChangedListeners.delete(listener);
       };
     },
     onSeatTruthChanged: (listener) => {
@@ -1078,7 +1004,6 @@ export function createSymbolRegistryDouble(params?: {
       };
     },
     getSeatStateChangedListenerCount: () => seatStateChangedListeners.size,
-    getSeatVersionChangedListenerCount: () => seatVersionChangedListeners.size,
     getSeatTruthChangedListenerCount: () => seatTruthChangedListeners.size,
     getSeatStateListenerErrors: () => [...seatStateListenerErrors],
   };
@@ -1234,10 +1159,8 @@ export function createMonitorContextDouble(
     createSymbolRegistryDouble({
       monitorSymbol: config.monitorSymbol,
     });
-  const longSeatState =
-    overrides.seatState?.long ?? symbolRegistry.getSeatState(config.monitorSymbol, 'LONG');
-  const shortSeatState =
-    overrides.seatState?.short ?? symbolRegistry.getSeatState(config.monitorSymbol, 'SHORT');
+  const longSeatState = overrides.seatState?.long ?? symbolRegistry.getSeatState('LONG');
+  const shortSeatState = overrides.seatState?.short ?? symbolRegistry.getSeatState('SHORT');
 
   return {
     config,
@@ -1248,8 +1171,8 @@ export function createMonitorContextDouble(
       short: shortSeatState,
     },
     seatVersion: overrides.seatVersion ?? {
-      long: symbolRegistry.getSeatVersion(config.monitorSymbol, 'LONG'),
-      short: symbolRegistry.getSeatVersion(config.monitorSymbol, 'SHORT'),
+      long: symbolRegistry.getSeatVersion('LONG'),
+      short: symbolRegistry.getSeatVersion('SHORT'),
     },
     autoSymbolManager: overrides.autoSymbolManager ?? createAutoSymbolManagerDouble(),
     strategy: overrides.strategy ?? createStrategyDouble(),
@@ -1261,7 +1184,6 @@ export function createMonitorContextDouble(
     longSymbolName: overrides.longSymbolName ?? '',
     shortSymbolName: overrides.shortSymbolName ?? '',
     monitorSymbolName: overrides.monitorSymbolName ?? config.monitorSymbol,
-    normalizedMonitorSymbol: overrides.normalizedMonitorSymbol ?? config.monitorSymbol,
     indicatorProfile: overrides.indicatorProfile ?? createIndicatorUsageProfileDouble(),
   };
 }

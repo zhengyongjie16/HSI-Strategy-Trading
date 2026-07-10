@@ -112,9 +112,7 @@ function scheduleSeatRefreshTask(
   queue.scheduleLatest({
     type: 'SEAT_REFRESH',
     dedupeKey,
-    monitorSymbol: 'HSI.HK',
     data: {
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       seatVersion: 2,
       previousSymbol: 'OLD_BULL.HK',
@@ -149,7 +147,6 @@ describe('monitorTaskProcessor business flow', () => {
   it('hands AUTO_SYMBOL_TICK WAIT result to switchWakeupRuntime', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const handoffCalls: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       seatVersion: number;
       driveKind: string;
@@ -158,7 +155,10 @@ describe('monitorTaskProcessor business flow', () => {
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async (params) => {
-          context.symbolRegistry.bumpSeatVersion('HSI.HK', params.direction);
+          context.symbolRegistry.updateSeatStateWithVersionBump(
+            params.direction,
+            context.symbolRegistry.getSeatState(params.direction),
+          );
           return {
             kind: 'WAIT',
             wakeups: [{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }],
@@ -199,12 +199,8 @@ describe('monitorTaskProcessor business flow', () => {
       switchWakeupRuntime: {
         handoffPendingSwitch: (params) => {
           handoffCalls.push({
-            monitorSymbol: params.monitorSymbol,
             direction: params.direction,
-            seatVersion: params.monitorContext.symbolRegistry.getSeatVersion(
-              params.monitorSymbol,
-              params.direction,
-            ),
+            seatVersion: params.monitorContext.symbolRegistry.getSeatVersion(params.direction),
             driveKind: params.driveResult.kind,
           });
         },
@@ -226,9 +222,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:WAKEUP',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -244,7 +238,6 @@ describe('monitorTaskProcessor business flow', () => {
     expect(statuses).toEqual(['processed']);
     expect(handoffCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         seatVersion: 3,
         driveKind: 'WAIT',
@@ -318,9 +311,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:API_FAIL',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -399,9 +390,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FATAL',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -476,9 +465,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -554,9 +541,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:CURRENT_GATE',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -576,7 +561,6 @@ describe('monitorTaskProcessor business flow', () => {
   it('marks periodic route waiting-empty when AUTO_SYMBOL_TICK leaves periodic pending state', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const markCalls: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       symbol: string;
       seatVersion: number;
@@ -633,9 +617,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_PENDING',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -651,7 +633,6 @@ describe('monitorTaskProcessor business flow', () => {
     expect(statuses).toEqual(['processed']);
     expect(markCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -663,14 +644,12 @@ describe('monitorTaskProcessor business flow', () => {
   it('clears periodic waiting-empty and replans route after processed AUTO_SYMBOL_TICK without pending state', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const clearCalls: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       symbol: string;
       seatVersion: number;
       lastSeatActivatedAt: number;
     }> = [];
     const replanCalls: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       symbol: string;
       seatVersion: number;
@@ -730,9 +709,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_REPLAN',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -748,7 +725,6 @@ describe('monitorTaskProcessor business flow', () => {
     expect(statuses).toEqual(['processed']);
     expect(clearCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -758,7 +734,6 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(replanCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -772,7 +747,6 @@ describe('monitorTaskProcessor business flow', () => {
   it('returns blocked and hands periodic route back to runtime outside ordinary trade gate', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       symbol: string;
       seatVersion: number;
@@ -838,9 +812,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_GATE_CLOSED',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -858,7 +830,6 @@ describe('monitorTaskProcessor business flow', () => {
     expect(clearCalls).toEqual([]);
     expect(replanCalls).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -918,9 +889,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 1,
             symbol: 'BULL.HK',
@@ -987,9 +956,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:STALE_ACTIVATION',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -1019,8 +986,8 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -1052,7 +1019,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(statuses).toEqual(['skipped']);
     expect(getQuotesCalls).toBe(0);
     expect(clearLongWarrantCalls).toBe(0);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG')).toMatchObject({
+    expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
     });
@@ -1114,9 +1081,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:GATE',
-          monitorSymbol: 'HSI.HK',
           data: {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             seatVersion: 2,
             symbol: 'BULL.HK',
@@ -1131,91 +1096,6 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(seen[0]?.status).toBe('skipped');
     expect(maybeSearchCalls).toBe(0);
-  });
-
-  it('sends SEAT_REFRESH foreign monitor symbol to fatal channel', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
-    const fatalErrors: unknown[] = [];
-    const processor = createMonitorTaskProcessor({
-      monitorTaskQueue: queue,
-      monitorContext: createMonitorTaskContext(),
-      trader: createTraderDouble(),
-      marketDataClient: createMarketDataClientDouble(),
-      quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
-      switchWakeupRuntime: {
-        handoffPendingSwitch: () => {},
-      },
-      periodicSwitchWakeupRuntime: {
-        markWaitingEmpty: () => {},
-        clearWaitingEmpty: () => {},
-        replanRouteAfterTask: () => {},
-      },
-      lastState: createLastState(),
-      tradingConfig: createTradingConfig(),
-      getCanTradeNow: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
-      },
-      onProcessed: createStatusCollector(statuses),
-    });
-
-    await runProcessorFlow({
-      processor,
-      pushTask: () => {
-        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:FOREIGN_MONITOR', {
-          monitorSymbol: 'TECH.HK',
-        });
-      },
-      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
-      timeoutMs: 500,
-    });
-
-    expect(fatalErrors).toHaveLength(1);
-    expect(fatalErrors[0]).toBeInstanceOf(Error);
-    expect(statuses).toEqual([]);
-  });
-
-  it('sends AUTO_SYMBOL_TICK foreign data monitor symbol to fatal channel', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
-    const fatalErrors: unknown[] = [];
-    const processor = createBusinessProcessor({
-      queue,
-      context: createMonitorTaskContext(),
-      onFatalError: (error) => {
-        fatalErrors.push(error);
-      },
-      onProcessed: createStatusCollector(statuses),
-    });
-
-    await runProcessorFlow({
-      processor,
-      pushTask: () => {
-        queue.scheduleLatest({
-          type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FOREIGN_MONITOR',
-          monitorSymbol: 'HSI.HK',
-          data: {
-            monitorSymbol: 'TECH.HK',
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
-        });
-      },
-      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
-      timeoutMs: 500,
-    });
-
-    expect(fatalErrors).toHaveLength(1);
-    expect(fatalErrors[0]).toBeInstanceOf(Error);
-    expect((fatalErrors[0] as Error).message).toContain(
-      'task.data.monitorSymbol 不匹配唯一监控标的',
-    );
-    expect(statuses).toEqual([]);
   });
 
   it('processes SEAT_REFRESH and rebuilds long-side runtime caches', async () => {
@@ -1256,8 +1136,8 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -1313,7 +1193,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(stockPositionCalls).toBe(1);
     expect(refreshUnrealizedCalls).toBe(1);
     expect(getQuotesCalls).toBe(1);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(context.longSymbolName).toBe('BULL Name');
     expect(lastState.cachedAccount?.totalCash).toBe(200_000);
     expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(100);
@@ -1336,8 +1216,8 @@ describe('monitorTaskProcessor business flow', () => {
         refreshUnrealizedLossData: async () => ({ r1: 100, n1: 100 }),
       }),
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'SHORT'),
+    context.symbolRegistry.updateSeatState('SHORT', {
+      ...context.symbolRegistry.getSeatState('SHORT'),
       symbol: 'BEAR.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -1370,7 +1250,7 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(statuses).toEqual(['processed']);
     expect(refreshOrdersCalls).toBe(1);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'SHORT').status).toBe('ACTIVE');
+    expect(context.symbolRegistry.getSeatState('SHORT').status).toBe('ACTIVE');
     expect(context.shortSymbolName).toBe('BEAR Name');
   });
 
@@ -1380,8 +1260,8 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorTaskContext({
       shortSymbolName: 'OLD_BEAR',
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'SHORT', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'SHORT'),
+    context.symbolRegistry.updateSeatState('SHORT', {
+      ...context.symbolRegistry.getSeatState('SHORT'),
       symbol: 'BEAR.HK',
       status: 'ACTIVATING',
       callPrice: null,
@@ -1410,13 +1290,13 @@ describe('monitorTaskProcessor business flow', () => {
     });
 
     expect(statuses).toEqual(['processed']);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'SHORT')).toMatchObject({
+    expect(context.symbolRegistry.getSeatState('SHORT')).toMatchObject({
       symbol: null,
       status: 'EMPTY',
       callPrice: null,
     });
     expect(context.shortSymbolName).toBe('');
-    expect(context.symbolRegistry.getSeatVersion('HSI.HK', 'SHORT')).toBe(4);
+    expect(context.symbolRegistry.getSeatVersion('SHORT')).toBe(4);
   });
 
   it('waits for quote admission to resolve before rebuilding SEAT_REFRESH caches', async () => {
@@ -1446,8 +1326,8 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -1482,7 +1362,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(fetchAllOrdersCalls).toBe(0);
     expect(refreshOrdersCalls).toBe(0);
     expect(refreshUnrealizedCalls).toBe(0);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVATING');
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
 
     admissionDeferred.resolve(null);
     await waitUntil(() => statuses.length === 1, 500);
@@ -1493,7 +1373,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(fetchAllOrdersCalls).toBe(1);
     expect(refreshOrdersCalls).toBe(1);
     expect(refreshUnrealizedCalls).toBe(1);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG').status).toBe('ACTIVE');
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
   });
 
   it('does not leave stale warrant risk cache after SEAT_REFRESH skips on changed seat', async () => {
@@ -1525,9 +1405,8 @@ describe('monitorTaskProcessor business flow', () => {
             quote,
             dailyLossOffset,
           );
-          const latestSeat = context.symbolRegistry.getSeatState('HSI.HK', 'LONG');
-          context.symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-          context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+          const latestSeat = context.symbolRegistry.getSeatState('LONG');
+          context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
             ...latestSeat,
             symbol: 'NEXT_BULL.HK',
             status: 'SWITCHING',
@@ -1538,8 +1417,8 @@ describe('monitorTaskProcessor business flow', () => {
         },
       },
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -1572,6 +1451,112 @@ describe('monitorTaskProcessor business flow', () => {
     expect(riskCheckResult.allowed).toBeTrue();
   });
 
+  it('does not write shared refresh state when SEAT_REFRESH becomes stale before cache rebuild starts', async () => {
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const statuses: MonitorTaskStatus[] = [];
+    let recalculateCalls = 0;
+    let refreshOrdersCalls = 0;
+    let refreshUnrealizedCalls = 0;
+    let accountSnapshotCalls = 0;
+    let stockPositionCalls = 0;
+    const lastState = createLastState();
+    const context = createMonitorTaskContext({
+      orderRecorder: createOrderRecorderDouble({
+        fetchAllOrdersFromAPI: async () => [],
+        refreshOrdersFromAllOrdersForLong: async () => {
+          refreshOrdersCalls += 1;
+          return [];
+        },
+      }),
+      dailyLossTracker: {
+        resetAll: () => {},
+        recalculateFromAllOrders: () => {
+          recalculateCalls += 1;
+        },
+        recordFilledOrder: () => {},
+        getLossOffset: () => 0,
+        startNewProtectionEpisode: () => {},
+      },
+      riskChecker: createRiskCheckerDouble({
+        refreshUnrealizedLossData: async () => {
+          refreshUnrealizedCalls += 1;
+          return { r1: 100, n1: 100 };
+        },
+      }),
+      longSymbolName: 'OLD_BULL',
+    });
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
+      symbol: 'BULL.HK',
+      status: 'ACTIVATING',
+      callPrice: 20_000,
+    });
+
+    const processor = createBusinessProcessor({
+      queue,
+      context,
+      lastState,
+      trader: createTraderDouble({
+        getAccountSnapshot: async () => {
+          accountSnapshotCalls += 1;
+          return createAccountSnapshotDouble(123_000);
+        },
+        getStockPositions: async () => {
+          stockPositionCalls += 1;
+          return [
+            createPositionDouble({
+              symbol: 'BULL.HK',
+              quantity: 100,
+              availableQuantity: 100,
+            }),
+          ];
+        },
+      }),
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          const latestSeat = context.symbolRegistry.getSeatState('LONG');
+          context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+            ...latestSeat,
+            symbol: 'NEXT_BULL.HK',
+            status: 'SWITCHING',
+            lastSwitchAt: Date.now(),
+            callPrice: null,
+          });
+          return new Map([
+            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+          ]);
+        },
+      }),
+      onProcessed: createStatusCollector(statuses),
+    });
+
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:STALE_BEFORE_SHARED_WRITES');
+      },
+      waitCondition: () => statuses.length === 1,
+      timeoutMs: 500,
+    });
+
+    expect(statuses).toEqual(['skipped']);
+    expect(recalculateCalls).toBe(0);
+    expect(refreshOrdersCalls).toBe(0);
+    expect(accountSnapshotCalls).toBe(0);
+    expect(stockPositionCalls).toBe(0);
+    expect(refreshUnrealizedCalls).toBe(0);
+    expect(lastState.cachedAccount).toBeNull();
+    expect(lastState.cachedPositions).toEqual([]);
+    expect(lastState.positionCache.get('BULL.HK')).toBeNull();
+    expect(context.longSymbolName).toBe('OLD_BULL');
+    expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(3);
+    expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      symbol: 'NEXT_BULL.HK',
+      status: 'SWITCHING',
+    });
+  });
+
   it('marks activating seat EMPTY after SEAT_REFRESH API retry is exhausted', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
@@ -1580,13 +1565,13 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorTaskContext({
       longSymbolName: 'OLD_BULL',
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
     });
-    const originalSeatVersion = context.symbolRegistry.getSeatVersion('HSI.HK', 'LONG');
+    const originalSeatVersion = context.symbolRegistry.getSeatVersion('LONG');
 
     const processor = createBusinessProcessor({
       queue,
@@ -1622,15 +1607,13 @@ describe('monitorTaskProcessor business flow', () => {
     expect(statuses).toEqual(['failed', 'failed']);
     expect(fatalErrors).toEqual([]);
     expect(getQuotesCalls).toBe(2);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG')).toMatchObject({
+    expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: null,
       status: 'EMPTY',
       callPrice: null,
     });
     expect(context.longSymbolName).toBe('OLD_BULL');
-    expect(context.symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBeGreaterThan(
-      originalSeatVersion,
-    );
+    expect(context.symbolRegistry.getSeatVersion('LONG')).toBeGreaterThan(originalSeatVersion);
   });
 
   it('sends SEAT_REFRESH non API order refresh errors to fatal channel', async () => {
@@ -1648,8 +1631,8 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
     });
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
@@ -1683,30 +1666,29 @@ describe('monitorTaskProcessor business flow', () => {
     expect(fatalErrors[0]).toBeInstanceOf(Error);
     expect(statuses).toEqual([]);
     expect(getQuotesCalls).toBe(1);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG')).toMatchObject({
+    expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
     });
     expect(context.longSymbolName).toBe('OLD_BULL');
-    expect(context.symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(2);
+    expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(2);
   });
 
   it('skips SEAT_REFRESH final activation when seat snapshot changes during refresh', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
     const context = createMonitorTaskContext();
-    context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
-      ...context.symbolRegistry.getSeatState('HSI.HK', 'LONG'),
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
       callPrice: 20_000,
     });
 
     context.riskChecker.refreshUnrealizedLossData = async () => {
-      const latestSeat = context.symbolRegistry.getSeatState('HSI.HK', 'LONG');
-      context.symbolRegistry.bumpSeatVersion('HSI.HK', 'LONG');
-      context.symbolRegistry.updateSeatState('HSI.HK', 'LONG', {
+      const latestSeat = context.symbolRegistry.getSeatState('LONG');
+      context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
         ...latestSeat,
         symbol: 'NEXT_BULL.HK',
         status: 'SWITCHING',
@@ -1739,8 +1721,8 @@ describe('monitorTaskProcessor business flow', () => {
     });
 
     expect(statuses).toEqual(['skipped']);
-    expect(context.symbolRegistry.getSeatVersion('HSI.HK', 'LONG')).toBe(3);
-    expect(context.symbolRegistry.getSeatState('HSI.HK', 'LONG')).toMatchObject({
+    expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(3);
+    expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'NEXT_BULL.HK',
       status: 'SWITCHING',
     });

@@ -491,6 +491,7 @@ export type PostTradeConsistencyRuntimeBusinessDeps = Readonly<{
  * 使用范围：仅 app 装配层与后续接线模块使用。
  */
 export interface PostTradeConsistencyRuntime {
+  /** 绑定成交后业务依赖；同一运行时只允许绑定一次，重复绑定必须暴露为装配错误。 */
   readonly bindBusinessDeps: (deps: PostTradeConsistencyRuntimeBusinessDeps) => void;
   readonly recordSettlementRefreshNeed: (need: PostTradeConsistencyRefreshNeed) => void;
   readonly getStatus: () => PostTradeConsistencyRuntimeStatus;

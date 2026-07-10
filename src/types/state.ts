@@ -167,9 +167,6 @@ export type MonitorContext = {
   /** 监控标的名称缓存 */
   monitorSymbolName: string;
 
-  /** 已校验的监控标的代码 */
-  readonly normalizedMonitorSymbol: string;
-
   /** 监控标的指标画像（启动编译，运行期只读） */
   readonly indicatorProfile: IndicatorUsageProfile;
 };

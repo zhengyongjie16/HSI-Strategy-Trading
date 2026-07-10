@@ -199,7 +199,6 @@ describe('riskController(index) business flow', () => {
       await monitor.monitorDirectionalUnrealizedLoss({
         symbol: 'BULL.HK',
         isLong: true,
-        monitorSymbol: 'HSI.HK',
         seatVersion: 2,
         quote: createQuoteDouble('BULL.HK', 1.1, 100),
         riskChecker,
@@ -240,7 +239,6 @@ describe('riskController(index) business flow', () => {
       await monitor.monitorDirectionalUnrealizedLoss({
         symbol: 'BULL.HK',
         isLong: true,
-        monitorSymbol: 'HSI.HK',
         seatVersion: 2,
         quote: createQuoteDouble('BULL.HK', 1.1, 100),
         riskChecker,
@@ -253,6 +251,48 @@ describe('riskController(index) business flow', () => {
     }
 
     expect(caught).toBe(cleanupError);
+  });
+
+  it('rethrows local sync failure after protective liquidation order is submitted remotely', async () => {
+    const monitor = createUnrealizedLossMonitor({
+      maxUnrealizedLossPerSymbol: 1_000,
+    });
+    const localSyncError = new Error('order monitor track failed');
+    const syncFailure = new Error('order submitted but local sync failed: order-1', {
+      cause: localSyncError,
+    });
+    const riskChecker = {
+      checkUnrealizedLoss: () => ({ shouldLiquidate: true, reason: 'loss limit', quantity: 100 }),
+    } as unknown as RiskChecker;
+    const trader = {
+      executeSignals: async () => {
+        throw syncFailure;
+      },
+    } as unknown as Trader;
+    const orderRecorder = {
+      clearBuyOrders: () => {},
+    } as unknown as OrderRecorder;
+    const dailyLossTracker = {
+      getLossOffset: () => 0,
+    } as unknown as DailyLossTracker;
+
+    let caught: unknown = null;
+    try {
+      await monitor.monitorDirectionalUnrealizedLoss({
+        symbol: 'BULL.HK',
+        isLong: true,
+        seatVersion: 2,
+        quote: createQuoteDouble('BULL.HK', 1.1, 100),
+        riskChecker,
+        trader,
+        orderRecorder,
+        dailyLossTracker,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(syncFailure);
   });
 
   it('builds unrealized-loss metrics from cached R1/N1 and current price', () => {

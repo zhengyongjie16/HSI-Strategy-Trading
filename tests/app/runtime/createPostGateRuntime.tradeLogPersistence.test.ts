@@ -139,12 +139,6 @@ describe('createPostGateRuntime trade log persistence', () => {
     });
     const createPostGateRuntime = createPostGateRuntimeWithPositionRefreshForTest();
     const runtime = await createPostGateRuntime(createRuntimeParams({ marketDataClient }));
-    runtime.postTradeConsistencyRuntime.bindBusinessDeps({
-      monitorContext: runtime.monitorContext,
-      dailyLossTracker: runtime.dailyLossTracker,
-      liquidationCooldownTracker: runtime.liquidationCooldownTracker,
-      protectiveLiquidationEpisodeTracker: runtime.protectiveLiquidationEpisodeTracker,
-    });
 
     runtime.postTradeConsistencyRuntime.recordSettlementRefreshNeed({
       refreshAccount: true,
@@ -311,10 +305,9 @@ describe('createPostGateRuntime trade log persistence', () => {
 
     const boundaries = hydrator.hydrate();
 
-    expect(boundaries.get('HSI.HK:LONG')).toBe(executedTimeMs);
+    expect(boundaries.get('LONG')).toBe(executedTimeMs);
     expect(
       tracker.getRemainingMs({
-        symbol: 'HSI.HK',
         direction: 'LONG',
         cooldownConfig: {
           mode: 'minutes',

@@ -46,11 +46,7 @@ function syncMonitorContextQuotes(
   symbolRegistry: SymbolRegistry,
   quotesMap: ReadonlyMap<string, Quote | null>,
 ): void {
-  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
-    monitorContext.config.monitorSymbol,
-    symbolRegistry,
-    quotesMap,
-  );
+  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(symbolRegistry, quotesMap);
   monitorContext.seatState = runtimeSnapshot.seatState;
   monitorContext.seatVersion = runtimeSnapshot.seatVersion;
   monitorContext.longSymbolName = runtimeSnapshot.longSymbolName;
@@ -77,9 +73,8 @@ async function rebuildOrderRecords(
   allOrders: ReadonlyArray<RawOrderFromAPI>,
   quotesMap: ReadonlyMap<string, Quote | null>,
 ): Promise<void> {
-  const monitorSymbol = monitorContext.config.monitorSymbol;
-  const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-  const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+  const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
+  const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
   if (hasSeatSymbol(longSeatState)) {
     await monitorContext.orderRecorder.refreshOrdersFromAllOrdersForLong(
       longSeatState.symbol,
@@ -148,9 +143,8 @@ async function rebuildWarrantRiskCache(
   monitorContext: MonitorContext,
   quotesMap: ReadonlyMap<string, Quote | null>,
 ): Promise<void> {
-  const monitorSymbol = monitorContext.config.monitorSymbol;
-  const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-  const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+  const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
+  const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
   await refreshSeatWarrantInfo(
     marketDataClient,
     monitorContext,
@@ -178,11 +172,10 @@ async function rebuildUnrealizedLossCache(
   dailyLossTracker: DailyLossTracker,
   quotesMap: ReadonlyMap<string, Quote | null>,
 ): Promise<void> {
-  const monitorSymbol = monitorContext.config.monitorSymbol;
-  const longSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-  const shortSeatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+  const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
+  const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
   if (hasSeatSymbol(longSeatState)) {
-    const dailyLossOffset = dailyLossTracker.getLossOffset(monitorSymbol, true);
+    const dailyLossOffset = dailyLossTracker.getLossOffset('LONG');
     await monitorContext.riskChecker.refreshUnrealizedLossData(
       monitorContext.orderRecorder,
       longSeatState.symbol,
@@ -193,7 +186,7 @@ async function rebuildUnrealizedLossCache(
   }
 
   if (hasSeatSymbol(shortSeatState)) {
-    const dailyLossOffset = dailyLossTracker.getLossOffset(monitorSymbol, false);
+    const dailyLossOffset = dailyLossTracker.getLossOffset('SHORT');
     await monitorContext.riskChecker.refreshUnrealizedLossData(
       monitorContext.orderRecorder,
       shortSeatState.symbol,
@@ -214,12 +207,12 @@ function activateRebuiltSeats(
 ): void {
   const monitorSymbol = monitorContext.config.monitorSymbol;
   for (const direction of ['LONG', 'SHORT'] as const) {
-    const seatState = monitorContext.symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = monitorContext.symbolRegistry.getSeatState(direction);
     if (!hasSeatSymbol(seatState)) {
       continue;
     }
 
-    monitorContext.symbolRegistry.updateSeatState(monitorSymbol, direction, {
+    monitorContext.symbolRegistry.updateSeatState(direction, {
       ...seatState,
       status: 'ACTIVE',
       lastSeatActivatedAt:

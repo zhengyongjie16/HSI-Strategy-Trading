@@ -83,13 +83,17 @@ function createPipelineHarness(params: {
 }): {
   buyTaskQueue: ReturnType<typeof createBuyTaskQueue>;
   sellTaskQueue: ReturnType<typeof createSellTaskQueue>;
-  delayedAdded: Signal[];
+  delayedAdded: ReadonlyArray<{
+    readonly signal: Signal;
+  }>;
   getGenerateSignalsCallCount: () => number;
 } {
   const buyTaskQueue = createBuyTaskQueue();
   const sellTaskQueue = createSellTaskQueue();
 
-  const delayedAdded: Signal[] = [];
+  const delayedAdded: Array<{
+    readonly signal: Signal;
+  }> = [];
   let generateSignalsCallCount = 0;
 
   const monitorContext = {
@@ -106,7 +110,7 @@ function createPipelineHarness(params: {
     indicatorProfile: createIndicatorUsageProfileDouble(),
     delayedSignalVerifier: {
       addSignal: (queuedSignal: { readonly signal: Signal }) => {
-        delayedAdded.push(queuedSignal.signal);
+        delayedAdded.push(queuedSignal);
       },
     },
   } as unknown as MonitorContext;
@@ -132,7 +136,6 @@ function createPipelineHarness(params: {
   };
 
   runSignalPipeline({
-    monitorSymbol: 'HSI.HK',
     monitorSnapshot: createSnapshot(),
     monitorContext,
     mainContext,
@@ -171,13 +174,17 @@ describe('signalPipeline business flow', () => {
     expect(queuedBuy?.type).toBe('IMMEDIATE_BUY');
     expect(queuedBuy?.data.seatVersion).toBe(7);
     expect(queuedBuy?.data.symbolName).toBeNull();
+    expect('monitorSymbol' in (queuedBuy ?? {})).toBeFalse();
+    expect('monitorSymbol' in (queuedBuy?.data ?? {})).toBeFalse();
 
     expect(queuedSell?.type).toBe('IMMEDIATE_SELL');
     expect(queuedSell?.data.seatVersion).toBe(11);
     expect(queuedSell?.data.symbolName).toBeNull();
+    expect('monitorSymbol' in (queuedSell ?? {})).toBeFalse();
+    expect('monitorSymbol' in (queuedSell?.data ?? {})).toBeFalse();
 
     expect(harness.delayedAdded).toHaveLength(1);
-    expect(harness.delayedAdded[0]?.seatVersion).toBe(11);
+    expect(harness.delayedAdded[0]?.signal.seatVersion).toBe(11);
   });
 
   it('routes buy and sell signals without quote enrichment in seat info', () => {

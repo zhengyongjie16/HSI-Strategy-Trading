@@ -2,12 +2,11 @@ import type { MonitorConfig } from '../../types/config.js';
 
 /**
  * 通用配置校验结果。
- * 类型用途：表达配置校验是否通过，以及累积的错误与缺失或非法字段列表。
+ * 类型用途：表达累积的配置错误与缺失或非法字段列表。
  * 数据来源：由 validator 模块内部各类 validate 函数返回。
  * 使用范围：仅 validator 模块内部使用。
  */
 export type ValidationResult = {
-  readonly valid: boolean;
   readonly errors: ReadonlyArray<string>;
   readonly missingFields: ReadonlyArray<string>;
 };

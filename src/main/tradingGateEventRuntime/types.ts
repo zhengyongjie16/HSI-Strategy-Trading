@@ -9,7 +9,6 @@ import type { Unsubscribe } from '../../types/services.js';
 export type TradingGateStateChangedEvent = Readonly<{
   previousCanTrade: boolean | null;
   nextCanTrade: boolean;
-  timestampMs: number;
 }>;
 
 /**

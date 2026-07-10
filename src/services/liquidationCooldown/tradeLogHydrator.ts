@@ -12,7 +12,6 @@ import { TRADING } from '../../constants/index.js';
 import { isRecord } from '../../utils/helpers/index.js';
 import { buildTradeLogPath } from '../../utils/trading/tradeLogPath.js';
 import {
-  buildCooldownKey,
   resolveCooldownEndMs,
   resolveRemainingCooldownMs,
   simulateTriggerCycle,
@@ -110,7 +109,7 @@ function collectStrictProtectiveRecords(params: {
   readonly tradeRecords: ReadonlyArray<TradeRecord>;
   readonly expectedMonitorSymbol: string;
 }): ReadonlyMap<
-  string,
+  'LONG' | 'SHORT',
   ReadonlyArray<{
     readonly monitorSymbol: string;
     readonly direction: 'LONG' | 'SHORT';
@@ -118,7 +117,7 @@ function collectStrictProtectiveRecords(params: {
   }>
 > {
   const grouped = new Map<
-    string,
+    'LONG' | 'SHORT',
     Array<{
       readonly monitorSymbol: string;
       readonly direction: 'LONG' | 'SHORT';
@@ -132,7 +131,7 @@ function collectStrictProtectiveRecords(params: {
     }
 
     const protectiveRecord = assertProtectiveCompletionRecord(record, params.expectedMonitorSymbol);
-    const key = buildCooldownKey(protectiveRecord.monitorSymbol, protectiveRecord.direction);
+    const key = protectiveRecord.direction;
     const existing = grouped.get(key);
     if (existing !== undefined) {
       existing.push(protectiveRecord);
@@ -170,8 +169,8 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
    * 读取当日成交日志，按唯一监控标的方向模拟触发-冷却周期并恢复当前状态。
    * 启动时调用一次，用于跨进程重启后恢复触发计数器和未到期冷却。
    */
-  function hydrate(): ReadonlyMap<string, number> {
-    const latestCompletedBoundaryByDirection = new Map<string, number>();
+  function hydrate(): ReadonlyMap<'LONG' | 'SHORT', number> {
+    const latestCompletedBoundaryByDirection = new Map<'LONG' | 'SHORT', number>();
     const currentTimeMs = nowMs();
     const logFile = buildTradeLogPath(resolveLogRootDir(), new Date(currentTimeMs));
     if (!existsSync(logFile)) {
@@ -215,10 +214,7 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
 
       const latestRecord = recordGroup.at(-1) ?? null;
       if (latestRecord) {
-        latestCompletedBoundaryByDirection.set(
-          buildCooldownKey(firstRecord.monitorSymbol, firstRecord.direction),
-          latestRecord.executedAtMs,
-        );
+        latestCompletedBoundaryByDirection.set(firstRecord.direction, latestRecord.executedAtMs);
       }
 
       const cooldownConfig = monitorConfig.liquidationCooldown;
@@ -236,7 +232,6 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
       if (cycleResult.cooldownExecutedTimeMs === null) {
         if (cycleResult.currentCount > 0) {
           liquidationCooldownTracker.restoreTriggerCount({
-            symbol: firstRecord.monitorSymbol,
             direction: firstRecord.direction,
             count: cycleResult.currentCount,
           });
@@ -253,14 +248,12 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
       if (remainingMs > 0) {
         if (cycleResult.currentCount > 0) {
           liquidationCooldownTracker.restoreTriggerCount({
-            symbol: firstRecord.monitorSymbol,
             direction: firstRecord.direction,
             count: cycleResult.currentCount,
           });
         }
 
         liquidationCooldownTracker.recordCooldown({
-          symbol: firstRecord.monitorSymbol,
           direction: firstRecord.direction,
           executedTimeMs: cycleResult.cooldownExecutedTimeMs,
         });

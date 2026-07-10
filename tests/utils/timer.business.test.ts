@@ -60,7 +60,7 @@ describe('scheduleBoundedOneShotAt', () => {
     const harness = createTimerHarness(2_000);
     let dueCount = 0;
 
-    const controller = scheduleBoundedOneShotAt({
+    scheduleBoundedOneShotAt({
       atMs: 1_000,
       now: harness.now,
       scheduleTimer: harness.scheduleTimer,
@@ -71,13 +71,11 @@ describe('scheduleBoundedOneShotAt', () => {
     });
 
     expect(dueCount).toBe(0);
-    expect(controller.hasTimer()).toBe(true);
     expect(harness.timers[0]?.delayMs).toBe(0);
 
     harness.timers[0]?.callback();
 
     expect(dueCount).toBe(1);
-    expect(controller.hasTimer()).toBe(false);
   });
 
   it('超过平台安全延迟时先注册最大安全分段，分段未到期时继续重排', () => {
@@ -85,7 +83,7 @@ describe('scheduleBoundedOneShotAt', () => {
     let dueCount = 0;
     const atMs = 1_000 + TIME.MAX_TIMER_DELAY_MS + 5;
 
-    const controller = scheduleBoundedOneShotAt({
+    scheduleBoundedOneShotAt({
       atMs,
       now: harness.now,
       scheduleTimer: harness.scheduleTimer,
@@ -103,7 +101,6 @@ describe('scheduleBoundedOneShotAt', () => {
 
     expect(dueCount).toBe(0);
     expect(harness.timers[1]?.delayMs).toBe(1);
-    expect(controller.hasTimer()).toBe(true);
   });
 
   it('取消后分段 callback 不会触发到期行为', () => {
@@ -125,6 +122,5 @@ describe('scheduleBoundedOneShotAt', () => {
 
     expect(dueCount).toBe(0);
     expect(harness.timers[0]?.cleared).toBe(true);
-    expect(controller.hasTimer()).toBe(false);
   });
 });

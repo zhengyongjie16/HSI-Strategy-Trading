@@ -42,12 +42,11 @@ export type BusinessEventRouteState =
 
 /**
  * 普通信号席位投影参数。
- * 类型用途：封装 resolveSignalSeatInfo 所需的监控标的与监控上下文。
+ * 类型用途：封装 resolveSignalSeatInfo 所需的监控上下文。
  * 数据来源：由 businessEventProgram 按当前 monitor 组装。
  * 使用范围：仅 K 线信号链路使用。
  */
 export type SignalSeatProjectionParams = Readonly<{
-  monitorSymbol: string;
   monitorContext: MonitorContext;
 }>;
 
@@ -73,10 +72,7 @@ export type SignalSeatInfo = Readonly<{
  * 使用范围：仅 businessEventProgram 模块使用。
  */
 type BusinessEventMonitorDisplayRuntime = Readonly<{
-  requestRender: (params: {
-    readonly monitorSymbol: string;
-    readonly monitorSnapshot: IndicatorSnapshot;
-  }) => void;
+  requestRender: (params: { readonly monitorSnapshot: IndicatorSnapshot }) => void;
 }>;
 
 /**
@@ -109,12 +105,11 @@ type BusinessEventRuntimeFlags = Readonly<{
 
 /**
  * 指标流水线参数（执行指标计算与最新快照写入时的入参）。
- * 类型用途：封装指标流水线所需的监控标的、监控上下文与 K 线缓存读取端口。
+ * 类型用途：封装指标流水线所需的监控上下文与 K 线缓存读取端口。
  * 数据来源：由 businessEventProgram 按 K 线事件组装。
  * 使用范围：仅普通 K 线业务事件链路使用。
  */
 export type IndicatorPipelineParams = Readonly<{
-  monitorSymbol: string;
   monitorContext: MonitorContext;
   mainContext: Readonly<{
     marketDataClient: Pick<MarketDataClient, 'getCandlestickSnapshot'>;
@@ -123,12 +118,11 @@ export type IndicatorPipelineParams = Readonly<{
 
 /**
  * 信号流水线参数（执行信号生成、延迟验证入队等时的入参）。
- * 类型用途：封装信号流水线所需的监控标的、上下文、席位信息与指标快照。
+ * 类型用途：封装信号流水线所需的上下文、席位信息与指标快照。
  * 数据来源：由 businessEventProgram 从席位投影结果、指标流水线输出等组装。
  * 使用范围：仅普通 K 线业务事件链路使用。
  */
 export type SignalPipelineParams = Readonly<{
-  monitorSymbol: string;
   monitorContext: MonitorContext;
   mainContext: Pick<
     BusinessEventProgramDeps,

@@ -4,17 +4,6 @@ import type { LiquidationCooldownConfig } from '../../types/config.js';
 import type { CooldownCandidate } from './types.js';
 
 /**
- * 构建冷却记录的 key。
- *
- * @param symbol 标的代码
- * @param direction 方向（LONG / SHORT）
- * @returns 格式为 `symbol:direction` 的字符串键
- */
-export function buildCooldownKey(symbol: string, direction: 'LONG' | 'SHORT'): string {
-  return `${symbol}:${direction}`;
-}
-
-/**
  * 将分钟转换为毫秒，非正数返回 0。
  *
  * @param minutes 分钟数
@@ -149,16 +138,15 @@ export function toBooleanOrNull(value: unknown): boolean | null {
 }
 
 /**
- * 模拟触发-冷却周期，计算当前周期计数、当前周期冷却激活时间、最近一次已过期冷却结束边界。
- * 当记录时间跨过冷却结束时间时，视为进入新周期并重置计数，同时记录该冷却结束边界。
+ * 模拟触发-冷却周期，计算当前周期计数与当前周期冷却激活时间。
+ * 当记录时间跨过冷却结束时间时，视为进入新周期并重置计数。
  *
  * @param params.records 按时间升序排列的保护性清仓记录
  * @param params.triggerLimit 触发上限
  * @param params.cooldownConfig 冷却配置
  * @returns 当前周期快照：
  * - currentCount: 当前周期触发计数；
- * - cooldownExecutedTimeMs: 当前周期最后一次冷却激活时间（null 表示当前周期未激活冷却）；
- * - lastExpiredCooldownEndMs: 最近一次已过期冷却结束时间（null 表示未出现过到期边界）
+ * - cooldownExecutedTimeMs: 当前周期最后一次冷却激活时间（null 表示当前周期未激活冷却）
  */
 export function simulateTriggerCycle({
   records,
@@ -171,24 +159,20 @@ export function simulateTriggerCycle({
 }): {
   readonly currentCount: number;
   readonly cooldownExecutedTimeMs: number | null;
-  readonly lastExpiredCooldownEndMs: number | null;
 } {
   if (records.length === 0 || triggerLimit <= 0) {
     return {
       currentCount: 0,
       cooldownExecutedTimeMs: null,
-      lastExpiredCooldownEndMs: null,
     };
   }
 
   let count = 0;
   let cooldownEndMs = 0;
   let lastCooldownTimeMs: number | null = null;
-  let lastExpiredCooldownEndMs: number | null = null;
 
   for (const record of records) {
     if (cooldownEndMs > 0 && record.executedAtMs >= cooldownEndMs) {
-      lastExpiredCooldownEndMs = cooldownEndMs;
       count = 0;
       cooldownEndMs = 0;
       lastCooldownTimeMs = null;
@@ -218,7 +202,6 @@ export function simulateTriggerCycle({
   return {
     currentCount: count,
     cooldownExecutedTimeMs: lastCooldownTimeMs,
-    lastExpiredCooldownEndMs,
   };
 }
 

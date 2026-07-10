@@ -12,13 +12,12 @@ export type TradingRiskRouteKey = 'LONG' | 'SHORT';
 
 /**
  * 风险路由条目。
- * 类型用途：表示某个 tradingSymbol 当前应路由到的 monitorSymbol / direction / seatVersion。
+ * 类型用途：表示某个 tradingSymbol 当前应路由到的 direction / seatVersion 内部执行身份。
  * 数据来源：由 symbolRegistry 的权威快照重建。
  * 使用范围：仅 tradingRiskEventRuntime 模块内部使用。
  */
 export type TradingRiskRoute = Readonly<{
   readonly routeKey: TradingRiskRouteKey;
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly tradingSymbol: string;
   readonly seatVersion: number;
@@ -33,7 +32,7 @@ export type TradingRiskRoute = Readonly<{
  */
 export type TradingRiskRoutingIndex = Readonly<{
   readonly routesBySymbol: ReadonlyMap<string, TradingRiskRoute>;
-  readonly routesByKey: ReadonlyMap<string, TradingRiskRoute>;
+  readonly routesByKey: ReadonlyMap<TradingRiskRouteKey, TradingRiskRoute>;
 }>;
 
 /**

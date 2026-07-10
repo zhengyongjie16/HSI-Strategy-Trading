@@ -334,7 +334,7 @@ describe('settlementFlow business flow', () => {
     ]);
   });
 
-  it('rejects settlement when executed close lacks attribution context', () => {
+  it('fails fast when executed close lacks attribution context', () => {
     const runtime = createRuntime();
     const settlementFlow = createSettlementFlow({
       runtime,
@@ -348,22 +348,22 @@ describe('settlementFlow business flow', () => {
       emitOrderStateChanged: () => {},
     });
 
-    const result = settlementFlow.settleOrder({
-      orderId: 'BUY-PARTIAL-MISSING-ATTR',
-      closedReason: 'CANCELED',
-      source: 'RECOVERY',
-      symbol: 'BULL.HK',
-      side: 'BUY',
-      executedPrice: 1.02,
-      executedQuantity: 20,
-      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
-    });
-
-    expect(result.handled).toBe(false);
+    expect(() =>
+      settlementFlow.settleOrder({
+        orderId: 'BUY-PARTIAL-MISSING-ATTR',
+        closedReason: 'CANCELED',
+        source: 'RECOVERY',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        executedPrice: 1.02,
+        executedQuantity: 20,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      }),
+    ).toThrow(/缺少唯一 monitor\/direction 归因/);
     expect(runtime.closedOrderIds.has('BUY-PARTIAL-MISSING-ATTR')).toBe(false);
   });
 
-  it('rejects settlement when executed close lacks monitor attribution', () => {
+  it('fails fast when executed close lacks monitor attribution', () => {
     const runtime = createRuntime();
     const refreshNeeds: Array<{
       readonly refreshAccount: boolean;
@@ -386,20 +386,20 @@ describe('settlementFlow business flow', () => {
       },
     });
 
-    const result = settlementFlow.settleOrder({
-      orderId: 'SELL-PROTECTIVE-MISSING-MONITOR',
-      closedReason: 'FILLED',
-      source: 'WS',
-      symbol: 'BULL.HK',
-      side: 'SELL',
-      isLongSymbol: true,
-      isProtectiveLiquidation: true,
-      executedPrice: 1.02,
-      executedQuantity: 100,
-      executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
-    });
-
-    expect(result.handled).toBe(false);
+    expect(() =>
+      settlementFlow.settleOrder({
+        orderId: 'SELL-PROTECTIVE-MISSING-MONITOR',
+        closedReason: 'FILLED',
+        source: 'WS',
+        symbol: 'BULL.HK',
+        side: 'SELL',
+        isLongSymbol: true,
+        isProtectiveLiquidation: true,
+        executedPrice: 1.02,
+        executedQuantity: 100,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      }),
+    ).toThrow(/缺少唯一 monitor\/direction 归因/);
     expect(runtime.closedOrderIds.has('SELL-PROTECTIVE-MISSING-MONITOR')).toBe(false);
     expect(refreshNeeds).toEqual([]);
     expect(orderStateEvents).toEqual([]);
@@ -409,7 +409,6 @@ describe('settlementFlow business flow', () => {
     const runtime = createRuntime();
     const orderStateEvents: OrderStateChangedEvent[] = [];
     const recordedProgressPayloads: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       symbol: string;
       executedTimeMs: number;
@@ -451,7 +450,6 @@ describe('settlementFlow business flow', () => {
     expect(result.handled).toBe(true);
     expect(recordedProgressPayloads).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'BULL.OLD.HK',
         executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),

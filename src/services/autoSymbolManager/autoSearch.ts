@@ -43,7 +43,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       return;
     }
 
-    const seatState = symbolRegistry.getSeatState(monitorSymbol, direction);
+    const seatState = symbolRegistry.getSeatState(direction);
     if (seatState.status !== 'EMPTY') {
       return;
     }
@@ -96,7 +96,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       });
       best = await findBestWarrant(input);
     } catch (err) {
-      const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const currentSeat = symbolRegistry.getSeatState(direction);
       updateSeatState(
         direction,
         buildSeatState({
@@ -122,7 +122,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
     }
 
     if (!best) {
-      const currentSeat = symbolRegistry.getSeatState(monitorSymbol, direction);
+      const currentSeat = symbolRegistry.getSeatState(direction);
       const hkDateKey = getHKDateKey(currentTime);
       const { nextFailCount, frozenTradingDayKey, shouldFreeze } = resolveNextSearchFailureState({
         currentSeat,

@@ -56,16 +56,13 @@ export type MockMethodName =
 
 /**
  * Longbridge mock 单次调用记录结构。
- * 类型用途：保存方法调用参数、结果和错误，供测试断言调用链路。
+ * 类型用途：保存方法调用名称、参数和错误，供测试断言调用链路。
  * 数据来源：mock 调用包装器 withMockCall 运行时记录。
  * 使用范围：mock/longbridge 模块内部及对外 getCalls 返回值。
  */
 export type MockCallRecord = {
   readonly method: MockMethodName;
-  readonly callIndex: number;
-  readonly calledAtMs: number;
   readonly args: ReadonlyArray<unknown>;
-  readonly result: unknown;
   readonly error: Error | null;
 };
 

@@ -1595,7 +1595,6 @@ describe('orderMonitor business flow', () => {
 
   it('restores protective liquidation semantics for recovered pending sells and keeps monitor trigger limit', async () => {
     const progressCalls: Array<{
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
       symbol: string;
       executedTimeMs: number;
@@ -1640,7 +1639,6 @@ describe('orderMonitor business flow', () => {
 
     expect(progressCalls).toHaveLength(1);
     expect(progressCalls[0]).toEqual({
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
       symbol: 'BULL.HK',
       executedTimeMs,

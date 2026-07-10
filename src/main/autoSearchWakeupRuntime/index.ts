@@ -86,12 +86,10 @@ export function createAutoSearchWakeupRuntime(
   }
 
   function scheduleRouteTimer(params: {
-    readonly monitorSymbol: string;
     readonly direction: 'LONG' | 'SHORT';
     readonly seatVersion: number;
     readonly atMs: number;
   }): void {
-    assertAutoSearchMonitorSymbol(params.monitorSymbol, deps.monitorContext.config.monitorSymbol);
     const routeKey = buildRouteKey(params);
     clearRouteTimer(routeKey);
     const timer = scheduleBoundedOneShotAt({
@@ -101,7 +99,7 @@ export function createAutoSearchWakeupRuntime(
       clearTimer: deps.clearTimer,
       onDue: () => {
         timers.delete(routeKey);
-        triggerSeat(params.monitorSymbol, params.direction, params.seatVersion);
+        triggerSeat(params.direction, params.seatVersion);
       },
     });
     timers.set(routeKey, timer);
@@ -137,27 +135,21 @@ export function createAutoSearchWakeupRuntime(
     });
   }
 
-  function triggerSeat(
-    monitorSymbol: string,
-    direction: 'LONG' | 'SHORT',
-    expectedSeatVersion?: number,
-  ): void {
+  function triggerSeat(direction: 'LONG' | 'SHORT', expectedSeatVersion?: number): void {
     if (!running) {
       return;
     }
 
-    assertAutoSearchMonitorSymbol(monitorSymbol, deps.monitorContext.config.monitorSymbol);
     const routeKey = buildRouteKey({
       direction,
-      seatVersion:
-        expectedSeatVersion ?? deps.symbolRegistry.getSeatVersion(monitorSymbol, direction),
+      seatVersion: expectedSeatVersion ?? deps.symbolRegistry.getSeatVersion(direction),
     });
     if (activeRouteKeys.has(routeKey)) {
       return;
     }
 
     activeRouteKeys.add(routeKey);
-    const promise = processSeat(monitorSymbol, direction, expectedSeatVersion, routeKey);
+    const promise = processSeat(direction, expectedSeatVersion, routeKey);
     registerActivePromise(promise);
   }
 
@@ -166,7 +158,6 @@ export function createAutoSearchWakeupRuntime(
    * 冷却或开盘延迟未到时只登记下一次 one-shot timer，不在 runtime 内轮询。
    */
   async function processSeat(
-    monitorSymbol: string,
     direction: 'LONG' | 'SHORT',
     expectedSeatVersion: number | undefined,
     activeRouteKey: AutoSearchRouteKey,
@@ -176,15 +167,14 @@ export function createAutoSearchWakeupRuntime(
         return;
       }
 
-      assertAutoSearchMonitorSymbol(monitorSymbol, deps.monitorContext.config.monitorSymbol);
       const monitorContext = deps.monitorContext;
 
       if (!monitorContext.config.autoSearchConfig.autoSearchEnabled) {
         return;
       }
 
-      const seatState = deps.symbolRegistry.getSeatState(monitorSymbol, direction);
-      const seatVersion = deps.symbolRegistry.getSeatVersion(monitorSymbol, direction);
+      const seatState = deps.symbolRegistry.getSeatState(direction);
+      const seatVersion = deps.symbolRegistry.getSeatVersion(direction);
       const routeKey = buildRouteKey({ direction, seatVersion });
       if (expectedSeatVersion !== undefined && expectedSeatVersion !== seatVersion) {
         return;
@@ -201,7 +191,6 @@ export function createAutoSearchWakeupRuntime(
       const cooldownEndMs = lastSearchAt + AUTO_SYMBOL_SEARCH_COOLDOWN_MS;
       if (nowMs < cooldownEndMs) {
         scheduleRouteTimer({
-          monitorSymbol,
           direction,
           seatVersion,
           atMs: cooldownEndMs,
@@ -214,7 +203,6 @@ export function createAutoSearchWakeupRuntime(
         const openDelayEndMs = resolveOpenDelayEndMs(now, openDelayMinutes);
         if (openDelayEndMs !== null) {
           scheduleRouteTimer({
-            monitorSymbol,
             direction,
             seatVersion,
             atMs: openDelayEndMs,
@@ -236,7 +224,6 @@ export function createAutoSearchWakeupRuntime(
         }
 
         scheduleRouteTimer({
-          monitorSymbol,
           direction,
           seatVersion,
           atMs: nowMs + TRADING.INTERVAL_MS,
@@ -265,7 +252,7 @@ export function createAutoSearchWakeupRuntime(
       return;
     }
 
-    triggerSeat(event.monitorSymbol, event.direction);
+    triggerSeat(event.direction);
   }
 
   function handleGateStateChanged(event: TradingGateStateChangedEvent): void {
@@ -273,29 +260,27 @@ export function createAutoSearchWakeupRuntime(
       return;
     }
 
-    const monitorConfig = deps.tradingConfig.monitor;
     for (const direction of AUTO_SEARCH_DIRECTIONS) {
       if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
         continue;
       }
 
-      const seatState = deps.symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
+      const seatState = deps.symbolRegistry.getSeatState(direction);
       if (seatState.status === 'EMPTY') {
-        triggerSeat(monitorConfig.monitorSymbol, direction);
+        triggerSeat(direction);
       }
     }
   }
 
   function seedEmptySeats(): void {
-    const monitorConfig = deps.tradingConfig.monitor;
     for (const direction of AUTO_SEARCH_DIRECTIONS) {
       if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
         continue;
       }
 
-      const seatState = deps.symbolRegistry.getSeatState(monitorConfig.monitorSymbol, direction);
+      const seatState = deps.symbolRegistry.getSeatState(direction);
       if (seatState.status === 'EMPTY') {
-        triggerSeat(monitorConfig.monitorSymbol, direction);
+        triggerSeat(direction);
       }
     }
   }

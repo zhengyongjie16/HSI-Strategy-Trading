@@ -1,12 +1,11 @@
 /**
  * bounded one-shot timer 控制器。
- * 类型用途：暴露取消与可观测 timer 状态，供各局部 timer owner 清理派生计划。
+ * 类型用途：暴露取消能力，供各局部 timer owner 清理派生计划。
  * 数据来源：scheduleBoundedOneShotAt 返回。
  * 使用范围：系统级和局部 one-shot 时间 owner。
  */
 export interface BoundedOneShotTimerController {
   readonly cancel: () => void;
-  readonly hasTimer: () => boolean;
 }
 
 /**

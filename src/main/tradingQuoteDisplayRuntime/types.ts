@@ -41,7 +41,6 @@ export type TradingQuoteDisplayRuntimeDeps = Readonly<{
   renderTradingQuote: (params: {
     readonly event: QuoteUpdatedEvent;
     readonly tradingSymbol: string;
-    readonly monitorSymbol: string;
     readonly direction: 'LONG' | 'SHORT';
     readonly monitorQuote: Awaited<ReturnType<MarketDataClient['getQuotes']>> extends Map<
       string,

@@ -59,7 +59,6 @@ describe('createSeatDomain', () => {
       direction: string;
       nextState: SeatState;
     }> = [];
-    const bumpCalls: Array<{ monitorSymbol: string; direction: string }> = [];
     const monitorContext = {
       config: { monitorSymbol: 'HSI.HK' },
       seatState: { long: emptySeatState, short: emptySeatState },
@@ -78,34 +77,23 @@ describe('createSeatDomain', () => {
       monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
       global: {} as TradingConfig['global'],
     };
+    const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
     const symbolRegistry: SymbolRegistry = {
-      getSeatState: (_monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
+      getMonitorSymbol: () => expectedMonitorSymbol,
+      getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longBeforeClear : shortBeforeClear;
       },
       getSeatVersion: () => 1,
       resolveSeatBySymbol: () => null,
-      updateSeatState: (
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-        nextState: SeatState,
-      ) => {
-        updateCalls.push({ monitorSymbol, direction, nextState });
+      updateSeatState: (direction: 'LONG' | 'SHORT', nextState: SeatState) => {
+        updateCalls.push({ monitorSymbol: expectedMonitorSymbol, direction, nextState });
         return nextState;
       },
-      bumpSeatVersion: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
-        bumpCalls.push({ monitorSymbol, direction });
-        return 2;
-      },
-      updateSeatStateWithVersionBump: (
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-        nextState: SeatState,
-      ) => {
-        atomicUpdateCalls.push({ monitorSymbol, direction, nextState });
+      updateSeatStateWithVersionBump: (direction: 'LONG' | 'SHORT', nextState: SeatState) => {
+        atomicUpdateCalls.push({ monitorSymbol: expectedMonitorSymbol, direction, nextState });
         return { seatState: nextState, seatVersion: 2 };
       },
       onSeatStateChanged: () => () => {},
-      onSeatVersionChanged: () => () => {},
       onSeatTruthChanged: () => {
         throw new Error('seatDomain test must not subscribe to seat truth events');
       },
@@ -165,7 +153,6 @@ describe('createSeatDomain', () => {
         symbol: 'OLD_BEAR.HK',
       }),
     ).toBe(310);
-    expect(bumpCalls).toHaveLength(0);
     clearSeatActivationCarryover(symbolRegistry);
   });
 
@@ -202,13 +189,15 @@ describe('createSeatDomain', () => {
       monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
       global: {} as TradingConfig['global'],
     };
+    const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
     const symbolRegistry: SymbolRegistry = {
-      getSeatState: (_monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
+      getMonitorSymbol: () => expectedMonitorSymbol,
+      getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longSeatState : shortSeatState;
       },
       getSeatVersion: () => 1,
       resolveSeatBySymbol: () => null,
-      updateSeatState: (_monitorSymbol, direction, nextState) => {
+      updateSeatState: (direction, nextState) => {
         if (direction === 'LONG') {
           longSeatState = nextState;
         } else {
@@ -217,8 +206,7 @@ describe('createSeatDomain', () => {
 
         return nextState;
       },
-      bumpSeatVersion: () => 2,
-      updateSeatStateWithVersionBump: (_monitorSymbol, direction, nextState) => {
+      updateSeatStateWithVersionBump: (direction, nextState) => {
         if (direction === 'LONG') {
           longSeatState = nextState;
         } else {
@@ -228,7 +216,6 @@ describe('createSeatDomain', () => {
         return { seatState: nextState, seatVersion: 2 };
       },
       onSeatStateChanged: () => () => {},
-      onSeatVersionChanged: () => () => {},
       onSeatTruthChanged: () => () => {},
     };
     const warrantListCache = { clear: () => {} } as unknown as WarrantListCache;
@@ -302,19 +289,19 @@ describe('createSeatDomain', () => {
       monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
       global: {} as TradingConfig['global'],
     };
+    const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
     const symbolRegistry: SymbolRegistry = {
-      getSeatState: (_monitorSymbol: string, direction: 'LONG' | 'SHORT') => {
+      getMonitorSymbol: () => expectedMonitorSymbol,
+      getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longSeatState : shortSeatState;
       },
       getSeatVersion: () => 1,
       resolveSeatBySymbol: () => null,
-      updateSeatState: (_monitorSymbol, _direction, nextState) => nextState,
-      bumpSeatVersion: () => 2,
-      updateSeatStateWithVersionBump: (_monitorSymbol, _direction, nextState) => {
+      updateSeatState: (_direction, nextState) => nextState,
+      updateSeatStateWithVersionBump: (_direction, nextState) => {
         return { seatState: nextState, seatVersion: 2 };
       },
       onSeatStateChanged: () => () => {},
-      onSeatVersionChanged: () => () => {},
       onSeatTruthChanged: () => () => {},
     };
     const warrantListCache = { clear: () => {} } as unknown as WarrantListCache;
@@ -377,7 +364,6 @@ describe('createSeatDomain', () => {
       getSeatState: () => emptySeatState,
       getSeatVersion: () => 0,
       updateSeatState: () => emptySeatState,
-      bumpSeatVersion: () => 0,
     } as unknown as SymbolRegistry;
     const warrantListCache = { clear: () => {} } as unknown as WarrantListCache;
 

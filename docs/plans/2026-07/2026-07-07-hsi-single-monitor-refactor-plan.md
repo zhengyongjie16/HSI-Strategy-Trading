@@ -1,3 +1,5 @@
+> Historical note: this plan describes the initial single-monitor migration. The active follow-up simplification plan is `2026-07-09-hsi-single-monitor-architecture-simplification-plan.md`; where this older document asks to add or retain indexed-key, foreign-monitor, or internal `monitorSymbol` regression tests, the newer plan supersedes it.
+
 # HSI Single Monitor Refactor Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `typescript-project-specifications` before writing or refactoring TypeScript code. Use subagent-driven review for independent domains when implementing this plan. Steps use checkbox (`- [ ]`) syntax for tracking.

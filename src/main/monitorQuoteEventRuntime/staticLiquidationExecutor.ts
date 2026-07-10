@@ -87,10 +87,7 @@ function createStaticLiquidationCandidate(params: {
     executionTime,
   } = params;
   const isLongDirection = direction === 'LONG';
-  const seatState = monitorContext.symbolRegistry.getSeatState(
-    monitorContext.config.monitorSymbol,
-    direction,
-  );
+  const seatState = monitorContext.symbolRegistry.getSeatState(direction);
   if (!isSeatActive(seatState)) {
     return { kind: 'SKIP' };
   }
@@ -129,10 +126,7 @@ function createStaticLiquidationCandidate(params: {
     triggerTime: executionTime,
     orderTypeOverride: WARRANT_LIQUIDATION_ORDER_TYPE,
     isProtectiveLiquidation: false,
-    seatVersion: monitorContext.symbolRegistry.getSeatVersion(
-      monitorContext.config.monitorSymbol,
-      direction,
-    ),
+    seatVersion: monitorContext.symbolRegistry.getSeatVersion(direction),
   };
 
   return {
@@ -173,8 +167,8 @@ export function createStaticLiquidationExecutor(
     const { monitorContext } = params;
     const executionTime = now();
     const monitorSymbol = monitorContext.config.monitorSymbol;
-    const longSeat = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'LONG');
-    const shortSeat = monitorContext.symbolRegistry.getSeatState(monitorSymbol, 'SHORT');
+    const longSeat = monitorContext.symbolRegistry.getSeatState('LONG');
+    const shortSeat = monitorContext.symbolRegistry.getSeatState('SHORT');
     const longSymbol = isSeatActive(longSeat) ? longSeat.symbol : null;
     const shortSymbol = isSeatActive(shortSeat) ? shortSeat.symbol : null;
     const wakeupSymbols = buildStaticLiquidationWakeupSymbols({
@@ -253,7 +247,6 @@ export function createStaticLiquidationExecutor(
       }
 
       const seatValidation = validateSignalSeat({
-        monitorSymbol,
         signal: candidate.signal,
         symbolRegistry: monitorContext.symbolRegistry,
       });
@@ -276,8 +269,7 @@ export function createStaticLiquidationExecutor(
         candidate.quote,
       );
       const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(
-        monitorSymbol,
-        isLongDirection,
+        isLongDirection ? 'LONG' : 'SHORT',
       );
       await monitorContext.riskChecker.refreshUnrealizedLossData(
         monitorContext.orderRecorder,

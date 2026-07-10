@@ -104,8 +104,8 @@ function collectAllQuoteSymbols(
     return new Set(symbols);
   }
 
-  const longSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
-  const shortSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'SHORT');
+  const longSeat = symbolRegistry.getSeatState('LONG');
+  const shortSeat = symbolRegistry.getSeatState('SHORT');
   if (longSeat.symbol) {
     symbols.push(longSeat.symbol);
   }

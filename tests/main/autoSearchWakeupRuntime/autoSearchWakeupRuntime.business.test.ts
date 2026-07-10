@@ -70,9 +70,9 @@ function createTimerHarness(initialNowMs: number) {
 
 function makeSeatEmpty(
   symbolRegistry: ReturnType<typeof createSymbolRegistry>,
-  monitorSymbol: string,
+  _monitorSymbol: string,
 ): void {
-  symbolRegistry.updateSeatState(monitorSymbol, 'SHORT', {
+  symbolRegistry.updateSeatState('SHORT', {
     symbol: 'BEAR.HK',
     status: 'ACTIVE',
     lastSwitchAt: null,
@@ -83,7 +83,7 @@ function makeSeatEmpty(
     frozenTradingDayKey: null,
   });
 
-  symbolRegistry.updateSeatState(monitorSymbol, 'LONG', {
+  symbolRegistry.updateSeatState('LONG', {
     symbol: null,
     status: 'EMPTY',
     lastSwitchAt: null,
@@ -181,7 +181,6 @@ describe('AutoSearchWakeupRuntime', () => {
     tradingGateEventRuntime.emitGateStateChanged({
       previousCanTrade: false,
       nextCanTrade: true,
-      timestampMs: Date.parse('2026-04-10T02:00:00.000Z'),
     });
     await Bun.sleep(0);
 
@@ -230,7 +229,6 @@ describe('AutoSearchWakeupRuntime', () => {
     tradingGateEventRuntime.emitGateStateChanged({
       previousCanTrade: false,
       nextCanTrade: true,
-      timestampMs: Date.now(),
     });
     await Bun.sleep(0);
     await runtime.stopAndDrain();
@@ -285,8 +283,8 @@ describe('AutoSearchWakeupRuntime', () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
-    symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
-      ...symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG'),
+    symbolRegistry.updateSeatState('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
       searchFailCountToday: 2,
     });
     const calls: SearchOnEventParams[] = [];
@@ -326,7 +324,7 @@ describe('AutoSearchWakeupRuntime', () => {
 
     expect(calls).toHaveLength(1);
     expect(timers.getPendingTimerAts()).toEqual([startMs + TRADING.INTERVAL_MS]);
-    expect(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG')).toMatchObject({
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
       searchFailCountToday: 2,
       frozenTradingDayKey: null,
     });
@@ -337,7 +335,7 @@ describe('AutoSearchWakeupRuntime', () => {
     await runtime.stopAndDrain();
 
     expect(calls).toHaveLength(2);
-    expect(symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG')).toMatchObject({
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
       searchFailCountToday: 2,
       frozenTradingDayKey: null,
     });
@@ -357,14 +355,14 @@ describe('AutoSearchWakeupRuntime', () => {
         maybeSearchOnEvent: async (params) => {
           calls.push(params);
           if (calls.length === 1) {
-            const currentSeat = symbolRegistry.getSeatState(monitorConfig.monitorSymbol, 'LONG');
-            symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+            const currentSeat = symbolRegistry.getSeatState('LONG');
+            symbolRegistry.updateSeatState('LONG', {
               ...currentSeat,
               status: 'SEARCHING',
               lastSearchAt: startMs,
             });
 
-            symbolRegistry.updateSeatState(monitorConfig.monitorSymbol, 'LONG', {
+            symbolRegistry.updateSeatState('LONG', {
               ...currentSeat,
               status: 'EMPTY',
               lastSearchAt: null,
@@ -460,14 +458,19 @@ describe('AutoSearchWakeupRuntime', () => {
     expect(calls.map((call) => call.direction)).toEqual(['LONG']);
   });
 
-  it('seat 写入携带非唯一 monitorSymbol 时在 symbolRegistry 边界 fail-fast', async () => {
+  it('seat truth 变化只按方向重算，不再要求 monitorSymbol fail-fast', async () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
+    const calls: SearchOnEventParams[] = [];
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
       symbolRegistry,
-      autoSymbolManager: createAutoSymbolManagerDouble(),
+      autoSymbolManager: createAutoSymbolManagerDouble({
+        maybeSearchOnEvent: async (params) => {
+          calls.push(params);
+        },
+      }),
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
@@ -489,7 +492,7 @@ describe('AutoSearchWakeupRuntime', () => {
     runtime.start();
 
     expect(() => {
-      symbolRegistry.updateSeatStateWithVersionBump('TECH.HK', 'LONG', {
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', {
         symbol: null,
         status: 'EMPTY',
         lastSwitchAt: null,
@@ -499,8 +502,9 @@ describe('AutoSearchWakeupRuntime', () => {
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });
-    }).toThrow('SymbolRegistry 未找到监控标的: TECH.HK');
+    }).not.toThrow();
 
     await runtime.stopAndDrain();
+    expect(calls.map((call) => call.direction)).toEqual(['LONG', 'LONG']);
   });
 });

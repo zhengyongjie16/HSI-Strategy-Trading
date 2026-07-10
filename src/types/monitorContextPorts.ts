@@ -152,13 +152,11 @@ export interface AutoSymbolManagerPort {
 export interface DelayedSignalVerifierPort {
   addSignal: (params: {
     readonly signal: Signal;
-    readonly monitorSymbol: string;
     readonly verificationIndicators: ReadonlyArray<VerificationIndicator>;
   }) => void;
   onVerified: (callback: (signal: Signal) => void) => void;
   cancelAll: () => number;
-  cancelAllForSymbol: (monitorSymbol: string) => void;
-  cancelAllForDirection: (monitorSymbol: string, direction: 'LONG' | 'SHORT') => number;
+  cancelAllForDirection: (direction: 'LONG' | 'SHORT') => number;
   getPendingCount: () => number;
   destroy: () => void;
 }

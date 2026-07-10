@@ -44,7 +44,7 @@ function logSeatRefreshReplaced<TDataMap extends Readonly<Record<string, unknown
   }
 
   logger.debug(
-    `[SEAT_REFRESH replaced] monitorSymbol=${task.monitorSymbol} direction=${readStringField(task.data, 'direction')} seatVersion=${readNumberField(task.data, 'seatVersion')} nextSymbol=${readStringField(task.data, 'nextSymbol')} dedupeKey=${task.dedupeKey} replacedCount=${removedCount}`,
+    `[SEAT_REFRESH replaced] direction=${readStringField(task.data, 'direction')} seatVersion=${readNumberField(task.data, 'seatVersion')} nextSymbol=${readStringField(task.data, 'nextSymbol')} dedupeKey=${task.dedupeKey} replacedCount=${removedCount}`,
   );
 }
 
@@ -125,7 +125,6 @@ export function createMonitorTaskQueue<
       id: randomUUID(),
       type: task.type,
       dedupeKey: task.dedupeKey,
-      monitorSymbol: task.monitorSymbol,
       data: task.data,
       createdAt: Date.now(),
     } as MonitorTask<TDataMap, TType>;

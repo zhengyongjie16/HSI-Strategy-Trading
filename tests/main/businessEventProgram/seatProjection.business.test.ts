@@ -17,9 +17,8 @@ import {
 
 describe('seatProjection business flow', () => {
   it('投影最新席位身份但不清理旧方向运行态', () => {
-    const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
+      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -48,7 +47,6 @@ describe('seatProjection business flow', () => {
     const buyTaskQueue = createBuyTaskQueue();
     buyTaskQueue.push({
       type: 'IMMEDIATE_BUY',
-      monitorSymbol,
       data: createSignalDouble('BUYCALL', 'BULL.HK'),
     });
 
@@ -76,13 +74,12 @@ describe('seatProjection business flow', () => {
           searchFailCountToday: 0,
           frozenTradingDayKey: null,
         },
-        short: symbolRegistry.getSeatState(monitorSymbol, 'SHORT'),
+        short: symbolRegistry.getSeatState('SHORT'),
       },
       seatVersion: { long: 1, short: 1 },
     } as unknown as MonitorContext;
 
     const seatInfo = resolveSignalSeatInfo({
-      monitorSymbol,
       monitorContext,
     });
 

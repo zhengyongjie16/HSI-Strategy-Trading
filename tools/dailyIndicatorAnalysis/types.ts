@@ -5,18 +5,7 @@ import type { KDJIndicator } from '../../src/types/quote.js';
  * 数据来源：分钟指标计算结果（MinuteIndicatorRow）。
  * 使用范围：仅 `tools/dailyIndicatorAnalysis` 工具内部。
  */
-export type RowColorIndicatorKey =
-  | 'rsi6'
-  | 'k'
-  | 'd'
-  | 'j'
-  | 'mfi'
-  | 'adx'
-  | 'ema5'
-  | 'poc'
-  | 'vah'
-  | 'val'
-  | 'vaPositionInValueArea';
+export type RowColorIndicatorKey = 'rsi6' | 'd' | 'j' | 'vaPositionInValueArea';
 
 /**
  * 单条着色条件类型：用于描述一组「指标 -> 阈值」判断。
@@ -65,9 +54,6 @@ export type LastCandleVariant = 'high' | 'low';
 export type MinuteIndicatorRow = {
   readonly time: string;
   readonly variant: LastCandleVariant;
-  readonly open: number;
-  readonly high: number;
-  readonly low: number;
   readonly close: number;
   readonly changePercent: number | null;
   readonly volume: number;
