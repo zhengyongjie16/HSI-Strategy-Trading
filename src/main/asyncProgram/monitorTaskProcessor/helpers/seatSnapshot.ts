@@ -6,7 +6,8 @@
  */
 import { isSeatVersionMatch } from '../../../../utils/seat/guards.js';
 
-import type { MonitorTaskContext, SeatSnapshot } from '../types.js';
+import type { MonitorContext } from '../../../../types/state.js';
+import type { SeatSnapshot } from '../types.js';
 
 /**
  * 校验席位快照是否与当前席位状态一致
@@ -14,18 +15,14 @@ import type { MonitorTaskContext, SeatSnapshot } from '../types.js';
  *
  * @param direction 方向（LONG 或 SHORT）
  * @param snapshot 任务携带的席位快照（版本号 + 标的 + 激活基线）
- * @param context 监控上下文，为 null 时返回 false
+ * @param context 唯一监控上下文
  * @returns 版本、标的与激活基线均一致时返回 true
  */
 export function isSeatSnapshotValid(
   direction: 'LONG' | 'SHORT',
   snapshot: SeatSnapshot,
-  context: MonitorTaskContext | null,
+  context: Pick<MonitorContext, 'symbolRegistry'>,
 ): boolean {
-  if (!context) {
-    return false;
-  }
-
   const seatState = context.symbolRegistry.getSeatState(direction);
   const currentVersion = context.symbolRegistry.getSeatVersion(direction);
   if (!isSeatVersionMatch(snapshot.seatVersion, currentVersion)) {

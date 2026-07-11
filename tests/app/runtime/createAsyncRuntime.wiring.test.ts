@@ -31,7 +31,7 @@ import {
 } from '../../helpers/testDoubles.js';
 import {
   createLastState,
-  createMonitorTaskContext,
+  createMonitorContext,
   runProcessorFlow,
 } from '../../main/asyncProgram/utils.js';
 
@@ -59,7 +59,7 @@ function createDeps(
 ): AsyncRuntimeFactoryDeps {
   const { lastState, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContext } = options;
   const warrantListCache = createWarrantListCache();
-  const runtimeMonitorContext = monitorContext ?? createMonitorTaskContext();
+  const runtimeMonitorContext = monitorContext ?? createMonitorContext();
 
   return {
     preGateRuntime: {
@@ -211,7 +211,7 @@ describe('app createAsyncRuntime wiring', () => {
       const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
       const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
       let periodicDueCalls = 0;
-      const context = createMonitorTaskContext({
+      const context = createMonitorContext({
         autoSymbolManager: {
           maybeSearchOnEvent: async () => {},
           evaluatePeriodicSwitchDue: async () => {
@@ -290,7 +290,7 @@ describe('app createAsyncRuntime wiring', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
-      const context = createMonitorTaskContext({
+      const context = createMonitorContext({
         autoSymbolManager: {
           maybeSearchOnEvent: async () => {},
           evaluatePeriodicSwitchDue: async () => {
@@ -371,7 +371,7 @@ describe('app createAsyncRuntime wiring', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
-      const context = createMonitorTaskContext({
+      const context = createMonitorContext({
         autoSymbolManager: {
           maybeSearchOnEvent: async () => {},
           evaluatePeriodicSwitchDue: async () => {

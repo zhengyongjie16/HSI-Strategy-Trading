@@ -2,7 +2,6 @@ import type { PeriodicSwitchWakeupRuntime } from '../../periodicSwitchWakeupRunt
 import type { SwitchWakeupRuntime } from '../../monitorQuoteEventRuntime/types.js';
 import type { MonitorTaskQueue, MonitorTask } from '../monitorTaskQueue/types.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
-import type { TradingConfig } from '../../../types/config.js';
 import type { RawOrderFromAPI, Trader, MarketDataClient } from '../../../types/services.js';
 import type { QuoteSubscriptionRuntime } from '../../quoteSubscriptionRuntime/types.js';
 
@@ -82,32 +81,6 @@ export type MonitorTaskDataMap = Readonly<{
 export type MonitorTaskStatus = 'processed' | 'skipped' | 'failed' | 'blocked';
 
 /**
- * 监控任务处理上下文（处理器执行任务时的运行时依赖）。
- * 类型用途：处理器执行任务时所需的唯一上下文，含 symbolRegistry、orderRecorder、riskChecker、名称缓存等。
- * 数据来源：由 app runtime 直接注入唯一 monitorContext。
- * 使用范围：仅 monitorTaskProcessor 内部使用。
- */
-export type MonitorTaskContext = Pick<
-  MonitorContext,
-  | 'config'
-  | 'state'
-  | 'symbolRegistry'
-  | 'seatState'
-  | 'seatVersion'
-  | 'autoSymbolManager'
-  | 'orderRecorder'
-  | 'dailyLossTracker'
-  | 'riskChecker'
-  | 'longSymbolName'
-  | 'shortSymbolName'
-  | 'monitorSymbolName'
-  | 'indicatorProfile'
-  | 'strategy'
-  | 'unrealizedLossMonitor'
-  | 'delayedSignalVerifier'
->;
-
-/**
  * 刷新辅助函数集合（席位刷新任务用工具）。
  * 类型用途：封装席位刷新任务所需的订单拉取与账户缓存刷新，供 MonitorTaskProcessor 内部调用。
  * 数据来源：由 MonitorTaskProcessor 实现模块注入或闭包提供。
@@ -126,7 +99,7 @@ export type RefreshHelpers = Readonly<{
  */
 export type MonitorTaskProcessorDeps = Readonly<{
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
-  monitorContext: MonitorTaskContext;
+  monitorContext: MonitorContext;
   trader: Trader;
   marketDataClient: MarketDataClient;
   quoteSubscriptionRuntime: Pick<
@@ -139,7 +112,6 @@ export type MonitorTaskProcessorDeps = Readonly<{
     'markWaitingEmpty' | 'clearWaitingEmpty' | 'replanRouteAfterTask'
   >;
   lastState: LastState;
-  tradingConfig: TradingConfig;
 
   /** 生命周期门禁：false 时任务直接跳过 */
   getCanProcessTask?: () => boolean;

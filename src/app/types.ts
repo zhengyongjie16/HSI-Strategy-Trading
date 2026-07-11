@@ -95,6 +95,17 @@ export type AppEnvironmentParams = Readonly<{
 }>;
 
 /**
+ * pre-gate runtime 创建参数。
+ * 类型用途：在首次资源获取前把唯一 cleanup owner 注入 pre-gate 工厂。
+ * 数据来源：由 app 顶层入口创建。
+ * 使用范围：仅 pre-gate runtime 创建链路使用。
+ */
+export type CreatePreGateRuntimeParams = AppEnvironmentParams &
+  Readonly<{
+    cleanup: CleanupController;
+  }>;
+
+/**
  * 交易日信息缓存条目。
  * 类型用途：按交易日缓存 `isTradingDay/isHalfDay`，避免重复调用交易日接口。
  * 数据来源：由 createTradingDayInfoResolver 查询并缓存。
@@ -219,44 +230,70 @@ export type MonitorContextFactoryDeps = Readonly<{
 }>;
 
 /**
- * 退出清理上下文。
- * 类型用途：作为 createCleanup 的入参，封装程序退出时需要释放的处理器与资源引用，其中 trader 仅暴露 orderMonitor runtime 的停止端口。
- * 数据来源：由 app 顶层装配在全部 runtime 创建后组装传入。
- * 使用范围：仅 app createCleanup 使用。
- */
-export type CleanupContext = Readonly<{
-  buyProcessor: Processor;
-  sellProcessor: Processor;
-  monitorTaskProcessor: MonitorTaskProcessor;
-  trader: Pick<Trader, 'stopOrderMonitorRuntimeAndDrain'>;
-  businessEventProgram: BusinessEventProgram;
-  tradingRiskEventRuntime: TradingRiskEventRuntime;
-  monitorQuoteEventRuntime: MonitorQuoteEventRuntime;
-  monitorDisplayRuntime: MonitorDisplayRuntime;
-  tradingQuoteDisplayRuntime: TradingQuoteDisplayRuntime;
-  switchWakeupRuntime: SwitchWakeupRuntime;
-  periodicSwitchWakeupRuntime: PeriodicSwitchWakeupRuntime;
-  timeWakeupRuntime: TimeWakeupRuntime;
-  quoteSubscriptionRuntime: QuoteSubscriptionRuntime;
-  seatActivationDispatcher: SeatActivationDispatcher;
-  seatRuntimeCleanupDispatcher: SeatRuntimeCleanupDispatcher;
-  autoSearchWakeupRuntime: AutoSearchWakeupRuntime;
-  postTradeConsistencyRuntime: PostTradeConsistencyRuntime;
-  marketDataClient: MarketDataClient;
-  monitorContext: MonitorContext;
-  indicatorCache: IndicatorCache;
-  lastState: LastState;
-}>;
-
-/**
  * 退出清理控制器。
  * 类型用途：表达 createCleanup 返回的显式资源清理能力。
  * 数据来源：由 createCleanup 创建。
  * 使用范围：仅 app 顶层装配与测试使用。
  */
 export type CleanupController = Readonly<{
+  register: (step: CleanupStep) => void;
   execute: () => Promise<void>;
 }>;
+
+/**
+ * cleanup 阶段。
+ * 类型用途：让分散的资源获取点只登记真实 disposer，由统一 owner 保持既有有序 shutdown 语义。
+ * 数据来源：由各 runtime 工厂在资源获取后立即登记。
+ * 使用范围：仅 app 资源所有权与 cleanup 链路使用。
+ */
+export type CleanupPhase =
+  | 'CLOSE_TRADING_GATE'
+  | 'ABORT_FRESHNESS_WAITING'
+  | 'STOP_TIME_WAKEUP_RUNTIME'
+  | 'STOP_BUSINESS_EVENT_PROGRAM'
+  | 'STOP_TRADING_RISK_EVENT_RUNTIME'
+  | 'STOP_MONITOR_QUOTE_EVENT_RUNTIME'
+  | 'STOP_MONITOR_DISPLAY_RUNTIME'
+  | 'STOP_TRADING_QUOTE_DISPLAY_RUNTIME'
+  | 'STOP_SWITCH_WAKEUP_RUNTIME'
+  | 'STOP_PERIODIC_SWITCH_WAKEUP_RUNTIME'
+  | 'STOP_AUTO_SEARCH_WAKEUP_RUNTIME'
+  | 'STOP_SEAT_ACTIVATION_DISPATCHER'
+  | 'STOP_MONITOR_TASK_PROCESSOR'
+  | 'STOP_SEAT_RUNTIME_CLEANUP_DISPATCHER'
+  | 'STOP_BUY_PROCESSOR'
+  | 'STOP_SELL_PROCESSOR'
+  | 'UNSUBSCRIBE_TRADER_LISTENER'
+  | 'STOP_ORDER_MONITOR_RUNTIME'
+  | 'STOP_QUOTE_SUBSCRIPTION_RUNTIME'
+  | 'STOP_POST_TRADE_CONSISTENCY_RUNTIME'
+  | 'DESTROY_DELAYED_SIGNAL_VERIFIER'
+  | 'CLEAR_INDICATOR_CACHE'
+  | 'CLEAR_MONITOR_SNAPSHOT'
+  | 'RESET_MARKET_DATA_RUNTIME';
+
+/**
+ * 单个 cleanup 步骤。
+ * 类型用途：描述资源释放动作、业务顺序阶段与日志名称。
+ * 数据来源：由资源 acquisition owner 在取得真实 disposer 后创建。
+ * 使用范围：仅 CleanupController.register 使用。
+ */
+export type CleanupStep = Readonly<{
+  phase: CleanupPhase;
+  step: string;
+  handler: () => Promise<void> | void;
+}>;
+
+/**
+ * 已登记的 cleanup 步骤。
+ * 类型用途：在公开 cleanup 步骤上附加稳定登记顺序，用于同阶段排序。
+ * 数据来源：由 createCleanup.register 在资源登记时生成。
+ * 使用范围：仅 app/shutdown/createCleanup 内部使用。
+ */
+export type RegisteredCleanupStep = CleanupStep &
+  Readonly<{
+    sequence: number;
+  }>;
 
 /**
  * 退出清理失败条目。
@@ -323,7 +360,7 @@ export type RegisterDelayedSignalHandlersParams = Readonly<{
 /**
  * 唯一监控上下文装配参数。
  * 类型用途：封装 createMonitorContext 所需的 pre/post gate 运行时对象与启动 quotesMap。
- * 数据来源：由 app 顶层装配在 startup snapshot 之后组装传入。
+ * 数据来源：由 createPostGateRuntime 在 startup snapshot 前以 quotesMap: null 组装传入；READY 后再同步标的名称。
  * 使用范围：仅唯一 monitorContext 装配链路使用。
  */
 export type CreateMonitorContextParams = Readonly<{
@@ -359,6 +396,7 @@ export type CreatePostGateRuntimeParams = Readonly<{
   env: NodeJS.ProcessEnv;
   preGateRuntime: PreGateRuntime;
   now: Date;
+  cleanup: CleanupController;
 }>;
 
 /**
@@ -468,13 +506,13 @@ export type PostTradeConsistencyRuntimeStatus = Readonly<{
 export type PostTradeConsistencyRuntimeDeps = Readonly<{
   getTrader: () => Trader;
   lastState: LastState;
-  onPositionsCommitted?: () => Promise<void>;
+  onPositionsCommitted: () => Promise<void>;
 }>;
 
 /**
  * 成交后一致性运行时业务依赖。
  * 类型用途：在唯一 monitorContext 与风控跟踪器完成装配后，为 PostTradeConsistencyRuntime 绑定成交后业务刷新所需协作者。
- * 数据来源：由 app 顶层 runApp 在唯一 monitorContext 装配完成后、任何 start 前显式注入。
+ * 数据来源：由 createPostGateRuntime 在唯一 monitorContext 装配完成后、任何 start 前内部单次绑定。
  * 使用范围：仅成交后一致性运行时与 app 装配层使用。
  */
 export type PostTradeConsistencyRuntimeBusinessDeps = Readonly<{
@@ -529,7 +567,7 @@ export type LifecycleRuntimeFactoryDeps = Readonly<{
  * 使用范围：仅 app 顶层入口装配使用。
  */
 export type RunAppDeps = Readonly<{
-  createPreGateRuntime: (params: AppEnvironmentParams) => Promise<PreGateRuntime>;
+  createPreGateRuntime: (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime>;
   createPostGateRuntime: (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime>;
   loadStartupSnapshot: (params: LoadStartupSnapshotParams) => Promise<StartupSnapshotResult>;
   collectRuntimeValidationSymbols: (
@@ -546,7 +584,7 @@ export type RunAppDeps = Readonly<{
     params: LifecycleRuntimeFactoryDeps,
     factories?: LifecycleRuntimeFactories,
   ) => DayLifecycleManager;
-  createCleanup: (context: CleanupContext) => CleanupController;
+  createCleanup: () => CleanupController;
   createTimeWakeupRuntime: (deps: TimeWakeupRuntimeDeps) => TimeWakeupRuntime;
   waitForShutdownSignal: () => Promise<void>;
   logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;

@@ -3,36 +3,26 @@ import type { MarketDataClient, QuoteUpdatedEvent, Trader } from '../../types/se
 import type { SymbolRegistry } from '../../types/seat.js';
 
 /**
- * 风险路由键。
- * 类型用途：以 LONG / SHORT 方向作为单条风险执行链的唯一键，支撑 single-flight 与 latest-only collapse。
- * 数据来源：由 routing index 构建流程生成。
- * 使用范围：仅 tradingRiskEventRuntime 模块内部使用。
- */
-export type TradingRiskRouteKey = 'LONG' | 'SHORT';
-
-/**
  * 风险路由条目。
  * 类型用途：表示某个 tradingSymbol 当前应路由到的 direction / seatVersion 内部执行身份。
  * 数据来源：由 symbolRegistry 的权威快照重建。
  * 使用范围：仅 tradingRiskEventRuntime 模块内部使用。
  */
 export type TradingRiskRoute = Readonly<{
-  readonly routeKey: TradingRiskRouteKey;
   readonly direction: 'LONG' | 'SHORT';
   readonly tradingSymbol: string;
   readonly seatVersion: number;
-  readonly monitorContext: MonitorContext;
 }>;
 
 /**
  * 风险路由索引。
- * 类型用途：把 tradingSymbol 唯一映射到当前路由条目，并同时保留按 routeKey 的索引。
+ * 类型用途：把 tradingSymbol 唯一映射到当前路由条目，并记录当前激活方向集合。
  * 数据来源：由 tradingRiskEventRuntime 在启动与事件处理过程中基于 symbolRegistry 权威快照重建。
  * 使用范围：仅 tradingRiskEventRuntime 模块内部使用。
  */
 export type TradingRiskRoutingIndex = Readonly<{
   readonly routesBySymbol: ReadonlyMap<string, TradingRiskRoute>;
-  readonly routesByKey: ReadonlyMap<TradingRiskRouteKey, TradingRiskRoute>;
+  readonly activeRouteKeys: ReadonlySet<'LONG' | 'SHORT'>;
 }>;
 
 /**

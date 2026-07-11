@@ -2,7 +2,7 @@ import type { SignalType, Signal } from './signal.js';
 import type { IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { MonitorConfig } from './config.js';
-import type { SeatState, SymbolRegistry, LifecycleState } from './seat.js';
+import type { SymbolRegistry, LifecycleState } from './seat.js';
 import type { OrderRecorder, PositionCache, RiskChecker, TradingDayInfo } from './services.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from './risk.js';
 import type { IndicatorUsageProfile } from './indicatorProfile.js';
@@ -121,21 +121,6 @@ export type MonitorContext = {
 
   /** 标的注册表 */
   readonly symbolRegistry: SymbolRegistry;
-
-  /**
-   * 运行中会更新的席位缓存（保持可变，避免频繁重建上下文）
-   */
-  /** 席位状态缓存 */
-  seatState: {
-    readonly long: SeatState;
-    readonly short: SeatState;
-  };
-
-  /** 席位版本缓存 */
-  seatVersion: {
-    readonly long: number;
-    readonly short: number;
-  };
 
   /** 自动换标管理器 */
   readonly autoSymbolManager: AutoSymbolManagerPort;

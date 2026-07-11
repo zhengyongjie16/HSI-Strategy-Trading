@@ -192,6 +192,7 @@ function createDeps(params?: {
     readonly refreshAccount: boolean;
     readonly refreshPositions: boolean;
   }) => void;
+  readonly onThrottle?: () => void;
 }): {
   deps: OrderMonitorDeps;
   tradeCtx: ReturnType<typeof createTradeContextMock>;
@@ -203,7 +204,6 @@ function createDeps(params?: {
   const quoteUpdatedListeners: Array<(event: QuoteUpdatedEvent) => void> = [];
   const pendingSellSnapshot = new Map<string, PendingSellInfo>();
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -348,7 +348,9 @@ function createDeps(params?: {
   const deps: OrderMonitorDeps = {
     ctx: tradeCtx as unknown as TradeContext,
     rateLimiter: {
-      throttle: async () => {},
+      throttle: async () => {
+        params?.onThrottle?.();
+      },
     },
     cacheManager: {
       clearCache: () => {},
@@ -505,6 +507,55 @@ function extractReplaceOrderPrices(
 }
 
 describe('orderMonitor business flow', () => {
+  for (const mutation of ['cancel', 'replace'] as const) {
+    it(`rechecks signal authorization after throttle before ${mutation} API`, async () => {
+      let authorized = true;
+      const { deps, tradeCtx } = createDeps({
+        onThrottle: () => {
+          authorized = false;
+        },
+      });
+      const monitor = createOrderMonitor(deps);
+      monitor.trackOrder({
+        orderId: `SIGNAL-${mutation.toUpperCase()}`,
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        price: 1,
+        initialSubmittedPrice: 1,
+        quantity: 100,
+        isLongSymbol: true,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: false,
+        orderType: OrderType.ELO,
+      });
+
+      await (mutation === 'cancel'
+        ? monitor.cancelOrder('SIGNAL-CANCEL', {
+            kind: 'SIGNAL_AUTHORIZED',
+            authorize: () => authorized,
+          })
+        : monitor.replaceOrderPrice(
+            'SIGNAL-REPLACE',
+            1.01,
+            { kind: 'SIGNAL_AUTHORIZED', authorize: () => authorized },
+            null,
+          ));
+
+      expect(
+        tradeCtx.getCalls(mutation === 'cancel' ? 'cancelOrder' : 'replaceOrder'),
+      ).toHaveLength(0);
+    });
+  }
+
+  it('keeps order-fact public cancel independent from signal authorization', async () => {
+    const { deps, tradeCtx } = createDeps();
+    const monitor = createOrderMonitor(deps);
+
+    await monitor.cancelOrder('ORDER-FACT-CANCEL', { kind: 'ORDER_FACT' });
+
+    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
+  });
+
   it('retries private topic subscription during initialization after a transient API failure', async () => {
     const { deps, tradeCtx } = createDeps();
     tradeCtx.setFailureRule('tradeSubscribe', {
@@ -3116,7 +3167,7 @@ describe('orderMonitor business flow', () => {
       orderType: OrderType.ELO,
     });
 
-    const outcome = await monitor.cancelOrder('SELL-CANCEL-SETTLED');
+    const outcome = await monitor.cancelOrder('SELL-CANCEL-SETTLED', { kind: 'ORDER_FACT' });
 
     expect(outcome.kind).toBe('ALREADY_CLOSED');
     if (outcome.kind === 'ALREADY_CLOSED') {
@@ -3159,7 +3210,9 @@ describe('orderMonitor business flow', () => {
     await monitor.initialize();
     await monitor.recoverOrderTrackingFromSnapshot([]);
 
-    const outcome = await monitor.cancelOrder('UNTRACKED-601012-FILLED');
+    const outcome = await monitor.cancelOrder('UNTRACKED-601012-FILLED', {
+      kind: 'ORDER_FACT',
+    });
 
     expect(outcome.kind).toBe('ALREADY_CLOSED');
     if (outcome.kind === 'ALREADY_CLOSED') {

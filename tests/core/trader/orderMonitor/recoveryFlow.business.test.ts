@@ -140,7 +140,7 @@ describe('orderMonitor recoveryFlow', () => {
       tradingConfig: createTradingConfig({
         monitor: createMonitorConfigWithOwnership(),
       }),
-      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry: createSymbolRegistryDouble(),
       trackOrder: (params: TrackOrderParams) => {
         runtime.trackedOrders.set(
           params.orderId,
@@ -174,7 +174,7 @@ describe('orderMonitor recoveryFlow', () => {
       tradingConfig: createTradingConfig({
         monitor: createMonitorConfigWithOwnership(),
       }),
-      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry: createSymbolRegistryDouble(),
       trackOrder: (params: TrackOrderParams) => {
         trackCalls.push(params.orderId);
         runtime.trackedOrders.set(
@@ -211,7 +211,7 @@ describe('orderMonitor recoveryFlow', () => {
       tradingConfig: createTradingConfig({
         monitor: createMonitorConfigWithOwnership(),
       }),
-      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry: createSymbolRegistryDouble(),
       trackOrder: () => {},
       cancelOrder: async () => {
         runtime.queriedTerminalStateByOrderId.set('ORDER-MISMATCHED-FILLED', {

@@ -106,7 +106,6 @@ function bindMinimalBusinessDeps(
         monitorSymbol: 'HSI.HK',
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
         longSeat: {
           symbol: '',
           status: 'EMPTY',
@@ -163,6 +162,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           },
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
 
     runtime.onFreshReached((event) => {
@@ -296,6 +296,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           },
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
 
     bindMinimalBusinessDeps(runtime);
@@ -360,7 +361,6 @@ describe('createPostTradeConsistencyRuntime', () => {
         maxUnrealizedLossPerSymbol: 2_000,
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.HK',
           status: 'ACTIVE',
@@ -416,6 +416,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           ],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
       monitorContext,
@@ -450,7 +451,6 @@ describe('createPostTradeConsistencyRuntime', () => {
       readonly dailyLossOffset: number | undefined;
     }> = [];
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -510,6 +510,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           getStockPositions: async () => [],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
       monitorContext,
@@ -553,6 +554,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           getStockPositions: async () => [],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
 
     bindMinimalBusinessDeps(runtime);
@@ -661,7 +663,6 @@ describe('createPostTradeConsistencyRuntime', () => {
         monitorSymbol: 'HSI.HK',
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.HK',
           status: 'ACTIVE',
@@ -701,6 +702,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           ],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
 
     runtime.bindBusinessDeps({
@@ -742,7 +744,6 @@ describe('createPostTradeConsistencyRuntime', () => {
         monitorSymbol: 'HSI.HK',
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.HK',
           status: 'ACTIVE',
@@ -786,6 +787,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           ],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
 
     runtime.bindBusinessDeps({
@@ -841,6 +843,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       executedTimeMs: number;
       triggerLimit: number;
     }> = [];
+    const pendingProtectiveDirections: Array<'LONG' | 'SHORT'> = [];
     const riskRefreshCalls: Array<{
       symbol: string;
       isLongSymbol: boolean;
@@ -854,7 +857,6 @@ describe('createPostTradeConsistencyRuntime', () => {
         liquidationTriggerLimit: 2,
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.HK',
           status: 'ACTIVE',
@@ -897,9 +899,13 @@ describe('createPostTradeConsistencyRuntime', () => {
         createTraderDouble({
           getAccountSnapshot: async () => createAccountSnapshotDouble(77_000),
           getStockPositions: async () => [],
-          hasPendingProtectiveLiquidationOrders: () => false,
+          hasPendingProtectiveLiquidationOrders: (direction) => {
+            pendingProtectiveDirections.push(direction);
+            return false;
+          },
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
       monitorContext,
@@ -948,6 +954,7 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     expect(lastState.cachedAccount?.buyPower).toBe(77_000);
     expect(lastState.cachedPositions).toEqual([]);
+    expect(pendingProtectiveDirections).toEqual(['LONG']);
     expect(startNewProtectionEpisodeCalls).toEqual([
       {
         direction: 'LONG',
@@ -976,6 +983,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () => createTraderDouble(),
       lastState: createLastState(),
+      onPositionsCommitted: async () => {},
     });
 
     expect(() => {
@@ -987,6 +995,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () => createTraderDouble(),
       lastState: createLastState(),
+      onPositionsCommitted: async () => {},
     });
 
     bindMinimalBusinessDeps(runtime);
@@ -999,7 +1008,6 @@ describe('createPostTradeConsistencyRuntime', () => {
   it('fails fast and stops retrying when attributed seat symbols are duplicated', async () => {
     const lastState = createLastState();
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -1030,6 +1038,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           getStockPositions: async () => [],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
     expect(() => {
       runtime.bindBusinessDeps({
@@ -1050,6 +1059,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () => createTraderDouble(),
       lastState: createLastState(),
+      onPositionsCommitted: async () => {},
     });
 
     runtime.onFreshReached((event) => {
@@ -1091,6 +1101,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () => createTraderDouble(),
       lastState: createLastState(),
+      onPositionsCommitted: async () => {},
     });
 
     bindMinimalBusinessDeps(runtime);
@@ -1133,6 +1144,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           getStockPositions: async () => [],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
 
     runtime.onFreshReached((event) => {
@@ -1181,6 +1193,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           getStockPositions: async () => [],
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
 
     runtime.onFreshReached((event) => {
@@ -1230,7 +1243,6 @@ describe('createPostTradeConsistencyRuntime', () => {
         liquidationTriggerLimit: 2,
       }),
       symbolRegistry: createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
         longSeat: {
           symbol: 'BULL.NEW.HK',
           status: 'ACTIVE',
@@ -1273,6 +1285,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           hasPendingProtectiveLiquidationOrders: () => false,
         }),
       lastState,
+      onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
       monitorContext,

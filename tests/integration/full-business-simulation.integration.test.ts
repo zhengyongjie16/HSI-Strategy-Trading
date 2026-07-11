@@ -213,7 +213,6 @@ describe('full business simulation integration', () => {
     });
     const tradingConfig = createTradingConfigForMonitor(monitorConfig);
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -498,7 +497,6 @@ describe('full business simulation integration', () => {
     });
     const tradingConfig = createTradingConfigForMonitor(monitorConfig);
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -674,7 +672,6 @@ describe('full business simulation integration', () => {
       quoteSubscriptionRuntime,
     });
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
-      tradingConfig,
       symbolRegistry,
       monitorContext,
       lastState,
@@ -688,7 +685,6 @@ describe('full business simulation integration', () => {
       },
     });
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
-      tradingConfig,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue,
@@ -718,7 +714,6 @@ describe('full business simulation integration', () => {
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       lastState,
-      tradingConfig,
       getCanProcessTask: () => true,
       getCanTradeNow: () => lastState.canTrade === true,
       onProcessed: (task, status) => {
@@ -920,7 +915,6 @@ describe('full business simulation integration', () => {
     });
     const tradingConfig = createTradingConfigForMonitor(monitorConfig);
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -1128,7 +1122,6 @@ describe('full business simulation integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
-      tradingConfig,
       getCanProcessTask: () => lastState.isTradingEnabled,
       getCanTradeNow: () => lastState.canTrade === true,
     });

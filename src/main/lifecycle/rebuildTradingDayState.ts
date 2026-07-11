@@ -5,13 +5,15 @@
  * - 在开盘重建阶段，基于最新的行情和订单数据重建唯一监控标的运行时状态
  *
  * 重建流程（按顺序执行）：
- * 1. 同步唯一监控标的的席位快照和行情数据到 MonitorContext
+ * 1. 以 SymbolRegistry 为席位真相，根据行情数据刷新 MonitorContext 的标的名称缓存
  * 2. 重建订单记录（从全量订单 API 数据中恢复）
  * 3. 预热交易日历快照（基于仍持仓订单需求窗口）
  * 4. 重建牛熊证风险缓存（收回价等关键风控数据）
  * 5. 重建浮亏缓存（结合当日已实现亏损偏移量）
- * 6. 恢复订单追踪状态
- * 7. 展示账户和持仓信息
+ * 6. 将完成重建的席位激活为 ACTIVE
+ * 7. 基于激活后的 SymbolRegistry 再次刷新标的名称缓存
+ * 8. 恢复订单追踪状态
+ * 9. 展示账户和持仓信息
  *
  * 错误处理：
  * - 任一步骤失败即整体抛出，由生命周期管理器负责重试
@@ -22,7 +24,7 @@ import type { Quote } from '../../types/quote.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, RawOrderFromAPI } from '../../types/services.js';
 import type { DailyLossTracker } from '../../types/risk.js';
-import { resolveMonitorContextRuntimeSnapshot } from '../../utils/seat/snapshots.js';
+import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
 import type { RebuildTradingDayStateDeps, RebuildTradingDayStateParams } from './types.js';
 import {
   clearSeatActivationCarryover,
@@ -33,36 +35,25 @@ import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 
 /**
- * 将席位状态和行情数据同步到单个 MonitorContext。
- * 为什么必须在订单重建前执行：后续订单重建、风控缓存重建等步骤依赖 symbolRegistry 与各 MonitorContext 中的最新席位与行情，若延后执行会导致恢复状态基于过旧数据。
+ * 在交易日状态重建开始时刷新单个 MonitorContext 的标的名称缓存。
+ * 名称根据当前 SymbolRegistry 席位真相与行情数据派生。
  *
  * @param monitorContext 待同步的监控上下文
- * @param symbolRegistry 席位注册表（取席位状态与版本）
  * @param quotesMap 标的 -> 行情 Map
  * @returns 无返回值
  */
-function syncMonitorContextQuotes(
+function syncMonitorContextSymbolNames(
   monitorContext: MonitorContext,
-  symbolRegistry: SymbolRegistry,
   quotesMap: ReadonlyMap<string, Quote | null>,
 ): void {
-  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(symbolRegistry, quotesMap);
-  monitorContext.seatState = runtimeSnapshot.seatState;
-  monitorContext.seatVersion = runtimeSnapshot.seatVersion;
-  monitorContext.longSymbolName = runtimeSnapshot.longSymbolName;
-  monitorContext.shortSymbolName = runtimeSnapshot.shortSymbolName;
-  monitorContext.monitorSymbolName = runtimeSnapshot.monitorSymbolName;
-}
-
-/**
- * 将席位状态和行情数据同步到 MonitorContext。
- */
-function syncMonitorContextRuntime(
-  monitorContext: MonitorContext,
-  symbolRegistry: SymbolRegistry,
-  quotesMap: ReadonlyMap<string, Quote | null>,
-): void {
-  syncMonitorContextQuotes(monitorContext, symbolRegistry, quotesMap);
+  const symbolNames = resolveMonitorContextSymbolNames({
+    symbolRegistry: monitorContext.symbolRegistry,
+    monitorSymbol: monitorContext.config.monitorSymbol,
+    quotesMap,
+  });
+  monitorContext.longSymbolName = symbolNames.longSymbolName;
+  monitorContext.shortSymbolName = symbolNames.shortSymbolName;
+  monitorContext.monitorSymbolName = symbolNames.monitorSymbolName;
 }
 
 /**
@@ -205,7 +196,6 @@ function activateRebuiltSeats(
   symbolRegistry: SymbolRegistry,
   nowMs: number,
 ): void {
-  const monitorSymbol = monitorContext.config.monitorSymbol;
   for (const direction of ['LONG', 'SHORT'] as const) {
     const seatState = monitorContext.symbolRegistry.getSeatState(direction);
     if (!hasSeatSymbol(seatState)) {
@@ -218,7 +208,6 @@ function activateRebuiltSeats(
       lastSeatActivatedAt:
         resolveSeatActivationCarryover({
           symbolRegistry,
-          monitorSymbol,
           direction,
           symbol: seatState.symbol,
         }) ?? nowMs,
@@ -228,7 +217,7 @@ function activateRebuiltSeats(
 
 /**
  * 创建交易日状态重建函数（工厂）。
- * 注入依赖后返回 rebuildTradingDayState，在开盘重建阶段基于全量订单与行情快照同步席位、重建订单与风控缓存并展示账户持仓。
+ * 注入依赖后返回 rebuildTradingDayState，在开盘重建阶段以 SymbolRegistry 为席位真相，刷新名称缓存、重建订单与风控缓存并展示账户持仓。
  *
  * @param deps 依赖注入（marketDataClient、trader、lastState、symbolRegistry、monitorContext、dailyLossTracker、displayAccountAndPositions）
  * @returns 接收 RebuildTradingDayStateParams 的异步函数，无返回值；任一步骤失败即抛出，由生命周期管理器重试
@@ -247,15 +236,16 @@ export function createRebuildTradingDayState(
   } = deps;
 
   /**
-   * 重建交易日运行时状态：同步席位/行情 → 重建订单记录 → 预热交易日历
-   * → 重建风险缓存 → 重建浮亏缓存 → 恢复订单追踪 → 展示账户持仓。
+   * 重建交易日运行时状态：刷新标的名称缓存 → 重建订单记录 → 预热交易日历
+   * → 重建风险缓存 → 重建浮亏缓存 → 激活重建席位
+   * → 基于激活后的 SymbolRegistry 再刷新标的名称缓存 → 恢复订单追踪 → 展示账户持仓。
    * 任一步骤失败即整体抛出，由生命周期管理器负责重试。
    */
   return async function rebuildTradingDayState(
     params: RebuildTradingDayStateParams,
   ): Promise<void> {
     const { allOrders, quotesMap, now = new Date() } = params;
-    syncMonitorContextRuntime(monitorContext, symbolRegistry, quotesMap);
+    syncMonitorContextSymbolNames(monitorContext, quotesMap);
     try {
       await rebuildOrderRecords(monitorContext, allOrders, quotesMap);
       await prewarmTradingCalendarSnapshotForRebuild({
@@ -267,7 +257,7 @@ export function createRebuildTradingDayState(
       await rebuildWarrantRiskCache(marketDataClient, monitorContext, quotesMap);
       await rebuildUnrealizedLossCache(monitorContext, dailyLossTracker, quotesMap);
       activateRebuiltSeats(monitorContext, symbolRegistry, now.getTime());
-      syncMonitorContextRuntime(monitorContext, symbolRegistry, quotesMap);
+      syncMonitorContextSymbolNames(monitorContext, quotesMap);
       await trader.recoverOrderTrackingFromSnapshot(allOrders);
       displayAccountAndPositions({ lastState, quotesMap });
       clearSeatActivationCarryover(symbolRegistry);

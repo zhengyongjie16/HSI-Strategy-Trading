@@ -118,8 +118,8 @@ export type RecoverySnapshotReconciliationParams = {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type SubmitOrderParams = {
-  readonly ctx: TradeContext;
   readonly signal: Signal;
+  readonly authorizeOrderAction: OrderActionAuthorization;
   readonly symbol: string;
   readonly side: OrderSide;
   readonly submittedQtyDecimal: Decimal;
@@ -129,7 +129,6 @@ export type SubmitOrderParams = {
   readonly overridePrice: number | undefined;
   readonly relatedBuyOrderIds?: ReadonlyArray<string> | null;
   readonly isShortSymbol: boolean;
-  readonly monitorConfig: MonitorConfig;
 };
 
 /**
@@ -223,10 +222,15 @@ export interface OrderMonitor {
   trackOrder: (params: TrackOrderParams) => void;
 
   /** 撤销订单；若 tracked order 已被权威确认为终态，会先完成本地结算再返回结果 */
-  cancelOrder: (orderId: string) => Promise<CancelOrderOutcome>;
+  cancelOrder: (orderId: string, request: OrderMutationRequest) => Promise<CancelOrderOutcome>;
 
   /** 修改订单价格 */
-  replaceOrderPrice: (orderId: string, newPrice: number, quantity?: number | null) => Promise<void>;
+  replaceOrderPrice: (
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    quantity?: number | null,
+  ) => Promise<ReplaceOrderPriceOutcome>;
 
   /** 启动订单监控 runtime */
   startRuntime: () => void;
@@ -240,11 +244,8 @@ export interface OrderMonitor {
   /** 获取指定标的的未成交卖单快照 */
   getPendingSellOrders: (symbol: string) => ReadonlyArray<PendingSellOrderSnapshot>;
 
-  /** 是否存在指定监控标的方向的未完成保护性清仓卖单链路 */
-  hasPendingProtectiveLiquidationOrders: (
-    monitorSymbol: string,
-    direction: 'LONG' | 'SHORT',
-  ) => boolean;
+  /** 是否存在指定方向的未完成保护性清仓卖单链路 */
+  hasPendingProtectiveLiquidationOrders: (direction: 'LONG' | 'SHORT') => boolean;
 
   /** 清空恢复运行态（tracked order lifecycle / closed set）与 BOOTSTRAPPING 事件缓存 */
   clearTrackedOrders: () => void;
@@ -258,7 +259,7 @@ export interface OrderMonitor {
  * 使用范围：仅在当前模块及其直接依赖方使用。
  */
 export interface OrderExecutor {
-  canTradeNow: (signalAction: SignalType, monitorConfig: MonitorConfig) => TradeCheckResult;
+  canTradeNow: (signalAction: SignalType) => TradeCheckResult;
   executeSignals: (
     signals: ReadonlyArray<ExecutableSignal>,
   ) => Promise<{ submittedCount: number; submittedOrderIds: ReadonlyArray<string> }>;
@@ -548,6 +549,49 @@ export type OrderMonitorDeps = {
  * 使用范围：Trader、OrderMonitor、OrderExecutor 依赖注入使用。
  */
 type IsExecutionAllowed = () => boolean;
+
+/**
+ * 信号派生订单副作用授权阶段。
+ * 类型用途：限制授权器只接受真实存在的执行与 mutation API 前阶段。
+ * 数据来源：OrderExecutor 与 OrderMonitor 固定调用点。
+ * 使用范围：OrderActionAuthorization 参数。
+ */
+export type OrderActionAuthorizationStage =
+  | 'executeSignals'
+  | 'submitOrder.beforeApi'
+  | 'cancelOrder.beforeApi'
+  | 'replaceOrder.beforeApi';
+
+/**
+ * 信号派生订单副作用授权器。
+ * 类型用途：在固定订单副作用阶段复核信号绑定是否仍然有效。
+ * 数据来源：OrderExecutor 根据信号与当前运行态创建。
+ * 使用范围：executeSignals 初始复核与 SIGNAL_AUTHORIZED 订单 mutation 请求。
+ */
+export type OrderActionAuthorization = (stage: OrderActionAuthorizationStage) => boolean;
+
+/**
+ * 订单 mutation 请求来源。
+ * 类型用途：强制调用方区分公共订单事实操作与必须逐次授权的信号派生操作。
+ * 数据来源：订单 owner 或 OrderExecutor 信号链路创建。
+ * 使用范围：OrderMonitor cancel/replace API。
+ */
+export type OrderMutationRequest =
+  | { readonly kind: 'ORDER_FACT' }
+  | {
+      readonly kind: 'SIGNAL_AUTHORIZED';
+      readonly authorize: OrderActionAuthorization;
+    };
+
+/**
+ * 改单执行结果。
+ * 类型用途：明确区分 broker 已确认改单与未执行，防止未执行时更新本地 pending fact。
+ * 数据来源：OrderMonitor.replaceOrderPrice 返回。
+ * 使用范围：OrderExecutor 卖单合并链路。
+ */
+export type ReplaceOrderPriceOutcome =
+  | { readonly kind: 'BROKER_CONFIRMED' }
+  | { readonly kind: 'NOT_EXECUTED' };
 
 /**
  * 订单执行器依赖。

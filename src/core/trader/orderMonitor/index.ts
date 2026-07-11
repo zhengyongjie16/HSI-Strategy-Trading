@@ -11,7 +11,12 @@ import { logger } from '../../../utils/logger/index.js';
 import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
 import { toDecimal } from '../utils.js';
 import { PENDING_ORDER_STATUSES } from '../../../constants/index.js';
-import type { OrderMonitor, OrderMonitorDeps, PendingSellOrderSnapshot } from '../types.js';
+import type {
+  OrderMutationRequest,
+  OrderMonitor,
+  OrderMonitorDeps,
+  PendingSellOrderSnapshot,
+} from '../types.js';
 import type { OrderStateChangedEvent, RawOrderFromAPI } from '../../../types/services.js';
 import type {
   OrderMonitorRuntimeStore,
@@ -120,7 +125,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     tradingConfig,
     symbolRegistry,
     trackOrder: orderOps.trackOrder,
-    cancelOrder: orderOps.cancelOrder,
+    cancelOrder: (orderId) => orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' }),
     settleOrder: settlementFlow.settleOrder,
     handleOrderChangedWhenActive: (event) => {
       if (!activeHandler) {
@@ -149,9 +154,11 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     rateLimiter,
     isExecutionAllowed,
     trackOrder: orderOps.trackOrder,
-    cancelOrder: orderOps.cancelOrder,
+    cancelOrder: (orderId) => orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' }),
     settleOrder: settlementFlow.settleOrder,
-    replaceOrderPrice: orderOps.replaceOrderPrice,
+    replaceOrderPrice: async (orderId, newPrice) => {
+      await orderOps.replaceOrderPrice(orderId, newPrice, { kind: 'ORDER_FACT' });
+    },
   });
 
   routeRuntime = createRouteRuntime({
@@ -173,8 +180,11 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     routeRuntime.bootstrapActiveRoutes();
   }
 
-  async function cancelOrder(orderId: string): Promise<CancelOrderOutcome> {
-    const outcome = await orderOps.cancelOrder(orderId);
+  async function cancelOrder(
+    orderId: string,
+    request: OrderMutationRequest,
+  ): Promise<CancelOrderOutcome> {
+    const outcome = await orderOps.cancelOrder(orderId, request);
     if (outcome.kind !== 'ALREADY_CLOSED') {
       return outcome;
     }
@@ -330,10 +340,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     return [...pendingOrders].sort((left, right) => left.submittedAt - right.submittedAt);
   }
 
-  function hasPendingProtectiveLiquidationOrders(
-    monitorSymbol: string,
-    direction: 'LONG' | 'SHORT',
-  ): boolean {
+  function hasPendingProtectiveLiquidationOrders(direction: 'LONG' | 'SHORT'): boolean {
     for (const trackedOrder of runtime.trackedOrders.values()) {
       if (!trackedOrder.isProtectiveLiquidation) {
         continue;
@@ -344,10 +351,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       }
 
       if (trackedOrder.side !== OrderSide.Sell) {
-        continue;
-      }
-
-      if (trackedOrder.monitorSymbol !== monitorSymbol) {
         continue;
       }
 

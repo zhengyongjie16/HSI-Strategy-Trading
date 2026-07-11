@@ -96,7 +96,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -124,7 +123,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     };
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -203,7 +201,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -218,7 +215,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -291,7 +287,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -306,7 +301,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -376,7 +370,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -391,7 +384,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -467,7 +459,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -483,7 +474,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -565,7 +555,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -581,7 +570,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -657,7 +645,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -673,7 +660,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -830,7 +816,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -846,7 +831,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -964,7 +948,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -980,7 +963,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1114,7 +1096,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1130,7 +1111,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1224,7 +1204,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1240,7 +1219,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1362,7 +1340,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1378,7 +1355,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1497,7 +1473,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1513,7 +1488,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:40:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1626,7 +1600,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1642,7 +1615,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1796,7 +1768,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1812,7 +1783,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -1915,7 +1885,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -1931,7 +1900,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2055,7 +2023,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2071,7 +2038,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2197,7 +2163,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2213,7 +2178,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2349,7 +2313,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2365,7 +2328,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2488,7 +2450,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2504,7 +2465,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2625,7 +2585,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2641,7 +2600,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     let nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2741,7 +2699,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -2757,7 +2714,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2826,7 +2782,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -2842,7 +2797,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -2923,7 +2877,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -2938,7 +2891,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -3011,7 +2963,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -3026,7 +2977,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const switchSuppressions = createSwitchSuppressionsMap();
     const nowMs = Date.parse('2026-02-16T01:00:00.000Z');
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,

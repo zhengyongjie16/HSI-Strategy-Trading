@@ -2,7 +2,6 @@ import { OrderSide, OrderType } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { SIGNAL_ACTION_DESCRIPTIONS } from '../../../constants/index.js';
 import type { OrderTypeConfig, Signal } from '../../../types/signal.js';
-import type { MonitorConfig } from '../../../types/config.js';
 import type { ErrorTypeIdentifier, OrderPayload } from '../types.js';
 import { formatError } from '../../../utils/error/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
@@ -97,18 +96,6 @@ export function resolveOrderSide(action: Signal['action']): OrderSide | null {
       return null;
     }
   }
-}
-
-/**
- * 构造买入频率限制键。
- *
- * @param signalAction 信号动作
- * @param monitorConfig 监控配置
- * @returns 频率限制键
- */
-export function buildBuyTimeKey(signalAction: string, monitorConfig: MonitorConfig): string {
-  const direction: 'LONG' | 'SHORT' = signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
-  return `${monitorConfig.monitorSymbol}:${direction}`;
 }
 
 /**

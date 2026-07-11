@@ -15,7 +15,6 @@ import {
   createMonitorConfigDouble,
   createMonitorContextDouble,
 } from '../../helpers/testDoubles.js';
-import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 
 function createAutoSearchEnabledMonitorConfig(
   params: { readonly autoSearchOpenDelayMinutes?: number } = {},
@@ -112,7 +111,6 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -164,7 +162,6 @@ describe('AutoSearchWakeupRuntime', () => {
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState,
@@ -209,7 +206,6 @@ describe('AutoSearchWakeupRuntime', () => {
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState,
@@ -253,7 +249,6 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -306,7 +301,6 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -378,7 +372,6 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -424,7 +417,6 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -474,7 +466,6 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       monitorContext,
       lastState: {

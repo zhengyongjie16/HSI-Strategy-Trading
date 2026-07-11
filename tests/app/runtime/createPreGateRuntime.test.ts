@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createPreGateRuntime } from '../../../src/app/runtime/createPreGateRuntime.js';
+import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 
 function isConfigValidationError(error: unknown): error is {
   readonly name?: string;
@@ -26,7 +27,7 @@ describe('app createPreGateRuntime config error contract', () => {
 
     let caughtError: unknown = null;
     try {
-      await createPreGateRuntime({ env });
+      await createPreGateRuntime({ env, cleanup: createCleanup() });
     } catch (error) {
       caughtError = error;
     }

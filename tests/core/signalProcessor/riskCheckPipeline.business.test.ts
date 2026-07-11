@@ -257,8 +257,8 @@ describe('riskCheckPipeline business flow', () => {
   });
 
   it('does not preempt same-direction buy slot in risk check stage', async () => {
-    const buyThrottle = createBuyThrottle();
     const monitorConfig = createMonitorConfigDouble();
+    const buyThrottle = createBuyThrottle(monitorConfig.buyIntervalSeconds);
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
       getAccountSnapshot: async () => createAccountSnapshotDouble(100000),
@@ -301,7 +301,7 @@ describe('riskCheckPipeline business flow', () => {
     expect(secondBuySignal.reason).toBeUndefined();
 
     const buyTradeCheck = await withMockedNow(50_001, async () =>
-      buyThrottle.canTradeNow('BUYCALL', monitorConfig),
+      buyThrottle.canTradeNow('BUYCALL'),
     );
     expect(buyTradeCheck.canTrade).toBe(true);
   });
@@ -457,8 +457,8 @@ describe('riskCheckPipeline business flow', () => {
   });
 
   it('does not refresh buy throttle when base risk check rejects after realtime fetch', async () => {
-    const buyThrottle = createBuyThrottle();
     const monitorConfig = createMonitorConfigDouble();
+    const buyThrottle = createBuyThrottle(monitorConfig.buyIntervalSeconds);
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
@@ -493,7 +493,7 @@ describe('riskCheckPipeline business flow', () => {
     expect(signal.reason).toBeUndefined();
 
     const buyTradeCheck = await withMockedNow(48_000, async () =>
-      buyThrottle.canTradeNow('BUYCALL', monitorConfig),
+      buyThrottle.canTradeNow('BUYCALL'),
     );
     expect(buyTradeCheck.canTrade).toBe(true);
   });

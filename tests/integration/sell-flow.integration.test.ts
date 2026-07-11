@@ -76,7 +76,7 @@ describe('sell-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -205,7 +205,7 @@ describe('sell-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -350,7 +350,7 @@ describe('sell-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -477,7 +477,7 @@ describe('sell-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -555,8 +555,9 @@ describe('sell-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async (orderId, price, quantity) => {
+        replaceOrderPrice: async (orderId, price, _request, quantity) => {
           replaceCalls.push({ orderId, price, quantity });
+          return { kind: 'BROKER_CONFIRMED' };
         },
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
@@ -640,6 +641,106 @@ describe('sell-flow integration', () => {
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
   });
 
+  it('does not update pending sell when REPLACE authorization expires inside throttle', async () => {
+    const tradingConfig = createTradingConfig();
+    const tradeCtx = createTradeContextMock();
+    tradeCtx.seedStockPositions(
+      createStockPositionsResponse({
+        symbol: 'BULL.HK',
+        quantity: 300,
+        availableQuantity: 300,
+      }),
+    );
+
+    let executionAllowed = true;
+    let replaceSdkCallCount = 0;
+    let updatePendingSellCallCount = 0;
+    const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
+    const orderExecutor = createOrderExecutor({
+      ctx: tradeCtx as unknown as TradeContext,
+      rateLimiter: {
+        throttle: async () => {},
+      },
+      cacheManager: {
+        clearCache: () => {},
+        getPendingOrders: async () => [],
+      },
+      orderMonitor: {
+        initialize: async () => {},
+        trackOrder: () => {},
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          closedReason: 'CANCELED',
+          source: 'API',
+          relatedBuyOrderIds: null,
+        }),
+        replaceOrderPrice: async (_orderId, _price, request) => {
+          executionAllowed = false;
+          if (request.kind === 'SIGNAL_AUTHORIZED' && request.authorize('replaceOrder.beforeApi')) {
+            replaceSdkCallCount += 1;
+          }
+
+          return { kind: 'NOT_EXECUTED' };
+        },
+        startRuntime: () => {},
+        stopRuntimeAndDrain: async () => {},
+        recoverOrderTrackingFromSnapshot: async () => {},
+        getPendingSellOrders: () => [
+          {
+            orderId: 'SELL-EXISTING-AUTH-REVOKED',
+            symbol: 'BULL.HK',
+            side: OrderSide.Sell,
+            status: OrderStatus.New,
+            orderType: OrderType.ELO,
+            submittedPrice: 1,
+            submittedQuantity: 100,
+            executedQuantity: 0,
+            submittedAt,
+          },
+        ],
+        clearTrackedOrders: () => {},
+        onOrderStateChanged: () => () => {},
+        hasPendingProtectiveLiquidationOrders: () => false,
+      },
+      orderRecorder: createOrderRecorderDouble({
+        getPendingSellSnapshot: () => [
+          {
+            orderId: 'SELL-EXISTING-AUTH-REVOKED',
+            symbol: 'BULL.HK',
+            direction: 'LONG',
+            submittedQuantity: 100,
+            filledQuantity: 0,
+            relatedBuyOrderIds: ['BUY-OLD'],
+            status: 'pending',
+            submittedAt,
+          },
+        ],
+        updatePendingSell: () => {
+          updatePendingSellCallCount += 1;
+          return null;
+        },
+      }),
+      tradingConfig,
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () => executionAllowed,
+    });
+
+    let signal = createSignal({
+      symbol: 'BULL.HK',
+      action: 'SELLCALL',
+      price: 1.02,
+      triggerTimeMs: Date.now(),
+      reason: 'replace-auth-revoked-inside-throttle',
+    });
+    signal = { ...signal, quantity: 50 };
+    signal = { ...signal, relatedBuyOrderIds: ['BUY-NEW'] };
+
+    await orderExecutor.executeSignals(requireExecutableSellSignals([signal]));
+
+    expect(replaceSdkCallCount).toBe(0);
+    expect(updatePendingSellCallCount).toBe(0);
+  });
+
   it('does not submit merged sell order before cancel reaches confirmed terminal close', async () => {
     const tradingConfig = createTradingConfig();
     const tradeCtx = createTradeContextMock();
@@ -673,7 +774,7 @@ describe('sell-flow integration', () => {
             relatedBuyOrderIds: ['BUY-OLD'],
           };
         },
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -762,7 +863,7 @@ describe('sell-flow integration', () => {
             relatedBuyOrderIds: ['BUY-OLD'],
           };
         },
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},

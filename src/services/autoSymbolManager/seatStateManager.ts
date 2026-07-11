@@ -43,19 +43,11 @@ const buildSeatState: SeatStateBuilder = ({
 
 /**
  * 创建席位状态管理器，封装席位状态构建、更新、日内抑制记录与换标启动准备。
- * @param deps - 依赖（monitorSymbol、symbolRegistry、switchStates、switchSuppressions、now、logger、getHKDateKey）
+ * @param deps - 依赖（symbolRegistry、switchStates、switchSuppressions、now、logger、getHKDateKey）
  * @returns SeatStateManager 实例（buildSeatState、updateSeatState、resolveSuppression、markSuppression、enterSwitchingSeat）
  */
 export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateManager {
-  const {
-    monitorSymbol,
-    symbolRegistry,
-    switchStates,
-    switchSuppressions,
-    now,
-    logger,
-    getHKDateKey,
-  } = deps;
+  const { symbolRegistry, switchStates, switchSuppressions, now, logger, getHKDateKey } = deps;
 
   /**
    * 更新席位状态，若标的发生变更且 bumpOnSymbolChange 为 true，则同步提升席位版本以隔离旧信号。
@@ -180,7 +172,7 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     }
 
     logger.info(
-      `${LOG_COLORS.green}[自动换标] ${monitorSymbol} ${direction} 进入换标中状态: ${reason}${LOG_COLORS.reset}`,
+      `${LOG_COLORS.green}[自动换标] ${direction} 进入换标中状态: ${reason}${LOG_COLORS.reset}`,
     );
     return nextVersion;
   }

@@ -156,7 +156,7 @@ function createDeps(): {
         orderMonitorPriceUpdateInterval: 0,
       },
     }),
-    symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: 'HSI.HK' }),
+    symbolRegistry: createSymbolRegistryDouble(),
     isExecutionAllowed: () => true,
   };
 
@@ -198,8 +198,8 @@ describe('createOrderMonitor route hooks integration', () => {
       initialSubmittedPrice: 1.01,
       quantity: 100,
       initialStatus: OrderStatus.New,
-      isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
+      isLongSymbol: true,
       isProtectiveLiquidation: false,
       orderType: OrderType.ELO,
     });

@@ -671,11 +671,8 @@ export interface Trader {
   /** 停止订单监控 runtime 并等待在途处理完成 */
   stopOrderMonitorRuntimeAndDrain: () => Promise<void>;
 
-  /** 是否存在指定监控标的方向的未完成保护性清仓卖单链路 */
-  hasPendingProtectiveLiquidationOrders: (
-    monitorSymbol: string,
-    direction: 'LONG' | 'SHORT',
-  ) => boolean;
+  /** 是否存在指定方向的未完成保护性清仓卖单链路 */
+  hasPendingProtectiveLiquidationOrders: (direction: 'LONG' | 'SHORT') => boolean;
 
   /** 初始化订单监控（WebSocket 订阅） */
   initializeOrderMonitor: () => Promise<void>;
@@ -686,7 +683,7 @@ export interface Trader {
   // ========== 订单执行 ==========
 
   /** 检查当前是否可交易 */
-  canTradeNow: (signalAction: SignalType, monitorConfig: MonitorConfig) => TradeCheckResult;
+  canTradeNow: (signalAction: SignalType) => TradeCheckResult;
 
   /** 从 API 获取全量订单 */
   fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;

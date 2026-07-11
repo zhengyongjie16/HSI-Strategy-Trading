@@ -236,7 +236,7 @@ describe('orderMonitor orderOps', () => {
     });
 
     try {
-      await orderOps.cancelOrder('ORDER-CANCEL-RETRY');
+      await orderOps.cancelOrder('ORDER-CANCEL-RETRY', { kind: 'ORDER_FACT' });
       expect.unreachable();
     } catch (error) {
       expect(error).toMatchObject({
@@ -274,7 +274,7 @@ describe('orderMonitor orderOps', () => {
     });
 
     try {
-      await orderOps.cancelOrder('ORDER-CANCEL-CODED-TRANSIENT');
+      await orderOps.cancelOrder('ORDER-CANCEL-CODED-TRANSIENT', { kind: 'ORDER_FACT' });
       expect.unreachable();
     } catch (error) {
       expect(error).toMatchObject({
@@ -283,6 +283,42 @@ describe('orderMonitor orderOps', () => {
       });
       expect(cancelCallCount).toBeGreaterThan(1);
     }
+  });
+
+  it('cancelOrder 在暂态失败后的重试前重新授权，授权失效时不再次调用 SDK', async () => {
+    const runtime = createRuntimeStore();
+    const tradeCtx = createTradeContextMock();
+    let authorized = true;
+    let cancelCallCount = 0;
+    tradeCtx.cancelOrder = async () => {
+      cancelCallCount += 1;
+      authorized = false;
+      throw new Error('network unavailable');
+    };
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiter(),
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'QUERY_FAILED' as const,
+          reason: 'NOT_FOUND' as const,
+          errorCode: '603001',
+          message: 'not used in this test',
+        }),
+      },
+      triggerRoute: () => {},
+    });
+
+    await orderOps.cancelOrder('ORDER-CANCEL-AUTH-REVOKED', {
+      kind: 'SIGNAL_AUTHORIZED',
+      authorize: () => authorized,
+    });
+
+    expect(cancelCallCount).toBe(1);
   });
 
   it('cancelOrder does not retry known business error codes even when message contains retry hints', async () => {
@@ -313,7 +349,9 @@ describe('orderMonitor orderOps', () => {
       triggerRoute: () => {},
     });
 
-    const outcome = await orderOps.cancelOrder('ORDER-CANCEL-BUSINESS-NO-RETRY');
+    const outcome = await orderOps.cancelOrder('ORDER-CANCEL-BUSINESS-NO-RETRY', {
+      kind: 'ORDER_FACT',
+    });
 
     expect(cancelCallCount).toBe(1);
     expect(outcome.kind).toBe('ALREADY_CLOSED');
@@ -358,7 +396,9 @@ describe('orderMonitor orderOps', () => {
       orderType: OrderType.ELO,
     });
 
-    await orderOps.replaceOrderPrice('ORDER-REPLACE-BUSINESS-NO-RETRY', 1.23);
+    await orderOps.replaceOrderPrice('ORDER-REPLACE-BUSINESS-NO-RETRY', 1.23, {
+      kind: 'ORDER_FACT',
+    });
 
     expect(replaceCallCount).toBe(1);
     expect(runtime.latestReplaceOutcomeByOrderId.get('ORDER-REPLACE-BUSINESS-NO-RETRY')).toEqual({
@@ -407,7 +447,9 @@ describe('orderMonitor orderOps', () => {
     });
 
     try {
-      await orderOps.replaceOrderPrice('ORDER-REPLACE-CODED-TRANSIENT', 1.23);
+      await orderOps.replaceOrderPrice('ORDER-REPLACE-CODED-TRANSIENT', 1.23, {
+        kind: 'ORDER_FACT',
+      });
       expect.unreachable();
     } catch (error) {
       expect(error).toMatchObject({
@@ -458,7 +500,7 @@ describe('orderMonitor orderOps', () => {
     });
 
     try {
-      await orderOps.replaceOrderPrice('ORDER-REPLACE-RETRY', 1.23, 1000);
+      await orderOps.replaceOrderPrice('ORDER-REPLACE-RETRY', 1.23, { kind: 'ORDER_FACT' }, 1000);
       expect.unreachable();
     } catch (error) {
       expect(error).toMatchObject({
@@ -467,6 +509,57 @@ describe('orderMonitor orderOps', () => {
       });
       expect(replaceCallCount).toBeGreaterThan(1);
     }
+  });
+
+  it('replaceOrderPrice 在暂态失败后的重试前重新授权，授权失效时不再次调用 SDK', async () => {
+    const runtime = createRuntimeStore();
+    const tradeCtx = createTradeContextMock();
+    let authorized = true;
+    let replaceCallCount = 0;
+    tradeCtx.replaceOrder = async () => {
+      replaceCallCount += 1;
+      authorized = false;
+      throw new Error('network unavailable');
+    };
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiter(),
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'QUERY_FAILED' as const,
+          reason: 'NOT_FOUND' as const,
+          errorCode: '603001',
+          message: 'not used in this test',
+        }),
+      },
+      triggerRoute: () => {},
+    });
+    orderOps.trackOrder({
+      orderId: 'ORDER-REPLACE-AUTH-REVOKED',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      price: 1.01,
+      initialSubmittedPrice: 1.01,
+      quantity: 100,
+      initialStatus: OrderStatus.New,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    await orderOps.replaceOrderPrice(
+      'ORDER-REPLACE-AUTH-REVOKED',
+      1.23,
+      { kind: 'SIGNAL_AUTHORIZED', authorize: () => authorized },
+      100,
+    );
+
+    expect(replaceCallCount).toBe(1);
   });
 
   it('replaceOrderPrice 在订单脱离追踪后不会写回过期结果', async () => {
@@ -516,7 +609,9 @@ describe('orderMonitor orderOps', () => {
       throw new Error('missing tracked order for stale replace test');
     }
 
-    const replacePromise = orderOps.replaceOrderPrice('ORDER-STALE-REPLACE-1', 1.23);
+    const replacePromise = orderOps.replaceOrderPrice('ORDER-STALE-REPLACE-1', 1.23, {
+      kind: 'ORDER_FACT',
+    });
     await replaceStarted.promise;
     runtime.trackedOrders.delete('ORDER-STALE-REPLACE-1');
     runtime.trackedOrderLifecycles.set('ORDER-STALE-REPLACE-1', 'CLOSED');

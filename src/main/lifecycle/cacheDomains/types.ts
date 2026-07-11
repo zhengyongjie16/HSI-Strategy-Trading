@@ -1,7 +1,7 @@
 import type { LastState, MonitorContext } from '../../../types/state.js';
-import type { TradingConfig } from '../../../types/config.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
+import type { AutoSymbolManagerPort } from '../../../types/monitorContextPorts.js';
 import type { Processor } from '../../asyncProgram/types.js';
 import type {
   TaskQueue,
@@ -83,15 +83,14 @@ export type SignalRuntimeDomainDeps = Readonly<{
 
 /**
  * 席位域依赖。
- * 类型用途：createSeatDomain 的入参，提供 tradingConfig、symbolRegistry、monitorContext、warrantListCache。
+ * 类型用途：createSeatDomain 的入参，只提供午夜席位清理实际需要的 symbolRegistry、自动换标状态重置与轮证缓存清理能力。
  * 数据来源：由 lifecycle 在注册 cacheDomains 时组装传入。
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type SeatDomainDeps = Readonly<{
-  tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
-  monitorContext: MonitorContext;
-  warrantListCache: WarrantListCache;
+  autoSymbolManager: Pick<AutoSymbolManagerPort, 'resetAllState'>;
+  warrantListCache: Pick<WarrantListCache, 'clear'>;
 }>;
 
 /**

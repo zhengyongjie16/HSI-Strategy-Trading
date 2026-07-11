@@ -33,17 +33,6 @@ function buildRouteKey(params: {
   return `${params.direction}:${params.seatVersion}`;
 }
 
-function assertAutoSearchMonitorSymbol(
-  actualMonitorSymbol: string,
-  expectedMonitorSymbol: string,
-): void {
-  if (actualMonitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[AutoSearchWakeupRuntime] 非唯一 monitorSymbol 输入: expected=${expectedMonitorSymbol} actual=${actualMonitorSymbol}`,
-    );
-  }
-}
-
 function resolveOpenDelayEndMs(currentTime: Date, delayMinutes: number): number | null {
   if (!Number.isFinite(delayMinutes) || delayMinutes <= 0) {
     return null;
@@ -235,7 +224,6 @@ export function createAutoSearchWakeupRuntime(
   }
 
   function handleSeatStateChanged(event: SeatStateChangedEvent): void {
-    assertAutoSearchMonitorSymbol(event.monitorSymbol, deps.monitorContext.config.monitorSymbol);
     if (event.nextState.status !== 'EMPTY') {
       return;
     }

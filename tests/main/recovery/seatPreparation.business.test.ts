@@ -72,9 +72,8 @@ function createAutoSearchMonitor() {
   });
 }
 
-function createEmptySymbolRegistry(monitorSymbol: string) {
+function createEmptySymbolRegistry() {
   return createSymbolRegistryDouble({
-    monitorSymbol,
     longSeat: {
       symbol: null,
       status: 'EMPTY',
@@ -119,7 +118,6 @@ describe('recovery seat preparation business flow', () => {
   it('restores configured symbols on startup when auto-search is disabled', async () => {
     const startupTime = '2026-02-16T01:00:00.000Z';
     const monitor = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
       autoSearchConfig: {
@@ -137,7 +135,6 @@ describe('recovery seat preparation business flow', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -161,7 +158,7 @@ describe('recovery seat preparation business flow', () => {
     const quoteCtx = createQuoteContextMock();
 
     let quoteContextCalls = 0;
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -180,10 +177,6 @@ describe('recovery seat preparation business flow', () => {
 
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(0);
     expect(quoteContextCalls).toBe(0);
-    expect(prepared.seatSymbols).toEqual([
-      { monitorSymbol: 'HSI.HK', direction: 'LONG', symbol: 'BULL.HK' },
-      { monitorSymbol: 'HSI.HK', direction: 'SHORT', symbol: 'BEAR.HK' },
-    ]);
     const longSeat = symbolRegistry.getSeatState('LONG');
     const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(longSeat.lastSeatActivatedAt).toBeNull();
@@ -192,7 +185,6 @@ describe('recovery seat preparation business flow', () => {
 
   it('tracks failure counts when auto-search cannot find candidates on startup', async () => {
     const monitor = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -209,7 +201,6 @@ describe('recovery seat preparation business flow', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -232,7 +223,7 @@ describe('recovery seat preparation business flow', () => {
 
     const quoteCtx = createQuoteContextMock();
 
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -252,14 +243,11 @@ describe('recovery seat preparation business flow', () => {
     expect(longSeat.searchFailCountToday).toBe(1);
     expect(shortSeat.status).toBe('EMPTY');
     expect(shortSeat.searchFailCountToday).toBe(1);
-
-    expect(prepared.seatSymbols).toEqual([]);
   });
 
   it('skips startup recovery search for frozen empty seats', async () => {
     const monitor = createAutoSearchMonitor();
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -280,7 +268,7 @@ describe('recovery seat preparation business flow', () => {
       },
     });
 
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -296,7 +284,6 @@ describe('recovery seat preparation business flow', () => {
       resolveCanAutoSearchNow: () => true,
     });
 
-    expect(prepared.seatSymbols).toEqual([]);
     expect(symbolRegistry.getSeatState('LONG').frozenTradingDayKey).toBe('2026-02-15');
 
     expect(symbolRegistry.getSeatState('SHORT').frozenTradingDayKey).toBe('2026-02-15');
@@ -305,7 +292,6 @@ describe('recovery seat preparation business flow', () => {
   it('rethrows ExternalApiRequestError during startup recovery search and preserves prior failure state', async () => {
     const monitor = createAutoSearchMonitor();
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -364,7 +350,6 @@ describe('recovery seat preparation business flow', () => {
   it('rethrows TypeError during startup recovery search and preserves prior failure state', async () => {
     const monitor = createAutoSearchMonitor();
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -421,7 +406,6 @@ describe('recovery seat preparation business flow', () => {
   it('freezes seat when startup auto-search misses candidate at daily failure threshold', async () => {
     const monitor = createAutoSearchMonitor();
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -442,7 +426,7 @@ describe('recovery seat preparation business flow', () => {
       },
     });
     const currentTime = new Date('2026-02-16T01:35:00.000Z');
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -457,7 +441,6 @@ describe('recovery seat preparation business flow', () => {
     });
 
     const longSeat = symbolRegistry.getSeatState('LONG');
-    expect(prepared.seatSymbols).toEqual([]);
     expect(longSeat.status).toBe('EMPTY');
     expect(longSeat.searchFailCountToday).toBe(AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY);
     expect(longSeat.frozenTradingDayKey).toBe(getHKDateKey(currentTime));
@@ -465,7 +448,6 @@ describe('recovery seat preparation business flow', () => {
 
   it('skips startup search during morning open protection window', async () => {
     const monitor = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -481,7 +463,6 @@ describe('recovery seat preparation business flow', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -520,7 +501,7 @@ describe('recovery seat preparation business flow', () => {
       }),
     ]);
 
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -535,7 +516,6 @@ describe('recovery seat preparation business flow', () => {
     });
 
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(0);
-    expect(prepared.seatSymbols).toEqual([]);
   });
 
   it.each([
@@ -545,11 +525,11 @@ describe('recovery seat preparation business flow', () => {
     ['on non-trading day', '2026-02-16T01:35:00.000Z'],
   ])('skips startup auto-search %s', async (_caseName, currentTime) => {
     const monitor = createAutoSearchMonitor();
-    const symbolRegistry = createEmptySymbolRegistry(monitor.monitorSymbol);
+    const symbolRegistry = createEmptySymbolRegistry();
     const quoteCtx = createQuoteContextMock();
     seedAutoSearchCandidates(quoteCtx);
 
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -566,16 +546,15 @@ describe('recovery seat preparation business flow', () => {
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(0);
     expect(symbolRegistry.getSeatState('LONG').status).toBe('EMPTY');
     expect(symbolRegistry.getSeatState('SHORT').status).toBe('EMPTY');
-    expect(prepared.seatSymbols).toEqual([]);
   });
 
   it('runs startup auto-search after morning open delay ends', async () => {
     const monitor = createAutoSearchMonitor();
-    const symbolRegistry = createEmptySymbolRegistry(monitor.monitorSymbol);
+    const symbolRegistry = createEmptySymbolRegistry();
     const quoteCtx = createQuoteContextMock();
     seedAutoSearchCandidates(quoteCtx);
 
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -596,19 +575,15 @@ describe('recovery seat preparation business flow', () => {
     expect(longSeat.symbol).toBe('AUTO_BULL.HK');
     expect(shortSeat.status).toBe('ACTIVATING');
     expect(shortSeat.symbol).toBe('AUTO_BEAR.HK');
-    expect(prepared.seatSymbols).toEqual([
-      { monitorSymbol: 'HSI.HK', direction: 'LONG', symbol: 'AUTO_BULL.HK' },
-      { monitorSymbol: 'HSI.HK', direction: 'SHORT', symbol: 'AUTO_BEAR.HK' },
-    ]);
   });
 
   it('runs startup auto-search in afternoon continuous session', async () => {
     const monitor = createAutoSearchMonitor();
-    const symbolRegistry = createEmptySymbolRegistry(monitor.monitorSymbol);
+    const symbolRegistry = createEmptySymbolRegistry();
     const quoteCtx = createQuoteContextMock();
     seedAutoSearchCandidates(quoteCtx);
 
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -627,12 +602,10 @@ describe('recovery seat preparation business flow', () => {
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(2);
     expect(longSeat.status).toBe('ACTIVATING');
     expect(shortSeat.status).toBe('ACTIVATING');
-    expect(prepared.seatSymbols).toHaveLength(2);
   });
 
   it('binds degraded bear candidate for SHORT seat during startup auto-search and keeps it ACTIVATING', async () => {
     const monitor = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -649,7 +622,6 @@ describe('recovery seat preparation business flow', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitor.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -688,7 +660,7 @@ describe('recovery seat preparation business flow', () => {
       }),
     ]);
 
-    const prepared = await prepareSeatsForRuntime({
+    await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -706,10 +678,5 @@ describe('recovery seat preparation business flow', () => {
     expect(shortSeat.status).toBe('ACTIVATING');
     expect(shortSeat.symbol).toBe('AUTO_BEAR_BEST.HK');
     expect(shortSeat.callPrice).toBe(19_500);
-    expect(
-      prepared.seatSymbols.some(
-        (entry) => entry.direction === 'SHORT' && entry.symbol === 'AUTO_BEAR_BEST.HK',
-      ),
-    ).toBeTrue();
   });
 });

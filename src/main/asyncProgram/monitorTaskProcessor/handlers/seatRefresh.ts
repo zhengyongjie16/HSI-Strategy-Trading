@@ -9,12 +9,11 @@
 import { logger } from '../../../../utils/logger/index.js';
 import { isSeatVersionMatch } from '../../../../utils/seat/guards.js';
 
-import type { TradingConfig } from '../../../../types/config.js';
 import type { MarketDataClient } from '../../../../types/services.js';
+import type { MonitorContext } from '../../../../types/state.js';
 import type { QuoteSubscriptionRuntime } from '../../../quoteSubscriptionRuntime/types.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
 import type {
-  MonitorTaskContext,
   MonitorTaskDataMap,
   MonitorTaskStatus,
   RefreshHelpers,
@@ -22,7 +21,7 @@ import type {
 } from '../types.js';
 
 function logSeatRefreshSkipped(params: {
-  readonly context: MonitorTaskContext;
+  readonly context: MonitorContext;
   readonly data: SeatRefreshTaskData;
   readonly reason: string;
 }): void {
@@ -48,7 +47,7 @@ function logSeatRefreshProcessed(params: {
 }
 
 function setDirectionSymbolName(
-  context: MonitorTaskContext,
+  context: MonitorContext,
   direction: 'LONG' | 'SHORT',
   symbolName: string,
 ): void {
@@ -66,7 +65,7 @@ function setDirectionSymbolName(
  * @returns 相关交易标的集合
  */
 function collectSeatRefreshRelatedTradingSymbols(
-  context: MonitorTaskContext,
+  context: MonitorContext,
   data: SeatRefreshTaskData,
 ): Set<string> {
   const symbols = new Set<string>([data.nextSymbol]);
@@ -92,7 +91,6 @@ function collectSeatRefreshRelatedTradingSymbols(
  * 将指定监控标的的方向席位标记为空（刷新业务失败或数据无效时调用）。
  * 该函数只更新 seat truth；方向运行态清理由 ACTIVE 退场事件 owner 处理。
  *
- * @param monitorSymbol 监控标的代码
  * @param direction 多空方向
  * @param reason 标记原因（用于日志）
  * @param context 任务上下文
@@ -101,7 +99,7 @@ function collectSeatRefreshRelatedTradingSymbols(
 function markSeatAsEmpty(
   direction: 'LONG' | 'SHORT',
   reason: string,
-  context: MonitorTaskContext,
+  context: MonitorContext,
 ): void {
   const monitorSymbol = context.config.monitorSymbol;
   const currentSeat = context.symbolRegistry.getSeatState(direction);
@@ -133,9 +131,9 @@ function markSeatAsEmpty(
  * @returns 快照仍有效时返回当前 seatState，否则返回 null
  */
 function resolveActivatingSeatSnapshot(
-  context: MonitorTaskContext,
+  context: MonitorContext,
   data: SeatRefreshTaskData,
-): ReturnType<MonitorTaskContext['symbolRegistry']['getSeatState']> | null {
+): ReturnType<MonitorContext['symbolRegistry']['getSeatState']> | null {
   const seatState = context.symbolRegistry.getSeatState(data.direction);
   const seatVersion = context.symbolRegistry.getSeatVersion(data.direction);
   if (!isSeatVersionMatch(data.seatVersion, seatVersion)) {
@@ -153,17 +151,15 @@ function resolveActivatingSeatSnapshot(
  * 创建席位刷新任务处理器。
  * 在 seat 进入 ACTIVATING 后执行 admission、订单/风控缓存初始化与旧标的订单缓存收口；仅当全部成功时才把 seat 推进到 ACTIVE。
  *
- * @param deps 依赖注入，包含 requireContext、tradingConfig、marketDataClient
+ * @param deps 依赖注入，包含唯一 monitorContext、marketDataClient
  * @returns 处理 SEAT_REFRESH 任务的异步函数
  */
 export function createSeatRefreshHandler({
-  requireContext,
-  tradingConfig,
+  monitorContext,
   marketDataClient,
   quoteSubscriptionRuntime,
 }: {
-  readonly requireContext: () => MonitorTaskContext;
-  readonly tradingConfig: TradingConfig;
+  readonly monitorContext: MonitorContext;
   readonly marketDataClient: MarketDataClient;
   readonly quoteSubscriptionRuntime: Pick<
     QuoteSubscriptionRuntime,
@@ -178,7 +174,7 @@ export function createSeatRefreshHandler({
     helpers: RefreshHelpers,
   ): Promise<MonitorTaskStatus> {
     const data: SeatRefreshTaskData = task.data;
-    const context = requireContext();
+    const context = monitorContext;
 
     const entrySeatState = resolveActivatingSeatSnapshot(context, data);
     if (!entrySeatState) {
@@ -239,7 +235,7 @@ export function createSeatRefreshHandler({
 
       context.dailyLossTracker.recalculateFromAllOrders(
         allOrders,
-        tradingConfig.monitor,
+        context.config,
         new Date(),
         undefined,
         collectSeatRefreshRelatedTradingSymbols(context, data),

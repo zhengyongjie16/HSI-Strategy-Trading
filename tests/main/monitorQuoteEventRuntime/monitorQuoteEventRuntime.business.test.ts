@@ -95,7 +95,6 @@ function createDefaultStaticLiquidationHarness(): RuntimeHarness &
   let clearedOrders = 0;
   let refreshUnrealizedCalls = 0;
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -231,7 +230,6 @@ function createDefaultDistanceSwitchHarness(
     readonly driveResultKind: string;
   }> = [];
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -372,7 +370,6 @@ function createDefaultStaticWaitHarness(
   const quoteResponseGate = params.deferQuoteResponse ? createDeferred<true>() : null;
   let routeMode: 'STATIC_LIQUIDATION' | 'DISTANCE_SWITCH' = 'STATIC_LIQUIDATION';
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',

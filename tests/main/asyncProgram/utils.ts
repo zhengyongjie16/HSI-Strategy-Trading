@@ -100,7 +100,6 @@ function buildMonitorContextBase(
 ): MonitorContext {
   const { state, monitorSymbolName } = options;
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -126,14 +125,6 @@ function buildMonitorContextBase(
   return createMonitorContextDouble({
     state,
     symbolRegistry,
-    seatState: {
-      long: symbolRegistry.getSeatState('LONG'),
-      short: symbolRegistry.getSeatState('SHORT'),
-    },
-    seatVersion: {
-      long: symbolRegistry.getSeatVersion('LONG'),
-      short: symbolRegistry.getSeatVersion('SHORT'),
-    },
     monitorSymbolName,
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
@@ -177,26 +168,4 @@ export function createLastStateWithPositions(): LastState {
     cachedPositions: positions,
     positionCache: createPositionCacheDouble(positions),
   });
-}
-
-/**
- * 构造无行情、无席位的 MonitorContext，供 monitorTaskProcessor 等测试使用。
- *
- * @param overrides 覆盖字段（可选）
- * @returns 用于监控任务测试的 MonitorContext
- */
-export function createMonitorTaskContext(overrides: Partial<MonitorContext> = {}): MonitorContext {
-  return buildMonitorContextBase(
-    {
-      state: {
-        monitorSymbol: 'HSI.HK',
-        signal: null,
-        pendingDelayedSignals: [],
-        lastMonitorSnapshot: null,
-        incrementalIndicatorRuntime: null,
-      },
-      monitorSymbolName: 'HSI',
-    },
-    overrides,
-  );
 }

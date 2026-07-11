@@ -4,7 +4,7 @@
  * 覆盖周期换标 due timer 的 ownership、baseline 隔离、waiting-empty 显式唤醒与 stop 清理语义。
  */
 import { describe, expect, it } from 'bun:test';
-import { TIME } from '../../../src/constants/index.js';
+import { TIME, TRADING } from '../../../src/constants/index.js';
 import { createPeriodicSwitchWakeupRuntime } from '../../../src/main/periodicSwitchWakeupRuntime/index.js';
 import {
   createMonitorConfigDouble,
@@ -12,7 +12,6 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
-import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { SeatState } from '../../../src/types/seat.js';
 import type { MonitorContext } from '../../../src/types/state.js';
@@ -209,7 +208,6 @@ function createHarness(
   const symbolRegistry =
     params.symbolRegistry ??
     createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: createActiveSeat('BULL.HK', 1_000),
       shortSeat: createActiveSeat('BEAR.HK', 1_500),
       longVersion: 1,
@@ -225,7 +223,6 @@ function createHarness(
   const tasks: ScheduledTask[] = [];
 
   const runtime = createPeriodicSwitchWakeupRuntime({
-    tradingConfig: createTradingConfig({ monitor: monitorConfig }),
     monitorContext: runtimeMonitorContext,
     symbolRegistry,
     monitorTaskQueue: {
@@ -356,7 +353,6 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     const dueAtMs = hkMs('2026-04-29', 13, 10);
     const monitorConfig = createSwitchEnabledMonitorConfig({ switchIntervalMinutes: 20 });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: createActiveSeat('BULL.HK', startMs),
       shortSeat: createActiveSeat('BEAR.HK', startMs),
       longVersion: 1,
@@ -652,7 +648,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     ).toBe(true);
   });
 
-  it('非 waiting-empty route 收到 failed outcome 后 fail-fast 且不注册重评估 timer', () => {
+  it('failed outcome 为同 baseline 安排明确未来 one-shot，seat/order/fresh/gate 不提前热循环', () => {
     const harness = createHarness({ nowMs: 400_000 });
     harness.runtime.start();
     harness.tasks.length = 0;
@@ -664,12 +660,9 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     };
 
     harness.runtime.replanRouteAfterTask({ ...baseline, taskTimeMs: 400_000, status: 'failed' });
-
-    expect(harness.tasks).toHaveLength(0);
-    expect(harness.timers.getPendingTimerCount()).toBe(0);
-
-    harness.timers.setNow(401_000);
-    harness.timers.fireNext();
+    harness.symbolRegistry.updateSeatState('LONG', createActiveSeat('BULL.HK', 1_000));
+    harness.subscriptions.emitOrder();
+    harness.subscriptions.emitFresh();
     harness.subscriptions.emitGate({
       previousCanTrade: false,
       nextCanTrade: true,
@@ -681,9 +674,21 @@ describe('PeriodicSwitchWakeupRuntime', () => {
           task.data.direction === baseline.direction && task.data.symbol === baseline.symbol,
       ),
     ).toBe(false);
+    expect(harness.timers.getPendingTimerAts()).toEqual([400_000 + TRADING.INTERVAL_MS]);
+
+    harness.timers.setNow(400_000 + TRADING.INTERVAL_MS);
+    harness.timers.fireNext();
+
+    expect(
+      harness.tasks.filter(
+        (task) =>
+          task.data.direction === baseline.direction && task.data.symbol === baseline.symbol,
+      ),
+    ).toHaveLength(1);
+    expect(harness.timers.getPendingTimerCount()).toBe(0);
   });
 
-  it('waiting-empty route 收到 failed outcome 后清理等待且不注册重评估 timer', () => {
+  it('waiting-empty route 收到 failed outcome 后清理等待并只由未来 one-shot 重评估', () => {
     const harness = createHarness({ nowMs: 400_000 });
     harness.runtime.start();
     harness.tasks.length = 0;
@@ -700,24 +705,20 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     harness.subscriptions.emitFresh();
 
     expect(harness.tasks).toHaveLength(0);
-    expect(harness.timers.getPendingTimerCount()).toBe(0);
+    expect(harness.timers.getPendingTimerAts()).toEqual([400_000 + TRADING.INTERVAL_MS]);
 
-    harness.timers.setNow(401_000);
+    harness.timers.setNow(400_000 + TRADING.INTERVAL_MS);
     harness.timers.fireNext();
-    harness.subscriptions.emitGate({
-      previousCanTrade: false,
-      nextCanTrade: true,
-    });
 
     expect(
       harness.tasks.some(
         (task) =>
           task.data.direction === baseline.direction && task.data.symbol === baseline.symbol,
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it('failed 后同 baseline 的晚到 processed outcome 不能清除 fail-fast 屏障', () => {
+  it('failed 后同 baseline 的晚到 processed outcome 不能提前清除延迟重评估边界', () => {
     const harness = createHarness({ nowMs: 400_000 });
     harness.runtime.start();
     harness.tasks.length = 0;
@@ -741,7 +742,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
           task.data.direction === baseline.direction && task.data.symbol === baseline.symbol,
       ),
     ).toBe(false);
-    expect(harness.timers.getPendingTimerCount()).toBe(0);
+    expect(harness.timers.getPendingTimerAts()).toEqual([400_000 + TRADING.INTERVAL_MS]);
   });
 
   it('failed 后同 baseline 的晚到 waiting-empty 回写不能重新打开 order/fresh 派发', () => {
@@ -766,7 +767,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
           task.data.direction === baseline.direction && task.data.symbol === baseline.symbol,
       ),
     ).toBe(false);
-    expect(harness.timers.getPendingTimerCount()).toBe(0);
+    expect(harness.timers.getPendingTimerAts()).toEqual([400_000 + TRADING.INTERVAL_MS]);
   });
 
   it('failed 后 seat baseline 变化允许新 baseline 正常派发', () => {
@@ -816,7 +817,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     expect(harness.timers.getPendingTimerCount()).toBe(0);
   });
 
-  it('同一 baseline 连续 failed outcome 不注册重评估 timer 且不立即重派发', () => {
+  it('同一 baseline 连续 failed outcome 只保留一个未来重评估 timer', () => {
     const harness = createHarness({ nowMs: 400_000 });
     harness.runtime.start();
     harness.tasks.length = 0;
@@ -829,6 +830,27 @@ describe('PeriodicSwitchWakeupRuntime', () => {
 
     harness.runtime.replanRouteAfterTask({ ...baseline, taskTimeMs: 400_000, status: 'failed' });
     harness.runtime.replanRouteAfterTask({ ...baseline, taskTimeMs: 400_000, status: 'failed' });
+
+    expect(harness.tasks).toHaveLength(0);
+    expect(harness.timers.getPendingTimerAts()).toEqual([400_000 + TRADING.INTERVAL_MS]);
+  });
+
+  it('stopAndDrain 取消 failed outcome 的未来重评估 timer 与失效 callback', async () => {
+    const harness = createHarness({ nowMs: 400_000 });
+    harness.runtime.start();
+    harness.tasks.length = 0;
+    const baseline: PeriodicSwitchRouteBaseline = {
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      seatVersion: 1,
+      lastSeatActivatedAt: 1_000,
+    };
+
+    harness.runtime.replanRouteAfterTask({ ...baseline, taskTimeMs: 400_000, status: 'failed' });
+    const staleCallback = harness.timers.captureNextCallback();
+
+    await harness.runtime.stopAndDrain();
+    staleCallback?.();
 
     expect(harness.tasks).toHaveLength(0);
     expect(harness.timers.getPendingTimerCount()).toBe(0);
@@ -887,7 +909,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     expect(harness.timers.getPendingTimerCount()).toBe(0);
   });
 
-  it('failed outcome 不产生 timer 且不影响新 route timer ownership', async () => {
+  it('failed outcome timer 在 baseline 变化时取消且不影响新 route timer ownership', async () => {
     const harness = createHarness({
       nowMs: 400_000,
       calculateDueAtMs: ({ startMs }) => (startMs === 500_000 ? 700_000 : 1_000),
@@ -902,12 +924,14 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     };
 
     harness.runtime.replanRouteAfterTask({ ...baseline, taskTimeMs: 400_000, status: 'failed' });
-    expect(harness.timers.getPendingTimerCount()).toBe(0);
+    const staleCallback = harness.timers.captureNextCallback();
+    expect(harness.timers.getPendingTimerAts()).toEqual([400_000 + TRADING.INTERVAL_MS]);
 
     harness.symbolRegistry.updateSeatStateWithVersionBump(
       'LONG',
       createActiveSeat('BULL2.HK', 500_000),
     );
+    staleCallback?.();
 
     expect(harness.tasks).toHaveLength(0);
     expect(harness.timers.getPendingTimerAts()).toEqual([700_000]);

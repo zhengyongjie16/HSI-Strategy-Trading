@@ -456,9 +456,7 @@ describe('createDayLifecycleManager', () => {
         isTradingEnabled: false,
       });
       let warrantRefreshCalls = 0;
-      const symbolRegistry = createSymbolRegistryDouble({
-        monitorSymbol: 'HSI.HK',
-      });
+      const symbolRegistry = createSymbolRegistryDouble({});
       const monitorContext = createMonitorContextDouble({
         symbolRegistry,
         riskChecker: {

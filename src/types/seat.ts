@@ -47,9 +47,6 @@ export type SeatState = {
  * 使用范围：事件驱动自动换标链路与 quote 订阅维护链路。
  */
 export type SeatStateChangedEvent = Readonly<{
-  /** 监控标的代码 */
-  monitorSymbol: string;
-
   /** 席位方向 */
   direction: 'LONG' | 'SHORT';
 
@@ -73,9 +70,6 @@ export type SeatStateChangedEvent = Readonly<{
  * 使用范围：依赖完整席位 truth 重投影的事件驱动链路。
  */
 type SeatTruthChangedEvent = Readonly<{
-  /** 监控标的代码 */
-  monitorSymbol: string;
-
   /** 席位方向 */
   direction: 'LONG' | 'SHORT';
 }>;
@@ -95,9 +89,6 @@ export type SeatTruthChangedListener = (event: SeatTruthChangedEvent) => void;
  * 使用范围：主程序、MonitorContext、autoSymbolManager、orderRecorder 等；全项目可引用。
  */
 export interface SymbolRegistry {
-  /** 获取唯一监控标的代码 */
-  getMonitorSymbol: () => string;
-
   /** 获取席位状态 */
   getSeatState: (direction: 'LONG' | 'SHORT') => SeatState;
 
@@ -106,9 +97,7 @@ export interface SymbolRegistry {
 
   /** 根据标的代码解析所属席位 */
   resolveSeatBySymbol: (symbol: string) => Readonly<{
-    monitorSymbol: string;
     direction: 'LONG' | 'SHORT';
-    seatState: SeatState;
     seatVersion: number;
   }> | null;
 
@@ -143,15 +132,3 @@ export type LifecycleState =
   | 'MIDNIGHT_CLEANED'
   | 'OPEN_REBUILDING'
   | 'OPEN_REBUILD_FAILED';
-
-/**
- * 启动阶段的席位标的快照条目。
- * 类型用途：开盘重建与启动阶段快照的一条记录，表示某监控标的某方向的当前轮证代码。
- * 数据来源：启动时从 SymbolRegistry/席位状态序列化或从持久化恢复。
- * 使用范围：startup 开盘重建、席位快照；见调用方。
- */
-export type SeatSymbolSnapshotEntry = {
-  readonly monitorSymbol: string;
-  readonly direction: 'LONG' | 'SHORT';
-  readonly symbol: string;
-};

@@ -196,13 +196,10 @@ function settleProtectiveLiquidationEpisodes(
   businessDeps: PostTradeConsistencyRuntimeBusinessDeps,
   getQuantityBySymbol: (symbol: string) => { quantity: number } | null,
 ): void {
-  const monitorSymbol = businessDeps.monitorContext.config.monitorSymbol;
-
   for (const episode of businessDeps.protectiveLiquidationEpisodeTracker.getInProgressEpisodes()) {
     const monitorContext = businessDeps.monitorContext;
     const isDirectionFlat = isSymbolFlatByPositionCache(episode.symbol, getQuantityBySymbol);
     const hasPendingProtectiveOrders = trader.hasPendingProtectiveLiquidationOrders(
-      monitorSymbol,
       episode.direction,
     );
     const completedEvent = businessDeps.protectiveLiquidationEpisodeTracker.completeIfEligible({
@@ -419,7 +416,7 @@ export function createPostTradeConsistencyRuntime(
       if (positions !== null) {
         lastState.cachedPositions = positions;
         lastState.positionCache.update(positions);
-        await deps.onPositionsCommitted?.();
+        await deps.onPositionsCommitted();
       }
 
       refreshOk = await runPostRefreshBusinessFlow(trader, lastState, resolvedBusinessDeps);

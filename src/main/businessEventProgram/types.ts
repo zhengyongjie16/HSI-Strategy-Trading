@@ -2,7 +2,6 @@ import type { TradingConfig } from '../../types/config.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { MarketDataClient } from '../../types/services.js';
-import type { SeatState } from '../../types/seat.js';
 import type { IndicatorCache } from '../asyncProgram/indicatorCache/types.js';
 import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/tradeTaskQueue/types.js';
 
@@ -39,31 +38,6 @@ export type BusinessEventRouteState =
       readonly dirty: true;
       readonly pendingObservedAtMs: number;
     };
-
-/**
- * 普通信号席位投影参数。
- * 类型用途：封装 resolveSignalSeatInfo 所需的监控上下文。
- * 数据来源：由 businessEventProgram 按当前 monitor 组装。
- * 使用范围：仅 K 线信号链路使用。
- */
-export type SignalSeatProjectionParams = Readonly<{
-  monitorContext: MonitorContext;
-}>;
-
-/**
- * 信号流水线席位信息。
- * 类型用途：封装普通 K 线信号入队前所需的席位身份，不包含行情，确保 K 线信号链路不依赖 quote。
- * 数据来源：由 resolveSignalSeatInfo 根据 symbolRegistry 派生。
- * 使用范围：仅 signalPipeline 使用。
- */
-export type SignalSeatInfo = Readonly<{
-  longSeatState: SeatState;
-  shortSeatState: SeatState;
-  longSeatVersion: number;
-  shortSeatVersion: number;
-  longSymbol: string;
-  shortSymbol: string;
-}>;
 
 /**
  * monitor indicator 显示 runtime 最小契约。
@@ -118,8 +92,8 @@ export type IndicatorPipelineParams = Readonly<{
 
 /**
  * 信号流水线参数（执行信号生成、延迟验证入队等时的入参）。
- * 类型用途：封装信号流水线所需的上下文、席位信息与指标快照。
- * 数据来源：由 businessEventProgram 从席位投影结果、指标流水线输出等组装。
+ * 类型用途：封装信号流水线所需的上下文与指标快照。
+ * 数据来源：由 businessEventProgram 从指标流水线输出等组装；席位身份在流水线中直接从唯一注册表读取。
  * 使用范围：仅普通 K 线业务事件链路使用。
  */
 export type SignalPipelineParams = Readonly<{
@@ -129,6 +103,5 @@ export type SignalPipelineParams = Readonly<{
     'lastState' | 'tradingConfig' | 'buyTaskQueue' | 'sellTaskQueue'
   >;
   runtimeFlags: BusinessEventRuntimeFlags;
-  seatInfo: SignalSeatInfo;
   monitorSnapshot: IndicatorSnapshot;
 }>;

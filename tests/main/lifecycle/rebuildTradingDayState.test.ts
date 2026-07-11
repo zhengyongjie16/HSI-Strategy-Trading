@@ -15,7 +15,6 @@ import {
 import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
 import { listHKDateKeysBetween } from '../../../src/main/lifecycle/utils.js';
 import type { RebuildTradingDayStateDeps } from '../../../src/main/lifecycle/types.js';
-import type { TradingConfig } from '../../../src/types/config.js';
 import type { MonitorContext } from '../../../src/types/state.js';
 import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
 import type { Quote } from '../../../src/types/quote.js';
@@ -60,7 +59,6 @@ function createSymbolRegistry(
         }
       : emptySeatState;
   return {
-    getMonitorSymbol: () => 'HSI.HK',
     getSeatState: (_direction: 'LONG' | 'SHORT') => readySeatState,
     getSeatVersion: () => 1,
     resolveSeatBySymbol: () => null,
@@ -120,17 +118,7 @@ function createMonitorContext(params: {
       refreshWarrantInfoForSymbol: async () => ({ status: 'ok' as const }),
       refreshUnrealizedLossData: async () => {},
     },
-    longQuote: null,
-    shortQuote: null,
-    monitorQuote: null,
   } as unknown as MonitorContext;
-}
-
-function createCarryoverTradingConfig(): TradingConfig {
-  return {
-    monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
-    global: {} as TradingConfig['global'],
-  };
 }
 
 function createDefaultMarketDataClient(
@@ -378,7 +366,6 @@ describe('createRebuildTradingDayState', () => {
     const carriedActivatedAt = Date.parse('2026-02-16T07:59:00.000Z');
     const rebuildNow = new Date('2026-02-17T01:31:00.000Z');
     const registry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         ...emptySeatState,
         symbol: 'OLD_BULL.HK',
@@ -387,10 +374,7 @@ describe('createRebuildTradingDayState', () => {
       },
       shortSeat: emptySeatState,
     });
-    captureSeatActivationCarryover({
-      tradingConfig: createCarryoverTradingConfig(),
-      symbolRegistry: registry,
-    });
+    captureSeatActivationCarryover({ symbolRegistry: registry });
 
     registry.updateSeatState('LONG', {
       ...emptySeatState,
@@ -423,7 +407,6 @@ describe('createRebuildTradingDayState', () => {
     const carriedActivatedAt = Date.parse('2026-02-16T07:59:00.000Z');
     const rebuildNow = new Date('2026-02-17T01:31:00.000Z');
     const registry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         ...emptySeatState,
         symbol: 'OLD_BULL.HK',
@@ -432,10 +415,7 @@ describe('createRebuildTradingDayState', () => {
       },
       shortSeat: emptySeatState,
     });
-    captureSeatActivationCarryover({
-      tradingConfig: createCarryoverTradingConfig(),
-      symbolRegistry: registry,
-    });
+    captureSeatActivationCarryover({ symbolRegistry: registry });
 
     registry.updateSeatState('LONG', {
       ...emptySeatState,
@@ -470,7 +450,6 @@ describe('createRebuildTradingDayState', () => {
     const carriedActivatedAt = Date.parse('2026-02-16T07:59:00.000Z');
     const rebuildNow = new Date('2026-02-18T01:31:00.000Z');
     const registry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         ...emptySeatState,
         symbol: 'OLD_BULL.HK',
@@ -479,11 +458,7 @@ describe('createRebuildTradingDayState', () => {
       },
       shortSeat: emptySeatState,
     });
-    const tradingConfig = createCarryoverTradingConfig();
-    captureSeatActivationCarryover({
-      tradingConfig,
-      symbolRegistry: registry,
-    });
+    captureSeatActivationCarryover({ symbolRegistry: registry });
 
     registry.updateSeatState('LONG', {
       ...emptySeatState,
@@ -492,15 +467,9 @@ describe('createRebuildTradingDayState', () => {
       lastSeatActivatedAt: null,
     });
 
-    captureSeatActivationCarryover({
-      tradingConfig,
-      symbolRegistry: registry,
-    });
+    captureSeatActivationCarryover({ symbolRegistry: registry });
 
-    captureSeatActivationCarryover({
-      tradingConfig,
-      symbolRegistry: registry,
-    });
+    captureSeatActivationCarryover({ symbolRegistry: registry });
 
     registry.updateSeatState('LONG', {
       ...emptySeatState,

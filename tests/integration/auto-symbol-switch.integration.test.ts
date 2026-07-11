@@ -64,7 +64,6 @@ describe('auto-symbol-switch integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -247,7 +246,6 @@ describe('auto-symbol-switch integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -319,7 +317,7 @@ describe('auto-symbol-switch integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -463,7 +461,6 @@ describe('auto-symbol-switch integration', () => {
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -561,7 +558,6 @@ describe('auto-symbol-switch integration', () => {
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -654,7 +650,6 @@ describe('auto-symbol-switch integration', () => {
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',

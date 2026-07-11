@@ -449,7 +449,6 @@ describe('type organization regressions', () => {
     const symbolHelperImports = collectProjectImports('src/utils/seat/symbols.ts', symbolsSource);
 
     expect([...symbolHelperExports]).toContain('resolveBoundSeatSymbol');
-    expect([...symbolHelperExports]).toContain('collectBoundSeatSymbols');
     expect(symbolHelperImports.some((importedPath) => importedPath.startsWith('src/config/'))).toBe(
       false,
     );
@@ -466,11 +465,7 @@ describe('type organization regressions', () => {
     const recoveryFiles = await collectTypeScriptFiles('src/main/recovery');
     const recoveryImportViolations: string[] = [];
     const recoveryHelperViolations: string[] = [];
-    const forbiddenRecoveryHelperNames = new Set([
-      'collectBoundSeatSymbols',
-      'collectSeatSymbols',
-      'resolveBoundSeatSymbol',
-    ]);
+    const forbiddenRecoveryHelperNames = new Set(['collectSeatSymbols', 'resolveBoundSeatSymbol']);
 
     for (const relativePath of appFiles) {
       for (const importedPath of collectProjectImports(
@@ -516,15 +511,6 @@ describe('type organization regressions', () => {
       }
     }
 
-    const snapshotExports = collectNamedExports(
-      parseSourceFile(
-        'src/utils/seat/snapshots.ts',
-        await readProjectFile('src/utils/seat/snapshots.ts'),
-      ),
-    );
-
     expect(importViolations).toEqual([]);
-    expect([...snapshotExports]).toContain('resolveMonitorContextSeatSnapshot');
-    expect([...snapshotExports]).toContain('resolveMonitorContextRuntimeSnapshot');
   });
 });

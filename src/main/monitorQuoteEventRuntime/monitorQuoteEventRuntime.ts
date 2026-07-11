@@ -29,22 +29,6 @@ import type {
 } from './types.js';
 
 /**
- * 根据 quote 事件匹配唯一监控上下文。
- *
- * @param params.monitorContext monitor 上下文
- * @param params.event 标准化 quote 事件
- * @returns 事件属于唯一 monitor 时返回 monitor 上下文；否则返回 null
- */
-function matchMonitorContextForQuoteEvent(params: {
-  readonly monitorContext: MonitorContext;
-  readonly event: QuoteUpdatedEvent;
-}): MonitorContext | null {
-  return params.event.symbol === params.monitorContext.config.monitorSymbol
-    ? params.monitorContext
-    : null;
-}
-
-/**
  * 判断当前 runtime gate 是否打开。
  *
  * @param deps runtime 依赖
@@ -658,13 +642,8 @@ function createMonitorQuoteEventRuntime(
       return;
     }
 
-    const eventMonitorContext = matchMonitorContextForQuoteEvent({
-      monitorContext,
-      event,
-    });
-    if (eventMonitorContext) {
-      const mode: MonitorQuoteRouteMode = eventMonitorContext.config.autoSearchConfig
-        .autoSearchEnabled
+    if (event.symbol === runtimeMonitorSymbol) {
+      const mode: MonitorQuoteRouteMode = monitorContext.config.autoSearchConfig.autoSearchEnabled
         ? 'DISTANCE_SWITCH'
         : 'STATIC_LIQUIDATION';
       const currentRouteState = getOrCreateRouteState(mode);

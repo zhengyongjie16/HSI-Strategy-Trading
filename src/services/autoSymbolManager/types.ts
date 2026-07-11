@@ -450,7 +450,6 @@ export type SeatStateUpdater = (
  * 使用范围：autoSymbolManager 模块及其调用方使用。
  */
 export type SeatStateManagerDeps = {
-  readonly monitorSymbol: string;
   readonly symbolRegistry: SymbolRegistry;
   readonly switchStates: SwitchStateMap;
   readonly switchSuppressions: SwitchSuppressionMap;

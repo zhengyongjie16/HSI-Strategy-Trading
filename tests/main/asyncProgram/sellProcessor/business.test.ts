@@ -323,6 +323,7 @@ describe('sellProcessor business flow', () => {
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
       getTrader: () => trader,
       lastState,
+      onPositionsCommitted: async () => {},
     });
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext: createMonitorContext({

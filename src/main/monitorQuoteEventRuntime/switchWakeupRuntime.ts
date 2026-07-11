@@ -389,13 +389,12 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @returns 权威 route 或 null
    */
   function resolveAuthoritativeRoute(routeState: SwitchWakeupRouteState): SwitchWakeupRoute | null {
-    const monitorContext = deps.monitorContext;
     const seatVersion = deps.symbolRegistry.getSeatVersion(routeState.route.direction);
     if (seatVersion !== routeState.route.seatVersion) {
       return null;
     }
 
-    if (!monitorContext.autoSymbolManager.hasPendingSwitch(routeState.route.direction)) {
+    if (!deps.monitorContext.autoSymbolManager.hasPendingSwitch(routeState.route.direction)) {
       return null;
     }
 
@@ -403,7 +402,6 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       routeKey: routeState.route.routeKey,
       direction: routeState.route.direction,
       seatVersion: routeState.route.seatVersion,
-      monitorContext,
     };
   }
 
@@ -534,11 +532,10 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
 
         routeState.route = authoritativeRoute;
 
-        const result =
-          await authoritativeRoute.monitorContext.autoSymbolManager.advancePendingSwitch({
-            direction: authoritativeRoute.direction,
-            positions: deps.lastState.cachedPositions,
-          });
+        const result = await deps.monitorContext.autoSymbolManager.advancePendingSwitch({
+          direction: authoritativeRoute.direction,
+          positions: deps.lastState.cachedPositions,
+        });
 
         if (!result.advanced) {
           deleteRoute(routeKey);
@@ -705,7 +702,6 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       }),
       direction: params.direction,
       seatVersion,
-      monitorContext: params.monitorContext,
     };
 
     pruneOlderSeatVersions(route);

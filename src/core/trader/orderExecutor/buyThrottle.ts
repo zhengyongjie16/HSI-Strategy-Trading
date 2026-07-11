@@ -8,36 +8,36 @@
  */
 import { TIME } from '../../../constants/index.js';
 import { isBuyAction } from '../../../utils/helpers/index.js';
-import { isSellAction } from '../../../utils/display/index.js';
-import type { MonitorConfig } from '../../../types/config.js';
-import type { SignalType } from '../../../types/signal.js';
+import type { BuySignalAction, SignalType } from '../../../types/signal.js';
 import type { BuyThrottle } from './types.js';
-import { buildBuyTimeKey } from './utils.js';
+
+function resolveBuyDirection(signalAction: BuySignalAction): 'LONG' | 'SHORT' {
+  return signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
+}
 
 /**
  * 创建买入节流器。
  *
+ * @param buyIntervalSeconds 已绑定唯一 monitor 的买入间隔秒数
  * @returns 买入节流器实例
  */
-export function createBuyThrottle(): BuyThrottle {
-  const lastBuyTime = new Map<string, number>();
+export function createBuyThrottle(buyIntervalSeconds: number): BuyThrottle {
+  const lastBuyTime = new Map<'LONG' | 'SHORT', number>();
 
   /**
    * 检查买入频率限制（卖出不限制）。
    *
    * @param signalAction 信号动作
-   * @param monitorConfig 监控配置
    * @returns 频率检查结果
    */
-  function canTradeNow(signalAction: SignalType, monitorConfig: MonitorConfig) {
-    if (isSellAction(signalAction)) {
+  function canTradeNow(signalAction: SignalType) {
+    if (!isBuyAction(signalAction)) {
       return { canTrade: true };
     }
 
-    const buyIntervalSeconds = monitorConfig.buyIntervalSeconds;
-    const timeKey = buildBuyTimeKey(signalAction, monitorConfig);
-    const lastTime = lastBuyTime.get(timeKey);
-    if (!lastTime) {
+    const direction = resolveBuyDirection(signalAction);
+    const lastTime = lastBuyTime.get(direction);
+    if (lastTime === undefined) {
       return { canTrade: true };
     }
 
@@ -59,12 +59,11 @@ export function createBuyThrottle(): BuyThrottle {
    * 记录买入时间（用于频率限制）。
    *
    * @param signalAction 信号动作
-   * @param monitorConfig 监控配置
    * @returns 无返回值
    */
-  function recordBuyAttempt(signalAction: SignalType, monitorConfig: MonitorConfig): void {
+  function recordBuyAttempt(signalAction: SignalType): void {
     if (isBuyAction(signalAction)) {
-      lastBuyTime.set(buildBuyTimeKey(signalAction, monitorConfig), Date.now());
+      lastBuyTime.set(resolveBuyDirection(signalAction), Date.now());
     }
   }
 

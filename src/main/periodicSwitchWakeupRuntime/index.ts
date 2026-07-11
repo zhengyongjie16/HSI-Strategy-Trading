@@ -6,6 +6,7 @@
  * - 基于 seat truth baseline 隔离旧 timer、旧 waiting-empty 与旧任务回调
  * - 通过 AUTO_SYMBOL_TICK latest-only 任务推进周期换标，不向 timeWakeupPlanner 暴露候选
  */
+import { TRADING } from '../../constants/index.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { SeatTruthChangedListener } from '../../types/seat.js';
 import type { MonitorTaskInput } from '../asyncProgram/monitorTaskQueue/types.js';
@@ -13,17 +14,11 @@ import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/ty
 import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
   PeriodicSwitchAutoSymbolTickTaskData,
-  PeriodicSwitchDirection,
-  PeriodicSwitchRoute,
   PeriodicSwitchRouteBaseline,
   PeriodicSwitchRouteState,
   PeriodicSwitchWakeupRuntime,
   PeriodicSwitchWakeupRuntimeDeps,
 } from './types.js';
-
-function buildRouteKey(route: PeriodicSwitchRoute): string {
-  return route.direction;
-}
 
 function baselineMatches(
   left: PeriodicSwitchRouteBaseline,
@@ -41,14 +36,18 @@ function isValidSeatVersion(seatVersion: number): boolean {
   return Number.isSafeInteger(seatVersion) && seatVersion > 0;
 }
 
-function isFailedBaseline(
+function isFailureReevaluationPending(
   state: PeriodicSwitchRouteState,
   baseline: PeriodicSwitchRouteBaseline,
 ): boolean {
-  return state.failedBaseline !== null && baselineMatches(state.failedBaseline, baseline);
+  return (
+    state.failureReevaluationAtMs !== null &&
+    state.baseline !== null &&
+    baselineMatches(state.baseline, baseline)
+  );
 }
 
-const PERIODIC_SWITCH_DIRECTIONS: ReadonlyArray<PeriodicSwitchDirection> = ['LONG', 'SHORT'];
+const PERIODIC_SWITCH_DIRECTIONS: ReadonlyArray<'LONG' | 'SHORT'> = ['LONG', 'SHORT'];
 
 /**
  * 创建周期换标唤醒 runtime。
@@ -64,11 +63,10 @@ export function createPeriodicSwitchWakeupRuntime(
   let unsubscribeOrderStateChanged: (() => void) | null = null;
   let unsubscribeFreshReached: (() => void) | null = null;
   let unsubscribeGateStateChanged: (() => void) | null = null;
-  const routeStates = new Map<string, PeriodicSwitchRouteState>();
+  const routeStates = new Map<'LONG' | 'SHORT', PeriodicSwitchRouteState>();
 
-  function getRouteState(route: PeriodicSwitchRoute): PeriodicSwitchRouteState {
-    const routeKey = buildRouteKey(route);
-    const currentState = routeStates.get(routeKey);
+  function getRouteState(direction: 'LONG' | 'SHORT'): PeriodicSwitchRouteState {
+    const currentState = routeStates.get(direction);
     if (currentState !== undefined) {
       return currentState;
     }
@@ -77,14 +75,14 @@ export function createPeriodicSwitchWakeupRuntime(
       baseline: null,
       timerHandle: null,
       waitingEmpty: null,
-      failedBaseline: null,
+      failureReevaluationAtMs: null,
     };
-    routeStates.set(routeKey, nextState);
+    routeStates.set(direction, nextState);
     return nextState;
   }
 
-  function clearRouteTimer(route: PeriodicSwitchRoute): void {
-    const state = routeStates.get(buildRouteKey(route));
+  function clearRouteTimer(direction: 'LONG' | 'SHORT'): void {
+    const state = routeStates.get(direction);
     if (state?.timerHandle === null || state === undefined) {
       return;
     }
@@ -93,14 +91,14 @@ export function createPeriodicSwitchWakeupRuntime(
     state.timerHandle = null;
   }
 
-  function readCurrentBaseline(route: PeriodicSwitchRoute): PeriodicSwitchRouteBaseline | null {
+  function readCurrentBaseline(direction: 'LONG' | 'SHORT'): PeriodicSwitchRouteBaseline | null {
     const autoSearchConfig = deps.monitorContext.config.autoSearchConfig;
     if (!autoSearchConfig.autoSearchEnabled || autoSearchConfig.switchIntervalMinutes <= 0) {
       return null;
     }
 
-    const seatState = deps.symbolRegistry.getSeatState(route.direction);
-    const seatVersion = deps.symbolRegistry.getSeatVersion(route.direction);
+    const seatState = deps.symbolRegistry.getSeatState(direction);
+    const seatVersion = deps.symbolRegistry.getSeatVersion(direction);
     if (
       seatState.status !== 'ACTIVE' ||
       seatState.symbol === null ||
@@ -112,7 +110,7 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     return {
-      direction: route.direction,
+      direction,
       symbol: seatState.symbol,
       seatVersion,
       lastSeatActivatedAt: seatState.lastSeatActivatedAt,
@@ -147,19 +145,19 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function invalidateRouteIfBaselineChanged(
-    route: PeriodicSwitchRoute,
+    direction: 'LONG' | 'SHORT',
     nextBaseline: PeriodicSwitchRouteBaseline | null,
   ): PeriodicSwitchRouteState {
-    const state = getRouteState(route);
+    const state = getRouteState(direction);
     const currentBaseline = state.baseline;
     const baselineChanged =
       currentBaseline !== null &&
       (nextBaseline === null || !baselineMatches(currentBaseline, nextBaseline));
 
     if (baselineChanged) {
-      clearRouteTimer(route);
+      clearRouteTimer(direction);
       state.waitingEmpty = null;
-      state.failedBaseline = null;
+      state.failureReevaluationAtMs = null;
     }
 
     state.baseline = nextBaseline;
@@ -170,18 +168,18 @@ export function createPeriodicSwitchWakeupRuntime(
    * 对单 route 重新读取权威 truth 并安排一次 due 行为。
    * baseline 不完整或 dueAtMs 为 null 时只清理旧派生状态，不额外补排到期动作。
    */
-  function planRoute(route: PeriodicSwitchRoute): void {
+  function planRoute(direction: 'LONG' | 'SHORT'): void {
     if (!running) {
       return;
     }
 
-    const baseline = readCurrentBaseline(route);
-    const state = invalidateRouteIfBaselineChanged(route, baseline);
+    const baseline = readCurrentBaseline(direction);
+    const state = invalidateRouteIfBaselineChanged(direction, baseline);
     if (baseline === null || state.waitingEmpty !== null) {
       return;
     }
 
-    if (isFailedBaseline(state, baseline)) {
+    if (isFailureReevaluationPending(state, baseline)) {
       return;
     }
 
@@ -195,18 +193,18 @@ export function createPeriodicSwitchWakeupRuntime(
       switchIntervalMinutes,
     });
     if (dueAtMs === null) {
-      clearRouteTimer(route);
+      clearRouteTimer(direction);
       return;
     }
 
     const nowMs = deps.now().getTime();
     if (dueAtMs <= nowMs) {
-      clearRouteTimer(route);
+      clearRouteTimer(direction);
       dispatchAutoSymbolTick(baseline);
       return;
     }
 
-    clearRouteTimer(route);
+    clearRouteTimer(direction);
     const timerHandle = scheduleBoundedOneShotAt({
       atMs: dueAtMs,
       now: deps.now,
@@ -222,7 +220,7 @@ export function createPeriodicSwitchWakeupRuntime(
           return;
         }
 
-        const currentBaseline = readCurrentBaseline(route);
+        const currentBaseline = readCurrentBaseline(direction);
         if (currentBaseline !== null && baselineMatches(currentBaseline, baseline)) {
           dispatchAutoSymbolTick(baseline);
         }
@@ -233,12 +231,12 @@ export function createPeriodicSwitchWakeupRuntime(
 
   function seedRoutes(): void {
     for (const direction of PERIODIC_SWITCH_DIRECTIONS) {
-      planRoute({ direction });
+      planRoute(direction);
     }
   }
 
   const handleSeatTruthChanged: SeatTruthChangedListener = (event) => {
-    planRoute({ direction: event.direction });
+    planRoute(event.direction);
   };
 
   function redispatchWaitingEmptyRoutes(): void {
@@ -246,15 +244,15 @@ export function createPeriodicSwitchWakeupRuntime(
       return;
     }
 
-    for (const [routeKey, state] of routeStates) {
+    for (const [direction, state] of routeStates) {
       const waitingBaseline = state.waitingEmpty;
       if (waitingBaseline === null) {
         continue;
       }
 
-      const currentBaseline = readCurrentBaseline(waitingBaseline);
+      const currentBaseline = readCurrentBaseline(waitingBaseline.direction);
       if (currentBaseline === null || !baselineMatches(currentBaseline, waitingBaseline)) {
-        routeStates.delete(routeKey);
+        routeStates.delete(direction);
         continue;
       }
 
@@ -268,13 +266,12 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     for (const direction of PERIODIC_SWITCH_DIRECTIONS) {
-      const route = { direction };
-      const state = routeStates.get(buildRouteKey(route));
+      const state = routeStates.get(direction);
       if (state !== undefined && state.waitingEmpty !== null) {
         continue;
       }
 
-      planRoute(route);
+      planRoute(direction);
     }
   }
 
@@ -283,29 +280,29 @@ export function createPeriodicSwitchWakeupRuntime(
       return;
     }
 
-    const currentBaseline = readCurrentBaseline(baseline);
+    const currentBaseline = readCurrentBaseline(baseline.direction);
     if (currentBaseline === null || !baselineMatches(currentBaseline, baseline)) {
       return;
     }
 
-    const state = getRouteState(baseline);
-    if (isFailedBaseline(state, baseline)) {
+    const state = getRouteState(baseline.direction);
+    if (isFailureReevaluationPending(state, baseline)) {
       return;
     }
 
-    clearRouteTimer(baseline);
+    clearRouteTimer(baseline.direction);
     state.baseline = baseline;
     state.waitingEmpty = baseline;
   }
 
   function clearWaitingEmpty(baseline: PeriodicSwitchRouteBaseline): void {
-    const currentBaseline = readCurrentBaseline(baseline);
+    const currentBaseline = readCurrentBaseline(baseline.direction);
     if (currentBaseline === null || !baselineMatches(currentBaseline, baseline)) {
       return;
     }
 
-    const state = routeStates.get(buildRouteKey(baseline));
-    if (state === undefined || isFailedBaseline(state, baseline)) {
+    const state = routeStates.get(baseline.direction);
+    if (state === undefined || isFailureReevaluationPending(state, baseline)) {
       return;
     }
 
@@ -316,8 +313,8 @@ export function createPeriodicSwitchWakeupRuntime(
 
   /**
    * 根据 AUTO_SYMBOL_TICK 的处理结果回写 route 状态。
-   * processed 只按当前 baseline 重排未来 due；blocked/skipped/failed 分别交还给 gate owner、清理等待或 fail-fast，
-   * 避免周期换标在门禁关闭、快照过期或业务失败后产生隐藏 retry。
+   * processed 只按当前 baseline 重排未来 due；blocked/skipped 交还给 gate owner 或清理等待；
+   * failed 由本 owner 安排一次未来外部失败重评估，避免同 baseline 永久锁死或事件热循环。
    */
   function replanRouteAfterTask(
     params: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0],
@@ -332,41 +329,72 @@ export function createPeriodicSwitchWakeupRuntime(
       seatVersion: params.seatVersion,
       lastSeatActivatedAt: params.lastSeatActivatedAt,
     };
-    const currentBaseline = readCurrentBaseline(baseline);
+    const currentBaseline = readCurrentBaseline(baseline.direction);
     if (currentBaseline === null || !baselineMatches(currentBaseline, baseline)) {
-      const state = routeStates.get(buildRouteKey(baseline));
+      const state = routeStates.get(baseline.direction);
       const stateBaseline = state?.baseline;
       if (
         stateBaseline !== undefined &&
         stateBaseline !== null &&
         baselineMatches(stateBaseline, baseline)
       ) {
-        clearRouteTimer(baseline);
-        routeStates.delete(buildRouteKey(baseline));
+        clearRouteTimer(baseline.direction);
+        routeStates.delete(baseline.direction);
       }
 
       return;
     }
 
-    const state = invalidateRouteIfBaselineChanged(baseline, currentBaseline);
-    if (params.status !== 'failed' && isFailedBaseline(state, baseline)) {
+    const state = invalidateRouteIfBaselineChanged(baseline.direction, currentBaseline);
+    if (params.status !== 'failed' && isFailureReevaluationPending(state, baseline)) {
       return;
     }
 
     if (params.status === 'skipped' || params.status === 'blocked') {
-      clearRouteTimer(baseline);
+      clearRouteTimer(baseline.direction);
       state.waitingEmpty = null;
+      state.failureReevaluationAtMs = null;
       return;
     }
 
     if (params.status === 'failed') {
-      clearRouteTimer(baseline);
+      if (isFailureReevaluationPending(state, baseline)) {
+        return;
+      }
+
+      clearRouteTimer(baseline.direction);
       state.waitingEmpty = null;
-      state.failedBaseline = baseline;
+      const failureReevaluationAtMs = deps.now().getTime() + TRADING.INTERVAL_MS;
+      state.failureReevaluationAtMs = failureReevaluationAtMs;
+      const timerHandle = scheduleBoundedOneShotAt({
+        atMs: failureReevaluationAtMs,
+        now: deps.now,
+        scheduleTimer: deps.scheduleTimer,
+        clearTimer: deps.clearTimer,
+        onDue: () => {
+          if (state.timerHandle !== timerHandle) {
+            return;
+          }
+
+          state.timerHandle = null;
+          state.failureReevaluationAtMs = null;
+          if (!running) {
+            return;
+          }
+
+          const latestBaseline = readCurrentBaseline(baseline.direction);
+          if (latestBaseline === null || !baselineMatches(latestBaseline, baseline)) {
+            return;
+          }
+
+          dispatchAutoSymbolTick(baseline);
+        },
+      });
+      state.timerHandle = timerHandle;
       return;
     }
 
-    state.failedBaseline = null;
+    state.failureReevaluationAtMs = null;
 
     if (state.waitingEmpty !== null && baselineMatches(state.waitingEmpty, baseline)) {
       return;
@@ -383,16 +411,16 @@ export function createPeriodicSwitchWakeupRuntime(
       switchIntervalMinutes,
     });
     if (dueAtMs === null) {
-      clearRouteTimer(baseline);
+      clearRouteTimer(baseline.direction);
       return;
     }
 
     if (dueAtMs <= params.taskTimeMs) {
-      clearRouteTimer(baseline);
+      clearRouteTimer(baseline.direction);
       return;
     }
 
-    planRoute(baseline);
+    planRoute(baseline.direction);
   }
 
   function start(): void {

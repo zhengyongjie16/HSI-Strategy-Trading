@@ -74,7 +74,6 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
   });
   const signalBuilder = createSignalBuilder();
   const seatStateManager = createSeatStateManager({
-    monitorSymbol,
     symbolRegistry,
     switchStates,
     switchSuppressions,

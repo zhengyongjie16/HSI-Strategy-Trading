@@ -79,7 +79,6 @@ function createPeriodicHarness(params: HarnessParams): {
     },
   });
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'OLD_BULL.HK',
       status: 'ACTIVE',
@@ -95,7 +94,6 @@ function createPeriodicHarness(params: HarnessParams): {
   const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
   const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
   const seatStateManager = createSeatStateManager({
-    monitorSymbol: 'HSI.HK',
     symbolRegistry,
     switchStates,
     switchSuppressions,
@@ -811,7 +809,6 @@ describe('periodic auto-switch regression', () => {
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -827,7 +824,6 @@ describe('periodic auto-switch regression', () => {
     const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
     const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
     const seatStateManager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,

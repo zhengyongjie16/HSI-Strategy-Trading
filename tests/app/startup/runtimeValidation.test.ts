@@ -66,7 +66,6 @@ describe('app runtimeValidation', () => {
       }),
     );
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -157,9 +156,7 @@ describe('app runtimeValidation', () => {
         },
       }),
     );
-    const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSCEI.HK',
-    });
+    const symbolRegistry = createSymbolRegistryDouble({});
 
     const collector = collectRuntimeValidationSymbols({
       tradingConfig,

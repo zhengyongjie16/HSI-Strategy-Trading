@@ -41,7 +41,6 @@ describe('tradingQuoteDisplayRuntime', () => {
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -104,7 +103,6 @@ describe('tradingQuoteDisplayRuntime', () => {
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -181,7 +179,6 @@ describe('tradingQuoteDisplayRuntime', () => {
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -361,7 +358,6 @@ describe('tradingQuoteDisplayRuntime', () => {
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -422,7 +418,6 @@ describe('tradingQuoteDisplayRuntime', () => {
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -498,7 +493,6 @@ describe('tradingQuoteDisplayRuntime', () => {
       cause: new Error('quote supplement failed'),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -576,7 +570,6 @@ describe('tradingQuoteDisplayRuntime', () => {
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     warnLogs.length = 0;
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',

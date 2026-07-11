@@ -20,6 +20,7 @@ import {
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
+  createTradeContextDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
@@ -102,7 +103,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -161,7 +162,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -223,7 +224,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -257,6 +258,129 @@ describe('buy-flow integration', () => {
     expect(trackedOrderCount).toBe(0);
   });
 
+  it('skips submit when the same symbol seatVersion advances during API throttling', async () => {
+    const tradingConfig = createTradingConfig();
+    const tradeCtx = createTradeContextMock();
+    const symbolRegistry = createSymbolRegistryDouble();
+    let throttleCalls = 0;
+    const orderExecutor = createOrderExecutor({
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: {
+        throttle: async () => {
+          throttleCalls += 1;
+          symbolRegistry.updateSeatStateWithVersionBump(
+            'LONG',
+            symbolRegistry.getSeatState('LONG'),
+          );
+        },
+      },
+      cacheManager: {
+        clearCache: () => {},
+        getPendingOrders: async () => [],
+      },
+      orderMonitor: {
+        initialize: async () => {},
+        trackOrder: () => {},
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          closedReason: 'CANCELED',
+          source: 'API',
+          relatedBuyOrderIds: null,
+        }),
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
+        startRuntime: () => {},
+        stopRuntimeAndDrain: async () => {},
+        recoverOrderTrackingFromSnapshot: async () => {},
+        getPendingSellOrders: () => [],
+        clearTrackedOrders: () => {},
+        onOrderStateChanged: () => () => {},
+        hasPendingProtectiveLiquidationOrders: () => false,
+      },
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig,
+      symbolRegistry,
+      isExecutionAllowed: () => true,
+    });
+    const signal = createSignal({
+      symbol: 'BULL.HK',
+      action: 'BUYCALL',
+      triggerTimeMs: Date.now(),
+      price: 5,
+      lotSize: 100,
+      reason: 'seat-version-advanced-during-throttle',
+    });
+
+    const result = await orderExecutor.executeSignals([signal]);
+
+    expect(throttleCalls).toBe(1);
+    expect(result).toEqual({ submittedCount: 0, submittedOrderIds: [] });
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+  });
+
+  it('fails fast when executable signal action does not match the resolved seat direction', async () => {
+    const tradingConfig = createTradingConfig();
+    const tradeCtx = createTradeContextMock();
+    let trackedOrderCount = 0;
+    const orderExecutor = createOrderExecutor({
+      ctx: tradeCtx as unknown as TradeContext,
+      rateLimiter: {
+        throttle: async () => {},
+      },
+      cacheManager: {
+        clearCache: () => {},
+        getPendingOrders: async () => [],
+      },
+      orderMonitor: {
+        initialize: async () => {},
+        trackOrder: () => {
+          trackedOrderCount += 1;
+        },
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          closedReason: 'CANCELED',
+          source: 'API',
+          relatedBuyOrderIds: null,
+        }),
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
+        startRuntime: () => {},
+        stopRuntimeAndDrain: async () => {},
+        recoverOrderTrackingFromSnapshot: async () => {},
+        getPendingSellOrders: () => [],
+        clearTrackedOrders: () => {},
+        onOrderStateChanged: () => () => {},
+        hasPendingProtectiveLiquidationOrders: () => false,
+      },
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig,
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () => true,
+    });
+    const mismatchedSignal: ExecutableSignal = createSignal({
+      symbol: 'BULL.HK',
+      action: 'BUYPUT',
+      triggerTimeMs: Date.now(),
+      price: 5,
+      lotSize: 100,
+      reason: 'mismatched-seat-direction',
+    });
+
+    let directionMismatchError: unknown = null;
+    try {
+      await orderExecutor.executeSignals([mismatchedSignal]);
+    } catch (error) {
+      directionMismatchError = error;
+    }
+
+    expect(directionMismatchError).toBeInstanceOf(Error);
+    if (!(directionMismatchError instanceof Error)) {
+      throw new Error('expected seat direction mismatch error');
+    }
+
+    expect(directionMismatchError.message).toContain('信号动作与席位方向不一致');
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(trackedOrderCount).toBe(0);
+  });
+
   it('rejects missing seatVersion at final order execution gate', async () => {
     const tradingConfig = createTradingConfig();
     const tradeCtx = createTradeContextMock();
@@ -281,7 +405,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -349,7 +473,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -432,7 +556,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -495,7 +619,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -527,7 +651,7 @@ describe('buy-flow integration', () => {
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
   });
 
-  it('blocks the next same-direction buy only after a successful submit', async () => {
+  it('isolates successful buy throttling by direction', async () => {
     const fixedNow = 1_000_000;
     const tradingConfig = createTradingConfig();
     const tradeCtx = createTradeContextMock({ now: () => fixedNow });
@@ -549,7 +673,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -563,8 +687,6 @@ describe('buy-flow integration', () => {
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
-
-    const monitorConfig = tradingConfig.monitor;
 
     const firstSignal = createSignal({
       symbol: 'BULL.HK',
@@ -580,12 +702,38 @@ describe('buy-flow integration', () => {
       expect(firstResult.submittedCount).toBe(1);
     });
 
-    const secondCheck = await withMockedNow(fixedNow, async () =>
-      orderExecutor.canTradeNow('BUYCALL', monitorConfig),
-    );
+    const { secondCallCheck, firstPutCheck } = await withMockedNow(fixedNow, async () => ({
+      secondCallCheck: orderExecutor.canTradeNow('BUYCALL'),
+      firstPutCheck: orderExecutor.canTradeNow('BUYPUT'),
+    }));
 
-    expect(secondCheck.canTrade).toBe(false);
-    expect(secondCheck.waitSeconds).toBe(60);
+    expect(secondCallCheck.canTrade).toBe(false);
+    expect(secondCallCheck.waitSeconds).toBe(60);
+    expect(firstPutCheck).toEqual({ canTrade: true });
+
+    orderExecutor.resetBuyThrottle();
+    const firstPutSignal = createSignal({
+      symbol: 'BEAR.HK',
+      action: 'BUYPUT',
+      triggerTimeMs: Date.now(),
+      price: 5,
+      lotSize: 100,
+      reason: 'first-successful-put-buy',
+    });
+
+    await withMockedNow(fixedNow, async () => {
+      const firstPutResult = await orderExecutor.executeSignals([firstPutSignal]);
+      expect(firstPutResult.submittedCount).toBe(1);
+    });
+
+    const { secondPutCheck, nextCallCheck } = await withMockedNow(fixedNow, async () => ({
+      secondPutCheck: orderExecutor.canTradeNow('BUYPUT'),
+      nextCallCheck: orderExecutor.canTradeNow('BUYCALL'),
+    }));
+
+    expect(secondPutCheck.canTrade).toBe(false);
+    expect(secondPutCheck.waitSeconds).toBe(60);
+    expect(nextCallCheck).toEqual({ canTrade: true });
   });
 
   it('still blocks the next same-direction buy when submit fails after frequency check passed', async () => {
@@ -615,7 +763,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -629,8 +777,6 @@ describe('buy-flow integration', () => {
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
     });
-
-    const monitorConfig = tradingConfig.monitor;
 
     const failedSignal = createSignal({
       symbol: 'BULL.HK',
@@ -659,7 +805,7 @@ describe('buy-flow integration', () => {
     });
 
     const nextCheck = await withMockedNow(fixedNow, async () =>
-      orderExecutor.canTradeNow('BUYCALL', monitorConfig),
+      orderExecutor.canTradeNow('BUYCALL'),
     );
 
     expect(nextCheck.canTrade).toBe(false);
@@ -700,7 +846,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
@@ -796,7 +942,7 @@ describe('buy-flow integration', () => {
           source: 'API',
           relatedBuyOrderIds: null,
         }),
-        replaceOrderPrice: async () => {},
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},

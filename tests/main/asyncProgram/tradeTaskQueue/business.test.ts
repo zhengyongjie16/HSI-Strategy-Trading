@@ -33,24 +33,6 @@ function pushBuyTask(params: {
   });
 }
 
-type BuyTaskPushPayload = Parameters<TaskQueue<BuyTaskType>['push']>[0];
-
-const validSingleMonitorPushPayload: BuyTaskPushPayload = {
-  type: 'IMMEDIATE_BUY',
-  data: createSignal('TYPE-CHECK.HK'),
-};
-
-void validSingleMonitorPushPayload;
-
-const invalidSingleMonitorPushPayload: BuyTaskPushPayload = {
-  type: 'IMMEDIATE_BUY',
-  data: createSignal('TYPE-CHECK.HK'),
-  // @ts-expect-error 单 monitor 队列负载不再接受 monitorSymbol。
-  monitorSymbol: 'HSI.HK',
-};
-
-void invalidSingleMonitorPushPayload;
-
 describe('tradeTaskQueue business behavior', () => {
   it('pops buy tasks in FIFO order', () => {
     const queue = createBuyTaskQueue();
@@ -75,7 +57,6 @@ describe('tradeTaskQueue business behavior', () => {
 
     const firstTask = queue.pop();
     expect(firstTask?.data.symbol).toBe('BULL-1.HK');
-    expect('monitorSymbol' in (firstTask ?? {})).toBeFalse();
     expect(queue.pop()?.data.symbol).toBe('BULL-2.HK');
     expect(queue.pop()?.data.symbol).toBe('BULL-3.HK');
     expect(queue.pop()).toBeNull();

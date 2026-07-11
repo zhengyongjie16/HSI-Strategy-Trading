@@ -10,9 +10,115 @@ import {
   createDelayedSignalVerifierDouble,
   createMonitorContextDouble,
 } from '../../helpers/testDoubles.js';
-import { createCleanupDeps, createLastState, createMonitorState } from './utils.js';
+import { createLastState, createMonitorState, registerCleanupSteps } from './utils.js';
 
 describe('cleanup business flow', () => {
+  it('executes each registered disposer exactly once across repeated execute calls', async () => {
+    let disposeCount = 0;
+    const cleanup = createCleanup();
+    cleanup.register({
+      phase: 'RESET_MARKET_DATA_RUNTIME',
+      step: '释放测试资源',
+      handler: () => {
+        disposeCount += 1;
+      },
+    });
+
+    await cleanup.execute();
+    await cleanup.execute();
+
+    expect(disposeCount).toBe(1);
+  });
+
+  it('fails fast when a cleanup handler reenters execute without running disposers twice', async () => {
+    let disposeCount = 0;
+    const cleanup = createCleanup();
+    cleanup.register({
+      phase: 'RESET_MARKET_DATA_RUNTIME',
+      step: '触发 execute 重入',
+      handler: async () => {
+        disposeCount += 1;
+        await cleanup.execute();
+      },
+    });
+
+    const outcome = await Promise.race([
+      cleanup.execute().then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      ),
+      Bun.sleep(50).then(() => ({ status: 'timeout' as const })),
+    ]);
+
+    expect(outcome.status).toBe('rejected');
+    if (outcome.status !== 'rejected') {
+      throw new Error('cleanup.execute 未按预期拒绝重入');
+    }
+
+    expect(outcome.error).toBeInstanceOf(AggregateError);
+    if (!(outcome.error instanceof AggregateError)) {
+      throw new Error('cleanup.execute 未聚合重入失败');
+    }
+
+    expect(outcome.error.errors).toHaveLength(1);
+    expect(outcome.error.errors[0]).toEqual(
+      new Error('[Cleanup] cleanup 正在同步启动，禁止从清理 handler 重入 execute'),
+    );
+    expect(disposeCount).toBe(1);
+  });
+
+  it('rejects synchronous resource registration after cleanup execution starts', async () => {
+    let disposeCount = 0;
+    const cleanup = createCleanup();
+    cleanup.register({
+      phase: 'RESET_MARKET_DATA_RUNTIME',
+      step: '触发执行中登记',
+      handler: () => {
+        disposeCount += 1;
+        expect(() => {
+          cleanup.register({
+            phase: 'RESET_MARKET_DATA_RUNTIME',
+            step: '迟到的资源',
+            handler: () => {
+              disposeCount += 100;
+            },
+          });
+        }).toThrow('[Cleanup] cleanup 已开始执行，禁止继续登记资源');
+      },
+    });
+
+    const firstExecution = cleanup.execute();
+    const repeatedExecution = cleanup.execute();
+
+    expect(repeatedExecution).toBe(firstExecution);
+    await firstExecution;
+    expect(disposeCount).toBe(1);
+  });
+
+  it('drains the order monitor before unsubscribing its final order-state listener', async () => {
+    const steps: string[] = [];
+    const cleanup = createCleanup();
+    cleanup.register({
+      phase: 'UNSUBSCRIBE_TRADER_LISTENER',
+      step: '取消 Trader 订单状态监听',
+      handler: () => {
+        steps.push('unsubscribe');
+      },
+    });
+
+    cleanup.register({
+      phase: 'STOP_ORDER_MONITOR_RUNTIME',
+      step: '停止订单监控 runtime',
+      handler: () => {
+        steps.push('stopAndDrain');
+      },
+    });
+
+    await cleanup.execute();
+
+    expect(steps).toEqual(['stopAndDrain', 'unsubscribe']);
+  });
+
   it('drains processors, destroys delayed verifiers and releases monitor snapshots', async () => {
     const steps: string[] = [];
     const monitorState = createMonitorState('HSI.HK');
@@ -25,7 +131,8 @@ describe('cleanup business flow', () => {
     });
     const lastState = createLastState(monitorState);
 
-    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContext, lastState }));
+    const cleanup = createCleanup();
+    registerCleanupSteps(cleanup, steps, { monitorContext, lastState });
 
     await cleanup.execute();
 
@@ -46,6 +153,7 @@ describe('cleanup business flow', () => {
       'buy',
       'sell',
       'stopOrderMonitorRuntimeAndDrain',
+      'unsubscribeTraderListener',
       'quoteSubscriptionRuntime',
       'postTradeConsistencyRuntime',
       'destroyVerifier',
@@ -68,7 +176,8 @@ describe('cleanup business flow', () => {
     });
     const lastState = createLastState(monitorState);
 
-    const cleanup = createCleanup(createCleanupDeps(steps, { monitorContext, lastState }));
+    const cleanup = createCleanup();
+    registerCleanupSteps(cleanup, steps, { monitorContext, lastState });
 
     await cleanup.execute();
 
@@ -78,7 +187,8 @@ describe('cleanup business flow', () => {
 
   it('resets market data runtime at the end of cleanup', async () => {
     const steps: string[] = [];
-    const cleanup = createCleanup(createCleanupDeps(steps));
+    const cleanup = createCleanup();
+    registerCleanupSteps(cleanup, steps);
 
     await cleanup.execute();
 
@@ -99,6 +209,7 @@ describe('cleanup business flow', () => {
       'buy',
       'sell',
       'stopOrderMonitorRuntimeAndDrain',
+      'unsubscribeTraderListener',
       'quoteSubscriptionRuntime',
       'postTradeConsistencyRuntime',
       'clearIndicatorCache',
@@ -118,21 +229,15 @@ describe('cleanup business flow', () => {
     });
     const lastState = createLastState(monitorState);
 
-    const cleanup = createCleanup(
-      createCleanupDeps(steps, {
-        monitorContext,
-        lastState,
-        buyProcessor: {
-          start: () => {},
-          stop: () => {},
-          stopAndDrain: async () => {
-            steps.push('buy');
-            throw new Error('buy failed');
-          },
-          restart: () => {},
-        },
-      }),
-    );
+    const cleanup = createCleanup();
+    registerCleanupSteps(cleanup, steps, {
+      monitorContext,
+      lastState,
+      stopBuyProcessorAndDrain: async () => {
+        steps.push('buy');
+        throw new Error('buy failed');
+      },
+    });
 
     let caught: unknown = null;
     try {
@@ -159,6 +264,7 @@ describe('cleanup business flow', () => {
       'buy',
       'sell',
       'stopOrderMonitorRuntimeAndDrain',
+      'unsubscribeTraderListener',
       'quoteSubscriptionRuntime',
       'postTradeConsistencyRuntime',
       'destroyVerifier',
@@ -171,19 +277,13 @@ describe('cleanup business flow', () => {
   it('closes trading gate before draining processors during cleanup', async () => {
     const steps: string[] = [];
     const lastState = createLastState(createMonitorState('HSI.HK'));
-    const cleanup = createCleanup(
-      createCleanupDeps(steps, {
-        lastState,
-        buyProcessor: {
-          start: () => {},
-          stop: () => {},
-          stopAndDrain: async () => {
-            steps.push(`buy:${lastState.isTradingEnabled ? 'open' : 'closed'}`);
-          },
-          restart: () => {},
-        },
-      }),
-    );
+    const cleanup = createCleanup();
+    registerCleanupSteps(cleanup, steps, {
+      lastState,
+      stopBuyProcessorAndDrain: async () => {
+        steps.push(`buy:${lastState.isTradingEnabled ? 'open' : 'closed'}`);
+      },
+    });
 
     await cleanup.execute();
 
@@ -197,29 +297,17 @@ describe('cleanup business flow', () => {
       releaseBlockedProcessor = resolve;
     });
 
-    const cleanup = createCleanup(
-      createCleanupDeps(steps, {
-        buyProcessor: {
-          start: () => {},
-          stop: () => {},
-          stopAndDrain: async () => {
-            steps.push('buy');
-            await blockedProcessor;
-          },
-          restart: () => {},
-        },
-        postTradeConsistencyRuntime: {
-          ...createCleanupDeps([], {}).postTradeConsistencyRuntime,
-          abortWaiting: () => {
-            steps.push('abortWaiting');
-            releaseBlockedProcessor?.();
-          },
-          stopAndDrain: async () => {
-            steps.push('postTradeConsistencyRuntime');
-          },
-        },
-      }),
-    );
+    const cleanup = createCleanup();
+    registerCleanupSteps(cleanup, steps, {
+      stopBuyProcessorAndDrain: async () => {
+        steps.push('buy');
+        await blockedProcessor;
+      },
+      abortWaiting: () => {
+        steps.push('abortWaiting');
+        releaseBlockedProcessor?.();
+      },
+    });
 
     const outcome = await Promise.race([
       cleanup.execute().then(() => 'done' as const),

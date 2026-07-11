@@ -9,7 +9,6 @@ import { describe, expect, it } from 'bun:test';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { initMonitorState } from '../../src/utils/helpers/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
@@ -126,7 +125,6 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -200,9 +198,6 @@ describe('periodic auto-symbol full chain integration', () => {
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-      longQuote: null,
-      shortQuote: null,
-      monitorQuote: null,
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
@@ -216,7 +211,6 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -304,7 +298,6 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -380,9 +373,6 @@ describe('periodic auto-symbol full chain integration', () => {
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-      longQuote: null,
-      shortQuote: null,
-      monitorQuote: null,
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
@@ -396,7 +386,6 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -456,7 +445,6 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -532,9 +520,6 @@ describe('periodic auto-symbol full chain integration', () => {
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-      longQuote: null,
-      shortQuote: null,
-      monitorQuote: null,
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
@@ -548,7 +533,6 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -609,7 +593,6 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -684,9 +667,6 @@ describe('periodic auto-symbol full chain integration', () => {
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-      longQuote: null,
-      shortQuote: null,
-      monitorQuote: null,
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
     const processor = createMonitorTaskProcessor({
@@ -700,7 +680,6 @@ describe('periodic auto-symbol full chain integration', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState: createLastState(),
-      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);

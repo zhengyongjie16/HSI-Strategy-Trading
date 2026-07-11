@@ -10,9 +10,8 @@ import { logger } from '../../../utils/logger/index.js';
 import { LOG_COLORS } from '../../../constants/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import { isSeatVersionMatch } from '../../../utils/seat/guards.js';
-import type { MonitorConfig } from '../../../types/config.js';
 import type { ExecutableSignal, Signal } from '../../../types/signal.js';
-import type { OrderExecutor, OrderExecutorDeps } from '../types.js';
+import type { OrderActionAuthorization, OrderExecutor, OrderExecutorDeps } from '../types.js';
 import { createSubmitTargetOrder } from './submitFlow.js';
 import { createBuyThrottle } from './buyThrottle.js';
 import {
@@ -32,16 +31,17 @@ import {
  */
 function validateSignalSeatVersionAtExecution(
   signal: ExecutableSignal,
+  boundSeatVersion: number,
   currentSeatVersion: number,
 ): boolean {
-  if (!Number.isFinite(signal.seatVersion)) {
+  if (!Number.isFinite(boundSeatVersion)) {
     logger.debug(
       `[执行门禁] 信号缺少有效席位版本，跳过信号: ${formatSymbolDisplay(signal.symbol, signal.symbolName ?? null)} ${signal.action}`,
     );
     return false;
   }
 
-  if (!isSeatVersionMatch(signal.seatVersion, currentSeatVersion)) {
+  if (!isSeatVersionMatch(boundSeatVersion, currentSeatVersion)) {
     logger.debug(
       `[执行门禁] 席位版本不匹配，跳过信号: ${formatSymbolDisplay(signal.symbol, signal.symbolName ?? null)} ${signal.action}`,
     );
@@ -49,6 +49,31 @@ function validateSignalSeatVersionAtExecution(
   }
 
   return true;
+}
+
+/**
+ * 将可执行信号动作解析为其唯一允许的席位方向。
+ * 最终下单边界必须独立校验该方向，避免上游已失效或被错误构造的信号污染另一方向的订单与风控状态。
+ *
+ * @param action 已通过执行入口类型约束的买卖信号动作
+ * @returns 信号应归属的 LONG 或 SHORT 席位方向
+ */
+function resolveSignalDirection(action: ExecutableSignal['action']): 'LONG' | 'SHORT' {
+  switch (action) {
+    case 'BUYCALL':
+    case 'SELLCALL': {
+      return 'LONG';
+    }
+
+    case 'BUYPUT':
+    case 'SELLPUT': {
+      return 'SHORT';
+    }
+
+    default: {
+      throw new Error(`[订单执行] 无法解析信号动作方向: action=${String(action)}`);
+    }
+  }
 }
 
 /**
@@ -71,34 +96,6 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
   const { global, monitor } = tradingConfig;
 
   /**
-   * 通过信号标的解析监控配置与方向，未找到时返回 null。
-   *
-   * @param signalSymbol 信号标的
-   * @returns 监控配置与方向信息
-   */
-  function resolveMonitorConfigBySymbol(
-    signalSymbol: string,
-  ): { monitorConfig: MonitorConfig; isShortSymbol: boolean; seatVersion: number } | null {
-    const resolvedSeat = symbolRegistry.resolveSeatBySymbol(signalSymbol);
-    if (!resolvedSeat) {
-      logger.warn(`[订单执行] 未找到席位标的，跳过信号: ${signalSymbol}`);
-      return null;
-    }
-
-    if (resolvedSeat.monitorSymbol !== monitor.monitorSymbol) {
-      throw new Error(
-        `[订单执行] 席位归属监控标的不匹配: signalSymbol=${signalSymbol} resolvedMonitor=${resolvedSeat.monitorSymbol} configuredMonitor=${monitor.monitorSymbol}`,
-      );
-    }
-
-    return {
-      monitorConfig: monitor,
-      isShortSymbol: resolvedSeat.direction === 'SHORT',
-      seatVersion: resolvedSeat.seatVersion,
-    };
-  }
-
-  /**
    * 检查执行门禁。
    *
    * @param signal 信号
@@ -116,14 +113,65 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     return false;
   }
 
-  const buyThrottle = createBuyThrottle();
+  /**
+   * 为单个信号创建贯穿 submit/replace/cancel 的席位绑定授权器。
+   * 每次授权都重新读取生命周期门禁与 SymbolRegistry 当前事实，阻断异步等待期间失效的旧信号副作用。
+   *
+   * @param signal 已绑定 seatVersion 的可执行信号
+   * @returns 可在最终 SDK API 前重复调用的授权器
+   */
+  function createSignalOrderAuthorization(signal: ExecutableSignal): OrderActionAuthorization {
+    const binding = {
+      action: signal.action,
+      direction: resolveSignalDirection(signal.action),
+      symbol: signal.symbol,
+      seatVersion: signal.seatVersion,
+    } as const;
+
+    return (stage) => {
+      if (!canExecuteSignal(signal, stage)) {
+        return false;
+      }
+
+      const currentSeat = symbolRegistry.resolveSeatBySymbol(binding.symbol);
+      if (!currentSeat) {
+        logger.debug(
+          `[执行门禁] ${stage} 信号标的已不属于当前席位，跳过信号: ${binding.symbol} ${binding.action}`,
+        );
+        return false;
+      }
+
+      if (currentSeat.direction !== binding.direction) {
+        if (stage === 'executeSignals') {
+          throw new Error(
+            `[订单执行] 信号动作与席位方向不一致: action=${binding.action} expected=${binding.direction} actual=${currentSeat.direction} symbol=${binding.symbol}`,
+          );
+        }
+
+        logger.debug(
+          `[执行门禁] ${stage} 信号方向已失效，跳过信号: ${binding.symbol} ${binding.action}`,
+        );
+        return false;
+      }
+
+      return validateSignalSeatVersionAtExecution(
+        signal,
+        binding.seatVersion,
+        currentSeat.seatVersion,
+      );
+    };
+  }
+
+  const buyThrottle = createBuyThrottle(monitor.buyIntervalSeconds);
 
   const submitTargetOrder = createSubmitTargetOrder({
+    ctx,
     rateLimiter,
     cacheManager,
     orderMonitor,
     orderRecorder,
     globalConfig: global,
+    monitorConfig: monitor,
     canExecuteSignal,
     recordBuyAttempt: buyThrottle.recordBuyAttempt,
   });
@@ -171,16 +219,12 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         continue;
       }
 
-      const resolved = resolveMonitorConfigBySymbol(signal.symbol);
-      if (!resolved) {
-        logger.warn(`[跳过信号] 无法找到信号标的 ${signalSymbolDisplay} 对应的监控配置`);
+      const authorizeOrderAction = createSignalOrderAuthorization(signal);
+      if (!authorizeOrderAction('executeSignals')) {
         continue;
       }
 
-      const { monitorConfig, isShortSymbol, seatVersion } = resolved;
-      if (!validateSignalSeatVersionAtExecution(signal, seatVersion)) {
-        continue;
-      }
+      const isShortSymbol = resolveSignalDirection(signal.action) === 'SHORT';
 
       const actualAction = getActionDescription(signal.action);
       const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName);
@@ -193,11 +237,10 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       );
 
       const submittedOrderId = await submitTargetOrder(
-        ctx,
         signal,
         signal.symbol,
         isShortSymbol,
-        monitorConfig,
+        authorizeOrderAction,
       );
       if (submittedOrderId !== null) {
         submittedCount += 1;

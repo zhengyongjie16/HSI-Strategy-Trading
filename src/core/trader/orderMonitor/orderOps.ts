@@ -19,7 +19,12 @@ import {
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
 } from '../../../constants/index.js';
 import { toDecimal } from '../utils.js';
-import type { TrackOrderParams } from '../types.js';
+import type {
+  OrderActionAuthorizationStage,
+  OrderMutationRequest,
+  ReplaceOrderPriceOutcome,
+  TrackOrderParams,
+} from '../types.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
@@ -147,6 +152,18 @@ function setReplaceOutcome(
   outcome: ReplaceOrderOutcome,
 ): void {
   runtime.latestReplaceOutcomeByOrderId.set(orderId, outcome);
+}
+
+/** 在每次真实 SDK mutation attempt 前检查订单事实来源或信号授权。 */
+function isOrderMutationAuthorized(
+  request: OrderMutationRequest,
+  stage: OrderActionAuthorizationStage,
+): boolean {
+  if (request.kind === 'ORDER_FACT') {
+    return true;
+  }
+
+  return request.authorize(stage);
 }
 
 /** 清理单个订单的改单阻塞与查询缓存，进入“可重试”稳态。 */
@@ -280,14 +297,32 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
    * @param orderId 订单 ID
    * @returns 语义化撤单结果
    */
-  async function cancelOrder(orderId: string): Promise<CancelOrderOutcome> {
+  async function cancelOrder(
+    orderId: string,
+    request: OrderMutationRequest,
+  ): Promise<CancelOrderOutcome> {
     try {
       await rateLimiter.throttle();
-      await wrapExternalApiRequest({
+      const mutationOutcome = await wrapExternalApiRequest({
         operation: 'TradeContext.cancelOrder',
-        request: () => ctx.cancelOrder(orderId),
+        request: async () => {
+          if (!isOrderMutationAuthorized(request, 'cancelOrder.beforeApi')) {
+            return { kind: 'AUTHORIZATION_REVOKED' } as const;
+          }
+
+          await ctx.cancelOrder(orderId);
+          return { kind: 'BROKER_CONFIRMED' } as const;
+        },
         shouldRetry: isRetryableOrderMutationError,
       });
+      if (mutationOutcome.kind === 'AUTHORIZATION_REVOKED') {
+        return {
+          kind: 'UNKNOWN_FAILURE',
+          errorCode: null,
+          message: `signal authorization revoked before cancel order ${orderId}`,
+        };
+      }
+
       cacheManager.clearCache();
       logger.debug(`[订单撤销成功] 订单ID=${orderId}，等待 WS 终态确认`);
       return {
@@ -396,8 +431,9 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
   async function replaceOrderPrice(
     orderId: string,
     newPrice: number,
+    request: OrderMutationRequest,
     quantity: number | null = null,
-  ): Promise<void> {
+  ): Promise<ReplaceOrderPriceOutcome> {
     const trackedOrder = runtime.trackedOrders.get(orderId);
     if (!trackedOrder) {
       setReplaceOutcome(runtime, orderId, {
@@ -405,7 +441,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         reason: 'ORDER_NOT_TRACKED',
       });
       logger.warn(`[订单修改] 订单 ${orderId} 未在追踪列表中`);
-      return;
+      return { kind: 'NOT_EXECUTED' };
     }
 
     const now = Date.now();
@@ -415,7 +451,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         reason: 'UNSUPPORTED_BY_TYPE',
       });
       logger.debug(`[订单修改] 订单 ${orderId} 已标记为类型不支持改单，跳过`);
-      return;
+      return { kind: 'NOT_EXECUTED' };
     }
 
     if (isWaitWsOnlyReplaceMode(trackedOrder)) {
@@ -423,7 +459,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         kind: 'SKIPPED',
         reason: 'WAIT_WS_ONLY',
       });
-      return;
+      return { kind: 'NOT_EXECUTED' };
     }
 
     if (
@@ -435,7 +471,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         kind: 'SKIPPED',
         reason: 'BACKOFF_IN_PROGRESS',
       });
-      return;
+      return { kind: 'NOT_EXECUTED' };
     }
 
     const remainingQty = trackedOrder.submittedQuantity - trackedOrder.executedQuantity;
@@ -446,7 +482,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         reason: 'INVALID_REMAINING_QUANTITY',
       });
       logger.warn(`[订单修改] 订单 ${orderId} 剩余数量无效: ${targetQuantity}`);
-      return;
+      return { kind: 'NOT_EXECUTED' };
     }
 
     const normalizedNewPriceText = normalizePriceText(newPrice);
@@ -462,19 +498,30 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       await rateLimiter.throttle();
       if (resolveAttachedTrackedOrder(runtime, orderId, trackedOrder) === null) {
         logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，跳过过期改单请求`);
-        return;
+        return { kind: 'NOT_EXECUTED' };
       }
 
-      await wrapExternalApiRequest({
+      const mutationOutcome = await wrapExternalApiRequest({
         operation: 'TradeContext.replaceOrder',
-        request: () => ctx.replaceOrder(replacePayload),
+        request: async () => {
+          if (!isOrderMutationAuthorized(request, 'replaceOrder.beforeApi')) {
+            return { kind: 'AUTHORIZATION_REVOKED' } as const;
+          }
+
+          await ctx.replaceOrder(replacePayload);
+          return { kind: 'BROKER_CONFIRMED' } as const;
+        },
         shouldRetry: isRetryableOrderMutationError,
       });
+      if (mutationOutcome.kind === 'AUTHORIZATION_REVOKED') {
+        return { kind: 'NOT_EXECUTED' };
+      }
+
       cacheManager.clearCache();
       const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
       if (attachedTrackedOrder === null) {
         logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，丢弃过期改单成功结果`);
-        return;
+        return { kind: 'NOT_EXECUTED' };
       }
 
       attachedTrackedOrder.submittedPrice = normalizedNewPriceNumber;
@@ -486,6 +533,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         kind: 'REPLACED',
       });
       logger.debug(`[订单修改成功] 订单ID=${orderId} 新价格=${normalizedNewPriceText}`);
+      return { kind: 'BROKER_CONFIRMED' };
     } catch (error) {
       if (isExternalApiRequestError(error)) {
         throw error;
@@ -494,7 +542,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
       if (attachedTrackedOrder === null) {
         logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，丢弃过期改单失败结果`);
-        return;
+        return { kind: 'NOT_EXECUTED' };
       }
 
       attachedTrackedOrder.lastPriceUpdateAt = now;
@@ -511,12 +559,12 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
           reason: 'UNSUPPORTED_BY_TYPE',
         });
         logger.warn(`[订单修改] 订单 ${orderId} 类型不支持改单（602012），后续永久禁改`);
-        return;
+        return { kind: 'NOT_EXECUTED' };
       }
 
       if (isReplaceTempBlockedError(error)) {
         await handleReplaceTempBlockedByStatus(orderId, attachedTrackedOrder, now);
-        return;
+        return { kind: 'NOT_EXECUTED' };
       }
 
       if (isRetryableOrderMutationError(error)) {
@@ -530,7 +578,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         logger.warn(
           `[订单修改失败] 订单ID=${orderId} 新价格=${normalizedNewPriceText}: ${message}`,
         );
-        return;
+        return { kind: 'NOT_EXECUTED' };
       }
 
       if (isOrderClosedBusinessError(error)) {
@@ -542,7 +590,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         );
         if (latestAttachedTrackedOrder === null) {
           logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，丢弃过期改单终态查询结果`);
-          return;
+          return { kind: 'NOT_EXECUTED' };
         }
 
         if (queryResult.kind === 'TERMINAL') {
@@ -553,7 +601,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
             terminalState: queryResult,
           });
           logger.warn(`[订单修改] 订单 ${orderId} 业务失败后确认已终态，停止改单流程`);
-          return;
+          return { kind: 'NOT_EXECUTED' };
         }
 
         if (queryResult.kind === 'OPEN') {
@@ -563,7 +611,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
             errorCode,
             message: `order still open: status=${queryResult.status}`,
           });
-          return;
+          return { kind: 'NOT_EXECUTED' };
         }
 
         setReplaceOutcome(runtime, orderId, {
@@ -572,7 +620,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
           errorCode: queryResult.errorCode,
           message: queryResult.message,
         });
-        return;
+        return { kind: 'NOT_EXECUTED' };
       }
 
       setReplaceOutcome(runtime, orderId, {
@@ -582,6 +630,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         message,
       });
       logger.error(`[订单修改失败] 订单ID=${orderId} 新价格=${normalizedNewPriceText}: ${message}`);
+      return { kind: 'NOT_EXECUTED' };
     }
   }
 

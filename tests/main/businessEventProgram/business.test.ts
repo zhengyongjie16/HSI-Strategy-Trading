@@ -772,7 +772,6 @@ describe('businessEventProgram business flow', () => {
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
-      tradingConfig,
       getCanTradeNow: () => true,
     });
 

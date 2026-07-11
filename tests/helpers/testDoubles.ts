@@ -783,13 +783,11 @@ type SymbolRegistryDouble = SymbolRegistry &
  * 提供可变席位与版本号，支持换标流程与并发校验测试。
  */
 export function createSymbolRegistryDouble(params?: {
-  readonly monitorSymbol?: string;
   readonly longSeat?: SeatState;
   readonly shortSeat?: SeatState;
   readonly longVersion?: number;
   readonly shortVersion?: number;
 }): SymbolRegistryDouble {
-  const monitorSymbol = params?.monitorSymbol ?? 'HSI.HK';
   let longSeat = params?.longSeat ?? {
     symbol: 'BULL.HK',
     status: 'ACTIVE',
@@ -874,9 +872,6 @@ export function createSymbolRegistryDouble(params?: {
   assertSeatStateInvariant(shortSeat);
 
   return {
-    getMonitorSymbol(): string {
-      return monitorSymbol;
-    },
     getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
       return direction === 'LONG' ? longSeat : shortSeat;
     },
@@ -886,18 +881,14 @@ export function createSymbolRegistryDouble(params?: {
     resolveSeatBySymbol(symbol: string) {
       if (longSeat.symbol === symbol) {
         return {
-          monitorSymbol,
           direction: 'LONG' as const,
-          seatState: longSeat,
           seatVersion: longVersion,
         };
       }
 
       if (shortSeat.symbol === symbol) {
         return {
-          monitorSymbol,
           direction: 'SHORT' as const,
-          seatState: shortSeat,
           seatVersion: shortVersion,
         };
       }
@@ -914,14 +905,13 @@ export function createSymbolRegistryDouble(params?: {
         longLastEventVersion = longVersion;
         const listenerErrors = [
           ...emitSeatStateChanged({
-            monitorSymbol,
             direction,
             previousState,
             nextState: longSeat,
             previousVersion,
             nextVersion: longVersion,
           }),
-          ...emitSeatTruthChanged({ monitorSymbol, direction }),
+          ...emitSeatTruthChanged({ direction }),
         ];
         throwIfListenerErrors(listenerErrors);
         return longSeat;
@@ -933,14 +923,13 @@ export function createSymbolRegistryDouble(params?: {
       shortLastEventVersion = shortVersion;
       const listenerErrors = [
         ...emitSeatStateChanged({
-          monitorSymbol,
           direction,
           previousState,
           nextState: shortSeat,
           previousVersion,
           nextVersion: shortVersion,
         }),
-        ...emitSeatTruthChanged({ monitorSymbol, direction }),
+        ...emitSeatTruthChanged({ direction }),
       ];
       throwIfListenerErrors(listenerErrors);
       return shortSeat;
@@ -959,14 +948,13 @@ export function createSymbolRegistryDouble(params?: {
         longLastEventVersion = longVersion;
         const listenerErrors = [
           ...emitSeatStateChanged({
-            monitorSymbol,
             direction,
             previousState,
             nextState: longSeat,
             previousVersion: previousStateEventVersion,
             nextVersion: longVersion,
           }),
-          ...emitSeatTruthChanged({ monitorSymbol, direction }),
+          ...emitSeatTruthChanged({ direction }),
         ];
         throwIfListenerErrors(listenerErrors);
         return { seatState: longSeat, seatVersion: longVersion };
@@ -979,14 +967,13 @@ export function createSymbolRegistryDouble(params?: {
       shortLastEventVersion = shortVersion;
       const listenerErrors = [
         ...emitSeatStateChanged({
-          monitorSymbol,
           direction,
           previousState,
           nextState: shortSeat,
           previousVersion: previousStateEventVersion,
           nextVersion: shortVersion,
         }),
-        ...emitSeatTruthChanged({ monitorSymbol, direction }),
+        ...emitSeatTruthChanged({ direction }),
       ];
       throwIfListenerErrors(listenerErrors);
       return { seatState: shortSeat, seatVersion: shortVersion };
@@ -1154,26 +1141,12 @@ export function createMonitorContextDouble(
   overrides: Partial<MonitorContext> = {},
 ): MonitorContext {
   const config = overrides.config ?? createMonitorConfigDouble();
-  const symbolRegistry =
-    overrides.symbolRegistry ??
-    createSymbolRegistryDouble({
-      monitorSymbol: config.monitorSymbol,
-    });
-  const longSeatState = overrides.seatState?.long ?? symbolRegistry.getSeatState('LONG');
-  const shortSeatState = overrides.seatState?.short ?? symbolRegistry.getSeatState('SHORT');
+  const symbolRegistry = overrides.symbolRegistry ?? createSymbolRegistryDouble();
 
   return {
     config,
     state: overrides.state ?? createMonitorStateDouble(config.monitorSymbol),
     symbolRegistry,
-    seatState: overrides.seatState ?? {
-      long: longSeatState,
-      short: shortSeatState,
-    },
-    seatVersion: overrides.seatVersion ?? {
-      long: symbolRegistry.getSeatVersion('LONG'),
-      short: symbolRegistry.getSeatVersion('SHORT'),
-    },
     autoSymbolManager: overrides.autoSymbolManager ?? createAutoSymbolManagerDouble(),
     strategy: overrides.strategy ?? createStrategyDouble(),
     orderRecorder: overrides.orderRecorder ?? createOrderRecorderDouble(),

@@ -6,21 +6,14 @@
  * - 对启用自动寻标的空席位执行运行时恢复寻标
  * - 在恢复完成后回写当前席位快照，供后续运行时订阅使用
  */
-import type { SeatSymbolSnapshotEntry, SymbolRegistry } from '../../types/seat.js';
-import type {
-  PreparedSeats,
-  PrepareSeatsForRuntimeDeps,
-  RuntimeRecoverySearchParams,
-  SeatSnapshot,
-  SeatSnapshotInput,
-} from './types.js';
+import type { SymbolRegistry } from '../../types/seat.js';
+import type { PrepareSeatsForRuntimeDeps, RuntimeRecoverySearchParams } from './types.js';
 import { findBestWarrant } from '../../services/autoSymbolFinder/index.js';
 import {
   buildFindBestWarrantInputFromPolicy,
   resolveDirectionalAutoSearchPolicy,
 } from '../../services/autoSymbolFinder/policyResolver.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
-import { collectBoundSeatSymbols } from '../../utils/seat/symbols.js';
 import {
   isSeatFrozenToday,
   resolveNextSearchFailureState,
@@ -32,63 +25,13 @@ import { getHKDateKey } from '../../utils/time/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 
 /**
- * 基于订单与持仓生成席位快照，用于恢复运行时席位标的。
- *
- * @param input 包含 monitor、positions、orders 的输入
- * @returns 席位快照，含唯一 monitor 各方向的解析结果条目
- */
-function resolveSeatSnapshot(input: SeatSnapshotInput): SeatSnapshot {
-  const { monitor, positions, orders } = input;
-  const entries: SeatSymbolSnapshotEntry[] = [];
-
-  const candidateLongSymbol = getLatestTradedSymbol(orders, monitor.orderOwnershipMapping, 'LONG');
-  const candidateShortSymbol = getLatestTradedSymbol(
-    orders,
-    monitor.orderOwnershipMapping,
-    'SHORT',
-  );
-  const resolvedLongSymbol = resolveSeatOnStartup({
-    autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
-    candidateSymbol: candidateLongSymbol ?? null,
-    configuredSymbol: monitor.longSymbol,
-    positions,
-  });
-  if (resolvedLongSymbol) {
-    entries.push({
-      monitorSymbol: monitor.monitorSymbol,
-      direction: 'LONG',
-      symbol: resolvedLongSymbol,
-    });
-  }
-
-  const resolvedShortSymbol = resolveSeatOnStartup({
-    autoSearchEnabled: monitor.autoSearchConfig.autoSearchEnabled,
-    candidateSymbol: candidateShortSymbol ?? null,
-    configuredSymbol: monitor.shortSymbol,
-    positions,
-  });
-  if (resolvedShortSymbol) {
-    entries.push({
-      monitorSymbol: monitor.monitorSymbol,
-      direction: 'SHORT',
-      symbol: resolvedShortSymbol,
-    });
-  }
-
-  return { entries };
-}
-
-/**
  * 恢复全部席位：
  * - 先恢复历史标的
  * - 对启用自动寻标的席位执行寻标
  *
  * @param deps 依赖注入，包含 tradingConfig、symbolRegistry、positions、orders、marketDataClient、now、logger 等
- * @returns 已绑定席位的标的列表（seatSymbols），用于后续订阅行情
  */
-export async function prepareSeatsForRuntime(
-  deps: PrepareSeatsForRuntimeDeps,
-): Promise<PreparedSeats> {
+export async function prepareSeatsForRuntime(deps: PrepareSeatsForRuntimeDeps): Promise<void> {
   const {
     tradingConfig,
     symbolRegistry,
@@ -101,16 +44,21 @@ export async function prepareSeatsForRuntime(
     resolveCanAutoSearchNow,
     warrantListCacheConfig,
   } = deps;
-  const snapshot = resolveSeatSnapshot({
-    monitor: tradingConfig.monitor,
+  const monitorConfig = tradingConfig.monitor;
+  const resolvedLongSymbol = resolveSeatOnStartup({
+    autoSearchEnabled: monitorConfig.autoSearchConfig.autoSearchEnabled,
+    candidateSymbol:
+      getLatestTradedSymbol(orders, monitorConfig.orderOwnershipMapping, 'LONG') ?? null,
+    configuredSymbol: monitorConfig.longSymbol,
     positions,
-    orders,
   });
-  const snapshotMap = new Map<string, string>();
-
-  for (const entry of snapshot.entries) {
-    snapshotMap.set(`${entry.monitorSymbol}:${entry.direction}`, entry.symbol);
-  }
+  const resolvedShortSymbol = resolveSeatOnStartup({
+    autoSearchEnabled: monitorConfig.autoSearchConfig.autoSearchEnabled,
+    candidateSymbol:
+      getLatestTradedSymbol(orders, monitorConfig.orderOwnershipMapping, 'SHORT') ?? null,
+    configuredSymbol: monitorConfig.shortSymbol,
+    positions,
+  });
 
   function updateSeatOnRuntimeRecovery(direction: 'LONG' | 'SHORT', symbol: string | null): void {
     const currentSeat = symbolRegistry.getSeatState(direction);
@@ -126,11 +74,8 @@ export async function prepareSeatsForRuntime(
     });
   }
 
-  const longKey = `${tradingConfig.monitor.monitorSymbol}:LONG`;
-  const shortKey = `${tradingConfig.monitor.monitorSymbol}:SHORT`;
-  updateSeatOnRuntimeRecovery('LONG', snapshotMap.get(longKey) ?? null);
-
-  updateSeatOnRuntimeRecovery('SHORT', snapshotMap.get(shortKey) ?? null);
+  updateSeatOnRuntimeRecovery('LONG', resolvedLongSymbol);
+  updateSeatOnRuntimeRecovery('SHORT', resolvedShortSymbol);
 
   let quoteContextPromise: ReturnType<typeof marketDataClient.getQuoteContext> | null = null;
 
@@ -262,7 +207,6 @@ export async function prepareSeatsForRuntime(
   async function trySearchEmptySeats(): Promise<void> {
     const currentTime = now();
 
-    const monitorConfig = tradingConfig.monitor;
     if (!monitorConfig.autoSearchConfig.autoSearchEnabled) {
       return;
     }
@@ -300,10 +244,4 @@ export async function prepareSeatsForRuntime(
   }
 
   await trySearchEmptySeats();
-
-  return {
-    seatSymbols: collectBoundSeatSymbols({
-      symbolRegistry,
-    }),
-  };
 }

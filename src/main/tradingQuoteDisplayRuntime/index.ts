@@ -4,8 +4,8 @@
  * 职责：
  * - 监听标准化交易标的 quote 事件
  * - 复用 tradingRisk routing 规则解析当前 ACTIVE route
- * - 按 routeKey 执行 single-flight + latest-only collapse，避免异步期间输出旧 quote
- * - 在异步补充 monitor quote 后再次复核 routeKey + seatVersion，再交给纯渲染器输出
+ * - 按方向执行 single-flight + latest-only collapse，避免异步期间输出旧 quote
+ * - 在异步补充 monitor quote 后再次复核方向 + seatVersion，再交给纯渲染器输出
  */
 import { buildTradingRiskRoutingIndex } from '../tradingRiskEventRuntime/routingIndex.js';
 import {
@@ -30,7 +30,7 @@ export function createTradingQuoteDisplayRuntime(
   deps: TradingQuoteDisplayRuntimeDeps,
 ): TradingQuoteDisplayRuntime {
   const activePromises = new Set<Promise<void>>();
-  const routeStates = new Map<string, TradingQuoteDisplayRouteState>();
+  const routeStates = new Map<'LONG' | 'SHORT', TradingQuoteDisplayRouteState>();
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
   let fatalError: Error | null = null;
   let running = false;
@@ -49,7 +49,6 @@ export function createTradingQuoteDisplayRuntime(
    */
   function rebuildRoutingIndex(): void {
     const nextRoutingIndex = buildTradingRiskRoutingIndex({
-      monitorContext: deps.monitorContext,
       symbolRegistry: deps.symbolRegistry,
     });
     cachedRoutingIndex = nextRoutingIndex;
@@ -85,8 +84,8 @@ export function createTradingQuoteDisplayRuntime(
     return cachedRoutingIndex;
   }
 
-  function getOrCreateRouteState(routeKey: string): TradingQuoteDisplayRouteState {
-    const existing = routeStates.get(routeKey);
+  function getOrCreateRouteState(direction: 'LONG' | 'SHORT'): TradingQuoteDisplayRouteState {
+    const existing = routeStates.get(direction);
     if (existing !== undefined) {
       return existing;
     }
@@ -97,12 +96,12 @@ export function createTradingQuoteDisplayRuntime(
       latestEvent: null,
       latestRoute: null,
     };
-    routeStates.set(routeKey, routeState);
+    routeStates.set(direction, routeState);
     return routeState;
   }
 
-  async function processRoute(routeKey: string): Promise<void> {
-    const routeState = routeStates.get(routeKey);
+  async function processRoute(direction: 'LONG' | 'SHORT'): Promise<void> {
+    const routeState = routeStates.get(direction);
     if (routeState === undefined) {
       return;
     }
@@ -123,7 +122,7 @@ export function createTradingQuoteDisplayRuntime(
         let quotesMap: Awaited<
           ReturnType<TradingQuoteDisplayRuntimeDeps['marketDataClient']['getQuotes']>
         >;
-        const monitorSymbol = route.monitorContext.config.monitorSymbol;
+        const monitorSymbol = deps.monitorContext.config.monitorSymbol;
         try {
           quotesMap = await deps.marketDataClient.getQuotes([monitorSymbol]);
         } catch (error) {
@@ -136,13 +135,13 @@ export function createTradingQuoteDisplayRuntime(
           }
 
           logger.warn(
-            `[tradingQuoteDisplayRuntime] quote supplement failed routeKey=${routeKey}`,
+            `[tradingQuoteDisplayRuntime] quote supplement failed direction=${direction}`,
             formatError(error),
           );
           return;
         }
 
-        const latestRouteState = routeStates.get(routeKey);
+        const latestRouteState = routeStates.get(direction);
         if (latestRouteState?.dirty === true) {
           continue;
         }
@@ -172,7 +171,7 @@ export function createTradingQuoteDisplayRuntime(
       routeState.inFlight = false;
       if (routeState.dirty && running) {
         routeState.inFlight = true;
-        trackPromise(processRoute(routeKey));
+        trackPromise(processRoute(direction));
       }
     }
   }
@@ -194,7 +193,7 @@ export function createTradingQuoteDisplayRuntime(
       return;
     }
 
-    const routeState = getOrCreateRouteState(route.routeKey);
+    const routeState = getOrCreateRouteState(route.direction);
     routeState.latestEvent = event;
     routeState.latestRoute = route;
     routeState.dirty = true;
@@ -203,7 +202,7 @@ export function createTradingQuoteDisplayRuntime(
     }
 
     routeState.inFlight = true;
-    trackPromise(processRoute(route.routeKey));
+    trackPromise(processRoute(route.direction));
   }
 
   function start(): void {

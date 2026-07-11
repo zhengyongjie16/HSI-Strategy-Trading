@@ -52,7 +52,6 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
   it('在 LONG 席位从 ACTIVE 退场时清理方向运行态并保留 SEAT_REFRESH', () => {
     const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
       longSeat: createActiveSeatState('BULL.HK'),
       shortSeat: createActiveSeatState('BEAR.HK'),
     });
@@ -175,7 +174,6 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
   it('在 SHORT 席位从 ACTIVE 退场时清理做空方向运行态', () => {
     const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
       longSeat: createActiveSeatState('BULL.HK'),
       shortSeat: createActiveSeatState('BEAR.HK'),
     });
@@ -248,7 +246,6 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
   it('只在 ACTIVE 退场事件触发清理', () => {
     const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
       longSeat: createEmptySeatState(),
     });
     let clearLongCalls = 0;
@@ -292,9 +289,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
   });
 
   it('seat truth 事件只按方向处理，不再要求 monitorSymbol fail-fast', () => {
-    const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
       longSeat: createActiveSeatState('BULL.HK'),
     });
     const monitorContext = createMonitorContextDouble({ symbolRegistry });
@@ -317,9 +312,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
   });
 
   it('席位状态 listener 失败后仍执行后续 listener 并向写入方暴露错误', () => {
-    const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
       longSeat: createActiveSeatState('BULL.HK'),
     });
     let observedBySecondListener = false;
@@ -348,7 +341,6 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
   it('start 和 stop 保持幂等且 stop 后不再消费事件', () => {
     const monitorSymbol = 'HSI.HK';
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol,
       longSeat: createActiveSeatState('BULL.HK'),
     });
     let clearLongCalls = 0;

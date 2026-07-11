@@ -1,34 +1,9 @@
 import type { Logger } from '../../utils/logger/types.js';
 import type { MonitorConfig, TradingConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
-import type { SeatSymbolSnapshotEntry, SymbolRegistry } from '../../types/seat.js';
+import type { SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, RawOrderFromAPI } from '../../types/services.js';
 import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/types.js';
-
-/**
- * resolveSeatSnapshot() 的输入参数。
- * 类型用途：构建席位快照的入参，包含唯一监控配置、持仓、订单。
- * 数据来源：启动时从 API 获取的持仓与订单，以及配置中的 monitor。
- * 使用范围：仅席位恢复流程（prepareSeatsForRuntime 等）使用。
- */
-export type SeatSnapshotInput = {
-  readonly monitor: Pick<
-    MonitorConfig,
-    'monitorSymbol' | 'autoSearchConfig' | 'longSymbol' | 'shortSymbol' | 'orderOwnershipMapping'
-  >;
-  readonly positions: ReadonlyArray<Position>;
-  readonly orders: ReadonlyArray<RawOrderFromAPI>;
-};
-
-/**
- * resolveSeatSnapshot() 的返回结果。
- * 类型用途：包含唯一监控标的下的席位快照条目，供后续席位恢复与 symbolRegistry 初始化使用。
- * 数据来源：由 resolveSeatSnapshot(SeatSnapshotInput) 根据持仓、订单、配置计算返回。
- * 使用范围：仅席位恢复流程内部使用。
- */
-export type SeatSnapshot = {
-  readonly entries: ReadonlyArray<SeatSymbolSnapshotEntry>;
-};
 
 /**
  * prepareSeatsForRuntime() 的依赖注入对象。
@@ -50,16 +25,6 @@ export type PrepareSeatsForRuntimeDeps = {
     readonly openDelayMinutes: number;
   }) => boolean;
   readonly warrantListCacheConfig?: WarrantListCacheConfig;
-};
-
-/**
- * prepareSeatsForRuntime() 的返回结果。
- * 类型用途：包含当前恢复后已准备好的席位标的列表（seatSymbols）。
- * 数据来源：由 prepareSeatsForRuntime(PrepareSeatsForRuntimeDeps) 执行后返回。
- * 使用范围：仅运行时快照加载与相关测试使用。
- */
-export type PreparedSeats = {
-  readonly seatSymbols: ReadonlyArray<SeatSymbolSnapshotEntry>;
 };
 
 /**

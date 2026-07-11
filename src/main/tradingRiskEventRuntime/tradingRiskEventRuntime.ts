@@ -24,7 +24,6 @@ import type {
   RouteExecutionState,
   TradingRiskEventRuntime,
   TradingRiskEventRuntimeDeps,
-  TradingRiskRouteKey,
   TradingRiskRoutingIndex,
 } from './types.js';
 
@@ -60,39 +59,39 @@ export function createTradingRiskEventRuntime(
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
   let routingIndexFatalError: Error | null = null;
-  const routeStates = new Map<TradingRiskRouteKey, RouteExecutionState>();
+  const routeStates = new Map<'LONG' | 'SHORT', RouteExecutionState>();
   const activeRoutePromises = new Set<Promise<void>>();
 
   /**
    * 获取或创建 route 状态。
    *
-   * @param routeKey 路由键
+   * @param direction 方向级执行键
    * @returns 对应的执行状态
    */
-  function getRouteState(routeKey: TradingRiskRouteKey): RouteExecutionState {
-    const existing = routeStates.get(routeKey);
+  function getRouteState(direction: 'LONG' | 'SHORT'): RouteExecutionState {
+    const existing = routeStates.get(direction);
     if (existing) {
       return existing;
     }
 
     const nextState = createRouteExecutionState();
-    routeStates.set(routeKey, nextState);
+    routeStates.set(direction, nextState);
     return nextState;
   }
 
   /**
    * 清理已经不再活跃且没有 in-flight 的 route 状态。
    *
-   * @param activeRouteKeys 当前 symbolRegistry 快照下的活跃 routeKey 集合
+   * @param activeRouteKeys 当前 symbolRegistry 快照下的活跃方向集合
    */
-  function pruneRouteStates(activeRouteKeys: ReadonlySet<TradingRiskRouteKey>): void {
-    for (const [routeKey, state] of routeStates) {
+  function pruneRouteStates(activeRouteKeys: ReadonlySet<'LONG' | 'SHORT'>): void {
+    for (const [direction, state] of routeStates) {
       if (state.inFlight) {
         continue;
       }
 
-      if (!activeRouteKeys.has(routeKey)) {
-        routeStates.delete(routeKey);
+      if (!activeRouteKeys.has(direction)) {
+        routeStates.delete(direction);
       }
     }
   }
@@ -130,12 +129,11 @@ export function createTradingRiskEventRuntime(
   function refreshRoutingIndex(): TradingRiskRoutingIndex {
     try {
       const routingIndex = buildTradingRiskRoutingIndex({
-        monitorContext: deps.monitorContext,
         symbolRegistry: deps.symbolRegistry,
       });
       cachedRoutingIndex = routingIndex;
       routingIndexFatalError = null;
-      pruneRouteStates(new Set(routingIndex.routesByKey.keys()));
+      pruneRouteStates(routingIndex.activeRouteKeys);
       return routingIndex;
     } catch (error) {
       throw recordRoutingIndexFatal(error);
@@ -187,10 +185,10 @@ export function createTradingRiskEventRuntime(
   /**
    * 发起某个 route 的 single-flight 执行。
    *
-   * @param routeKey 路由键
+   * @param direction 方向级执行键
    */
-  function launchRouteProcessing(routeKey: TradingRiskRouteKey): void {
-    const processingPromise = processRouteQueue(routeKey).catch((error: unknown) => {
+  function launchRouteProcessing(direction: 'LONG' | 'SHORT'): void {
+    const processingPromise = processRouteQueue(direction).catch((error: unknown) => {
       logger.error('[TradingRiskEventRuntime] 风险事件处理失败', formatError(error));
       if (shouldExposeRouteProcessingError(error)) {
         deps.onFatalError?.(error);
@@ -242,7 +240,7 @@ export function createTradingRiskEventRuntime(
       return;
     }
 
-    const routeState = getRouteState(route.routeKey);
+    const routeState = getRouteState(route.direction);
     routeState.latestRoute = route;
     routeState.latestEvent = event;
     routeState.dirty = true;
@@ -252,7 +250,7 @@ export function createTradingRiskEventRuntime(
     }
 
     routeState.inFlight = true;
-    launchRouteProcessing(route.routeKey);
+    launchRouteProcessing(route.direction);
   }
 
   /**
@@ -265,10 +263,10 @@ export function createTradingRiskEventRuntime(
    * 4. 读取当前 route 收敛后的 latest event quote
    * 5. 执行单方向浮亏检查
    *
-   * @param routeKey 路由键
+   * @param direction 方向级执行键
    */
-  async function processRouteQueue(routeKey: TradingRiskRouteKey): Promise<void> {
-    const routeState = getRouteState(routeKey);
+  async function processRouteQueue(direction: 'LONG' | 'SHORT'): Promise<void> {
+    const routeState = getRouteState(direction);
 
     try {
       while (running && routeState.dirty) {
@@ -330,6 +328,7 @@ export function createTradingRiskEventRuntime(
           route: latestRoute,
           event: latestEvent,
           trader: deps.trader,
+          monitorContext: deps.monitorContext,
         });
       }
     } finally {
@@ -337,13 +336,13 @@ export function createTradingRiskEventRuntime(
 
       const activeRoutingIndex = getActiveRoutingIndex();
       const routeInactive =
-        activeRoutingIndex !== null && !activeRoutingIndex.routesByKey.has(routeKey);
+        activeRoutingIndex !== null && !activeRoutingIndex.activeRouteKeys.has(direction);
 
       if (routeInactive) {
-        routeStates.delete(routeKey);
-      } else if (routeStates.get(routeKey) === routeState && routeState.dirty && running) {
+        routeStates.delete(direction);
+      } else if (routeStates.get(direction) === routeState && routeState.dirty && running) {
         routeState.inFlight = true;
-        launchRouteProcessing(routeKey);
+        launchRouteProcessing(direction);
       }
     }
   }

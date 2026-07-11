@@ -5,14 +5,11 @@
  * - 重置唯一监控标的的自动换仓状态（autoSymbolManager）
  * - 清空轮证列表缓存
  * - 清空所有席位绑定（保留 lastSwitchAt / lastSearchAt 时间戳，重置 lastSeatActivatedAt）
- * - 同步席位快照到 MonitorContext
  *
  * 开盘重建：
  * - 席位在统一开盘重建流水线（loadTradingDayRuntimeSnapshot）中重建，此处为空操作
  */
 import { logger } from '../../../utils/logger/index.js';
-import { resolveMonitorContextSeatSnapshot } from '../../../utils/seat/snapshots.js';
-import type { MonitorContext } from '../../../types/state.js';
 import type { SeatState, SymbolRegistry } from '../../../types/seat.js';
 import type { CacheDomain, LifecycleContext } from '../types.js';
 import {
@@ -35,7 +32,7 @@ function buildEmptySeatState(previous: SeatState): SeatState {
   };
 }
 
-/** 清空所有监控标的的多空席位绑定，并刷新席位版本号，返回变更的席位数量 */
+/** 清空唯一 monitor 的多空席位绑定，并刷新席位版本号，返回变更的席位数量 */
 function clearAllSeatBindings(symbolRegistry: SymbolRegistry): number {
   let changed = 0;
 
@@ -48,40 +45,26 @@ function clearAllSeatBindings(symbolRegistry: SymbolRegistry): number {
   return changed;
 }
 
-/** 将 symbolRegistry 中的最新席位状态和版本号同步到 MonitorContext 快照 */
-function syncMonitorSeatSnapshot(
-  monitorContext: MonitorContext,
-  symbolRegistry: SymbolRegistry,
-): void {
-  const seatSnapshot = resolveMonitorContextSeatSnapshot(symbolRegistry);
-  monitorContext.seatState = seatSnapshot.seatState;
-  monitorContext.seatVersion = seatSnapshot.seatVersion;
-}
-
 /**
  * 创建席位缓存域。
- * 午夜清理时重置自动换标状态、清空轮证缓存与席位绑定并同步到 MonitorContext；开盘重建由统一流水线负责，本域为空操作。
+ * 午夜清理时重置自动换标状态、清空轮证缓存与席位绑定；开盘重建由统一流水线负责，本域为空操作。
  *
- * @param deps 依赖注入，包含 tradingConfig、symbolRegistry、monitorContext、warrantListCache
+ * @param deps 依赖注入，包含 symbolRegistry、自动换标状态重置与 warrantListCache
  * @returns 实现 CacheDomain 的席位域实例
  */
 export function createSeatDomain(deps: SeatDomainDeps): CacheDomain {
-  const { tradingConfig, symbolRegistry, monitorContext, warrantListCache } = deps;
+  const { symbolRegistry, autoSymbolManager, warrantListCache } = deps;
   return {
     midnightClear(ctx: LifecycleContext): void {
       if (ctx.invalidateSeatActivationCarryover === true) {
         clearSeatActivationCarryover(symbolRegistry);
       } else {
-        captureSeatActivationCarryover({
-          tradingConfig,
-          symbolRegistry,
-        });
+        captureSeatActivationCarryover({ symbolRegistry });
       }
 
-      monitorContext.autoSymbolManager.resetAllState();
+      autoSymbolManager.resetAllState();
       warrantListCache.clear();
       const changedSeats = clearAllSeatBindings(symbolRegistry);
-      syncMonitorSeatSnapshot(monitorContext, symbolRegistry);
 
       logger.debug(`[Lifecycle][seat] 午夜清理完成: seats=${changedSeats}`);
     },

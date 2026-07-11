@@ -57,7 +57,6 @@ function createMonitorContext(
   orderRecorder = createOrderRecorderDouble(),
 ): MonitorContext {
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: config.monitorSymbol,
     longSeat: {
       symbol: 'BULL.HK',
       status: 'ACTIVE',
@@ -88,14 +87,6 @@ function createMonitorContext(
       incrementalIndicatorRuntime: null,
     },
     symbolRegistry,
-    seatState: {
-      long: symbolRegistry.getSeatState('LONG'),
-      short: symbolRegistry.getSeatState('SHORT'),
-    },
-    seatVersion: {
-      long: symbolRegistry.getSeatVersion('LONG'),
-      short: symbolRegistry.getSeatVersion('SHORT'),
-    },
     autoSymbolManager: {
       maybeSearchOnEvent: async () => {},
       evaluatePeriodicSwitchDue: async () => ({
@@ -162,9 +153,6 @@ function createMonitorContext(
     shortSymbolName: 'BEAR.HK',
     monitorSymbolName: config.monitorSymbol,
     indicatorProfile: createIndicatorUsageProfileDouble(),
-    longQuote: createQuoteDouble('BULL.HK', 1.1, 100),
-    shortQuote: createQuoteDouble('BEAR.HK', 0.9, 100),
-    monitorQuote: createQuoteDouble(config.monitorSymbol, 20_000),
   } as unknown as MonitorContext;
 }
 
@@ -1023,7 +1011,7 @@ describe('doomsday integration', () => {
     expect(lastState.positionCache.get('BULL.HK')).not.toBeNull();
   });
 
-  it('propagates clearance execution error even when duplicate single-monitor signals are deduplicated', async () => {
+  it('propagates clearance execution error when duplicate signals are deduplicated', async () => {
     const doomsday = createDoomsdayProtection();
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const lastState = createLastState();

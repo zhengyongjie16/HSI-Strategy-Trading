@@ -39,7 +39,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -53,7 +52,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -103,7 +101,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -117,7 +114,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -163,7 +159,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
     });
     const now = new Date('2026-02-16T01:00:00.000Z');
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -177,7 +172,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,
@@ -217,7 +211,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       shortSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -231,7 +224,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
     const switchStates = createSwitchStatesMap();
     const switchSuppressions = createSwitchSuppressionsMap();
     const manager = createSeatStateManager({
-      monitorSymbol: 'HSI.HK',
       symbolRegistry,
       switchStates,
       switchSuppressions,

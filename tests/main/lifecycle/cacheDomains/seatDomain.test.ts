@@ -2,7 +2,7 @@
  * 席位缓存域单元测试
  *
  * 覆盖：midnightClear 调用 autoSymbolManager.resetAllState、warrantListCache.clear、
- * clearAllSeatBindings、syncMonitorSeatSnapshots；openRebuild 为空操作
+ * clearAllSeatBindings；openRebuild 为空操作
  */
 import { describe, it, expect } from 'bun:test';
 import { createSeatDomain } from '../../../../src/main/lifecycle/cacheDomains/seatDomain.js';
@@ -10,10 +10,8 @@ import {
   clearSeatActivationCarryover,
   resolveSeatActivationCarryover,
 } from '../../../../src/main/lifecycle/seatActivationCarryover.js';
-import type { TradingConfig } from '../../../../src/types/config.js';
 import type { SeatState, SymbolRegistry } from '../../../../src/types/seat.js';
-import type { MonitorContext } from '../../../../src/types/state.js';
-import type { WarrantListCache } from '../../../../src/services/autoSymbolFinder/types.js';
+import { createSymbolRegistryDouble } from '../../../helpers/testDoubles.js';
 
 const emptySeatState = {
   symbol: null,
@@ -26,7 +24,7 @@ const emptySeatState = {
 };
 
 describe('createSeatDomain', () => {
-  it('midnightClear 依次调用 resetAllState、warrantListCache.clear、席位清空与同步', async () => {
+  it('midnightClear 依次调用 resetAllState、warrantListCache.clear 与席位清空', async () => {
     let resetAllStateCount = 0;
     let clearCount = 0;
     const longBeforeClear: SeatState = {
@@ -50,47 +48,30 @@ describe('createSeatDomain', () => {
       frozenTradingDayKey: null,
     };
     const updateCalls: Array<{
-      monitorSymbol: string;
       direction: string;
       nextState: SeatState;
     }> = [];
     const atomicUpdateCalls: Array<{
-      monitorSymbol: string;
       direction: string;
       nextState: SeatState;
     }> = [];
-    const monitorContext = {
-      config: { monitorSymbol: 'HSI.HK' },
-      seatState: { long: emptySeatState, short: emptySeatState },
-      seatVersion: { long: 1, short: 1 },
-      autoSymbolManager: {
-        getPeriodicSwitchPendingState: () => ({
-          pending: false,
-          pendingSinceMs: null,
-        }),
-        resetAllState: () => {
-          resetAllStateCount += 1;
-        },
+    const autoSymbolManager = {
+      resetAllState: () => {
+        resetAllStateCount += 1;
       },
-    } as unknown as MonitorContext;
-    const tradingConfig: TradingConfig = {
-      monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
-      global: {} as TradingConfig['global'],
     };
-    const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
     const symbolRegistry: SymbolRegistry = {
-      getMonitorSymbol: () => expectedMonitorSymbol,
       getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longBeforeClear : shortBeforeClear;
       },
       getSeatVersion: () => 1,
       resolveSeatBySymbol: () => null,
       updateSeatState: (direction: 'LONG' | 'SHORT', nextState: SeatState) => {
-        updateCalls.push({ monitorSymbol: expectedMonitorSymbol, direction, nextState });
+        updateCalls.push({ direction, nextState });
         return nextState;
       },
       updateSeatStateWithVersionBump: (direction: 'LONG' | 'SHORT', nextState: SeatState) => {
-        atomicUpdateCalls.push({ monitorSymbol: expectedMonitorSymbol, direction, nextState });
+        atomicUpdateCalls.push({ direction, nextState });
         return { seatState: nextState, seatVersion: 2 };
       },
       onSeatStateChanged: () => () => {},
@@ -98,16 +79,15 @@ describe('createSeatDomain', () => {
         throw new Error('seatDomain test must not subscribe to seat truth events');
       },
     };
-    const warrantListCache: WarrantListCache = {
+    const warrantListCache = {
       clear: () => {
         clearCount += 1;
       },
-    } as unknown as WarrantListCache;
+    };
 
     const domain = createSeatDomain({
-      tradingConfig,
       symbolRegistry,
-      monitorContext,
+      autoSymbolManager,
       warrantListCache,
     });
 
@@ -122,9 +102,9 @@ describe('createSeatDomain', () => {
     expect(atomicUpdateCalls).toHaveLength(2);
     expect(
       atomicUpdateCalls
-        .map((c) => `${c.monitorSymbol}-${c.direction}`)
+        .map((c) => c.direction)
         .sort((left, right) => left.localeCompare(right, 'en')),
-    ).toEqual(['HSI.HK-LONG', 'HSI.HK-SHORT']);
+    ).toEqual(['LONG', 'SHORT']);
     const longAfterClear = atomicUpdateCalls.find((item) => item.direction === 'LONG')?.nextState;
     const shortAfterClear = atomicUpdateCalls.find((item) => item.direction === 'SHORT')?.nextState;
     expect(longAfterClear?.status).toBe('EMPTY');
@@ -135,7 +115,6 @@ describe('createSeatDomain', () => {
     expect(
       resolveSeatActivationCarryover({
         symbolRegistry,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'OLD_BULL.HK',
       }),
@@ -148,7 +127,6 @@ describe('createSeatDomain', () => {
     expect(
       resolveSeatActivationCarryover({
         symbolRegistry,
-        monitorSymbol: 'HSI.HK',
         direction: 'SHORT',
         symbol: 'OLD_BEAR.HK',
       }),
@@ -173,25 +151,8 @@ describe('createSeatDomain', () => {
       status: 'ACTIVE',
       lastSeatActivatedAt: 310,
     };
-    const monitorContext = {
-      config: { monitorSymbol: 'HSI.HK' },
-      seatState: { long: emptySeatState, short: emptySeatState },
-      seatVersion: { long: 1, short: 1 },
-      autoSymbolManager: {
-        getPeriodicSwitchPendingState: () => ({
-          pending: false,
-          pendingSinceMs: null,
-        }),
-        resetAllState: () => {},
-      },
-    } as unknown as MonitorContext;
-    const tradingConfig: TradingConfig = {
-      monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
-      global: {} as TradingConfig['global'],
-    };
-    const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
+    const autoSymbolManager = { resetAllState: () => {} };
     const symbolRegistry: SymbolRegistry = {
-      getMonitorSymbol: () => expectedMonitorSymbol,
       getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longSeatState : shortSeatState;
       },
@@ -218,11 +179,10 @@ describe('createSeatDomain', () => {
       onSeatStateChanged: () => () => {},
       onSeatTruthChanged: () => () => {},
     };
-    const warrantListCache = { clear: () => {} } as unknown as WarrantListCache;
+    const warrantListCache = { clear: () => {} };
     const domain = createSeatDomain({
-      tradingConfig,
       symbolRegistry,
-      monitorContext,
+      autoSymbolManager,
       warrantListCache,
     });
 
@@ -234,7 +194,6 @@ describe('createSeatDomain', () => {
     expect(
       resolveSeatActivationCarryover({
         symbolRegistry,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'OLD_BULL.HK',
       }),
@@ -248,7 +207,6 @@ describe('createSeatDomain', () => {
     expect(
       resolveSeatActivationCarryover({
         symbolRegistry,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'OLD_BULL.HK',
       }),
@@ -273,25 +231,8 @@ describe('createSeatDomain', () => {
       status: 'ACTIVE',
       lastSeatActivatedAt: 310,
     };
-    const monitorContext = {
-      config: { monitorSymbol: 'HSI.HK' },
-      seatState: { long: emptySeatState, short: emptySeatState },
-      seatVersion: { long: 1, short: 1 },
-      autoSymbolManager: {
-        getPeriodicSwitchPendingState: () => ({
-          pending: false,
-          pendingSinceMs: null,
-        }),
-        resetAllState: () => {},
-      },
-    } as unknown as MonitorContext;
-    const tradingConfig: TradingConfig = {
-      monitor: { monitorSymbol: 'HSI.HK' } as unknown as TradingConfig['monitor'],
-      global: {} as TradingConfig['global'],
-    };
-    const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
+    const autoSymbolManager = { resetAllState: () => {} };
     const symbolRegistry: SymbolRegistry = {
-      getMonitorSymbol: () => expectedMonitorSymbol,
       getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longSeatState : shortSeatState;
       },
@@ -304,11 +245,10 @@ describe('createSeatDomain', () => {
       onSeatStateChanged: () => () => {},
       onSeatTruthChanged: () => () => {},
     };
-    const warrantListCache = { clear: () => {} } as unknown as WarrantListCache;
+    const warrantListCache = { clear: () => {} };
     const domain = createSeatDomain({
-      tradingConfig,
       symbolRegistry,
-      monitorContext,
+      autoSymbolManager,
       warrantListCache,
     });
 
@@ -320,7 +260,6 @@ describe('createSeatDomain', () => {
     expect(
       resolveSeatActivationCarryover({
         symbolRegistry,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'OLD_BULL.HK',
       }),
@@ -335,7 +274,6 @@ describe('createSeatDomain', () => {
     expect(
       resolveSeatActivationCarryover({
         symbolRegistry,
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         symbol: 'OLD_BULL.HK',
       }),
@@ -344,33 +282,13 @@ describe('createSeatDomain', () => {
   });
 
   it('openRebuild 为空操作，不抛错', async () => {
-    const monitorContext = {
-      config: { monitorSymbol: 'HSI.HK' },
-      seatState: { long: emptySeatState, short: emptySeatState },
-      seatVersion: { long: 1, short: 1 },
-      autoSymbolManager: {
-        getPeriodicSwitchPendingState: () => ({
-          pending: false,
-          pendingSinceMs: null,
-        }),
-        resetAllState: () => {},
-      },
-    } as unknown as MonitorContext;
-    const tradingConfig = {
-      monitor: { monitorSymbol: 'HSI.HK' },
-      global: {},
-    } as unknown as TradingConfig;
-    const symbolRegistry = {
-      getSeatState: () => emptySeatState,
-      getSeatVersion: () => 0,
-      updateSeatState: () => emptySeatState,
-    } as unknown as SymbolRegistry;
-    const warrantListCache = { clear: () => {} } as unknown as WarrantListCache;
+    const autoSymbolManager = { resetAllState: () => {} };
+    const symbolRegistry = createSymbolRegistryDouble();
+    const warrantListCache = { clear: () => {} };
 
     const domain = createSeatDomain({
-      tradingConfig,
       symbolRegistry,
-      monitorContext,
+      autoSymbolManager,
       warrantListCache,
     });
     await domain.openRebuild({

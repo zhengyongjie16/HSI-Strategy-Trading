@@ -18,7 +18,7 @@ import { formatError, toError } from '../utils/error/index.js';
 import { isExternalApiRequestError } from '../utils/apiFailure/index.js';
 import { createCleanup } from './shutdown/createCleanup.js';
 import { createLifecycleRuntime } from './lifecycle/createLifecycleRuntime.js';
-import { syncMonitorContextRuntimeSnapshot } from './context/createMonitorContext.js';
+import { syncMonitorContextSymbolNames } from './context/createMonitorContext.js';
 import { registerDelayedSignalHandlers } from './wiring/registerDelayedSignalHandlers.js';
 import { loadStartupSnapshot } from './startup/startupSnapshot.js';
 import { collectRuntimeValidationSymbols } from './startup/runtimeValidation.js';
@@ -103,241 +103,246 @@ export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) =
 
   return async function runApp(params: AppEnvironmentParams): Promise<void> {
     const runtimeEnv = buildAppRuntimeEnv(params.env);
+    const cleanup = buildCleanup();
+    let hasPrimaryError = false;
+    let primaryError: unknown;
 
-    const preGateRuntime = await buildPreGateRuntime({ env: runtimeEnv });
-    const startupNow = new Date();
-    const postGateRuntime = await buildPostGateRuntime({
-      env: runtimeEnv,
-      preGateRuntime,
-      now: startupNow,
-    });
-    const startupSnapshot = await loadStartupRuntimeSnapshot({
-      now: startupNow,
-      lastState: postGateRuntime.lastState,
-      loadTradingDayRuntimeSnapshot: postGateRuntime.loadTradingDayRuntimeSnapshot,
-      applyStartupSnapshotFailureState: applyStartupSnapshotFailure,
-      logger: appLogger,
-      formatError: formatAppError,
-    });
-    const runtimeValidationCollector = buildRuntimeValidationCollector({
-      tradingConfig: preGateRuntime.tradingConfig,
-      symbolRegistry: preGateRuntime.symbolRegistry,
-      positions: postGateRuntime.lastState.cachedPositions,
-    });
-
-    if (startupSnapshot.kind === 'API_RETRY_PENDING') {
-      appLogger.warn('启动快照 API 请求失败，跳过运行时标的验证，等待生命周期重建恢复');
-    } else {
-      const runtimeValidationResult = validateRuntimeSymbols({
-        inputs: runtimeValidationCollector.runtimeValidationInputs,
-        quotesMap: startupSnapshot.quotesMap,
+    try {
+      const preGateRuntime = await buildPreGateRuntime({ env: runtimeEnv, cleanup });
+      const startupNow = new Date();
+      const postGateRuntime = await buildPostGateRuntime({
+        env: runtimeEnv,
+        preGateRuntime,
+        now: startupNow,
+        cleanup,
       });
-      if (runtimeValidationResult.warnings.length > 0) {
-        appLogger.warn('标的验证出现警告：');
-        for (const [index, warning] of runtimeValidationResult.warnings.entries()) {
-          appLogger.warn(`${index + 1}. ${warning}`);
-        }
-      }
-
-      if (!runtimeValidationResult.valid) {
-        appLogger.error('标的验证失败！');
-        appLogger.error('='.repeat(60));
-        for (const [index, error] of runtimeValidationResult.errors.entries()) {
-          appLogger.error(`${index + 1}. ${error}`);
-        }
-
-        appLogger.error('='.repeat(60));
-        const startupAbortError = new Error('运行时标的验证失败，启动已中止');
-        startupAbortError.name = 'AppStartupAbortError';
-        throw startupAbortError;
-      }
-    }
-
-    const monitorContext = postGateRuntime.monitorContext;
-    if (startupSnapshot.kind === 'READY') {
-      syncMonitorContextRuntimeSnapshot({
-        monitorContext,
+      const startupSnapshot = await loadStartupRuntimeSnapshot({
+        now: startupNow,
+        lastState: postGateRuntime.lastState,
+        loadTradingDayRuntimeSnapshot: postGateRuntime.loadTradingDayRuntimeSnapshot,
+        applyStartupSnapshotFailureState: applyStartupSnapshotFailure,
+        logger: appLogger,
+        formatError: formatAppError,
+      });
+      const runtimeValidationCollector = buildRuntimeValidationCollector({
+        tradingConfig: preGateRuntime.tradingConfig,
         symbolRegistry: preGateRuntime.symbolRegistry,
-        quotesMap: startupSnapshot.quotesMap,
+        positions: postGateRuntime.lastState.cachedPositions,
       });
-    }
 
-    const rebuildTradingDayState = buildRebuildTradingDayState({
-      marketDataClient: preGateRuntime.marketDataClient,
-      trader: postGateRuntime.trader,
-      lastState: postGateRuntime.lastState,
-      symbolRegistry: preGateRuntime.symbolRegistry,
-      monitorContext,
-      dailyLossTracker: postGateRuntime.dailyLossTracker,
-      displayAccountAndPositions: renderAccountAndPositions,
-    });
-
-    const asyncRuntime = buildAsyncRuntime({
-      preGateRuntime,
-      postGateRuntime,
-    });
-    const businessEventProgram = buildBusinessEventProgram({
-      marketDataClient: preGateRuntime.marketDataClient,
-      monitorContext,
-      lastState: postGateRuntime.lastState,
-      tradingConfig: preGateRuntime.tradingConfig,
-      buyTaskQueue: postGateRuntime.buyTaskQueue,
-      sellTaskQueue: postGateRuntime.sellTaskQueue,
-      indicatorCache: postGateRuntime.indicatorCache,
-      monitorDisplayRuntime: postGateRuntime.monitorDisplayRuntime,
-    });
-    const dayLifecycleManager = buildLifecycleRuntime({
-      preGateRuntime,
-      postGateRuntime,
-      asyncRuntime,
-      businessEventProgram,
-      rebuildTradingDayState,
-    });
-
-    bindDelayedSignalHandlers({
-      monitorContext,
-      lastState: postGateRuntime.lastState,
-      buyTaskQueue: postGateRuntime.buyTaskQueue,
-      sellTaskQueue: postGateRuntime.sellTaskQueue,
-      logger: appLogger,
-      doomsdayProtectionEnabled: preGateRuntime.tradingConfig.global.doomsdayProtection,
-    });
-
-    const timeWakeupRuntime = buildTimeWakeupRuntime({
-      evaluate: () =>
-        timeWakeupEvaluationProgram({
-          marketDataClient: preGateRuntime.marketDataClient,
-          trader: postGateRuntime.trader,
-          lastState: postGateRuntime.lastState,
-          doomsdayProtection: postGateRuntime.doomsdayProtection,
-          tradingConfig: preGateRuntime.tradingConfig,
-          monitorContext,
-          tradingGateEventRuntime: postGateRuntime.tradingGateEventRuntime,
-          quoteSubscriptionRuntime: postGateRuntime.quoteSubscriptionRuntime,
-          dayLifecycleManager,
-        }),
-      now: () => new Date(Date.now()),
-      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-      clearTimer: (handle) => {
-        clearTimeout(handle);
-      },
-      logger: appLogger,
-    });
-
-    const cleanup = buildCleanup({
-      buyProcessor: asyncRuntime.buyProcessor,
-      sellProcessor: asyncRuntime.sellProcessor,
-      monitorTaskProcessor: asyncRuntime.monitorTaskProcessor,
-      trader: postGateRuntime.trader,
-      businessEventProgram,
-      tradingRiskEventRuntime: postGateRuntime.tradingRiskEventRuntime,
-      monitorQuoteEventRuntime: postGateRuntime.monitorQuoteEventRuntime,
-      monitorDisplayRuntime: postGateRuntime.monitorDisplayRuntime,
-      tradingQuoteDisplayRuntime: postGateRuntime.tradingQuoteDisplayRuntime,
-      switchWakeupRuntime: postGateRuntime.switchWakeupRuntime,
-      autoSearchWakeupRuntime: postGateRuntime.autoSearchWakeupRuntime,
-      seatActivationDispatcher: postGateRuntime.seatActivationDispatcher,
-      seatRuntimeCleanupDispatcher: postGateRuntime.seatRuntimeCleanupDispatcher,
-      quoteSubscriptionRuntime: postGateRuntime.quoteSubscriptionRuntime,
-      postTradeConsistencyRuntime: postGateRuntime.postTradeConsistencyRuntime,
-      periodicSwitchWakeupRuntime: postGateRuntime.periodicSwitchWakeupRuntime,
-      timeWakeupRuntime,
-      marketDataClient: preGateRuntime.marketDataClient,
-      monitorContext,
-      indicatorCache: postGateRuntime.indicatorCache,
-      lastState: postGateRuntime.lastState,
-    });
-
-    let initialRebuildSucceeded = false;
-    if (startupSnapshot.kind === 'API_RETRY_PENDING') {
-      appLogger.warn('启动阶段跳过初次重建，保持静止并等待生命周期重建任务自动恢复');
-    } else {
-      try {
-        await rebuildTradingDayState({
-          allOrders: startupSnapshot.allOrders,
+      if (startupSnapshot.kind === 'API_RETRY_PENDING') {
+        appLogger.warn('启动快照 API 请求失败，跳过运行时标的验证，等待生命周期重建恢复');
+      } else {
+        const runtimeValidationResult = validateRuntimeSymbols({
+          inputs: runtimeValidationCollector.runtimeValidationInputs,
           quotesMap: startupSnapshot.quotesMap,
-          now: startupSnapshot.now,
         });
-        initialRebuildSucceeded = true;
-      } catch (err) {
-        if (!isExternalApiRequestError(err)) {
-          const rebuildError = err instanceof Error ? err : new Error(formatAppError(err));
-          try {
-            await cleanup.execute();
-          } catch (cleanupError) {
-            appLogger.error(
-              '[runApp] cleanup 失败，保留原始初始重建错误',
-              formatAppError(cleanupError),
-            );
+        if (runtimeValidationResult.warnings.length > 0) {
+          appLogger.warn('标的验证出现警告：');
+          for (const [index, warning] of runtimeValidationResult.warnings.entries()) {
+            appLogger.warn(`${index + 1}. ${warning}`);
+          }
+        }
+
+        if (!runtimeValidationResult.valid) {
+          appLogger.error('标的验证失败！');
+          appLogger.error('='.repeat(60));
+          for (const [index, error] of runtimeValidationResult.errors.entries()) {
+            appLogger.error(`${index + 1}. ${error}`);
           }
 
-          throw rebuildError;
+          appLogger.error('='.repeat(60));
+          const startupAbortError = new Error('运行时标的验证失败，启动已中止');
+          startupAbortError.name = 'AppStartupAbortError';
+          throw startupAbortError;
+        }
+      }
+
+      const monitorContext = postGateRuntime.monitorContext;
+      if (startupSnapshot.kind === 'READY') {
+        syncMonitorContextSymbolNames({
+          monitorContext,
+          quotesMap: startupSnapshot.quotesMap,
+        });
+      }
+
+      const rebuildTradingDayState = buildRebuildTradingDayState({
+        marketDataClient: preGateRuntime.marketDataClient,
+        trader: postGateRuntime.trader,
+        lastState: postGateRuntime.lastState,
+        symbolRegistry: preGateRuntime.symbolRegistry,
+        monitorContext,
+        dailyLossTracker: postGateRuntime.dailyLossTracker,
+        displayAccountAndPositions: renderAccountAndPositions,
+      });
+
+      const asyncRuntime = buildAsyncRuntime({
+        preGateRuntime,
+        postGateRuntime,
+      });
+      cleanup.register({
+        phase: 'STOP_MONITOR_TASK_PROCESSOR',
+        step: '停止 MonitorTaskProcessor',
+        handler: () => asyncRuntime.monitorTaskProcessor.stopAndDrain(),
+      });
+
+      cleanup.register({
+        phase: 'STOP_BUY_PROCESSOR',
+        step: '停止 BuyProcessor',
+        handler: () => asyncRuntime.buyProcessor.stopAndDrain(),
+      });
+
+      cleanup.register({
+        phase: 'STOP_SELL_PROCESSOR',
+        step: '停止 SellProcessor',
+        handler: () => asyncRuntime.sellProcessor.stopAndDrain(),
+      });
+      const businessEventProgram = buildBusinessEventProgram({
+        marketDataClient: preGateRuntime.marketDataClient,
+        monitorContext,
+        lastState: postGateRuntime.lastState,
+        tradingConfig: preGateRuntime.tradingConfig,
+        buyTaskQueue: postGateRuntime.buyTaskQueue,
+        sellTaskQueue: postGateRuntime.sellTaskQueue,
+        indicatorCache: postGateRuntime.indicatorCache,
+        monitorDisplayRuntime: postGateRuntime.monitorDisplayRuntime,
+      });
+      cleanup.register({
+        phase: 'STOP_BUSINESS_EVENT_PROGRAM',
+        step: '停止 BusinessEventProgram',
+        handler: () => businessEventProgram.stopAndDrain(),
+      });
+      const dayLifecycleManager = buildLifecycleRuntime({
+        preGateRuntime,
+        postGateRuntime,
+        asyncRuntime,
+        businessEventProgram,
+        rebuildTradingDayState,
+      });
+
+      bindDelayedSignalHandlers({
+        monitorContext,
+        lastState: postGateRuntime.lastState,
+        buyTaskQueue: postGateRuntime.buyTaskQueue,
+        sellTaskQueue: postGateRuntime.sellTaskQueue,
+        logger: appLogger,
+        doomsdayProtectionEnabled: preGateRuntime.tradingConfig.global.doomsdayProtection,
+      });
+
+      const timeWakeupRuntime = buildTimeWakeupRuntime({
+        evaluate: () =>
+          timeWakeupEvaluationProgram({
+            marketDataClient: preGateRuntime.marketDataClient,
+            trader: postGateRuntime.trader,
+            lastState: postGateRuntime.lastState,
+            doomsdayProtection: postGateRuntime.doomsdayProtection,
+            tradingConfig: preGateRuntime.tradingConfig,
+            monitorContext,
+            tradingGateEventRuntime: postGateRuntime.tradingGateEventRuntime,
+            quoteSubscriptionRuntime: postGateRuntime.quoteSubscriptionRuntime,
+            dayLifecycleManager,
+          }),
+        now: () => new Date(Date.now()),
+        scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimer: (handle) => {
+          clearTimeout(handle);
+        },
+        logger: appLogger,
+      });
+      cleanup.register({
+        phase: 'STOP_TIME_WAKEUP_RUNTIME',
+        step: '停止 TimeWakeupRuntime',
+        handler: () => timeWakeupRuntime.stopAndDrain(),
+      });
+
+      let initialRebuildSucceeded = false;
+      if (startupSnapshot.kind === 'API_RETRY_PENDING') {
+        appLogger.warn('启动阶段跳过初次重建，保持静止并等待生命周期重建任务自动恢复');
+      } else {
+        try {
+          await rebuildTradingDayState({
+            allOrders: startupSnapshot.allOrders,
+            quotesMap: startupSnapshot.quotesMap,
+            now: startupSnapshot.now,
+          });
+          initialRebuildSucceeded = true;
+        } catch (err) {
+          if (!isExternalApiRequestError(err)) {
+            const rebuildError = err instanceof Error ? err : new Error(formatAppError(err));
+            throw rebuildError;
+          }
+
+          applyStartupSnapshotFailure(postGateRuntime.lastState, startupSnapshot.now);
+          appLogger.error(
+            '启动初始重建 API 请求失败：已阻断交易并切换为开盘重建重试模式',
+            formatAppError(err),
+          );
+        }
+      }
+
+      const waitForInitialTimeWakeup = (): Promise<void> =>
+        Promise.race([timeWakeupRuntime.start(), timeWakeupRuntime.drainFatalError()]);
+
+      let waitError: Error | null = null;
+      try {
+        if (initialRebuildSucceeded) {
+          postGateRuntime.postTradeConsistencyRuntime.start();
+          postGateRuntime.postTradeConsistencyRuntime.completeRebuildBaseline();
+          await postGateRuntime.quoteSubscriptionRuntime.reconcileFromCurrentTruth();
+          postGateRuntime.tradingQuoteDisplayRuntime.start();
+          postGateRuntime.quoteSubscriptionRuntime.start();
+          postGateRuntime.seatRuntimeCleanupDispatcher.start();
+          postGateRuntime.seatActivationDispatcher.start();
+          postGateRuntime.autoSearchWakeupRuntime.start();
+          postGateRuntime.periodicSwitchWakeupRuntime.start();
+          postGateRuntime.monitorDisplayRuntime.start();
+          postGateRuntime.tradingRiskEventRuntime.start();
+          postGateRuntime.monitorQuoteEventRuntime.start();
+          postGateRuntime.switchWakeupRuntime.start();
+          asyncRuntime.monitorTaskProcessor.start();
+          asyncRuntime.buyProcessor.start();
+          asyncRuntime.sellProcessor.start();
+          postGateRuntime.trader.startOrderMonitorRuntime();
+          await waitForInitialTimeWakeup();
+          businessEventProgram.start();
+        } else {
+          await waitForInitialTimeWakeup();
         }
 
-        applyStartupSnapshotFailure(postGateRuntime.lastState, startupSnapshot.now);
-        appLogger.error(
-          '启动初始重建 API 请求失败：已阻断交易并切换为开盘重建重试模式',
-          formatAppError(err),
-        );
-      }
-    }
-
-    const waitForInitialTimeWakeup = (): Promise<void> =>
-      Promise.race([timeWakeupRuntime.start(), timeWakeupRuntime.drainFatalError()]);
-
-    let waitError: Error | null = null;
-    try {
-      if (initialRebuildSucceeded) {
-        postGateRuntime.postTradeConsistencyRuntime.start();
-        postGateRuntime.postTradeConsistencyRuntime.completeRebuildBaseline();
-        await postGateRuntime.quoteSubscriptionRuntime.reconcileFromCurrentTruth();
-        postGateRuntime.tradingQuoteDisplayRuntime.start();
-        postGateRuntime.quoteSubscriptionRuntime.start();
-        postGateRuntime.seatRuntimeCleanupDispatcher.start();
-        postGateRuntime.seatActivationDispatcher.start();
-        postGateRuntime.autoSearchWakeupRuntime.start();
-        postGateRuntime.periodicSwitchWakeupRuntime.start();
-        postGateRuntime.monitorDisplayRuntime.start();
-        postGateRuntime.tradingRiskEventRuntime.start();
-        postGateRuntime.monitorQuoteEventRuntime.start();
-        postGateRuntime.switchWakeupRuntime.start();
-        asyncRuntime.monitorTaskProcessor.start();
-        asyncRuntime.buyProcessor.start();
-        asyncRuntime.sellProcessor.start();
-        postGateRuntime.trader.startOrderMonitorRuntime();
-        await waitForInitialTimeWakeup();
-        businessEventProgram.start();
-      } else {
-        await waitForInitialTimeWakeup();
+        appLogger.info('程序开始运行，在交易时段将进行实时监控和交易（按 Ctrl+C 退出）');
+        await Promise.race([
+          waitForShutdown(),
+          timeWakeupRuntime.drainFatalError(),
+          businessEventProgram.drainFatalError(),
+          asyncRuntime.drainFatalError(),
+          postGateRuntime.drainFatalError(),
+          postGateRuntime.postTradeConsistencyRuntime.drainFatalError(),
+          postGateRuntime.autoSearchWakeupRuntime.drainFatalError(),
+        ]);
+      } catch (error) {
+        waitError = toError(error);
       }
 
-      appLogger.info('程序开始运行，在交易时段将进行实时监控和交易（按 Ctrl+C 退出）');
-      await Promise.race([
-        waitForShutdown(),
-        timeWakeupRuntime.drainFatalError(),
-        businessEventProgram.drainFatalError(),
-        asyncRuntime.drainFatalError(),
-        postGateRuntime.drainFatalError(),
-        postGateRuntime.postTradeConsistencyRuntime.drainFatalError(),
-        postGateRuntime.autoSearchWakeupRuntime.drainFatalError(),
-      ]);
+      if (waitError !== null) {
+        throw waitError;
+      }
     } catch (error) {
-      waitError = toError(error);
+      hasPrimaryError = true;
+      primaryError = error;
     }
 
     try {
       await cleanup.execute();
     } catch (cleanupError) {
-      if (waitError !== null) {
-        appLogger.error('[runApp] cleanup 失败，保留原始退出错误', formatAppError(cleanupError));
-        throw waitError;
+      if (hasPrimaryError) {
+        appLogger.error('[runApp] cleanup 失败，保留原始错误', formatAppError(cleanupError));
+      } else {
+        throw toError(cleanupError);
       }
-
-      throw toError(cleanupError);
     }
 
-    if (waitError !== null) {
-      throw waitError;
+    if (hasPrimaryError) {
+      throw primaryError;
     }
   };
 }

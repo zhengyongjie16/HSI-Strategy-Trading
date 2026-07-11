@@ -340,7 +340,6 @@ function resolveSeatEntry(seatStore: SymbolSeatEntry, direction: 'LONG' | 'SHORT
  * @returns 实现了 SymbolRegistry 接口的注册表对象
  */
 export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
-  const expectedMonitorSymbol = monitor.monitorSymbol;
   const listeners = new Set<SeatStateChangedListener>();
   const truthListeners = new Set<SeatTruthChangedListener>();
 
@@ -383,9 +382,6 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
   }
 
   return {
-    getMonitorSymbol(): string {
-      return expectedMonitorSymbol;
-    },
     getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
       return resolveSeatEntry(seatStore, direction).state;
     },
@@ -393,9 +389,7 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
       return resolveSeatEntry(seatStore, direction).version;
     },
     resolveSeatBySymbol(symbol: string): {
-      monitorSymbol: string;
       direction: 'LONG' | 'SHORT';
-      seatState: SeatState;
       seatVersion: number;
     } | null {
       if (!symbol) {
@@ -404,18 +398,14 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
 
       if (seatStore.long.state.symbol === symbol) {
         return {
-          monitorSymbol: expectedMonitorSymbol,
           direction: 'LONG',
-          seatState: seatStore.long.state,
           seatVersion: seatStore.long.version,
         };
       }
 
       if (seatStore.short.state.symbol === symbol) {
         return {
-          monitorSymbol: expectedMonitorSymbol,
           direction: 'SHORT',
-          seatState: seatStore.short.state,
           seatVersion: seatStore.short.version,
         };
       }
@@ -429,14 +419,13 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
       seatEntry.state = normalizeSeatState(nextState);
       seatEntry.lastEventVersion = seatEntry.version;
       emitSeatStateChanged({
-        monitorSymbol: expectedMonitorSymbol,
         direction,
         previousState,
         nextState: seatEntry.state,
         previousVersion,
         nextVersion: seatEntry.version,
       });
-      emitSeatTruthChanged({ monitorSymbol: expectedMonitorSymbol, direction });
+      emitSeatTruthChanged({ direction });
       return seatEntry.state;
     },
     updateSeatStateWithVersionBump(
@@ -450,14 +439,13 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
       seatEntry.version += 1;
       seatEntry.lastEventVersion = seatEntry.version;
       emitSeatStateChanged({
-        monitorSymbol: expectedMonitorSymbol,
         direction,
         previousState,
         nextState: seatEntry.state,
         previousVersion: previousStateEventVersion,
         nextVersion: seatEntry.version,
       });
-      emitSeatTruthChanged({ monitorSymbol: expectedMonitorSymbol, direction });
+      emitSeatTruthChanged({ direction });
       return { seatState: seatEntry.state, seatVersion: seatEntry.version };
     },
     onSeatStateChanged(listener: SeatStateChangedListener): () => void {

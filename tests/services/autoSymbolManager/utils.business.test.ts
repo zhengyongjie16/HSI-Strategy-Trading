@@ -62,6 +62,9 @@ describe('autoSymbolManager utils business flow', () => {
 
     expect(result.seatVersion).toBe(2);
     expect(result.seatState.status).toBe('ACTIVATING');
+    const resolvedSeat = symbolRegistry.resolveSeatBySymbol('NEW_BULL.HK');
+    expect(resolvedSeat?.direction).toBe('LONG');
+    expect(resolvedSeat?.seatVersion).toBe(2);
     expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
     expect(observed).toEqual([
@@ -84,7 +87,6 @@ describe('autoSymbolManager utils business flow', () => {
       readonly status: string;
     }> = [];
     const truthEvents: Array<{
-      readonly monitorSymbol: string;
       readonly direction: 'LONG' | 'SHORT';
       readonly observedVersion: number;
       readonly status: string;
@@ -100,7 +102,6 @@ describe('autoSymbolManager utils business flow', () => {
 
     symbolRegistry.onSeatTruthChanged((event) => {
       truthEvents.push({
-        monitorSymbol: event.monitorSymbol,
         direction: event.direction,
         observedVersion: symbolRegistry.getSeatVersion('LONG'),
         status: symbolRegistry.getSeatState('LONG').status,
@@ -131,7 +132,6 @@ describe('autoSymbolManager utils business flow', () => {
 
     expect(truthEvents).toEqual([
       {
-        monitorSymbol: 'HSI.HK',
         direction: 'LONG',
         observedVersion: 1,
         status: 'ACTIVATING',
@@ -256,7 +256,6 @@ describe('autoSymbolManager utils business flow', () => {
 
   it('accepts signal when current seat version and symbol both match', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',
@@ -281,7 +280,6 @@ describe('autoSymbolManager utils business flow', () => {
 
   it('reports seat-unavailable reason when seat is not ready', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -309,7 +307,6 @@ describe('autoSymbolManager utils business flow', () => {
 
   it('reports version mismatch before symbol mismatch', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       shortSeat: {
         symbol: 'BEAR_NEW.HK',
         status: 'ACTIVE',
@@ -350,7 +347,6 @@ describe('autoSymbolManager utils business flow', () => {
 
   it('rejects HOLD signal without throwing', () => {
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'BULL.HK',
         status: 'ACTIVE',

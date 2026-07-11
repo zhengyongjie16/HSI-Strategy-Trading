@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 以 tradingSymbol 为入口校验当前应执行的 route 是否仍然有效
- * - 校验 seatVersion 与 routeKey 是否与最新索引一致
+ * - 校验方向与 seatVersion 是否与最新索引一致
  */
 import type { TradingRiskRoute, TradingRiskRoutingIndex } from './types.js';
 
@@ -26,7 +26,7 @@ export function resolveTradingRiskRoute(
  *
  * @param expectedRoute 事件到达时的路由快照
  * @param routingIndex 当前基于 symbolRegistry 重建的路由索引
- * @returns 路由 key 与 seatVersion 同时匹配时返回 true
+ * @returns 方向与 seatVersion 同时匹配时返回 true
  */
 export function isTradingRiskRouteCurrent(
   expectedRoute: TradingRiskRoute,
@@ -38,7 +38,7 @@ export function isTradingRiskRouteCurrent(
   }
 
   return (
-    currentRoute.routeKey === expectedRoute.routeKey &&
+    currentRoute.direction === expectedRoute.direction &&
     currentRoute.seatVersion === expectedRoute.seatVersion
   );
 }

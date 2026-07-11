@@ -192,7 +192,7 @@ export type SwitchWakeupRouteKey = `${'LONG' | 'SHORT'}:${number}`;
 /**
  * Switch wakeup route。
  * 类型用途：描述当前 runtime 持有的一条 pending switch 权威路由身份。
- * 数据来源：由 handoffPendingSwitch 参数与单一 monitorContext 权威快照组合得到。
+ * 数据来源：由 handoffPendingSwitch 参数与单一运行时权威快照组合得到。
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
 export type SwitchWakeupRoute = Readonly<{
@@ -204,9 +204,6 @@ export type SwitchWakeupRoute = Readonly<{
 
   /** 席位版本 */
   seatVersion: number;
-
-  /** 当前 monitor context */
-  monitorContext: MonitorContext;
 }>;
 
 /**

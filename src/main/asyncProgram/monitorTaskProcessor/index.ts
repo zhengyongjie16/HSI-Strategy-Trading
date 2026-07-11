@@ -26,7 +26,6 @@ import { formatError } from '../../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
 import type { PeriodicSwitchRouteBaseline } from '../../periodicSwitchWakeupRuntime/types.js';
 import type {
-  MonitorTaskContext,
   MonitorTaskDataMap,
   MonitorTaskProcessor,
   MonitorTaskProcessorDeps,
@@ -73,7 +72,6 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,
     lastState,
-    tradingConfig,
     getCanProcessTask,
     getCanTradeNow,
     onFatalError,
@@ -81,19 +79,14 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   } = deps;
   const monitorSymbol = monitorContext.config.monitorSymbol;
 
-  /** 当前处理器只服务唯一 monitor 上下文，内部任务直接复用同一上下文。 */
-  function requireContext(): MonitorTaskContext {
-    return monitorContext;
-  }
   const { handleAutoSymbolTick } = createAutoSymbolHandlers({
-    requireContext,
+    monitorContext,
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,
     getCanTradeNow,
   });
   const handleSeatRefresh = createSeatRefreshHandler({
-    requireContext,
-    tradingConfig,
+    monitorContext,
     marketDataClient,
     quoteSubscriptionRuntime,
   });

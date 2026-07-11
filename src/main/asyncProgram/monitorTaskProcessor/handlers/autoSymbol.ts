@@ -17,12 +17,8 @@ import type {
 } from '../../../periodicSwitchWakeupRuntime/types.js';
 import type { SwitchWakeupRuntime } from '../../../monitorQuoteEventRuntime/types.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
-import type {
-  AutoSymbolTickTaskData,
-  MonitorTaskContext,
-  MonitorTaskDataMap,
-  MonitorTaskStatus,
-} from '../types.js';
+import type { AutoSymbolTickTaskData, MonitorTaskDataMap, MonitorTaskStatus } from '../types.js';
+import type { MonitorContext } from '../../../../types/state.js';
 import { isSeatSnapshotValid } from '../helpers/seatSnapshot.js';
 
 function buildPeriodicBaseline(data: AutoSymbolTickTaskData): PeriodicSwitchRouteBaseline {
@@ -35,7 +31,7 @@ function buildPeriodicBaseline(data: AutoSymbolTickTaskData): PeriodicSwitchRout
 }
 
 function handoffPeriodicWakeup(params: {
-  readonly context: MonitorTaskContext;
+  readonly context: MonitorContext;
   readonly data: AutoSymbolTickTaskData;
   readonly periodicSwitchWakeupRuntime: Pick<
     PeriodicSwitchWakeupRuntime,
@@ -63,16 +59,16 @@ function handoffPeriodicWakeup(params: {
  * 创建周期换标任务处理器（AUTO_SYMBOL_TICK）。
  * 执行前校验席位快照，防止换标后执行旧任务；该任务只触发周期换标 due 检查。
  *
- * @param deps 依赖注入，包含 requireContext、switchWakeupRuntime、getCanTradeNow
+ * @param deps 依赖注入，包含唯一 monitorContext、switchWakeupRuntime、getCanTradeNow
  * @returns AUTO_SYMBOL_TICK 处理函数
  */
 export function createAutoSymbolHandlers({
-  requireContext,
+  monitorContext,
   switchWakeupRuntime,
   periodicSwitchWakeupRuntime,
   getCanTradeNow,
 }: {
-  readonly requireContext: () => MonitorTaskContext;
+  readonly monitorContext: MonitorContext;
   readonly switchWakeupRuntime: Pick<SwitchWakeupRuntime, 'handoffPendingSwitch'>;
   readonly periodicSwitchWakeupRuntime: Pick<
     PeriodicSwitchWakeupRuntime,
@@ -85,7 +81,7 @@ export function createAutoSymbolHandlers({
   ) => Promise<MonitorTaskStatus>;
 }> {
   function handoffPendingWakeup(params: {
-    readonly context: MonitorTaskContext;
+    readonly context: MonitorContext;
     readonly direction: 'LONG' | 'SHORT';
     readonly result: SwitchDriveResult | StartSwitchOnDistanceResult | AdvancePendingSwitchResult;
   }): void {
@@ -136,7 +132,7 @@ export function createAutoSymbolHandlers({
     task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
   ): Promise<MonitorTaskStatus> {
     const data: AutoSymbolTickTaskData = task.data;
-    const context = requireContext();
+    const context = monitorContext;
 
     const isSnapshotValid = isSeatSnapshotValid(
       data.direction,

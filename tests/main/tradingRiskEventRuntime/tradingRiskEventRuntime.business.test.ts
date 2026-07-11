@@ -100,14 +100,8 @@ describe('tradingRiskEventRuntime routing', () => {
         frozenTradingDayKey: null,
       },
     });
-    const monitorContext = createMonitorContextDouble({
-      config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-      symbolRegistry,
-    });
-
     expect(() =>
       buildTradingRiskRoutingIndex({
-        monitorContext,
         symbolRegistry,
       }),
     ).toThrow('重复归属');
@@ -134,17 +128,12 @@ describe('tradingRiskEventRuntime routing', () => {
         frozenTradingDayKey: null,
       },
     });
-    const monitorContext = createMonitorContextDouble({
-      config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
-      symbolRegistry,
-    });
     const routingIndex = buildTradingRiskRoutingIndex({
-      monitorContext,
       symbolRegistry,
     });
 
     const longRoute = resolveTradingRiskRoute(routingIndex, 'BULL.HK');
-    expect(longRoute?.routeKey).toBe('LONG');
+    expect(routingIndex.activeRouteKeys).toEqual(new Set(['LONG', 'SHORT']));
     expect(longRoute?.direction).toBe('LONG');
     expect(longRoute?.tradingSymbol).toBe('BULL.HK');
     expect(longRoute?.seatVersion).toBe(1);
@@ -687,7 +676,6 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       frozenTradingDayKey: null,
     };
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: hsiLong,
       shortSeat: hsiShort,
       longVersion: 1,
@@ -773,7 +761,6 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       frozenTradingDayKey: null,
     };
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: hsiLong,
       shortSeat: hsiShort,
       longVersion: 1,

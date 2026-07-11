@@ -6,7 +6,7 @@
  * - 构造订单载荷并提交到 Trade API
  * - 在提交成功后注册 orderMonitor 追踪与卖单防重占用
  */
-import { OrderSide, OrderType, TimeInForceType, type TradeContext } from 'longbridge';
+import { OrderSide, OrderType, TimeInForceType } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import {
   isExternalApiRequestError,
@@ -14,7 +14,6 @@ import {
 } from '../../../utils/apiFailure/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
-import type { MonitorConfig } from '../../../types/config.js';
 import type { Signal } from '../../../types/signal.js';
 import type { CancelOrderOutcome } from '../../../types/trader.js';
 import type { OrderPayload, SubmitOrderParams } from '../types.js';
@@ -78,6 +77,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     orderMonitor,
     orderRecorder,
     globalConfig,
+    ctx,
+    monitorConfig,
     canExecuteSignal,
     recordBuyAttempt,
   } = deps;
@@ -103,8 +104,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
    */
   async function submitOrder(params: SubmitOrderParams): Promise<string | null> {
     const {
-      ctx,
       signal,
+      authorizeOrderAction,
       symbol,
       side,
       submittedQtyDecimal,
@@ -113,7 +114,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       remark,
       overridePrice,
       isShortSymbol,
-      monitorConfig,
       relatedBuyOrderIds = null,
     } = params;
 
@@ -154,11 +154,11 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
     try {
       await rateLimiter.throttle();
-      if (!canExecuteSignal(signal, 'submitOrder.beforeApi')) {
+      if (!authorizeOrderAction('submitOrder.beforeApi')) {
         return null;
       }
 
-      recordBuyAttempt(signal.action, monitorConfig);
+      recordBuyAttempt(signal.action);
       const resp = await wrapExternalApiRequest({
         operation: 'TradeContext.submitOrder',
         request: () => ctx.submitOrder(orderPayload),
@@ -228,19 +228,16 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
    * 根据信号构建并提交订单。
    * 卖出分支包含卖单合并（REPLACE/CANCEL_AND_SUBMIT/SUBMIT/SKIP）。
    *
-   * @param ctx TradeContext
    * @param signal 交易信号
    * @param targetSymbol 目标标的
    * @param isShortSymbol 是否为空头方向标的
-   * @param monitorConfig 监控配置
    * @returns 已提交订单 ID，未提交返回 null
    */
   return async function submitTargetOrder(
-    ctx: TradeContext,
     signal: Signal,
     targetSymbol: string,
     isShortSymbol: boolean,
-    monitorConfig: MonitorConfig,
+    authorizeOrderAction,
   ): Promise<string | null> {
     if (!signal.symbol || typeof signal.symbol !== 'string') {
       logger.error(`[订单提交] 信号缺少有效的标的代码: ${JSON.stringify(signal)}`);
@@ -303,11 +300,16 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           return null;
         }
 
-        await orderMonitor.replaceOrderPrice(
+        const replaceOutcome = await orderMonitor.replaceOrderPrice(
           decision.targetOrderId,
           price,
+          { kind: 'SIGNAL_AUTHORIZED', authorize: authorizeOrderAction },
           decision.mergedQuantity,
         );
+        if (replaceOutcome.kind !== 'BROKER_CONFIRMED') {
+          return null;
+        }
+
         const existingPendingSell = orderRecorder
           .getPendingSellSnapshot()
           .find((pendingSell) => pendingSell.orderId === decision.targetOrderId);
@@ -332,7 +334,12 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         }
 
         cancelOutcomes = await Promise.all(
-          decision.pendingOrderIds.map((orderId) => orderMonitor.cancelOrder(orderId)),
+          decision.pendingOrderIds.map((orderId) =>
+            orderMonitor.cancelOrder(orderId, {
+              kind: 'SIGNAL_AUTHORIZED',
+              authorize: authorizeOrderAction,
+            }),
+          ),
         );
 
         if (cancelOutcomes.some(isFilledCancelOutcome)) {
@@ -366,8 +373,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
               )
             : (signal.relatedBuyOrderIds ?? null);
         return submitOrder({
-          ctx,
           signal,
+          authorizeOrderAction,
           symbol: targetSymbol,
           side,
           submittedQtyDecimal: mergedQtyDecimal,
@@ -376,7 +383,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           remark,
           overridePrice: decision.price ?? undefined,
           isShortSymbol,
-          monitorConfig,
           relatedBuyOrderIds: mergedRelatedBuyOrderIds,
         });
       }
@@ -395,8 +401,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     }
 
     return submitOrder({
-      ctx,
       signal,
+      authorizeOrderAction,
       symbol: targetSymbol,
       side,
       submittedQtyDecimal,
@@ -405,7 +411,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       remark,
       overridePrice: undefined,
       isShortSymbol,
-      monitorConfig,
     });
   };
 }

@@ -8,6 +8,7 @@
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import type { DirectionalUnrealizedLossMonitorContext } from '../../types/risk.js';
 import type { QuoteUpdatedEvent, Trader } from '../../types/services.js';
+import type { MonitorContext } from '../../types/state.js';
 import type { TradingRiskRoute } from './types.js';
 
 /**
@@ -19,8 +20,9 @@ export async function executeDirectionalUnrealizedLoss(params: {
   readonly route: TradingRiskRoute;
   readonly event: QuoteUpdatedEvent;
   readonly trader: Trader;
+  readonly monitorContext: MonitorContext;
 }): Promise<void> {
-  const { route, event, trader } = params;
+  const { route, event, trader, monitorContext } = params;
   if (!isValidPositiveNumber(event.quote.price)) {
     return;
   }
@@ -30,11 +32,11 @@ export async function executeDirectionalUnrealizedLoss(params: {
     isLong: route.direction === 'LONG',
     seatVersion: route.seatVersion,
     quote: event.quote,
-    riskChecker: route.monitorContext.riskChecker,
+    riskChecker: monitorContext.riskChecker,
     trader,
-    orderRecorder: route.monitorContext.orderRecorder,
-    dailyLossTracker: route.monitorContext.dailyLossTracker,
+    orderRecorder: monitorContext.orderRecorder,
+    dailyLossTracker: monitorContext.dailyLossTracker,
   };
 
-  await route.monitorContext.unrealizedLossMonitor.monitorDirectionalUnrealizedLoss(context);
+  await monitorContext.unrealizedLossMonitor.monitorDirectionalUnrealizedLoss(context);
 }

@@ -63,7 +63,6 @@ function createExecutorHarness(
   });
 
   const symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: 'HSI.HK',
     longSeat: {
       symbol: 'BULL.HK',
       status: params.longSeatStatus ?? 'ACTIVE',
@@ -119,10 +118,6 @@ function createExecutorHarness(
       shortSymbol: 'BEAR.HK',
     }),
     symbolRegistry: symbolRegistryWithVersionRace,
-    seatVersion: {
-      long: 1,
-      short: 1,
-    },
     orderRecorder,
     riskChecker: createRiskCheckerDouble({
       checkWarrantDistanceLiquidation: (_symbol, isLongSymbol, monitorCurrentPrice) => {

@@ -20,14 +20,9 @@ import type {
 } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTask } from '../../../../src/main/asyncProgram/monitorTaskQueue/types.js';
-import type { TradingConfig } from '../../../../src/types/config.js';
-
-import { createTradingConfig as createTradingConfigFactory } from '../../../../mock/factories/configFactory.js';
-
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
-  createMonitorConfigDouble,
   createOrderRecorderDouble,
   createPositionDouble,
   createQuoteSubscriptionRuntimeDouble,
@@ -35,19 +30,8 @@ import {
   createRiskCheckerDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
-import {
-  createLastState,
-  createMonitorTaskContext,
-  runProcessorFlow,
-  waitUntil,
-} from '../utils.js';
+import { createLastState, createMonitorContext, runProcessorFlow, waitUntil } from '../utils.js';
 import type { CreateBusinessProcessorParams } from '../types.js';
-
-function createTradingConfig(): TradingConfig {
-  return createTradingConfigFactory({
-    monitor: createMonitorConfigDouble(),
-  });
-}
 
 function createStatusCollector(
   statuses: MonitorTaskStatus[],
@@ -95,7 +79,6 @@ function createBusinessProcessor(
       handoffPendingSwitch: () => {},
     },
     lastState,
-    tradingConfig: createTradingConfig(),
     getCanTradeNow,
     periodicSwitchWakeupRuntime,
     ...(onProcessed ? { onProcessed } : {}),
@@ -151,7 +134,7 @@ describe('monitorTaskProcessor business flow', () => {
       seatVersion: number;
       driveKind: string;
     }> = [];
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async (params) => {
@@ -211,7 +194,6 @@ describe('monitorTaskProcessor business flow', () => {
         replanRouteAfterTask: () => {},
       },
       lastState: createLastState(),
-      tradingConfig: createTradingConfig(),
       getCanTradeNow: () => true,
       onProcessed: createStatusCollector(statuses),
     });
@@ -249,7 +231,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -297,7 +279,6 @@ describe('monitorTaskProcessor business flow', () => {
         replanRouteAfterTask: () => {},
       },
       lastState: createLastState(),
-      tradingConfig: createTradingConfig(),
       getCanTradeNow: () => true,
       onFatalError: (error) => {
         fatalErrors.push(error);
@@ -332,7 +313,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -376,7 +357,6 @@ describe('monitorTaskProcessor business flow', () => {
         replanRouteAfterTask: () => {},
       },
       lastState: createLastState(),
-      tradingConfig: createTradingConfig(),
       getCanTradeNow: () => true,
       onFatalError: (error) => {
         fatalErrors.push(error);
@@ -417,7 +397,7 @@ describe('monitorTaskProcessor business flow', () => {
       canTradeNow: boolean;
     }> = [];
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {
           maybeSearchCalls += 1;
@@ -494,7 +474,7 @@ describe('monitorTaskProcessor business flow', () => {
       canTradeNow: boolean;
     }> = [];
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async (params) => {
@@ -566,7 +546,7 @@ describe('monitorTaskProcessor business flow', () => {
       seatVersion: number;
       lastSeatActivatedAt: number;
     }> = [];
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({
@@ -657,7 +637,7 @@ describe('monitorTaskProcessor business flow', () => {
       taskTimeMs: number;
       status: MonitorTaskStatus;
     }> = [];
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({
@@ -756,7 +736,7 @@ describe('monitorTaskProcessor business flow', () => {
     }> = [];
     const clearCalls: string[] = [];
     let periodicDueCalls = 0;
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -844,7 +824,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     let maybeSearchCalls = 0;
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {
           maybeSearchCalls += 1;
@@ -910,7 +890,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     let periodicDueCalls = 0;
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -979,7 +959,7 @@ describe('monitorTaskProcessor business flow', () => {
     let getQuotesCalls = 0;
     let clearLongWarrantCalls = 0;
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       riskChecker: createRiskCheckerDouble({
         clearLongWarrantInfo: () => {
           clearLongWarrantCalls += 1;
@@ -1029,7 +1009,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     let maybeSearchCalls = 0;
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {
           maybeSearchCalls += 1;
@@ -1108,7 +1088,7 @@ describe('monitorTaskProcessor business flow', () => {
     let stockPositionCalls = 0;
     let getQuotesCalls = 0;
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => {
           fetchAllOrdersCalls += 1;
@@ -1203,7 +1183,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
     let refreshOrdersCalls = 0;
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [],
         refreshOrdersFromAllOrdersForShort: async (_symbol, _allOrders, quote) => {
@@ -1257,7 +1237,7 @@ describe('monitorTaskProcessor business flow', () => {
   it('marks SHORT SEAT_REFRESH business failure as EMPTY and clears short-side symbol name', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       shortSymbolName: 'OLD_BEAR',
     });
     context.symbolRegistry.updateSeatState('SHORT', {
@@ -1308,7 +1288,7 @@ describe('monitorTaskProcessor business flow', () => {
     let fetchAllOrdersCalls = 0;
     let refreshOrdersCalls = 0;
     let refreshUnrealizedCalls = 0;
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => {
           fetchAllOrdersCalls += 1;
@@ -1388,7 +1368,7 @@ describe('monitorTaskProcessor business flow', () => {
         maxUnrealizedLossPerSymbol: null,
       }),
     });
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       riskChecker: {
         ...baseRiskChecker,
         refreshUnrealizedLossData: async (
@@ -1460,7 +1440,7 @@ describe('monitorTaskProcessor business flow', () => {
     let accountSnapshotCalls = 0;
     let stockPositionCalls = 0;
     const lastState = createLastState();
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [],
         refreshOrdersFromAllOrdersForLong: async () => {
@@ -1562,7 +1542,7 @@ describe('monitorTaskProcessor business flow', () => {
     const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     let getQuotesCalls = 0;
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       longSymbolName: 'OLD_BULL',
     });
     context.symbolRegistry.updateSeatState('LONG', {
@@ -1622,7 +1602,7 @@ describe('monitorTaskProcessor business flow', () => {
     const fatalErrors: unknown[] = [];
     let getQuotesCalls = 0;
 
-    const context = createMonitorTaskContext({
+    const context = createMonitorContext({
       longSymbolName: 'OLD_BULL',
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [],
@@ -1678,7 +1658,7 @@ describe('monitorTaskProcessor business flow', () => {
   it('skips SEAT_REFRESH final activation when seat snapshot changes during refresh', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const statuses: MonitorTaskStatus[] = [];
-    const context = createMonitorTaskContext();
+    const context = createMonitorContext();
     context.symbolRegistry.updateSeatState('LONG', {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',

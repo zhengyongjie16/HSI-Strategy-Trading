@@ -1,4 +1,3 @@
-import type { TradingConfig } from '../../types/config.js';
 import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
@@ -13,25 +12,6 @@ import type {
   MonitorTaskStatus,
 } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.js';
-
-/**
- * 周期换标 route。
- * 类型用途：以方向唯一标识单 monitor 下的一条周期换标路线。
- * 数据来源：启动 seed、seat truth 事件和 gate 事件中的 direction。
- * 使用范围：PeriodicSwitchWakeupRuntime 的公开方法与内部排程。
- */
-export type PeriodicSwitchRoute = Readonly<{
-  /** 席位方向 */
-  direction: 'LONG' | 'SHORT';
-}>;
-
-/**
- * 周期换标方向。
- * 类型用途：从 PeriodicSwitchRoute 结构化 route 提取方向类型，避免运行时代码重复定义联合类型。
- * 数据来源：PeriodicSwitchRoute.direction。
- * 使用范围：PeriodicSwitchWakeupRuntime 内部路线遍历。
- */
-export type PeriodicSwitchDirection = PeriodicSwitchRoute['direction'];
 
 /**
  * 周期换标 route baseline。
@@ -77,7 +57,7 @@ export type PeriodicSwitchAutoSymbolTickTaskData = MonitorTaskDataMap['AUTO_SYMB
 
 /**
  * 周期换标单 route 运行态。
- * 类型用途：记录当前 baseline、one-shot timer 和 waiting-empty 标记。
+ * 类型用途：记录当前 baseline、one-shot timer、waiting-empty 与外部失败重评估边界。
  * 数据来源：PeriodicSwitchWakeupRuntime 按 route key 维护。
  * 使用范围：PeriodicSwitchWakeupRuntime 内部状态表。
  */
@@ -91,8 +71,8 @@ export type PeriodicSwitchRouteState = {
   /** 当前 waiting-empty baseline */
   waitingEmpty: PeriodicSwitchRouteBaseline | null;
 
-  /** 已 fail-fast 终止的 baseline，直到席位 baseline 变化前不再重派 */
-  failedBaseline: PeriodicSwitchRouteBaseline | null;
+  /** 当前 baseline 的外部失败未来重评估边界；null 表示未等待 */
+  failureReevaluationAtMs: number | null;
 };
 
 /**
@@ -102,9 +82,6 @@ export type PeriodicSwitchRouteState = {
  * 使用范围：createPeriodicSwitchWakeupRuntime 工厂。
  */
 export type PeriodicSwitchWakeupRuntimeDeps = Readonly<{
-  /** 交易配置中的唯一监控标的配置 */
-  tradingConfig: Pick<TradingConfig, 'monitor'>;
-
   /** 当前唯一 monitorContext */
   monitorContext: Pick<MonitorContext, 'config'>;
 

@@ -19,7 +19,7 @@ import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { createTradingDayInfoResolver } from '../lifecycle/rebuild.js';
 import type { CreatePreGateRuntimeDeps } from './types.js';
-import type { AppEnvironmentParams, PreGateRuntime } from '../types.js';
+import type { CreatePreGateRuntimeParams, PreGateRuntime } from '../types.js';
 
 const DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS: CreatePreGateRuntimeDeps = {
   createSdkConfigFromAuth,
@@ -34,16 +34,16 @@ const DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS: CreatePreGateRuntimeDeps = {
  */
 export function createPreGateRuntimeFactory(
   deps: CreatePreGateRuntimeDeps,
-): (params: AppEnvironmentParams) => Promise<PreGateRuntime> {
+): (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime> {
   const {
     createSdkConfigFromAuth: buildSdkConfigFromAuth,
     createMarketDataClient: buildMarketDataClient,
   } = deps;
 
   return async function createPreGateRuntime(
-    params: AppEnvironmentParams,
+    params: CreatePreGateRuntimeParams,
   ): Promise<PreGateRuntime> {
-    const { env } = params;
+    const { env, cleanup } = params;
     const tradingConfig = createTradingConfig({ env });
     await validateAllConfig({ env, tradingConfig });
 
@@ -62,6 +62,11 @@ export function createPreGateRuntimeFactory(
       },
     });
     const marketDataClient = await buildMarketDataClient({ config });
+    cleanup.register({
+      phase: 'RESET_MARKET_DATA_RUNTIME',
+      step: '重置行情运行态订阅与缓存',
+      handler: () => marketDataClient.resetRuntimeSubscriptionsAndCaches(),
+    });
     const resolveTradingDayInfo = createTradingDayInfoResolver({
       marketDataClient,
       getHKDateKey,

@@ -73,18 +73,13 @@ function createClearanceSignal(params: ClearanceSignalParams): SellSignal {
  * 用于末日清仓时确定唯一监控标的下 LONG/SHORT 席位的实际交易标的（牛熊证代码）。
  *
  * @param context 监控上下文
- * @param monitorSymbol 监控标的代码（如 HSI.HK）
  * @param direction 多空方向（LONG/SHORT）
  * @returns 该席位对应的交易标的代码，席位未就绪时返回 null
  */
-function resolveSeatSymbol(
-  context: MonitorContext,
-  monitorSymbol: string,
-  direction: 'LONG' | 'SHORT',
-): string | null {
+function resolveSeatSymbol(context: MonitorContext, direction: 'LONG' | 'SHORT'): string | null {
   const seatState = context.symbolRegistry.getSeatState(direction);
   if (!isSeatActive(seatState)) {
-    logger.debug(`[末日保护程序] 席位未就绪，跳过: ${monitorSymbol} ${direction}`);
+    logger.debug(`[末日保护程序] 席位未就绪，跳过: ${context.config.monitorSymbol} ${direction}`);
     return null;
   }
 
@@ -113,10 +108,9 @@ function resolveMonitorSymbols(monitorContext: MonitorContext): {
   longSeatVersion: number | null;
   shortSeatVersion: number | null;
 } {
-  const monitorSymbol = monitorContext.config.monitorSymbol;
   return {
-    longSymbol: resolveSeatSymbol(monitorContext, monitorSymbol, 'LONG'),
-    shortSymbol: resolveSeatSymbol(monitorContext, monitorSymbol, 'SHORT'),
+    longSymbol: resolveSeatSymbol(monitorContext, 'LONG'),
+    shortSymbol: resolveSeatSymbol(monitorContext, 'SHORT'),
     longSeatVersion: resolveSeatVersion(monitorContext, 'LONG'),
     shortSeatVersion: resolveSeatVersion(monitorContext, 'SHORT'),
   };

@@ -11,6 +11,8 @@ import path from 'node:path';
 import { TRADING } from '../../../src/constants/index.js';
 import { createTradingConfig, createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createPostGateRuntimeFactory } from '../../../src/app/runtime/createPostGateRuntime.js';
+import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
+import { createMonitorContext } from '../../../src/app/context/createMonitorContext.js';
 import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
 import { createLiquidationCooldownTracker } from '../../../src/services/liquidationCooldown/index.js';
 import { createTradeLogHydrator } from '../../../src/services/liquidationCooldown/tradeLogHydrator.js';
@@ -46,10 +48,11 @@ function createRuntimeParams(
   return {
     env: createTestEnv(),
     now: new Date('2026-03-13T09:30:00+08:00'),
+    cleanup: createCleanup(),
     preGateRuntime: {
       config: createSdkConfigDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
-      symbolRegistry: createSymbolRegistryDouble({ monitorSymbol: monitorConfig.monitorSymbol }),
+      symbolRegistry: createSymbolRegistryDouble(),
       warrantListCache,
       warrantListCacheConfig: {
         cache: warrantListCache,
@@ -70,6 +73,7 @@ function createRuntimeParams(
 
 function createPostGateRuntimeForTest() {
   return createPostGateRuntimeFactory({
+    createMonitorContext,
     createTrader: async () =>
       createTraderDouble({
         onOrderStateChanged: (listener) => {
@@ -86,6 +90,7 @@ function createPostGateRuntimeForTest() {
 
 function createPostGateRuntimeWithPositionRefreshForTest() {
   return createPostGateRuntimeFactory({
+    createMonitorContext,
     createTrader: async () =>
       createTraderDouble({
         getAccountSnapshot: async () => createAccountSnapshotDouble(88_000),
@@ -150,6 +155,41 @@ describe('createPostGateRuntime trade log persistence', () => {
 
     expect(subscribed).toEqual([['POS.HK']]);
     expect(runtime.lastState.allTradingSymbols).toEqual(new Set(['POS.HK']));
+  });
+
+  it('registers trader listener disposal before a later post-gate factory failure', async () => {
+    let unsubscribeCount = 0;
+    const cleanup = createCleanup();
+    const createPostGateRuntime = createPostGateRuntimeFactory({
+      createTrader: async () =>
+        createTraderDouble({
+          onOrderStateChanged: () => () => {
+            unsubscribeCount += 1;
+          },
+        }),
+      createMonitorContext: () => {
+        throw new Error('monitor context wiring failed');
+      },
+    });
+
+    let caught: unknown = null;
+    try {
+      await createPostGateRuntime({
+        ...createRuntimeParams(),
+        cleanup,
+      });
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    if (!(caught instanceof Error)) {
+      throw new Error('expected createPostGateRuntime to reject with Error');
+    }
+
+    expect(caught.message).toBe('monitor context wiring failed');
+    await cleanup.execute();
+    await cleanup.execute();
+    expect(unsubscribeCount).toBe(1);
   });
 
   it('persists FILLED buy order state event into daily trade log', async () => {

@@ -16,15 +16,13 @@ import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { Signal } from '../../../src/types/signal.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
 import type { MonitorContext } from '../../../src/types/state.js';
-import type {
-  SignalPipelineParams,
-  SignalSeatInfo,
-} from '../../../src/main/businessEventProgram/types.js';
+import type { SignalPipelineParams } from '../../../src/main/businessEventProgram/types.js';
 
 import {
   createIndicatorUsageProfileDouble,
   createOrderRecorderDouble,
   createSignalDouble,
+  createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 
 function createSnapshot(): IndicatorSnapshot {
@@ -41,42 +39,9 @@ function createSnapshot(): IndicatorSnapshot {
   };
 }
 
-function createSeatInfo(overrides: Partial<SignalSeatInfo> = {}): SignalSeatInfo {
-  const base: SignalSeatInfo = {
-    longSeatState: {
-      symbol: 'BULL.HK',
-      status: 'ACTIVE',
-      lastSwitchAt: null,
-      lastSearchAt: null,
-      lastSeatActivatedAt: null,
-      searchFailCountToday: 0,
-      frozenTradingDayKey: null,
-    },
-    shortSeatState: {
-      symbol: 'BEAR.HK',
-      status: 'ACTIVE',
-      lastSwitchAt: null,
-      lastSearchAt: null,
-      lastSeatActivatedAt: null,
-      searchFailCountToday: 0,
-      frozenTradingDayKey: null,
-    },
-    longSeatVersion: 7,
-    shortSeatVersion: 11,
-    longSymbol: 'BULL.HK',
-    shortSymbol: 'BEAR.HK',
-  };
-
-  return {
-    ...base,
-    ...overrides,
-  };
-}
-
 function createPipelineHarness(params: {
   immediateSignals: ReadonlyArray<Signal>;
   delayedSignals: ReadonlyArray<Signal>;
-  seatInfo?: SignalSeatInfo;
   canTradeNow?: boolean;
   openProtectionActive?: boolean;
   isTradingEnabled?: boolean;
@@ -95,6 +60,28 @@ function createPipelineHarness(params: {
     readonly signal: Signal;
   }> = [];
   let generateSignalsCallCount = 0;
+  const symbolRegistry = createSymbolRegistryDouble({
+    longSeat: {
+      symbol: 'BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    },
+    shortSeat: {
+      symbol: 'BEAR.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    },
+    longVersion: 7,
+    shortVersion: 11,
+  });
 
   const monitorContext = {
     strategy: {
@@ -107,6 +94,7 @@ function createPipelineHarness(params: {
       },
     },
     orderRecorder: createOrderRecorderDouble(),
+    symbolRegistry,
     indicatorProfile: createIndicatorUsageProfileDouble(),
     delayedSignalVerifier: {
       addSignal: (queuedSignal: { readonly signal: Signal }) => {
@@ -143,7 +131,6 @@ function createPipelineHarness(params: {
       currentTime: new Date('2026-02-16T09:31:00.000Z'),
       openProtectionActive: params.openProtectionActive ?? false,
     },
-    seatInfo: params.seatInfo ?? createSeatInfo(),
   });
 
   return {
@@ -174,14 +161,10 @@ describe('signalPipeline business flow', () => {
     expect(queuedBuy?.type).toBe('IMMEDIATE_BUY');
     expect(queuedBuy?.data.seatVersion).toBe(7);
     expect(queuedBuy?.data.symbolName).toBeNull();
-    expect('monitorSymbol' in (queuedBuy ?? {})).toBeFalse();
-    expect('monitorSymbol' in (queuedBuy?.data ?? {})).toBeFalse();
 
     expect(queuedSell?.type).toBe('IMMEDIATE_SELL');
     expect(queuedSell?.data.seatVersion).toBe(11);
     expect(queuedSell?.data.symbolName).toBeNull();
-    expect('monitorSymbol' in (queuedSell ?? {})).toBeFalse();
-    expect('monitorSymbol' in (queuedSell?.data ?? {})).toBeFalse();
 
     expect(harness.delayedAdded).toHaveLength(1);
     expect(harness.delayedAdded[0]?.signal.seatVersion).toBe(11);

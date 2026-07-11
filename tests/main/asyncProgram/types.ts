@@ -1,6 +1,6 @@
 import type { MonitorTaskProcessorDeps } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { PeriodicSwitchWakeupRuntime } from '../../../src/main/periodicSwitchWakeupRuntime/types.js';
-import type { createLastState, createMonitorTaskContext } from './utils.js';
+import type { createLastState, createMonitorContext } from './utils.js';
 import type { createTraderDouble } from '../../helpers/testDoubles.js';
 
 /**
@@ -11,7 +11,7 @@ import type { createTraderDouble } from '../../helpers/testDoubles.js';
  */
 export type CreateBusinessProcessorParams = Readonly<{
   readonly queue: MonitorTaskProcessorDeps['monitorTaskQueue'];
-  readonly context: ReturnType<typeof createMonitorTaskContext>;
+  readonly context: ReturnType<typeof createMonitorContext>;
   readonly lastState?: ReturnType<typeof createLastState>;
   readonly trader?: ReturnType<typeof createTraderDouble>;
   readonly marketDataClient?: MonitorTaskProcessorDeps['marketDataClient'];

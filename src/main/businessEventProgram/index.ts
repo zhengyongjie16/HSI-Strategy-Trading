@@ -14,7 +14,6 @@ import { formatError, toError } from '../../utils/error/index.js';
 import { projectVerificationSampleValues } from '../asyncProgram/indicatorCache/utils.js';
 import { runIndicatorPipeline } from './indicatorPipeline.js';
 import { runSignalPipeline } from './signalPipeline.js';
-import { resolveSignalSeatInfo } from './seatProjection.js';
 import type {
   BusinessEventProgram,
   BusinessEventProgramDeps,
@@ -143,10 +142,6 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
           observedAtMs,
         );
 
-        const seatInfo = resolveSignalSeatInfo({
-          monitorContext,
-        });
-
         monitorDisplayRuntime.requestRender({
           monitorSnapshot,
         });
@@ -158,7 +153,6 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
             currentTime: new Date(),
             openProtectionActive: lastState.openProtectionActive === true,
           },
-          seatInfo,
           monitorSnapshot,
         });
       }

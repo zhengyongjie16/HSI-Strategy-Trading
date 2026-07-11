@@ -78,11 +78,6 @@ export function registerDelayedSignalHandlers(params: RegisterDelayedSignalHandl
       return;
     }
 
-    if (lastState.openProtectionActive) {
-      discardSignal('[延迟验证通过] 开盘保护激活，丢弃信号');
-      return;
-    }
-
     if (!isBuyAction(signal.action) && !isSellAction(signal.action)) {
       discardSignal('[延迟验证通过] 非买卖动作信号，丢弃信号');
       return;

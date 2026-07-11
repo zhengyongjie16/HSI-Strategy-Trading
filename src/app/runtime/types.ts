@@ -1,6 +1,7 @@
 import type { createSdkConfigFromAuth } from '../../config/auth/index.js';
 import type { createTrader } from '../../core/trader/index.js';
 import type { createMarketDataClient } from '../../services/quoteClient/index.js';
+import type { createMonitorContext } from '../context/createMonitorContext.js';
 
 /**
  * pre-gate runtime 工厂依赖。
@@ -21,4 +22,16 @@ export type CreatePreGateRuntimeDeps = Readonly<{
  */
 export type CreatePostGateRuntimeDeps = Readonly<{
   createTrader: typeof createTrader;
+  createMonitorContext: typeof createMonitorContext;
 }>;
+
+/**
+ * 一次性运行时绑定端口。
+ * 类型用途：显式解决互相依赖对象的构造环，并禁止重复绑定或未绑定读取。
+ * 数据来源：由 createPostGateRuntime 内部创建。
+ * 使用范围：仅 app/runtime/createPostGateRuntime 使用。
+ */
+export interface SingleAssignmentBinding<T> {
+  bind: (value: T) => void;
+  get: () => T;
+}

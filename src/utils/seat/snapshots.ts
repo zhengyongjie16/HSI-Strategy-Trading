@@ -1,6 +1,6 @@
 import type { Quote } from '../../types/quote.js';
 import type { SymbolRegistry, SeatState } from '../../types/seat.js';
-import type { MonitorContextRuntimeSnapshot, MonitorContextSeatSnapshot } from './types.js';
+import type { MonitorContextSeatSnapshot, MonitorContextSymbolNames } from './types.js';
 
 /**
  * 解析可消费的 ACTIVE 席位标的代码。
@@ -27,7 +27,7 @@ function resolveActiveSeatSymbol(seatState: SeatState): string | null {
  * @returns 席位状态、版本与当前就绪标的代码快照
  */
 export function resolveMonitorContextSeatSnapshot(
-  symbolRegistry: SymbolRegistry,
+  symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>,
 ): MonitorContextSeatSnapshot {
   const longSeatState = symbolRegistry.getSeatState('LONG');
   const shortSeatState = symbolRegistry.getSeatState('SHORT');
@@ -46,28 +46,24 @@ export function resolveMonitorContextSeatSnapshot(
 }
 
 /**
- * 解析唯一 monitorContext 的运行时快照。
- * 默认行为：基于席位快照与 quotesMap 派生 MonitorContext 所需的行情与名称字段。
+ * 解析唯一 monitorContext 的标的名称。
+ * 默认行为：基于席位快照、已验证的唯一 monitorSymbol 与 quotesMap 派生名称字段。
  *
- * @param symbolRegistry 席位注册表
- * @param quotesMap 标的 -> 行情 Map
- * @returns MonitorContext 所需的运行时派生快照
+ * @param params 席位注册表、唯一监控标的与行情 Map
+ * @returns MonitorContext 所需的名称派生结果
  */
-export function resolveMonitorContextRuntimeSnapshot(
-  symbolRegistry: SymbolRegistry,
-  quotesMap: ReadonlyMap<string, Quote | null>,
-): MonitorContextRuntimeSnapshot {
+export function resolveMonitorContextSymbolNames(params: {
+  readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+  readonly monitorSymbol: string;
+  readonly quotesMap: ReadonlyMap<string, Quote | null>;
+}): MonitorContextSymbolNames {
+  const { symbolRegistry, monitorSymbol, quotesMap } = params;
   const seatSnapshot = resolveMonitorContextSeatSnapshot(symbolRegistry);
-  const monitorSymbol = symbolRegistry.getMonitorSymbol();
   const { longSymbol, shortSymbol } = seatSnapshot;
   const longQuote = longSymbol ? (quotesMap.get(longSymbol) ?? null) : null;
   const shortQuote = shortSymbol ? (quotesMap.get(shortSymbol) ?? null) : null;
   const monitorQuote = quotesMap.get(monitorSymbol) ?? null;
   return {
-    ...seatSnapshot,
-    longQuote,
-    shortQuote,
-    monitorQuote,
     longSymbolName: longSymbol ? (longQuote?.name ?? longSymbol) : '',
     shortSymbolName: shortSymbol ? (shortQuote?.name ?? shortSymbol) : '',
     monitorSymbolName: monitorQuote?.name ?? monitorSymbol,

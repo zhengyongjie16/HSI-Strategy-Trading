@@ -6,6 +6,8 @@
 
 **Architecture:** 配置、外部事件、订单恢复和持久化事实仍保留 monitorSymbol 校验；校验通过后，内部运行时只传递 direction、seatVersion、symbol 和业务事实。SymbolRegistry、任务队列、延迟验证、指标缓存、route baseline、风控状态和测试辅助都收缩到单 monitor 内部模型。
 
+**Implementation status:** 本文记录最终目标与验收边界。已完成的实现不保留 `getMonitorSymbol`、`SeatVersionChangedEvent`、`MonitorTaskContext`、`seatProjection`、`routesByKey` 或 monitor-prefixed 内部 route key；后续修改必须以本节的实际目标契约为准。下方未勾选框保留原计划审计轨迹，不代表当前工作树未完成；以“Current Findings”和最终验证记录为准。
+
 **Tech Stack:** TypeScript strict mode, Bun, Longbridge SDK, event-driven async runtimes, existing repository factories and test doubles.
 
 ---
@@ -17,7 +19,9 @@
 后续审查的主问题已经从旧关键字和内部传播改为剩余 `monitorSymbol` 命中的边界分类：
 
 - buy/sell task、monitor task、delayed verifier、indicator cache、display request 和 switch handoff 等内部路径已经基本不再携带唯一 `monitorSymbol`。剩余命中主要应归类为配置、外部事件校验、订单归属/恢复、持久化事实、日志和展示。
-- `resolveMonitorContextRuntimeSnapshot` 和 `collectBoundSeatSymbols` 已从 `SymbolRegistry` 派生 monitorSymbol，不再接受调用方传入的自由 monitor route。后续审查应防止重新引入调用方 supplied monitor identity。
+- `resolveMonitorContextSeatSnapshot` 已改为只按方向读取 `SymbolRegistry`；`resolveMonitorContextSymbolNames` 只从已验证的配置 monitor 与行情派生显示名称。旧 `resolveMonitorContextRuntimeSnapshot`、`collectBoundSeatSymbols` 已删除，后续审查应防止重新引入调用方 supplied monitor identity。
+- 午夜 `SeatDomain` 只需要 `autoSymbolManager.resetAllState` 与 `warrantListCache.clear`；不得继续注入完整 `MonitorContext` 或测试侧的 seat snapshot 镜像。
+- `TradingRisk` 路由索引只从 `SymbolRegistry` 派生；它不接收 `MonitorContext`，也不以 monitor 信息构造第二条内部索引。
 - 风控/恢复链路仍必须保留外部事实归因校验；liquidation cooldown 的内部恢复合同已经收口为 direction key，外部 trade log/recovery facts 校验 monitorSymbol 后再传 direction。
 - `tests/architecture/typeOrganization.test.ts` 已改为长期架构规则，不再锁一次性旧关键字。switchWakeup handoff 负测保留对象身份不变量，已删除 old foreign monitor route 命名。
 
@@ -38,13 +42,10 @@ Target interface shape:
 
 ```ts
 export interface SymbolRegistry {
-  getMonitorSymbol: () => string;
   getSeatState: (direction: 'LONG' | 'SHORT') => SeatState;
   getSeatVersion: (direction: 'LONG' | 'SHORT') => number;
   resolveSeatBySymbol: (symbol: string) => {
-    readonly monitorSymbol: string;
     readonly direction: 'LONG' | 'SHORT';
-    readonly seatState: SeatState;
     readonly seatVersion: number;
   } | null;
   updateSeatState: (direction: 'LONG' | 'SHORT', nextState: SeatState) => SeatState;
@@ -55,14 +56,12 @@ export interface SymbolRegistry {
     readonly seatState: SeatState;
     readonly seatVersion: number;
   };
-  bumpSeatVersion: (direction: 'LONG' | 'SHORT') => number;
   onSeatStateChanged: (listener: (event: SeatStateChangedEvent) => void) => Unsubscribe;
-  onSeatVersionChanged: (listener: (event: SeatVersionChangedEvent) => void) => Unsubscribe;
   onSeatTruthChanged: (listener: SeatTruthChangedListener) => Unsubscribe;
 }
 ```
 
-`SeatStateChangedEvent` may continue to include `monitorSymbol` only where the event is consumed by observable or persisted boundaries. Internal registry accessors must not require the caller to pass it.
+`SeatStateChangedEvent` 与 `SeatTruthChangedEvent` 是内部席位事实事件，不携带 `monitorSymbol`。可观测日志从唯一 `MonitorContext.config.monitorSymbol` 读取显示标签；持久化与外部边界则在各自入口完成 monitor 校验。
 
 ### Trade And Monitor Tasks
 
@@ -121,9 +120,11 @@ export interface DelayedSignalVerifierPort {
     readonly signal: Signal;
     readonly verificationIndicators: ReadonlyArray<VerificationIndicator>;
   }) => void;
-  onVerified: (callback: VerifiedCallback) => () => void;
+  onVerified: (callback: VerifiedCallback) => void;
   cancelAllForDirection: (direction: 'LONG' | 'SHORT') => number;
-  cancelAll: () => void;
+  cancelAll: () => number;
+  getPendingCount: () => number;
+  destroy: () => void;
 }
 ```
 
@@ -302,8 +303,8 @@ TradingRiskRoute
 SwitchWakeupRoute
 PeriodicSwitchRoute
 
-// Rename if present as monitor-specific wrappers
-MonitorTaskContext -> SingleMonitorTaskContext
+// Remove stale wrapper instead of renaming it
+MonitorTaskContext -> direct MonitorContext injection
 ```
 
 - [ ] **Step 3: Run type-only compile check**
@@ -333,13 +334,10 @@ Replace monitor-first methods with direction-first methods:
 
 ```ts
 export interface SymbolRegistry {
-  getMonitorSymbol: () => string;
   getSeatState: (direction: 'LONG' | 'SHORT') => SeatState;
   getSeatVersion: (direction: 'LONG' | 'SHORT') => number;
   resolveSeatBySymbol: (symbol: string) => {
-    readonly monitorSymbol: string;
     readonly direction: 'LONG' | 'SHORT';
-    readonly seatState: SeatState;
     readonly seatVersion: number;
   } | null;
   updateSeatState: (direction: 'LONG' | 'SHORT', nextState: SeatState) => SeatState;
@@ -350,21 +348,16 @@ export interface SymbolRegistry {
     readonly seatState: SeatState;
     readonly seatVersion: number;
   };
-  bumpSeatVersion: (direction: 'LONG' | 'SHORT') => number;
   onSeatStateChanged: (listener: (event: SeatStateChangedEvent) => void) => Unsubscribe;
-  onSeatVersionChanged: (listener: (event: SeatVersionChangedEvent) => void) => Unsubscribe;
   onSeatTruthChanged: (listener: SeatTruthChangedListener) => Unsubscribe;
 }
 ```
 
 - [ ] **Step 2: Update `createSymbolRegistry` implementation**
 
-Use the bound `expectedMonitorSymbol` only for emitted events and `resolveSeatBySymbol`:
+Keep only the two directional seat entries; the registry itself does not retain a monitor identifier:
 
 ```ts
-getMonitorSymbol(): string {
-  return expectedMonitorSymbol;
-},
 getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
   return resolveSeatEntry(seatStore, direction).state;
 },
@@ -373,7 +366,7 @@ getSeatVersion(direction: 'LONG' | 'SHORT'): number {
 },
 ```
 
-`resolveSeatEntry` should accept only `seatStore` and `direction`. Delete monitor mismatch branches inside internal registry accessors.
+`resolveSeatEntry` should accept only `seatStore` and `direction`. `resolveSeatBySymbol` returns only `{ direction, seatVersion }`; state consumers must re-read the registry. Emit `{ direction }` truth events after every atomic state mutation.
 
 - [ ] **Step 3: Update call sites**
 
@@ -409,7 +402,7 @@ const symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'> = 
 Run:
 
 ```powershell
-rg -n "getSeatState\\([^,]+,|getSeatVersion\\([^,]+,|updateSeatState\\([^,]+,|bumpSeatVersion\\([^,]+," src tests
+rg -n "getSeatState\\([^,]+,|getSeatVersion\\([^,]+,|updateSeatState\\([^,]+," src tests
 ```
 
 Expected: no active call sites except historical docs if deliberately ignored.
@@ -576,17 +569,9 @@ Seat refresh replacement log should read fields from data:
 `[SEAT_REFRESH replaced] direction=${readStringField(task.data, 'direction')} seatVersion=${readNumberField(task.data, 'seatVersion')} nextSymbol=${readStringField(task.data, 'nextSymbol')} dedupeKey=${task.dedupeKey} replacedCount=${removedCount}`;
 ```
 
-- [ ] **Step 4: Replace `requireContext(monitorSymbol)`**
+- [ ] **Step 4: Delete `MonitorTaskContext` and `requireContext`**
 
-Use a zero-argument context getter:
-
-```ts
-function requireContext(): MonitorTaskContext {
-  return monitorContext;
-}
-```
-
-Handlers should use:
+Inject the unique `MonitorContext` directly into the processor and its handlers. Handlers should use:
 
 ```ts
 const monitorSymbol = context.config.monitorSymbol;
@@ -787,7 +772,6 @@ export type SwitchWakeupRoute = Readonly<{
   routeKey: SwitchWakeupRouteKey;
   direction: 'LONG' | 'SHORT';
   seatVersion: number;
-  monitorContext: MonitorContext;
 }>;
 ```
 
@@ -801,17 +785,18 @@ if (params.monitorContext !== deps.monitorContext) {
 }
 ```
 
-Build `SwitchWakeupRoute` from `{ direction, seatVersion, monitorContext }`. The route key remains `${direction}:${seatVersion}` and the route object must not carry `monitorSymbol`.
+Build `SwitchWakeupRoute` from `{ direction, seatVersion }`. The route key remains `${direction}:${seatVersion}`; only the handoff performs the object-identity check and the route object carries neither monitor context nor monitorSymbol.
 
 - [ ] **Step 3: Narrow TradingRisk route key maps**
 
-Use:
+Use a symbol lookup for incoming quote resolution plus a direction set solely for in-flight state pruning:
 
 ```ts
-routesByKey: Map<TradingRiskRouteKey, TradingRiskRoute>;
+routesBySymbol: Map<string, TradingRiskRoute>;
+activeRouteKeys: Set<'LONG' | 'SHORT'>;
 ```
 
-instead of `Map<string, TradingRiskRoute>` where possible.
+Do not keep a second `routesByKey` map that merely mirrors direction information already present in the route.
 
 - [ ] **Step 4: Add route helper only if repeated code remains**
 

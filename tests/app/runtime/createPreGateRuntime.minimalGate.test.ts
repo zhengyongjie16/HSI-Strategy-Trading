@@ -5,15 +5,16 @@
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
 
-import type { AppEnvironmentParams, PreGateRuntime } from '../../../src/app/types.js';
+import type { CreatePreGateRuntimeParams, PreGateRuntime } from '../../../src/app/types.js';
 import { createPreGateRuntimeFactory } from '../../../src/app/runtime/createPreGateRuntime.js';
+import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createMarketDataClientDouble, createSdkConfigDouble } from '../../helpers/testDoubles.js';
 
 let isTradingDayCalls = 0;
 let tradingDayResolveError: Error | null = null;
 
-type CreatePreGateRuntimeFunction = (params: AppEnvironmentParams) => Promise<PreGateRuntime>;
+type CreatePreGateRuntimeFunction = (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime>;
 
 function createPreGateRuntimeForTest(): CreatePreGateRuntimeFunction {
   return createPreGateRuntimeFactory({
@@ -41,6 +42,7 @@ describe('app createPreGateRuntime minimal startup gate', () => {
   it('returns pre-gate runtime even when current day is not a trading day', async () => {
     const createPreGateRuntime = createPreGateRuntimeForTest();
     const runtime = await createPreGateRuntime({
+      cleanup: createCleanup(),
       env: {
         MONITOR_SYMBOL: 'HSI.HK',
         LONG_SYMBOL: 'BULL.HK',
@@ -73,6 +75,7 @@ describe('app createPreGateRuntime minimal startup gate', () => {
     });
     const createPreGateRuntime = createPreGateRuntimeForTest();
     const runtime = await createPreGateRuntime({
+      cleanup: createCleanup(),
       env: {
         MONITOR_SYMBOL: 'HSI.HK',
         LONG_SYMBOL: 'BULL.HK',
@@ -101,6 +104,7 @@ describe('app createPreGateRuntime minimal startup gate', () => {
     let caught: unknown = null;
     try {
       await createPreGateRuntime({
+        cleanup: createCleanup(),
         env: {
           MONITOR_SYMBOL: 'HSI.HK',
           LONG_SYMBOL: 'BULL.HK',

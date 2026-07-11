@@ -1,8 +1,7 @@
-import type { CleanupContext } from '../../../src/app/types.js';
-import type { MonitorTaskProcessor } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { MarketDataClient } from '../../../src/types/services.js';
+import type { CleanupController } from '../../../src/app/types.js';
 import type { LastState, MonitorState } from '../../../src/types/state.js';
 import { createMonitorContextDouble } from '../../helpers/testDoubles.js';
+import type { CleanupTestOverrides } from './types.js';
 
 /**
  * 构造单监控标的的 MonitorState，含默认指标快照，供 cleanup 测试使用。
@@ -59,198 +58,134 @@ export function createLastState(monitorState: MonitorState): LastState {
 }
 
 /**
- * 构造 cleanup 测试依赖的默认实现，并将每个清理步骤写入 steps。
+ * 按生产阶段直接向真实 cleanup owner 登记测试 disposer。
  *
+ * @param cleanup 真实 cleanup owner
  * @param steps 步骤记录数组
- * @returns 默认 CleanupContext
+ * @param overrides 需要观察的测试 disposer 覆盖
  */
-function defaultDeps(steps: string[]): CleanupContext {
-  const monitorTaskProcessor: MonitorTaskProcessor = {
-    start: () => {},
-    stopAndDrain: async () => {
-      steps.push('monitorTask');
-    },
-    restart: () => {},
-  };
-  const marketDataClient: MarketDataClient = {
-    getQuoteContext: async () => {
-      throw new Error('cleanup test should not request quote context');
-    },
-    getQuotes: async () => new Map(),
-    subscribeSymbols: async () => {},
-    unsubscribeSymbols: async () => {},
-    onQuoteUpdated: () => () => {},
-    onCandlestickUpdated: () => () => {},
-    subscribeCandlesticks: async () => [],
-    getCandlestickSnapshot: () => null,
-    isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
-    resetRuntimeSubscriptionsAndCaches: async () => {
-      steps.push('resetMarketData');
-    },
-  };
-
-  return {
-    timeWakeupRuntime: {
-      start: async () => {},
-      stopAndDrain: async () => {
-        steps.push('timeWakeupRuntime');
-      },
-      drainFatalError: () => new Promise<never>(() => {}),
-    },
-    tradingRiskEventRuntime: {
-      start: () => {},
-      stopAndDrain: async () => {
-        steps.push('tradingRiskEventRuntime');
-      },
-    },
-    switchWakeupRuntime: {
-      start: () => {},
-      stopAndDrain: async () => {
-        steps.push('switchWakeupRuntime');
-      },
-      handoffPendingSwitch: () => {},
-    },
-    periodicSwitchWakeupRuntime: {
-      start: () => {},
-      stopAndDrain: async () => {
-        steps.push('periodicSwitchWakeupRuntime');
-      },
-      markWaitingEmpty: () => {},
-      clearWaitingEmpty: () => {},
-      replanRouteAfterTask: () => {},
-    },
-    monitorQuoteEventRuntime: {
-      start: () => {},
-      stopAndDrain: async () => {
-        steps.push('monitorQuoteEventRuntime');
-      },
-    },
-    monitorDisplayRuntime: {
-      start: () => {},
-      requestRender: () => {},
-      stopAndDrain: async () => {
-        steps.push('monitorDisplayRuntime');
-      },
-    },
-    tradingQuoteDisplayRuntime: {
-      start: () => {},
-      stopAndDrain: async () => {
-        steps.push('tradingQuoteDisplayRuntime');
-      },
-    },
-    seatRuntimeCleanupDispatcher: {
-      start: () => {},
-      stop: () => {
-        steps.push('seatRuntimeCleanupDispatcher');
-      },
-    },
-    quoteSubscriptionRuntime: {
-      reconcileFromCurrentTruth: async () => {
-        steps.push('quoteSubscriptionRuntime.reconcile');
-      },
-      reconcilePositionHoldFromCurrentTruth: async () => {},
-      start: () => {
-        steps.push('quoteSubscriptionRuntime.start');
-      },
-      stopAndDrain: async () => {
-        steps.push('quoteSubscriptionRuntime');
-      },
-      retainSymbols: async () => () => {},
-      releaseRetain: async () => {},
-      waitForAdmission: async () => {},
-    },
-    seatActivationDispatcher: {
-      start: () => {
-        steps.push('seatActivationDispatcher.start');
-      },
-      stop: () => {
-        steps.push('seatActivationDispatcher');
-      },
-      dispatchCurrentActivatingSeats: () => {},
-    },
-    autoSearchWakeupRuntime: {
-      start: () => {
-        steps.push('autoSearchWakeupRuntime.start');
-      },
-      stopAndDrain: async () => {
-        steps.push('autoSearchWakeupRuntime');
-      },
-      drainFatalError: () => new Promise<never>(() => {}),
-    },
-    buyProcessor: {
-      start: () => {},
-      stop: () => {},
-      stopAndDrain: async () => {
-        steps.push('buy');
-      },
-      restart: () => {},
-    },
-    sellProcessor: {
-      start: () => {},
-      stop: () => {},
-      stopAndDrain: async () => {
-        steps.push('sell');
-      },
-      restart: () => {},
-    },
-    monitorTaskProcessor,
-    trader: {
-      stopOrderMonitorRuntimeAndDrain: async () => {
-        steps.push('stopOrderMonitorRuntimeAndDrain');
-      },
-    },
-    businessEventProgram: {
-      start: () => {},
-      stopAndDrain: async () => {
-        steps.push('businessEventProgram');
-      },
-      drainFatalError: () => new Promise<never>(() => {}),
-    },
-    postTradeConsistencyRuntime: {
-      bindBusinessDeps: () => {},
-      recordSettlementRefreshNeed: () => {},
-      getStatus: () => ({
-        started: false,
-        currentVersion: 0,
-        staleVersion: 0,
-      }),
-      waitForFresh: async () => {},
-      onFreshReached: () => () => {},
-      drainFatalError: () => new Promise<never>(() => {}),
-      abortWaiting: () => {
-        steps.push('abortWaiting');
-      },
-      resetAbort: () => {},
-      start: () => {},
-      stopAndDrain: async () => {
-        steps.push('postTradeConsistencyRuntime');
-      },
-      midnightClear: () => {},
-      completeRebuildBaseline: () => {},
-    },
-    marketDataClient,
-    monitorContext: createMonitorContextDouble(),
-    indicatorCache: {
-      push: () => {},
-      getClosest: () => null,
-      clearAll: () => {
-        steps.push('clearIndicatorCache');
-      },
-    },
-    lastState: createLastState(createMonitorState('HSI.HK')),
-  };
-}
-
-/**
- * 构建 createCleanup 的入参，默认各步骤向 steps 数组 push 名称；可传 overrides 覆盖 monitorContext、lastState 或任意处理器。
- *
- * @param steps 记录执行步骤顺序的数组
- * @param overrides 对默认依赖的覆盖项
- * @returns 供 createCleanup 使用的 CleanupContext
- */
-export function createCleanupDeps(
+export function registerCleanupSteps(
+  cleanup: CleanupController,
   steps: string[],
-  overrides: Partial<CleanupContext> = {},
-): CleanupContext {
-  return { ...defaultDeps(steps), ...overrides };
+  overrides: CleanupTestOverrides = {},
+): void {
+  const lastState = overrides.lastState ?? createLastState(createMonitorState('HSI.HK'));
+  const monitorContext = overrides.monitorContext ?? createMonitorContextDouble();
+  const registerStep = (
+    phase: Parameters<CleanupController['register']>[0]['phase'],
+    step: string,
+    handler: () => Promise<void> | void,
+  ): void => {
+    cleanup.register({ phase, step, handler });
+  };
+
+  registerStep('CLOSE_TRADING_GATE', '关闭交易门禁', () => {
+    lastState.isTradingEnabled = false;
+  });
+
+  registerStep('ABORT_FRESHNESS_WAITING', '终止 Freshness 等待', () => {
+    if (overrides.abortWaiting !== undefined) {
+      overrides.abortWaiting();
+      return;
+    }
+
+    steps.push('abortWaiting');
+  });
+
+  registerStep('STOP_TIME_WAKEUP_RUNTIME', '停止 TimeWakeupRuntime', () => {
+    steps.push('timeWakeupRuntime');
+  });
+
+  registerStep('STOP_BUSINESS_EVENT_PROGRAM', '停止 BusinessEventProgram', () => {
+    steps.push('businessEventProgram');
+  });
+
+  registerStep('STOP_TRADING_RISK_EVENT_RUNTIME', '停止 TradingRiskEventRuntime', () => {
+    steps.push('tradingRiskEventRuntime');
+  });
+
+  registerStep('STOP_MONITOR_QUOTE_EVENT_RUNTIME', '停止 MonitorQuoteEventRuntime', () => {
+    steps.push('monitorQuoteEventRuntime');
+  });
+
+  registerStep('STOP_MONITOR_DISPLAY_RUNTIME', '停止 MonitorDisplayRuntime', () => {
+    steps.push('monitorDisplayRuntime');
+  });
+
+  registerStep('STOP_TRADING_QUOTE_DISPLAY_RUNTIME', '停止 TradingQuoteDisplayRuntime', () => {
+    steps.push('tradingQuoteDisplayRuntime');
+  });
+
+  registerStep('STOP_SWITCH_WAKEUP_RUNTIME', '停止 SwitchWakeupRuntime', () => {
+    steps.push('switchWakeupRuntime');
+  });
+
+  registerStep('STOP_PERIODIC_SWITCH_WAKEUP_RUNTIME', '停止 PeriodicSwitchWakeupRuntime', () => {
+    steps.push('periodicSwitchWakeupRuntime');
+  });
+
+  registerStep('STOP_AUTO_SEARCH_WAKEUP_RUNTIME', '停止 AutoSearchWakeupRuntime', () => {
+    steps.push('autoSearchWakeupRuntime');
+  });
+
+  registerStep('STOP_SEAT_ACTIVATION_DISPATCHER', '停止 SeatActivationDispatcher', () => {
+    steps.push('seatActivationDispatcher');
+  });
+
+  registerStep('STOP_MONITOR_TASK_PROCESSOR', '停止 MonitorTaskProcessor', () => {
+    steps.push('monitorTask');
+  });
+
+  registerStep('STOP_SEAT_RUNTIME_CLEANUP_DISPATCHER', '停止 SeatRuntimeCleanupDispatcher', () => {
+    steps.push('seatRuntimeCleanupDispatcher');
+  });
+
+  registerStep('STOP_BUY_PROCESSOR', '停止 BuyProcessor', async () => {
+    if (overrides.stopBuyProcessorAndDrain !== undefined) {
+      await overrides.stopBuyProcessorAndDrain();
+      return;
+    }
+
+    steps.push('buy');
+  });
+
+  registerStep('STOP_SELL_PROCESSOR', '停止 SellProcessor', () => {
+    steps.push('sell');
+  });
+
+  registerStep('STOP_ORDER_MONITOR_RUNTIME', '停止订单监控 runtime', () => {
+    steps.push('stopOrderMonitorRuntimeAndDrain');
+  });
+
+  registerStep('UNSUBSCRIBE_TRADER_LISTENER', '取消 Trader 订单状态监听', () => {
+    steps.push('unsubscribeTraderListener');
+  });
+
+  registerStep('STOP_QUOTE_SUBSCRIPTION_RUNTIME', '停止 QuoteSubscriptionRuntime', () => {
+    steps.push('quoteSubscriptionRuntime');
+  });
+
+  registerStep('STOP_POST_TRADE_CONSISTENCY_RUNTIME', '停止 PostTradeConsistencyRuntime', () => {
+    steps.push('postTradeConsistencyRuntime');
+  });
+
+  registerStep(
+    'DESTROY_DELAYED_SIGNAL_VERIFIER',
+    `销毁延迟验证器 ${monitorContext.config.monitorSymbol}`,
+    () => {
+      monitorContext.delayedSignalVerifier.destroy();
+    },
+  );
+
+  registerStep('CLEAR_INDICATOR_CACHE', '清空指标缓存', () => {
+    steps.push('clearIndicatorCache');
+  });
+
+  registerStep('CLEAR_MONITOR_SNAPSHOT', '清空监控快照引用', () => {
+    lastState.monitorState.lastMonitorSnapshot = null;
+  });
+
+  registerStep('RESET_MARKET_DATA_RUNTIME', '重置行情运行态订阅与缓存', () => {
+    steps.push('resetMarketData');
+  });
 }

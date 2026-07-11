@@ -179,7 +179,7 @@ export const createRiskCheckPipeline = ({
          * 7. Promise.all([trader.getAccountSnapshot(), trader.getStockPositions()])
          * 8. 基础风险检查（使用第 7 步实时数据）
          */
-        const tradeCheck = trader.canTradeNow(sig.action, context.config);
+        const tradeCheck = trader.canTradeNow(sig.action);
         if (!tradeCheck.canTrade) {
           const waitSeconds = tradeCheck.waitSeconds ?? 0;
           const reason = `交易频率限制：${directionDesc} 在${context.config.buyIntervalSeconds}秒内已买入过，需等待 ${waitSeconds} 秒后才能再次买入`;

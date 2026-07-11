@@ -78,9 +78,7 @@ function createTradingConfig(monitor: MonitorConfig): TradingConfig {
 
 function createRuntime(
   monitor: MonitorConfig,
-  symbolRegistry = createSymbolRegistryDouble({
-    monitorSymbol: monitor.monitorSymbol,
-  }),
+  symbolRegistry = createSymbolRegistryDouble({}),
 ): {
   preGateRuntime: PreGateRuntime;
   postGateRuntime: MonitorContextBootstrapRuntime;
@@ -151,7 +149,7 @@ function createRuntime(
 }
 
 describe('createMonitorContext strategy factory behavior', () => {
-  it('hydrates seat names and seat versions for ACTIVE seats', () => {
+  it('hydrates seat names without creating a second seat truth cache', () => {
     const monitorConfig = createMonitorConfigDouble({
       monitorSymbol: 'HSI.HK',
       signalConfig: {
@@ -172,7 +170,6 @@ describe('createMonitorContext strategy factory behavior', () => {
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: 'LONG_READY.HK',
         status: 'ACTIVE',
@@ -209,8 +206,8 @@ describe('createMonitorContext strategy factory behavior', () => {
     expect(context.longSymbolName).toBe('LongReady');
     expect(context.shortSymbolName).toBe('ShortReady');
     expect(context.monitorSymbolName).toBe('HangSeng');
-    expect(context.seatVersion.long).toBe(3);
-    expect(context.seatVersion.short).toBe(4);
+    expect('seatState' in context).toBeFalse();
+    expect('seatVersion' in context).toBeFalse();
   });
 
   it('keeps inactive seat name empty, falls back to symbol names and compiles indicatorProfile', () => {
@@ -234,7 +231,6 @@ describe('createMonitorContext strategy factory behavior', () => {
       },
     });
     const symbolRegistry = createSymbolRegistryDouble({
-      monitorSymbol: 'HSI.HK',
       longSeat: {
         symbol: null,
         status: 'EMPTY',

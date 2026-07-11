@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 创建单 monitor 的 MonitorContext
- * - 根据启动 quotesMap 刷新唯一 monitorContext 的席位与名称快照
+ * - 以 SymbolRegistry 作为席位真相，仅根据启动 quotesMap 派生标的名称缓存
  * - 将唯一 monitor 配置装配为纯返回值，由调用方持有唯一上下文
  * - 固化 monitorState 与 tradingConfig.monitor 的一一对应装配不变量
  */
@@ -17,24 +17,22 @@ import { createDelayedSignalVerifier } from '../../main/asyncProgram/delayedSign
 import { createAutoSymbolManager } from '../../services/autoSymbolManager/index.js';
 import { compileIndicatorUsageProfile } from '../../services/indicators/profile/index.js';
 import type { MonitorContext } from '../../types/state.js';
-import { resolveMonitorContextRuntimeSnapshot } from '../../utils/seat/snapshots.js';
+import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
 import type { CreateMonitorContextParams, MonitorContextFactoryDeps } from '../types.js';
 
 const DEFAULT_STRATEGY_FACTORY = createMultiIndicatorTradingStrategy;
 
-function applyRuntimeSnapshotToMonitorContext(
+function applySymbolNamesToMonitorContext(
   monitorContext: MonitorContext,
-  runtimeSnapshot: ReturnType<typeof resolveMonitorContextRuntimeSnapshot>,
+  symbolNames: ReturnType<typeof resolveMonitorContextSymbolNames>,
 ): void {
-  monitorContext.seatState = runtimeSnapshot.seatState;
-  monitorContext.seatVersion = runtimeSnapshot.seatVersion;
-  monitorContext.longSymbolName = runtimeSnapshot.longSymbolName;
-  monitorContext.shortSymbolName = runtimeSnapshot.shortSymbolName;
-  monitorContext.monitorSymbolName = runtimeSnapshot.monitorSymbolName;
+  monitorContext.longSymbolName = symbolNames.longSymbolName;
+  monitorContext.shortSymbolName = symbolNames.shortSymbolName;
+  monitorContext.monitorSymbolName = symbolNames.monitorSymbolName;
 }
 
 /**
- * 创建监控标的运行时上下文，从注册表读取席位状态与版本号，从行情 Map 提取标的名称，
+ * 创建监控标的运行时上下文，直接持有 SymbolRegistry 作为席位真相，从行情 Map 提取标的名称，
  * 并预编译指标画像，避免运行期重复解析。
  *
  * @param deps 工厂依赖（config、state、symbolRegistry、quotesMap、strategy、orderRecorder 等）
@@ -54,10 +52,11 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     delayedSignalVerifier,
     autoSymbolManager,
   } = deps;
-  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
+  const symbolNames = resolveMonitorContextSymbolNames({
     symbolRegistry,
-    quotesMap ?? new Map<string, null>(),
-  );
+    monitorSymbol: config.monitorSymbol,
+    quotesMap: quotesMap ?? new Map<string, null>(),
+  });
   const indicatorProfile = compileIndicatorUsageProfile({
     signalConfig: config.signalConfig,
     verificationConfig: config.verificationConfig,
@@ -67,8 +66,6 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     config,
     state,
     symbolRegistry,
-    seatState: runtimeSnapshot.seatState,
-    seatVersion: runtimeSnapshot.seatVersion,
     autoSymbolManager,
     strategy,
     orderRecorder,
@@ -76,30 +73,30 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     riskChecker,
     unrealizedLossMonitor,
     delayedSignalVerifier,
-    longSymbolName: runtimeSnapshot.longSymbolName,
-    shortSymbolName: runtimeSnapshot.shortSymbolName,
-    monitorSymbolName: runtimeSnapshot.monitorSymbolName,
+    longSymbolName: symbolNames.longSymbolName,
+    shortSymbolName: symbolNames.shortSymbolName,
+    monitorSymbolName: symbolNames.monitorSymbolName,
     indicatorProfile,
   };
 }
 
 /**
- * 刷新唯一 monitorContext 的席位与名称快照。
- * 默认行为：仅同步运行期会变化的 seatState、seatVersion 与名称缓存，不重建上下文本体。
+ * 刷新唯一 monitorContext 的标的名称缓存。
+ * 默认行为：名称从唯一配置与当前席位真相直接派生，不重建上下文本体。
  *
- * @param params 需要刷新的 monitorContext、symbolRegistry 与最新 quotesMap
+ * @param params 需要刷新的 monitorContext 与最新 quotesMap
  * @returns 无返回值
  */
-export function syncMonitorContextRuntimeSnapshot(params: {
+export function syncMonitorContextSymbolNames(params: {
   readonly monitorContext: MonitorContext;
-  readonly symbolRegistry: MonitorContextFactoryDeps['symbolRegistry'];
   readonly quotesMap: MonitorContextFactoryDeps['quotesMap'];
 }): void {
-  const runtimeSnapshot = resolveMonitorContextRuntimeSnapshot(
-    params.symbolRegistry,
-    params.quotesMap ?? new Map<string, null>(),
-  );
-  applyRuntimeSnapshotToMonitorContext(params.monitorContext, runtimeSnapshot);
+  const symbolNames = resolveMonitorContextSymbolNames({
+    symbolRegistry: params.monitorContext.symbolRegistry,
+    monitorSymbol: params.monitorContext.config.monitorSymbol,
+    quotesMap: params.quotesMap ?? new Map<string, null>(),
+  });
+  applySymbolNamesToMonitorContext(params.monitorContext, symbolNames);
 }
 
 /**

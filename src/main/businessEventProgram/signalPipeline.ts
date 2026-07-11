@@ -26,6 +26,7 @@ import { formatSignalLog } from './utils.js';
 import type { BuySignal, SellSignal, Signal } from '../../types/signal.js';
 import type { SignalPipelineParams } from './types.js';
 import { formatSymbolDisplay, isSellAction } from '../../utils/display/index.js';
+import { resolveMonitorContextSeatSnapshot } from '../../utils/seat/snapshots.js';
 
 function toSellSignal(signal: Signal): SellSignal | null {
   if (!isSellAction(signal.action)) {
@@ -60,18 +61,15 @@ function toBuySignal(signal: Signal): BuySignal | null {
  * 再按信号类型分流：立即信号入买卖队列，延迟信号交由 delayedSignalVerifier 管理。
  */
 export function runSignalPipeline(params: SignalPipelineParams): void {
-  const { monitorSnapshot, monitorContext, mainContext, runtimeFlags, seatInfo } = params;
+  const { monitorSnapshot, monitorContext, mainContext, runtimeFlags } = params;
   const { currentTime, openProtectionActive } = runtimeFlags;
   const { strategy, orderRecorder, delayedSignalVerifier, indicatorProfile } = monitorContext;
   const { lastState, buyTaskQueue, sellTaskQueue, tradingConfig } = mainContext;
-  const {
-    longSeatState,
-    shortSeatState,
-    longSeatVersion,
-    shortSeatVersion,
-    longSymbol,
-    shortSymbol,
-  } = seatInfo;
+  const seatSnapshot = resolveMonitorContextSeatSnapshot(monitorContext.symbolRegistry);
+  const { long: longSeatState, short: shortSeatState } = seatSnapshot.seatState;
+  const { long: longSeatVersion, short: shortSeatVersion } = seatSnapshot.seatVersion;
+  const longSymbol = seatSnapshot.longSymbol ?? '';
+  const shortSymbol = seatSnapshot.shortSymbol ?? '';
 
   if (openProtectionActive) {
     return;

@@ -7,143 +7,53 @@
  */
 import { logger } from '../../utils/logger/index.js';
 import { formatError } from '../../utils/error/index.js';
-import type { CleanupContext, CleanupController, CleanupFailure } from '../types.js';
+import { CLEANUP_PHASE_ORDER } from '../../constants/cleanup.js';
+import type {
+  CleanupController,
+  CleanupFailure,
+  CleanupStep,
+  RegisteredCleanupStep,
+} from '../types.js';
 
 /**
- * 创建程序退出时的清理函数，负责按顺序停止处理器、销毁验证器、清空缓存。
+ * 创建可增量登记清理步骤、并按阶段单次执行的程序退出清理控制器。
  *
- * @param context 清理上下文，包含需要停止与释放的处理器、行情客户端、监控上下文等
- * @returns 包含 execute 的清理控制器
+ * @returns 提供 register 与 execute 的增量清理控制器
  */
-export function createCleanup(context: CleanupContext): CleanupController {
-  const {
-    buyProcessor,
-    sellProcessor,
-    monitorTaskProcessor,
-    trader,
-    businessEventProgram,
-    tradingRiskEventRuntime,
-    monitorQuoteEventRuntime,
-    monitorDisplayRuntime,
-    tradingQuoteDisplayRuntime,
-    switchWakeupRuntime,
-    periodicSwitchWakeupRuntime,
-    timeWakeupRuntime,
-    autoSearchWakeupRuntime,
-    seatActivationDispatcher,
-    seatRuntimeCleanupDispatcher,
-    quoteSubscriptionRuntime,
-    postTradeConsistencyRuntime,
-    marketDataClient,
-    monitorContext,
-    indicatorCache,
-    lastState,
-  } = context;
+export function createCleanup(): CleanupController {
+  const registeredSteps: RegisteredCleanupStep[] = [];
+  let nextSequence = 0;
+  let executionStarted = false;
+  let executePromise: Promise<void> | null = null;
+
+  const register = (step: CleanupStep): void => {
+    if (executionStarted) {
+      throw new Error('[Cleanup] cleanup 已开始执行，禁止继续登记资源');
+    }
+
+    registeredSteps.push({ ...step, sequence: nextSequence });
+    nextSequence += 1;
+  };
 
   /**
    * 执行清理：先关闭交易门禁并中断 freshness 等待，再停止上游事件 owner、排空提交链路处理器，最后停止订单监控与订阅 owner，随后销毁验证器、清空缓存并重置行情订阅。
    */
-  async function execute(): Promise<void> {
+  async function executeRegisteredSteps(): Promise<void> {
     logger.info('Program exiting, cleaning up resources...');
-    lastState.isTradingEnabled = false;
     const failures: CleanupFailure[] = [];
+    const orderedSteps = [...registeredSteps].sort((left, right) => {
+      const phaseDifference = CLEANUP_PHASE_ORDER[left.phase] - CLEANUP_PHASE_ORDER[right.phase];
+      return phaseDifference === 0 ? left.sequence - right.sequence : phaseDifference;
+    });
 
-    const runStep = async (step: string, handler: () => Promise<void> | void): Promise<void> => {
+    for (const cleanupStep of orderedSteps) {
       try {
-        await handler();
+        await cleanupStep.handler();
       } catch (err) {
-        failures.push({ step, error: err });
-        logger.error(`[Cleanup] ${step} 失败: ${formatError(err)}`);
+        failures.push({ step: cleanupStep.step, error: err });
+        logger.error(`[Cleanup] ${cleanupStep.step} 失败: ${formatError(err)}`);
       }
-    };
-
-    await runStep('终止 Freshness 等待', () => {
-      postTradeConsistencyRuntime.abortWaiting();
-    });
-
-    await runStep('停止 TimeWakeupRuntime', async () => {
-      await timeWakeupRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 BusinessEventProgram', async () => {
-      await businessEventProgram.stopAndDrain();
-    });
-
-    await runStep('停止 TradingRiskEventRuntime', async () => {
-      await tradingRiskEventRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 MonitorQuoteEventRuntime', async () => {
-      await monitorQuoteEventRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 MonitorDisplayRuntime', async () => {
-      await monitorDisplayRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 TradingQuoteDisplayRuntime', async () => {
-      await tradingQuoteDisplayRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 SwitchWakeupRuntime', async () => {
-      await switchWakeupRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 PeriodicSwitchWakeupRuntime', async () => {
-      await periodicSwitchWakeupRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 AutoSearchWakeupRuntime', async () => {
-      await autoSearchWakeupRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 SeatActivationDispatcher', () => {
-      seatActivationDispatcher.stop();
-    });
-
-    await runStep('停止 MonitorTaskProcessor', async () => {
-      await monitorTaskProcessor.stopAndDrain();
-    });
-
-    await runStep('停止 SeatRuntimeCleanupDispatcher', () => {
-      seatRuntimeCleanupDispatcher.stop();
-    });
-
-    await runStep('停止 BuyProcessor', async () => {
-      await buyProcessor.stopAndDrain();
-    });
-
-    await runStep('停止 SellProcessor', async () => {
-      await sellProcessor.stopAndDrain();
-    });
-
-    await runStep('停止订单监控 runtime', async () => {
-      await trader.stopOrderMonitorRuntimeAndDrain();
-    });
-
-    await runStep('停止 QuoteSubscriptionRuntime', async () => {
-      await quoteSubscriptionRuntime.stopAndDrain();
-    });
-
-    await runStep('停止 PostTradeConsistencyRuntime', async () => {
-      await postTradeConsistencyRuntime.stopAndDrain();
-    });
-
-    await runStep(`销毁延迟验证器 ${monitorContext.config.monitorSymbol}`, () => {
-      monitorContext.delayedSignalVerifier.destroy();
-    });
-
-    await runStep('清空指标缓存', () => {
-      indicatorCache.clearAll();
-    });
-
-    await runStep('清空监控快照引用', () => {
-      lastState.monitorState.lastMonitorSnapshot = null;
-    });
-
-    await runStep('重置行情运行态订阅与缓存', async () => {
-      await marketDataClient.resetRuntimeSubscriptionsAndCaches();
-    });
+    }
 
     if (failures.length > 0) {
       throw new AggregateError(
@@ -153,7 +63,25 @@ export function createCleanup(context: CleanupContext): CleanupController {
     }
   }
 
+  /**
+   * 启动一次清理并复用已发布的执行 Promise；同步启动窗口内的 handler 重入必须立即失败，避免重复执行清理步骤。
+   */
+  const execute = (): Promise<void> => {
+    if (executePromise !== null) {
+      return executePromise;
+    }
+
+    if (executionStarted) {
+      throw new Error('[Cleanup] cleanup 正在同步启动，禁止从清理 handler 重入 execute');
+    }
+
+    executionStarted = true;
+    executePromise = executeRegisteredSteps();
+    return executePromise;
+  };
+
   return {
+    register,
     execute,
   };
 }

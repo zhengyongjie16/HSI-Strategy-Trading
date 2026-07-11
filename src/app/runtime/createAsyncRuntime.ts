@@ -76,7 +76,6 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     periodicSwitchWakeupRuntime,
     quoteSubscriptionRuntime,
     lastState,
-    tradingConfig,
     getCanProcessTask: () => lastState.isTradingEnabled,
     getCanTradeNow: canProcessOrdinaryTradeTask,
     onFatalError: handleFatalError,

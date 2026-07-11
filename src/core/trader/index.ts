@@ -19,15 +19,9 @@
  */
 import { TradeContext } from 'longbridge';
 import { createOrderRecorder } from '../orderRecorder/index.js';
-import type { ExecutableSignal, SignalType } from '../../types/signal.js';
+import type { ExecutableSignal } from '../../types/signal.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
-import type {
-  Trader,
-  TradeCheckResult,
-  PendingOrder,
-  RawOrderFromAPI,
-} from '../../types/services.js';
-import type { MonitorConfig } from '../../types/config.js';
+import type { Trader, PendingOrder, RawOrderFromAPI } from '../../types/services.js';
 import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
 import type { TraderDeps } from './types.js';
 
@@ -153,7 +147,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       // ==================== 订单监控相关方法 ====================
 
       cancelOrder(orderId: string) {
-        return orderMonitor.cancelOrder(orderId);
+        return orderMonitor.cancelOrder(orderId, { kind: 'ORDER_FACT' });
       },
 
       startOrderMonitorRuntime(): void {
@@ -164,11 +158,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
         return orderMonitor.stopRuntimeAndDrain();
       },
 
-      hasPendingProtectiveLiquidationOrders(
-        monitorSymbol: string,
-        direction: 'LONG' | 'SHORT',
-      ): boolean {
-        return orderMonitor.hasPendingProtectiveLiquidationOrders(monitorSymbol, direction);
+      hasPendingProtectiveLiquidationOrders(direction): boolean {
+        return orderMonitor.hasPendingProtectiveLiquidationOrders(direction);
       },
 
       initializeOrderMonitor(): Promise<void> {
@@ -181,8 +172,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
       // ==================== 订单执行相关方法 ====================
 
-      canTradeNow(signalAction: SignalType, monitorConfig: MonitorConfig): TradeCheckResult {
-        return orderExecutor.canTradeNow(signalAction, monitorConfig);
+      canTradeNow(signalAction) {
+        return orderExecutor.canTradeNow(signalAction);
       },
 
       fetchAllOrdersFromAPI(

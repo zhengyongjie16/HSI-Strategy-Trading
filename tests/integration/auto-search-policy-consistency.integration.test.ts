@@ -142,7 +142,6 @@ describe('auto search policy consistency integration', () => {
 
     const startupLogger = createLoggerRecorder();
     const startupRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -188,7 +187,6 @@ describe('auto search policy consistency integration', () => {
 
     const runtimeLogger = createLoggerRecorder();
     const runtimeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -200,7 +198,6 @@ describe('auto search policy consistency integration', () => {
       },
     });
     const runtimeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: runtimeRegistry,
       switchStates: new Map(),
       switchSuppressions: new Map(),
@@ -258,7 +255,6 @@ describe('auto search policy consistency integration', () => {
     const switchStates = new Map();
     const switchSuppressions = new Map();
     const switchRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVE',
@@ -271,7 +267,6 @@ describe('auto search policy consistency integration', () => {
       longVersion: 1,
     });
     const switchSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: switchRegistry,
       switchStates,
       switchSuppressions,
@@ -392,7 +387,6 @@ describe('auto search policy consistency integration', () => {
 
     const startupLogger = createLoggerRecorder();
     const startupRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -438,7 +432,6 @@ describe('auto search policy consistency integration', () => {
 
     const runtimeLogger = createLoggerRecorder();
     const runtimeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       shortSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -450,7 +443,6 @@ describe('auto search policy consistency integration', () => {
       },
     });
     const runtimeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: runtimeRegistry,
       switchStates: new Map(),
       switchSuppressions: new Map(),
@@ -508,7 +500,6 @@ describe('auto search policy consistency integration', () => {
     const switchStates = new Map();
     const switchSuppressions = new Map();
     const switchRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       shortSeat: {
         symbol: 'OLD_BEAR.HK',
         status: 'ACTIVE',
@@ -521,7 +512,6 @@ describe('auto search policy consistency integration', () => {
       shortVersion: 1,
     });
     const switchSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: switchRegistry,
       switchStates,
       switchSuppressions,
@@ -642,7 +632,6 @@ describe('auto search policy consistency integration', () => {
 
     const runtimeLogger = createLoggerRecorder();
     const runtimeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: null,
         status: 'EMPTY',
@@ -654,7 +643,6 @@ describe('auto search policy consistency integration', () => {
       },
     });
     const runtimeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: runtimeRegistry,
       switchStates: new Map(),
       switchSuppressions: new Map(),
@@ -704,7 +692,6 @@ describe('auto search policy consistency integration', () => {
     const safeSwitchStates = new Map();
     const safeSwitchSuppressions = new Map();
     const safeRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'BEST_BULL.HK',
         status: 'ACTIVE',
@@ -717,7 +704,6 @@ describe('auto search policy consistency integration', () => {
       longVersion: 1,
     });
     const safeSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: safeRegistry,
       switchStates: safeSwitchStates,
       switchSuppressions: safeSwitchSuppressions,
@@ -792,7 +778,6 @@ describe('auto search policy consistency integration', () => {
     const dangerSwitchStates = new Map();
     const dangerSwitchSuppressions = new Map();
     const dangerRegistry = createSymbolRegistryDouble({
-      monitorSymbol: monitorConfig.monitorSymbol,
       longSeat: {
         symbol: 'BEST_BULL.HK',
         status: 'ACTIVE',
@@ -805,7 +790,6 @@ describe('auto search policy consistency integration', () => {
       longVersion: 1,
     });
     const dangerSeatStateManager = createSeatStateManager({
-      monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: dangerRegistry,
       switchStates: dangerSwitchStates,
       switchSuppressions: dangerSwitchSuppressions,

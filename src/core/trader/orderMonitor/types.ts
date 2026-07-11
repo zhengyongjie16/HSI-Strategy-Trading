@@ -21,11 +21,13 @@ import type { BoundedOneShotTimerController } from '../../../utils/timer/types.j
 import type { ProtectiveLiquidationEpisodeTracker } from '../protectiveLiquidationEpisodeTracker/types.js';
 import type {
   OrderCacheManager,
+  OrderMutationRequest,
   OrderMonitorConfig,
   OrderHoldRegistry,
   OrderMonitorRuntimeState,
   TrackOrderParams,
   TrackedOrder,
+  ReplaceOrderPriceOutcome,
 } from '../types.js';
 
 /**
@@ -409,8 +411,13 @@ export type OrderOpsDeps = {
  */
 export interface OrderOps {
   trackOrder: (params: TrackOrderParams) => void;
-  cancelOrder: (orderId: string) => Promise<CancelOrderOutcome>;
-  replaceOrderPrice: (orderId: string, newPrice: number, quantity?: number | null) => Promise<void>;
+  cancelOrder: (orderId: string, request: OrderMutationRequest) => Promise<CancelOrderOutcome>;
+  replaceOrderPrice: (
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    quantity?: number | null,
+  ) => Promise<ReplaceOrderPriceOutcome>;
 }
 
 /**
