@@ -22,6 +22,7 @@ describe('protective-liquidation integration', () => {
   it('records protective episode progress + local sell update after protective liquidation fill event', async () => {
     let recordLocalSellCount = 0;
     let markSellFilledCount = 0;
+    let executionRecorded = false;
     const episodeProgressPayloads: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -54,9 +55,19 @@ describe('protective-liquidation integration', () => {
       }),
       dailyLossTracker: {
         resetAll: () => {},
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {},
+        restoreExecutionSnapshot: () => {},
+        restoreProtectionBoundary: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => {
+          if (executionRecorded) {
+            return { authoritativeFactChanged: false, executionAdvanced: false };
+          }
+
+          executionRecorded = true;
+          return { authoritativeFactChanged: true, executionAdvanced: true };
+        },
         getLossOffset: () => 0,
       },
       orderHoldRegistry: {
@@ -67,6 +78,7 @@ describe('protective-liquidation integration', () => {
         onOrderHoldSymbolsChanged: () => () => {},
         clear: () => {},
       },
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
         recordProtectiveFillProgress: (params) => {
           episodeProgressPayloads.push(params);
@@ -126,6 +138,10 @@ describe('protective-liquidation integration', () => {
     ]);
 
     expect(refreshNeeds).toEqual([
+      {
+        refreshAccount: true,
+        refreshPositions: true,
+      },
       {
         refreshAccount: true,
         refreshPositions: true,

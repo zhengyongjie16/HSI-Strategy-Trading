@@ -72,7 +72,6 @@ export const TRADING = {
   PROTECTIVE_LIQUIDATION_REMARK_SUFFIX: '|PL',
 
   /** 保护性清仓业务事件完成日志原因（用于冷却恢复） */
-  PROTECTIVE_LIQUIDATION_COMPLETED_REASON: 'PROTECTIVE_LIQUIDATION_COMPLETED',
 } as const;
 
 /** 自动寻标相关常量 */
@@ -247,17 +246,33 @@ export const ORDER_TYPE_CODE_MAP: ReadonlyMap<OrderType, string> = new Map([
   [OrderType.SLO, 'SLO'],
 ]);
 
-/** 未成交订单状态集合（New/PartialFilled/WaitToNew/WaitToReplace/PendingReplace/Replaced/WaitToCancel/PendingCancel） */
-export const PENDING_ORDER_STATUSES = new Set<OrderStatus>([
-  OrderStatus.New,
-  OrderStatus.PartialFilled,
-  OrderStatus.WaitToNew,
-  OrderStatus.WaitToReplace,
-  OrderStatus.PendingReplace,
-  OrderStatus.Replaced,
-  OrderStatus.WaitToCancel,
-  OrderStatus.PendingCancel,
-]) as ReadonlySet<OrderStatus>;
+/** SDK OrderStatus 的单一生命周期真值表；Unknown 不进入表并由分类器 fail-fast。 */
+export const ORDER_STATUS_LIFECYCLE_MAP: ReadonlyMap<OrderStatus, 'OPEN' | 'TERMINAL'> = new Map([
+  [OrderStatus.NotReported, 'OPEN'],
+  [OrderStatus.ReplacedNotReported, 'OPEN'],
+  [OrderStatus.ProtectedNotReported, 'OPEN'],
+  [OrderStatus.VarietiesNotReported, 'OPEN'],
+  [OrderStatus.WaitToNew, 'OPEN'],
+  [OrderStatus.New, 'OPEN'],
+  [OrderStatus.WaitToReplace, 'OPEN'],
+  [OrderStatus.PendingReplace, 'OPEN'],
+  [OrderStatus.Replaced, 'OPEN'],
+  [OrderStatus.PartialFilled, 'OPEN'],
+  [OrderStatus.WaitToCancel, 'OPEN'],
+  [OrderStatus.PendingCancel, 'OPEN'],
+  [OrderStatus.Filled, 'TERMINAL'],
+  [OrderStatus.Rejected, 'TERMINAL'],
+  [OrderStatus.Canceled, 'TERMINAL'],
+  [OrderStatus.Expired, 'TERMINAL'],
+  [OrderStatus.PartialWithdrawal, 'TERMINAL'],
+]);
+
+/** 未成交订单状态集合；从生命周期真值表派生，供策略依赖注入使用。 */
+export const PENDING_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set(
+  [...ORDER_STATUS_LIFECYCLE_MAP.entries()]
+    .filter(([, lifecycle]) => lifecycle === 'OPEN')
+    .map(([status]) => status),
+);
 
 /** 不可改单的订单状态集合（包含改单中与撤单中状态） */
 export const NON_REPLACEABLE_ORDER_STATUSES = new Set<OrderStatus>([

@@ -101,7 +101,6 @@ export function createPeriodicSwitchWakeupRuntime(
     const seatVersion = deps.symbolRegistry.getSeatVersion(direction);
     if (
       seatState.status !== 'ACTIVE' ||
-      seatState.symbol === null ||
       seatState.lastSeatActivatedAt === null ||
       !Number.isFinite(seatState.lastSeatActivatedAt) ||
       !isValidSeatVersion(seatVersion)

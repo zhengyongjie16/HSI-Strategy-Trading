@@ -20,6 +20,7 @@
 import { TradeContext } from 'longbridge';
 import { createOrderRecorder } from '../orderRecorder/index.js';
 import type { ExecutableSignal } from '../../types/signal.js';
+import type { ExecuteSignalsResult } from '../../types/trader.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { Trader, PendingOrder, RawOrderFromAPI } from '../../types/services.js';
 import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
@@ -50,8 +51,11 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       symbolRegistry,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
+      persistProtectiveLiquidationExecutionProgress,
       postTradeConsistencyRuntime,
       isExecutionAllowed,
+      now,
+      readCurrentTradingDayInfo,
       onFatalError,
     } = deps;
 
@@ -85,6 +89,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       dailyLossTracker,
       orderHoldRegistry,
       protectiveLiquidationEpisodeTracker,
+      persistProtectiveLiquidationExecutionProgress,
       postTradeConsistencyRuntime,
       tradingConfig,
       symbolRegistry,
@@ -102,6 +107,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       tradingConfig,
       symbolRegistry,
       isExecutionAllowed,
+      now,
+      readCurrentTradingDayInfo,
     });
 
     // 创建 Trader 实例
@@ -194,9 +201,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
         return orderMonitor.recoverOrderTrackingFromSnapshot(allOrders);
       },
 
-      executeSignals(
-        signals: ReadonlyArray<ExecutableSignal>,
-      ): Promise<{ submittedCount: number; submittedOrderIds: ReadonlyArray<string> }> {
+      executeSignals(signals: ReadonlyArray<ExecutableSignal>): Promise<ExecuteSignalsResult> {
         return orderExecutor.executeSignals(signals);
       },
     };

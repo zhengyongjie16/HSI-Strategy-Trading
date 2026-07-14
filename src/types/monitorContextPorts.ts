@@ -33,6 +33,14 @@ export type SwitchWakeupRequirement =
     }>;
 
 /**
+ * 非空只读数组。
+ * 类型用途：表达业务结果至少持有一个后续 owner，不允许构造无人接管的等待状态。
+ * 数据来源：由换标状态机在返回 WAIT 时构造。
+ * 使用范围：switch drive result 与 runtime handoff 边界。
+ */
+export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
+
+/**
  * 距离换标单步推进结果。
  * 类型用途：显式表达本轮推进后已完成、无需动作，或下一次需要等待的事件源。
  * 数据来源：由 autoSymbolManager 状态机单步推进返回。
@@ -51,7 +59,7 @@ export type SwitchDriveResult =
     }>
   | Readonly<{
       kind: 'WAIT';
-      wakeups: ReadonlyArray<SwitchWakeupRequirement>;
+      wakeups: NonEmptyReadonlyArray<SwitchWakeupRequirement>;
     }>;
 
 /**
@@ -69,7 +77,7 @@ export type StartSwitchOnDistanceResult =
   | Readonly<{
       started: true;
       direction: 'LONG' | 'SHORT';
-      driveResult: Exclude<SwitchDriveResult, { kind: 'NOOP' }>;
+      driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>;
     }>;
 
 /**
@@ -88,8 +96,14 @@ export type AdvancePendingSwitchResult =
   | Readonly<{
       advanced: true;
       direction: 'LONG' | 'SHORT';
-      stillPending: boolean;
-      driveResult: SwitchDriveResult;
+      stillPending: true;
+      driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>;
+    }>
+  | Readonly<{
+      advanced: true;
+      direction: 'LONG' | 'SHORT';
+      stillPending: false;
+      driveResult: Exclude<SwitchDriveResult, { kind: 'WAIT' }>;
     }>;
 
 /**

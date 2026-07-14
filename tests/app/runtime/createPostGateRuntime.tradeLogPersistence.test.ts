@@ -3,19 +3,16 @@
  *
  * 功能：
  * - 验证订单状态事件可落盘为 trade log
- * - 验证落盘结构可被 tradeLogHydrator 读取并恢复冷却边界
+ * - 验证保护性 FILLED 订单不会提前写入 episode 完成语义
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { TRADING } from '../../../src/constants/index.js';
 import { createTradingConfig, createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createPostGateRuntimeFactory } from '../../../src/app/runtime/createPostGateRuntime.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createMonitorContext } from '../../../src/app/context/createMonitorContext.js';
 import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
-import { createLiquidationCooldownTracker } from '../../../src/services/liquidationCooldown/index.js';
-import { createTradeLogHydrator } from '../../../src/services/liquidationCooldown/tradeLogHydrator.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import {
   createAccountSnapshotDouble,
@@ -297,7 +294,7 @@ describe('createPostGateRuntime trade log persistence', () => {
     expect(fs.readFileSync(logFile, 'utf8')).toBe('{}');
   });
 
-  it('writes protective liquidation completion records consumable by tradeLogHydrator', async () => {
+  it('does not mark a protective FILLED order as a completed liquidation episode', async () => {
     const executedTimeMs = Date.parse('2026-03-13T10:00:00+08:00');
     const event: OrderStateChangedEvent = {
       orderId: 'PL-001',
@@ -315,55 +312,13 @@ describe('createPostGateRuntime trade log persistence', () => {
 
     await emitOrderStateChangedThroughPostGateRuntime(event);
 
-    const tradingConfig = createTradingConfig({
-      monitor: createMonitorConfig({
-        monitorSymbol: 'HSI.HK',
-        liquidationTriggerLimit: 1,
-        liquidationCooldown: {
-          mode: 'minutes',
-          minutes: 5,
-        },
-      }),
-    });
-    const tracker = createLiquidationCooldownTracker({
-      nowMs: () => executedTimeMs + 60_000,
-    });
-    const hydrator = createTradeLogHydrator({
-      readFileSync: fs.readFileSync,
-      existsSync: fs.existsSync,
-      resolveLogRootDir: () => TEST_LOG_ROOT_DIR,
-      nowMs: () => executedTimeMs + 60_000,
-      logger: {
-        info: () => {},
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      tradingConfig,
-      liquidationCooldownTracker: tracker,
-    });
-
-    const boundaries = hydrator.hydrate();
-
-    expect(boundaries.get('LONG')).toBe(executedTimeMs);
-    expect(
-      tracker.getRemainingMs({
-        direction: 'LONG',
-        cooldownConfig: {
-          mode: 'minutes',
-          minutes: 5,
-        },
-        currentTimeMs: executedTimeMs + 60_000,
-      }),
-    ).toBe(240_000);
-
     const logFile = buildTradeLogPath(TEST_LOG_ROOT_DIR, new Date(executedTimeMs));
     const records = JSON.parse(fs.readFileSync(logFile, 'utf8')) as ReadonlyArray<{
       readonly reason: string | null;
       readonly action: string | null;
     }>;
     expect(records[0]).toMatchObject({
-      reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
+      reason: null,
       action: 'SELLCALL',
     });
   });

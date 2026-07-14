@@ -12,8 +12,6 @@ import type { CleanupTestOverrides } from './types.js';
 export function createMonitorState(monitorSymbol: string): MonitorState {
   return {
     monitorSymbol,
-    signal: null,
-    pendingDelayedSignals: [],
     lastMonitorSnapshot: {
       price: 20_000,
       changePercent: 0,
@@ -52,6 +50,7 @@ export function createLastState(monitorState: MonitorState): LastState {
       get: () => null,
     },
     cachedTradingDayInfo: null,
+    tradingCalendarSnapshot: new Map(),
     monitorState,
     allTradingSymbols: new Set(),
   };

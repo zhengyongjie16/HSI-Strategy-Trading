@@ -7,7 +7,7 @@ import type {
   TimeInForceType,
   TradeContext,
 } from 'longbridge';
-import type { ExecutableSignal, Signal, SignalType, OrderTypeConfig } from '../../types/signal.js';
+import type { ExecutableSignal, SignalType, OrderTypeConfig } from '../../types/signal.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
 import type { MonitorConfig, TradingConfig } from '../../types/config.js';
@@ -22,10 +22,14 @@ import type {
   MarketDataClient,
   OrderStateChangedEvent,
   OrderHoldSymbolsChangedEvent,
+  TradingDayInfo,
   Unsubscribe,
 } from '../../types/services.js';
-import type { DailyLossTracker } from '../../types/risk.js';
-import type { CancelOrderOutcome } from '../../types/trader.js';
+import type {
+  DailyLossTracker,
+  ProtectiveLiquidationExecutionProgressInput,
+} from '../../types/risk.js';
+import type { CancelOrderOutcome, ExecuteSignalsResult } from '../../types/trader.js';
 import type { ProtectiveLiquidationEpisodeTracker } from './protectiveLiquidationEpisodeTracker/types.js';
 
 /**
@@ -109,26 +113,6 @@ export type RecoverySnapshotReconciliationParams = {
   readonly allOrders: ReadonlyArray<RawOrderFromAPI>;
   readonly closedMismatchedBuyOrderIds: ReadonlySet<string>;
   readonly replayedOrderIds: ReadonlySet<string>;
-};
-
-/**
- * 提交订单入参。
- * 类型用途：传递给内部 submitOrder 函数的参数，封装订单提交所需的完整上下文（交易上下文、信号、标的、方向、数量、价格等）。
- * 数据来源：由 OrderExecutor.executeSignals 等根据信号与配置构造。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type SubmitOrderParams = {
-  readonly signal: Signal;
-  readonly authorizeOrderAction: OrderActionAuthorization;
-  readonly symbol: string;
-  readonly side: OrderSide;
-  readonly submittedQtyDecimal: Decimal;
-  readonly orderTypeParam: OrderType;
-  readonly timeInForce: TimeInForceType;
-  readonly remark: string | undefined;
-  readonly overridePrice: number | undefined;
-  readonly relatedBuyOrderIds?: ReadonlyArray<string> | null;
-  readonly isShortSymbol: boolean;
 };
 
 /**
@@ -260,9 +244,7 @@ export interface OrderMonitor {
  */
 export interface OrderExecutor {
   canTradeNow: (signalAction: SignalType) => TradeCheckResult;
-  executeSignals: (
-    signals: ReadonlyArray<ExecutableSignal>,
-  ) => Promise<{ submittedCount: number; submittedOrderIds: ReadonlyArray<string> }>;
+  executeSignals: (signals: ReadonlyArray<ExecutableSignal>) => Promise<ExecuteSignalsResult>;
 
   /** 清空 lastBuyTime（买入节流状态） */
   resetBuyThrottle: () => void;
@@ -357,6 +339,9 @@ export type TrackedOrder = {
 
   /** 最近一次已成交时间（毫秒） */
   lastExecutedTimeMs: number | null;
+
+  /** 最近一次已合并的订单事件更新时间（毫秒），用于拒绝乱序 WS 回退 */
+  lastOrderUpdateAtMs: number | null;
 
   /** 当前订单状态（由 WebSocket 推送更新） */
   status: OrderStatus;
@@ -526,6 +511,11 @@ export type OrderMonitorDeps = {
   /** 保护性清仓事件跟踪器（用于完成边界） */
   readonly protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
 
+  /** 保护性累计成交进度的前置持久化端口。 */
+  readonly persistProtectiveLiquidationExecutionProgress: (
+    input: ProtectiveLiquidationExecutionProgressInput,
+  ) => void;
+
   /** 标的注册表（用于解析动态标的归属） */
   readonly symbolRegistry: SymbolRegistry;
 
@@ -569,6 +559,25 @@ export type OrderActionAuthorizationStage =
  * 使用范围：executeSignals 初始复核与 SIGNAL_AUTHORIZED 订单 mutation 请求。
  */
 export type OrderActionAuthorization = (stage: OrderActionAuthorizationStage) => boolean;
+
+/**
+ * 最终下单授权读取的当日交易日事实。
+ * 类型用途：把权威 TradingDayInfo 与其香港日期键绑定，防止跨日误用旧日历状态。
+ * 数据来源：app runtime 的 LastState.cachedTradingDayInfo。
+ * 使用范围：Trader 与 OrderExecutor 的末日保护最终买入授权。
+ */
+export type CurrentTradingDayInfo = Readonly<{
+  dateKey: string;
+  info: TradingDayInfo;
+}>;
+
+/**
+ * 最终下单授权的实时交易日事实读取器。
+ * 类型用途：在 broker mutation 前同步读取当前权威交易日状态。
+ * 数据来源：由 app runtime 注入。
+ * 使用范围：Trader 与 OrderExecutor。
+ */
+export type CurrentTradingDayInfoReader = () => CurrentTradingDayInfo | null;
 
 /**
  * 订单 mutation 请求来源。
@@ -616,6 +625,12 @@ export type OrderExecutorDeps = {
 
   /** 运行时执行门禁（单一状态源注入，执行层统一判定） */
   readonly isExecutionAllowed: IsExecutionAllowed;
+
+  /** 最终订单授权使用的实时钟。 */
+  readonly now: () => Date;
+
+  /** 最终订单授权使用的权威当日交易日事实读取器。 */
+  readonly readCurrentTradingDayInfo: CurrentTradingDayInfoReader;
 };
 
 /**
@@ -634,12 +649,21 @@ export type TraderDeps = {
   readonly symbolRegistry: SymbolRegistry;
   readonly dailyLossTracker: DailyLossTracker;
   readonly protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
+  readonly persistProtectiveLiquidationExecutionProgress: (
+    input: ProtectiveLiquidationExecutionProgressInput,
+  ) => void;
 
   /** 成交后一致性运行时（负责收口成交后的最小补刷需求） */
   readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntimePort;
 
   /** 运行时执行门禁（单一状态源注入，执行层统一判定） */
   readonly isExecutionAllowed: IsExecutionAllowed;
+
+  /** 最终订单授权使用的实时钟。 */
+  readonly now: () => Date;
+
+  /** 最终订单授权使用的权威当日交易日事实读取器。 */
+  readonly readCurrentTradingDayInfo: CurrentTradingDayInfoReader;
 
   /** 运行期异步错误 fatal 通道 */
   readonly onFatalError?: (error: unknown) => void;

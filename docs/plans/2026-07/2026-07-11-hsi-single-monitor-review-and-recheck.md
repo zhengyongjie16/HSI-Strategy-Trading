@@ -1,5 +1,7 @@
 # HSI Single-Monitor Architecture Review and Recheck Plan
 
+> [!WARNING] **历史快照，已被取代。** 本文记录 2026-07-11 较早代码快照的实施与验证，保留内容仅用于追溯；其中“仅发现一项”、`resolveSignalSeat`、`1116 pass` 及已收敛结论均不得作为当前源码事实。当前 19 项 finding、二次复核修正、修复状态与最终验证规则以 [HSI 单监控标的全链路业务审查问题记录](../../issues/2026-07/2026-07-11-hsi-single-monitor-full-chain-review-findings.md) 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans for any future implementation task. This document is a retrospective and recheck contract; it does not authorize restoring deleted multi-monitor abstractions.
 
 **Goal:** 记录本轮将项目收敛为“唯一可配置 HSI monitor + LONG/SHORT 方向隔离”后的全链路审查结论、已确认缺陷、已实施修复和可重复的二次复核方法。

@@ -8,12 +8,9 @@
  */
 import { OrderSide } from 'longbridge';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import type {
-  OrderRecord,
-  OrderRecorder,
-  PostTradeConsistencyRefreshNeed,
-} from '../../../types/services.js';
+import type { OrderRecorder, PostTradeConsistencyRefreshNeed } from '../../../types/services.js';
 import type { TrackedOrder } from '../types.js';
+import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js';
 import type {
   FinalizeOrderSettlementParams,
   FinalizeOrderSettlementResult,
@@ -21,27 +18,14 @@ import type {
   SettlementFlowDeps,
 } from './types.js';
 import { detachTrackedOrder } from './routingIndex.js';
+import { compareBuyOrdersBySellPriority } from '../../orderRecorder/sellDeductionPolicy.js';
 
 function resolveOrderSideText(orderSide: OrderSide): 'BUY' | 'SELL' {
   return orderSide === OrderSide.Buy ? 'BUY' : 'SELL';
 }
 
-function resolveOrderSideFromText(side: 'BUY' | 'SELL'): OrderSide {
+function resolveOrderSideFromText(side: 'BUY' | 'SELL'): OrderSide.Buy | OrderSide.Sell {
   return side === 'BUY' ? OrderSide.Buy : OrderSide.Sell;
-}
-
-function sortOrdersBySellPriority(orders: ReadonlyArray<OrderRecord>): ReadonlyArray<OrderRecord> {
-  return [...orders].sort((left, right) => {
-    if (left.executedPrice !== right.executedPrice) {
-      return left.executedPrice - right.executedPrice;
-    }
-
-    if (left.executedTime !== right.executedTime) {
-      return left.executedTime - right.executedTime;
-    }
-
-    return left.orderId.localeCompare(right.orderId);
-  });
 }
 
 function resolveExactFilledRelatedBuyOrderIds(params: {
@@ -57,11 +41,10 @@ function resolveExactFilledRelatedBuyOrderIds(params: {
   }
 
   const relatedBuyOrderIdSet = new Set(relatedBuyOrderIds);
-  const relatedBuyOrders = sortOrdersBySellPriority(
-    orderRecorder
-      .getBuyOrdersForSymbol(symbol, isLongSymbol)
-      .filter((order) => relatedBuyOrderIdSet.has(order.orderId)),
-  );
+  const relatedBuyOrders = orderRecorder
+    .getBuyOrdersForSymbol(symbol, isLongSymbol)
+    .filter((order) => relatedBuyOrderIdSet.has(order.orderId))
+    .sort(compareBuyOrdersBySellPriority);
   if (relatedBuyOrders.length !== relatedBuyOrderIds.length) {
     return null;
   }
@@ -169,6 +152,7 @@ function resolveCloseContext(params: {
   readonly executedPrice: number | null;
   readonly executedQuantity: number | null;
   readonly executedTimeMs: number | null;
+  readonly orderUpdatedAtMs: number | null;
 } {
   const { trackedOrder, closeParams } = params;
   const side = closeParams.side ?? (trackedOrder ? resolveOrderSideText(trackedOrder.side) : null);
@@ -182,6 +166,7 @@ function resolveCloseContext(params: {
     executedPrice: closeParams.executedPrice ?? trackedOrder?.executedPrice ?? null,
     executedQuantity: closeParams.executedQuantity ?? trackedOrder?.executedQuantity ?? null,
     executedTimeMs: closeParams.executedTimeMs ?? trackedOrder?.lastExecutedTimeMs ?? null,
+    orderUpdatedAtMs: closeParams.orderUpdatedAtMs ?? null,
   };
 }
 
@@ -254,6 +239,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     orderRecorder,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
+    persistProtectiveLiquidationExecutionProgress,
     postTradeConsistencyRuntime,
     emitOrderStateChanged,
   } = deps;
@@ -283,17 +269,19 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     postTradeConsistencyRuntime.recordSettlementRefreshNeed(refreshNeed);
   }
 
-  function recordDailyLossAndEpisodeProgress(params: {
+  function recordCumulativeExecution(params: {
+    readonly factStage: 'OPEN' | 'TERMINAL';
     readonly orderId: string;
     readonly side: 'BUY' | 'SELL';
     readonly monitorSymbol: string | null;
-    readonly symbol: string | null;
-    readonly isLongSymbol: boolean | undefined;
+    readonly symbol: string;
+    readonly isLongSymbol: boolean;
     readonly isProtectiveLiquidation: boolean;
     readonly executedPrice: number | null;
     readonly executedQuantity: number | null;
     readonly executedTimeMs: number | null;
-  }): void {
+    readonly orderUpdatedAtMs: number | null;
+  }): DailyLossCumulativeExecutionResult {
     const {
       orderId,
       side,
@@ -304,37 +292,59 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       executedPrice,
       executedQuantity,
       executedTimeMs,
+      orderUpdatedAtMs,
+      factStage,
     } = params;
     if (
       !monitorSymbol ||
-      !symbol ||
-      isLongSymbol === undefined ||
       !isValidPositiveNumber(executedPrice) ||
       !isValidPositiveNumber(executedQuantity) ||
-      !isValidPositiveNumber(executedTimeMs)
+      !isValidPositiveNumber(executedTimeMs) ||
+      !isValidPositiveNumber(orderUpdatedAtMs)
     ) {
-      return;
+      return { authoritativeFactChanged: false, executionAdvanced: false };
     }
 
     const orderSide = resolveOrderSideFromText(side);
-    dailyLossTracker.recordFilledOrder({
-      direction: isLongSymbol ? 'LONG' : 'SHORT',
-      symbol,
-      side: orderSide,
-      executedPrice,
-      executedQuantity,
-      executedTimeMs,
-      orderId,
-    });
+    const direction = isLongSymbol ? 'LONG' : 'SHORT';
+    const result = dailyLossTracker.recordCumulativeExecution(
+      {
+        factStage,
+        direction,
+        symbol,
+        side: orderSide,
+        executedPrice,
+        executedQuantity,
+        executedTimeMs,
+        orderUpdatedAtMs,
+        orderId,
+      },
+      isProtectiveLiquidation && orderSide === OrderSide.Sell
+        ? (snapshot) => {
+            persistProtectiveLiquidationExecutionProgress({
+              monitorSymbol,
+              direction,
+              symbol,
+              orderId,
+              ...snapshot,
+            });
+          }
+        : undefined,
+    );
 
-    if (isProtectiveLiquidation && orderSide === OrderSide.Sell) {
-      const direction = isLongSymbol ? 'LONG' : 'SHORT';
+    if (result.executionAdvanced && isProtectiveLiquidation && orderSide === OrderSide.Sell) {
       protectiveLiquidationEpisodeTracker.recordProtectiveFillProgress({
         direction,
         symbol,
         executedTimeMs,
       });
     }
+
+    if (result.executionAdvanced) {
+      markPostTradeRefresh();
+    }
+
+    return result;
   }
 
   function settleOrder(params: FinalizeOrderSettlementParams): FinalizeOrderSettlementResult {
@@ -357,6 +367,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     const executedPrice = context.executedPrice;
     const executedQuantity = context.executedQuantity;
     const executedTimeMs = context.executedTimeMs;
+    const orderUpdatedAtMs = context.orderUpdatedAtMs;
     const recordedExecution = resolveRecordedExecution({
       executedPrice,
       executedQuantity,
@@ -375,6 +386,10 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       throw new Error(
         `[订单监控] 订单 ${orderId} 存在成交事实但缺少唯一 monitor/direction 归因，阻断结算`,
       );
+    }
+
+    if (recordedExecution !== null && !isValidPositiveNumber(orderUpdatedAtMs)) {
+      throw new Error(`[订单监控] 订单 ${orderId} 存在成交事实但缺少 order revision，阻断结算`);
     }
 
     let relatedBuyOrderIds: ReadonlyArray<string> | null = null;
@@ -418,7 +433,8 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         relatedBuyOrderIds = settledSell.remainingRelatedBuyOrderIds;
       }
 
-      recordDailyLossAndEpisodeProgress({
+      const executionResult = recordCumulativeExecution({
+        factStage: 'TERMINAL',
         orderId,
         side,
         monitorSymbol: context.monitorSymbol,
@@ -428,9 +444,12 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         executedPrice,
         executedQuantity,
         executedTimeMs,
+        orderUpdatedAtMs,
       });
 
-      markPostTradeRefresh();
+      if (!executionResult.executionAdvanced) {
+        markPostTradeRefresh();
+      }
     }
 
     if (closedReason === 'CANCELED' || closedReason === 'REJECTED') {
@@ -482,7 +501,8 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       }
 
       if (symbol && side && isLongSymbol !== undefined && recordedExecution !== null) {
-        recordDailyLossAndEpisodeProgress({
+        const executionResult = recordCumulativeExecution({
+          factStage: 'TERMINAL',
           orderId,
           side,
           monitorSymbol: context.monitorSymbol,
@@ -492,9 +512,12 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
           executedPrice: recordedExecution.executedPrice,
           executedQuantity: recordedExecution.executedQuantity,
           executedTimeMs: recordedExecution.executedTimeMs,
+          orderUpdatedAtMs,
         });
 
-        markPostTradeRefresh();
+        if (!executionResult.executionAdvanced) {
+          markPostTradeRefresh();
+        }
       }
     }
 
@@ -520,6 +543,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
   }
 
   return {
+    recordCumulativeExecution,
     settleOrder,
   };
 }

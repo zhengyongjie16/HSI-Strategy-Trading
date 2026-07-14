@@ -28,6 +28,28 @@ import type {
   StartDistanceSwitchExecutor,
 } from './types.js';
 
+function assertValidStartedSwitchResult(result: unknown): void {
+  if (typeof result !== 'object' || result === null) {
+    throw new Error('[MonitorQuoteEventRuntime] start switch result must be an object');
+  }
+
+  if (!('started' in result) || result.started !== true) {
+    return;
+  }
+
+  if (
+    !('driveResult' in result) ||
+    typeof result.driveResult !== 'object' ||
+    result.driveResult === null
+  ) {
+    throw new Error('[MonitorQuoteEventRuntime] started switch must return WAIT');
+  }
+
+  if (!('kind' in result.driveResult) || result.driveResult.kind !== 'WAIT') {
+    throw new Error('[MonitorQuoteEventRuntime] started switch must return WAIT');
+  }
+}
+
 /**
  * 判断当前 runtime gate 是否打开。
  *
@@ -556,12 +578,8 @@ function createMonitorQuoteEventRuntime(
           }
 
           for (const result of results) {
-            if (
-              isRuntimeRunning() &&
-              handoffPendingSwitch &&
-              result.started &&
-              result.driveResult.kind === 'WAIT'
-            ) {
+            assertValidStartedSwitchResult(result);
+            if (isRuntimeRunning() && handoffPendingSwitch && result.started) {
               handoffPendingSwitch({
                 direction: result.direction,
                 monitorContext,

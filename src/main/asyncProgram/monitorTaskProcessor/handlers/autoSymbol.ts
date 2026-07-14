@@ -8,7 +8,6 @@
 import { logger } from '../../../../utils/logger/index.js';
 import type {
   AdvancePendingSwitchResult,
-  StartSwitchOnDistanceResult,
   SwitchDriveResult,
 } from '../../../../types/monitorContextPorts.js';
 import type {
@@ -83,7 +82,7 @@ export function createAutoSymbolHandlers({
   function handoffPendingWakeup(params: {
     readonly context: MonitorContext;
     readonly direction: 'LONG' | 'SHORT';
-    readonly result: SwitchDriveResult | StartSwitchOnDistanceResult | AdvancePendingSwitchResult;
+    readonly result: SwitchDriveResult | AdvancePendingSwitchResult;
   }): void {
     const { result } = params;
 
@@ -100,24 +99,11 @@ export function createAutoSymbolHandlers({
       return;
     }
 
-    if ('started' in result) {
-      if (!result.started || result.driveResult.kind !== 'WAIT') {
-        return;
-      }
-
-      switchWakeupRuntime.handoffPendingSwitch({
-        direction: params.direction,
-        monitorContext: params.context,
-        driveResult: result.driveResult,
-      });
-      return;
-    }
-
     if (!result.advanced) {
       return;
     }
 
-    if (!result.stillPending || result.driveResult.kind !== 'WAIT') {
+    if (!result.stillPending) {
       return;
     }
 

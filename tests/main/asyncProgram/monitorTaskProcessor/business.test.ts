@@ -138,10 +138,12 @@ describe('monitorTaskProcessor business flow', () => {
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async (params) => {
-          context.symbolRegistry.updateSeatStateWithVersionBump(
-            params.direction,
-            context.symbolRegistry.getSeatState(params.direction),
-          );
+          const currentSeat = context.symbolRegistry.getSeatState(params.direction);
+          if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+            throw new Error('expected runtime ACTIVE seat');
+          }
+
+          context.symbolRegistry.updateSeatStateWithVersionBump(params.direction, currentSeat);
           return {
             kind: 'WAIT',
             wakeups: [{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }],
@@ -1105,9 +1107,15 @@ describe('monitorTaskProcessor business flow', () => {
         recalculateFromAllOrders: () => {
           recalculateCalls += 1;
         },
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        }),
         getLossOffset: () => 0,
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {},
+        restoreExecutionSnapshot: () => {},
+        restoreProtectionBoundary: () => {},
       },
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
@@ -1453,9 +1461,15 @@ describe('monitorTaskProcessor business flow', () => {
         recalculateFromAllOrders: () => {
           recalculateCalls += 1;
         },
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        }),
         getLossOffset: () => 0,
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {},
+        restoreExecutionSnapshot: () => {},
+        restoreProtectionBoundary: () => {},
       },
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {

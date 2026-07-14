@@ -8,8 +8,6 @@
  */
 import { LOG_COLORS } from '../../constants/index.js';
 import type {
-  BuildSeatStateParams,
-  SeatStateBuilder,
   SeatStateManager,
   SeatStateManagerDeps,
   SeatStateUpdater,
@@ -17,34 +15,9 @@ import type {
 } from './types.js';
 
 /**
- * 构造席位状态对象，统一初始化各字段默认值（如 callPrice 默认为 null）。
- */
-const buildSeatState: SeatStateBuilder = ({
-  symbol,
-  status,
-  lastSwitchAt,
-  lastSearchAt,
-  lastSeatActivatedAt,
-  callPrice,
-  searchFailCountToday,
-  frozenTradingDayKey,
-}: BuildSeatStateParams) => {
-  return {
-    symbol,
-    status,
-    lastSwitchAt,
-    lastSearchAt,
-    lastSeatActivatedAt,
-    callPrice: callPrice ?? null,
-    searchFailCountToday,
-    frozenTradingDayKey,
-  };
-};
-
-/**
  * 创建席位状态管理器，封装席位状态构建、更新、日内抑制记录与换标启动准备。
  * @param deps - 依赖（symbolRegistry、switchStates、switchSuppressions、now、logger、getHKDateKey）
- * @returns SeatStateManager 实例（buildSeatState、updateSeatState、resolveSuppression、markSuppression、enterSwitchingSeat）
+ * @returns SeatStateManager 实例（updateSeatState、resolveSuppression、markSuppression、enterSwitchingSeat）
  */
 export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateManager {
   const { symbolRegistry, switchStates, switchSuppressions, now, logger, getHKDateKey } = deps;
@@ -136,19 +109,20 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     const timestamp = now().getTime();
     const currentState = symbolRegistry.getSeatState(direction);
     const currentSymbol = currentState.symbol;
-    const { seatVersion: nextVersion } = symbolRegistry.updateSeatStateWithVersionBump(
-      direction,
-      buildSeatState({
-        symbol: currentState.symbol ?? null,
-        status: 'SWITCHING',
-        lastSwitchAt: timestamp,
-        lastSearchAt: null,
-        lastSeatActivatedAt: currentState.lastSeatActivatedAt,
-        callPrice: null,
-        searchFailCountToday: currentState.searchFailCountToday,
-        frozenTradingDayKey: currentState.frozenTradingDayKey,
-      }),
-    );
+    if (currentSymbol === null) {
+      throw new Error(`无法将无标的席位推进为 SWITCHING: direction=${direction}`);
+    }
+
+    const { seatVersion: nextVersion } = symbolRegistry.updateSeatStateWithVersionBump(direction, {
+      symbol: currentSymbol,
+      status: 'SWITCHING',
+      lastSwitchAt: timestamp,
+      lastSearchAt: null,
+      lastSeatActivatedAt: currentState.lastSeatActivatedAt,
+      callPrice: null,
+      searchFailCountToday: currentState.searchFailCountToday,
+      frozenTradingDayKey: currentState.frozenTradingDayKey,
+    });
     if (currentSymbol) {
       switchStates.set(direction, {
         direction,
@@ -178,7 +152,6 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
   }
 
   return {
-    buildSeatState,
     updateSeatState,
     resolveSuppression,
     markSuppression,

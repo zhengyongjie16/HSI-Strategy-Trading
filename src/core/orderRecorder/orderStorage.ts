@@ -25,7 +25,10 @@ import type {
 } from '../../types/services.js';
 import type { OrderStorage } from './types.js';
 import { calculateOrderStatistics, calculateTotalQuantity, isOrderTimedOut } from './utils.js';
-import { deductSellQuantityFromBuyOrders } from './sellDeductionPolicy.js';
+import {
+  compareBuyOrdersBySellPriority,
+  deductSellQuantityFromBuyOrders,
+} from './sellDeductionPolicy.js';
 
 function resolvePendingSellStatus(
   filledQuantity: number,
@@ -286,25 +289,6 @@ export const createOrderStorage = (): OrderStorage => {
   }
 
   /**
-   * 按卖出优先级排序（价格从低到高，时间从早到晚，orderId 字典序）。
-   */
-  function sortOrdersBySellPriority(
-    orders: ReadonlyArray<OrderRecord>,
-  ): ReadonlyArray<OrderRecord> {
-    return [...orders].sort((a, b) => {
-      if (a.executedPrice !== b.executedPrice) {
-        return a.executedPrice - b.executedPrice;
-      }
-
-      if (a.executedTime !== b.executedTime) {
-        return a.executedTime - b.executedTime;
-      }
-
-      return a.orderId.localeCompare(b.orderId);
-    });
-  }
-
-  /**
    * 选择买入价低于当前价的盈利订单。
    */
   function selectProfitOrders(
@@ -525,7 +509,7 @@ export const createOrderStorage = (): OrderStorage => {
 
     const available = buyOrders
       .filter((o) => !occupiedIds.has(o.orderId))
-      .sort((a, b) => a.executedPrice - b.executedPrice);
+      .sort(compareBuyOrdersBySellPriority);
 
     const result: string[] = [];
     let remaining = quantity;
@@ -612,7 +596,7 @@ export const createOrderStorage = (): OrderStorage => {
       return { orders: [], totalQuantity: 0 };
     }
 
-    const sortedOrders = sortOrdersBySellPriority(availableOrders);
+    const sortedOrders = [...availableOrders].sort(compareBuyOrdersBySellPriority);
     let totalQuantity = calculateTotalQuantity(sortedOrders);
 
     if (maxSellQuantity !== undefined && totalQuantity > maxSellQuantity) {

@@ -10,7 +10,7 @@ import { createBuyTaskQueue } from '../../../../src/main/asyncProgram/tradeTaskQ
 import { createBuyProcessor } from '../../../../src/main/asyncProgram/buyProcessor/index.js';
 import { createExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
 
-import type { Signal } from '../../../../src/types/signal.js';
+import type { BuySignal, Signal } from '../../../../src/types/signal.js';
 
 import {
   createDoomsdayProtectionDouble,
@@ -19,7 +19,7 @@ import {
   createSignalDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
-import { createLastState, createMonitorContext, runProcessorFlow } from '../utils.js';
+import { createMonitorContext, runProcessorFlow } from '../utils.js';
 
 describe('buyProcessor business flow', () => {
   it('runs risk pipeline then executes buy order with execution-time realtime quote price/lotSize', async () => {
@@ -29,7 +29,7 @@ describe('buyProcessor business flow', () => {
     let riskCheckCalls = 0;
     const signalProcessor = {
       processSellSignals: () => [],
-      applyRiskChecks: async <TSignal extends Signal>(signals: TSignal[]) => {
+      applyRiskChecks: async (signals: ReadonlyArray<BuySignal>) => {
         riskCheckCalls += 1;
         return signals;
       },
@@ -50,7 +50,7 @@ describe('buyProcessor business flow', () => {
           price: first?.price,
           lotSize: first?.lotSize,
         };
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -73,7 +73,6 @@ describe('buyProcessor business flow', () => {
       trader,
       marketDataClient,
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
     });
@@ -119,7 +118,7 @@ describe('buyProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -137,7 +136,6 @@ describe('buyProcessor business flow', () => {
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
     });
@@ -176,7 +174,7 @@ describe('buyProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -194,7 +192,6 @@ describe('buyProcessor business flow', () => {
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
     });
@@ -232,7 +229,7 @@ describe('buyProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -250,7 +247,6 @@ describe('buyProcessor business flow', () => {
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
     });
@@ -275,7 +271,7 @@ describe('buyProcessor business flow', () => {
     let riskCalls = 0;
     const signalProcessor = {
       processSellSignals: () => [],
-      applyRiskChecks: async <TSignal extends Signal>(signals: TSignal[]) => {
+      applyRiskChecks: async (signals: ReadonlyArray<BuySignal>) => {
         riskCalls += 1;
         return signals;
       },
@@ -286,7 +282,7 @@ describe('buyProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -300,10 +296,12 @@ describe('buyProcessor business flow', () => {
         getQuotes: async () => {
           quoteCalls += 1;
           if (quoteCalls === 2) {
-            monitorContext.symbolRegistry.updateSeatStateWithVersionBump(
-              'LONG',
-              monitorContext.symbolRegistry.getSeatState('LONG'),
-            );
+            const currentSeat = monitorContext.symbolRegistry.getSeatState('LONG');
+            if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+              throw new Error('expected runtime ACTIVE LONG seat');
+            }
+
+            monitorContext.symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
           }
 
           return new Map([
@@ -314,7 +312,6 @@ describe('buyProcessor business flow', () => {
         },
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
     });
@@ -345,7 +342,7 @@ describe('buyProcessor business flow', () => {
     const fatalErrors: unknown[] = [];
     const signalProcessor = {
       processSellSignals: () => [],
-      applyRiskChecks: async <TSignal extends Signal>(signals: TSignal[]) => signals,
+      applyRiskChecks: async (signals: ReadonlyArray<BuySignal>) => signals,
       resetRiskCheckCooldown: () => {},
     };
 
@@ -367,7 +364,6 @@ describe('buyProcessor business flow', () => {
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
       onFatalError: (error) => {
@@ -400,7 +396,7 @@ describe('buyProcessor business flow', () => {
     let executeCalls = 0;
     const signalProcessor = {
       processSellSignals: () => [],
-      applyRiskChecks: async <TSignal extends Signal>(signals: TSignal[]) => signals,
+      applyRiskChecks: async (signals: ReadonlyArray<BuySignal>) => signals,
       resetRiskCheckCooldown: () => {},
     };
 
@@ -423,7 +419,6 @@ describe('buyProcessor business flow', () => {
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
       onFatalError: (error) => {
@@ -472,7 +467,6 @@ describe('buyProcessor business flow', () => {
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => createLastState(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => false,
     });

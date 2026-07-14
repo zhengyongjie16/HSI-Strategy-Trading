@@ -16,11 +16,27 @@ import { createWarrantRiskChecker } from '../../core/riskController/warrantRiskC
 import { createDelayedSignalVerifier } from '../../main/asyncProgram/delayedSignalVerifier/index.js';
 import { createAutoSymbolManager } from '../../services/autoSymbolManager/index.js';
 import { compileIndicatorUsageProfile } from '../../services/indicators/profile/index.js';
-import type { MonitorContext } from '../../types/state.js';
+import type { LastState, MonitorContext } from '../../types/state.js';
 import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
 import type { CreateMonitorContextParams, MonitorContextFactoryDeps } from '../types.js';
 
 const DEFAULT_STRATEGY_FACTORY = createMultiIndicatorTradingStrategy;
+
+/**
+ * 校验跨越运行时装配边界的交易日历事实，拒绝被强制注入的非法 undefined。
+ *
+ * @param snapshot 待装配的交易日历快照
+ * @returns 已确认存在的交易日历快照
+ */
+function requireTradingCalendarSnapshot(
+  snapshot: LastState['tradingCalendarSnapshot'] | undefined,
+): LastState['tradingCalendarSnapshot'] {
+  if (snapshot === undefined) {
+    throw new Error('监控上下文装配失败: 缺少交易日历快照');
+  }
+
+  return snapshot;
+}
 
 function applySymbolNamesToMonitorContext(
   monitorContext: MonitorContext,
@@ -116,6 +132,8 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
 
   const monitorConfig = preGateRuntime.tradingConfig.monitor;
   const monitorState = postGateRuntime.lastState.monitorState;
+  requireTradingCalendarSnapshot(postGateRuntime.lastState.tradingCalendarSnapshot);
+
   if (monitorState.monitorSymbol !== monitorConfig.monitorSymbol) {
     throw new Error(
       `监控状态与配置标的不一致: state=${monitorState.monitorSymbol}, config=${monitorConfig.monitorSymbol}`,
@@ -139,8 +157,7 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     orderRecorder: postGateRuntime.trader.orderRecorder,
     riskChecker,
     warrantListCacheConfig: preGateRuntime.warrantListCacheConfig,
-    getTradingCalendarSnapshot: () =>
-      postGateRuntime.lastState.tradingCalendarSnapshot ?? new Map(),
+    getTradingCalendarSnapshot: () => postGateRuntime.lastState.tradingCalendarSnapshot,
   });
   const strategy = strategyFactory({
     signalConfig: monitorConfig.signalConfig,

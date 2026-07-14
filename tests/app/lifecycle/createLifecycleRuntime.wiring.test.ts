@@ -174,8 +174,6 @@ function createLastState(): LastState {
     tradingCalendarSnapshot: new Map(),
     monitorState: {
       monitorSymbol: 'HSI.HK',
-      signal: null,
-      pendingDelayedSignals: [],
       lastMonitorSnapshot: null,
       incrementalIndicatorRuntime: null,
     },

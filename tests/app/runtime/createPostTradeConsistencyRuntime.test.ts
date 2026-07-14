@@ -81,10 +81,9 @@ function createLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
+    tradingCalendarSnapshot: new Map(),
     monitorState: {
       monitorSymbol: 'HSI.HK',
-      signal: null,
-      pendingDelayedSignals: [],
       lastMonitorSnapshot: null,
       incrementalIndicatorRuntime: null,
     },
@@ -107,7 +106,7 @@ function bindMinimalBusinessDeps(
       }),
       symbolRegistry: createSymbolRegistryDouble({
         longSeat: {
-          symbol: '',
+          symbol: null,
           status: 'EMPTY',
           lastSwitchAt: null,
           lastSearchAt: null,
@@ -116,7 +115,7 @@ function bindMinimalBusinessDeps(
           frozenTradingDayKey: null,
         },
         shortSeat: {
-          symbol: '',
+          symbol: null,
           status: 'EMPTY',
           lastSwitchAt: null,
           lastSearchAt: null,
@@ -129,6 +128,9 @@ function bindMinimalBusinessDeps(
     dailyLossTracker: createDailyLossTrackerDouble(),
     liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => 'APPENDED',
+    },
   });
 }
 
@@ -423,6 +425,9 @@ describe('createPostTradeConsistencyRuntime', () => {
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => 'APPENDED',
+      },
     });
 
     runtime.recordSettlementRefreshNeed({
@@ -493,7 +498,7 @@ describe('createPostTradeConsistencyRuntime', () => {
               status: 'ACTIVE',
               lastSwitchAt: null,
               lastSearchAt: null,
-              lastSeatActivatedAt: null,
+              lastSeatActivatedAt: 1,
               searchFailCountToday: 0,
               frozenTradingDayKey: null,
             });
@@ -517,6 +522,9 @@ describe('createPostTradeConsistencyRuntime', () => {
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => 'APPENDED',
+      },
     });
 
     runtime.recordSettlementRefreshNeed({
@@ -673,7 +681,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           frozenTradingDayKey: null,
         },
         shortSeat: {
-          symbol: 'BEAR.HK',
+          symbol: null,
           status: 'EMPTY',
           lastSwitchAt: null,
           lastSearchAt: null,
@@ -710,6 +718,9 @@ describe('createPostTradeConsistencyRuntime', () => {
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => 'APPENDED',
+      },
     });
 
     runtime.recordSettlementRefreshNeed({
@@ -754,7 +765,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           frozenTradingDayKey: null,
         },
         shortSeat: {
-          symbol: 'BEAR.HK',
+          symbol: null,
           status: 'EMPTY',
           lastSwitchAt: null,
           lastSearchAt: null,
@@ -795,6 +806,9 @@ describe('createPostTradeConsistencyRuntime', () => {
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => 'APPENDED',
+      },
     });
 
     runtime.recordSettlementRefreshNeed({
@@ -834,7 +848,7 @@ describe('createPostTradeConsistencyRuntime', () => {
 
   it('completes protective liquidation episodes and advances daily loss plus cooldown after positions refresh', async () => {
     const lastState = createLastState();
-    const startNewProtectionEpisodeCalls: Array<{
+    const committedProtectionBoundaryCalls: Array<{
       direction: 'LONG' | 'SHORT';
       boundaryExecutedTimeMs: number;
     }> = [];
@@ -867,7 +881,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           frozenTradingDayKey: null,
         },
         shortSeat: {
-          symbol: 'BEAR.HK',
+          symbol: null,
           status: 'EMPTY',
           lastSwitchAt: null,
           lastSearchAt: null,
@@ -910,8 +924,12 @@ describe('createPostTradeConsistencyRuntime', () => {
     runtime.bindBusinessDeps({
       monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble({
-        startNewProtectionEpisode: (params) => {
-          startNewProtectionEpisodeCalls.push(params);
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: (params) => {
+          committedProtectionBoundaryCalls.push({
+            direction: params.direction,
+            boundaryExecutedTimeMs: params.boundaryExecutedTimeMs,
+          });
         },
       }),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -936,12 +954,16 @@ describe('createPostTradeConsistencyRuntime', () => {
             latestExecutedTimeMs: protectiveBoundaryMs,
           },
         ],
-        completeIfEligible: () => ({
-          monitorSymbol: 'HSI.HK',
+        prepareCompletion: () => ({
           direction: 'LONG',
+          symbol: 'BULL.HK',
           boundaryExecutedTimeMs: protectiveBoundaryMs,
         }),
+        commitCompletion: () => {},
       }),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => 'APPENDED',
+      },
     });
 
     runtime.recordSettlementRefreshNeed({
@@ -955,7 +977,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     expect(lastState.cachedAccount?.buyPower).toBe(77_000);
     expect(lastState.cachedPositions).toEqual([]);
     expect(pendingProtectiveDirections).toEqual(['LONG']);
-    expect(startNewProtectionEpisodeCalls).toEqual([
+    expect(committedProtectionBoundaryCalls).toEqual([
       {
         direction: 'LONG',
         boundaryExecutedTimeMs: protectiveBoundaryMs,
@@ -977,6 +999,65 @@ describe('createPostTradeConsistencyRuntime', () => {
         dailyLossOffset: 88,
       },
     ]);
+  });
+
+  it('keeps daily loss, cooldown, and episode uncommitted when completion persistence fails', async () => {
+    const boundaryExecutedTimeMs = Date.parse('2026-07-11T03:00:00.000Z');
+    const commits: string[] = [];
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => createAccountSnapshotDouble(10_000),
+          getStockPositions: async () => [],
+          hasPendingProtectiveLiquidationOrders: () => false,
+        }),
+      lastState: createLastState(),
+      onPositionsCommitted: async () => {},
+    });
+    runtime.bindBusinessDeps({
+      monitorContext: createMonitorContextDouble({
+        config: createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
+      }),
+      dailyLossTracker: createDailyLossTrackerDouble({
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {
+          commits.push('daily');
+        },
+      }),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
+        recordLiquidationTrigger: () => {
+          commits.push('cooldown');
+          return { currentCount: 1, cooldownActivated: false };
+        },
+      }),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
+        getInProgressEpisodes: () => [
+          { direction: 'LONG', symbol: 'BULL.HK', latestExecutedTimeMs: boundaryExecutedTimeMs },
+        ],
+        prepareCompletion: () => ({
+          direction: 'LONG',
+          symbol: 'BULL.HK',
+          boundaryExecutedTimeMs,
+        }),
+        commitCompletion: () => {
+          commits.push('episode');
+        },
+      }),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => {
+          throw new Error('persist failed');
+        },
+      },
+    });
+
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
+    const waitResult = runtime.waitForFresh().catch((error: unknown) => error);
+    runtime.start();
+
+    const waitError = await waitResult;
+    expect(runtime.stopAndDrain()).rejects.toThrow('persist failed');
+    expect(waitError).toBeInstanceOf(Error);
+    expect(commits).toEqual([]);
   });
 
   it('fails fast when start is called before bindBusinessDeps', () => {
@@ -1046,6 +1127,9 @@ describe('createPostTradeConsistencyRuntime', () => {
         dailyLossTracker: createDailyLossTrackerDouble(),
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
         protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+        mixedTradeLogRepository: {
+          appendCompletionIdempotent: () => 'APPENDED',
+        },
       });
     }).toThrow('重复归属');
   });
@@ -1227,7 +1311,7 @@ describe('createPostTradeConsistencyRuntime', () => {
 
   it('does not complete protective liquidation when original liquidation symbol still has position after seat switch', async () => {
     const lastState = createLastState();
-    const startNewProtectionEpisodeCalls: Array<{
+    const committedProtectionBoundaryCalls: Array<{
       direction: 'LONG' | 'SHORT';
       boundaryExecutedTimeMs: number;
     }> = [];
@@ -1253,7 +1337,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           frozenTradingDayKey: null,
         },
         shortSeat: {
-          symbol: 'BEAR.HK',
+          symbol: null,
           status: 'EMPTY',
           lastSwitchAt: null,
           lastSearchAt: null,
@@ -1290,8 +1374,8 @@ describe('createPostTradeConsistencyRuntime', () => {
     runtime.bindBusinessDeps({
       monitorContext,
       dailyLossTracker: createDailyLossTrackerDouble({
-        startNewProtectionEpisode: (params) => {
-          startNewProtectionEpisodeCalls.push(params);
+        commitProtectionBoundary: (params) => {
+          committedProtectionBoundaryCalls.push(params);
         },
       }),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -1315,15 +1399,18 @@ describe('createPostTradeConsistencyRuntime', () => {
             latestExecutedTimeMs: protectiveBoundaryMs,
           },
         ],
-        completeIfEligible: ({ isDirectionFlat }) =>
+        prepareCompletion: ({ isDirectionFlat }) =>
           isDirectionFlat
             ? {
-                monitorSymbol: 'HSI.HK',
                 direction: 'LONG',
+                symbol: 'BULL.OLD.HK',
                 boundaryExecutedTimeMs: protectiveBoundaryMs,
               }
             : null,
       }),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => 'APPENDED',
+      },
     });
 
     runtime.recordSettlementRefreshNeed({
@@ -1334,7 +1421,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     await runtime.waitForFresh();
     await runtime.stopAndDrain();
 
-    expect(startNewProtectionEpisodeCalls).toEqual([]);
+    expect(committedProtectionBoundaryCalls).toEqual([]);
     expect(cooldownCalls).toEqual([]);
   });
 });

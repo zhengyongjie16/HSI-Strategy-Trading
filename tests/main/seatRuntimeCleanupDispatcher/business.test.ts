@@ -11,7 +11,7 @@ import {
 } from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { SeatState } from '../../../src/types/seat.js';
+import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
 import {
   createMonitorConfigDouble,
   createMonitorContextDouble,
@@ -21,7 +21,10 @@ import {
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 
-function createEmptySeatState(overrides: Partial<SeatState> = {}): SeatState {
+function createEmptySeatState(): RuntimeWritableSeatState & {
+  readonly symbol: null;
+  readonly status: 'EMPTY';
+} {
   return {
     symbol: null,
     status: 'EMPTY',
@@ -31,11 +34,26 @@ function createEmptySeatState(overrides: Partial<SeatState> = {}): SeatState {
     callPrice: null,
     searchFailCountToday: 0,
     frozenTradingDayKey: null,
-    ...overrides,
   };
 }
 
-function createActiveSeatState(symbol: string): SeatState {
+function createBoundPendingSeatState(
+  status: 'SWITCHING' | 'ACTIVATING',
+  callPrice: number | null = null,
+): RuntimeWritableSeatState {
+  return {
+    symbol: 'BULL.HK',
+    status,
+    lastSwitchAt: null,
+    lastSearchAt: null,
+    lastSeatActivatedAt: null,
+    callPrice,
+    searchFailCountToday: 0,
+    frozenTradingDayKey: null,
+  };
+}
+
+function createActiveSeatState(symbol: string): RuntimeWritableSeatState {
   return {
     symbol,
     status: 'ACTIVE',
@@ -269,20 +287,14 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
 
     dispatcher.start();
     symbolRegistry.updateSeatState('LONG', {
-      ...createEmptySeatState({ symbol: 'BULL.HK' }),
+      ...createEmptySeatState(),
       status: 'SEARCHING',
     });
 
-    symbolRegistry.updateSeatState('LONG', {
-      ...createEmptySeatState({ symbol: 'BULL.HK', callPrice: 20_000 }),
-      status: 'ACTIVATING',
-    });
+    symbolRegistry.updateSeatState('LONG', createBoundPendingSeatState('ACTIVATING', 20_000));
     symbolRegistry.updateSeatState('LONG', createActiveSeatState('BULL.HK'));
     symbolRegistry.updateSeatState('LONG', createActiveSeatState('BULL.HK'));
-    symbolRegistry.updateSeatState('LONG', {
-      ...createEmptySeatState({ symbol: 'BULL.HK' }),
-      status: 'SWITCHING',
-    });
+    symbolRegistry.updateSeatState('LONG', createBoundPendingSeatState('SWITCHING'));
     dispatcher.stop();
 
     expect(clearLongCalls).toBe(1);

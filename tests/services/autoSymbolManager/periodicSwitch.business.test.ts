@@ -105,7 +105,7 @@ function createPeriodicHarness(params: HarnessParams): {
   const trader = createTraderDouble({
     executeSignals: async () => {
       params.executeSignalsHook?.();
-      return { submittedCount: 1, submittedOrderIds: [] };
+      return { executedOrderIds: ['EXECUTED-ORDER-1'] };
     },
     getPendingOrders: async () => [],
     getOrderHoldSymbols: () => params.getOrderHoldSymbols?.() ?? new Set<string>(),
@@ -151,7 +151,6 @@ function createPeriodicHarness(params: HarnessParams): {
     resolveSuppression: seatStateManager.resolveSuppression,
     markSuppression: seatStateManager.markSuppression,
     enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-    buildSeatState: seatStateManager.buildSeatState,
     updateSeatState: seatStateManager.updateSeatState,
     resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
     buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -195,7 +194,10 @@ async function runDistanceSwitch(
     return;
   }
 
-  await machine.startSwitchOnDistance(params);
+  const startResult = await machine.startSwitchOnDistance(params);
+  if (startResult.started) {
+    await machine.advancePendingSwitch(params);
+  }
 }
 
 describe('periodic auto-switch regression', () => {
@@ -207,11 +209,12 @@ describe('periodic auto-switch regression', () => {
       lastSeatActivatedAt: nowMs - 60 * 60 * 1000,
       findBestSymbol: 'NEW_BULL.HK',
     });
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('NOOP');
     const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
@@ -227,11 +230,18 @@ describe('periodic auto-switch regression', () => {
       lastSeatActivatedAt: readyMs,
       findBestSymbol: 'NEW_BULL.HK',
     });
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BULL.HK');
@@ -248,11 +258,18 @@ describe('periodic auto-switch regression', () => {
       findBestSymbol: 'NEW_BULL.HK',
     });
 
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
 
     const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVATING');
@@ -303,8 +320,13 @@ describe('periodic auto-switch regression', () => {
       lastSeatActivatedAt: readyMs,
       findBestSymbol: null,
     });
+    const currentSeat = harness.symbolRegistry.getSeatState('LONG');
+    if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+      throw new Error('expected runtime ACTIVE LONG seat');
+    }
+
     harness.symbolRegistry.updateSeatState('LONG', {
-      ...harness.symbolRegistry.getSeatState('LONG'),
+      ...currentSeat,
       searchFailCountToday: 2,
       frozenTradingDayKey: null,
     });
@@ -350,11 +372,18 @@ describe('periodic auto-switch regression', () => {
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
     buyOrdersCount = 0;
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs + 1000),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
   });
@@ -402,11 +431,12 @@ describe('periodic auto-switch regression', () => {
     expect(harness.periodicSwitchPending.get('LONG')?.pending).toBeTrue();
     buyOrdersCount = 0;
     holdSymbols = new Set(['OLD_BULL.HK']);
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs + 1000),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('NOOP');
     const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVE');
     expect(seat.symbol).toBe('OLD_BULL.HK');
@@ -463,11 +493,18 @@ describe('periodic auto-switch regression', () => {
     expect(harness.periodicSwitchPending.get('LONG')?.blockedBy).toBe('LOCAL_PENDING_ORDER');
 
     holdSymbols = new Set<string>();
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs + 1000),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
     expect(harness.machine.hasPendingSwitch('LONG')).toBeFalse();
   });
@@ -502,11 +539,12 @@ describe('periodic auto-switch regression', () => {
     });
     buyOrdersCount = 0;
     holdSymbols = new Set(['OLD_BULL.HK']);
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs + 1000),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('NOOP');
     expect(harness.periodicSwitchPending.get('LONG')?.blockedBy).toBe('LOCAL_PENDING_ORDER');
     expect(
       warnMessages.some((message) => message.includes('blockedBy=LOCAL_PENDING_ORDER')),
@@ -694,11 +732,18 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: false,
     });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs + 1000),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   });
 
@@ -722,11 +767,18 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
     });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(Date.parse('2026-02-16T05:01:00.000Z')), // 13:01 HK
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   });
 
@@ -748,11 +800,18 @@ describe('periodic auto-switch regression', () => {
       canTradeNow: true,
     });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(Date.parse('2026-02-17T01:31:00.000Z')),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   });
 
@@ -765,11 +824,18 @@ describe('periodic auto-switch regression', () => {
       lastSeatActivatedAt: readyMs,
       findBestSymbol: 'NEW_BULL.HK',
     });
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   });
 
@@ -786,11 +852,18 @@ describe('periodic auto-switch regression', () => {
         executeCalls += 1;
       },
     });
-    await harness.machine.evaluatePeriodicSwitchDue({
+    const driveResult = await harness.machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs),
       canTradeNow: true,
     });
+    expect(driveResult.kind).toBe('WAIT');
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('periodic switch must hand off a WAIT owner');
+    }
+
+    expect(driveResult.wakeups.length).toBeGreaterThan(0);
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
     const seat = harness.symbolRegistry.getSeatState('LONG');
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BULL.HK');
@@ -895,7 +968,6 @@ describe('periodic auto-switch regression', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),

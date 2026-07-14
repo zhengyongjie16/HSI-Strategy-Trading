@@ -10,6 +10,7 @@ import { describe, expect, it } from 'bun:test';
 import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
 import { createStaticLiquidationExecutor } from '../../../src/main/monitorQuoteEventRuntime/staticLiquidationExecutor.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
+import type { RuntimeWritableSeatState, SeatState } from '../../../src/types/seat.js';
 import {
   createMarketDataClientDouble,
   createMonitorContextDouble,
@@ -27,10 +28,49 @@ const WAIT_RESOLVED_TIME_MS = EXECUTION_TIME_MS + 750;
 const EXPECTED_RETRY_AT_MS = EXECUTION_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
 const EXPECTED_WAIT_RESOLVED_RETRY_AT_MS = WAIT_RESOLVED_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
 
+function createLongSeatState(status: SeatState['status']): RuntimeWritableSeatState {
+  if (status === 'EMPTY' || status === 'SEARCHING') {
+    return {
+      symbol: null,
+      status,
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    };
+  }
+
+  if (status === 'ACTIVE') {
+    return {
+      symbol: 'BULL.HK',
+      status,
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: 1,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    };
+  }
+
+  return {
+    symbol: 'BULL.HK',
+    status,
+    lastSwitchAt: null,
+    lastSearchAt: null,
+    lastSeatActivatedAt: null,
+    callPrice: null,
+    searchFailCountToday: 0,
+    frozenTradingDayKey: null,
+  };
+}
+
 function createExecutorHarness(
   params: {
-    readonly executeSignalsSubmittedCount?: number;
-    readonly executeSignalsSubmittedCounts?: ReadonlyArray<number>;
+    readonly executeSignalsExecutedCount?: number;
+    readonly executeSignalsExecutedCounts?: ReadonlyArray<number>;
     readonly shouldLiquidateLong?: boolean;
     readonly shouldLiquidateShort?: boolean;
     readonly longSeatStatus?: 'EMPTY' | 'SEARCHING' | 'SWITCHING' | 'ACTIVATING' | 'ACTIVE';
@@ -63,15 +103,7 @@ function createExecutorHarness(
   });
 
   const symbolRegistry = createSymbolRegistryDouble({
-    longSeat: {
-      symbol: 'BULL.HK',
-      status: params.longSeatStatus ?? 'ACTIVE',
-      lastSwitchAt: null,
-      lastSearchAt: null,
-      lastSeatActivatedAt: null,
-      searchFailCountToday: 0,
-      frozenTradingDayKey: null,
-    },
+    longSeat: createLongSeatState(params.longSeatStatus ?? 'ACTIVE'),
     shortSeat: {
       symbol: 'BEAR.HK',
       status: 'ACTIVE',
@@ -89,10 +121,12 @@ function createExecutorHarness(
       const version = symbolRegistry.getSeatVersion(direction);
       if (direction === 'LONG' && shouldBumpLongSeatVersionOnNextRead) {
         shouldBumpLongSeatVersionOnNextRead = false;
-        symbolRegistry.updateSeatStateWithVersionBump(
-          direction,
-          symbolRegistry.getSeatState(direction),
-        );
+        const currentSeat = symbolRegistry.getSeatState(direction);
+        if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+          throw new Error('expected runtime ACTIVE LONG seat');
+        }
+
+        symbolRegistry.updateSeatStateWithVersionBump(direction, currentSeat);
       }
 
       return version;
@@ -154,15 +188,23 @@ function createExecutorHarness(
       }
 
       if (params.bumpLongSeatVersionAfterSubmission) {
-        symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+        const currentSeat = symbolRegistry.getSeatState('LONG');
+        if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+          throw new Error('expected runtime ACTIVE LONG seat');
+        }
+
+        symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
       }
 
+      const executedCount =
+        params.executeSignalsExecutedCounts?.[executeSignalsCallIndex++] ??
+        params.executeSignalsExecutedCount ??
+        signals.length;
       return {
-        submittedCount:
-          params.executeSignalsSubmittedCounts?.[executeSignalsCallIndex++] ??
-          params.executeSignalsSubmittedCount ??
-          signals.length,
-        submittedOrderIds: [],
+        executedOrderIds: Array.from(
+          { length: executedCount },
+          (_, index) => `STATIC-LIQUIDATION-${executeSignalsCallIndex}-${index}`,
+        ),
       };
     },
   });
@@ -478,7 +520,7 @@ describe('staticLiquidationExecutor', () => {
 
   it('keeps clearing the successfully submitted candidate when later candidate only partially submits', async () => {
     const harness = createExecutorHarness({
-      executeSignalsSubmittedCounts: [1, 0],
+      executeSignalsExecutedCounts: [1, 0],
       shouldLiquidateShort: true,
     });
 
@@ -501,7 +543,7 @@ describe('staticLiquidationExecutor', () => {
 
   it('keeps evaluating later candidates when earlier candidate is not submitted', async () => {
     const harness = createExecutorHarness({
-      executeSignalsSubmittedCounts: [0, 1],
+      executeSignalsExecutedCounts: [0, 1],
       shouldLiquidateShort: true,
     });
 

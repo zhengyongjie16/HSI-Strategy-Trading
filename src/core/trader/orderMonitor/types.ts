@@ -1,7 +1,11 @@
-import type { Decimal, PushOrderChanged, TradeContext } from 'longbridge';
+import type { Decimal, OrderStatus, PushOrderChanged, TradeContext } from 'longbridge';
 import type { MonitorConfig, TradingConfig } from '../../../types/config.js';
 import type { Quote } from '../../../types/quote.js';
-import type { DailyLossTracker } from '../../../types/risk.js';
+import type {
+  DailyLossCumulativeExecutionResult,
+  DailyLossTracker,
+  ProtectiveLiquidationExecutionProgressInput,
+} from '../../../types/risk.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
 import type {
   CancelOrderOutcome,
@@ -60,6 +64,7 @@ export type TerminalSettlementInput = {
     readonly executedPrice: number | null;
     readonly executedQuantity: number | null;
     readonly executedTimeMs: number | null;
+    readonly orderUpdatedAtMs: number | null;
   };
   readonly queriedExecutedQuantity: number | null;
 };
@@ -95,6 +100,17 @@ export type SellTimeoutResolution =
  * 使用范围：orderMonitor 目录内部。
  */
 export type TerminalStateSnapshot = Extract<OrderStateCheckResult, { kind: 'TERMINAL' }>;
+
+/**
+ * 已与当前订单事实合并的终态快照。
+ * 类型用途：为结算链路同时提供单调的终态、累计成交、成交时间与 revision。
+ * 数据来源：orderFactMerge 合并 tracked/启动快照与 API TERMINAL state-check。
+ * 使用范围：orderMonitor 内部 TERMINAL 消费路径。
+ */
+export type NormalizedTerminalStateSnapshot = TerminalStateSnapshot &
+  Readonly<{
+    readonly executedTimeMs: number | null;
+  }>;
 
 /**
  * 改单结果语义。
@@ -255,7 +271,72 @@ export type TimeoutMarketConversionTerminalState = Readonly<{
   readonly executedPrice: number | null;
   readonly executedQuantity: number | null;
   readonly executedTimeMs: number | null;
+  readonly orderUpdatedAtMs: number | null;
 }>;
+
+/**
+ * 订单累计成交观察值。
+ * 类型用途：统一承载 WS partial/terminal 与 API/state-check/recovery terminal 的累计成交事实。
+ * 数据来源：OrderMonitor 的 tracked order 或权威订单查询。
+ * 使用范围：eventFlow 与 settlementFlow。
+ */
+export type OrderCumulativeExecutionParams = Readonly<{
+  factStage: 'OPEN' | 'TERMINAL';
+  orderId: string;
+  side: 'BUY' | 'SELL';
+  monitorSymbol: string | null;
+  symbol: string;
+  isLongSymbol: boolean;
+  isProtectiveLiquidation: boolean;
+  executedPrice: number | null;
+  executedQuantity: number | null;
+  executedTimeMs: number | null;
+  orderUpdatedAtMs: number | null;
+}>;
+
+/**
+ * 订单事实观察值。
+ * 类型用途：统一承载 WS 与权威 state-check 输入单调合并的状态、成交和 revision。
+ * 数据来源：PushOrderChanged 或 OrderStateCheckResult OPEN/TERMINAL 分支。
+ * 使用范围：orderMonitor 内部。
+ */
+export type OrderObservedFact = Readonly<{
+  status: OrderStatus;
+  executedQuantity: number;
+  executedPrice: number | null;
+  executedTimeMs: number | null;
+  updatedAtMs: number | null;
+}>;
+
+/**
+ * 单调合并后的订单事件事实。
+ * 类型用途：承载 WS 或 state-check 观察值经过时间、累计成交量和状态强度裁决后的结果。
+ * 数据来源：orderFactMerge 对观察值与 tracked order 当前事实合并得到。
+ * 使用范围：orderMonitor 内部。
+ */
+export type MonotonicOrderFact = Readonly<{
+  status: OrderStatus;
+  executedQuantity: number;
+  executedPrice: number | null;
+  executedTimeMs: number | null;
+  updatedAtMs: number | null;
+}>;
+
+/**
+ * 单调合并所需的已知订单事实。
+ * 类型用途：限制 orderFactMerge 只读取订单标识、生命周期、累计成交与 revision 字段。
+ * 数据来源：orderMonitor 当前 tracked order 或同结构的已知事实快照。
+ * 使用范围：仅 orderMonitor/orderFactMerge.ts 使用。
+ */
+export type KnownOrderFact = Pick<
+  OrderMonitorTrackedOrder,
+  | 'orderId'
+  | 'status'
+  | 'executedQuantity'
+  | 'executedPrice'
+  | 'lastExecutedTimeMs'
+  | 'lastOrderUpdateAtMs'
+>;
 
 /**
  * orderMonitor 内部扩展追踪订单模型。
@@ -349,6 +430,7 @@ export interface RecoveryFlow {
 export type EventFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderRecorder: OrderRecorder;
+  readonly recordCumulativeExecution: (params: OrderCumulativeExecutionParams) => void;
   readonly settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
   readonly cacheBootstrappingEvent: (event: PushOrderChanged) => void;
   readonly triggerRoute: (symbol: string, wakeupKind: OrderMonitorWakeupKind) => void;
@@ -399,6 +481,8 @@ export type OrderOpsDeps = {
   readonly rateLimiter: RateLimiter;
   readonly cacheManager: OrderCacheManager;
   readonly orderHoldRegistry: OrderHoldRegistry;
+  readonly orderRecorder: OrderRecorder;
+  readonly recordCumulativeExecution: (params: OrderCumulativeExecutionParams) => void;
   readonly orderStatusQuery: OrderStatusQuery;
   readonly triggerRoute: (symbol: string, wakeupKind: OrderMonitorWakeupKind) => void;
 };
@@ -482,6 +566,7 @@ export type FinalizeOrderSettlementParams = {
   readonly executedPrice?: number | null;
   readonly executedQuantity?: number | null;
   readonly executedTimeMs?: number | null;
+  readonly orderUpdatedAtMs?: number | null;
   readonly symbol?: string;
   readonly side?: 'BUY' | 'SELL';
   readonly monitorSymbol?: string | null;
@@ -515,6 +600,9 @@ export type SettlementFlowDeps = {
   readonly orderRecorder: OrderRecorder;
   readonly dailyLossTracker: DailyLossTracker;
   readonly protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
+  readonly persistProtectiveLiquidationExecutionProgress: (
+    input: ProtectiveLiquidationExecutionProgressInput,
+  ) => void;
   readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntimePort;
   readonly emitOrderStateChanged: (event: OrderStateChangedEvent) => void;
 };
@@ -526,6 +614,9 @@ export type SettlementFlowDeps = {
  * 使用范围：orderMonitor/index.ts 及子流程调用。
  */
 export interface SettlementFlow {
+  recordCumulativeExecution: (
+    params: OrderCumulativeExecutionParams,
+  ) => DailyLossCumulativeExecutionResult;
   settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
 }
 

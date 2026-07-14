@@ -54,7 +54,13 @@ describe('createRiskDomain', () => {
         resetAllCalled = true;
         resetAllNow = now;
       },
-      startNewProtectionEpisode: () => {},
+      prepareProtectionBoundary: () => ({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: 1,
+        orderBaselines: [],
+      }),
+      commitProtectionBoundary: () => {},
+      restoreProtectionBoundary: () => {},
     } as unknown as DailyLossTracker;
     const liquidationCooldownTracker: LiquidationCooldownTracker = {
       recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
@@ -124,7 +130,13 @@ describe('createRiskDomain', () => {
       signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
       dailyLossTracker: {
         resetAll: () => {},
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: () => ({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: 1,
+          orderBaselines: [],
+        }),
+        commitProtectionBoundary: () => {},
+        restoreProtectionBoundary: () => {},
       } as unknown as DailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       monitorContext,
@@ -145,7 +157,13 @@ describe('createRiskDomain', () => {
       signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
       dailyLossTracker: {
         resetAll: () => {},
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: () => ({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: 1,
+          orderBaselines: [],
+        }),
+        commitProtectionBoundary: () => {},
+        restoreProtectionBoundary: () => {},
       } as unknown as DailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       monitorContext: createMonitorContextDouble(),

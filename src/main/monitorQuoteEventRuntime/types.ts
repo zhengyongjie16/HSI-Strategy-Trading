@@ -249,7 +249,7 @@ export type SwitchWakeupHandoffParams = Readonly<{
   monitorContext: MonitorContext;
 
   /** 本轮单步推进结果 */
-  driveResult: SwitchDriveResult;
+  driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>;
 }>;
 
 /**

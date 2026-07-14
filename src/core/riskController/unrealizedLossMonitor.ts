@@ -106,10 +106,10 @@ export const createUnrealizedLossMonitor = (
       lotSize: quote.lotSize ?? null,
     };
 
-    let submittedCount: number;
+    let executedOrderCount: number;
     try {
       const executionResult = await trader.executeSignals([liquidationSignal]);
-      submittedCount = executionResult.submittedCount;
+      executedOrderCount = executionResult.executedOrderIds.length;
     } catch (error) {
       if (isUnconfirmedOrderSubmissionError(error) || isSubmittedOrderLocalSyncFailure(error)) {
         throw error;
@@ -121,7 +121,7 @@ export const createUnrealizedLossMonitor = (
       return false;
     }
 
-    if (submittedCount === 0) {
+    if (executedOrderCount === 0) {
       return false;
     }
 

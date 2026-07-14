@@ -46,6 +46,7 @@ import {
   isWaitWsOnlyReplaceMode,
   normalizePriceText,
 } from './utils.js';
+import { normalizeTerminalStateSnapshot } from './orderFactMerge.js';
 
 function resolveCancelRetryDelayMs(retryCount: number): number {
   const delay = ORDER_MONITOR_CANCEL_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, retryCount - 1);
@@ -90,9 +91,18 @@ function resolveTerminalSettlementInput(
   closedReason: TerminalClosedReason,
 ): TerminalSettlementInput | null {
   const queriedTerminalState = consumeQueriedTerminalState(deps.runtime, orderId);
-  const resolvedClosedReason = queriedTerminalState?.closedReason ?? closedReason;
+  const normalizedTerminalState =
+    queriedTerminalState === null
+      ? null
+      : normalizeTerminalStateSnapshot(order, queriedTerminalState);
+  const resolvedClosedReason = normalizedTerminalState?.closedReason ?? closedReason;
   if (!isSupportedTerminalCloseReason(resolvedClosedReason)) {
     return null;
+  }
+
+  let executedTimeMs = order.lastExecutedTimeMs;
+  if (normalizedTerminalState !== null) {
+    executedTimeMs = normalizedTerminalState.executedTimeMs;
   }
 
   return {
@@ -100,11 +110,12 @@ function resolveTerminalSettlementInput(
       orderId,
       closedReason: resolvedClosedReason,
       source: 'API',
-      executedPrice: queriedTerminalState?.executedPrice ?? order.executedPrice ?? null,
-      executedQuantity: queriedTerminalState?.executedQuantity ?? order.executedQuantity,
-      executedTimeMs: queriedTerminalState?.executedTimeMs ?? order.lastExecutedTimeMs ?? null,
+      executedPrice: normalizedTerminalState?.executedPrice ?? order.executedPrice ?? null,
+      executedQuantity: normalizedTerminalState?.executedQuantity ?? order.executedQuantity,
+      executedTimeMs,
+      orderUpdatedAtMs: normalizedTerminalState?.orderUpdatedAtMs ?? order.lastOrderUpdateAtMs,
     },
-    queriedExecutedQuantity: queriedTerminalState?.executedQuantity ?? null,
+    queriedExecutedQuantity: normalizedTerminalState?.executedQuantity ?? null,
   };
 }
 
@@ -172,6 +183,7 @@ function resolvePendingTimeoutSettlementInput(
       executedPrice: terminalState.executedPrice,
       executedQuantity: terminalState.executedQuantity,
       executedTimeMs: terminalState.executedTimeMs,
+      orderUpdatedAtMs: terminalState.orderUpdatedAtMs,
     },
     queriedExecutedQuantity: terminalState.executedQuantity,
   };
@@ -283,27 +295,6 @@ function isTrackedOrderStillAttachedToRoute(
   return symbolBucket?.has(order.orderId) ?? false;
 }
 
-/**
- * 在 broker 已接受 follow-up 市价单后，校验当前 route pass 是否仍允许把结果写回本地真相。
- *
- * 这一步是 timeout market conversion 的最终 guarded commit：
- * - stopAndDrain 后不得再向已停止 runtime 写回新 tracked order / pending sell
- * - generation 变化后，旧 route continuation 不得命中新 route
- *
- * 注意：旧卖单在 settlement 后会被正常移出 tracked route，因此这里不能再要求旧 order 仍 attached。
- * timeout -> settlement -> follow-up submit 的 owner 是当前 symbol generation，而不是旧 order 附着关系。
- *
- * @param params 当前 route generation 快照
- * @param runtime routeProcessor 共享运行态
- * @returns 当前 commit 是否仍然有效
- */
-function canCommitTimeoutMarketConversion(
-  params: Pick<RouteRuntimeProcessParams, 'symbol' | 'generation'>,
-  runtime: RouteProcessorDeps['runtime'],
-): boolean {
-  return isRouteGenerationCurrent(runtime, params);
-}
-
 async function handleBuyOrderTimeout(
   params: RouteRuntimeProcessParams,
   deps: RouteProcessorDeps,
@@ -366,7 +357,8 @@ async function handleBuyOrderTimeout(
  * - 进入该函数前，settlementFlow 已把旧卖单占用保留为 follow-up placeholder
  * - 提交前若 route/gate 已失效，则释放 placeholder，避免生成不存在新单的假占用
  * - broker 未接受新单前若提交失败，则释放 placeholder，避免本地残留不存在的卖单占用
- * - 提交成功后先登记新 orderId 的占用，再移除旧 placeholder，保证同一批 buy orders 无空窗
+ * - broker 返回新 orderId 后，远端事实不再受 route generation / stop 状态否认
+ * - 先建立新 tracked order，再迁移 pending-sell 占用并移除旧 placeholder
  *
  * @param params 当前 route generation 快照
  * @param deps routeProcessor 依赖
@@ -448,21 +440,7 @@ async function submitTimeoutMarketOrder(
     });
     brokerSubmissionAccepted = true;
     newOrderId = extractOrderId(response);
-    if (!canCommitTimeoutMarketConversion(params, deps.runtime)) {
-      deps.orderRecorder.markSellCancelled(order.orderId);
-      throw new Error(`stale timeout market conversion commit: ${newOrderId}`);
-    }
-
     const direction: 'LONG' | 'SHORT' = order.isLongSymbol ? 'LONG' : 'SHORT';
-    deps.orderRecorder.submitSellOrder(
-      newOrderId,
-      order.symbol,
-      direction,
-      marketConversionQuantity,
-      relatedBuyOrderIds,
-    );
-    deps.orderRecorder.markSellCancelled(order.orderId);
-
     deps.trackOrder({
       orderId: newOrderId,
       symbol: order.symbol,
@@ -475,6 +453,15 @@ async function submitTimeoutMarketOrder(
       isProtectiveLiquidation: order.isProtectiveLiquidation,
       orderType: OrderType.MO,
     });
+
+    deps.orderRecorder.submitSellOrder(
+      newOrderId,
+      order.symbol,
+      direction,
+      marketConversionQuantity,
+      relatedBuyOrderIds,
+    );
+    deps.orderRecorder.markSellCancelled(order.orderId);
   } catch (error: unknown) {
     if (!brokerSubmissionAccepted) {
       deps.orderRecorder.markSellCancelled(order.orderId);
@@ -482,13 +469,6 @@ async function submitTimeoutMarketOrder(
     }
 
     if (newOrderId === null) {
-      throw error;
-    }
-
-    if (
-      error instanceof Error &&
-      error.message.startsWith('stale timeout market conversion commit:')
-    ) {
       throw error;
     }
 
@@ -898,7 +878,7 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
 
       const replaceOutcome = consumeLatestReplaceOutcome(deps.runtime, order.orderId);
       if (replaceOutcome?.kind === 'TERMINAL_CONFIRMED') {
-        const terminal = replaceOutcome.terminalState;
+        const terminal = normalizeTerminalStateSnapshot(order, replaceOutcome.terminalState);
         const settlementResult = deps.settleOrder({
           orderId: order.orderId,
           closedReason: terminal.closedReason,
@@ -906,6 +886,7 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
           executedPrice: terminal.executedPrice,
           executedQuantity: terminal.executedQuantity,
           executedTimeMs: terminal.executedTimeMs,
+          orderUpdatedAtMs: terminal.orderUpdatedAtMs,
         });
         resetOrderReplaceRuntimeState(deps.runtime, order.orderId);
         if (!settlementResult.handled) {

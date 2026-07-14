@@ -11,7 +11,8 @@
  */
 import { logger } from '../../utils/logger/index.js';
 import { decimalToNumber, isRecord } from '../../utils/helpers/index.js';
-import { PENDING_ORDER_STATUSES, API } from '../../constants/index.js';
+import { API } from '../../constants/index.js';
+import { isOpenOrderStatus } from '../orderStatusLifecycle/utils.js';
 import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
 import type { PendingOrder } from '../../types/services.js';
 import type {
@@ -142,7 +143,7 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
     const result: PendingOrder[] = [];
     for (const order of allOrders) {
       // 先过滤状态
-      if (!PENDING_ORDER_STATUSES.has(order.status)) {
+      if (!isOpenOrderStatus(order.status)) {
         continue;
       }
 

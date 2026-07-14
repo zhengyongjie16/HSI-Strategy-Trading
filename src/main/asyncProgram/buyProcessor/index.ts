@@ -33,7 +33,7 @@ import {
 import type { Processor } from '../types.js';
 import type { BuyProcessorDeps } from './types.js';
 import type { Task, BuyTaskType } from '../tradeTaskQueue/types.js';
-import type { RiskCheckContext } from '../../../types/services.js';
+import type { BuyRiskCheckContext } from '../../../types/services.js';
 import type { BuySignal } from '../../../types/signal.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 
@@ -45,7 +45,7 @@ import { formatSymbolDisplay } from '../../../utils/display/index.js';
  * - 席位未就绪、席位版本不匹配或席位标的已切换时，仅记录信息日志并安全丢弃信号
  * - 风险检查拦截、行情缺失或 lotSize 无效等场景下，会记录原因并跳过下单，同样视为"正常完成但不下单"，调用方无需重试
  *
- * @param deps 依赖注入（任务队列、唯一 monitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getLastState、getIsHalfDay、可选 getCanProcessTask）
+ * @param deps 依赖注入（任务队列、唯一 monitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getIsHalfDay、可选 getCanProcessTask）
  * @returns 实现 Processor 接口的买入处理器实例（start/stop/stopAndDrain/restart）
  */
 export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
@@ -56,7 +56,6 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     trader,
     marketDataClient,
     doomsdayProtection,
-    getLastState,
     getIsHalfDay,
     getCanProcessTask,
     onFatalError,
@@ -85,8 +84,6 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         return;
       }
 
-      // 获取全局状态
-      const lastState = getLastState();
       const isHalfDay = getIsHalfDay();
 
       // 买入信号：执行风险检查（需要 API 调用获取最新账户和持仓）
@@ -121,7 +118,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         return;
       }
 
-      const riskCheckContext: RiskCheckContext = {
+      const riskCheckContext: BuyRiskCheckContext = {
         trader,
         riskChecker,
         orderRecorder,
@@ -133,13 +130,6 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         shortSymbol,
         longSymbolName: ctx.longSymbolName,
         shortSymbolName: ctx.shortSymbolName,
-        account: lastState.cachedAccount,
-        positions: lastState.cachedPositions,
-        lastState: {
-          cachedAccount: lastState.cachedAccount,
-          cachedPositions: lastState.cachedPositions,
-          positionCache: lastState.positionCache,
-        },
         currentTime: new Date(),
         isHalfDay,
         doomsdayProtection,

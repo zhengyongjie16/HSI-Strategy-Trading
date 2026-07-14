@@ -45,6 +45,7 @@ import {
   resolveInitialTrackedStatus,
 } from './utils.js';
 import { attachTrackedOrder } from './routingIndex.js';
+import { mergeMonotonicOrderFact } from './orderFactMerge.js';
 
 /**
  * 读取并消费单订单权威终态缓存。
@@ -116,10 +117,11 @@ export function resumeOrderReplaceFromWsProgress(
 
 /** 将单订单权威状态查询结果映射为统一撤单 outcome。 */
 function mapStateCheckResultToCancelOutcome(
-  runtime: OrderMonitorRuntimeStore,
+  deps: OrderOpsDeps,
   orderId: string,
   queryResult: OrderStateCheckResult,
 ): CancelOrderOutcome {
+  const { runtime } = deps;
   if (queryResult.kind === 'TERMINAL') {
     runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
     return {
@@ -143,6 +145,57 @@ function mapStateCheckResultToCancelOutcome(
     errorCode: queryResult.errorCode,
     message: queryResult.message,
   };
+}
+
+/** 将 OPEN state-check 的权威观察值并入 tracked 事实与成交副作用。 */
+function applyOpenStateCheckFact(
+  deps: OrderOpsDeps,
+  orderId: string,
+  queryResult: Extract<OrderStateCheckResult, { kind: 'OPEN' }>,
+): void {
+  const trackedOrder = deps.runtime.trackedOrders.get(orderId);
+  if (trackedOrder === undefined) {
+    return;
+  }
+
+  const previousExecutedQuantity = trackedOrder.executedQuantity;
+  const mergedFact = mergeMonotonicOrderFact(trackedOrder, {
+    status: queryResult.status,
+    executedQuantity: queryResult.executedQuantity ?? trackedOrder.executedQuantity,
+    executedPrice: queryResult.executedPrice,
+    executedTimeMs: queryResult.updatedAtMs,
+    updatedAtMs: queryResult.updatedAtMs,
+  });
+  if (mergedFact === null) {
+    return;
+  }
+
+  trackedOrder.status = mergedFact.status;
+  trackedOrder.executedQuantity = mergedFact.executedQuantity;
+  trackedOrder.executedPrice = mergedFact.executedPrice;
+  trackedOrder.lastExecutedTimeMs = mergedFact.executedTimeMs;
+  trackedOrder.lastOrderUpdateAtMs = mergedFact.updatedAtMs;
+  if (mergedFact.executedQuantity <= previousExecutedQuantity) {
+    return;
+  }
+
+  if (trackedOrder.side === OrderSide.Sell) {
+    deps.orderRecorder.markSellPartialFilled(orderId, mergedFact.executedQuantity);
+  }
+
+  deps.recordCumulativeExecution({
+    factStage: 'OPEN',
+    orderId,
+    side: trackedOrder.side === OrderSide.Buy ? 'BUY' : 'SELL',
+    monitorSymbol: trackedOrder.monitorSymbol,
+    symbol: trackedOrder.symbol,
+    isLongSymbol: trackedOrder.isLongSymbol,
+    isProtectiveLiquidation: trackedOrder.isProtectiveLiquidation,
+    executedPrice: trackedOrder.executedPrice,
+    executedQuantity: trackedOrder.executedQuantity,
+    executedTimeMs: trackedOrder.lastExecutedTimeMs,
+    orderUpdatedAtMs: trackedOrder.lastOrderUpdateAtMs,
+  });
 }
 
 /** 写入改单结果事件缓存，供 route owner 在后续推进中消费。 */
@@ -261,6 +314,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       executedQuantity: 0,
       executedPrice: null,
       lastExecutedTimeMs: null,
+      lastOrderUpdateAtMs: null,
       status: resolveInitialTrackedStatus(initialStatus),
       submittedAt,
       lastPriceUpdateAt: now,
@@ -355,7 +409,11 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       }
 
       const queryResult = await orderStatusQuery.checkOrderState(orderId);
-      return mapStateCheckResultToCancelOutcome(runtime, orderId, queryResult);
+      if (queryResult.kind === 'OPEN') {
+        applyOpenStateCheckFact(deps, orderId, queryResult);
+      }
+
+      return mapStateCheckResultToCancelOutcome(deps, orderId, queryResult);
     }
   }
 
@@ -405,6 +463,10 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       });
       logger.warn(`[订单修改] 订单 ${orderId} 连续 602013 后确认已终态，停止改单`);
       return;
+    }
+
+    if (queryResult.kind === 'OPEN') {
+      applyOpenStateCheckFact(deps, orderId, queryResult);
     }
 
     attachedTrackedOrder.replaceCapability = 'TEMP_BLOCKED_BY_STATUS';
@@ -520,8 +582,10 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       cacheManager.clearCache();
       const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
       if (attachedTrackedOrder === null) {
-        logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，丢弃过期改单成功结果`);
-        return { kind: 'NOT_EXECUTED' };
+        logger.debug(
+          `[订单修改] 订单 ${orderId} 已脱离追踪，不写回过期本地状态，但保留 broker 已确认改单事实`,
+        );
+        return { kind: 'BROKER_CONFIRMED' };
       }
 
       attachedTrackedOrder.submittedPrice = normalizedNewPriceNumber;
@@ -605,6 +669,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         }
 
         if (queryResult.kind === 'OPEN') {
+          applyOpenStateCheckFact(deps, orderId, queryResult);
           setReplaceOutcome(runtime, orderId, {
             kind: 'FAILED',
             reason: 'QUERY_OPEN',

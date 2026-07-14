@@ -13,7 +13,10 @@ import type {
   OrderMonitorTrackedOrder,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createTradeContextDouble } from '../../../helpers/testDoubles.js';
+import {
+  createOrderRecorderDouble,
+  createTradeContextDouble,
+} from '../../../helpers/testDoubles.js';
 import type { OrderHoldRegistry, OrderCacheManager } from '../../../../src/core/trader/types.js';
 import type { RateLimiter } from '../../../../src/types/services.js';
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
@@ -88,6 +91,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -139,6 +144,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -182,6 +189,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -224,6 +233,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -262,6 +273,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -302,6 +315,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -336,6 +351,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'TERMINAL' as const,
@@ -343,7 +360,7 @@ describe('orderMonitor orderOps', () => {
           status: 15,
           executedPrice: null,
           executedQuantity: null,
-          executedTimeMs: null,
+          orderUpdatedAtMs: null,
         }),
       },
       triggerRoute: () => {},
@@ -372,6 +389,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -422,6 +441,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -475,6 +496,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -528,6 +551,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -580,6 +605,8 @@ describe('orderMonitor orderOps', () => {
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
@@ -619,12 +646,381 @@ describe('orderMonitor orderOps', () => {
     runtime.routeStatesBySymbol.delete('BULL.HK');
     runtime.closedOrderIds.add('ORDER-STALE-REPLACE-1');
     releaseReplace.resolve();
-    await replacePromise;
+    const replaceOutcome = await replacePromise;
 
     expect(replaceCallCount).toBe(1);
+    expect(replaceOutcome).toEqual({ kind: 'BROKER_CONFIRMED' });
     expect(runtime.latestReplaceOutcomeByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
     expect(runtime.queriedTerminalStateByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
     expect(trackedOrder.submittedPrice).toBe(1.01);
     expect(trackedOrder.submittedQuantity).toBe(100);
+  });
+
+  it('replaceOrderPrice 在 broker API 前脱离追踪时返回 NOT_EXECUTED 且不调用 SDK', async () => {
+    const runtime = createRuntimeStore();
+    const throttleStarted = createDeferred();
+    const releaseThrottle = createDeferred();
+    const tradeCtx = createTradeContextMock();
+    let replaceCallCount = 0;
+    tradeCtx.replaceOrder = async () => {
+      replaceCallCount += 1;
+    };
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: {
+        throttle: async () => {
+          throttleStarted.resolve();
+          await releaseThrottle.promise;
+        },
+      },
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'QUERY_FAILED',
+          reason: 'NOT_FOUND',
+          errorCode: '603001',
+          message: 'not used in this test',
+        }),
+      },
+      triggerRoute: () => {},
+    });
+    orderOps.trackOrder({
+      orderId: 'ORDER-DETACHED-BEFORE-API',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      price: 1.01,
+      initialSubmittedPrice: 1.01,
+      quantity: 100,
+      initialStatus: OrderStatus.New,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    const replacePromise = orderOps.replaceOrderPrice('ORDER-DETACHED-BEFORE-API', 1.23, {
+      kind: 'ORDER_FACT',
+    });
+    await throttleStarted.promise;
+    runtime.trackedOrders.delete('ORDER-DETACHED-BEFORE-API');
+    releaseThrottle.resolve();
+
+    const replaceOutcome = await replacePromise;
+    expect(replaceOutcome).toEqual({ kind: 'NOT_EXECUTED' });
+    expect(replaceCallCount).toBe(0);
+  });
+
+  it('撤单业务失败后的 OPEN state-check 会记录新增累计成交事实', async () => {
+    const runtime = createRuntimeStore();
+    const tradeCtx = createTradeContextMock();
+    tradeCtx.cancelOrder = async () => {
+      throw new Error('openapi error: code=601011: order cannot be cancelled');
+    };
+    const partialFills: Array<Readonly<{ orderId: string; filledQuantity: number }>> = [];
+    const cumulativeExecutions: Array<
+      Readonly<{
+        orderId: string;
+        executedQuantity: number | null;
+        orderUpdatedAtMs: number | null;
+      }>
+    > = [];
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiter(),
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        markSellPartialFilled: (orderId, filledQuantity) => {
+          partialFills.push({ orderId, filledQuantity });
+          return null;
+        },
+      }),
+      recordCumulativeExecution: (params) => {
+        cumulativeExecutions.push(params);
+      },
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'OPEN' as const,
+          status: OrderStatus.PartialFilled,
+          executedPrice: 1.02,
+          executedQuantity: 40,
+          updatedAtMs: 200,
+        }),
+      },
+      triggerRoute: () => {},
+    });
+    orderOps.trackOrder({
+      orderId: 'SELL-CANCEL-OPEN-PARTIAL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 1.01,
+      initialSubmittedPrice: 1.01,
+      quantity: 100,
+      initialStatus: OrderStatus.New,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: true,
+      orderType: OrderType.ELO,
+    });
+
+    await orderOps.cancelOrder('SELL-CANCEL-OPEN-PARTIAL', { kind: 'ORDER_FACT' });
+
+    expect(runtime.trackedOrders.get('SELL-CANCEL-OPEN-PARTIAL')).toMatchObject({
+      status: OrderStatus.PartialFilled,
+      executedPrice: 1.02,
+      executedQuantity: 40,
+      lastExecutedTimeMs: 200,
+      lastOrderUpdateAtMs: 200,
+    });
+    expect(partialFills).toEqual([{ orderId: 'SELL-CANCEL-OPEN-PARTIAL', filledQuantity: 40 }]);
+    expect(cumulativeExecutions).toEqual([
+      expect.objectContaining({
+        orderId: 'SELL-CANCEL-OPEN-PARTIAL',
+        executedQuantity: 40,
+        orderUpdatedAtMs: 200,
+        isProtectiveLiquidation: true,
+      }),
+    ]);
+  });
+
+  it.each([null, 0] as const)(
+    'OPEN state-check 累计量推进但成交价为 %s 时拒绝且不推进本地与累计副作用',
+    async (incomingPrice) => {
+      const runtime = createRuntimeStore();
+      const tradeCtx = createTradeContextMock();
+      tradeCtx.cancelOrder = async () => {
+        throw new Error('openapi error: code=601011: order cannot be cancelled');
+      };
+      let cumulativeExecutionCount = 0;
+      const orderOps = createOrderOps({
+        runtime,
+        monitorConfig: TEST_MONITOR_CONFIG,
+        ctx: createTradeContextDouble(tradeCtx),
+        rateLimiter: createRateLimiter(),
+        cacheManager: createCacheManager(),
+        orderHoldRegistry: createOrderHoldRegistry(),
+        orderRecorder: createOrderRecorderDouble(),
+        recordCumulativeExecution: () => {
+          cumulativeExecutionCount += 1;
+        },
+        orderStatusQuery: {
+          checkOrderState: async () => ({
+            kind: 'OPEN',
+            status: OrderStatus.PartialFilled,
+            executedPrice: incomingPrice,
+            executedQuantity: 100,
+            updatedAtMs: 200,
+          }),
+        },
+        triggerRoute: () => {},
+      });
+      orderOps.trackOrder({
+        orderId: 'SELL-CANCEL-OPEN-INVALID-PRICE',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        price: 1.01,
+        initialSubmittedPrice: 1.01,
+        quantity: 100,
+        initialStatus: OrderStatus.PartialFilled,
+        isLongSymbol: true,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: true,
+        orderType: OrderType.ELO,
+      });
+      const trackedOrder = runtime.trackedOrders.get('SELL-CANCEL-OPEN-INVALID-PRICE');
+      if (!trackedOrder) {
+        throw new Error('missing tracked order for invalid OPEN state-check test');
+      }
+
+      trackedOrder.executedQuantity = 40;
+      trackedOrder.executedPrice = 1;
+      trackedOrder.lastExecutedTimeMs = 100;
+      trackedOrder.lastOrderUpdateAtMs = 100;
+
+      let caughtError: unknown = null;
+      try {
+        await orderOps.cancelOrder('SELL-CANCEL-OPEN-INVALID-PRICE', { kind: 'ORDER_FACT' });
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(Error);
+      expect(caughtError).toHaveProperty(
+        'message',
+        expect.stringContaining('累计成交数量推进但缺少有效成交价'),
+      );
+
+      expect(trackedOrder).toMatchObject({
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 1,
+        lastExecutedTimeMs: 100,
+        lastOrderUpdateAtMs: 100,
+      });
+      expect(cumulativeExecutionCount).toBe(0);
+    },
+  );
+
+  it('改单业务失败后的 OPEN state-check 会记录新增累计成交事实', async () => {
+    const runtime = createRuntimeStore();
+    const tradeCtx = createTradeContextMock();
+    tradeCtx.replaceOrder = async () => {
+      throw new Error('openapi error: code=601011: order state changed');
+    };
+    const partialFills: Array<Readonly<{ orderId: string; filledQuantity: number }>> = [];
+    const cumulativeExecutions: Array<
+      Readonly<{ orderId: string; executedQuantity: number | null }>
+    > = [];
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiter(),
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        markSellPartialFilled: (orderId, filledQuantity) => {
+          partialFills.push({ orderId, filledQuantity });
+          return null;
+        },
+      }),
+      recordCumulativeExecution: (params) => {
+        cumulativeExecutions.push(params);
+      },
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'OPEN' as const,
+          status: OrderStatus.PartialFilled,
+          executedPrice: 1.03,
+          executedQuantity: 60,
+          updatedAtMs: 300,
+        }),
+      },
+      triggerRoute: () => {},
+    });
+    orderOps.trackOrder({
+      orderId: 'SELL-REPLACE-OPEN-PARTIAL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 1.01,
+      initialSubmittedPrice: 1.01,
+      quantity: 100,
+      initialStatus: OrderStatus.New,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: true,
+      orderType: OrderType.ELO,
+    });
+
+    await orderOps.replaceOrderPrice('SELL-REPLACE-OPEN-PARTIAL', 1.04, {
+      kind: 'ORDER_FACT',
+    });
+
+    expect(runtime.trackedOrders.get('SELL-REPLACE-OPEN-PARTIAL')).toMatchObject({
+      status: OrderStatus.PartialFilled,
+      executedPrice: 1.03,
+      executedQuantity: 60,
+      lastExecutedTimeMs: 300,
+      lastOrderUpdateAtMs: 300,
+    });
+    expect(partialFills).toEqual([{ orderId: 'SELL-REPLACE-OPEN-PARTIAL', filledQuantity: 60 }]);
+    expect(cumulativeExecutions).toEqual([
+      expect.objectContaining({
+        orderId: 'SELL-REPLACE-OPEN-PARTIAL',
+        executedQuantity: 60,
+        isProtectiveLiquidation: true,
+      }),
+    ]);
+  });
+
+  it('连续 602013 后的 OPEN state-check 会在转入 WAIT_WS_ONLY 前记录成交事实', async () => {
+    const runtime = createRuntimeStore();
+    const tradeCtx = createTradeContextMock();
+    tradeCtx.replaceOrder = async () => {
+      throw new Error('openapi error: code=602013: current status does not allow replace');
+    };
+    const partialFills: Array<Readonly<{ orderId: string; filledQuantity: number }>> = [];
+    const cumulativeExecutions: Array<
+      Readonly<{ orderId: string; executedQuantity: number | null }>
+    > = [];
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiter(),
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        markSellPartialFilled: (orderId, filledQuantity) => {
+          partialFills.push({ orderId, filledQuantity });
+          return null;
+        },
+      }),
+      recordCumulativeExecution: (params) => {
+        cumulativeExecutions.push(params);
+      },
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'OPEN' as const,
+          status: OrderStatus.PartialFilled,
+          executedPrice: 1.05,
+          executedQuantity: 80,
+          updatedAtMs: 400,
+        }),
+      },
+      triggerRoute: () => {},
+    });
+    orderOps.trackOrder({
+      orderId: 'SELL-REPLACE-602013-OPEN-PARTIAL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 1.01,
+      initialSubmittedPrice: 1.01,
+      quantity: 100,
+      initialStatus: OrderStatus.New,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: true,
+      orderType: OrderType.ELO,
+    });
+    const trackedOrder = runtime.trackedOrders.get('SELL-REPLACE-602013-OPEN-PARTIAL');
+    if (trackedOrder === undefined) {
+      throw new Error('missing tracked order for 602013 state-check test');
+    }
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      trackedOrder.replaceBlockedUntilAt = null;
+      await orderOps.replaceOrderPrice('SELL-REPLACE-602013-OPEN-PARTIAL', 1.04, {
+        kind: 'ORDER_FACT',
+      });
+    }
+
+    expect(trackedOrder).toMatchObject({
+      status: OrderStatus.PartialFilled,
+      executedPrice: 1.05,
+      executedQuantity: 80,
+      lastExecutedTimeMs: 400,
+      lastOrderUpdateAtMs: 400,
+      replaceCapability: 'TEMP_BLOCKED_BY_STATUS',
+      replaceResumeMode: 'WAIT_WS_ONLY',
+    });
+
+    expect(partialFills).toEqual([
+      { orderId: 'SELL-REPLACE-602013-OPEN-PARTIAL', filledQuantity: 80 },
+    ]);
+
+    expect(cumulativeExecutions).toEqual([
+      expect.objectContaining({
+        orderId: 'SELL-REPLACE-602013-OPEN-PARTIAL',
+        executedQuantity: 80,
+      }),
+    ]);
   });
 });

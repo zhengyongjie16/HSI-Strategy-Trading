@@ -7,19 +7,19 @@
  * - 协调订单提交流程与追踪登记
  */
 import { logger } from '../../../utils/logger/index.js';
+import { OrderSide } from 'longbridge';
 import { LOG_COLORS } from '../../../constants/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import { isSeatVersionMatch } from '../../../utils/seat/guards.js';
+import { getHKDateKey } from '../../../utils/time/index.js';
+import { hasReachedDoomsdayBuyCutoff } from '../../doomsdayProtection/utils.js';
 import type { ExecutableSignal, Signal } from '../../../types/signal.js';
+import type { ExecuteSignalsResult } from '../../../types/trader.js';
 import type { OrderActionAuthorization, OrderExecutor, OrderExecutorDeps } from '../types.js';
+import type { ExecutableOrderCommand } from './types.js';
 import { createSubmitTargetOrder } from './submitFlow.js';
 import { createBuyThrottle } from './buyThrottle.js';
-import {
-  getActionDescription,
-  isLiquidationSignal,
-  isStaleCrossDaySignal,
-  resolveOrderSide,
-} from './utils.js';
+import { getActionDescription, isLiquidationSignal, isStaleCrossDaySignal } from './utils.js';
 
 /**
  * 校验信号携带的席位版本是否与执行时席位版本一致。
@@ -58,20 +58,51 @@ function validateSignalSeatVersionAtExecution(
  * @param action 已通过执行入口类型约束的买卖信号动作
  * @returns 信号应归属的 LONG 或 SHORT 席位方向
  */
-function resolveSignalDirection(action: ExecutableSignal['action']): 'LONG' | 'SHORT' {
-  switch (action) {
-    case 'BUYCALL':
-    case 'SELLCALL': {
-      return 'LONG';
+function resolveExecutableOrderCommand(signal: ExecutableSignal): ExecutableOrderCommand {
+  if (typeof signal.symbol !== 'string' || signal.symbol.length === 0) {
+    throw new Error(`[订单执行] 信号缺少有效标的代码: action=${signal.action}`);
+  }
+
+  switch (signal.action) {
+    case 'BUYCALL': {
+      return {
+        kind: 'BUY',
+        signal: { ...signal, action: 'BUYCALL' },
+        direction: 'LONG',
+        side: OrderSide.Buy,
+      };
     }
 
-    case 'BUYPUT':
+    case 'BUYPUT': {
+      return {
+        kind: 'BUY',
+        signal: { ...signal, action: 'BUYPUT' },
+        direction: 'SHORT',
+        side: OrderSide.Buy,
+      };
+    }
+
+    case 'SELLCALL': {
+      return {
+        kind: 'SELL',
+        signal: { ...signal, action: 'SELLCALL' },
+        direction: 'LONG',
+        side: OrderSide.Sell,
+      };
+    }
+
     case 'SELLPUT': {
-      return 'SHORT';
+      return {
+        kind: 'SELL',
+        signal: { ...signal, action: 'SELLPUT' },
+        direction: 'SHORT',
+        side: OrderSide.Sell,
+      };
     }
 
     default: {
-      throw new Error(`[订单执行] 无法解析信号动作方向: action=${String(action)}`);
+      const invalidSignal: Signal = signal;
+      throw new Error(`[订单执行] 非法可执行信号动作: action=${invalidSignal.action}`);
     }
   }
 }
@@ -92,6 +123,8 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     tradingConfig,
     symbolRegistry,
     isExecutionAllowed,
+    now,
+    readCurrentTradingDayInfo,
   } = deps;
   const { global, monitor } = tradingConfig;
 
@@ -120,43 +153,67 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
    * @param signal 已绑定 seatVersion 的可执行信号
    * @returns 可在最终 SDK API 前重复调用的授权器
    */
-  function createSignalOrderAuthorization(signal: ExecutableSignal): OrderActionAuthorization {
-    const binding = {
-      action: signal.action,
-      direction: resolveSignalDirection(signal.action),
-      symbol: signal.symbol,
-      seatVersion: signal.seatVersion,
-    } as const;
+  function createSignalOrderAuthorization(
+    command: ExecutableOrderCommand,
+  ): OrderActionAuthorization {
+    const { signal } = command;
 
     return (stage) => {
       if (!canExecuteSignal(signal, stage)) {
         return false;
       }
 
-      const currentSeat = symbolRegistry.resolveSeatBySymbol(binding.symbol);
+      const currentSeat = symbolRegistry.resolveSeatBySymbol(signal.symbol);
       if (!currentSeat) {
         logger.debug(
-          `[执行门禁] ${stage} 信号标的已不属于当前席位，跳过信号: ${binding.symbol} ${binding.action}`,
+          `[执行门禁] ${stage} 信号标的已不属于当前席位，跳过信号: ${signal.symbol} ${signal.action}`,
         );
         return false;
       }
 
-      if (currentSeat.direction !== binding.direction) {
+      if (currentSeat.direction !== command.direction) {
         if (stage === 'executeSignals') {
           throw new Error(
-            `[订单执行] 信号动作与席位方向不一致: action=${binding.action} expected=${binding.direction} actual=${currentSeat.direction} symbol=${binding.symbol}`,
+            `[订单执行] 信号动作与席位方向不一致: action=${signal.action} expected=${command.direction} actual=${currentSeat.direction} symbol=${signal.symbol}`,
           );
         }
 
         logger.debug(
-          `[执行门禁] ${stage} 信号方向已失效，跳过信号: ${binding.symbol} ${binding.action}`,
+          `[执行门禁] ${stage} 信号方向已失效，跳过信号: ${signal.symbol} ${signal.action}`,
         );
         return false;
       }
 
+      if (
+        stage === 'submitOrder.beforeApi' &&
+        command.kind === 'BUY' &&
+        global.doomsdayProtection
+      ) {
+        const currentTime = now();
+        const currentDateKey = getHKDateKey(currentTime);
+        const currentTradingDayInfo = readCurrentTradingDayInfo();
+        if (
+          currentDateKey === null ||
+          currentTradingDayInfo?.dateKey !== currentDateKey ||
+          !currentTradingDayInfo.info.isTradingDay
+        ) {
+          logger.warn(
+            `[执行门禁] ${stage} 无法确认当日交易日事实，拒绝买入: symbol=${signal.symbol} action=${signal.action} currentDateKey=${currentDateKey ?? 'null'} calendarDateKey=${currentTradingDayInfo?.dateKey ?? 'null'}`,
+          );
+          return false;
+        }
+
+        if (hasReachedDoomsdayBuyCutoff(currentTime, currentTradingDayInfo.info.isHalfDay)) {
+          logger.info(
+            `[执行门禁] ${stage} 已进入末日保护买入截止窗口，拒绝买入: symbol=${signal.symbol} action=${signal.action}`,
+          );
+          return false;
+        }
+      }
+
       return validateSignalSeatVersionAtExecution(
         signal,
-        binding.seatVersion,
+        signal.seatVersion,
         currentSeat.seatVersion,
       );
     };
@@ -177,27 +234,23 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
   });
 
   /**
-   * 执行交易信号，返回实际提交数量与订单 ID 列表。
+   * 执行交易信号，返回真正新提交或 broker 已确认改单的唯一订单 ID 列表。
    *
    * @param signals 待执行信号
-   * @returns 提交统计
+   * @returns 已执行订单 ID
    */
   async function executeSignals(
     signals: ReadonlyArray<ExecutableSignal>,
-  ): Promise<{ submittedCount: number; submittedOrderIds: ReadonlyArray<string> }> {
+  ): Promise<ExecuteSignalsResult> {
     if (!isExecutionAllowed()) {
       logger.debug('[执行门禁] 门禁关闭，跳过本次下单，不提交任何订单');
-      return { submittedCount: 0, submittedOrderIds: [] };
+      return { executedOrderIds: [] };
     }
 
-    let submittedCount = 0;
-    const submittedOrderIds: string[] = [];
+    const executedOrderIds: string[] = [];
 
     for (const signal of signals) {
-      if (!signal.symbol || typeof signal.symbol !== 'string') {
-        logger.warn(`[跳过信号] 信号缺少有效的标的代码: ${JSON.stringify(signal)}`);
-        continue;
-      }
+      const command = resolveExecutableOrderCommand(signal);
 
       const signalSymbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
 
@@ -213,18 +266,10 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         continue;
       }
 
-      const side = resolveOrderSide(signal.action);
-      if (!side) {
-        logger.warn(`[跳过信号] 未知的信号类型: ${signal.action}, 标的: ${signalSymbolDisplay}`);
-        continue;
-      }
-
-      const authorizeOrderAction = createSignalOrderAuthorization(signal);
+      const authorizeOrderAction = createSignalOrderAuthorization(command);
       if (!authorizeOrderAction('executeSignals')) {
         continue;
       }
-
-      const isShortSymbol = resolveSignalDirection(signal.action) === 'SHORT';
 
       const actualAction = getActionDescription(signal.action);
       const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName);
@@ -236,19 +281,13 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         `${LOG_COLORS.green}[交易计划] ${actualAction} ${symbolDisplay} - ${planReason}${LOG_COLORS.reset}`,
       );
 
-      const submittedOrderId = await submitTargetOrder(
-        signal,
-        signal.symbol,
-        isShortSymbol,
-        authorizeOrderAction,
-      );
-      if (submittedOrderId !== null) {
-        submittedCount += 1;
-        submittedOrderIds.push(submittedOrderId);
+      const actionResult = await submitTargetOrder(command, authorizeOrderAction);
+      if (actionResult.kind !== 'SKIPPED') {
+        executedOrderIds.push(actionResult.orderId);
       }
     }
 
-    return { submittedCount, submittedOrderIds };
+    return { executedOrderIds };
   }
 
   return {

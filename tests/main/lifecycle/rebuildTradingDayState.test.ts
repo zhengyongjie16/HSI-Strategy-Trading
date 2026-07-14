@@ -30,12 +30,13 @@ import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
 
 const emptyQuotesMap = new Map<string, Quote | null>();
 const emptyOrders: ReadonlyArray<RawOrderFromAPI> = [];
-const emptySeatState = {
-  symbol: null as string | null,
-  status: 'EMPTY' as const,
+const emptySeatState: SeatState = {
+  symbol: null,
+  status: 'EMPTY',
   lastSwitchAt: null as number | null,
   lastSearchAt: null as number | null,
   lastSeatActivatedAt: null,
+  callPrice: null,
   searchFailCountToday: 0,
   frozenTradingDayKey: null as string | null,
 };
@@ -53,9 +54,14 @@ function createSymbolRegistry(
   let readySeatState: SeatState =
     seatStatus === 'ACTIVE'
       ? {
-          ...emptySeatState,
           symbol,
           status: 'ACTIVE' as const,
+          lastSwitchAt: null,
+          lastSearchAt: null,
+          lastSeatActivatedAt: 1,
+          callPrice: null,
+          searchFailCountToday: 0,
+          frozenTradingDayKey: null,
         }
       : emptySeatState;
   return {
@@ -255,7 +261,7 @@ describe('createRebuildTradingDayState', () => {
     const oldOrderDateKey = getHKDateKey(new Date(oldOpenOrderTime));
     expect(oldOrderDateKey).not.toBeNull();
     if (oldOrderDateKey) {
-      expect(lastState.tradingCalendarSnapshot?.has(oldOrderDateKey)).toBe(true);
+      expect(lastState.tradingCalendarSnapshot.has(oldOrderDateKey)).toBe(true);
     }
   });
 

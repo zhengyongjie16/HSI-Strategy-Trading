@@ -11,6 +11,7 @@ import { isSeatVersionMatch } from '../../../../utils/seat/guards.js';
 
 import type { MarketDataClient } from '../../../../types/services.js';
 import type { MonitorContext } from '../../../../types/state.js';
+import type { SeatState } from '../../../../types/seat.js';
 import type { QuoteSubscriptionRuntime } from '../../../quoteSubscriptionRuntime/types.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
 import type {
@@ -133,7 +134,7 @@ function markSeatAsEmpty(
 function resolveActivatingSeatSnapshot(
   context: MonitorContext,
   data: SeatRefreshTaskData,
-): ReturnType<MonitorContext['symbolRegistry']['getSeatState']> | null {
+): (SeatState & { readonly status: 'ACTIVATING'; readonly symbol: string }) | null {
   const seatState = context.symbolRegistry.getSeatState(data.direction);
   const seatVersion = context.symbolRegistry.getSeatVersion(data.direction);
   if (!isSeatVersionMatch(data.seatVersion, seatVersion)) {

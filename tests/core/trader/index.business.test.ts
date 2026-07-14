@@ -15,6 +15,7 @@ import { createAccountService } from '../../../src/core/trader/accountService.js
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { TraderDeps } from '../../../src/core/trader/types.js';
 import type { Trader } from '../../../src/types/services.js';
+import { getRequiredHKDateKey } from '../../../src/utils/time/index.js';
 import {
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
@@ -23,14 +24,19 @@ import {
   createTradeContextDouble,
 } from '../../helpers/testDoubles.js';
 
+type TestTraderDeps = Omit<TraderDeps, 'now' | 'readCurrentTradingDayInfo'> &
+  Partial<Pick<TraderDeps, 'now' | 'readCurrentTradingDayInfo'>>;
+
 type TraderModuleShape = {
   readonly createTrader: (deps: TraderDeps) => Promise<Trader>;
 };
 
+type TestCreateTrader = (deps: TestTraderDeps) => Promise<Trader>;
+
 async function loadCreateTraderWithStubbedTradeContext(
   suffix: string,
   tradeContextFactory: { readonly new: () => object },
-): Promise<TraderModuleShape['createTrader']> {
+): Promise<TestCreateTrader> {
   const actualLongbridge = await import('longbridge');
 
   void mock.module('longbridge', () => ({
@@ -41,7 +47,17 @@ async function loadCreateTraderWithStubbedTradeContext(
   const traderModulePath = `../../../src/core/trader/index.js?worker-removal-cachebust-${suffix}`;
   const traderModuleUnknown: unknown = await import(traderModulePath);
   const traderModule = traderModuleUnknown as TraderModuleShape;
-  return traderModule.createTrader;
+  return (deps) => {
+    const defaultNow = (): Date => new Date(Date.now());
+    return traderModule.createTrader({
+      now: defaultNow,
+      readCurrentTradingDayInfo: () => ({
+        dateKey: getRequiredHKDateKey(defaultNow()),
+        info: { isTradingDay: true, isHalfDay: false },
+      }),
+      ...deps,
+    });
+  };
 }
 
 function createEmptyStockPositionsResponse(): StockPositionsResponse {
@@ -76,6 +92,7 @@ describe('trader facade business flow', () => {
       symbolRegistry: createSymbolRegistryDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
       },
@@ -99,6 +116,7 @@ describe('trader facade business flow', () => {
       symbolRegistry: createSymbolRegistryDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
       },
@@ -143,6 +161,7 @@ describe('trader facade business flow', () => {
         symbolRegistry: createSymbolRegistryDouble(),
         dailyLossTracker: createDailyLossTrackerDouble(),
         protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+        persistProtectiveLiquidationExecutionProgress: () => {},
         postTradeConsistencyRuntime: {
           recordSettlementRefreshNeed: () => {},
         },
@@ -173,6 +192,7 @@ describe('trader facade business flow', () => {
       symbolRegistry: createSymbolRegistryDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
       },
@@ -213,6 +233,7 @@ describe('trader facade business flow', () => {
       symbolRegistry: createSymbolRegistryDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
       },
@@ -267,6 +288,7 @@ describe('trader facade business flow', () => {
       symbolRegistry: createSymbolRegistryDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
       },

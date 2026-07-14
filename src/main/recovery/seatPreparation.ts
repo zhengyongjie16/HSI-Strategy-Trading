@@ -62,15 +62,29 @@ export async function prepareSeatsForRuntime(deps: PrepareSeatsForRuntimeDeps): 
 
   function updateSeatOnRuntimeRecovery(direction: 'LONG' | 'SHORT', symbol: string | null): void {
     const currentSeat = symbolRegistry.getSeatState(direction);
+    if (symbol === null) {
+      symbolRegistry.updateSeatState(direction, {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        callPrice: null,
+        searchFailCountToday: currentSeat.searchFailCountToday,
+        frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+      });
+      return;
+    }
+
     symbolRegistry.updateSeatState(direction, {
       symbol,
-      status: symbol ? 'ACTIVATING' : 'EMPTY',
+      status: 'ACTIVATING',
       lastSwitchAt: null,
       lastSearchAt: null,
       lastSeatActivatedAt: null,
       callPrice: null,
-      searchFailCountToday: symbol ? 0 : currentSeat.searchFailCountToday,
-      frozenTradingDayKey: symbol ? null : currentSeat.frozenTradingDayKey,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
     });
   }
 

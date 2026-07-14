@@ -6,9 +6,7 @@
  * - 固定 lastState、trader、快照加载器与异步基础设施的唯一创建点
  * - 保持 post-gate 对象所有权清单集中
  */
-import fs from 'node:fs';
-import path from 'node:path';
-import { INDICATOR_CACHE, LOGGING, TIME, TRADING, VERIFICATION } from '../../constants/index.js';
+import { INDICATOR_CACHE, TIME, VERIFICATION } from '../../constants/index.js';
 import { createTrader } from '../../core/trader/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
@@ -39,26 +37,24 @@ import { createMarketMonitor } from '../../services/marketMonitor/index.js';
 import { buildPriceDisplayInfo } from '../../services/marketMonitor/priceDisplayInfo.js';
 import { createLiquidationCooldownTracker } from '../../services/liquidationCooldown/index.js';
 import { createTradeLogHydrator } from '../../services/liquidationCooldown/tradeLogHydrator.js';
+import { createMixedTradeLogRepository } from '../../services/mixedTradeLogRepository/index.js';
 import { createPositionCache } from '../../utils/positionCache/index.js';
 import { initMonitorState, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
-import { buildTradeLogPath } from '../../utils/trading/tradeLogPath.js';
 import {
   calculateTradingDurationDueAtMs,
   getRequiredHKDateKey,
   toHongKongTimeIso,
 } from '../../utils/time/index.js';
-import { logger, retainLatestLogFiles } from '../../utils/logger/index.js';
+import { logger } from '../../utils/logger/index.js';
 import { toError } from '../../utils/error/index.js';
 import type { LastState } from '../../types/state.js';
+import type { ProtectiveLiquidationExecutionProgressInput } from '../../types/risk.js';
 import type { OrderStateChangedEvent } from '../../types/services.js';
 import type { MonitorTaskDataMap } from '../../main/asyncProgram/monitorTaskProcessor/types.js';
 import type { QuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/types.js';
-import type {
-  CreatePostGateRuntimeParams,
-  PersistableTradeRecord,
-  PostGateRuntime,
-} from '../types.js';
+import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../types.js';
+import type { PersistableTradeRecord } from '../../types/trader.js';
 import type { CreatePostGateRuntimeDeps, SingleAssignmentBinding } from './types.js';
 
 const DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS: CreatePostGateRuntimeDeps = {
@@ -128,10 +124,6 @@ function resolveTradeAction(params: {
 function resolveTradeReason(
   event: OrderStateChangedEvent & { readonly side: 'BUY' | 'SELL' },
 ): string | null {
-  if (event.isProtectiveLiquidation && event.side === 'SELL' && event.status === 'FILLED') {
-    return TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON;
-  }
-
   if (event.status === 'FILLED') {
     return null;
   }
@@ -189,9 +181,9 @@ function resolveTradeRecordFromOrderStateChangedEvent(
  * @param params 运行时环境与订单状态事件
  */
 function persistTradeRecordFromOrderStateChangedEvent(params: {
-  readonly env: NodeJS.ProcessEnv;
   readonly event: OrderStateChangedEvent;
   readonly expectedMonitorSymbol: string;
+  readonly appendTradeRecord: (record: PersistableTradeRecord) => void;
 }): void {
   const tradeRecord = resolveTradeRecordFromOrderStateChangedEvent(
     params.event,
@@ -201,27 +193,15 @@ function persistTradeRecordFromOrderStateChangedEvent(params: {
     return;
   }
 
-  const logRootDir = resolveLogRootDir(params.env);
-  const logDir = path.join(logRootDir, 'trades');
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
+  params.appendTradeRecord(tradeRecord);
+}
 
-  const logFile = buildTradeLogPath(logRootDir, new Date(tradeRecord.executedAtMs));
-  retainLatestLogFiles(logDir, LOGGING.MAX_RETAINED_LOG_FILES, 'json', path.basename(logFile));
-
-  let records: unknown[] = [];
-  if (fs.existsSync(logFile)) {
-    const parsed: unknown = JSON.parse(fs.readFileSync(logFile, 'utf8'));
-    if (!Array.isArray(parsed)) {
-      throw new TypeError('[createPostGateRuntime] trade log 根节点必须为数组');
-    }
-
-    records = parsed;
-  }
-
-  records.push(tradeRecord);
-  fs.writeFileSync(logFile, JSON.stringify(records, null, 2), 'utf8');
+function persistProtectiveLiquidationExecutionProgress(params: {
+  readonly repository: ReturnType<typeof createMixedTradeLogRepository>;
+  readonly input: ProtectiveLiquidationExecutionProgressInput;
+}): void {
+  const { repository, input } = params;
+  repository.appendExecutionProgressIdempotent(input);
 }
 
 /**
@@ -255,6 +235,9 @@ export function createPostGateRuntimeFactory(
       toHongKongTimeIso,
     });
     const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
+    const mixedTradeLogRepository = createMixedTradeLogRepository({
+      resolveLogRootDir: () => resolveLogRootDir(env),
+    });
     const initialDayKey = getRequiredHKDateKey(now);
     const initialTradingDayInfo =
       startupTradingDayInfo !== null && startupTradingDayInfo.dateKey === initialDayKey
@@ -360,8 +343,16 @@ export function createPostGateRuntimeFactory(
       symbolRegistry,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
+      persistProtectiveLiquidationExecutionProgress: (input) => {
+        persistProtectiveLiquidationExecutionProgress({
+          repository: mixedTradeLogRepository,
+          input,
+        });
+      },
       postTradeConsistencyRuntime,
       isExecutionAllowed: () => lastState.isTradingEnabled,
+      now: () => new Date(Date.now()),
+      readCurrentTradingDayInfo: () => lastState.cachedTradingDayInfo,
       onFatalError: handleFatalError,
     });
     traderBinding.bind(trader);
@@ -371,13 +362,11 @@ export function createPostGateRuntimeFactory(
       handler: () => trader.stopOrderMonitorRuntimeAndDrain(),
     });
     const tradeLogHydrator = createTradeLogHydrator({
-      readFileSync: fs.readFileSync,
-      existsSync: fs.existsSync,
-      resolveLogRootDir: () => resolveLogRootDir(env),
       nowMs: () => Date.now(),
       logger,
       tradingConfig,
       liquidationCooldownTracker,
+      mixedTradeLogRepository,
     });
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
@@ -403,6 +392,7 @@ export function createPostGateRuntimeFactory(
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
       tradeLogHydrator,
+      mixedTradeLogRepository,
       warrantListCacheConfig,
       seatActivationDispatcher,
     });
@@ -429,9 +419,9 @@ export function createPostGateRuntimeFactory(
     const unsubscribeOrderStateChanged = trader.onOrderStateChanged((event) => {
       try {
         persistTradeRecordFromOrderStateChangedEvent({
-          env,
           event,
           expectedMonitorSymbol: tradingConfig.monitor.monitorSymbol,
+          appendTradeRecord: mixedTradeLogRepository.appendTradeRecord,
         });
       } catch (error) {
         handleFatalError(error);
@@ -487,6 +477,7 @@ export function createPostGateRuntimeFactory(
       dailyLossTracker,
       liquidationCooldownTracker,
       protectiveLiquidationEpisodeTracker,
+      mixedTradeLogRepository,
     });
 
     const tradingRiskEventRuntime = createTradingRiskEventRuntime({
@@ -632,7 +623,7 @@ export function createPostGateRuntimeFactory(
         calculateTradingDurationDueAtMs({
           startMs,
           targetDurationMs: switchIntervalMinutes * TIME.MILLISECONDS_PER_MINUTE,
-          calendarSnapshot: lastState.tradingCalendarSnapshot ?? new Map(),
+          calendarSnapshot: lastState.tradingCalendarSnapshot,
         }),
       now: () => new Date(),
       scheduleTimer: (callback, delayMs) => {

@@ -192,7 +192,7 @@ function resolveNextTradingDayOpenMs(
   fromMs: number,
   calendarSnapshot: TimeWakeupEvaluationContext['lastState']['tradingCalendarSnapshot'],
 ): number | null {
-  const snapshot: TradingCalendarSnapshot = calendarSnapshot ?? new Map();
+  const snapshot: TradingCalendarSnapshot = calendarSnapshot;
   const dayStartMs = resolveHKDayStartUtcMs(getRequiredHKDateKey(new Date(fromMs)));
   if (dayStartMs === null) {
     return null;

@@ -85,7 +85,6 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     autoSearchConfig,
     monitorSymbol,
     symbolRegistry,
-    buildSeatState: seatStateManager.buildSeatState,
     updateSeatState: seatStateManager.updateSeatState,
     resolveDirectionalAutoSearchPolicy: thresholdResolver.resolveDirectionalAutoSearchPolicy,
     buildFindBestWarrantInput: thresholdResolver.buildFindBestWarrantInput,
@@ -113,7 +112,6 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
       seatStateManager.markSuppression(direction, seatSymbol, triggerKind);
     },
     enterSwitchingSeat: (params) => seatStateManager.enterSwitchingSeat(params),
-    buildSeatState: seatStateManager.buildSeatState,
     updateSeatState: seatStateManager.updateSeatState,
     resolveDirectionalAutoSearchPolicy: thresholdResolver.resolveDirectionalAutoSearchPolicy,
     buildFindBestWarrantInput: thresholdResolver.buildFindBestWarrantInput,

@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { createRecoveryFlow } from '../../../../src/core/trader/orderMonitor/recoveryFlow.js';
+import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
+import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
@@ -51,7 +53,11 @@ function createOrderHoldRegistry(): OrderHoldRegistry {
   };
 }
 
-function createTrackedOrder(orderId: string, symbol: string): OrderMonitorTrackedOrder {
+function createTrackedOrder(
+  orderId: string,
+  symbol: string,
+  status: OrderStatus = OrderStatus.New,
+): OrderMonitorTrackedOrder {
   const now = Date.now();
   return {
     orderId,
@@ -69,7 +75,8 @@ function createTrackedOrder(orderId: string, symbol: string): OrderMonitorTracke
     executedQuantity: 0,
     executedPrice: null,
     lastExecutedTimeMs: null,
-    status: OrderStatus.New,
+    lastOrderUpdateAtMs: null,
+    status,
     submittedAt: now,
     lastPriceUpdateAt: now,
     convertedToMarket: false,
@@ -101,25 +108,138 @@ function createPendingOrder(params: {
   readonly symbol: string;
   readonly side: OrderSide;
   readonly stockName?: string;
+  readonly status?: OrderStatus;
+  readonly updatedAtMs?: number;
+  readonly executedPrice?: number;
+  readonly executedQuantity?: number;
 }): RawOrderFromAPI {
   return {
     orderId: params.orderId,
     symbol: params.symbol,
     stockName: params.stockName ?? 'HSI RC',
     side: params.side,
-    status: OrderStatus.New,
+    status: params.status ?? OrderStatus.New,
     orderType: OrderType.ELO,
     remark: '',
     price: '1.01',
     quantity: '100',
-    executedPrice: '0',
-    executedQuantity: '0',
+    executedPrice: String(params.executedPrice ?? 0),
+    executedQuantity: String(params.executedQuantity ?? 0),
     submittedAt: new Date('2026-04-08T09:00:00.000Z'),
-    updatedAt: new Date('2026-04-08T09:00:00.000Z'),
+    updatedAt: new Date(params.updatedAtMs ?? Date.parse('2026-04-08T09:00:00.000Z')),
   };
 }
 
 describe('orderMonitor recoveryFlow', () => {
+  it('恢复 qty=0 订单仍保留 order updatedAt，并拒绝更旧 WS 覆盖', async () => {
+    const runtime = createRuntimeStore();
+    const snapshotUpdatedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
+    const recoveryFlow = createRecoveryFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: (params) => {
+        runtime.trackedOrders.set(
+          params.orderId,
+          createTrackedOrder(params.orderId, params.symbol, params.initialStatus),
+        );
+        attachTrackedOrder(runtime, params.symbol, params.orderId);
+      },
+      cancelOrder: async () => ({
+        kind: 'CANCEL_CONFIRMED',
+        closedReason: 'CANCELED',
+        source: 'API',
+        relatedBuyOrderIds: null,
+      }),
+      settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
+      handleOrderChangedWhenActive: () => {},
+    });
+    await recoveryFlow.recoverOrderTrackingFromSnapshot([
+      createPendingOrder({
+        orderId: 'ORDER-RECOVER-UPDATED-AT',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.PendingReplace,
+        updatedAtMs: snapshotUpdatedAtMs,
+      }),
+    ]);
+    const trackedOrder = runtime.trackedOrders.get('ORDER-RECOVER-UPDATED-AT');
+    if (!trackedOrder) {
+      throw new Error('expected recovered tracked order');
+    }
+
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.New,
+        updatedAtMs: snapshotUpdatedAtMs - 100,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.PendingReplace);
+    expect(trackedOrder.lastOrderUpdateAtMs).toBe(snapshotUpdatedAtMs);
+    expect(trackedOrder.lastExecutedTimeMs).toBeNull();
+  });
+
+  it('将四种 NotReported 开放状态全部恢复为 tracked order', async () => {
+    const runtime = createRuntimeStore();
+    const trackCalls: Array<Readonly<{ orderId: string; status: OrderStatus | undefined }>> = [];
+    const recoveryFlow = createRecoveryFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: (params) => {
+        trackCalls.push({ orderId: params.orderId, status: params.initialStatus });
+        runtime.trackedOrders.set(
+          params.orderId,
+          createTrackedOrder(params.orderId, params.symbol),
+        );
+        attachTrackedOrder(runtime, params.symbol, params.orderId);
+      },
+      cancelOrder: async () => ({
+        kind: 'CANCEL_CONFIRMED',
+        closedReason: 'CANCELED',
+        source: 'API',
+        relatedBuyOrderIds: null,
+      }),
+      settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
+      handleOrderChangedWhenActive: () => {},
+    });
+    const statuses: ReadonlyArray<OrderStatus> = [
+      OrderStatus.NotReported,
+      OrderStatus.ReplacedNotReported,
+      OrderStatus.ProtectedNotReported,
+      OrderStatus.VarietiesNotReported,
+    ];
+
+    await recoveryFlow.recoverOrderTrackingFromSnapshot(
+      statuses.map((status, index) =>
+        createPendingOrder({
+          orderId: `ORDER-NOT-REPORTED-${index}`,
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          status,
+        }),
+      ),
+    );
+
+    expect(trackCalls.map((call) => call.status)).toEqual([...statuses]);
+  });
+
   it('resetRecoveryTrackingState 会清空 symbol 索引与 route states', () => {
     const runtime = createRuntimeStore();
     runtime.trackedOrders.set('ORDER-1', createTrackedOrder('ORDER-1', 'BULL.HK'));
@@ -219,7 +339,7 @@ describe('orderMonitor recoveryFlow', () => {
           closedReason: 'FILLED',
           executedPrice: 1.02,
           executedQuantity: 100,
-          executedTimeMs: Date.parse('2026-04-08T09:01:00.000Z'),
+          orderUpdatedAtMs: Date.parse('2026-04-08T09:01:00.000Z'),
           status: OrderStatus.Filled,
         });
         return {
@@ -245,9 +365,55 @@ describe('orderMonitor recoveryFlow', () => {
       ]);
       throw new Error('expected recovery to reject');
     } catch (error) {
-      expect((error as Error).message).toContain('不匹配但权威终态存在成交事实');
+      expect((error as Error).message).toMatch(/不匹配但.*存在成交事实/);
     }
 
+    expect(runtime.runtimeState).toBe('STOPPED');
+  });
+
+  it('不匹配买单的启动快照已知部分成交时不得被陈旧零成交终态安全收口', async () => {
+    const runtime = createRuntimeStore();
+    const recoveryFlow = createRecoveryFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: () => {},
+      cancelOrder: async () => {
+        runtime.queriedTerminalStateByOrderId.set('ORDER-MISMATCHED-SNAPSHOT-PARTIAL', {
+          kind: 'TERMINAL',
+          closedReason: 'CANCELED',
+          executedPrice: null,
+          executedQuantity: 0,
+          orderUpdatedAtMs: Date.parse('2026-04-08T09:00:00.100Z'),
+          status: OrderStatus.Canceled,
+        });
+        return {
+          kind: 'ALREADY_CLOSED',
+          closedReason: 'CANCELED',
+          source: 'API_ERROR',
+          relatedBuyOrderIds: null,
+        };
+      },
+      settleOrder: () => {
+        throw new Error('mismatched partially-filled buy must not settle');
+      },
+      handleOrderChangedWhenActive: () => {},
+    });
+
+    expect(
+      recoveryFlow.recoverOrderTrackingFromSnapshot([
+        createPendingOrder({
+          orderId: 'ORDER-MISMATCHED-SNAPSHOT-PARTIAL',
+          symbol: 'OLD_BULL.HK',
+          side: OrderSide.Buy,
+          executedPrice: 1.05,
+          executedQuantity: 30,
+          updatedAtMs: Date.parse('2026-04-08T09:00:00.200Z'),
+        }),
+      ]),
+    ).rejects.toThrow(/不匹配但.*存在成交事实/);
     expect(runtime.runtimeState).toBe('STOPPED');
   });
 });

@@ -154,7 +154,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       status: 'ACTIVE',
       lastSwitchAt: null,
       lastSearchAt: null,
-      lastSeatActivatedAt: null,
+      lastSeatActivatedAt: 1,
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -266,7 +266,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       status: 'ACTIVE',
       lastSwitchAt: null,
       lastSearchAt: null,
-      lastSeatActivatedAt: null,
+      lastSeatActivatedAt: 1,
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -474,7 +474,11 @@ describe('tradingQuoteDisplayRuntime', () => {
       symbol: 'BULL.HK',
       quote: createQuoteDouble('BULL.HK', 1.01),
     });
-    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 1,
+    });
     resolveQuotes?.();
     await waitTick();
     await waitTick();

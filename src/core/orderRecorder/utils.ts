@@ -1,5 +1,6 @@
 import { OrderSide, OrderStatus } from 'longbridge';
-import { PENDING_ORDER_STATUSES, TIME } from '../../constants/index.js';
+import { TIME } from '../../constants/index.js';
+import { classifyOrderStatusLifecycle } from '../orderStatusLifecycle/index.js';
 import { decimalToNumber } from '../../utils/helpers/index.js';
 import { calculateTradingDurationMsBetween } from '../../utils/time/index.js';
 import {
@@ -197,7 +198,7 @@ export function classifyOrdersForRebuild(
       continue;
     }
 
-    if (!PENDING_ORDER_STATUSES.has(order.status)) {
+    if (classifyOrderStatusLifecycle(order.status) === 'TERMINAL') {
       continue;
     }
 

@@ -78,7 +78,7 @@ export function createOrderStatusQuery(deps: OrderStatusQueryDeps): OrderStatusQ
           status,
           executedPrice,
           executedQuantity,
-          executedTimeMs: updatedAtMs,
+          orderUpdatedAtMs: updatedAtMs,
         };
       }
 

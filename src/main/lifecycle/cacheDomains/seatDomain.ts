@@ -10,7 +10,7 @@
  * - 席位在统一开盘重建流水线（loadTradingDayRuntimeSnapshot）中重建，此处为空操作
  */
 import { logger } from '../../../utils/logger/index.js';
-import type { SeatState, SymbolRegistry } from '../../../types/seat.js';
+import type { RuntimeWritableSeatState, SeatState, SymbolRegistry } from '../../../types/seat.js';
 import type { CacheDomain, LifecycleContext } from '../types.js';
 import {
   captureSeatActivationCarryover,
@@ -19,7 +19,7 @@ import {
 import type { SeatDomainDeps } from './types.js';
 
 /** 基于旧席位状态构造空席位，保留 lastSwitchAt / lastSearchAt 时间戳并重置 lastSeatActivatedAt */
-function buildEmptySeatState(previous: SeatState): SeatState {
+function buildEmptySeatState(previous: SeatState): RuntimeWritableSeatState {
   return {
     symbol: null,
     status: 'EMPTY',

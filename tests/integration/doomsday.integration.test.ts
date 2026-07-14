@@ -47,6 +47,7 @@ function createLastState(): LastState {
       createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 }),
     ]),
     cachedTradingDayInfo: null,
+    tradingCalendarSnapshot: new Map(),
     monitorState: initMonitorState(createMonitorConfigDouble()),
     allTradingSymbols: new Set(['BULL.HK', 'BEAR.HK']),
   };
@@ -81,8 +82,6 @@ function createMonitorContext(
     config,
     state: {
       monitorSymbol: config.monitorSymbol,
-      signal: null,
-      pendingDelayedSignals: [],
       lastMonitorSnapshot: null,
       incrementalIndicatorRuntime: null,
     },
@@ -121,7 +120,10 @@ function createMonitorContext(
     dailyLossTracker: {
       resetAll: () => {},
       recalculateFromAllOrders: () => {},
-      recordFilledOrder: () => {},
+      recordCumulativeExecution: () => ({
+        authoritativeFactChanged: false,
+        executionAdvanced: false,
+      }),
       getLossOffset: () => 0,
     },
     riskChecker: {
@@ -346,7 +348,7 @@ describe('doomsday integration', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedSignals = signals.length;
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
 
@@ -428,7 +430,7 @@ describe('doomsday integration', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executeCalls += 1;
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
 
@@ -473,7 +475,7 @@ describe('doomsday integration', () => {
     const monitorConfig = createMonitorConfigDouble();
 
     const trader = createTraderDouble({
-      executeSignals: async () => ({ submittedCount: 0, submittedOrderIds: [] }),
+      executeSignals: async () => ({ executedOrderIds: [] }),
     });
 
     let clearCalls = 0;
@@ -534,7 +536,7 @@ describe('doomsday integration', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedSignals += signals.length;
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
 
@@ -589,7 +591,7 @@ describe('doomsday integration', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedSignals += signals.length;
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
 
@@ -645,7 +647,7 @@ describe('doomsday integration', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedSignals += signals.length;
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
 
@@ -716,7 +718,7 @@ describe('doomsday integration', () => {
           submittedSymbols.push(signal.symbol);
         }
 
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
     const orderRecorder = createOrderRecorderDouble();
@@ -779,7 +781,7 @@ describe('doomsday integration', () => {
           submittedSymbols.push(signal.symbol);
         }
 
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
     const orderRecorder = createOrderRecorderDouble();
@@ -857,7 +859,7 @@ describe('doomsday integration', () => {
           submittedSymbols.push(signal.symbol);
         }
 
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
     const orderRecorder = createOrderRecorderDouble();

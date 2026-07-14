@@ -6,7 +6,7 @@
  * - 重置半日标记、开盘保护、交易日信息缓存
  * - 清空账户/持仓缓存，确保开盘重建强制拉取当日实时快照
  * - 清空交易标的集合（allTradingSymbols 的权威清理位置）
- * - 重置唯一监控标的的运行状态（行情、信号、指标快照等）
+ * - 重置唯一监控标的的指标运行状态
  *
  * 开盘重建：
  * - 调用 runTradingDayOpenRebuild 执行完整的开盘重建流水线
@@ -23,8 +23,6 @@ import type { GlobalStateDomainDeps } from './types.js';
  * @param monitorState 单个监控标的的运行时状态
  */
 function resetMonitorStateForNewDay(monitorState: MonitorState): void {
-  monitorState.signal = null;
-  monitorState.pendingDelayedSignals = [];
   monitorState.lastMonitorSnapshot = null;
   monitorState.incrementalIndicatorRuntime = null;
 }

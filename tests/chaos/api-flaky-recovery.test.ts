@@ -117,9 +117,18 @@ function createOrderMonitorDeps(params?: {
     orderRecorder: params?.orderRecorder ?? createOrderRecorderDouble(),
     dailyLossTracker: {
       resetAll: () => {},
-      startNewProtectionEpisode: () => {},
+      prepareProtectionBoundary: (boundaryParams) => ({
+        ...boundaryParams,
+        orderBaselines: [],
+      }),
+      commitProtectionBoundary: () => {},
+      restoreExecutionSnapshot: () => {},
+      restoreProtectionBoundary: () => {},
       recalculateFromAllOrders: () => {},
-      recordFilledOrder: () => {},
+      recordCumulativeExecution: () => ({
+        authoritativeFactChanged: false,
+        executionAdvanced: false,
+      }),
       getLossOffset: () => 0,
     },
     orderHoldRegistry: {
@@ -130,6 +139,7 @@ function createOrderMonitorDeps(params?: {
       onOrderHoldSymbolsChanged: () => () => {},
       clear: () => {},
     },
+    persistProtectiveLiquidationExecutionProgress: () => {},
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
     postTradeConsistencyRuntime: {
       recordSettlementRefreshNeed: () => {},

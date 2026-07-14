@@ -12,6 +12,7 @@ import type {
   SwitchSuppression,
 } from '../../../src/services/autoSymbolManager/types.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
+import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import {
   createMonitorConfigDouble,
   createSymbolRegistryDouble,
@@ -34,6 +35,128 @@ function createSwitchSuppressionsMap(): Map<'LONG' | 'SHORT', SwitchSuppression>
 }
 
 describe('autoSymbolManager autoSearch business flow', () => {
+  it('counts explicit external request failures and returns control to the cooldown owner', async () => {
+    const monitorConfig = createMonitorConfigDouble({
+      autoSearchConfig: getDefaultAutoSearchConfig(),
+    });
+    const now = new Date('2026-02-16T01:00:00.000Z');
+    const symbolRegistry = createSymbolRegistryDouble({
+      longSeat: {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 1,
+        frozenTradingDayKey: null,
+      },
+    });
+    const manager = createSeatStateManager({
+      symbolRegistry,
+      switchStates: createSwitchStatesMap(),
+      switchSuppressions: createSwitchSuppressionsMap(),
+      now: () => now,
+      logger: createLoggerStub(),
+      getHKDateKey,
+    });
+    const autoSearch = createAutoSearch({
+      autoSearchConfig: monitorConfig.autoSearchConfig,
+      monitorSymbol: 'HSI.HK',
+      symbolRegistry,
+      updateSeatState: manager.updateSeatState,
+      resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
+      buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
+      findBestWarrant: async () => {
+        throw createExternalApiRequestError({
+          operation: 'test.autoSearch',
+          attempts: 1,
+          cause: new Error('api unavailable'),
+        });
+      },
+      isWithinMorningAutoSearchOpenDelay: () => false,
+      searchCooldownMs: 10_000,
+      getHKDateKey,
+      maxSearchFailuresPerDay: 3,
+      logger: createLoggerStub(),
+    });
+
+    await autoSearch.maybeSearchOnEvent({
+      direction: 'LONG',
+      currentTime: now,
+      canTradeNow: true,
+    });
+
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'EMPTY',
+      lastSearchAt: now.getTime(),
+      searchFailCountToday: 2,
+      frozenTradingDayKey: null,
+    });
+  });
+
+  it('counts input-builder exceptions as real search failures before rethrowing', async () => {
+    const monitorConfig = createMonitorConfigDouble({
+      autoSearchConfig: getDefaultAutoSearchConfig(),
+    });
+    const now = new Date('2026-02-16T01:00:00.000Z');
+    const symbolRegistry = createSymbolRegistryDouble({
+      longSeat: {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 2,
+        frozenTradingDayKey: null,
+      },
+    });
+    const manager = createSeatStateManager({
+      symbolRegistry,
+      switchStates: createSwitchStatesMap(),
+      switchSuppressions: createSwitchSuppressionsMap(),
+      now: () => now,
+      logger: createLoggerStub(),
+      getHKDateKey,
+    });
+    const autoSearch = createAutoSearch({
+      autoSearchConfig: monitorConfig.autoSearchConfig,
+      monitorSymbol: 'HSI.HK',
+      symbolRegistry,
+      updateSeatState: manager.updateSeatState,
+      resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
+      buildFindBestWarrantInput: async () => {
+        throw new Error('finder input unavailable');
+      },
+      findBestWarrant: async () => null,
+      isWithinMorningAutoSearchOpenDelay: () => false,
+      searchCooldownMs: 10_000,
+      getHKDateKey,
+      maxSearchFailuresPerDay: 3,
+      logger: createLoggerStub(),
+    });
+
+    let caught: unknown = null;
+    try {
+      await autoSearch.maybeSearchOnEvent({
+        direction: 'LONG',
+        currentTime: now,
+        canTradeNow: true,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ message: 'finder input unavailable' });
+
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'EMPTY',
+      symbol: null,
+      lastSearchAt: now.getTime(),
+      searchFailCountToday: 3,
+      frozenTradingDayKey: '2026-02-16',
+    });
+  });
+
   it('fills EMPTY seat to ACTIVATING and resets failure counters when a candidate is found', async () => {
     const monitorConfig = createMonitorConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
@@ -64,7 +187,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      buildSeatState: manager.buildSeatState,
       updateSeatState: manager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -126,7 +248,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      buildSeatState: manager.buildSeatState,
       updateSeatState: manager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -184,7 +305,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      buildSeatState: manager.buildSeatState,
       updateSeatState: manager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -236,7 +356,6 @@ describe('autoSymbolManager autoSearch business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      buildSeatState: manager.buildSeatState,
       updateSeatState: manager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('SHORT'),
       buildFindBestWarrantInput: async () =>

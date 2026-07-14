@@ -118,7 +118,7 @@ export type LiquidationCooldownConfig =
 
 /**
  * 单个监控标的的完整配置。
- * 类型用途：单监控标的的交易标的、风控参数、信号配置与延迟验证等，作为 MonitorContext.config、RiskCheckContext.config 等类型。
+ * 类型用途：单监控标的的交易标的、风控参数、信号配置与延迟验证等，作为 MonitorContext.config、BuyRiskCheckContext.config 等类型。
  * 数据来源：配置解析（环境变量/配置文件）。
  * 使用范围：MonitorContext、信号处理、风控等；全项目可引用。
  */

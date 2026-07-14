@@ -6,8 +6,8 @@
  */
 import type {
   InProgressProtectiveEpisode,
-  ProtectiveLiquidationCompletedEvent,
   ProtectiveLiquidationEpisodeTracker,
+  PreparedProtectiveLiquidationCompletion,
 } from './types.js';
 
 /**
@@ -77,11 +77,11 @@ export function createProtectiveLiquidationEpisodeTracker(): ProtectiveLiquidati
     }
   }
 
-  function completeIfEligible(params: {
+  function prepareCompletion(params: {
     direction: 'LONG' | 'SHORT';
     isDirectionFlat: boolean;
     hasPendingProtectiveOrders: boolean;
-  }): ProtectiveLiquidationCompletedEvent | null {
+  }): PreparedProtectiveLiquidationCompletion | null {
     const { direction, isDirectionFlat, hasPendingProtectiveOrders } = params;
     if (!isDirectionFlat || hasPendingProtectiveOrders) {
       return null;
@@ -93,17 +93,21 @@ export function createProtectiveLiquidationEpisodeTracker(): ProtectiveLiquidati
       return null;
     }
 
-    inProgressByDirection.delete(key);
     const previousBoundary = latestProtectionBoundaryByDirection.get(key);
     if (previousBoundary !== undefined && inProgress.latestExecutedTimeMs <= previousBoundary) {
       return null;
     }
 
-    latestProtectionBoundaryByDirection.set(key, inProgress.latestExecutedTimeMs);
     return {
       direction,
+      symbol: inProgress.symbol,
       boundaryExecutedTimeMs: inProgress.latestExecutedTimeMs,
     };
+  }
+
+  function commitCompletion(prepared: PreparedProtectiveLiquidationCompletion): void {
+    inProgressByDirection.delete(prepared.direction);
+    latestProtectionBoundaryByDirection.set(prepared.direction, prepared.boundaryExecutedTimeMs);
   }
 
   function restoreCompletedBoundary(params: {
@@ -172,7 +176,8 @@ export function createProtectiveLiquidationEpisodeTracker(): ProtectiveLiquidati
 
   return {
     recordProtectiveFillProgress,
-    completeIfEligible,
+    prepareCompletion,
+    commitCompletion,
     restoreCompletedBoundary,
     restoreInProgressEpisode,
     getLatestProtectionBoundaryByDirection,

@@ -16,11 +16,14 @@ import {
 } from '../../../src/services/autoSymbolManager/signalBuilder.js';
 import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
 import { PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
+import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import type { PeriodicSwitchPendingState } from '../../../src/types/monitorContextPorts.js';
 import type {
+  SwitchStateMachineDeps,
   SwitchState,
   SwitchSuppression,
 } from '../../../src/services/autoSymbolManager/types.js';
+import type { OrderRecorder, Trader } from '../../../src/types/services.js';
 import type { Quote } from '../../../src/types/quote.js';
 import {
   createWarrantDistanceInfoDouble,
@@ -75,6 +78,86 @@ function createPeriodicSwitchPendingMap(): Map<'LONG' | 'SHORT', PeriodicSwitchP
   return new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
 }
 
+function createLongSwitchAdmissionHarness(params: {
+  readonly nowMs: number;
+  readonly traderOverrides?: Partial<Trader>;
+  readonly orderRecorder?: OrderRecorder;
+  readonly findBestWarrant?: SwitchStateMachineDeps['findBestWarrant'];
+  readonly marketDataClient?: SwitchStateMachineDeps['marketDataClient'];
+}) {
+  const monitorConfig = createMonitorConfigDouble({
+    autoSearchConfig: {
+      ...getDefaultAutoSearchConfig(),
+      switchIntervalMinutes: 1,
+    },
+  });
+  const symbolRegistry = createSymbolRegistryDouble({
+    longSeat: {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: params.nowMs - 31 * 60_000,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    },
+    longVersion: 1,
+  });
+  const switchStates = createSwitchStatesMap();
+  const switchSuppressions = createSwitchSuppressionsMap();
+  const seatStateManager = createSeatStateManager({
+    symbolRegistry,
+    switchStates,
+    switchSuppressions,
+    now: () => new Date(params.nowMs),
+    logger: createLoggerStub(),
+    getHKDateKey,
+  });
+  const signalBuilder = createSignalBuilder();
+  const trader = createTraderDouble(params.traderOverrides);
+  const machine = createSwitchStateMachine({
+    autoSearchConfig: monitorConfig.autoSearchConfig,
+    monitorSymbol: 'HSI.HK',
+    symbolRegistry,
+    trader,
+    orderRecorder: params.orderRecorder ?? createOrderRecorderDouble(),
+    riskChecker: createRiskCheckerDouble({
+      getWarrantDistanceInfo: () =>
+        createWarrantDistanceInfoDouble({
+          warrantType: 'BULL',
+          distanceToStrikePercent: 0.1,
+        }),
+    }),
+    now: () => new Date(params.nowMs),
+    switchStates,
+    periodicSwitchPending: createPeriodicSwitchPendingMap(),
+    resolveSuppression: seatStateManager.resolveSuppression,
+    markSuppression: seatStateManager.markSuppression,
+    enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
+    updateSeatState: seatStateManager.updateSeatState,
+    resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
+    buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
+    findBestWarrant: params.findBestWarrant ?? (async () => createWarrantCandidate('NEW_BULL.HK')),
+    resolveDirectionSymbols,
+    calculateBuyQuantityByNotional,
+    buildOrderSignal: signalBuilder.buildOrderSignal,
+    pendingOrderStatuses: PENDING_ORDER_STATUSES,
+    buySide: OrderSide.Buy,
+    logger: createLoggerStub(),
+    maxSearchFailuresPerDay: 3,
+    getHKDateKey,
+    calculateTradingDurationMsBetween,
+    getTradingCalendarSnapshot: () => createTradingCalendarSnapshot(),
+    marketDataClient:
+      params.marketDataClient ??
+      createMarketDataClientDouble({
+        getQuotes: async () => new Map(),
+      }),
+  });
+
+  return { machine, symbolRegistry, switchStates };
+}
+
 async function runDistanceSwitch(
   machine: ReturnType<typeof createSwitchStateMachine>,
   params: Parameters<ReturnType<typeof createSwitchStateMachine>['startSwitchOnDistance']>[0],
@@ -84,10 +167,234 @@ async function runDistanceSwitch(
     return;
   }
 
-  await machine.startSwitchOnDistance(params);
+  const startResult = await machine.startSwitchOnDistance(params);
+  if (startResult.started) {
+    await machine.advancePendingSwitch(params);
+  }
 }
 
 describe('autoSymbolManager switchStateMachine business flow', () => {
+  it('keeps distance-switch seat ACTIVE when pending-order admission read fails', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs,
+      traderOverrides: {
+        getPendingOrders: async () => {
+          throw new Error('pending orders unavailable');
+        },
+      },
+    });
+
+    let caught: unknown = null;
+    try {
+      await harness.machine.startSwitchOnDistance({
+        direction: 'LONG',
+        monitorPrice: 20_000,
+        positions: [],
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ message: 'pending orders unavailable' });
+
+    expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'ACTIVE',
+      symbol: 'OLD_BULL.HK',
+    });
+    expect(harness.symbolRegistry.getSeatVersion('LONG')).toBe(1);
+    expect(harness.switchStates.size).toBe(0);
+  });
+
+  it('keeps periodic-switch seat ACTIVE when pending-order admission read fails', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs,
+      traderOverrides: {
+        getPendingOrders: async () => {
+          throw new Error('pending orders unavailable');
+        },
+      },
+    });
+
+    let caught: unknown = null;
+    try {
+      await harness.machine.evaluatePeriodicSwitchDue({
+        direction: 'LONG',
+        currentTime: new Date(nowMs),
+        canTradeNow: true,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ message: 'pending orders unavailable' });
+
+    expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'ACTIVE',
+      symbol: 'OLD_BULL.HK',
+    });
+    expect(harness.symbolRegistry.getSeatVersion('LONG')).toBe(1);
+    expect(harness.switchStates.size).toBe(0);
+  });
+
+  it('abandons switch admission when seat identity changes during pending-order read', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    let resolvePendingOrders = (): void => {
+      throw new Error('pending-order resolver not initialized');
+    };
+    const pendingOrders = new Promise<ReadonlyArray<never>>((resolve) => {
+      resolvePendingOrders = () => {
+        resolve([]);
+      };
+    });
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs,
+      traderOverrides: {
+        getPendingOrders: async () => await pendingOrders,
+      },
+    });
+
+    const startPromise = harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [],
+    });
+    await Bun.sleep(0);
+
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
+    expect(harness.symbolRegistry.getSeatVersion('LONG')).toBe(1);
+    const currentSeat = harness.symbolRegistry.getSeatState('LONG');
+    if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+      throw new Error('expected runtime ACTIVE LONG seat');
+    }
+
+    harness.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...currentSeat,
+      symbol: 'OTHER_BULL.HK',
+    });
+    resolvePendingOrders();
+
+    const result = await startPromise;
+    expect(result).toMatchObject({
+      started: false,
+      driveResult: { kind: 'NOOP' },
+    });
+
+    expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'ACTIVE',
+      symbol: 'OTHER_BULL.HK',
+    });
+    expect(harness.switchStates.size).toBe(0);
+  });
+
+  it('returns a non-empty initial WAIT without executing switch side effects after mutation', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    let cancelCalls = 0;
+    let executeCalls = 0;
+    let quoteCalls = 0;
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs,
+      traderOverrides: {
+        getPendingOrders: async () => [],
+        cancelOrder: async () => {
+          cancelCalls += 1;
+          return {
+            kind: 'CANCEL_CONFIRMED',
+            closedReason: 'CANCELED',
+            source: 'API',
+            relatedBuyOrderIds: null,
+          };
+        },
+        executeSignals: async () => {
+          executeCalls += 1;
+          return { executedOrderIds: ['ORDER-1'] };
+        },
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          quoteCalls += 1;
+          return new Map();
+        },
+      }),
+    });
+
+    const result = await harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [],
+    });
+
+    expect(result).toEqual({
+      started: true,
+      direction: 'LONG',
+      driveResult: {
+        kind: 'WAIT',
+        wakeups: [{ kind: 'RETRY_TIMER', atMs: nowMs }],
+      },
+    });
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
+    expect(harness.switchStates.size).toBe(1);
+    expect(cancelCalls).toBe(0);
+    expect(executeCalls).toBe(0);
+    expect(quoteCalls).toBe(0);
+  });
+
+  it('replaces a consumed initial timer when pending-order refresh has an external failure', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    let pendingOrderCalls = 0;
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs,
+      traderOverrides: {
+        getPendingOrders: async () => {
+          pendingOrderCalls += 1;
+          if (pendingOrderCalls === 2) {
+            throw createExternalApiRequestError({
+              operation: 'test.pendingOrders',
+              attempts: 1,
+              cause: new Error('pending orders unavailable'),
+            });
+          }
+
+          return [];
+        },
+      },
+    });
+
+    const startResult = await harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [],
+    });
+    expect(startResult.started).toBeTrue();
+
+    const failedAdvance = await harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [],
+    });
+    expect(failedAdvance).toMatchObject({
+      advanced: true,
+      direction: 'LONG',
+      stillPending: true,
+      driveResult: {
+        kind: 'WAIT',
+        wakeups: [{ kind: 'RETRY_TIMER' }],
+      },
+    });
+    expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
+
+    const nextAdvance = await harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [],
+    });
+    expect(nextAdvance).toMatchObject({
+      advanced: true,
+      stillPending: false,
+      driveResult: { kind: 'COMPLETED' },
+    });
+    expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+  });
+
   it('treats periodic no-candidate as business closeout instead of state-machine failure', async () => {
     const monitorConfig = createMonitorConfigDouble({
       autoSearchConfig: {
@@ -155,7 +462,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -242,7 +548,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -328,7 +633,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -414,7 +718,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -507,7 +810,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -536,10 +838,14 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
     const latestSeat = symbolRegistry.getSeatState('LONG');
     symbolRegistry.updateSeatStateWithVersionBump('LONG', {
-      ...latestSeat,
       symbol: 'MANUAL_BULL.HK',
       status: 'ACTIVE',
+      lastSearchAt: latestSeat.lastSearchAt,
       lastSwitchAt: Date.now(),
+      lastSeatActivatedAt: latestSeat.lastSeatActivatedAt ?? Date.now(),
+      callPrice: latestSeat.callPrice ?? null,
+      searchFailCountToday: latestSeat.searchFailCountToday,
+      frozenTradingDayKey: latestSeat.frozenTradingDayKey,
     });
     resolveCandidate(createWarrantCandidate('NEW_BULL.HK'));
     await switchPromise;
@@ -582,7 +888,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
       getPendingOrders: async () => [],
     });
@@ -605,7 +911,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -683,10 +988,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         });
 
         if (signal?.action === 'SELLCALL') {
-          return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-1'] };
+          return { executedOrderIds: ['SELL-ORDER-1'] };
         }
 
-        return { submittedCount: 1, submittedOrderIds: ['BUY-ORDER-1'] };
+        return { executedOrderIds: ['BUY-ORDER-1'] };
       },
       getPendingOrders: async () => [],
     });
@@ -723,7 +1028,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -764,10 +1068,35 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       direction: 'LONG',
       driveResult: {
         kind: 'WAIT',
-        wakeups: [{ kind: 'ORDER_EVENT', symbols: ['OLD_BULL.HK'] }, { kind: 'FRESHNESS' }],
+        wakeups: [{ kind: 'RETRY_TIMER', atMs: nowMs }],
       },
     });
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
+    expect(executedActions).toHaveLength(0);
+
+    const sellResult = await machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [
+        {
+          symbol: 'OLD_BULL.HK',
+          quantity: 100,
+          availableQuantity: 100,
+          symbolName: 'OLD_BULL',
+          accountChannel: 'lb_papertrading',
+          currency: 'HKD',
+          costPrice: 1,
+          market: 'HK',
+        },
+      ],
+    });
+    expect(sellResult).toMatchObject({
+      advanced: true,
+      stillPending: true,
+      driveResult: {
+        kind: 'WAIT',
+        wakeups: [{ kind: 'ORDER_EVENT', symbols: ['OLD_BULL.HK'] }, { kind: 'FRESHNESS' }],
+      },
+    });
     expect(executedActions).toHaveLength(1);
     expect(executedActions[0]).toEqual({
       action: 'SELLCALL',
@@ -848,7 +1177,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           executedActions.push(signal.action);
         }
 
-        return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-1'] };
+        return { executedOrderIds: ['SELL-ORDER-1'] };
       },
       getPendingOrders: async () => [],
     });
@@ -903,7 +1232,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -976,10 +1304,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       executeSignals: async (signals) => {
         const signal = signals[0];
         if (signal?.action === 'SELLCALL') {
-          return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-1'] };
+          return { executedOrderIds: ['SELL-ORDER-1'] };
         }
 
-        return { submittedCount: 0, submittedOrderIds: [] };
+        return { executedOrderIds: [] };
       },
       getPendingOrders: async () => [],
     });
@@ -1040,7 +1368,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1145,7 +1472,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       }),
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
     const machine = createSwitchStateMachine({
@@ -1167,7 +1494,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1237,7 +1563,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const trader = createTraderDouble({
       getPendingOrders: async () => {
         pendingOrdersCall += 1;
-        if (pendingOrdersCall === 1) {
+        if (pendingOrdersCall <= 2) {
           return [
             {
               orderId: 'BUY-PENDING-ACCEPTED',
@@ -1262,7 +1588,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       }),
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
     const machine = createSwitchStateMachine({
@@ -1284,7 +1610,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1316,12 +1641,25 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       direction: 'LONG',
       driveResult: {
         kind: 'WAIT',
-        wakeups: [{ kind: 'ORDER_EVENT', symbols: ['OLD_BULL.HK'] }, { kind: 'FRESHNESS' }],
+        wakeups: [{ kind: 'RETRY_TIMER', atMs: nowMs }],
       },
     });
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
     expect(symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
     expect(executeCalls).toBe(0);
+
+    const cancelResult = await machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [],
+    });
+    expect(cancelResult).toMatchObject({
+      advanced: true,
+      stillPending: true,
+      driveResult: {
+        kind: 'WAIT',
+        wakeups: [{ kind: 'ORDER_EVENT', symbols: ['OLD_BULL.HK'] }, { kind: 'FRESHNESS' }],
+      },
+    });
 
     await runDistanceSwitch(machine, {
       direction: 'LONG',
@@ -1372,7 +1710,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const trader = createTraderDouble({
       getPendingOrders: async () => {
         pendingOrdersCall += 1;
-        if (pendingOrdersCall === 1) {
+        if (pendingOrdersCall <= 2) {
           return [
             {
               orderId: 'BUY-PENDING-FILLED',
@@ -1427,7 +1765,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1506,7 +1843,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const trader = createTraderDouble({
       getPendingOrders: async () => {
         pendingOrdersCall += 1;
-        if (pendingOrdersCall === 1) {
+        if (pendingOrdersCall <= 2) {
           return [
             {
               orderId: 'BUY-PENDING-FILLED-NO-EXPOSURE',
@@ -1531,7 +1868,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       }),
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
     const machine = createSwitchStateMachine({
@@ -1553,7 +1890,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1633,7 +1969,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const trader = createTraderDouble({
       getPendingOrders: async () => {
         pendingOrdersCall += 1;
-        if (pendingOrdersCall === 1) {
+        if (pendingOrdersCall <= 2) {
           return [
             {
               orderId: 'BUY-PENDING-FILLED-DISTANCE',
@@ -1659,10 +1995,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       executeSignals: async (signals) => {
         executedActions.push(signals[0]?.action ?? null);
         if (signals[0]?.action === 'SELLCALL') {
-          return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-FILLED-PENDING'] };
+          return { executedOrderIds: ['SELL-ORDER-FILLED-PENDING'] };
         }
 
-        return { submittedCount: 1, submittedOrderIds: ['BUY-ORDER-FILLED-PENDING'] };
+        return { executedOrderIds: ['BUY-ORDER-FILLED-PENDING'] };
       },
     });
     const orderRecorder = createOrderRecorderDouble({
@@ -1698,7 +2034,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1796,17 +2131,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       getPendingOrders: async () => [],
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
+        return { executedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
       },
     });
     const marketDataClient = createMarketDataClientDouble({
       getQuotes: async (symbols) => {
         const currentSeat = symbolRegistry.getSeatState('LONG');
         symbolRegistry.updateSeatStateWithVersionBump('LONG', {
-          ...currentSeat,
           symbol: 'MANUAL_BULL.HK',
           status: 'ACTIVE',
+          lastSearchAt: currentSeat.lastSearchAt,
           lastSwitchAt: nowMs + 1_000,
+          lastSeatActivatedAt: currentSeat.lastSeatActivatedAt ?? nowMs + 1_000,
+          callPrice: currentSeat.callPrice ?? null,
+          searchFailCountToday: currentSeat.searchFailCountToday,
+          frozenTradingDayKey: currentSeat.frozenTradingDayKey,
         });
 
         return new Map(createQuotes(Object.fromEntries([...symbols].map((symbol) => [symbol, 1]))));
@@ -1831,7 +2170,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1866,12 +2204,26 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       ],
     });
 
-    expect(startResult).toMatchObject({
-      started: false,
+    expect(startResult.started).toBeTrue();
+    const advanceResult = await machine.advancePendingSwitch({
       direction: 'LONG',
-      driveResult: {
-        kind: 'NOOP',
-      },
+      positions: [
+        {
+          symbol: 'OLD_BULL.HK',
+          quantity: 100,
+          availableQuantity: 100,
+          symbolName: 'OLD_BULL',
+          accountChannel: 'lb_papertrading',
+          currency: 'HKD',
+          costPrice: 1,
+          market: 'HK',
+        },
+      ],
+    });
+    expect(advanceResult).toMatchObject({
+      advanced: true,
+      stillPending: false,
+      driveResult: { kind: 'NOOP' },
     });
     expect(executeCalls).toBe(0);
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -1919,17 +2271,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
         const currentSeat = symbolRegistry.getSeatState('LONG');
         symbolRegistry.updateSeatStateWithVersionBump('LONG', {
-          ...currentSeat,
           symbol: 'MANUAL_BULL.HK',
           status: 'ACTIVE',
+          lastSearchAt: currentSeat.lastSearchAt,
           lastSwitchAt: nowMs + 1_000,
+          lastSeatActivatedAt: currentSeat.lastSeatActivatedAt ?? nowMs + 1_000,
+          callPrice: currentSeat.callPrice ?? null,
+          searchFailCountToday: currentSeat.searchFailCountToday,
+          frozenTradingDayKey: currentSeat.frozenTradingDayKey,
         });
 
         return [];
       },
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
+        return { executedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
       },
     });
     const machine = createSwitchStateMachine({
@@ -1951,7 +2307,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -1993,7 +2348,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       direction: 'LONG',
       driveResult: {
         kind: 'WAIT',
-        wakeups: [{ kind: 'ORDER_EVENT', symbols: ['OLD_BULL.HK'] }, { kind: 'FRESHNESS' }],
+        wakeups: [{ kind: 'RETRY_TIMER', atMs: nowMs }],
       },
     });
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
@@ -2050,10 +2405,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       executeSignals: async (signals) => {
         const action = signals[0]?.action ?? null;
         if (action === 'SELLCALL') {
-          return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-BARRIER'] };
+          return { executedOrderIds: ['SELL-ORDER-BARRIER'] };
         }
 
-        return { submittedCount: 0, submittedOrderIds: [] };
+        return { executedOrderIds: [] };
       },
       getPendingOrders: async () => [],
     });
@@ -2102,7 +2457,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -2190,7 +2544,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedActions.push(signals[0]?.action ?? 'UNKNOWN');
-        return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-1'] };
+        return { executedOrderIds: ['SELL-ORDER-1'] };
       },
       getPendingOrders: async () => [],
     });
@@ -2227,7 +2581,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -2270,6 +2623,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       ],
     });
     expect(startResult.started).toBeTrue();
+    await machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [
+        {
+          symbol: 'OLD_BULL.HK',
+          quantity: 100,
+          availableQuantity: 100,
+          symbolName: 'OLD_BULL',
+          accountChannel: 'lb_papertrading',
+          currency: 'HKD',
+          costPrice: 1,
+          market: 'HK',
+        },
+      ],
+    });
     expect(executedActions).toEqual(['SELLCALL']);
     expect(machine.hasPendingSwitch('LONG')).toBeTrue();
     nowMs += 1_000;
@@ -2342,10 +2710,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         const action = signals[0]?.action ?? null;
         executedActions.push(action);
         if (action === 'SELLCALL') {
-          return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-1'] };
+          return { executedOrderIds: ['SELL-ORDER-1'] };
         }
 
-        return { submittedCount: 0, submittedOrderIds: [] };
+        return { executedOrderIds: [] };
       },
       getPendingOrders: async () => [],
     });
@@ -2382,7 +2750,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -2480,7 +2847,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         const action = signals[0]?.action ?? null;
         executedActions.push(action);
         if (action === 'SELLCALL') {
-          return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-REBUY-THROW'] };
+          return { executedOrderIds: ['SELL-ORDER-REBUY-THROW'] };
         }
 
         throw new Error('rebuy submit failed');
@@ -2520,7 +2887,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -2612,7 +2978,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedActions.push(signals[0]?.action ?? 'UNKNOWN');
-        return { submittedCount: 1, submittedOrderIds: ['SELL-ORDER-NOTIONAL-MISS'] };
+        return { executedOrderIds: ['SELL-ORDER-NOTIONAL-MISS'] };
       },
       getPendingOrders: async () => [],
     });
@@ -2638,7 +3004,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -2741,7 +3106,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
@@ -2813,7 +3177,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       trader: createTraderDouble({
         executeSignals: async () => {
           executeCalls += 1;
-          return { submittedCount: 1, submittedOrderIds: [] };
+          return { executedOrderIds: ['EXECUTED-ORDER-1'] };
         },
       }),
       orderRecorder: createOrderRecorderDouble(),
@@ -2830,7 +3194,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('SHORT'),
       buildFindBestWarrantInput: async () =>
@@ -2918,7 +3281,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('SHORT'),
       buildFindBestWarrantInput: async () =>
@@ -3004,7 +3366,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       resolveSuppression: seatStateManager.resolveSuppression,
       markSuppression: seatStateManager.markSuppression,
       enterSwitchingSeat: seatStateManager.enterSwitchingSeat,
-      buildSeatState: seatStateManager.buildSeatState,
       updateSeatState: seatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('SHORT'),
       buildFindBestWarrantInput: async () =>

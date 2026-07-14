@@ -72,10 +72,9 @@ export function createLastState(overrides: Partial<LastState> = {}): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
+    tradingCalendarSnapshot: new Map(),
     monitorState: {
       monitorSymbol: 'HSI.HK',
-      signal: null,
-      pendingDelayedSignals: [],
       lastMonitorSnapshot: null,
       incrementalIndicatorRuntime: null,
     },
@@ -143,8 +142,6 @@ export function createMonitorContext(overrides: Partial<MonitorContext> = {}): M
     {
       state: {
         monitorSymbol: 'HSI.HK',
-        signal: null,
-        pendingDelayedSignals: [],
         lastMonitorSnapshot: null,
         incrementalIndicatorRuntime: null,
       },

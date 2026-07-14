@@ -6,7 +6,7 @@
  * - 管理订单缓存（缓存到显式清理/刷新为止）
  * - 在信任边界将 SDK Order 转换为 RawOrderFromAPI
  */
-import { OrderSide, OrderStatus, OrderType, type Order } from 'longbridge';
+import { OrderSide, type OrderStatus, OrderType, type Order } from 'longbridge';
 import { decimalToNumber, isRecord } from '../../utils/helpers/index.js';
 import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
 import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
@@ -17,6 +17,7 @@ import type {
   OrderAPIManagerDeps,
   OrderSnapshotSource,
 } from './types.js';
+import { classifyOrderStatusLifecycle } from '../orderStatusLifecycle/index.js';
 
 /**
  * 校验外部订单 API 返回值必须是数组。
@@ -69,31 +70,15 @@ function isValidOrderSide(value: unknown): value is OrderSide {
 }
 
 function isValidOrderStatus(value: unknown): value is OrderStatus {
-  switch (value) {
-    case OrderStatus.Unknown:
-    case OrderStatus.NotReported:
-    case OrderStatus.ReplacedNotReported:
-    case OrderStatus.ProtectedNotReported:
-    case OrderStatus.VarietiesNotReported:
-    case OrderStatus.Filled:
-    case OrderStatus.WaitToNew:
-    case OrderStatus.New:
-    case OrderStatus.WaitToReplace:
-    case OrderStatus.PendingReplace:
-    case OrderStatus.Replaced:
-    case OrderStatus.PartialFilled:
-    case OrderStatus.WaitToCancel:
-    case OrderStatus.PendingCancel:
-    case OrderStatus.Rejected:
-    case OrderStatus.Canceled:
-    case OrderStatus.Expired:
-    case OrderStatus.PartialWithdrawal: {
-      return true;
-    }
+  if (typeof value !== 'number') {
+    return false;
+  }
 
-    default: {
-      return false;
-    }
+  try {
+    classifyOrderStatusLifecycle(value);
+    return true;
+  } catch {
+    return false;
   }
 }
 

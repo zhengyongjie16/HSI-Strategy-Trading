@@ -20,7 +20,7 @@
  * - 开盘重建流程中由 globalStateDomain 调用
  */
 import { OrderSide, TradeSessions } from 'longbridge';
-import { PENDING_ORDER_STATUSES, TRADING } from '../../constants/index.js';
+import { TRADING } from '../../constants/index.js';
 import {
   getHKDateKey,
   getTradingMinutesSinceOpen,
@@ -32,13 +32,52 @@ import { prepareSeatsForRuntime } from '../recovery/seatPreparation.js';
 import { collectRuntimeQuoteSymbols, refreshAccountAndPositions } from '../utils.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { resolveOrderOwnership } from '../../core/orderRecorder/index.js';
+import { classifyOrderStatusLifecycle } from '../../core/orderStatusLifecycle/index.js';
 import { hasProtectiveLiquidationRemark } from '../../core/trader/utils.js';
+import { decimalGt, toDecimalValue } from '../../utils/numeric/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
   LoadTradingDayRuntimeSnapshotResult,
 } from './types.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
+import type { ProtectiveLiquidationExecutionProgressRecordV1 } from '../../services/mixedTradeLogRepository/types.js';
+
+/** OPEN 必须先于 TERMINAL 恢复，终态才能覆盖同 identity 的开放态观察。 */
+function compareFactStage(left: 'OPEN' | 'TERMINAL', right: 'OPEN' | 'TERMINAL'): number {
+  if (left === right) {
+    return 0;
+  }
+
+  return left === 'OPEN' ? -1 : 1;
+}
+
+/** 按同一订单不可变事实的自然顺序排序，确保 OPEN 先于 TERMINAL 恢复。 */
+function compareExecutionProgressFacts(
+  left: ProtectiveLiquidationExecutionProgressRecordV1,
+  right: ProtectiveLiquidationExecutionProgressRecordV1,
+): number {
+  return (
+    left.orderId.localeCompare(right.orderId) ||
+    left.orderRevisionMs - right.orderRevisionMs ||
+    toDecimalValue(left.cumulativeQuantity).comparedTo(toDecimalValue(right.cumulativeQuantity)) ||
+    compareFactStage(left.factStage, right.factStage)
+  );
+}
+
+/** 比较跨订单 progress 的业务新鲜度；同一事实身份下 TERMINAL 覆盖 OPEN。 */
+function compareExecutionProgressRecency(
+  left: ProtectiveLiquidationExecutionProgressRecordV1,
+  right: ProtectiveLiquidationExecutionProgressRecordV1,
+): number {
+  return (
+    left.lastExecutionTimeMs - right.lastExecutionTimeMs ||
+    left.orderRevisionMs - right.orderRevisionMs ||
+    toDecimalValue(left.cumulativeQuantity).comparedTo(toDecimalValue(right.cumulativeQuantity)) ||
+    compareFactStage(left.factStage, right.factStage) ||
+    left.orderId.localeCompare(right.orderId)
+  );
+}
 
 function restoreCompletedBoundary(params: {
   readonly protectiveLiquidationEpisodeTracker: LoadTradingDayRuntimeSnapshotDeps['protectiveLiquidationEpisodeTracker'];
@@ -79,6 +118,7 @@ export function createLoadTradingDayRuntimeSnapshot(
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
     tradeLogHydrator,
+    mixedTradeLogRepository,
     warrantListCacheConfig,
     seatActivationDispatcher,
   } = deps;
@@ -151,20 +191,36 @@ export function createLoadTradingDayRuntimeSnapshot(
     });
     seatActivationDispatcher.dispatchCurrentActivatingSeats();
     protectiveLiquidationEpisodeTracker.resetAll();
-    const completedBoundaryByDirection = hydrateCooldownFromTradeLog
-      ? tradeLogHydrator.hydrate()
-      : new Map<ProtectiveLiquidationDirection, number>();
-
     const currentDayKey = getHKDateKey(now);
-    const protectiveLatestFillByDirection = new Map<
-      ProtectiveLiquidationDirection,
-      Readonly<{ latestExecutedTimeMs: number; symbol: string }>
-    >();
-    const pendingProtectiveLatestFillByDirection = new Map<
-      ProtectiveLiquidationDirection,
-      Readonly<{ latestExecutedTimeMs: number; symbol: string }>
-    >();
-    const pendingProtectiveDirectionKeys = new Set<ProtectiveLiquidationDirection>();
+    if (hydrateCooldownFromTradeLog && currentDayKey === null) {
+      throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
+    }
+
+    const completionRecords =
+      hydrateCooldownFromTradeLog && currentDayKey !== null
+        ? [...mixedTradeLogRepository.loadCompletionRecords(currentDayKey)]
+        : [];
+    const executionProgressRecords =
+      hydrateCooldownFromTradeLog && currentDayKey !== null
+        ? [...mixedTradeLogRepository.loadExecutionProgressRecords(currentDayKey)]
+        : [];
+    const completedBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
+    for (const record of completionRecords) {
+      const previous = completedBoundaryByDirection.get(record.direction);
+      if (previous === undefined || record.boundaryExecutedTimeMs > previous) {
+        completedBoundaryByDirection.set(record.direction, record.boundaryExecutedTimeMs);
+      }
+    }
+
+    const protectiveExecutedOrders: Array<
+      Readonly<{
+        orderId: string;
+        direction: ProtectiveLiquidationDirection;
+        symbol: string;
+        executedQuantity: number;
+      }>
+    > = [];
+    const pendingProtectiveDirections = new Set<ProtectiveLiquidationDirection>();
     for (const order of allOrders) {
       if (!hasProtectiveLiquidationRemark(order.remark)) {
         continue;
@@ -191,36 +247,20 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
 
       const direction = ownership.direction;
-      const executedTimeMs = order.updatedAt.getTime();
       const executedQuantity = decimalToNumber(order.executedQuantity);
       const hasProtectiveExecution =
-        order.side === OrderSide.Sell &&
-        isValidPositiveNumber(executedTimeMs) &&
-        isValidPositiveNumber(executedQuantity);
-      if (hasProtectiveExecution) {
-        const existing = protectiveLatestFillByDirection.get(direction);
-        if (existing === undefined || executedTimeMs > existing.latestExecutedTimeMs) {
-          protectiveLatestFillByDirection.set(direction, {
-            latestExecutedTimeMs: executedTimeMs,
-            symbol: order.symbol,
-          });
-        }
+        order.side === OrderSide.Sell && isValidPositiveNumber(executedQuantity);
+      if (order.side === OrderSide.Sell && classifyOrderStatusLifecycle(order.status) === 'OPEN') {
+        pendingProtectiveDirections.add(direction);
       }
 
-      if (PENDING_ORDER_STATUSES.has(order.status)) {
-        pendingProtectiveDirectionKeys.add(direction);
-        if (hasProtectiveExecution) {
-          const existingPending = pendingProtectiveLatestFillByDirection.get(direction);
-          if (
-            existingPending === undefined ||
-            executedTimeMs > existingPending.latestExecutedTimeMs
-          ) {
-            pendingProtectiveLatestFillByDirection.set(direction, {
-              latestExecutedTimeMs: executedTimeMs,
-              symbol: order.symbol,
-            });
-          }
-        }
+      if (hasProtectiveExecution) {
+        protectiveExecutedOrders.push({
+          orderId: order.orderId,
+          direction,
+          symbol: order.symbol,
+          executedQuantity,
+        });
       }
     }
 
@@ -234,74 +274,6 @@ export function createLoadTradingDayRuntimeSnapshot(
       });
     }
 
-    for (const [direction, protectiveFill] of protectiveLatestFillByDirection) {
-      if (
-        restoredBoundaryByDirection.has(direction) ||
-        pendingProtectiveDirectionKeys.has(direction)
-      ) {
-        continue;
-      }
-
-      const position = lastState.positionCache.get(protectiveFill.symbol);
-      const isDirectionFlat = position === null || position.quantity <= 0;
-      if (!isDirectionFlat) {
-        continue;
-      }
-
-      restoreCompletedBoundary({
-        protectiveLiquidationEpisodeTracker,
-        restoredBoundaryByDirection,
-        direction,
-        boundaryExecutedTimeMs: protectiveFill.latestExecutedTimeMs,
-      });
-    }
-
-    for (const [direction, protectiveFill] of protectiveLatestFillByDirection) {
-      const boundaryExecutedTimeMs = restoredBoundaryByDirection.get(direction);
-      const hasPendingProtective = pendingProtectiveDirectionKeys.has(direction);
-      if (hasPendingProtective) {
-        const pendingLatestExecutedTimeMs = pendingProtectiveLatestFillByDirection.get(direction);
-        if (
-          pendingLatestExecutedTimeMs !== undefined &&
-          (boundaryExecutedTimeMs === undefined ||
-            pendingLatestExecutedTimeMs.latestExecutedTimeMs > boundaryExecutedTimeMs)
-        ) {
-          protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
-            direction,
-            symbol: pendingLatestExecutedTimeMs.symbol,
-            latestExecutedTimeMs: pendingLatestExecutedTimeMs.latestExecutedTimeMs,
-          });
-        }
-
-        continue;
-      }
-
-      if (
-        boundaryExecutedTimeMs !== undefined &&
-        protectiveFill.latestExecutedTimeMs <= boundaryExecutedTimeMs
-      ) {
-        continue;
-      }
-
-      const position = lastState.positionCache.get(protectiveFill.symbol);
-      const isDirectionFlat = position === null || position.quantity <= 0;
-      if (isDirectionFlat) {
-        restoreCompletedBoundary({
-          protectiveLiquidationEpisodeTracker,
-          restoredBoundaryByDirection,
-          direction,
-          boundaryExecutedTimeMs: protectiveFill.latestExecutedTimeMs,
-        });
-        continue;
-      }
-
-      protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
-        direction,
-        symbol: protectiveFill.symbol,
-        latestExecutedTimeMs: protectiveFill.latestExecutedTimeMs,
-      });
-    }
-
     const orderHoldSymbols = trader.getOrderHoldSymbols();
     const allTradingSymbols = collectRuntimeQuoteSymbols(
       tradingConfig.monitor,
@@ -311,15 +283,172 @@ export function createLoadTradingDayRuntimeSnapshot(
     );
     const relatedTradingSymbols = new Set(allTradingSymbols);
     relatedTradingSymbols.delete(tradingConfig.monitor.monitorSymbol);
-    const protectionBoundaryByDirection =
-      protectiveLiquidationEpisodeTracker.getLatestProtectionBoundaryByDirection();
     dailyLossTracker.recalculateFromAllOrders(
       allOrders,
       tradingConfig.monitor,
       now,
-      protectionBoundaryByDirection,
+      new Map(),
       relatedTradingSymbols,
     );
+
+    for (const progress of [...executionProgressRecords].sort(compareExecutionProgressFacts)) {
+      if (progress.monitorSymbol !== expectedMonitorSymbol) {
+        throw new Error(
+          `[loadTradingDayRuntimeSnapshot] progress monitorSymbol 不匹配唯一配置: ` +
+            `${progress.monitorSymbol} !== ${expectedMonitorSymbol}`,
+        );
+      }
+
+      dailyLossTracker.restoreExecutionSnapshot({
+        factStage: progress.factStage,
+        direction: progress.direction,
+        symbol: progress.symbol,
+        side: OrderSide.Sell,
+        orderId: progress.orderId,
+        cumulativeQuantity: progress.cumulativeQuantity,
+        cumulativeAmount: progress.cumulativeAmount,
+        lastExecutionTimeMs: progress.lastExecutionTimeMs,
+        orderRevisionMs: progress.orderRevisionMs,
+      });
+    }
+
+    for (const record of [...completionRecords].sort(
+      (left, right) => left.boundaryExecutedTimeMs - right.boundaryExecutedTimeMs,
+    )) {
+      dailyLossTracker.restoreProtectionBoundary({
+        direction: record.direction,
+        boundaryExecutedTimeMs: record.boundaryExecutedTimeMs,
+        orderBaselines: record.orderBaselines,
+      });
+    }
+
+    if (hydrateCooldownFromTradeLog) {
+      if (currentDayKey === null) {
+        throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
+      }
+
+      const latestCompletionByDirection = new Map<
+        ProtectiveLiquidationDirection,
+        (typeof completionRecords)[number]
+      >();
+      for (const record of completionRecords) {
+        const previous = latestCompletionByDirection.get(record.direction);
+        if (
+          previous === undefined ||
+          record.boundaryExecutedTimeMs > previous.boundaryExecutedTimeMs
+        ) {
+          latestCompletionByDirection.set(record.direction, record);
+        }
+      }
+
+      const latestProgressByDirection = new Map<
+        ProtectiveLiquidationDirection,
+        (typeof executionProgressRecords)[number]
+      >();
+      for (const progress of executionProgressRecords) {
+        const completedBoundary = latestCompletionByDirection.get(
+          progress.direction,
+        )?.boundaryExecutedTimeMs;
+        if (completedBoundary !== undefined && progress.lastExecutionTimeMs <= completedBoundary) {
+          continue;
+        }
+
+        const previous = latestProgressByDirection.get(progress.direction);
+        if (previous !== undefined && previous.symbol !== progress.symbol) {
+          throw new Error(
+            `[loadTradingDayRuntimeSnapshot] 同方向存在不同 symbol 的未完成 protection progress: ` +
+              `${previous.symbol} !== ${progress.symbol}`,
+          );
+        }
+
+        if (previous === undefined || compareExecutionProgressRecency(previous, progress) < 0) {
+          latestProgressByDirection.set(progress.direction, progress);
+        }
+      }
+
+      for (const execution of protectiveExecutedOrders) {
+        const latestCompletion = latestCompletionByDirection.get(execution.direction);
+        const persistedBaseline = latestCompletion?.orderBaselines.find(
+          (baseline) => baseline.orderId === execution.orderId,
+        );
+        if (
+          persistedBaseline !== undefined &&
+          !decimalGt(execution.executedQuantity, persistedBaseline.cumulativeQuantity)
+        ) {
+          continue;
+        }
+
+        let persistedProgress: (typeof executionProgressRecords)[number] | undefined;
+        for (const progress of executionProgressRecords) {
+          if (progress.orderId !== execution.orderId) {
+            continue;
+          }
+
+          if (
+            persistedProgress === undefined ||
+            compareExecutionProgressFacts(persistedProgress, progress) < 0
+          ) {
+            persistedProgress = progress;
+          }
+        }
+
+        if (
+          persistedProgress !== undefined &&
+          !decimalGt(execution.executedQuantity, persistedProgress.cumulativeQuantity)
+        ) {
+          continue;
+        }
+
+        throw new Error(
+          `[loadTradingDayRuntimeSnapshot] 保护性清仓订单缺少精确成交时间，无法恢复或补写 completion: ${execution.orderId}`,
+        );
+      }
+
+      for (const progress of latestProgressByDirection.values()) {
+        const position = lastState.positionCache.get(progress.symbol);
+        const hasPosition =
+          position !== null && Number.isFinite(position.quantity) && position.quantity > 0;
+        const hasPendingProtectiveOrders = pendingProtectiveDirections.has(progress.direction);
+
+        protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
+          direction: progress.direction,
+          symbol: progress.symbol,
+          latestExecutedTimeMs: progress.lastExecutionTimeMs,
+        });
+
+        if (hasPosition || hasPendingProtectiveOrders) {
+          continue;
+        }
+
+        const preparedEpisode = protectiveLiquidationEpisodeTracker.prepareCompletion({
+          direction: progress.direction,
+          isDirectionFlat: true,
+          hasPendingProtectiveOrders: false,
+        });
+        if (preparedEpisode === null) {
+          throw new Error(
+            `[loadTradingDayRuntimeSnapshot] crash-gap episode 无法冻结: ${progress.orderId}`,
+          );
+        }
+
+        const preparedDailyLoss = dailyLossTracker.prepareProtectionBoundary({
+          direction: preparedEpisode.direction,
+          boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
+        });
+        mixedTradeLogRepository.appendCompletionIdempotent({
+          monitorSymbol: expectedMonitorSymbol,
+          direction: preparedEpisode.direction,
+          boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
+          orderBaselines: preparedDailyLoss.orderBaselines,
+        });
+        dailyLossTracker.commitProtectionBoundary(preparedDailyLoss);
+        protectiveLiquidationEpisodeTracker.commitCompletion(preparedEpisode);
+      }
+    }
+
+    if (hydrateCooldownFromTradeLog) {
+      tradeLogHydrator.hydrate();
+    }
 
     if (resetRuntimeSubscriptions) {
       await marketDataClient.resetRuntimeSubscriptionsAndCaches();

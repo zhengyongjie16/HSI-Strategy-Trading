@@ -8,8 +8,8 @@
 import type { MonitorConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type {
+  RuntimeWritableSeatState,
   SeatState,
-  SeatStatus,
   SeatTruthChangedListener,
   SymbolRegistry,
 } from '../../types/seat.js';
@@ -18,6 +18,7 @@ import { logger } from '../../utils/logger/index.js';
 import { isSeatActive, isSeatVersionMatch } from '../../utils/seat/guards.js';
 import type {
   SeatEntry,
+  SeatStateCandidate,
   SeatStateChangedListener,
   SeatUnavailableReason,
   SignalSeatValidationResult,
@@ -262,43 +263,63 @@ export function resolveSeatOnStartup({
  *
  * @param seatState 待校验的席位状态
  */
-function assertSeatStateInvariant(seatState: SeatState): void {
-  if ((seatState.status === 'ACTIVE' || seatState.status === 'ACTIVATING') && !seatState.symbol) {
+function assertSeatStateInvariant(
+  seatState: SeatStateCandidate,
+  allowStaticBootstrap: boolean,
+): void {
+  if (seatState.status === 'EMPTY' || seatState.status === 'SEARCHING') {
+    if (seatState.symbol !== null) {
+      throw new Error(`SymbolRegistry 席位状态无效：${seatState.status} 不得绑定标的`);
+    }
+  } else if (typeof seatState.symbol !== 'string' || seatState.symbol.length === 0) {
     throw new Error(`SymbolRegistry 席位状态无效：${seatState.status} 必须绑定标的`);
+  }
+
+  for (const [field, value] of [
+    ['lastSwitchAt', seatState.lastSwitchAt],
+    ['lastSearchAt', seatState.lastSearchAt],
+    ['lastSeatActivatedAt', seatState.lastSeatActivatedAt],
+  ] as const) {
+    if (value !== null && !Number.isFinite(value)) {
+      throw new Error(`SymbolRegistry 席位状态无效：${field} 必须是有限时间戳`);
+    }
+  }
+
+  if (seatState.status !== 'ACTIVE' || seatState.lastSeatActivatedAt !== null) {
+    return;
+  }
+
+  if (!allowStaticBootstrap) {
+    throw new Error('SymbolRegistry 席位状态无效：运行时 ACTIVE 必须具有有效激活时间');
+  }
+
+  const isStaticBootstrap =
+    seatState.lastSwitchAt === null &&
+    seatState.lastSearchAt === null &&
+    (seatState.callPrice ?? null) === null &&
+    seatState.searchFailCountToday === 0 &&
+    seatState.frozenTradingDayKey === null;
+  if (!isStaticBootstrap) {
+    throw new Error('SymbolRegistry 席位状态无效：仅静态 bootstrap ACTIVE 可缺少激活时间');
   }
 }
 
-/**
- * 创建席位状态对象（内部工厂函数）。
- *
- * @param symbol 交易标的代码，null 表示未绑定
- * @param status 席位状态（EMPTY/SEARCHING/SWITCHING/ACTIVATING/ACTIVE）
- * @returns 初始化并通过不变量校验的席位状态对象
- */
-function createSeatState(symbol: string | null, status: SeatStatus): SeatState {
-  const seatState = {
-    symbol,
-    status,
-    lastSwitchAt: null,
-    lastSearchAt: null,
-    lastSeatActivatedAt: null,
-    callPrice: null,
-    searchFailCountToday: 0,
-    frozenTradingDayKey: null,
-  };
-  assertSeatStateInvariant(seatState);
-  return seatState;
+/** 断言 public mutation 输入是合法运行时状态，并排除构造期静态 bootstrap 成员。 */
+function assertRuntimeSeatStateInvariant(
+  seatState: SeatStateCandidate,
+): asserts seatState is RuntimeWritableSeatState {
+  assertSeatStateInvariant(seatState, false);
 }
 
 /**
  * 创建席位条目（内部工厂函数）
- * @param symbol 交易标的代码，null 表示未绑定
- * @param status 席位状态（EMPTY/SEARCHING/SWITCHING/ACTIVATING/ACTIVE）
+ * @param state 已满足判别联合约束的初始席位状态
  * @returns 包含状态和版本号的席位条目，初始版本号为 1
  */
-function createSeatEntry(symbol: string | null, status: SeatStatus): SeatEntry {
+function createSeatEntry(state: SeatState, allowStaticBootstrap: boolean): SeatEntry {
+  assertSeatStateInvariant(state, allowStaticBootstrap);
   return {
-    state: createSeatState(symbol, status),
+    state,
     version: 1,
     lastEventVersion: 1,
   };
@@ -309,19 +330,12 @@ function createSeatEntry(symbol: string | null, status: SeatStatus): SeatEntry {
  * @param nextState 调用方传入的下一席位状态
  * @returns 可写入注册表的完整席位状态
  */
-function normalizeSeatState(nextState: SeatState): SeatState {
-  const normalizedState = {
-    symbol: nextState.symbol,
-    status: nextState.status,
-    lastSwitchAt: nextState.lastSwitchAt ?? null,
-    lastSearchAt: nextState.lastSearchAt ?? null,
-    lastSeatActivatedAt: nextState.lastSeatActivatedAt ?? null,
+function normalizeSeatState(nextState: RuntimeWritableSeatState): RuntimeWritableSeatState {
+  assertRuntimeSeatStateInvariant(nextState);
+  return {
+    ...nextState,
     callPrice: nextState.callPrice ?? null,
-    searchFailCountToday: nextState.searchFailCountToday,
-    frozenTradingDayKey: nextState.frozenTradingDayKey,
   };
-  assertSeatStateInvariant(normalizedState);
-  return normalizedState;
 }
 
 /**
@@ -346,11 +360,59 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
   const autoSearchEnabled = monitor.autoSearchConfig.autoSearchEnabled;
   const seatStore: SymbolSeatEntry = {
     long: autoSearchEnabled
-      ? createSeatEntry(null, 'EMPTY')
-      : createSeatEntry(monitor.longSymbol, 'ACTIVE'),
+      ? createSeatEntry(
+          {
+            symbol: null,
+            status: 'EMPTY',
+            lastSwitchAt: null,
+            lastSearchAt: null,
+            lastSeatActivatedAt: null,
+            callPrice: null,
+            searchFailCountToday: 0,
+            frozenTradingDayKey: null,
+          },
+          false,
+        )
+      : createSeatEntry(
+          {
+            symbol: monitor.longSymbol,
+            status: 'ACTIVE',
+            lastSwitchAt: null,
+            lastSearchAt: null,
+            lastSeatActivatedAt: null,
+            callPrice: null,
+            searchFailCountToday: 0,
+            frozenTradingDayKey: null,
+          },
+          true,
+        ),
     short: autoSearchEnabled
-      ? createSeatEntry(null, 'EMPTY')
-      : createSeatEntry(monitor.shortSymbol, 'ACTIVE'),
+      ? createSeatEntry(
+          {
+            symbol: null,
+            status: 'EMPTY',
+            lastSwitchAt: null,
+            lastSearchAt: null,
+            lastSeatActivatedAt: null,
+            callPrice: null,
+            searchFailCountToday: 0,
+            frozenTradingDayKey: null,
+          },
+          false,
+        )
+      : createSeatEntry(
+          {
+            symbol: monitor.shortSymbol,
+            status: 'ACTIVE',
+            lastSwitchAt: null,
+            lastSearchAt: null,
+            lastSeatActivatedAt: null,
+            callPrice: null,
+            searchFailCountToday: 0,
+            frozenTradingDayKey: null,
+          },
+          true,
+        ),
   };
 
   /**
@@ -396,14 +458,22 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
         return null;
       }
 
-      if (seatStore.long.state.symbol === symbol) {
+      if (
+        seatStore.long.state.status !== 'EMPTY' &&
+        seatStore.long.state.status !== 'SEARCHING' &&
+        seatStore.long.state.symbol === symbol
+      ) {
         return {
           direction: 'LONG',
           seatVersion: seatStore.long.version,
         };
       }
 
-      if (seatStore.short.state.symbol === symbol) {
+      if (
+        seatStore.short.state.status !== 'EMPTY' &&
+        seatStore.short.state.status !== 'SEARCHING' &&
+        seatStore.short.state.symbol === symbol
+      ) {
         return {
           direction: 'SHORT',
           seatVersion: seatStore.short.version,
@@ -412,7 +482,7 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
 
       return null;
     },
-    updateSeatState(direction: 'LONG' | 'SHORT', nextState: SeatState): SeatState {
+    updateSeatState(direction: 'LONG' | 'SHORT', nextState: RuntimeWritableSeatState): SeatState {
       const seatEntry = resolveSeatEntry(seatStore, direction);
       const previousState = seatEntry.state;
       const previousVersion = seatEntry.lastEventVersion;
@@ -430,7 +500,7 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
     },
     updateSeatStateWithVersionBump(
       direction: 'LONG' | 'SHORT',
-      nextState: SeatState,
+      nextState: RuntimeWritableSeatState,
     ): { readonly seatState: SeatState; readonly seatVersion: number } {
       const seatEntry = resolveSeatEntry(seatStore, direction);
       const previousState = seatEntry.state;

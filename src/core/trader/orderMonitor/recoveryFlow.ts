@@ -9,7 +9,7 @@
 import { OrderSide, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import { PENDING_ORDER_STATUSES } from '../../../constants/index.js';
+import { isOpenOrderStatus } from '../../orderStatusLifecycle/utils.js';
 import type { RawOrderFromAPI } from '../../../types/services.js';
 import { resolveOrderOwnership } from '../../orderRecorder/index.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
@@ -23,6 +23,7 @@ import { consumeQueriedTerminalState, resetOrderReplaceRuntimeState } from './or
 import { resolveSubmittedAtMs, resolveUpdatedAtMs } from './utils.js';
 import { hasProtectiveLiquidationRemark } from '../utils.js';
 import { resetRoutingIndex } from './routingIndex.js';
+import { normalizeTerminalStateSnapshot } from './orderFactMerge.js';
 
 /**
  * 创建恢复流程处理器。
@@ -194,7 +195,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
         continue;
       }
 
-      if (!PENDING_ORDER_STATUSES.has(trackedOrder.status)) {
+      if (!isOpenOrderStatus(trackedOrder.status)) {
         continue;
       }
 
@@ -232,7 +233,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const nonPendingTrackedOrderIds: string[] = [];
     for (const trackedOrder of runtime.trackedOrders.values()) {
       trackedOrderIds.add(trackedOrder.orderId);
-      if (!PENDING_ORDER_STATUSES.has(trackedOrder.status)) {
+      if (!isOpenOrderStatus(trackedOrder.status)) {
         nonPendingTrackedOrderIds.push(trackedOrder.orderId);
       }
     }
@@ -245,7 +246,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
 
     const snapshotPendingOrderIds = new Set<string>();
     for (const order of allOrders) {
-      if (PENDING_ORDER_STATUSES.has(order.status)) {
+      if (isOpenOrderStatus(order.status)) {
         snapshotPendingOrderIds.add(order.orderId);
       }
     }
@@ -317,6 +318,10 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     };
     trackOrder(trackOrderParams);
     const trackedOrder = runtime.trackedOrders.get(order.orderId);
+    if (trackedOrder) {
+      trackedOrder.lastOrderUpdateAtMs = resolveUpdatedAtMs(order.updatedAt);
+    }
+
     if (trackedOrder && executedQuantity > 0) {
       trackedOrder.executedQuantity = executedQuantity;
       trackedOrder.executedPrice = decimalToNumber(order.executedPrice);
@@ -360,7 +365,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const closedMismatchedBuyOrderIds = new Set<string>();
     try {
       for (const order of allOrders) {
-        if (!PENDING_ORDER_STATUSES.has(order.status)) {
+        if (!isOpenOrderStatus(order.status)) {
           continue;
         }
 
@@ -401,19 +406,38 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               throw new Error(`[订单监控] 买单 ${order.orderId} 缺少权威终态查询结果，阻断恢复`);
             }
 
-            if (isValidPositiveNumber(queriedTerminalState.executedQuantity)) {
+            const snapshotExecutedQuantity = decimalToNumber(order.executedQuantity);
+            const snapshotExecutedPrice = decimalToNumber(order.executedPrice);
+            const snapshotUpdatedAtMs = resolveUpdatedAtMs(order.updatedAt);
+            const normalizedTerminalState = normalizeTerminalStateSnapshot(
+              {
+                orderId: order.orderId,
+                status: order.status,
+                executedQuantity: Number.isFinite(snapshotExecutedQuantity)
+                  ? snapshotExecutedQuantity
+                  : 0,
+                executedPrice: isValidPositiveNumber(snapshotExecutedPrice)
+                  ? snapshotExecutedPrice
+                  : null,
+                lastExecutedTimeMs: snapshotExecutedQuantity > 0 ? snapshotUpdatedAtMs : null,
+                lastOrderUpdateAtMs: snapshotUpdatedAtMs,
+              },
+              queriedTerminalState,
+            );
+            if (isValidPositiveNumber(normalizedTerminalState.executedQuantity)) {
               throw new Error(
-                `[订单监控] 买单 ${order.orderId} 不匹配但权威终态存在成交事实，阻断恢复`,
+                `[订单监控] 买单 ${order.orderId} 不匹配但启动快照或权威终态存在成交事实，阻断恢复`,
               );
             }
 
             const settlementPayload = {
               orderId: order.orderId,
-              closedReason: queriedTerminalState.closedReason,
+              closedReason: normalizedTerminalState.closedReason,
               source: 'RECOVERY',
-              executedPrice: queriedTerminalState.executedPrice,
-              executedQuantity: queriedTerminalState.executedQuantity,
-              executedTimeMs: queriedTerminalState.executedTimeMs,
+              executedPrice: normalizedTerminalState.executedPrice,
+              executedQuantity: normalizedTerminalState.executedQuantity,
+              executedTimeMs: null,
+              orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
               symbol: order.symbol,
               side: 'BUY',
               monitorSymbol: ownership?.monitorSymbol ?? null,

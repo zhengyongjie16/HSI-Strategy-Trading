@@ -5,18 +5,16 @@
  * - 验证启动日志恢复后，单方向冷却会对同监控标的双方向买入生效。
  */
 import { describe, expect, it } from 'bun:test';
-import { TRADING } from '../../src/constants/index.js';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createLiquidationCooldownTracker } from '../../src/services/liquidationCooldown/index.js';
 import { createTradeLogHydrator } from '../../src/services/liquidationCooldown/tradeLogHydrator.js';
-import type { RiskCheckContext } from '../../src/types/services.js';
+import type { BuyRiskCheckContext } from '../../src/types/services.js';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import {
   createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createOrderRecorderDouble,
-  createPositionCacheDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
   createTraderDouble,
@@ -34,25 +32,18 @@ function createCompletedRecord(params: {
   readonly monitorSymbol: string;
   readonly action: 'SELLCALL' | 'SELLPUT';
   readonly executedAtMs: number;
-}): Record<string, unknown> {
+}) {
+  const direction: 'LONG' | 'SHORT' = params.action === 'SELLCALL' ? 'LONG' : 'SHORT';
+  const tradingDayKey = '2026-03-13';
   return {
-    orderId: null,
-    symbol: null,
-    symbolName: null,
+    recordType: 'PROTECTIVE_LIQUIDATION_COMPLETION' as const,
+    schemaVersion: 1 as const,
+    completionId: `v1:${tradingDayKey}:${params.monitorSymbol}:${direction}:${String(params.executedAtMs)}`,
+    tradingDayKey,
     monitorSymbol: params.monitorSymbol,
-    action: params.action,
-    side: 'SELL',
-    quantity: null,
-    price: null,
-    orderType: null,
-    status: 'FILLED',
-    error: null,
-    reason: TRADING.PROTECTIVE_LIQUIDATION_COMPLETED_REASON,
-    signalTriggerTime: null,
-    executedAt: new Date(params.executedAtMs).toISOString(),
-    executedAtMs: params.executedAtMs,
-    timestamp: new Date(params.executedAtMs).toISOString(),
-    isProtectiveClearance: true,
+    direction,
+    boundaryExecutedTimeMs: params.executedAtMs,
+    orderBaselines: [],
   };
 }
 
@@ -61,8 +52,7 @@ function createRiskContext(params: {
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
   readonly monitorConfig: ReturnType<typeof createMonitorConfig>;
-}): RiskCheckContext {
-  const cachedAccount = createAccountSnapshotDouble(100_000);
+}): BuyRiskCheckContext {
   return {
     trader: params.trader,
     riskChecker: params.riskChecker,
@@ -85,13 +75,6 @@ function createRiskContext(params: {
     shortSymbol: params.monitorConfig.shortSymbol,
     longSymbolName: params.monitorConfig.longSymbol,
     shortSymbolName: params.monitorConfig.shortSymbol,
-    account: cachedAccount,
-    positions: [],
-    lastState: {
-      cachedAccount,
-      cachedPositions: [],
-      positionCache: createPositionCacheDouble([]),
-    },
     currentTime: new Date('2026-03-13T10:00:00+08:00'),
     isHalfDay: false,
     doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -117,16 +100,15 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
   });
   const executedAtMs = params.nowMs - 30_000;
   const hydrator = createTradeLogHydrator({
-    readFileSync: () =>
-      JSON.stringify([
+    mixedTradeLogRepository: {
+      loadCompletionRecords: () => [
         createCompletedRecord({
           monitorSymbol: 'HSI.HK',
           action: params.recordAction,
           executedAtMs,
         }),
-      ]),
-    existsSync: () => true,
-    resolveLogRootDir: () => process.cwd(),
+      ],
+    },
     nowMs: () => params.nowMs,
     logger: {
       info: () => {},
@@ -203,8 +185,8 @@ describe('liquidation-cooldown-recovery integration', () => {
       nowMs: () => nowMs,
     });
     const hydrator = createTradeLogHydrator({
-      readFileSync: () =>
-        JSON.stringify([
+      mixedTradeLogRepository: {
+        loadCompletionRecords: () => [
           createCompletedRecord({
             monitorSymbol: monitorConfig.monitorSymbol,
             action: 'SELLCALL',
@@ -215,9 +197,8 @@ describe('liquidation-cooldown-recovery integration', () => {
             action: 'SELLCALL',
             executedAtMs: nowMs - 20_000,
           }),
-        ]),
-      existsSync: () => true,
-      resolveLogRootDir: () => process.cwd(),
+        ],
+      },
       nowMs: () => nowMs,
       logger: {
         info: () => {},
@@ -229,7 +210,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       liquidationCooldownTracker: tracker,
     });
 
-    expect(() => hydrator.hydrate()).toThrow('monitorSymbol 不匹配唯一配置');
+    expect(() => hydrator.hydrate()).toThrow('monitorSymbol mismatch');
   });
 
   it('blocks BUYCALL and BUYPUT after hydrating only LONG cooldown records', async () => {
@@ -265,16 +246,15 @@ describe('liquidation-cooldown-recovery integration', () => {
     });
     const executedAtMs = nowMs - 6 * 60_000;
     const hydrator = createTradeLogHydrator({
-      readFileSync: () =>
-        JSON.stringify([
+      mixedTradeLogRepository: {
+        loadCompletionRecords: () => [
           createCompletedRecord({
             monitorSymbol: 'HSI.HK',
             action: 'SELLCALL',
             executedAtMs,
           }),
-        ]),
-      existsSync: () => true,
-      resolveLogRootDir: () => process.cwd(),
+        ],
+      },
       nowMs: () => nowMs,
       logger: {
         info: () => {},

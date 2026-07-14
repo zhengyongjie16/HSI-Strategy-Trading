@@ -6,8 +6,7 @@
  * - 消费 seat/gate/timer 显式唤醒源
  * - 每次唤醒重新读取权威状态，不维护 seat 事实副本
  */
-import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME, TRADING } from '../../constants/index.js';
-import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../constants/index.js';
 import { toError } from '../../utils/error/index.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
@@ -23,6 +22,7 @@ import type {
   AutoSearchWakeupRuntime,
   AutoSearchWakeupRuntimeDeps,
 } from './types.js';
+import { isSeatFrozenToday } from '../../services/autoSymbolManager/utils.js';
 
 const AUTO_SEARCH_DIRECTIONS: ReadonlyArray<'LONG' | 'SHORT'> = ['LONG', 'SHORT'];
 
@@ -142,6 +142,40 @@ export function createAutoSearchWakeupRuntime(
     registerActivePromise(promise);
   }
 
+  /** 基于一次真实寻标完成后的权威席位事实，交接唯一 cooldown owner。 */
+  function handoffAuthoritativeCooldownOwner(direction: 'LONG' | 'SHORT'): void {
+    if (
+      !running ||
+      !deps.lastState.isTradingEnabled ||
+      deps.lastState.canTrade !== true ||
+      !deps.monitorContext.config.autoSearchConfig.autoSearchEnabled
+    ) {
+      return;
+    }
+
+    const seatState = deps.symbolRegistry.getSeatState(direction);
+    if (seatState.status !== 'EMPTY' || isSeatFrozenToday(seatState)) {
+      return;
+    }
+
+    if (seatState.lastSearchAt === null) {
+      return;
+    }
+
+    const seatVersion = deps.symbolRegistry.getSeatVersion(direction);
+    const cooldownEndMs = seatState.lastSearchAt + AUTO_SYMBOL_SEARCH_COOLDOWN_MS;
+    if (cooldownEndMs <= deps.now().getTime()) {
+      triggerSeat(direction, seatVersion);
+      return;
+    }
+
+    scheduleRouteTimer({
+      direction,
+      seatVersion,
+      atMs: cooldownEndMs,
+    });
+  }
+
   /**
    * 对单个 EMPTY seat 做一次权威重评估。
    * 冷却或开盘延迟未到时只登记下一次 one-shot timer，不在 runtime 内轮询。
@@ -151,6 +185,7 @@ export function createAutoSearchWakeupRuntime(
     expectedSeatVersion: number | undefined,
     activeRouteKey: AutoSearchRouteKey,
   ): Promise<void> {
+    let shouldHandoffCooldownOwner = false;
     try {
       if (!deps.lastState.isTradingEnabled || deps.lastState.canTrade !== true) {
         return;
@@ -201,25 +236,17 @@ export function createAutoSearchWakeupRuntime(
         return;
       }
 
-      try {
-        await monitorContext.autoSymbolManager.maybeSearchOnEvent({
-          direction,
-          currentTime: now,
-          canTradeNow: deps.lastState.canTrade,
-        });
-      } catch (error) {
-        if (!isExternalApiRequestError(error)) {
-          throw error;
-        }
-
-        scheduleRouteTimer({
-          direction,
-          seatVersion,
-          atMs: nowMs + TRADING.INTERVAL_MS,
-        });
-      }
+      await monitorContext.autoSymbolManager.maybeSearchOnEvent({
+        direction,
+        currentTime: now,
+        canTradeNow: deps.lastState.canTrade,
+      });
+      shouldHandoffCooldownOwner = true;
     } finally {
       activeRouteKeys.delete(activeRouteKey);
+      if (shouldHandoffCooldownOwner) {
+        handoffAuthoritativeCooldownOwner(direction);
+      }
     }
   }
 

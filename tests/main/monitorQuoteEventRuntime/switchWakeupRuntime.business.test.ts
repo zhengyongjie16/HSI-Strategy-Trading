@@ -11,6 +11,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import {
   createMonitorContextDouble,
+  createAutoSymbolManagerDouble,
   createQuoteDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
@@ -221,8 +222,6 @@ describe('switchWakeupRuntime', () => {
         symbolRegistry,
         state: {
           monitorSymbol: 'HSI.HK',
-          signal: null,
-          pendingDelayedSignals: [],
           lastMonitorSnapshot: null,
           incrementalIndicatorRuntime: null,
         },
@@ -306,7 +305,7 @@ describe('switchWakeupRuntime', () => {
   }
 
   function createWaitResult(
-    wakeups: ReadonlyArray<SwitchWakeupRequirement>,
+    wakeups: readonly [SwitchWakeupRequirement, ...SwitchWakeupRequirement[]],
   ): Extract<SwitchDriveResult, { kind: 'WAIT' }> {
     return {
       kind: 'WAIT',
@@ -591,7 +590,10 @@ describe('switchWakeupRuntime', () => {
       driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
     });
 
-    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 1,
+    });
     emitOrderStateChanged('BULL.HK');
     await waitTick();
     expect(advanceCalls).toEqual([]);
@@ -616,7 +618,11 @@ describe('switchWakeupRuntime', () => {
     emitOrderStateChanged('BULL.HK');
     await waitTick();
 
-    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 1,
+    });
+
     consistencyHarness.setStatus({
       started: true,
       currentVersion: 2,
@@ -834,7 +840,10 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
     expect(advanceCalls).toBe(0);
 
-    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 1,
+    });
     retainDeferred.resolve(() => {});
     await waitTick();
     await waitTick();
@@ -1185,6 +1194,187 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.runtime.stopAndDrain();
   });
 
+  it('fails fast on empty WAIT handoff before replacing a valid route owner', async () => {
+    let advanceCalls = 0;
+    const runtimeHarness = createBaseHarness({
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async (params) => {
+          advanceCalls += 1;
+          return {
+            advanced: true,
+            direction: params.direction,
+            stillPending: false,
+            driveResult: { kind: 'COMPLETED' },
+          };
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
+    });
+
+    expect(() => {
+      Reflect.apply(runtimeHarness.runtime.handoffPendingSwitch, undefined, [
+        {
+          direction: 'LONG',
+          monitorContext: runtimeHarness.monitorContext,
+          driveResult: { kind: 'WAIT', wakeups: [] },
+        },
+      ]);
+    }).toThrow('[SwitchWakeupRuntime] WAIT must contain at least one wakeup owner');
+
+    expect(() => {
+      Reflect.apply(runtimeHarness.runtime.handoffPendingSwitch, undefined, [
+        {
+          direction: 'LONG',
+          monitorContext: runtimeHarness.monitorContext,
+          driveResult: { kind: 'WAIT', wakeups: [{ kind: 'BOGUS' }] },
+        },
+      ]);
+    }).toThrow('[SwitchWakeupRuntime] WAIT contains an invalid wakeup owner');
+
+    emitOrderStateChanged('BULL.HK');
+    await waitTick();
+    expect(advanceCalls).toBe(1);
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  it('fails fast on illegal still-pending result before removing valid wakeup indexes', async () => {
+    let advanceCalls = 0;
+    const fatalErrors: unknown[] = [];
+    const autoSymbolManager = createAutoSymbolManagerDouble({
+      hasPendingSwitch: () => true,
+    });
+    Object.defineProperty(autoSymbolManager, 'advancePendingSwitch', {
+      value: async (params: { readonly direction: 'LONG' | 'SHORT' }) => {
+        advanceCalls += 1;
+        return {
+          advanced: true,
+          direction: params.direction,
+          stillPending: true,
+          driveResult: { kind: 'COMPLETED' },
+        };
+      },
+    });
+    const runtimeHarness = createBaseHarness({
+      autoSymbolManager,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+    });
+
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await waitTick();
+    emitQuoteUpdated('BULL.HK', 1.24);
+    await waitTick();
+
+    expect(fatalErrors).toHaveLength(2);
+    expect(fatalErrors[0]).toMatchObject({
+      message: '[SwitchWakeupRuntime] stillPending=true requires a non-empty WAIT result',
+    });
+    expect(advanceCalls).toBe(2);
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  it('fails fast on a bogus drive kind before removing valid wakeup indexes', async () => {
+    let advanceCalls = 0;
+    const fatalErrors: unknown[] = [];
+    const autoSymbolManager = createAutoSymbolManagerDouble({ hasPendingSwitch: () => true });
+    Object.defineProperty(autoSymbolManager, 'advancePendingSwitch', {
+      value: async () => {
+        advanceCalls += 1;
+        return {
+          advanced: true,
+          direction: 'LONG',
+          stillPending: false,
+          driveResult: { kind: 'BOGUS' },
+        };
+      },
+    });
+    const runtimeHarness = createBaseHarness({
+      autoSymbolManager,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+    });
+
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await waitTick();
+    emitQuoteUpdated('BULL.HK', 1.24);
+    await waitTick();
+
+    expect(fatalErrors).toHaveLength(2);
+    expect(fatalErrors[0]).toMatchObject({
+      message: '[SwitchWakeupRuntime] advance result contains an invalid drive kind',
+    });
+    expect(advanceCalls).toBe(2);
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  it('fails fast when advance result direction does not match the route', async () => {
+    const fatalErrors: unknown[] = [];
+    const autoSymbolManager = createAutoSymbolManagerDouble({ hasPendingSwitch: () => true });
+    Object.defineProperty(autoSymbolManager, 'advancePendingSwitch', {
+      value: async () => ({
+        advanced: true,
+        direction: 'SHORT',
+        stillPending: true,
+        driveResult: { kind: 'WAIT', wakeups: [{ kind: 'FRESHNESS' }] },
+      }),
+    });
+    const runtimeHarness = createBaseHarness({
+      autoSymbolManager,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+    });
+
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await waitTick();
+
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]).toMatchObject({
+      message: '[SwitchWakeupRuntime] advance result direction mismatch',
+    });
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
   it('prunes old seat-version wakeups and stops matching old events', async () => {
     const timerHarness = createTimerHarness(40_000);
     const symbolRegistry = createSymbolRegistryDouble({ longVersion: 1, shortVersion: 1 });
@@ -1231,7 +1421,11 @@ describe('switchWakeupRuntime', () => {
       ]),
     });
 
-    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 1,
+    });
+
     runtimeHarness.runtime.handoffPendingSwitch({
       direction: 'LONG',
       monitorContext,

@@ -11,24 +11,87 @@ import type {
 import type { OrderFilteringEngine, OrderOwnership } from './orderRecorder.js';
 
 /**
- * 成交回报输入。
- * 类型用途：用于 DailyLossTracker.recordFilledOrder 增量记录单笔成交。
+ * 累计成交事实输入。
+ * 类型用途：用于 DailyLossTracker.recordCumulativeExecution 按 orderId 幂等合并累计成交事实。
  * 数据来源：OrderMonitor 成交回调，仅在当日日键匹配时写入。
  * 使用范围：风险控制与订单监控链路；全项目可引用。
  */
-export type DailyLossFilledOrderInput = {
+export type DailyLossCumulativeExecutionInput = {
+  readonly factStage: 'OPEN' | 'TERMINAL';
   readonly direction: 'LONG' | 'SHORT';
   readonly symbol: string;
-  readonly side: OrderSide;
+  readonly side: OrderSide.Buy | OrderSide.Sell;
   readonly executedPrice: number;
   readonly executedQuantity: number;
   readonly executedTimeMs: number;
-  readonly orderId?: string | null;
+  readonly orderUpdatedAtMs: number;
+  readonly orderId: string;
+};
+
+/**
+ * 待持久化的累计成交权威快照。
+ * 类型用途：DailyLossTracker 在提交内存事实前，把执行推进或合法终态金额修订暴露给持久化边界。
+ * 数据来源：recordCumulativeExecution 的单调合并结果。
+ * 使用范围：SettlementFlow 保护性清仓 progress 持久化。
+ */
+export type DailyLossAuthoritativeFactSnapshot = Readonly<{
+  factStage: 'OPEN' | 'TERMINAL';
+  cumulativeQuantity: string;
+  cumulativeAmount: string;
+  lastExecutionTimeMs: number;
+  orderRevisionMs: number;
+}>;
+
+/**
+ * 启动恢复的精确累计成交快照。
+ * 类型用途：将 mixed log progress 作为历史 execution snapshot 注入全量重算后的订单事实。
+ * 数据来源：PROTECTIVE_LIQUIDATION_EXECUTION_PROGRESS V1。
+ * 使用范围：lifecycle 启动恢复。
+ */
+export type RestoreDailyLossExecutionSnapshotParams = Readonly<{
+  factStage: 'OPEN' | 'TERMINAL';
+  direction: 'LONG' | 'SHORT';
+  symbol: string;
+  side: OrderSide.Buy | OrderSide.Sell;
+  orderId: string;
+  cumulativeQuantity: string;
+  cumulativeAmount: string;
+  lastExecutionTimeMs: number;
+  orderRevisionMs: number;
+}>;
+
+/**
+ * 保护性清仓累计成交进度持久化输入。
+ * 类型用途：隔离 OrderMonitor 与具体 mixed-log repository，实现持久化成功后才提交内存事实。
+ * 数据来源：SettlementFlow 与 DailyLossTracker 的 execution-advance snapshot。
+ * 使用范围：Trader 装配边界。
+ */
+export type ProtectiveLiquidationExecutionProgressInput = Readonly<{
+  monitorSymbol: string;
+  direction: 'LONG' | 'SHORT';
+  symbol: string;
+  orderId: string;
+  factStage: 'OPEN' | 'TERMINAL';
+  cumulativeQuantity: string;
+  cumulativeAmount: string;
+  lastExecutionTimeMs: number;
+  orderRevisionMs: number;
+}>;
+
+/**
+ * 累计成交事实合并结果。
+ * 类型用途：由 DailyLossTracker 单一判定事实是否变化、累计成交是否真实推进。
+ * 数据来源：recordCumulativeExecution 比较同 orderId 的 revision、累计数量与累计金额后返回。
+ * 使用范围：订单监控成交入口，用于推进保护性 episode 与刷新需求。
+ */
+export type DailyLossCumulativeExecutionResult = {
+  readonly authoritativeFactChanged: boolean;
+  readonly executionAdvanced: boolean;
 };
 
 /**
  * 开启保护性清仓新周期参数。
- * 类型用途：保护性清仓业务事件完成后推进偏移边界并清空旧周期状态。
+ * 类型用途：保护性清仓业务事件完成后推进偏移边界，刷新 per-order 累计数量与金额基线。
  * 数据来源：成交后一致性运行时在保护性清仓完成确认后传入。
  * 使用范围：风险控制链路；全项目可引用。
  */
@@ -38,6 +101,28 @@ export type StartNewProtectionEpisodeParams = {
   /** 最近一次已完成保护性清仓事件边界（毫秒） */
   readonly boundaryExecutedTimeMs: number;
 };
+
+/**
+ * 待提交的 DailyLoss 保护边界。
+ * 类型用途：在持久化前冻结 per-order baseline，持久化成功后再原子提交内存投影。
+ * 数据来源：DailyLossTracker.prepareProtectionBoundary。
+ * 使用范围：PostTradeConsistencyRuntime 完成协调器。
+ */
+export type PreparedDailyLossProtectionBoundary = Readonly<{
+  direction: 'LONG' | 'SHORT';
+  boundaryExecutedTimeMs: number;
+  orderBaselines: ReadonlyArray<
+    Readonly<{
+      orderId: string;
+      symbol: string;
+      side: 'BUY' | 'SELL';
+      cumulativeQuantity: string;
+      cumulativeAmount: string;
+      lastExecutionTimeMs: number;
+      orderRevisionMs: number;
+    }>
+  >;
+}>;
 
 /**
  * 当日亏损追踪器接口。
@@ -58,14 +143,28 @@ export interface DailyLossTracker {
     relatedTradingSymbols?: ReadonlySet<string>,
   ) => void;
 
-  /** 增量记录单笔成交，仅接受 executedTimeMs > 当前保护性边界 且 当日日键匹配的订单 */
-  recordFilledOrder: (input: DailyLossFilledOrderInput) => void;
+  /** 按 revision 幂等合并订单累计成交事实，分段投影由 per-order baseline 计算 */
+  recordCumulativeExecution: (
+    input: DailyLossCumulativeExecutionInput,
+    beforeAuthoritativeFactCommit?: (snapshot: DailyLossAuthoritativeFactSnapshot) => void,
+  ) => DailyLossCumulativeExecutionResult;
+
+  /** 启动时把正式 progress record 恢复为精确历史 execution snapshot。 */
+  restoreExecutionSnapshot: (params: RestoreDailyLossExecutionSnapshotParams) => void;
 
   /** 获取指定方向的当日亏损偏移（仅亏损，<=0），未初始化时返回 0 */
   getLossOffset: (direction: 'LONG' | 'SHORT') => number;
 
-  /** 推进保护性边界并开启新周期（幂等且只允许边界单向前进）。 */
-  startNewProtectionEpisode: (params: StartNewProtectionEpisodeParams) => void;
+  /** 冻结保护边界基线，不修改当前边界与偏移。 */
+  prepareProtectionBoundary: (
+    params: StartNewProtectionEpisodeParams,
+  ) => PreparedDailyLossProtectionBoundary;
+
+  /** 提交已冻结且已持久化的保护边界。 */
+  commitProtectionBoundary: (prepared: PreparedDailyLossProtectionBoundary) => void;
+
+  /** 启动恢复时校验 persisted baseline 与当前订单事实后提交。 */
+  restoreProtectionBoundary: (prepared: PreparedDailyLossProtectionBoundary) => void;
 }
 
 /**

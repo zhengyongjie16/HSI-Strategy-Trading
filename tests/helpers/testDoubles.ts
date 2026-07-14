@@ -237,7 +237,7 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
     fetchAllOrdersFromAPI: async () => [],
     resetRuntimeState: () => {},
     recoverOrderTrackingFromSnapshot: async () => {},
-    executeSignals: async () => ({ submittedCount: 0, submittedOrderIds: [] }),
+    executeSignals: async () => ({ executedOrderIds: [] }),
   };
 
   return {
@@ -291,9 +291,15 @@ export function createDailyLossTrackerDouble(
   const base: DailyLossTracker = {
     resetAll: () => {},
     recalculateFromAllOrders: () => {},
-    recordFilledOrder: () => {},
+    recordCumulativeExecution: () => ({
+      authoritativeFactChanged: false,
+      executionAdvanced: false,
+    }),
+    restoreExecutionSnapshot: () => {},
     getLossOffset: () => 0,
-    startNewProtectionEpisode: () => {},
+    prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+    commitProtectionBoundary: () => {},
+    restoreProtectionBoundary: () => {},
   };
 
   return {
@@ -756,7 +762,8 @@ export function createProtectiveLiquidationEpisodeTrackerDouble(
 ): ProtectiveLiquidationEpisodeTracker {
   const base: ProtectiveLiquidationEpisodeTracker = {
     recordProtectiveFillProgress: () => {},
-    completeIfEligible: () => null,
+    prepareCompletion: () => null,
+    commitCompletion: () => {},
     restoreCompletedBoundary: () => {},
     restoreInProgressEpisode: () => {},
     getLatestProtectionBoundaryByDirection: () => new Map<'LONG' | 'SHORT', number>(),
@@ -847,29 +854,79 @@ export function createSymbolRegistryDouble(params?: {
     }
   }
 
-  function assertSeatStateInvariant(seatState: SeatState): void {
-    if ((seatState.status === 'ACTIVE' || seatState.status === 'ACTIVATING') && !seatState.symbol) {
+  type SeatStateCandidate = Readonly<{
+    symbol: string | null;
+    status: 'EMPTY' | 'SEARCHING' | 'SWITCHING' | 'ACTIVATING' | 'ACTIVE';
+    lastSwitchAt: number | null;
+    lastSearchAt: number | null;
+    lastSeatActivatedAt: number | null;
+    callPrice?: number | null;
+    searchFailCountToday: number;
+    frozenTradingDayKey: string | null;
+  }>;
+  type RuntimeWritableSeatState = Exclude<
+    SeatState,
+    { readonly status: 'ACTIVE'; readonly lastSeatActivatedAt: null }
+  >;
+
+  function assertSeatStateInvariant(
+    seatState: SeatStateCandidate,
+    allowStaticBootstrap: boolean,
+  ): void {
+    if (seatState.status === 'EMPTY' || seatState.status === 'SEARCHING') {
+      if (seatState.symbol !== null) {
+        throw new Error(`SymbolRegistry 席位状态无效：${seatState.status} 不得绑定标的`);
+      }
+    } else if (typeof seatState.symbol !== 'string' || seatState.symbol.length === 0) {
       throw new Error(`SymbolRegistry 席位状态无效：${seatState.status} 必须绑定标的`);
+    }
+
+    for (const [field, value] of [
+      ['lastSwitchAt', seatState.lastSwitchAt],
+      ['lastSearchAt', seatState.lastSearchAt],
+      ['lastSeatActivatedAt', seatState.lastSeatActivatedAt],
+    ] as const) {
+      if (value !== null && !Number.isFinite(value)) {
+        throw new Error(`SymbolRegistry 席位状态无效：${field} 必须是有限时间戳`);
+      }
+    }
+
+    if (seatState.status !== 'ACTIVE' || seatState.lastSeatActivatedAt !== null) {
+      return;
+    }
+
+    if (!allowStaticBootstrap) {
+      throw new Error('SymbolRegistry 席位状态无效：运行时 ACTIVE 必须具有有效激活时间');
+    }
+
+    if (
+      seatState.lastSwitchAt !== null ||
+      seatState.lastSearchAt !== null ||
+      (seatState.callPrice ?? null) !== null ||
+      seatState.searchFailCountToday !== 0 ||
+      seatState.frozenTradingDayKey !== null
+    ) {
+      throw new Error('SymbolRegistry 席位状态无效：仅静态 bootstrap ACTIVE 可缺少激活时间');
     }
   }
 
   function normalizeSeatState(nextState: SeatState): SeatState {
-    const normalizedState = {
-      symbol: nextState.symbol,
-      status: nextState.status,
-      lastSwitchAt: nextState.lastSwitchAt ?? null,
-      lastSearchAt: nextState.lastSearchAt ?? null,
-      lastSeatActivatedAt: nextState.lastSeatActivatedAt ?? null,
+    assertRuntimeSeatStateInvariant(nextState);
+
+    return {
+      ...nextState,
       callPrice: nextState.callPrice ?? null,
-      searchFailCountToday: nextState.searchFailCountToday,
-      frozenTradingDayKey: nextState.frozenTradingDayKey,
     };
-    assertSeatStateInvariant(normalizedState);
-    return normalizedState;
   }
 
-  assertSeatStateInvariant(longSeat);
-  assertSeatStateInvariant(shortSeat);
+  function assertRuntimeSeatStateInvariant(
+    seatState: SeatStateCandidate,
+  ): asserts seatState is RuntimeWritableSeatState {
+    assertSeatStateInvariant(seatState, false);
+  }
+
+  assertSeatStateInvariant(longSeat, true);
+  assertSeatStateInvariant(shortSeat, true);
 
   return {
     getSeatState(direction: 'LONG' | 'SHORT'): SeatState {
@@ -879,14 +936,22 @@ export function createSymbolRegistryDouble(params?: {
       return direction === 'LONG' ? longVersion : shortVersion;
     },
     resolveSeatBySymbol(symbol: string) {
-      if (longSeat.symbol === symbol) {
+      if (
+        longSeat.status !== 'EMPTY' &&
+        longSeat.status !== 'SEARCHING' &&
+        longSeat.symbol === symbol
+      ) {
         return {
           direction: 'LONG' as const,
           seatVersion: longVersion,
         };
       }
 
-      if (shortSeat.symbol === symbol) {
+      if (
+        shortSeat.status !== 'EMPTY' &&
+        shortSeat.status !== 'SEARCHING' &&
+        shortSeat.symbol === symbol
+      ) {
         return {
           direction: 'SHORT' as const,
           seatVersion: shortVersion,
@@ -1125,8 +1190,6 @@ export function createIndicatorUsageProfileDouble(overrides?: {
 function createMonitorStateDouble(monitorSymbol: string = 'HSI.HK'): MonitorState {
   return {
     monitorSymbol,
-    signal: null,
-    pendingDelayedSignals: [],
     lastMonitorSnapshot: null,
     incrementalIndicatorRuntime: null,
   };

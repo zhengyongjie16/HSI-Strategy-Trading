@@ -391,14 +391,14 @@ export function createDoomsdayProtection(deps?: {
     }
 
     const uniqueClearanceSignals = [...uniqueSignalsMap.values()];
-    let submittedCount = 0;
+    let executedOrderCount = 0;
     if (uniqueClearanceSignals.length > 0) {
       logger.info(`[末日保护程序] 生成 ${uniqueClearanceSignals.length} 个清仓信号，准备执行`);
       const submittedSymbols = new Set(uniqueClearanceSignals.map((signal) => signal.symbol));
       const executionResult = await trader.executeSignals(uniqueClearanceSignals);
-      submittedCount = executionResult.submittedCount;
+      executedOrderCount = executionResult.executedOrderIds.length;
 
-      if (submittedCount === uniqueClearanceSignals.length) {
+      if (executedOrderCount === uniqueClearanceSignals.length) {
         lastState.cachedAccount = null;
         lastState.cachedPositions = lastState.cachedPositions.filter(
           (position) => !submittedSymbols.has(position.symbol),
@@ -416,7 +416,7 @@ export function createDoomsdayProtection(deps?: {
         }
       } else {
         logger.warn(
-          `[末日保护程序] 清仓信号仅提交 ${submittedCount}/${uniqueClearanceSignals.length} 个，保留缓存与订单记录等待后续刷新`,
+          `[末日保护程序] 清仓信号仅执行 ${executedOrderCount}/${uniqueClearanceSignals.length} 个，保留缓存与订单记录等待后续刷新`,
         );
       }
     } else {
@@ -432,8 +432,8 @@ export function createDoomsdayProtection(deps?: {
       const currentMs = now().getTime();
       if (clearanceRetryDueAtMs !== null && currentMs < clearanceRetryDueAtMs) {
         return {
-          executed: submittedCount > 0,
-          signalCount: submittedCount,
+          executed: executedOrderCount > 0,
+          signalCount: executedOrderCount,
           nextRetryAtMs: clearanceRetryDueAtMs,
         };
       }
@@ -453,20 +453,28 @@ export function createDoomsdayProtection(deps?: {
         logger.warn(
           `[末日保护程序] 清仓行情重试耗尽，放弃本窗口重试: symbols=${[...unresolvedSymbols].join(',')}`,
         );
-        return { executed: submittedCount > 0, signalCount: submittedCount, nextRetryAtMs: null };
+        return {
+          executed: executedOrderCount > 0,
+          signalCount: executedOrderCount,
+          nextRetryAtMs: null,
+        };
       }
 
       clearanceRetryAttempts = nextRetry.nextAttempts;
       clearanceRetryDueAtMs = nextRetry.nextRetryAt;
       return {
-        executed: submittedCount > 0,
-        signalCount: submittedCount,
+        executed: executedOrderCount > 0,
+        signalCount: executedOrderCount,
         nextRetryAtMs: nextRetry.nextRetryAt,
       };
     }
 
     clearClearanceRetry();
-    return { executed: submittedCount > 0, signalCount: submittedCount, nextRetryAtMs: null };
+    return {
+      executed: executedOrderCount > 0,
+      signalCount: executedOrderCount,
+      nextRetryAtMs: null,
+    };
   }
 
   return {

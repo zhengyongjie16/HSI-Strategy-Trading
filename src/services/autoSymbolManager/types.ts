@@ -3,9 +3,9 @@ import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { BuySignal, SellSignal, Signal } from '../../types/signal.js';
 import type {
+  RuntimeWritableSeatState,
   SeatState,
   SeatStateChangedEvent,
-  SeatStatus,
   SymbolRegistry,
 } from '../../types/seat.js';
 import type {
@@ -42,6 +42,23 @@ export type SeatEntry = {
   version: number;
   lastEventVersion: number;
 };
+
+/**
+ * 席位状态运行时校验候选。
+ * 类型用途：表达越过静态类型边界后，SymbolRegistry 写入断言需要逐字段检查的宽输入结构。
+ * 数据来源：SymbolRegistry 的初始状态与 public mutation 入参。
+ * 使用范围：仅 autoSymbolManager 的 SymbolRegistry 不变量校验使用。
+ */
+export type SeatStateCandidate = Readonly<{
+  symbol: string | null;
+  status: 'EMPTY' | 'SEARCHING' | 'SWITCHING' | 'ACTIVATING' | 'ACTIVE';
+  lastSwitchAt: number | null;
+  lastSearchAt: number | null;
+  lastSeatActivatedAt: number | null;
+  callPrice?: number | null;
+  searchFailCountToday: number;
+  frozenTradingDayKey: string | null;
+}>;
 
 /**
  * 单个监控标的的席位条目。
@@ -411,36 +428,13 @@ export type SignalSeatValidationResult =
     }>;
 
 /**
- * 构建席位状态的参数（对象参数模式）。
- * 类型用途：包含标的、状态、时间戳与冻结信息，由 seatStateManager.buildSeatState 消费。
- * 使用范围：autoSymbolManager 模块及其调用方使用。
- */
-export type BuildSeatStateParams = {
-  readonly symbol: string | null;
-  readonly status: SeatStatus;
-  readonly lastSwitchAt: number | null;
-  readonly lastSearchAt: number | null;
-  readonly lastSeatActivatedAt: number | null;
-  readonly callPrice?: number | null;
-  readonly searchFailCountToday: number;
-  readonly frozenTradingDayKey: string | null;
-};
-
-/**
- * 席位状态构建函数类型。
- * 类型用途：根据 BuildSeatStateParams 构造 SeatState，由 createSeatStateManager 实现并注入，供寻标与换标流程消费。
- * 使用范围：autoSymbolManager 模块及其调用方使用。
- */
-export type SeatStateBuilder = (params: BuildSeatStateParams) => SeatState;
-
-/**
  * 席位状态更新函数类型。
  * 类型用途：负责写入注册表并按需递增版本号；bumpOnSymbolChange 为 true 时标的变更会触发版本号递增。由 createSeatStateManager 实现，供寻标与换标流程调用。
  * 使用范围：autoSymbolManager 模块及其调用方使用。
  */
 export type SeatStateUpdater = (
   direction: 'LONG' | 'SHORT',
-  nextState: SeatState,
+  nextState: RuntimeWritableSeatState,
   bumpOnSymbolChange: boolean,
 ) => void;
 
@@ -464,7 +458,6 @@ export type SeatStateManagerDeps = {
  * 使用范围：autoSymbolManager 模块及其调用方使用。
  */
 export interface SeatStateManager {
-  buildSeatState: SeatStateBuilder;
   updateSeatState: SeatStateUpdater;
   resolveSuppression: (
     direction: 'LONG' | 'SHORT',
@@ -497,7 +490,6 @@ export type AutoSearchDeps = {
   readonly autoSearchConfig: AutoSearchConfig;
   readonly monitorSymbol: string;
   readonly symbolRegistry: SymbolRegistry;
-  readonly buildSeatState: SeatStateBuilder;
   readonly updateSeatState: SeatStateUpdater;
   readonly resolveDirectionalAutoSearchPolicy: ResolveDirectionalAutoSearchPolicy;
   readonly buildFindBestWarrantInput: BuildFindBestWarrantInput;
@@ -567,7 +559,6 @@ export type SwitchStateMachineDeps = {
     triggerKind: SuppressibleSwitchTriggerKind,
   ) => void;
   readonly enterSwitchingSeat: (params: { direction: 'LONG' | 'SHORT'; reason: string }) => number;
-  readonly buildSeatState: SeatStateBuilder;
   readonly updateSeatState: SeatStateUpdater;
   readonly resolveDirectionalAutoSearchPolicy: ResolveDirectionalAutoSearchPolicy;
   readonly buildFindBestWarrantInput: BuildFindBestWarrantInput;

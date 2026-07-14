@@ -1,6 +1,7 @@
 import type { Logger } from '../../utils/logger/types.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import type { TradeLogHydrator } from '../../services/liquidationCooldown/types.js';
+import type { MixedTradeLogRepository } from '../../services/mixedTradeLogRepository/types.js';
 import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/types.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { LifecycleState, SymbolRegistry } from '../../types/seat.js';
@@ -164,6 +165,7 @@ export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
   dailyLossTracker: DailyLossTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
   tradeLogHydrator: TradeLogHydrator;
+  mixedTradeLogRepository: MixedTradeLogRepository;
   warrantListCacheConfig: WarrantListCacheConfig;
   seatActivationDispatcher: Pick<SeatActivationDispatcher, 'dispatchCurrentActivatingSeats'>;
 }>;

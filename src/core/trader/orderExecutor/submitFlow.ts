@@ -16,7 +16,7 @@ import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/i
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import type { Signal } from '../../../types/signal.js';
 import type { CancelOrderOutcome } from '../../../types/trader.js';
-import type { OrderPayload, SubmitOrderParams } from '../types.js';
+import type { OrderPayload } from '../types.js';
 import {
   buildOrderRemark,
   extractOrderId,
@@ -30,13 +30,17 @@ import {
   formatCancelOutcomeTag,
   isTerminalNonFilledCloseConfirmed,
 } from '../../../utils/trading/orderStatus.js';
-import type { SubmitTargetOrder, SubmitTargetOrderDeps } from './types.js';
+import type {
+  OrderActionResult,
+  SubmitOrderParams,
+  SubmitTargetOrder,
+  SubmitTargetOrderDeps,
+} from './types.js';
 import {
   getActionDescription,
   getOrderTypeFromConfig,
   handleSubmitError,
   isLiquidationSignal,
-  resolveOrderSide,
 } from './utils.js';
 import { createQuantityResolver } from './quantityResolver.js';
 
@@ -102,23 +106,22 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
    * @returns 订单 ID，失败返回 null
    * @throws 当远端下单成功但本地追踪登记失败时抛错，避免静默丢失订单状态
    */
-  async function submitOrder(params: SubmitOrderParams): Promise<string | null> {
+  async function submitOrder(params: SubmitOrderParams): Promise<OrderActionResult> {
     const {
-      signal,
+      command,
       authorizeOrderAction,
-      symbol,
-      side,
       submittedQtyDecimal,
       orderTypeParam,
       timeInForce,
       remark,
       overridePrice,
-      isShortSymbol,
       relatedBuyOrderIds = null,
     } = params;
+    const { signal, side } = command;
+    const symbol = signal.symbol;
 
     if (!canExecuteSignal(signal, 'submitOrder')) {
-      return null;
+      return { kind: 'SKIPPED' };
     }
 
     const resolvedPrice = overridePrice ?? signal.price ?? null;
@@ -132,7 +135,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         logger.warn(
           `[跳过订单] ${symbolDisplayForLog} 的${orderTypeLabel}缺少价格，无法提交。请确保信号中包含价格信息`,
         );
-        return null;
+        return { kind: 'SKIPPED' };
       }
 
       const orderTypeCode = getOrderTypeCode(orderTypeParam);
@@ -155,7 +158,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     try {
       await rateLimiter.throttle();
       if (!authorizeOrderAction('submitOrder.beforeApi')) {
-        return null;
+        return { kind: 'SKIPPED' };
       }
 
       recordBuyAttempt(signal.action);
@@ -175,7 +178,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       );
 
       const submittedQuantityNum = decimalToNumber(orderPayload.submittedQuantity);
-      const isLongSymbol = !isShortSymbol;
+      const isLongSymbol = command.direction === 'LONG';
       const isProtectiveLiquidation = isLiquidationSignal(signal);
       try {
         orderMonitor.trackOrder({
@@ -208,7 +211,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         });
       }
 
-      return orderId;
+      return { kind: 'SUBMITTED', orderId };
     } catch (err) {
       handleSubmitError(err, signal, orderPayload);
       const message = err instanceof Error ? err.message : '';
@@ -220,7 +223,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         throw err;
       }
 
-      return null;
+      return { kind: 'SKIPPED' };
     }
   }
 
@@ -228,30 +231,18 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
    * 根据信号构建并提交订单。
    * 卖出分支包含卖单合并（REPLACE/CANCEL_AND_SUBMIT/SUBMIT/SKIP）。
    *
-   * @param signal 交易信号
-   * @param targetSymbol 目标标的
-   * @param isShortSymbol 是否为空头方向标的
-   * @returns 已提交订单 ID，未提交返回 null
+   * @param command 已在执行入口解析并固化身份的订单命令
+   * @returns 新提交、已确认改单或明确跳过
    */
   return async function submitTargetOrder(
-    signal: Signal,
-    targetSymbol: string,
-    isShortSymbol: boolean,
+    command,
     authorizeOrderAction,
-  ): Promise<string | null> {
-    if (!signal.symbol || typeof signal.symbol !== 'string') {
-      logger.error(`[订单提交] 信号缺少有效的标的代码: ${JSON.stringify(signal)}`);
-      return null;
-    }
-
-    const side = resolveOrderSide(signal.action);
-    if (!side) {
-      logger.error(`[订单提交] 未知的信号类型: ${signal.action}, 标的: ${signal.symbol}`);
-      return null;
-    }
+  ): Promise<OrderActionResult> {
+    const { signal, side } = command;
+    const symbol = signal.symbol;
 
     if (!canExecuteSignal(signal, 'submitTargetOrder')) {
-      return null;
+      return { kind: 'SKIPPED' };
     }
 
     const targetNotional = monitorConfig.targetNotional;
@@ -261,27 +252,23 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     const remark = buildOrderRemark(isProtectiveLiquidation);
 
     if (side === OrderSide.Sell) {
-      const submittedQtyDecimal = await quantityResolver.calculateSellQuantity(
-        ctx,
-        targetSymbol,
-        signal,
-      );
+      const submittedQtyDecimal = await quantityResolver.calculateSellQuantity(ctx, symbol, signal);
       if (submittedQtyDecimal.isZero()) {
-        return null;
+        return { kind: 'SKIPPED' };
       }
 
       const submittedQtyNumber = decimalToNumber(submittedQtyDecimal);
       if (!isValidPositiveNumber(submittedQtyNumber)) {
         logger.warn(
-          `[跳过订单] 卖出数量无效，无法合并卖单: ${submittedQtyDecimal.toString()}, symbol=${targetSymbol}`,
+          `[跳过订单] 卖出数量无效，无法合并卖单: ${submittedQtyDecimal.toString()}, symbol=${symbol}`,
         );
-        return null;
+        return { kind: 'SKIPPED' };
       }
 
       const resolvedPrice = isValidPositiveNumber(signal.price) ? signal.price : null;
-      const pendingSellOrders = orderMonitor.getPendingSellOrders(targetSymbol);
+      const pendingSellOrders = orderMonitor.getPendingSellOrders(symbol);
       const decision = resolveSellMergeDecision({
-        symbol: targetSymbol,
+        symbol,
         pendingOrders: pendingSellOrders,
         newOrderQuantity: submittedQtyNumber,
         newOrderPrice: resolvedPrice,
@@ -291,13 +278,13 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
       if (decision.action === 'REPLACE' && decision.targetOrderId) {
         if (!canExecuteSignal(signal, 'replaceOrderPrice')) {
-          return null;
+          return { kind: 'SKIPPED' };
         }
 
         const price = decision.price ?? resolvedPrice ?? 0;
         if (!isValidPositiveNumber(price)) {
-          logger.warn(`[订单合并] 无法获取有效改单价格，跳过: ${targetSymbol}`);
-          return null;
+          logger.warn(`[订单合并] 无法获取有效改单价格，跳过: ${symbol}`);
+          return { kind: 'SKIPPED' };
         }
 
         const replaceOutcome = await orderMonitor.replaceOrderPrice(
@@ -307,7 +294,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           decision.mergedQuantity,
         );
         if (replaceOutcome.kind !== 'BROKER_CONFIRMED') {
-          return null;
+          return { kind: 'SKIPPED' };
         }
 
         const existingPendingSell = orderRecorder
@@ -324,13 +311,13 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           });
         }
 
-        return null;
+        return { kind: 'REPLACED', orderId: decision.targetOrderId };
       }
 
       let cancelOutcomes: ReadonlyArray<CancelOrderOutcome> = [];
       if (decision.action === 'CANCEL_AND_SUBMIT') {
         if (!canExecuteSignal(signal, 'cancelAndSubmit')) {
-          return null;
+          return { kind: 'SKIPPED' };
         }
 
         cancelOutcomes = await Promise.all(
@@ -343,8 +330,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         );
 
         if (cancelOutcomes.some(isFilledCancelOutcome)) {
-          logger.warn(`[订单合并] 检测到已成交卖单，禁止重复提交: ${targetSymbol}`);
-          return null;
+          logger.warn(`[订单合并] 检测到已成交卖单，禁止重复提交: ${symbol}`);
+          return { kind: 'SKIPPED' };
         }
 
         const unconfirmedOutcome = cancelOutcomes.find(
@@ -352,15 +339,15 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         );
         if (unconfirmedOutcome) {
           logger.warn(
-            `[订单合并] 撤单未确认非成交终态，跳过合并提交: ${targetSymbol}, outcome=${formatCancelOutcomeTag(unconfirmedOutcome)}`,
+            `[订单合并] 撤单未确认非成交终态，跳过合并提交: ${symbol}, outcome=${formatCancelOutcomeTag(unconfirmedOutcome)}`,
           );
-          return null;
+          return { kind: 'SKIPPED' };
         }
       }
 
       if (decision.action === 'SKIP') {
-        logger.info(`[订单合并] 无需新增卖单: ${targetSymbol}, reason=${decision.reason}`);
-        return null;
+        logger.info(`[订单合并] 无需新增卖单: ${symbol}, reason=${decision.reason}`);
+        return { kind: 'SKIPPED' };
       }
 
       if (decision.action === 'SUBMIT' || decision.action === 'CANCEL_AND_SUBMIT') {
@@ -373,44 +360,38 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
               )
             : (signal.relatedBuyOrderIds ?? null);
         return submitOrder({
-          signal,
+          command,
           authorizeOrderAction,
-          symbol: targetSymbol,
-          side,
           submittedQtyDecimal: mergedQtyDecimal,
           orderTypeParam: orderType,
           timeInForce,
           remark,
           overridePrice: decision.price ?? undefined,
-          isShortSymbol,
           relatedBuyOrderIds: mergedRelatedBuyOrderIds,
         });
       }
 
-      return null;
+      return { kind: 'SKIPPED' };
     }
 
     const submittedQtyDecimal = quantityResolver.resolveBuyQuantity(
       signal,
-      isShortSymbol,
+      command.direction === 'SHORT',
       targetNotional,
     );
 
     if (submittedQtyDecimal.isZero()) {
-      return null;
+      return { kind: 'SKIPPED' };
     }
 
     return submitOrder({
-      signal,
+      command,
       authorizeOrderAction,
-      symbol: targetSymbol,
-      side,
       submittedQtyDecimal,
       orderTypeParam: orderType,
       timeInForce,
       remark,
       overridePrice: undefined,
-      isShortSymbol,
     });
   };
 }

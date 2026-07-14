@@ -135,6 +135,7 @@ function createDeps(): {
       clear: () => {},
     },
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    persistProtectiveLiquidationExecutionProgress: () => {},
     postTradeConsistencyRuntime: {
       recordSettlementRefreshNeed: () => {},
     },

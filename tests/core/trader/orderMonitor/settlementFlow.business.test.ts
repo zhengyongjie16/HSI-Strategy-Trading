@@ -13,6 +13,7 @@ import {
   createProtectiveLiquidationEpisodeTrackerDouble,
 } from '../../../helpers/testDoubles.js';
 import type { OrderRecord, OrderStateChangedEvent } from '../../../../src/types/services.js';
+import type { DailyLossCumulativeExecutionInput } from '../../../../src/types/risk.js';
 import type { OrderHoldRegistry } from '../../../../src/core/trader/types.js';
 import type {
   OrderMonitorRuntimeStore,
@@ -68,6 +69,7 @@ describe('settlementFlow business flow', () => {
       readonly refreshPositions: boolean;
     }> = [];
     const orderStateEvents: OrderStateChangedEvent[] = [];
+    const dailyLossFills: DailyLossCumulativeExecutionInput[] = [];
     const settlementFlow = createSettlementFlow({
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -76,7 +78,13 @@ describe('settlementFlow business flow', () => {
           localBuyCalls += 1;
         },
       }),
-      dailyLossTracker: createDailyLossTrackerDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble({
+        recordCumulativeExecution: (input) => {
+          dailyLossFills.push(input);
+          return { authoritativeFactChanged: true, executionAdvanced: true };
+        },
+      }),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: (need) => {
@@ -99,6 +107,7 @@ describe('settlementFlow business flow', () => {
       executedPrice: 1.02,
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      orderUpdatedAtMs: Date.parse('2026-02-25T03:11:00.000Z'),
     });
     const duplicateResult = settlementFlow.settleOrder({
       orderId: 'BUY-SETTLEMENT-IDEMPOTENT',
@@ -111,11 +120,26 @@ describe('settlementFlow business flow', () => {
       executedPrice: 1.02,
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      orderUpdatedAtMs: Date.parse('2026-02-25T03:11:00.000Z'),
     });
 
     expect(settledResult.handled).toBe(true);
     expect(duplicateResult.handled).toBe(false);
     expect(localBuyCalls).toBe(1);
+    expect(dailyLossFills).toEqual([
+      {
+        factStage: 'TERMINAL',
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        executedPrice: 1.02,
+        executedQuantity: 100,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+        orderUpdatedAtMs: Date.parse('2026-02-25T03:11:00.000Z'),
+        orderId: 'BUY-SETTLEMENT-IDEMPOTENT',
+      },
+    ]);
+
     expect(refreshNeeds).toEqual([
       {
         refreshAccount: true,
@@ -197,7 +221,13 @@ describe('settlementFlow business flow', () => {
           localSellRelatedIds.push(relatedBuyOrderIds ?? null);
         },
       }),
-      dailyLossTracker: createDailyLossTrackerDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble({
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: true,
+          executionAdvanced: true,
+        }),
+      }),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: (need) => {
@@ -220,6 +250,7 @@ describe('settlementFlow business flow', () => {
       executedPrice: 1.05,
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      orderUpdatedAtMs: Date.parse('2026-02-25T03:11:00.000Z'),
     });
 
     expect(settledResult.handled).toBe(true);
@@ -298,7 +329,13 @@ describe('settlementFlow business flow', () => {
           });
         },
       }),
-      dailyLossTracker: createDailyLossTrackerDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble({
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: true,
+          executionAdvanced: true,
+        }),
+      }),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
@@ -341,6 +378,7 @@ describe('settlementFlow business flow', () => {
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
@@ -363,6 +401,38 @@ describe('settlementFlow business flow', () => {
     expect(runtime.closedOrderIds.has('BUY-PARTIAL-MISSING-ATTR')).toBe(false);
   });
 
+  it('fails fast when an attributed cumulative execution lacks explicit revision progress', () => {
+    const runtime = createRuntime();
+    const settlementFlow = createSettlementFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: () => {},
+      },
+      emitOrderStateChanged: () => {},
+    });
+
+    expect(() =>
+      settlementFlow.settleOrder({
+        orderId: 'BUY-MISSING-REVISION-PROGRESS',
+        closedReason: 'FILLED',
+        source: 'WS',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        monitorSymbol: 'HSI.HK',
+        isLongSymbol: true,
+        executedPrice: 1.02,
+        executedQuantity: 20,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      }),
+    ).toThrow(/order revision/);
+    expect(runtime.closedOrderIds.has('BUY-MISSING-REVISION-PROGRESS')).toBe(false);
+  });
+
   it('fails fast when executed close lacks monitor attribution', () => {
     const runtime = createRuntime();
     const refreshNeeds: Array<{
@@ -374,7 +444,13 @@ describe('settlementFlow business flow', () => {
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
-      dailyLossTracker: createDailyLossTrackerDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble({
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: true,
+          executionAdvanced: true,
+        }),
+      }),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: (need) => {
@@ -419,7 +495,13 @@ describe('settlementFlow business flow', () => {
       orderRecorder: createOrderRecorderDouble({
         markSellFilled: () => null,
       }),
-      dailyLossTracker: createDailyLossTrackerDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble({
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: true,
+          executionAdvanced: true,
+        }),
+      }),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
         recordProtectiveFillProgress: (params) => {
           recordedProgressPayloads.push(params);
@@ -445,6 +527,7 @@ describe('settlementFlow business flow', () => {
       executedPrice: 1.03,
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-02-25T03:11:00.000Z'),
+      orderUpdatedAtMs: Date.parse('2026-02-25T03:11:00.000Z'),
     });
 
     expect(result.handled).toBe(true);
@@ -491,6 +574,7 @@ describe('settlementFlow business flow', () => {
       executedQuantity: 0,
       executedPrice: null,
       lastExecutedTimeMs: null,
+      lastOrderUpdateAtMs: null,
       status: OrderStatus.New,
       submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
       lastPriceUpdateAt: Date.parse('2026-02-25T03:00:00.000Z'),
@@ -533,6 +617,7 @@ describe('settlementFlow business flow', () => {
         }),
       }),
       dailyLossTracker: createDailyLossTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},

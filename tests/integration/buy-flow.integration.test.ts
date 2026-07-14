@@ -4,10 +4,10 @@
  * 功能：
  * - 验证买入流程风险管道与下单执行的端到端场景与业务期望。
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, setSystemTime } from 'bun:test';
 import { OrderSide, OrderType, TimeInForceType, type TradeContext } from 'longbridge';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
-import { createOrderExecutor } from '../../src/core/trader/orderExecutor/index.js';
+import { createOrderExecutor as createOrderExecutorCore } from '../../src/core/trader/orderExecutor/index.js';
 import { VERIFICATION } from '../../src/constants/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
@@ -16,7 +16,6 @@ import {
   createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createOrderRecorderDouble,
-  createPositionCacheDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
@@ -24,8 +23,37 @@ import {
   createTraderDouble,
 } from '../helpers/testDoubles.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
+import type { BuyRiskCheckContext } from '../../src/types/services.js';
+import type { OrderExecutorDeps } from '../../src/core/trader/types.js';
+import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
 
-function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
+function createOrderExecutor(
+  deps: Omit<OrderExecutorDeps, 'now' | 'readCurrentTradingDayInfo'> &
+    Partial<Pick<OrderExecutorDeps, 'now' | 'readCurrentTradingDayInfo'>>,
+) {
+  const defaultNow = (): Date => new Date(Date.now());
+  return createOrderExecutorCore({
+    now: defaultNow,
+    readCurrentTradingDayInfo: () => ({
+      dateKey: getRequiredHKDateKey(defaultNow()),
+      info: { isTradingDay: true, isHalfDay: false },
+    }),
+    ...deps,
+  });
+}
+
+function withMockedNow<T>(
+  nowMs: number,
+  run: () => Promise<T>,
+  useSystemTime: boolean = false,
+): Promise<T> {
+  if (useSystemTime) {
+    setSystemTime(nowMs);
+    return run().finally(() => {
+      setSystemTime();
+    });
+  }
+
   const originalNow = Date.now;
   Date.now = () => nowMs;
   return run().finally(() => {
@@ -37,8 +65,7 @@ function createRiskContext(params: {
   readonly trader: ReturnType<typeof createTraderDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
-}) {
-  const cachedAccount = createAccountSnapshotDouble(100000);
+}): BuyRiskCheckContext {
   const monitorConfig = createTradingConfig().monitor;
 
   return {
@@ -63,13 +90,6 @@ function createRiskContext(params: {
     shortSymbol: 'BEAR.HK',
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
-    account: cachedAccount,
-    positions: [],
-    lastState: {
-      cachedAccount,
-      cachedPositions: [],
-      positionCache: createPositionCacheDouble([]),
-    },
     currentTime: new Date(),
     isHalfDay: false,
     doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -78,6 +98,281 @@ function createRiskContext(params: {
 }
 
 describe('buy-flow integration', () => {
+  it.each([
+    {
+      label: '正常交易日',
+      beforeCutoff: '2026-07-12T07:44:59.000Z',
+      afterCutoff: '2026-07-12T07:45:01.000Z',
+      isHalfDay: false,
+    },
+    {
+      label: '半日交易日',
+      beforeCutoff: '2026-07-12T03:44:59.000Z',
+      afterCutoff: '2026-07-12T03:45:01.000Z',
+      isHalfDay: true,
+    },
+  ])('$label 买入在 throttle 跨过末日截止后不得进入 broker API', async (scenario) => {
+    const tradingConfig = createTradingConfig();
+    const tradeCtx = createTradeContextMock();
+    let currentTime = new Date(scenario.beforeCutoff);
+    const orderExecutor = createOrderExecutor({
+      ctx: tradeCtx as unknown as TradeContext,
+      rateLimiter: {
+        throttle: async () => {
+          currentTime = new Date(scenario.afterCutoff);
+        },
+      },
+      cacheManager: {
+        clearCache: () => {},
+        getPendingOrders: async () => [],
+      },
+      orderMonitor: {
+        initialize: async () => {},
+        trackOrder: () => {},
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          closedReason: 'CANCELED',
+          source: 'API',
+          relatedBuyOrderIds: null,
+        }),
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
+        startRuntime: () => {},
+        stopRuntimeAndDrain: async () => {},
+        recoverOrderTrackingFromSnapshot: async () => {},
+        getPendingSellOrders: () => [],
+        clearTrackedOrders: () => {},
+        onOrderStateChanged: () => () => {},
+        hasPendingProtectiveLiquidationOrders: () => false,
+      },
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig,
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () => true,
+      now: () => currentTime,
+      readCurrentTradingDayInfo: () => ({
+        dateKey: scenario.afterCutoff.slice(0, 10),
+        info: { isTradingDay: true, isHalfDay: scenario.isHalfDay },
+      }),
+    });
+
+    const result = await orderExecutor.executeSignals([
+      createSignal({
+        symbol: 'BULL.HK',
+        action: 'BUYCALL',
+        triggerTimeMs: currentTime.getTime(),
+        price: 5,
+        lotSize: 100,
+        reason: 'cross-doomsday-buy-cutoff-during-throttle',
+      }),
+    ]);
+
+    expect(result).toEqual({ executedOrderIds: [] });
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(orderExecutor.canTradeNow('BUYCALL')).toEqual({ canTrade: true });
+  });
+
+  it.each([
+    {
+      label: '正常交易日 exact close',
+      finalTime: '2026-07-12T08:00:00.000Z',
+      isHalfDay: false,
+    },
+    {
+      label: '正常交易日 after close',
+      finalTime: '2026-07-12T10:00:00.000Z',
+      isHalfDay: false,
+    },
+    {
+      label: '半日交易日 exact close',
+      finalTime: '2026-07-12T04:00:00.000Z',
+      isHalfDay: true,
+    },
+    {
+      label: '半日交易日 after close',
+      finalTime: '2026-07-12T06:00:00.000Z',
+      isHalfDay: true,
+    },
+  ])('$label 达到截止起点后当日持续拒绝买入', async (scenario) => {
+    const tradingConfig = createTradingConfig();
+    const tradeCtx = createTradeContextMock();
+    let currentTime = new Date('2026-07-12T03:30:00.000Z');
+    const orderExecutor = createOrderExecutor({
+      ctx: tradeCtx as unknown as TradeContext,
+      rateLimiter: {
+        throttle: async () => {
+          currentTime = new Date(scenario.finalTime);
+        },
+      },
+      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      orderMonitor: {
+        initialize: async () => {},
+        trackOrder: () => {},
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          closedReason: 'CANCELED',
+          source: 'API',
+          relatedBuyOrderIds: null,
+        }),
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
+        startRuntime: () => {},
+        stopRuntimeAndDrain: async () => {},
+        recoverOrderTrackingFromSnapshot: async () => {},
+        getPendingSellOrders: () => [],
+        clearTrackedOrders: () => {},
+        onOrderStateChanged: () => () => {},
+        hasPendingProtectiveLiquidationOrders: () => false,
+      },
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig,
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () => true,
+      now: () => currentTime,
+      readCurrentTradingDayInfo: () => ({
+        dateKey: '2026-07-12',
+        info: { isTradingDay: true, isHalfDay: scenario.isHalfDay },
+      }),
+    });
+
+    const result = await orderExecutor.executeSignals([
+      createSignal({
+        symbol: 'BULL.HK',
+        action: 'BUYCALL',
+        triggerTimeMs: currentTime.getTime(),
+        price: 5,
+        lotSize: 100,
+        reason: 'same-day-after-doomsday-cutoff',
+      }),
+    ]);
+
+    expect(result).toEqual({ executedOrderIds: [] });
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(orderExecutor.canTradeNow('BUYCALL')).toEqual({ canTrade: true });
+  });
+
+  it.each([
+    {
+      label: '交易日历缺失',
+      readCurrentTradingDayInfo: () => null,
+    },
+    {
+      label: '交易日历日期不匹配',
+      readCurrentTradingDayInfo: () => ({
+        dateKey: '2026-07-11',
+        info: { isTradingDay: true, isHalfDay: false },
+      }),
+    },
+    {
+      label: '当日不是交易日',
+      readCurrentTradingDayInfo: () => ({
+        dateKey: '2026-07-12',
+        info: { isTradingDay: false, isHalfDay: false },
+      }),
+    },
+  ])('$label 时末日保护买入最终授权 fail-closed', async (scenario) => {
+    const tradingConfig = createTradingConfig();
+    const tradeCtx = createTradeContextMock();
+    const currentTime = new Date('2026-07-12T06:30:00.000Z');
+    const orderExecutor = createOrderExecutor({
+      ctx: tradeCtx as unknown as TradeContext,
+      rateLimiter: { throttle: async () => {} },
+      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      orderMonitor: {
+        initialize: async () => {},
+        trackOrder: () => {},
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          closedReason: 'CANCELED',
+          source: 'API',
+          relatedBuyOrderIds: null,
+        }),
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
+        startRuntime: () => {},
+        stopRuntimeAndDrain: async () => {},
+        recoverOrderTrackingFromSnapshot: async () => {},
+        getPendingSellOrders: () => [],
+        clearTrackedOrders: () => {},
+        onOrderStateChanged: () => () => {},
+        hasPendingProtectiveLiquidationOrders: () => false,
+      },
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig,
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () => true,
+      now: () => currentTime,
+      readCurrentTradingDayInfo: scenario.readCurrentTradingDayInfo,
+    });
+
+    const result = await orderExecutor.executeSignals([
+      createSignal({
+        symbol: 'BEAR.HK',
+        action: 'BUYPUT',
+        triggerTimeMs: currentTime.getTime(),
+        price: 5,
+        lotSize: 100,
+        reason: 'missing-authoritative-trading-day-info',
+      }),
+    ]);
+
+    expect(result.executedOrderIds.length).toBe(0);
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(orderExecutor.canTradeNow('BUYPUT')).toEqual({ canTrade: true });
+  });
+
+  it('末日保护关闭时买入提交不依赖交易日截止授权', async () => {
+    const baseConfig = createTradingConfig();
+    const tradingConfig = createTradingConfig({
+      global: { ...baseConfig.global, doomsdayProtection: false },
+    });
+    const tradeCtx = createTradeContextMock();
+    const orderExecutor = createOrderExecutor({
+      ctx: tradeCtx as unknown as TradeContext,
+      rateLimiter: { throttle: async () => {} },
+      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      orderMonitor: {
+        initialize: async () => {},
+        trackOrder: () => {},
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          closedReason: 'CANCELED',
+          source: 'API',
+          relatedBuyOrderIds: null,
+        }),
+        replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
+        startRuntime: () => {},
+        stopRuntimeAndDrain: async () => {},
+        recoverOrderTrackingFromSnapshot: async () => {},
+        getPendingSellOrders: () => [],
+        clearTrackedOrders: () => {},
+        onOrderStateChanged: () => () => {},
+        hasPendingProtectiveLiquidationOrders: () => false,
+      },
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig,
+      symbolRegistry: createSymbolRegistryDouble(),
+      isExecutionAllowed: () => true,
+      now: () => {
+        throw new Error('末日保护关闭时不应读取最终截止授权时钟');
+      },
+      readCurrentTradingDayInfo: () => {
+        throw new Error('末日保护关闭时不应读取交易日事实');
+      },
+    });
+
+    const result = await orderExecutor.executeSignals([
+      createSignal({
+        symbol: 'BULL.HK',
+        action: 'BUYCALL',
+        triggerTimeMs: Date.parse('2026-07-12T07:44:59.000Z'),
+        price: 5,
+        lotSize: 100,
+        reason: 'doomsday-protection-disabled',
+      }),
+    ]);
+
+    expect(result.executedOrderIds.length).toBe(1);
+    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
+  });
+
   it('rejects broker success responses that do not contain a real orderId', async () => {
     const tradingConfig = createTradingConfig();
     const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
@@ -118,25 +413,31 @@ describe('buy-flow integration', () => {
       isExecutionAllowed: () => true,
     });
 
-    const signal = createSignal({
-      symbol: 'BULL.HK',
-      action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
-      reason: 'missing-order-id-should-fail',
-    });
+    await withMockedNow(
+      Date.parse('2026-07-10T07:00:00.000Z'),
+      async () => {
+        const signal = createSignal({
+          symbol: 'BULL.HK',
+          action: 'BUYCALL',
+          triggerTimeMs: Date.now(),
+          price: 5,
+          lotSize: 100,
+          reason: 'missing-order-id-should-fail',
+        });
 
-    let missingOrderIdError: unknown = null;
-    try {
-      await orderExecutor.executeSignals([signal]);
-    } catch (error) {
-      missingOrderIdError = error;
-    }
+        let missingOrderIdError: unknown = null;
+        try {
+          await orderExecutor.executeSignals([signal]);
+        } catch (error) {
+          missingOrderIdError = error;
+        }
 
-    expect(missingOrderIdError).toBeInstanceOf(Error);
-    expect((missingOrderIdError as Error).message).toContain('orderId');
-    expect(trackedOrders).toHaveLength(0);
+        expect(missingOrderIdError).toBeInstanceOf(Error);
+        expect((missingOrderIdError as Error).message).toContain('orderId');
+        expect(trackedOrders).toHaveLength(0);
+      },
+      true,
+    );
   });
 
   it('surfaces local tracking failures after broker submit succeeds', async () => {
@@ -177,27 +478,33 @@ describe('buy-flow integration', () => {
       isExecutionAllowed: () => true,
     });
 
-    const signal = createSignal({
-      symbol: 'BULL.HK',
-      action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
-      reason: 'track-order-failure-should-surface',
-    });
+    await withMockedNow(
+      Date.parse('2026-07-10T07:00:00.000Z'),
+      async () => {
+        const signal = createSignal({
+          symbol: 'BULL.HK',
+          action: 'BUYCALL',
+          triggerTimeMs: Date.now(),
+          price: 5,
+          lotSize: 100,
+          reason: 'track-order-failure-should-surface',
+        });
 
-    let localSyncError: unknown = null;
-    try {
-      await orderExecutor.executeSignals([signal]);
-    } catch (error) {
-      localSyncError = error;
-    }
+        let localSyncError: unknown = null;
+        try {
+          await orderExecutor.executeSignals([signal]);
+        } catch (error) {
+          localSyncError = error;
+        }
 
-    expect(localSyncError).toBeInstanceOf(Error);
-    expect((localSyncError as Error).message).toContain(
-      'order submitted but local sync failed: MOCK-000001',
+        expect(localSyncError).toBeInstanceOf(Error);
+        expect((localSyncError as Error).message).toContain(
+          'order submitted but local sync failed: MOCK-000001',
+        );
+        expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
+      },
+      true,
     );
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
   });
 
   it('skips stale seatVersion at final order execution gate', async () => {
@@ -253,7 +560,7 @@ describe('buy-flow integration', () => {
 
     const result = await orderExecutor.executeSignals([staleSignal]);
 
-    expect(result).toEqual({ submittedCount: 0, submittedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [] });
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
     expect(trackedOrderCount).toBe(0);
   });
@@ -268,10 +575,12 @@ describe('buy-flow integration', () => {
       rateLimiter: {
         throttle: async () => {
           throttleCalls += 1;
-          symbolRegistry.updateSeatStateWithVersionBump(
-            'LONG',
-            symbolRegistry.getSeatState('LONG'),
-          );
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+            throw new Error('expected runtime ACTIVE LONG seat');
+          }
+
+          symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
         },
       },
       cacheManager: {
@@ -313,7 +622,7 @@ describe('buy-flow integration', () => {
     const result = await orderExecutor.executeSignals([signal]);
 
     expect(throttleCalls).toBe(1);
-    expect(result).toEqual({ submittedCount: 0, submittedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [] });
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
   });
 
@@ -432,7 +741,7 @@ describe('buy-flow integration', () => {
     const invalidSignals = [missingSeatVersionSignal] as unknown as ReadonlyArray<ExecutableSignal>;
     const result = await orderExecutor.executeSignals(invalidSignals);
 
-    expect(result).toEqual({ submittedCount: 0, submittedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [] });
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
     expect(trackedOrderCount).toBe(0);
   });
@@ -496,40 +805,46 @@ describe('buy-flow integration', () => {
     const riskChecker = createRiskCheckerDouble();
     const orderRecorder = createOrderRecorderDouble();
 
-    const signal = createSignal({
-      symbol: 'BULL.HK',
-      action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
-      reason: 'integration-buy',
-    });
+    await withMockedNow(
+      Date.parse('2026-07-10T07:00:00.000Z'),
+      async () => {
+        const signal = createSignal({
+          symbol: 'BULL.HK',
+          action: 'BUYCALL',
+          triggerTimeMs: Date.now(),
+          price: 5,
+          lotSize: 100,
+          reason: 'integration-buy',
+        });
 
-    const checkedSignals = await signalProcessor.applyRiskChecks(
-      [signal],
-      createRiskContext({ trader, riskChecker, orderRecorder }),
+        const checkedSignals = await signalProcessor.applyRiskChecks(
+          [signal],
+          createRiskContext({ trader, riskChecker, orderRecorder }),
+        );
+        const result = await orderExecutor.executeSignals(checkedSignals);
+
+        expect(result.executedOrderIds.length).toBe(1);
+        expect(trackedOrders).toHaveLength(1);
+        expect(trackedOrders[0]?.side).toBe(OrderSide.Buy);
+        expect(trackedOrders[0]?.quantity).toBe(1000);
+
+        const submitCall = tradeCtx.getCalls('submitOrder')[0];
+        const payload = submitCall?.args[0] as {
+          readonly orderType: OrderType;
+          readonly timeInForce: TimeInForceType;
+          readonly side: OrderSide;
+          readonly symbol: string;
+          readonly submittedQuantity: { readonly toString: () => string };
+        };
+
+        expect(payload.orderType).toBe(OrderType.ELO);
+        expect(payload.timeInForce).toBe(TimeInForceType.Day);
+        expect(payload.side).toBe(OrderSide.Buy);
+        expect(payload.symbol).toBe('BULL.HK');
+        expect(Number(payload.submittedQuantity.toString())).toBe(1000);
+      },
+      true,
     );
-    const result = await orderExecutor.executeSignals(checkedSignals);
-
-    expect(result.submittedCount).toBe(1);
-    expect(trackedOrders).toHaveLength(1);
-    expect(trackedOrders[0]?.side).toBe(OrderSide.Buy);
-    expect(trackedOrders[0]?.quantity).toBe(1000);
-
-    const submitCall = tradeCtx.getCalls('submitOrder')[0];
-    const payload = submitCall?.args[0] as {
-      readonly orderType: OrderType;
-      readonly timeInForce: TimeInForceType;
-      readonly side: OrderSide;
-      readonly symbol: string;
-      readonly submittedQuantity: { readonly toString: () => string };
-    };
-
-    expect(payload.orderType).toBe(OrderType.ELO);
-    expect(payload.timeInForce).toBe(TimeInForceType.Day);
-    expect(payload.side).toBe(OrderSide.Buy);
-    expect(payload.symbol).toBe('BULL.HK');
-    expect(Number(payload.submittedQuantity.toString())).toBe(1000);
   });
 
   it('uses explicit signal quantity when valid quantity is provided', async () => {
@@ -571,28 +886,34 @@ describe('buy-flow integration', () => {
       isExecutionAllowed: () => true,
     });
 
-    let signal = createSignal({
-      symbol: 'BULL.HK',
-      action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
-      price: 1,
-      lotSize: 100,
-      reason: 'integration-buy-explicit-quantity',
-    });
-    signal = { ...signal, quantity: 200 };
+    await withMockedNow(
+      Date.parse('2026-07-10T07:00:00.000Z'),
+      async () => {
+        let signal = createSignal({
+          symbol: 'BULL.HK',
+          action: 'BUYCALL',
+          triggerTimeMs: Date.now(),
+          price: 1,
+          lotSize: 100,
+          reason: 'integration-buy-explicit-quantity',
+        });
+        signal = { ...signal, quantity: 200 };
 
-    const result = await orderExecutor.executeSignals([signal]);
+        const result = await orderExecutor.executeSignals([signal]);
 
-    expect(result.submittedCount).toBe(1);
-    expect(trackedOrders).toHaveLength(1);
-    expect(trackedOrders[0]?.side).toBe(OrderSide.Buy);
-    expect(trackedOrders[0]?.quantity).toBe(200);
+        expect(result.executedOrderIds.length).toBe(1);
+        expect(trackedOrders).toHaveLength(1);
+        expect(trackedOrders[0]?.side).toBe(OrderSide.Buy);
+        expect(trackedOrders[0]?.quantity).toBe(200);
 
-    const submitCall = tradeCtx.getCalls('submitOrder')[0];
-    const payload = submitCall?.args[0] as {
-      readonly submittedQuantity: { readonly toString: () => string };
-    };
-    expect(Number(payload.submittedQuantity.toString())).toBe(200);
+        const submitCall = tradeCtx.getCalls('submitOrder')[0];
+        const payload = submitCall?.args[0] as {
+          readonly submittedQuantity: { readonly toString: () => string };
+        };
+        expect(Number(payload.submittedQuantity.toString())).toBe(200);
+      },
+      true,
+    );
   });
 
   it('rejects invalid explicit buy quantity without silently using targetNotional', async () => {
@@ -646,7 +967,7 @@ describe('buy-flow integration', () => {
 
     const result = await orderExecutor.executeSignals([signal]);
 
-    expect(result.submittedCount).toBe(0);
+    expect(result.executedOrderIds.length).toBe(0);
     expect(trackedOrders).toHaveLength(0);
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
   });
@@ -699,7 +1020,7 @@ describe('buy-flow integration', () => {
 
     await withMockedNow(fixedNow, async () => {
       const firstResult = await orderExecutor.executeSignals([firstSignal]);
-      expect(firstResult.submittedCount).toBe(1);
+      expect(firstResult.executedOrderIds.length).toBe(1);
     });
 
     const { secondCallCheck, firstPutCheck } = await withMockedNow(fixedNow, async () => ({
@@ -723,7 +1044,7 @@ describe('buy-flow integration', () => {
 
     await withMockedNow(fixedNow, async () => {
       const firstPutResult = await orderExecutor.executeSignals([firstPutSignal]);
-      expect(firstPutResult.submittedCount).toBe(1);
+      expect(firstPutResult.executedOrderIds.length).toBe(1);
     });
 
     const { secondPutCheck, nextCallCheck } = await withMockedNow(fixedNow, async () => ({
@@ -889,7 +1210,7 @@ describe('buy-flow integration', () => {
       );
       expect(checkedSignals).toHaveLength(1);
       const executeResult = await successOrderExecutor.executeSignals(checkedSignals);
-      expect(executeResult.submittedCount).toBe(1);
+      expect(executeResult.executedOrderIds.length).toBe(1);
     });
 
     const blockedSignal = createSignal({

@@ -8,6 +8,7 @@ import { createSeatActivationDispatcher } from '../../../src/main/seatActivation
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
+import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
 import { createMonitorConfigDouble } from '../../helpers/testDoubles.js';
 
 describe('SeatActivationDispatcher', () => {
@@ -155,7 +156,7 @@ describe('SeatActivationDispatcher', () => {
     dispatcher.start();
     let caught: unknown = null;
     try {
-      symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      const invalidActivatingSeat = {
         symbol: null,
         status: 'ACTIVATING',
         lastSwitchAt: 123,
@@ -164,7 +165,8 @@ describe('SeatActivationDispatcher', () => {
         callPrice: 20_000,
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
-      });
+      } as unknown as RuntimeWritableSeatState;
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', invalidActivatingSeat);
     } catch (err) {
       caught = err;
     } finally {

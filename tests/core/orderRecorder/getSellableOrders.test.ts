@@ -80,6 +80,36 @@ describe('selectSellableOrders', () => {
     expect(result.orders.map((order) => order.orderId)).toEqual(['O2', 'O3', 'O1']);
   });
 
+  it('同价智能平仓按成交时间与 orderId 排序且输入反转结果一致', () => {
+    const orders = [
+      makeOrder('BUY-C', 1, 100, 100),
+      makeOrder('BUY-B', 1, 100, 100),
+      makeOrder('BUY-D', 1, 100, 200),
+    ];
+    storage.setBuyOrdersListForLong('TEST.HK', [orders[2]!, orders[1]!, orders[0]!]);
+
+    const result = storage.selectSellableOrders({
+      symbol: 'TEST.HK',
+      direction: 'LONG',
+      strategy: 'ALL',
+      currentPrice: 1,
+    });
+
+    expect(result.orders.map((order) => order.orderId)).toEqual(['BUY-B', 'BUY-C', 'BUY-D']);
+  });
+
+  it('恢复待成交卖单关联按与智能平仓相同的三键顺序分配', () => {
+    storage.setBuyOrdersListForLong('TEST.HK', [
+      makeOrder('BUY-LATER', 1, 100, 200),
+      makeOrder('BUY-ID-C', 1, 100, 100),
+      makeOrder('BUY-ID-B', 1, 100, 100),
+    ]);
+
+    const relatedIds = storage.allocateRelatedBuyOrderIdsForRecovery('TEST.HK', 'LONG', 200);
+
+    expect(relatedIds).toEqual(['BUY-ID-B', 'BUY-ID-C']);
+  });
+
   it('TIMEOUT_ONLY 在严格交易时段累计超过阈值时返回超时订单', () => {
     storage.setBuyOrdersListForLong('TEST.HK', [
       makeOrder('OLD', 1, 100, Date.parse('2026-02-24T01:30:00.000Z')),

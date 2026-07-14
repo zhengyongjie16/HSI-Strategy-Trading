@@ -10,7 +10,7 @@ import { OrderSide, OrderStatus, TopicType, type PushOrderChanged } from 'longbr
 import { logger } from '../../../utils/logger/index.js';
 import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
 import { toDecimal } from '../utils.js';
-import { PENDING_ORDER_STATUSES } from '../../../constants/index.js';
+import { isOpenOrderStatus } from '../../orderStatusLifecycle/utils.js';
 import type {
   OrderMutationRequest,
   OrderMonitor,
@@ -37,6 +37,7 @@ import {
 import { createRouteRuntime } from './routeRuntime.js';
 import { createRouteProcessor } from './routeProcessor.js';
 import type { CancelOrderOutcome } from '../../../types/trader.js';
+import { normalizeTerminalStateSnapshot } from './orderFactMerge.js';
 
 /**
  * 创建订单监控器。
@@ -54,6 +55,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     dailyLossTracker,
     orderHoldRegistry,
     protectiveLiquidationEpisodeTracker,
+    persistProtectiveLiquidationExecutionProgress,
     postTradeConsistencyRuntime,
     tradingConfig,
     symbolRegistry,
@@ -93,6 +95,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     orderRecorder,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
+    persistProtectiveLiquidationExecutionProgress,
     postTradeConsistencyRuntime,
     emitOrderStateChanged: (event) => {
       for (const listener of runtime.orderStateChangedListeners) {
@@ -113,6 +116,10 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     rateLimiter,
     cacheManager,
     orderHoldRegistry,
+    orderRecorder,
+    recordCumulativeExecution: (params) => {
+      settlementFlow.recordCumulativeExecution(params);
+    },
     orderStatusQuery,
     triggerRoute,
   });
@@ -139,6 +146,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   const eventFlow = createEventFlow({
     runtime,
     orderRecorder,
+    recordCumulativeExecution: (params) => {
+      settlementFlow.recordCumulativeExecution(params);
+    },
     settleOrder: settlementFlow.settleOrder,
     cacheBootstrappingEvent: recoveryFlow.cacheBootstrappingEvent,
     triggerRoute,
@@ -207,14 +217,17 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       };
     }
 
+    const normalizedTerminalState = normalizeTerminalStateSnapshot(trackedOrder, terminalState);
+
     const alreadySettled = runtime.closedOrderIds.has(orderId);
     const settlementResult = settlementFlow.settleOrder({
       orderId,
-      closedReason: terminalState.closedReason,
+      closedReason: normalizedTerminalState.closedReason,
       source: 'STATE_CHECK',
-      executedPrice: terminalState.executedPrice,
-      executedQuantity: terminalState.executedQuantity,
-      executedTimeMs: terminalState.executedTimeMs,
+      executedPrice: normalizedTerminalState.executedPrice,
+      executedQuantity: normalizedTerminalState.executedQuantity,
+      executedTimeMs: normalizedTerminalState.executedTimeMs,
+      orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
     });
     resetOrderReplaceRuntimeState(runtime, orderId);
     if (!settlementResult.handled && !alreadySettled) {
@@ -311,7 +324,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         continue;
       }
 
-      if (!PENDING_ORDER_STATUSES.has(order.status)) {
+      if (!isOpenOrderStatus(order.status)) {
         continue;
       }
 
@@ -346,7 +359,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         continue;
       }
 
-      if (!PENDING_ORDER_STATUSES.has(trackedOrder.status)) {
+      if (!isOpenOrderStatus(trackedOrder.status)) {
         continue;
       }
 

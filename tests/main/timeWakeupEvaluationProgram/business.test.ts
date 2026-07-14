@@ -94,10 +94,9 @@ function createLastState(
         isHalfDay: false,
       },
     },
+    tradingCalendarSnapshot: new Map([['2026-04-29', { isTradingDay: true, isHalfDay: false }]]),
     monitorState: {
       monitorSymbol: '700.HK',
-      signal: null,
-      pendingDelayedSignals: [],
       lastMonitorSnapshot: null,
       incrementalIndicatorRuntime: null,
     },

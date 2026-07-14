@@ -13,6 +13,8 @@ import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/in
 import type { EventFlow, EventFlowDeps } from './types.js';
 import { resetOrderReplaceRuntimeState, resumeOrderReplaceFromWsProgress } from './orderOps.js';
 import { isClosedStatus, resolveOrderClosedReasonFromStatus, resolveUpdatedAtMs } from './utils.js';
+import { mergeMonotonicOrderFact } from './orderFactMerge.js';
+import { classifyOrderStatusLifecycle } from '../../orderStatusLifecycle/index.js';
 
 /** 仅当状态已离开撤单中阶段时，才恢复下一次撤单重试机会。 */
 function shouldResumeCancelRetryFromWsStatus(status: OrderStatus): boolean {
@@ -32,7 +34,14 @@ function resolveNullableDecimalNumber(value: Parameters<typeof decimalToNumber>[
  * @returns 事件流接口
  */
 export function createEventFlow(deps: EventFlowDeps): EventFlow {
-  const { runtime, orderRecorder, settleOrder, cacheBootstrappingEvent, triggerRoute } = deps;
+  const {
+    runtime,
+    orderRecorder,
+    recordCumulativeExecution,
+    settleOrder,
+    cacheBootstrappingEvent,
+    triggerRoute,
+  } = deps;
 
   /**
    * 处理 ACTIVE 状态下的订单推送。
@@ -45,23 +54,39 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     const trackedOrder = runtime.trackedOrders.get(orderId);
     if (!trackedOrder) {
       if (isClosedStatus(event.status)) {
-        logger.warn(`[订单监控] 收到未追踪订单 ${orderId} 的终态事件 ${event.status}，已忽略`);
+        logger.warn(
+          `[订单监控] 收到未追踪订单 ${orderId} 的终态事件 ${String(event.status)}，已忽略`,
+        );
       }
 
       return;
     }
 
-    const previousStatus = trackedOrder.status;
-    trackedOrder.status = event.status;
-    trackedOrder.executedQuantity = decimalToNumber(event.executedQuantity) || 0;
-    trackedOrder.executedPrice = resolveNullableDecimalNumber(event.executedPrice);
-    trackedOrder.lastExecutedTimeMs = resolveUpdatedAtMs(event.updatedAt);
+    const nextExecutedQuantity = decimalToNumber(event.executedQuantity);
+    const mergedFact = mergeMonotonicOrderFact(trackedOrder, {
+      status: event.status,
+      executedQuantity: nextExecutedQuantity,
+      executedPrice: resolveNullableDecimalNumber(event.executedPrice),
+      executedTimeMs: resolveUpdatedAtMs(event.updatedAt),
+      updatedAtMs: resolveUpdatedAtMs(event.updatedAt),
+    });
+    if (mergedFact === null) {
+      return;
+    }
 
-    if (previousStatus !== event.status) {
+    const previousStatus = trackedOrder.status;
+    const previousExecutedQuantity = trackedOrder.executedQuantity;
+    trackedOrder.status = mergedFact.status;
+    trackedOrder.executedQuantity = mergedFact.executedQuantity;
+    trackedOrder.executedPrice = mergedFact.executedPrice;
+    trackedOrder.lastOrderUpdateAtMs = mergedFact.updatedAtMs;
+    trackedOrder.lastExecutedTimeMs = mergedFact.executedTimeMs;
+
+    if (previousStatus !== mergedFact.status) {
       resetOrderReplaceRuntimeState(runtime, orderId);
       if (
         trackedOrder.nextCancelAttemptAt === ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS &&
-        shouldResumeCancelRetryFromWsStatus(event.status)
+        shouldResumeCancelRetryFromWsStatus(mergedFact.status)
       ) {
         trackedOrder.cancelRetryCount = 0;
         trackedOrder.nextCancelAttemptAt = Date.now();
@@ -70,16 +95,36 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
       resumeOrderReplaceFromWsProgress(runtime, orderId, trackedOrder);
     }
 
-    if (event.status === OrderStatus.PartialFilled && trackedOrder.side === OrderSide.Sell) {
+    if (trackedOrder.executedQuantity > 0) {
+      recordCumulativeExecution({
+        factStage: classifyOrderStatusLifecycle(mergedFact.status),
+        orderId,
+        side: trackedOrder.side === OrderSide.Buy ? 'BUY' : 'SELL',
+        monitorSymbol: trackedOrder.monitorSymbol,
+        symbol: trackedOrder.symbol,
+        isLongSymbol: trackedOrder.isLongSymbol,
+        isProtectiveLiquidation: trackedOrder.isProtectiveLiquidation,
+        executedPrice: trackedOrder.executedPrice,
+        executedQuantity: trackedOrder.executedQuantity,
+        executedTimeMs: trackedOrder.lastExecutedTimeMs,
+        orderUpdatedAtMs: trackedOrder.lastOrderUpdateAtMs,
+      });
+    }
+
+    const closedReason = resolveOrderClosedReasonFromStatus(mergedFact.status);
+    if (
+      closedReason === null &&
+      trackedOrder.side === OrderSide.Sell &&
+      mergedFact.executedQuantity > previousExecutedQuantity
+    ) {
       orderRecorder.markSellPartialFilled(orderId, trackedOrder.executedQuantity);
       logger.info(
-        `[订单监控] 订单 ${orderId} 部分成交，` +
+        `[订单监控] 订单 ${orderId} 累计成交推进，` +
           `已成交=${trackedOrder.executedQuantity}/${trackedOrder.submittedQuantity}，` +
           '等待完全成交后更新本地记录',
       );
     }
 
-    const closedReason = resolveOrderClosedReasonFromStatus(event.status);
     if (closedReason === null) {
       triggerRoute(trackedOrder.symbol, 'ORDER_EVENT');
       return;
@@ -89,14 +134,15 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
       trackedOrder.timeoutMarketConversionTerminalState = {
         closedReason,
         source: 'WS',
-        executedPrice: resolveNullableDecimalNumber(event.executedPrice),
-        executedQuantity: resolveNullableDecimalNumber(event.executedQuantity),
-        executedTimeMs: resolveUpdatedAtMs(event.updatedAt),
+        executedPrice: mergedFact.executedPrice,
+        executedQuantity: mergedFact.executedQuantity,
+        executedTimeMs: trackedOrder.lastExecutedTimeMs,
+        orderUpdatedAtMs: mergedFact.updatedAtMs,
       };
 
       triggerRoute(trackedOrder.symbol, 'ORDER_EVENT');
       logger.info(
-        `[订单监控] 卖出订单 ${orderId} 超时撤单后收到终态=${event.status}，已写入终态快照并显式唤醒 route`,
+        `[订单监控] 卖出订单 ${orderId} 超时撤单后收到终态=${String(mergedFact.status)}，已写入终态快照并显式唤醒 route`,
       );
       return;
     }
@@ -105,13 +151,16 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
       orderId,
       closedReason,
       source: 'WS',
-      executedPrice: resolveNullableDecimalNumber(event.executedPrice),
-      executedQuantity: resolveNullableDecimalNumber(event.executedQuantity),
-      executedTimeMs: resolveUpdatedAtMs(event.updatedAt),
+      executedPrice: mergedFact.executedPrice,
+      executedQuantity: mergedFact.executedQuantity,
+      executedTimeMs: trackedOrder.lastExecutedTimeMs,
+      orderUpdatedAtMs: mergedFact.updatedAtMs,
     });
     resetOrderReplaceRuntimeState(runtime, orderId);
     if (!result.handled) {
-      logger.warn(`[订单监控] 订单 ${orderId} 终态=${event.status} 已到达，但结算未执行`);
+      logger.warn(
+        `[订单监控] 订单 ${orderId} 终态=${String(mergedFact.status)} 已到达，但结算未执行`,
+      );
       return;
     }
 

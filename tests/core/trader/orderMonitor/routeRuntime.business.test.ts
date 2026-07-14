@@ -192,6 +192,7 @@ function createTrackedOrder(
     executedQuantity: params.executedQuantity ?? 0,
     executedPrice: params.executedPrice ?? null,
     lastExecutedTimeMs: params.lastExecutedTimeMs ?? null,
+    lastOrderUpdateAtMs: params.lastOrderUpdateAtMs ?? null,
     status: params.status ?? OrderStatus.New,
     submittedAt: params.submittedAt ?? now - 5_000,
     lastPriceUpdateAt: params.lastPriceUpdateAt ?? now - 5_000,

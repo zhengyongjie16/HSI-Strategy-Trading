@@ -1,4 +1,3 @@
-import type { SignalType, Signal } from './signal.js';
 import type { IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { MonitorConfig } from './config.js';
@@ -23,9 +22,9 @@ type CachedLastStateTradingDayInfo = Readonly<{
 
 /**
  * 单个监控标的的运行时状态。
- * 类型用途：承载唯一监控标的的信号、待延迟验证信号、指标快照等，在事件驱动信号链路中持续更新，作为 MonitorContext.state、LastState.monitorState。
- * 数据来源：业务事件链路根据行情与策略输出更新。
- * 使用范围：LastState、MonitorContext、signal pipeline 等；全项目可引用。
+ * 类型用途：承载唯一监控标的的指标快照与增量指标运行态，作为 MonitorContext.state、LastState.monitorState。
+ * 数据来源：行情指标流水线持续更新。
+ * 使用范围：LastState、MonitorContext 与指标计算链路；全项目可引用。
  */
 export type MonitorState = {
   /** 监控标的代码 */
@@ -33,15 +32,8 @@ export type MonitorState = {
 
   /**
    * 运行中持续更新的状态字段（性能考虑保持可变）
-   * - signal/pendingDelayedSignals/lastMonitorSnapshot
-   * - incrementalIndicatorRuntime
+   * - lastMonitorSnapshot/incrementalIndicatorRuntime
    */
-  /** 当前信号 */
-  signal: SignalType | null;
-
-  /** 待处理的延迟验证信号 */
-  pendingDelayedSignals: ReadonlyArray<Signal>;
-
   /** 最新指标快照 */
   lastMonitorSnapshot: IndicatorSnapshot | null;
 
@@ -53,7 +45,7 @@ export type MonitorState = {
  * 系统全局状态。
  * 类型用途：聚合可交易标志、半日市、账户/持仓缓存、唯一监控标的状态等，供时间唤醒评估、业务事件链路、异步处理器与生命周期域使用。
  * 数据来源：启动快照、生命周期域、timeWakeupEvaluationProgram、businessEventProgram 与异步处理器共同维护。
- * 使用范围：timeWakeupEvaluationProgram、MonitorContext、RiskCheckContext、买卖处理器等；全项目可引用。
+ * 使用范围：timeWakeupEvaluationProgram、MonitorContext、买卖处理器等；全项目可引用。
  */
 export type LastState = {
   /**
@@ -97,7 +89,7 @@ export type LastState = {
   cachedTradingDayInfo: CachedLastStateTradingDayInfo | null;
 
   /** 交易日历快照（YYYY-MM-DD -> 是否交易日/半日市） */
-  tradingCalendarSnapshot?: ReadonlyMap<string, TradingDayInfo>;
+  tradingCalendarSnapshot: ReadonlyMap<string, TradingDayInfo>;
 
   /** 唯一监控标的状态 */
   readonly monitorState: MonitorState;

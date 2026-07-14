@@ -225,7 +225,7 @@ describe('riskController(index) business flow', () => {
       },
     } as unknown as RiskChecker;
     const trader = {
-      executeSignals: async () => ({ submittedCount: 1, submittedOrderIds: ['order-1'] }),
+      executeSignals: async () => ({ executedOrderIds: ['order-1'] }),
     } as unknown as Trader;
     const orderRecorder = {
       clearBuyOrders: () => {},

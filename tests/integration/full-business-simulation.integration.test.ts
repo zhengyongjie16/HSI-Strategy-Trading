@@ -128,9 +128,15 @@ function createCandlestickSnapshot(
 function createNoopDailyLossTracker(): DailyLossTracker {
   return {
     resetAll: () => {},
-    startNewProtectionEpisode: () => {},
+    prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+    commitProtectionBoundary: () => {},
+    restoreExecutionSnapshot: () => {},
+    restoreProtectionBoundary: () => {},
     recalculateFromAllOrders: () => {},
-    recordFilledOrder: () => {},
+    recordCumulativeExecution: () => ({
+      authoritativeFactChanged: false,
+      executionAdvanced: false,
+    }),
     getLossOffset: () => 0,
   };
 }
@@ -177,6 +183,9 @@ function createSimulationLastState(params: {
         isHalfDay: false,
       },
     },
+    tradingCalendarSnapshot: new Map([
+      [params.currentDayKey, { isTradingDay: true, isHalfDay: false }],
+    ]),
     monitorState: params.monitorState,
     allTradingSymbols: new Set<string>(),
   };
@@ -345,7 +354,7 @@ describe('full business simulation integration', () => {
           submittedActions.push(signal.action);
         }
 
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
 
@@ -389,7 +398,6 @@ describe('full business simulation integration', () => {
         },
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => lastState,
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
     });
@@ -544,10 +552,10 @@ describe('full business simulation integration', () => {
 
         const firstSignal = signals[0];
         if (firstSignal?.action === 'SELLCALL' && firstSignal.symbol === 'OLD_BULL.HK') {
-          return { submittedCount: signals.length, submittedOrderIds: ['SELL-1'] };
+          return { executedOrderIds: ['SELL-1'] };
         }
 
-        return { submittedCount: signals.length, submittedOrderIds: ['BUY-1'] };
+        return { executedOrderIds: ['BUY-1'] };
       },
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
@@ -753,7 +761,6 @@ describe('full business simulation integration', () => {
         getQuotes: autoSwitchMarketDataClient.getQuotes,
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => lastState,
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
     });
@@ -1037,7 +1044,7 @@ describe('full business simulation integration', () => {
           submittedActions.push(signal.action);
         }
 
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
     const signalProcessor = createSignalProcessor({
@@ -1080,7 +1087,6 @@ describe('full business simulation integration', () => {
         },
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
-      getLastState: () => lastState,
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
     });

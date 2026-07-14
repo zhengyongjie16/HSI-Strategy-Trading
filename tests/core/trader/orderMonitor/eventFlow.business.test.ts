@@ -11,7 +11,9 @@ import { describe, expect, it, mock } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
 import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
+import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../../src/constants/index.js';
 import type {
+  FinalizeOrderSettlementParams,
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
 } from '../../../../src/core/trader/orderMonitor/types.js';
@@ -50,6 +52,7 @@ function createTrackedOrder(params: {
   readonly side: OrderSide;
   readonly status?: OrderStatus;
   readonly timeoutMarketConversionPending?: boolean;
+  readonly isProtectiveLiquidation?: boolean;
 }): OrderMonitorTrackedOrder {
   const now = Date.now();
   return {
@@ -58,7 +61,7 @@ function createTrackedOrder(params: {
     side: params.side,
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
-    isProtectiveLiquidation: false,
+    isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
     liquidationTriggerLimit: 1,
     liquidationCooldownConfig: null,
     orderType: OrderType.ELO,
@@ -68,6 +71,7 @@ function createTrackedOrder(params: {
     executedQuantity: 0,
     executedPrice: null,
     lastExecutedTimeMs: null,
+    lastOrderUpdateAtMs: null,
     status: params.status ?? OrderStatus.New,
     submittedAt: now,
     lastPriceUpdateAt: now,
@@ -87,6 +91,614 @@ function createTrackedOrder(params: {
 }
 
 describe('orderMonitor eventFlow', () => {
+  it('records a live partial cumulative execution before an equal-quantity terminal revision', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-LIVE-PARTIAL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isProtectiveLiquidation: true,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const cumulativeExecutions: Array<
+      Readonly<{ executedQuantity: number; orderUpdatedAtMs: number }>
+    > = [];
+    const settlements: FinalizeOrderSettlementParams[] = [];
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: (params) => {
+        cumulativeExecutions.push({
+          executedQuantity: params.executedQuantity ?? -1,
+          orderUpdatedAtMs: params.orderUpdatedAtMs ?? -1,
+        });
+      },
+      settleOrder: (params) => {
+        settlements.push(params);
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 0.9,
+        updatedAtMs: 100,
+      }),
+    );
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.Canceled,
+        executedQuantity: 40,
+        executedPrice: 0.9,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(cumulativeExecutions).toEqual([
+      { executedQuantity: 40, orderUpdatedAtMs: 100 },
+      { executedQuantity: 40, orderUpdatedAtMs: 200 },
+    ]);
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]).not.toHaveProperty('hasNewExecution');
+  });
+
+  it.each([null, 0] as const)(
+    'equal-quantity terminal revision preserves the existing valid price when incoming price is %s',
+    (incomingPrice) => {
+      const runtime = createRuntimeStore();
+      const trackedOrder = createTrackedOrder({
+        orderId: 'ORDER-EQUAL-QTY-TERMINAL',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.PartialFilled,
+      });
+      trackedOrder.executedQuantity = 40;
+      trackedOrder.executedPrice = 1;
+      trackedOrder.lastExecutedTimeMs = 100;
+      trackedOrder.lastOrderUpdateAtMs = 100;
+      runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+      const settlements: FinalizeOrderSettlementParams[] = [];
+      const eventFlow = createEventFlow({
+        runtime,
+        orderRecorder: createOrderRecorderDouble(),
+        recordCumulativeExecution: () => {},
+        settleOrder: (params) => {
+          settlements.push(params);
+          return { handled: true, relatedBuyOrderIds: null };
+        },
+        cacheBootstrappingEvent: () => {},
+        triggerRoute: () => {},
+      });
+
+      const terminalEvent = createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.Filled,
+        executedQuantity: 40,
+        executedPrice: 0,
+        updatedAtMs: 200,
+      });
+      Object.assign(terminalEvent, { executedPrice: incomingPrice });
+      eventFlow.handleOrderChangedWhenActive(terminalEvent);
+
+      expect(settlements).toEqual([
+        {
+          orderId: 'ORDER-EQUAL-QTY-TERMINAL',
+          closedReason: 'FILLED',
+          source: 'WS',
+          executedPrice: 1,
+          executedQuantity: 40,
+          executedTimeMs: 100,
+          orderUpdatedAtMs: 200,
+        },
+      ]);
+    },
+  );
+
+  it('equal-quantity terminal revision may revise price without advancing execution time', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-EQUAL-QTY-PRICE-REVISION',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      status: OrderStatus.PartialFilled,
+    });
+    trackedOrder.executedQuantity = 40;
+    trackedOrder.executedPrice = 1;
+    trackedOrder.lastExecutedTimeMs = 100;
+    trackedOrder.lastOrderUpdateAtMs = 100;
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const settlements: FinalizeOrderSettlementParams[] = [];
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      settleOrder: (params) => {
+        settlements.push(params);
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.Filled,
+        executedQuantity: 40,
+        executedPrice: 1.1,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(settlements).toMatchObject([
+      {
+        executedPrice: 1.1,
+        executedQuantity: 40,
+        executedTimeMs: 100,
+        orderUpdatedAtMs: 200,
+      },
+    ]);
+  });
+
+  it.each([null, 0] as const)(
+    'quantity-advancing terminal revision rejects invalid incoming price %s before settlement side effects',
+    (incomingPrice) => {
+      const runtime = createRuntimeStore();
+      const trackedOrder = createTrackedOrder({
+        orderId: 'ORDER-ADVANCING-QTY-INVALID-PRICE',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        status: OrderStatus.PartialFilled,
+        isProtectiveLiquidation: true,
+      });
+      trackedOrder.executedQuantity = 40;
+      trackedOrder.executedPrice = 1;
+      trackedOrder.lastExecutedTimeMs = 100;
+      trackedOrder.lastOrderUpdateAtMs = 100;
+      runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+      let cumulativeExecutionCount = 0;
+      let settlementCount = 0;
+      const eventFlow = createEventFlow({
+        runtime,
+        orderRecorder: createOrderRecorderDouble(),
+        recordCumulativeExecution: () => {
+          cumulativeExecutionCount += 1;
+        },
+        settleOrder: () => {
+          settlementCount += 1;
+          return { handled: true, relatedBuyOrderIds: null };
+        },
+        cacheBootstrappingEvent: () => {},
+        triggerRoute: () => {},
+      });
+      const terminalEvent = createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.Filled,
+        executedQuantity: 100,
+        executedPrice: 0,
+        updatedAtMs: 200,
+      });
+      Object.assign(terminalEvent, { executedPrice: incomingPrice });
+
+      expect(() => {
+        eventFlow.handleOrderChangedWhenActive(terminalEvent);
+      }).toThrow('累计成交数量推进但缺少有效成交价');
+
+      expect(runtime.trackedOrders.get(trackedOrder.orderId)).toMatchObject({
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 1,
+        lastExecutedTimeMs: 100,
+        lastOrderUpdateAtMs: 100,
+      });
+      expect(cumulativeExecutionCount).toBe(0);
+      expect(settlementCount).toBe(0);
+    },
+  );
+
+  it.each([
+    [OrderStatus.PartialFilled, OrderStatus.New, OrderStatus.PartialFilled],
+    [OrderStatus.PendingCancel, OrderStatus.New, OrderStatus.PendingCancel],
+    [OrderStatus.PendingReplace, OrderStatus.New, OrderStatus.New],
+  ] as const)(
+    '同 timestamp、同 quantity 的 OPEN 冲突 %s/%s 与到达顺序无关',
+    (leftStatus, rightStatus, expectedStatus) => {
+      function resolveStatus(sequence: ReadonlyArray<OrderStatus>): OrderStatus {
+        const runtime = createRuntimeStore();
+        const trackedOrder = createTrackedOrder({
+          orderId: 'ORDER-SAME-TIME-CONFLICT',
+          symbol: 'BULL.HK',
+          side: OrderSide.Buy,
+          status: OrderStatus.New,
+        });
+        runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+        const eventFlow = createEventFlow({
+          runtime,
+          orderRecorder: createOrderRecorderDouble(),
+          recordCumulativeExecution: () => {},
+          settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+          cacheBootstrappingEvent: () => {},
+          triggerRoute: () => {},
+        });
+        for (const status of sequence) {
+          eventFlow.handleOrderChangedWhenActive(
+            createPushOrderChanged({
+              orderId: trackedOrder.orderId,
+              symbol: trackedOrder.symbol,
+              side: trackedOrder.side,
+              status,
+              executedQuantity: 20,
+              executedPrice: 1.01,
+              updatedAtMs: 200,
+            }),
+          );
+        }
+
+        return trackedOrder.status;
+      }
+
+      expect(resolveStatus([leftStatus, rightStatus])).toBe(expectedStatus);
+      expect(resolveStatus([rightStatus, leftStatus])).toBe(expectedStatus);
+    },
+  );
+
+  it('较新 timestamp 的 New 不得否认 PartialFilled 成交状态', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-NEWER-REGRESSION',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      status: OrderStatus.PartialFilled,
+    });
+    trackedOrder.executedQuantity = 20;
+    trackedOrder.lastOrderUpdateAtMs = 100;
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.New,
+        executedQuantity: trackedOrder.executedQuantity,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.PartialFilled);
+    expect(trackedOrder.lastOrderUpdateAtMs).toBe(100);
+  });
+
+  it('权威较新 New 会让 PendingCancel 离开撤单暂态并恢复 retry owner', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-CANCEL-REOPEN-NEW',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      status: OrderStatus.PendingCancel,
+    });
+    trackedOrder.lastOrderUpdateAtMs = 100;
+    trackedOrder.nextCancelAttemptAt = ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS;
+    trackedOrder.cancelRetryCount = 4;
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.New,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.New);
+    expect(trackedOrder.cancelRetryCount).toBe(0);
+    expect(trackedOrder.nextCancelAttemptAt).not.toBe(ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS);
+  });
+
+  it.each([
+    [OrderStatus.WaitToCancel, OrderStatus.Replaced, 0],
+    [OrderStatus.PendingCancel, OrderStatus.Replaced, 0],
+    [OrderStatus.WaitToCancel, OrderStatus.PartialFilled, 20],
+    [OrderStatus.PendingCancel, OrderStatus.PartialFilled, 20],
+  ] as const)(
+    '权威较新 OPEN 允许撤单暂态 %s 退出到 %s',
+    (currentStatus, nextStatus, executedQuantity) => {
+      const runtime = createRuntimeStore();
+      const trackedOrder = createTrackedOrder({
+        orderId: 'ORDER-CANCEL-TRANSIENT-EXIT',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: currentStatus,
+      });
+      trackedOrder.lastOrderUpdateAtMs = 100;
+      runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+      const eventFlow = createEventFlow({
+        runtime,
+        orderRecorder: createOrderRecorderDouble(),
+        recordCumulativeExecution: () => {},
+        settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+        cacheBootstrappingEvent: () => {},
+        triggerRoute: () => {},
+      });
+
+      eventFlow.handleOrderChangedWhenActive(
+        createPushOrderChanged({
+          orderId: trackedOrder.orderId,
+          symbol: trackedOrder.symbol,
+          side: trackedOrder.side,
+          status: nextStatus,
+          executedQuantity,
+          ...(executedQuantity > 0 ? { executedPrice: 1 } : {}),
+          updatedAtMs: 200,
+        }),
+      );
+
+      expect(trackedOrder.status).toBe(nextStatus);
+      expect(trackedOrder.lastOrderUpdateAtMs).toBe(200);
+    },
+  );
+
+  it('允许 replace 暂态在较新 timestamp 合法回到 New', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-REPLACE-REOPEN',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      status: OrderStatus.PendingReplace,
+    });
+    trackedOrder.lastOrderUpdateAtMs = 100;
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.New,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.New);
+    expect(trackedOrder.lastOrderUpdateAtMs).toBe(200);
+  });
+
+  it('PartialFilled 回退事件携带更大累计成交时仅吸收成交事实并同步 pending-sell', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-CANCEL-WITH-LATE-FILL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      status: OrderStatus.PartialFilled,
+    });
+    trackedOrder.executedQuantity = 20;
+    trackedOrder.lastOrderUpdateAtMs = 100;
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const partialFills: number[] = [];
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble({
+        markSellPartialFilled: (_orderId, executedQuantity) => {
+          partialFills.push(executedQuantity);
+          return null;
+        },
+      }),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.New,
+        executedQuantity: 50,
+        executedPrice: 1.02,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.PartialFilled);
+    expect(trackedOrder.executedQuantity).toBe(50);
+    expect(trackedOrder.lastOrderUpdateAtMs).toBe(200);
+    expect(partialFills).toEqual([50]);
+  });
+
+  it('ACTIVE 中较旧 WS 事件不能降低累计成交量或 pending-sell 成交事实', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-OUT-OF-ORDER-1',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      status: OrderStatus.New,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const partialFills: number[] = [];
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble({
+        markSellPartialFilled: (_orderId, executedQuantity) => {
+          partialFills.push(executedQuantity);
+          return null;
+        },
+      }),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 50,
+        executedPrice: 1.01,
+        updatedAtMs: 200,
+      }),
+    );
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 20,
+        executedPrice: 1,
+        updatedAtMs: 100,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.PartialFilled);
+    expect(trackedOrder.executedQuantity).toBe(50);
+    expect(trackedOrder.executedPrice).toBe(1.01);
+    expect(trackedOrder.lastExecutedTimeMs).toBe(200);
+    expect(partialFills).toEqual([50]);
+  });
+
+  it('相同 timestamp 选择累计成交量更大的事实且重复事件幂等', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-SAME-TIME-1',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      status: OrderStatus.New,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const partialFills: number[] = [];
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble({
+        markSellPartialFilled: (_orderId, executedQuantity) => {
+          partialFills.push(executedQuantity);
+          return null;
+        },
+      }),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+    const strongerEvent = createPushOrderChanged({
+      orderId: trackedOrder.orderId,
+      symbol: trackedOrder.symbol,
+      side: trackedOrder.side,
+      status: OrderStatus.PartialFilled,
+      executedQuantity: 30,
+      executedPrice: 1.02,
+      updatedAtMs: 200,
+    });
+
+    eventFlow.handleOrderChangedWhenActive(strongerEvent);
+    eventFlow.handleOrderChangedWhenActive(strongerEvent);
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.New,
+        executedQuantity: 0,
+        executedPrice: 0,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.PartialFilled);
+    expect(trackedOrder.executedQuantity).toBe(30);
+    expect(partialFills).toEqual([30]);
+  });
+
+  it('timeout 等待链路一旦收到终态就不能被后续 OPEN 事件回退', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-TERMINAL-NO-REOPEN-1',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      timeoutMarketConversionPending: true,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.Canceled,
+        updatedAtMs: 200,
+      }),
+    );
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.New,
+        updatedAtMs: 300,
+      }),
+    );
+
+    expect(trackedOrder.status).toBe(OrderStatus.Canceled);
+    expect(trackedOrder.timeoutMarketConversionTerminalState?.closedReason).toBe('CANCELED');
+  });
+
   it('STOPPED 阶段收到订单 WS 时会直接忽略，不缓存也不推进 truth', () => {
     const runtime = createRuntimeStore();
     runtime.runtimeState = 'STOPPED';
@@ -104,6 +716,7 @@ describe('orderMonitor eventFlow', () => {
     const eventFlow = createEventFlow({
       runtime,
       orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       settleOrder: () => {
         settlementCalls += 1;
         return { handled: false, relatedBuyOrderIds: null };
@@ -145,6 +758,7 @@ describe('orderMonitor eventFlow', () => {
     const eventFlow = createEventFlow({
       runtime,
       orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: (symbol: string, kind: string) => {
@@ -184,6 +798,7 @@ describe('orderMonitor eventFlow', () => {
     const eventFlow = createEventFlow({
       runtime,
       orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: (symbol: string, kind: string) => {
@@ -236,6 +851,7 @@ describe('orderMonitor eventFlow', () => {
     const eventFlow = createEventFlow({
       runtime,
       orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       settleOrder: (params) => {
         settlementPayloads.push({
           orderId: params.orderId,
@@ -313,6 +929,7 @@ describe('orderMonitor eventFlow', () => {
     const eventFlow = createEventFlow({
       runtime,
       orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       settleOrder: (params) => {
         runtime.trackedOrders.delete(params.orderId);
         runtime.trackedOrderLifecycles.set(params.orderId, 'CLOSED');
@@ -358,6 +975,7 @@ describe('orderMonitor eventFlow', () => {
     const eventFlow = createEventFlow({
       runtime,
       orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: (symbol: string, kind: string) => {

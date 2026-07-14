@@ -14,6 +14,7 @@ import {
 } from '../../../src/services/autoSymbolManager/utils.js';
 import { logger } from '../../../src/utils/logger/index.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
+import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
 import {
   createMonitorConfigDouble,
   createSignalDouble,
@@ -21,6 +22,186 @@ import {
 } from '../../helpers/testDoubles.js';
 
 describe('autoSymbolManager utils business flow', () => {
+  it('keeps the static configured bootstrap ACTIVE state as a narrow exception', () => {
+    const symbolRegistry = createSymbolRegistry(
+      createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+        longSymbol: 'STATIC_BULL.HK',
+      }),
+    );
+
+    expect(symbolRegistry.getSeatState('LONG')).toEqual({
+      symbol: 'STATIC_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    });
+  });
+
+  it('accepts finite runtime ACTIVE state when auto-search is enabled', () => {
+    const symbolRegistry = createSymbolRegistry(
+      createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+        autoSearchConfig: {
+          ...createMonitorConfigDouble().autoSearchConfig,
+          autoSearchEnabled: true,
+        },
+      }),
+    );
+
+    const nextState = symbolRegistry.updateSeatState('LONG', {
+      symbol: 'RUNTIME_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: 100,
+      lastSearchAt: 100,
+      lastSeatActivatedAt: 120,
+      callPrice: 20_000,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    });
+
+    expect(nextState.lastSeatActivatedAt).toBe(120);
+  });
+
+  it('rejects static-shaped ACTIVE null after runtime transition before mutating truth', () => {
+    const symbolRegistry = createSymbolRegistry(
+      createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+        longSymbol: 'STATIC_BULL.HK',
+      }),
+    );
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'NEXT_BULL.HK',
+      status: 'ACTIVATING',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    });
+    const observed: string[] = [];
+    symbolRegistry.onSeatStateChanged(() => {
+      observed.push('state');
+    });
+
+    symbolRegistry.onSeatTruthChanged(() => {
+      observed.push('truth');
+    });
+    const previousState = symbolRegistry.getSeatState('LONG');
+    const previousVersion = symbolRegistry.getSeatVersion('LONG');
+
+    expect(() =>
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+        symbol: 'RUNTIME_BULL.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        callPrice: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      } as unknown as RuntimeWritableSeatState),
+    ).toThrow('运行时 ACTIVE 必须具有有效激活时间');
+    expect(symbolRegistry.getSeatState('LONG')).toEqual(previousState);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(previousVersion);
+    expect(observed).toEqual([]);
+  });
+
+  it('rejects invalid auto-search ACTIVE state before mutating truth', () => {
+    const symbolRegistry = createSymbolRegistry(
+      createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+        autoSearchConfig: {
+          ...createMonitorConfigDouble().autoSearchConfig,
+          autoSearchEnabled: true,
+        },
+      }),
+    );
+    const observed: string[] = [];
+    symbolRegistry.onSeatStateChanged(() => {
+      observed.push('state');
+    });
+
+    symbolRegistry.onSeatTruthChanged(() => {
+      observed.push('truth');
+    });
+
+    const previousState = symbolRegistry.getSeatState('LONG');
+    const previousVersion = symbolRegistry.getSeatVersion('LONG');
+    expect(() =>
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+        symbol: 'BAD.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        callPrice: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      } as unknown as RuntimeWritableSeatState),
+    ).toThrow('运行时 ACTIVE 必须具有有效激活时间');
+    expect(symbolRegistry.getSeatState('LONG')).toEqual(previousState);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(previousVersion);
+    expect(observed).toEqual([]);
+  });
+
+  it('rejects non-finite ACTIVE activation time before mutating truth', () => {
+    const symbolRegistry = createSymbolRegistry(
+      createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+        autoSearchConfig: {
+          ...createMonitorConfigDouble().autoSearchConfig,
+          autoSearchEnabled: true,
+        },
+      }),
+    );
+    const previousState = symbolRegistry.getSeatState('LONG');
+    const previousVersion = symbolRegistry.getSeatVersion('LONG');
+
+    expect(() =>
+      symbolRegistry.updateSeatState('LONG', {
+        symbol: 'BAD.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: 100,
+        lastSearchAt: 100,
+        lastSeatActivatedAt: Number.POSITIVE_INFINITY,
+        callPrice: 20_000,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      }),
+    ).toThrow('lastSeatActivatedAt 必须是有限时间戳');
+    expect(symbolRegistry.getSeatState('LONG')).toEqual(previousState);
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(previousVersion);
+  });
+
+  it('does not resolve unowned lifecycle states by symbol', () => {
+    const symbolRegistry = createSymbolRegistry(
+      createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+      }),
+    );
+    const illegalState = {
+      symbol: 'BAD.HK',
+      status: 'EMPTY',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    } as unknown as RuntimeWritableSeatState;
+
+    expect(() => symbolRegistry.updateSeatState('LONG', illegalState)).toThrow(
+      'EMPTY 不得绑定标的',
+    );
+    expect(symbolRegistry.resolveSeatBySymbol('BAD.HK')).toBeNull();
+  });
+
   it('atomically updates seat state and version before publishing events', () => {
     const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({

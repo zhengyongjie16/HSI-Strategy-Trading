@@ -185,7 +185,7 @@ function buildAttributedSeatSymbols(monitorContext: MonitorContext): ReadonlyArr
 /**
  * 推进所有满足条件的保护性清仓事件。
  *
- * 业务顺序必须保持为：先基于最新 positionCache 判定事件完成，再推进 daily loss episode 与 cooldown。
+ * 业务顺序固定为：prepare episode -> prepare daily -> persist -> commit daily -> cooldown -> commit episode。
  *
  * @param trader Trader 实例，用于判定是否仍有未完成保护性卖单
  * @param businessDeps 已绑定的业务协作者
@@ -202,26 +202,36 @@ function settleProtectiveLiquidationEpisodes(
     const hasPendingProtectiveOrders = trader.hasPendingProtectiveLiquidationOrders(
       episode.direction,
     );
-    const completedEvent = businessDeps.protectiveLiquidationEpisodeTracker.completeIfEligible({
+    const preparedEpisode = businessDeps.protectiveLiquidationEpisodeTracker.prepareCompletion({
       direction: episode.direction,
       isDirectionFlat,
       hasPendingProtectiveOrders,
     });
-    if (completedEvent === null) {
+    if (preparedEpisode === null) {
       continue;
     }
 
-    businessDeps.dailyLossTracker.startNewProtectionEpisode({
-      direction: completedEvent.direction,
-      boundaryExecutedTimeMs: completedEvent.boundaryExecutedTimeMs,
+    const preparedDailyLoss = businessDeps.dailyLossTracker.prepareProtectionBoundary({
+      direction: preparedEpisode.direction,
+      boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
+    });
+    const monitorSymbol = monitorContext.config.monitorSymbol;
+    businessDeps.mixedTradeLogRepository.appendCompletionIdempotent({
+      monitorSymbol,
+      direction: preparedEpisode.direction,
+      boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
+      orderBaselines: preparedDailyLoss.orderBaselines,
     });
 
+    businessDeps.dailyLossTracker.commitProtectionBoundary(preparedDailyLoss);
+
     businessDeps.liquidationCooldownTracker.recordLiquidationTrigger({
-      direction: completedEvent.direction,
-      executedTimeMs: completedEvent.boundaryExecutedTimeMs,
+      direction: preparedEpisode.direction,
+      executedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
       triggerLimit: monitorContext.config.liquidationTriggerLimit,
       cooldownConfig: monitorContext.config.liquidationCooldown,
     });
+    businessDeps.protectiveLiquidationEpisodeTracker.commitCompletion(preparedEpisode);
   }
 }
 

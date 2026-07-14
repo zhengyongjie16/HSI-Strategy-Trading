@@ -1,5 +1,6 @@
 import type { LiquidationCooldownConfig, TradingConfig } from '../../types/config.js';
 import type { Logger } from '../../utils/logger/types.js';
+import type { MixedTradeLogRepository } from '../mixedTradeLogRepository/types.js';
 
 /**
  * 未解析的日志记录。
@@ -133,13 +134,11 @@ export interface LiquidationCooldownTracker {
  * 使用范围：仅在当前模块及其直接依赖方使用。
  */
 export type TradeLogHydratorDeps = {
-  readonly readFileSync: (path: string, encoding: BufferEncoding) => string;
-  readonly existsSync: (path: string) => boolean;
-  readonly resolveLogRootDir: () => string;
   readonly nowMs: () => number;
   readonly logger: Logger;
   readonly tradingConfig: TradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
+  readonly mixedTradeLogRepository: Pick<MixedTradeLogRepository, 'loadCompletionRecords'>;
 };
 
 /**

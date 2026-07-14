@@ -31,13 +31,14 @@ type CompleteIfEligibleParams = Readonly<{
 }>;
 
 /**
- * 保护性清仓完成事件。
- * 类型用途：向上游发布“当前事件完成且边界可推进”的单次事件。
- * 数据来源：protectiveLiquidationEpisodeTracker.completeIfEligible。
- * 使用范围：成交后一致性运行时、dailyLossTracker、liquidationCooldownTracker。
+ * 待提交的保护性清仓 episode 完成事实。
+ * 类型用途：完成条件验证通过后冻结事件身份，持久化成功后再提交内存状态。
+ * 数据来源：prepareCompletion。
+ * 使用范围：PostTradeConsistencyRuntime 完成协调器。
  */
-export type ProtectiveLiquidationCompletedEvent = Readonly<{
+export type PreparedProtectiveLiquidationCompletion = Readonly<{
   direction: ProtectiveLiquidationDirection;
+  symbol: string;
   boundaryExecutedTimeMs: number;
 }>;
 
@@ -84,9 +85,10 @@ export type InProgressProtectiveEpisode = Readonly<{
  */
 export interface ProtectiveLiquidationEpisodeTracker {
   recordProtectiveFillProgress: (params: RecordProtectiveFillProgressParams) => void;
-  completeIfEligible: (
+  prepareCompletion: (
     params: CompleteIfEligibleParams,
-  ) => ProtectiveLiquidationCompletedEvent | null;
+  ) => PreparedProtectiveLiquidationCompletion | null;
+  commitCompletion: (prepared: PreparedProtectiveLiquidationCompletion) => void;
   restoreCompletedBoundary: (params: RestoreCompletedBoundaryParams) => void;
   restoreInProgressEpisode: (params: RestoreInProgressEpisodeParams) => void;
   getLatestProtectionBoundaryByDirection: () => ReadonlyMap<ProtectiveLiquidationDirection, number>;

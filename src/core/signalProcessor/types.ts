@@ -1,8 +1,8 @@
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
-import type { Signal } from '../../types/signal.js';
+import type { BuySignal, Signal } from '../../types/signal.js';
 import type { TradingConfig } from '../../types/config.js';
-import type { OrderRecorder, RiskCheckContext } from '../../types/services.js';
+import type { BuyRiskCheckContext, OrderRecorder } from '../../types/services.js';
 import type { LiquidationCooldownTracker } from '../../services/liquidationCooldown/types.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 
@@ -49,7 +49,7 @@ export type ProcessSellSignalsParams = {
 
 /**
  * 信号处理器接口。
- * 类型用途：定义卖出数量计算与买入/卖出信号风险检查能力，供主程序依赖注入。
+ * 类型用途：定义卖出数量计算与买入信号风险检查能力，供主程序依赖注入。
  * 数据来源：由 createSignalProcessor 工厂实现并返回。
  * 使用范围：主程序与异步处理器通过该接口调用 signalProcessor 能力。
  */
@@ -61,16 +61,15 @@ export interface SignalProcessor {
   processSellSignals: (params: ProcessSellSignalsParams) => Signal[];
 
   /**
-   * 对信号列表应用风险检查。
+   * 对买入信号列表应用风险检查。
    * 买入轻检查顺序：风险检查冷却 → 交易频率 → 清仓冷却 → 买入价格限制 → 末日保护 → 牛熊证风险。
    * 仅当上述轻检查全部通过后，才实时拉取账户/持仓并执行基础风险检查。
    * 风险检查阶段不会刷新买入频率状态，即不会在此阶段记录买入尝试。
-   * 卖出路径继续使用缓存上下文 context.account/context.positions 执行基础风险检查。
    */
-  applyRiskChecks: <TSignal extends Signal>(
-    signals: TSignal[],
-    context: RiskCheckContext,
-  ) => Promise<TSignal[]>;
+  applyRiskChecks: (
+    signals: ReadonlyArray<BuySignal>,
+    context: BuyRiskCheckContext,
+  ) => Promise<ReadonlyArray<BuySignal>>;
 
   /**
    * 清空风险检查冷却时间记录

@@ -100,7 +100,10 @@ async function runDistanceSwitch(
     return;
   }
 
-  await machine.startSwitchOnDistance(params);
+  const startResult = await machine.startSwitchOnDistance(params);
+  if (startResult.started) {
+    await machine.advancePendingSwitch(params);
+  }
 }
 
 describe('auto search policy consistency integration', () => {
@@ -209,7 +212,6 @@ describe('auto search policy consistency integration', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: runtimeRegistry,
-      buildSeatState: runtimeSeatStateManager.buildSeatState,
       updateSeatState: runtimeSeatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: (params) =>
         resolveDirectionalAutoSearchPolicy({
@@ -296,7 +298,6 @@ describe('auto search policy consistency integration', () => {
       resolveSuppression: switchSeatStateManager.resolveSuppression,
       markSuppression: switchSeatStateManager.markSuppression,
       enterSwitchingSeat: switchSeatStateManager.enterSwitchingSeat,
-      buildSeatState: switchSeatStateManager.buildSeatState,
       updateSeatState: switchSeatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: (params) =>
         resolveDirectionalAutoSearchPolicy({
@@ -454,7 +455,6 @@ describe('auto search policy consistency integration', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: runtimeRegistry,
-      buildSeatState: runtimeSeatStateManager.buildSeatState,
       updateSeatState: runtimeSeatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: (params) =>
         resolveDirectionalAutoSearchPolicy({
@@ -541,7 +541,6 @@ describe('auto search policy consistency integration', () => {
       resolveSuppression: switchSeatStateManager.resolveSuppression,
       markSuppression: switchSeatStateManager.markSuppression,
       enterSwitchingSeat: switchSeatStateManager.enterSwitchingSeat,
-      buildSeatState: switchSeatStateManager.buildSeatState,
       updateSeatState: switchSeatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: (params) =>
         resolveDirectionalAutoSearchPolicy({
@@ -654,7 +653,6 @@ describe('auto search policy consistency integration', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: monitorConfig.monitorSymbol,
       symbolRegistry: runtimeRegistry,
-      buildSeatState: runtimeSeatStateManager.buildSeatState,
       updateSeatState: runtimeSeatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: (params) =>
         resolveDirectionalAutoSearchPolicy({
@@ -733,7 +731,6 @@ describe('auto search policy consistency integration', () => {
       resolveSuppression: safeSeatStateManager.resolveSuppression,
       markSuppression: safeSeatStateManager.markSuppression,
       enterSwitchingSeat: safeSeatStateManager.enterSwitchingSeat,
-      buildSeatState: safeSeatStateManager.buildSeatState,
       updateSeatState: safeSeatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: (params) =>
         resolveDirectionalAutoSearchPolicy({
@@ -819,7 +816,6 @@ describe('auto search policy consistency integration', () => {
       resolveSuppression: dangerSeatStateManager.resolveSuppression,
       markSuppression: dangerSeatStateManager.markSuppression,
       enterSwitchingSeat: dangerSeatStateManager.enterSwitchingSeat,
-      buildSeatState: dangerSeatStateManager.buildSeatState,
       updateSeatState: dangerSeatStateManager.updateSeatState,
       resolveDirectionalAutoSearchPolicy: (params) =>
         resolveDirectionalAutoSearchPolicy({

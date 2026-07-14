@@ -276,11 +276,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
 
       clearRetryState(retryKey);
 
-      // 卖出信号处理：计算卖出数量（不经过风险检查）
-      // 原因：
-      // 1. 卖出操作的优先级高于买入，应优先允许执行
-      // 2. checkBeforeOrder 对卖出信号基本是直接放行（只有持仓市值限制检查，但对卖出无意义）
-      // 3. applyRiskChecks 的冷却期检查会阻止 10 秒内的重复卖出，不适用于卖出场景
+      // 卖出只进入卖量计算与卖出执行链路，不经过买入风控。
       const processedSignals = signalProcessor.processSellSignals({
         signals: [signal],
         longPosition,
@@ -292,7 +288,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         smartCloseTimeoutMinutes: config.smartCloseTimeoutMinutes,
         nowMs: Date.now(),
         isHalfDay: lastState.isHalfDay ?? false,
-        tradingCalendarSnapshot: lastState.tradingCalendarSnapshot ?? new Map(),
+        tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
       });
 
       // 如果信号被转为 HOLD，跳过执行

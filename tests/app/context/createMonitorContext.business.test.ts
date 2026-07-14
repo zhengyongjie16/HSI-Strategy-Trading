@@ -28,8 +28,6 @@ import {
 function createMonitorState(monitorSymbol: string): MonitorState {
   return {
     monitorSymbol,
-    signal: null,
-    pendingDelayedSignals: [],
     lastMonitorSnapshot: null,
     incrementalIndicatorRuntime: null,
   };
@@ -130,6 +128,7 @@ function createRuntime(
           isHalfDay: false,
         },
       },
+      tradingCalendarSnapshot: new Map([['2026-03-23', { isTradingDay: true, isHalfDay: false }]]),
       monitorState,
       allTradingSymbols: new Set<string>(),
     },
@@ -401,5 +400,19 @@ describe('createMonitorContext strategy factory behavior', () => {
     expect(Object.keys(postGateRuntime).sort((left, right) => left.localeCompare(right))).toEqual(
       postGateRuntimeKeysBefore,
     );
+  });
+
+  it('rejects a runtime assembled without the required trading calendar snapshot', () => {
+    const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
+    const { preGateRuntime, postGateRuntime, quotesMap } = createRuntime(monitorConfig);
+    Reflect.set(postGateRuntime.lastState, 'tradingCalendarSnapshot', undefined);
+
+    expect(() =>
+      createMonitorContext({
+        preGateRuntime,
+        postGateRuntime,
+        quotesMap,
+      }),
+    ).toThrow('交易日历快照');
   });
 });

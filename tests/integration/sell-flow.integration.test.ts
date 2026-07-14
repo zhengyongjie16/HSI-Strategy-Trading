@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType, type TradeContext } from 'longbridge';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createOrderStorage } from '../../src/core/orderRecorder/orderStorage.js';
-import { createOrderExecutor } from '../../src/core/trader/orderExecutor/index.js';
+import { createOrderExecutor as createOrderExecutorCore } from '../../src/core/trader/orderExecutor/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
@@ -20,6 +20,23 @@ import {
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
 import type { SellSignal, Signal } from '../../src/types/signal.js';
+import type { OrderExecutorDeps } from '../../src/core/trader/types.js';
+import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
+
+function createOrderExecutor(
+  deps: Omit<OrderExecutorDeps, 'now' | 'readCurrentTradingDayInfo'> &
+    Partial<Pick<OrderExecutorDeps, 'now' | 'readCurrentTradingDayInfo'>>,
+) {
+  const defaultNow = (): Date => new Date(Date.now());
+  return createOrderExecutorCore({
+    now: defaultNow,
+    readCurrentTradingDayInfo: () => ({
+      dateKey: getRequiredHKDateKey(defaultNow()),
+      info: { isTradingDay: true, isHalfDay: false },
+    }),
+    ...deps,
+  });
+}
 
 function requireExecutableSellSignals(signals: ReadonlyArray<Signal>): SellSignal[] {
   return signals.map((signal) => {
@@ -118,7 +135,7 @@ describe('sell-flow integration', () => {
     expect(tradeCtx.getCalls('stockPositions')).toHaveLength(1);
   });
 
-  it('runs smart-close sell quantity resolution then submits sell order with capped quantity', async () => {
+  it('末日买入截止授权不影响 smart-close 卖单提交', async () => {
     const tradingConfig = createTradingConfig();
     const signalProcessor = createSignalProcessor({
       tradingConfig,
@@ -218,13 +235,15 @@ describe('sell-flow integration', () => {
       tradingConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
+      now: () => new Date('2026-07-12T07:45:01.000Z'),
+      readCurrentTradingDayInfo: () => null,
     });
 
     const executeResult = await orderExecutor.executeSignals(
       requireExecutableSellSignals(processed),
     );
 
-    expect(executeResult.submittedCount).toBe(1);
+    expect(executeResult.executedOrderIds.length).toBe(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
     expect(trackedOrders[0]?.quantity).toBe(100);
@@ -369,7 +388,7 @@ describe('sell-flow integration', () => {
       requireExecutableSellSignals(processed),
     );
 
-    expect(executeResult.submittedCount).toBe(1);
+    expect(executeResult.executedOrderIds.length).toBe(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
     expect(trackedOrders[0]?.quantity).toBe(200);
@@ -496,7 +515,7 @@ describe('sell-flow integration', () => {
       requireExecutableSellSignals(processed),
     );
 
-    expect(executeResult.submittedCount).toBe(1);
+    expect(executeResult.executedOrderIds.length).toBe(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
     expect(trackedOrders[0]?.quantity).toBe(200);
@@ -514,7 +533,7 @@ describe('sell-flow integration', () => {
     expect(sellOrderLinks[0]?.related.length).toBe(2);
   });
 
-  it('merges pending sell occupancy on REPLACE without releasing original related buy orders', async () => {
+  it('executor returns the existing order ID for broker-confirmed REPLACE and preserves merged occupancy', async () => {
     const tradingConfig = createTradingConfig();
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedStockPositions(
@@ -619,8 +638,7 @@ describe('sell-flow integration', () => {
     const result = await orderExecutor.executeSignals([signal]);
 
     expect(result).toEqual({
-      submittedCount: 0,
-      submittedOrderIds: [],
+      executedOrderIds: ['SELL-EXISTING'],
     });
 
     expect(replaceCalls).toEqual([
@@ -814,8 +832,7 @@ describe('sell-flow integration', () => {
     const result = await orderExecutor.executeSignals([signal]);
 
     expect(result).toEqual({
-      submittedCount: 0,
-      submittedOrderIds: [],
+      executedOrderIds: [],
     });
     expect(cancelCalls).toEqual(['SELL-MARKET-EXISTING']);
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
@@ -910,7 +927,7 @@ describe('sell-flow integration', () => {
 
     const result = await orderExecutor.executeSignals([signal]);
 
-    expect(result.submittedCount).toBe(1);
+    expect(result.executedOrderIds.length).toBe(1);
     expect(cancelCalls).toEqual(['SELL-MARKET-EXISTING']);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.quantity).toBe(150);

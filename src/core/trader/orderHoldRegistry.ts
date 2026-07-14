@@ -15,7 +15,7 @@
  * - 订单提交后追踪订单与标的的关联（trackOrder）
  * - 订单关闭后清理索引，若标的无剩余未成交订单则移除（markOrderClosed）
  */
-import { PENDING_ORDER_STATUSES } from '../../constants/index.js';
+import { isOpenOrderStatus } from '../orderStatusLifecycle/utils.js';
 import type { OrderHoldSymbolsChangedEvent, RawOrderFromAPI } from '../../types/services.js';
 import type { OrderHoldRegistry } from './types.js';
 
@@ -105,7 +105,7 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
         continue;
       }
 
-      if (!PENDING_ORDER_STATUSES.has(order.status)) {
+      if (!isOpenOrderStatus(order.status)) {
         continue;
       }
 

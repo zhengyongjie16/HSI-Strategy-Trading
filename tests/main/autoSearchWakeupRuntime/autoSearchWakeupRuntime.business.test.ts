@@ -4,10 +4,9 @@
  * 覆盖：runtime start seed 与 gate-open 事件唤醒 EMPTY seat，不依赖 AUTO_SYMBOL_TICK。
  */
 import { describe, expect, it } from 'bun:test';
-import { TIME, TRADING } from '../../../src/constants/index.js';
+import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../../src/constants/index.js';
 import { createAutoSearchWakeupRuntime } from '../../../src/main/autoSearchWakeupRuntime/index.js';
 import { createTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import type { SearchOnEventParams } from '../../../src/services/autoSymbolManager/types.js';
 import {
@@ -272,16 +271,12 @@ describe('AutoSearchWakeupRuntime', () => {
     expect((fatalError as Error).message).toBe('auto search contract broken');
   });
 
-  it('自动寻标 API 失败后保留同版本显式 retry 且不推进失败计数或冻结状态', async () => {
+  it('内部合约 fatal 即使已写回过期 EMPTY 也不交接 cooldown owner', async () => {
     const startMs = Date.parse('2026-04-10T02:00:00.000Z');
     const timers = createTimerHarness(startMs);
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
-    symbolRegistry.updateSeatState('LONG', {
-      ...symbolRegistry.getSeatState('LONG'),
-      searchFailCountToday: 2,
-    });
     const calls: SearchOnEventParams[] = [];
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
@@ -289,53 +284,55 @@ describe('AutoSearchWakeupRuntime', () => {
       autoSymbolManager: createAutoSymbolManagerDouble({
         maybeSearchOnEvent: async (params) => {
           calls.push(params);
-          if (calls.length === 1) {
-            throw createExternalApiRequestError({
-              operation: 'test.autoSearch',
-              attempts: 1,
-              cause: new Error('api unavailable'),
-            });
-          }
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: null,
+            status: 'SEARCHING',
+            lastSwitchAt: currentSeat.lastSwitchAt,
+            lastSearchAt: params.currentTime.getTime(),
+            lastSeatActivatedAt: currentSeat.lastSeatActivatedAt,
+            callPrice: null,
+            searchFailCountToday: currentSeat.searchFailCountToday,
+            frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+          });
+          timers.setNow(startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS + 1);
+          const searchingSeat = symbolRegistry.getSeatState('LONG');
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: null,
+            status: 'EMPTY',
+            lastSwitchAt: searchingSeat.lastSwitchAt,
+            lastSearchAt: params.currentTime.getTime(),
+            lastSeatActivatedAt: searchingSeat.lastSeatActivatedAt,
+            callPrice: null,
+            searchFailCountToday: searchingSeat.searchFailCountToday + 1,
+            frozenTradingDayKey: null,
+          });
+          throw new TypeError('auto search contract broken after seat rollback');
         },
       }),
     });
-    const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
       symbolRegistry,
       monitorContext,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-      },
-      tradingGateEventRuntime,
+      lastState: { canTrade: true, isTradingEnabled: true },
+      tradingGateEventRuntime: createTradingGateEventRuntime(),
       now: timers.now,
       scheduleTimer: timers.scheduleTimer,
       clearTimer: timers.clearTimer,
     });
 
+    const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
     runtime.start();
+    const fatalError = await fatalErrorPromise;
     await Bun.sleep(0);
 
+    expect(fatalError).toBeInstanceOf(TypeError);
     expect(calls).toHaveLength(1);
-    expect(timers.getPendingTimerAts()).toEqual([startMs + TRADING.INTERVAL_MS]);
-    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
-      searchFailCountToday: 2,
-      frozenTradingDayKey: null,
-    });
-
-    timers.setNow(startMs + TRADING.INTERVAL_MS);
-    timers.fireNext();
-    await Bun.sleep(0);
+    expect(timers.getPendingTimerAts()).toEqual([]);
     await runtime.stopAndDrain();
-
-    expect(calls).toHaveLength(2);
-    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
-      searchFailCountToday: 2,
-      frozenTradingDayKey: null,
-    });
   });
 
-  it('自动寻标 API 失败写回 EMPTY 时不通过席位事件即时重入', async () => {
+  it('连续受控外部失败按 cooldown 重试直到冻结且冻结后不再保留 timer', async () => {
     const startMs = Date.parse('2026-04-10T02:00:00.000Z');
     const timers = createTimerHarness(startMs);
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
@@ -348,25 +345,18 @@ describe('AutoSearchWakeupRuntime', () => {
       autoSymbolManager: createAutoSymbolManagerDouble({
         maybeSearchOnEvent: async (params) => {
           calls.push(params);
-          if (calls.length === 1) {
-            const currentSeat = symbolRegistry.getSeatState('LONG');
-            symbolRegistry.updateSeatState('LONG', {
-              ...currentSeat,
-              status: 'SEARCHING',
-              lastSearchAt: startMs,
-            });
-
-            symbolRegistry.updateSeatState('LONG', {
-              ...currentSeat,
-              status: 'EMPTY',
-              lastSearchAt: null,
-            });
-            throw createExternalApiRequestError({
-              operation: 'test.autoSearch',
-              attempts: 1,
-              cause: new Error('api unavailable'),
-            });
-          }
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          const nextFailCount = currentSeat.searchFailCountToday + 1;
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: null,
+            status: 'EMPTY',
+            lastSwitchAt: currentSeat.lastSwitchAt,
+            lastSearchAt: params.currentTime.getTime(),
+            lastSeatActivatedAt: currentSeat.lastSeatActivatedAt,
+            callPrice: null,
+            searchFailCountToday: nextFailCount,
+            frozenTradingDayKey: nextFailCount >= 3 ? '2026-04-10' : null,
+          });
         },
       }),
     });
@@ -388,8 +378,256 @@ describe('AutoSearchWakeupRuntime', () => {
     await Bun.sleep(0);
 
     expect(calls).toHaveLength(1);
-    expect(timers.getPendingTimerAts()).toEqual([startMs + TRADING.INTERVAL_MS]);
+    expect(timers.getPendingTimerAts()).toEqual([startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS]);
 
+    timers.setNow(startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS);
+    timers.fireNext();
+    await Bun.sleep(0);
+    expect(calls).toHaveLength(2);
+    expect(timers.getPendingTimerAts()).toEqual([startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS * 2]);
+
+    timers.setNow(startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS * 2);
+    timers.fireNext();
+    await Bun.sleep(0);
+    expect(calls).toHaveLength(3);
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      searchFailCountToday: 3,
+      frozenTradingDayKey: '2026-04-10',
+    });
+    expect(timers.getPendingTimerAts()).toEqual([]);
+    await runtime.stopAndDrain();
+  });
+
+  it('真实寻标返回 EMPTY 时先释放 active route 再安排唯一 cooldown owner', async () => {
+    const startMs = Date.parse('2026-04-10T02:00:00.000Z');
+    const timers = createTimerHarness(startMs);
+    const monitorConfig = createAutoSearchEnabledMonitorConfig();
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
+    const calls: SearchOnEventParams[] = [];
+    const monitorContext = createMonitorContextDouble({
+      config: monitorConfig,
+      symbolRegistry,
+      autoSymbolManager: createAutoSymbolManagerDouble({
+        maybeSearchOnEvent: async (params) => {
+          calls.push(params);
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: null,
+            status: 'SEARCHING',
+            lastSwitchAt: currentSeat.lastSwitchAt,
+            lastSearchAt: startMs,
+            lastSeatActivatedAt: currentSeat.lastSeatActivatedAt,
+            callPrice: null,
+            searchFailCountToday: currentSeat.searchFailCountToday,
+            frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+          });
+
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: null,
+            status: 'EMPTY',
+            lastSwitchAt: currentSeat.lastSwitchAt,
+            lastSearchAt: startMs,
+            lastSeatActivatedAt: currentSeat.lastSeatActivatedAt,
+            callPrice: null,
+            searchFailCountToday: currentSeat.searchFailCountToday,
+            frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+          });
+        },
+      }),
+    });
+    const tradingGateEventRuntime = createTradingGateEventRuntime();
+    const runtime = createAutoSearchWakeupRuntime({
+      symbolRegistry,
+      monitorContext,
+      lastState: {
+        canTrade: true,
+        isTradingEnabled: true,
+      },
+      tradingGateEventRuntime,
+      now: timers.now,
+      scheduleTimer: timers.scheduleTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    runtime.start();
+    await Bun.sleep(0);
+
+    expect(calls).toHaveLength(1);
+    expect(timers.getPendingTimerAts()).toEqual([startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS]);
+
+    await runtime.stopAndDrain();
+  });
+
+  it('慢速无候选已跨过 cooldown 时释放 route 后立即重触发且不并发', async () => {
+    const startMs = Date.parse('2026-04-10T02:00:00.000Z');
+    const timers = createTimerHarness(startMs);
+    const monitorConfig = createAutoSearchEnabledMonitorConfig();
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
+    let resolveFirstSearch = (): void => {
+      throw new Error('expected first search resolver');
+    };
+    const firstSearch = new Promise<void>((resolve) => {
+      resolveFirstSearch = resolve;
+    });
+    let activeSearchCount = 0;
+    let maxActiveSearchCount = 0;
+    const calls: SearchOnEventParams[] = [];
+    const monitorContext = createMonitorContextDouble({
+      config: monitorConfig,
+      symbolRegistry,
+      autoSymbolManager: createAutoSymbolManagerDouble({
+        maybeSearchOnEvent: async (params) => {
+          calls.push(params);
+          activeSearchCount += 1;
+          maxActiveSearchCount = Math.max(maxActiveSearchCount, activeSearchCount);
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: null,
+            status: 'SEARCHING',
+            lastSwitchAt: currentSeat.lastSwitchAt,
+            lastSearchAt: params.currentTime.getTime(),
+            lastSeatActivatedAt: currentSeat.lastSeatActivatedAt,
+            callPrice: null,
+            searchFailCountToday: currentSeat.searchFailCountToday,
+            frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+          });
+
+          if (calls.length === 1) {
+            await firstSearch;
+            const searchingSeat = symbolRegistry.getSeatState('LONG');
+            symbolRegistry.updateSeatState('LONG', {
+              symbol: null,
+              status: 'EMPTY',
+              lastSwitchAt: searchingSeat.lastSwitchAt,
+              lastSearchAt: params.currentTime.getTime(),
+              lastSeatActivatedAt: searchingSeat.lastSeatActivatedAt,
+              callPrice: null,
+              searchFailCountToday: searchingSeat.searchFailCountToday + 1,
+              frozenTradingDayKey: null,
+            });
+          } else {
+            symbolRegistry.updateSeatState('LONG', {
+              symbol: 'BULL.HK',
+              status: 'ACTIVATING',
+              lastSwitchAt: timers.now().getTime(),
+              lastSearchAt: params.currentTime.getTime(),
+              lastSeatActivatedAt: null,
+              callPrice: 20_000,
+              searchFailCountToday: 0,
+              frozenTradingDayKey: null,
+            });
+          }
+
+          activeSearchCount -= 1;
+        },
+      }),
+    });
+    const runtime = createAutoSearchWakeupRuntime({
+      symbolRegistry,
+      monitorContext,
+      lastState: { canTrade: true, isTradingEnabled: true },
+      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      now: timers.now,
+      scheduleTimer: timers.scheduleTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    runtime.start();
+    await Bun.sleep(0);
+    expect(calls).toHaveLength(1);
+
+    timers.setNow(startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS + 1);
+    resolveFirstSearch();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+
+    expect(calls).toHaveLength(2);
+    expect(maxActiveSearchCount).toBe(1);
+    expect(timers.getPendingTimerAts()).toEqual([]);
+    await runtime.stopAndDrain();
+  });
+
+  it('慢速受控外部失败已跨过 cooldown 时释放 route 后立即重触发', async () => {
+    const startMs = Date.parse('2026-04-10T02:00:00.000Z');
+    const timers = createTimerHarness(startMs);
+    const monitorConfig = createAutoSearchEnabledMonitorConfig();
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
+    let resolveExternalFailure = (): void => {
+      throw new Error('expected external failure resolver');
+    };
+    const externalFailure = new Promise<void>((resolve) => {
+      resolveExternalFailure = resolve;
+    });
+    const calls: SearchOnEventParams[] = [];
+    const monitorContext = createMonitorContextDouble({
+      config: monitorConfig,
+      symbolRegistry,
+      autoSymbolManager: createAutoSymbolManagerDouble({
+        maybeSearchOnEvent: async (params) => {
+          calls.push(params);
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: null,
+            status: 'SEARCHING',
+            lastSwitchAt: currentSeat.lastSwitchAt,
+            lastSearchAt: params.currentTime.getTime(),
+            lastSeatActivatedAt: currentSeat.lastSeatActivatedAt,
+            callPrice: null,
+            searchFailCountToday: currentSeat.searchFailCountToday,
+            frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+          });
+
+          if (calls.length === 1) {
+            await externalFailure;
+            const searchingSeat = symbolRegistry.getSeatState('LONG');
+            symbolRegistry.updateSeatState('LONG', {
+              symbol: null,
+              status: 'EMPTY',
+              lastSwitchAt: searchingSeat.lastSwitchAt,
+              lastSearchAt: params.currentTime.getTime(),
+              lastSeatActivatedAt: searchingSeat.lastSeatActivatedAt,
+              callPrice: null,
+              searchFailCountToday: searchingSeat.searchFailCountToday + 1,
+              frozenTradingDayKey: null,
+            });
+            return;
+          }
+
+          symbolRegistry.updateSeatState('LONG', {
+            symbol: 'BULL.HK',
+            status: 'ACTIVATING',
+            lastSwitchAt: timers.now().getTime(),
+            lastSearchAt: params.currentTime.getTime(),
+            lastSeatActivatedAt: null,
+            callPrice: 20_000,
+            searchFailCountToday: 0,
+            frozenTradingDayKey: null,
+          });
+        },
+      }),
+    });
+    const runtime = createAutoSearchWakeupRuntime({
+      symbolRegistry,
+      monitorContext,
+      lastState: { canTrade: true, isTradingEnabled: true },
+      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      now: timers.now,
+      scheduleTimer: timers.scheduleTimer,
+      clearTimer: timers.clearTimer,
+    });
+
+    runtime.start();
+    await Bun.sleep(0);
+    timers.setNow(startMs + AUTO_SYMBOL_SEARCH_COOLDOWN_MS + 1);
+    resolveExternalFailure();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+
+    expect(calls).toHaveLength(2);
+    expect(timers.getPendingTimerAts()).toEqual([]);
     await runtime.stopAndDrain();
   });
 

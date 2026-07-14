@@ -163,7 +163,7 @@ describe('sellProcessor business flow', () => {
     };
 
     const trader = createTraderDouble({
-      executeSignals: async () => ({ submittedCount: 1, submittedOrderIds: [] }),
+      executeSignals: async () => ({ executedOrderIds: ['EXECUTED-ORDER-1'] }),
     });
 
     const monitorContext = createMonitorContext({
@@ -263,7 +263,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedSignal = signals[0] ?? null;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -316,7 +316,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -334,9 +334,15 @@ describe('sellProcessor business flow', () => {
       dailyLossTracker: {
         resetAll: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        }),
         getLossOffset: () => 0,
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {},
+        restoreExecutionSnapshot: () => {},
+        restoreProtectionBoundary: () => {},
       },
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
@@ -348,12 +354,16 @@ describe('sellProcessor business flow', () => {
       },
       protectiveLiquidationEpisodeTracker: {
         recordProtectiveFillProgress: () => {},
-        completeIfEligible: () => null,
+        prepareCompletion: () => null,
+        commitCompletion: () => {},
         restoreCompletedBoundary: () => {},
         restoreInProgressEpisode: () => {},
         getLatestProtectionBoundaryByDirection: () => new Map(),
         getInProgressEpisodes: () => [],
         resetAll: () => {},
+      },
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => 'APPENDED',
       },
     });
 
@@ -426,7 +436,7 @@ describe('sellProcessor business flow', () => {
       trader: createTraderDouble({
         executeSignals: async () => {
           executeCalls += 1;
-          return { submittedCount: 1, submittedOrderIds: [] };
+          return { executedOrderIds: ['EXECUTED-ORDER-1'] };
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -481,7 +491,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -527,10 +537,12 @@ describe('sellProcessor business flow', () => {
       applyRiskChecks: async () => [],
       processSellSignals: ({ signals }: { signals: Signal[] }) => {
         processSellCalls += 1;
-        monitorContext.symbolRegistry.updateSeatStateWithVersionBump(
-          'LONG',
-          monitorContext.symbolRegistry.getSeatState('LONG'),
-        );
+        const currentSeat = monitorContext.symbolRegistry.getSeatState('LONG');
+        if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+          throw new Error('expected runtime ACTIVE LONG seat');
+        }
+
+        monitorContext.symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
         return signals;
       },
       resetRiskCheckCooldown: () => {},
@@ -540,7 +552,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -597,7 +609,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -673,7 +685,7 @@ describe('sellProcessor business flow', () => {
       trader: createTraderDouble({
         executeSignals: async () => {
           executeCalls += 1;
-          return { submittedCount: 1, submittedOrderIds: [] };
+          return { executedOrderIds: ['EXECUTED-ORDER-1'] };
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -727,7 +739,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -807,7 +819,7 @@ describe('sellProcessor business flow', () => {
       trader: createTraderDouble({
         executeSignals: async () => {
           executeCalls += 1;
-          return { submittedCount: 1, submittedOrderIds: [] };
+          return { executedOrderIds: ['EXECUTED-ORDER-1'] };
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -875,7 +887,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         executedSignal = signals[0] ?? null;
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
     const processor = createSellProcessor({
@@ -1007,7 +1019,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 
@@ -1179,7 +1191,7 @@ describe('sellProcessor business flow', () => {
       trader: createTraderDouble({
         executeSignals: async () => {
           executeCalls += 1;
-          return { submittedCount: 1, submittedOrderIds: [] };
+          return { executedOrderIds: ['EXECUTED-ORDER-1'] };
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -1230,7 +1242,7 @@ describe('sellProcessor business flow', () => {
     const trader = createTraderDouble({
       executeSignals: async () => {
         executeCalls += 1;
-        return { submittedCount: 1, submittedOrderIds: [] };
+        return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
 

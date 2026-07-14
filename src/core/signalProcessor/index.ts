@@ -2,12 +2,12 @@
  * 信号处理模块
  *
  * 功能：
- * - 对生成的信号进行过滤和风险检查
+ * - 对买入信号执行过滤和风险检查
  * - 计算卖出信号的数量和清仓策略
  * - 实施交易频率限制
  *
  * 买入检查顺序：
- * 1. 风险检查冷却（同标的同买卖方向短时间内不重复进入风险管道）
+ * 1. 风险检查冷却（同标的共用 BUY 键，短时间内不重复进入风险管道）
  * 2. 交易频率限制（同方向买入时间间隔）
  * 3. 清仓冷却（同监控标的任一方向触发冷却则双方向拒买）
  * 4. 买入价格限制（防止追高）
@@ -35,7 +35,7 @@ export const createSignalProcessor = ({
   tradingConfig,
   liquidationCooldownTracker,
 }: SignalProcessorDeps): SignalProcessor => {
-  /** 冷却时间记录：Map<symbol_direction, timestamp>，防止重复信号频繁触发风险检查 */
+  /** 买入风险冷却记录：Map<symbol_BUY, timestamp>，防止同标的重复信号频繁触发检查。 */
   const lastRiskCheckTime = new Map<string, number>();
   const applyRiskChecks = createRiskCheckPipeline({
     tradingConfig,

@@ -1,4 +1,5 @@
 import type { Position } from '../../types/account.js';
+import type { OrderSide } from 'longbridge';
 import type { Signal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
 import type {
@@ -164,9 +165,54 @@ export type DailyLossState = {
 export type DailyLossDirection = 'LONG' | 'SHORT';
 
 /**
+ * 单笔订单的一次累计成交推进快照。
+ * 类型用途：在保护边界晚于后续成交到达时，恢复该订单在边界时的累计数量与金额。
+ * 数据来源：全量订单快照或运行期新增成交 revision。
+ * 使用范围：仅 riskController 模块内部使用。
+ */
+export type DailyLossExecutionSnapshot = {
+  readonly factStage: 'OPEN' | 'TERMINAL';
+  readonly cumulativeQuantity: number;
+  readonly cumulativeAmount: number;
+  readonly lastExecutionTimeMs: number;
+  readonly orderUpdatedAtMs: number;
+};
+
+/**
+ * 单笔订单的累计权威成交事实。
+ * 类型用途：DailyLossTracker 按 orderId 与 revision 幂等合并恢复快照和运行期累计成交回报。
+ * 数据来源：全量订单重算或 OrderMonitor 终态结算。
+ * 使用范围：仅 riskController 模块内部使用。
+ */
+export type DailyLossOrderFact = {
+  readonly orderId: string;
+  readonly direction: DailyLossDirection;
+  readonly symbol: string;
+  readonly side: OrderSide.Buy | OrderSide.Sell;
+  readonly factStage: 'OPEN' | 'TERMINAL';
+  readonly cumulativeQuantity: number;
+  readonly cumulativeAmount: number;
+  readonly lastExecutionTimeMs: number;
+  readonly orderUpdatedAtMs: number;
+  readonly executionSnapshots: ReadonlyArray<DailyLossExecutionSnapshot>;
+  readonly historyCompleteFromZero: boolean;
+};
+
+/**
+ * 单笔订单在保护性清仓边界时的累计基线。
+ * 类型用途：当前累计事实减去该基线后得到新保护周期应计入的数量与金额。
+ * 数据来源：prepareProtectionBoundary 从订单执行快照中按边界选择。
+ * 使用范围：仅 riskController 模块内部使用。
+ */
+export type DailyLossOrderBaseline = {
+  readonly cumulativeQuantity: number;
+  readonly cumulativeAmount: number;
+};
+
+/**
  * 唯一 monitor 的双方向当日亏损状态集合。
  * 类型用途：DailyLossTracker 内部保存 LONG/SHORT 两个方向的当前分段状态。
- * 数据来源：recalculateFromAllOrders 全量重算或 recordFilledOrder 增量更新。
+ * 数据来源：recalculateFromAllOrders 全量重算或 recordCumulativeExecution 增量更新。
  * 使用范围：仅 riskController 模块内部使用。
  */
 export type DailyLossDirectionStates = Readonly<{

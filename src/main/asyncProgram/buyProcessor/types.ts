@@ -1,4 +1,4 @@
-import type { MonitorContext, LastState } from '../../../types/state.js';
+import type { MonitorContext } from '../../../types/state.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { TaskQueue, BuyTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
@@ -28,9 +28,6 @@ export type BuyProcessorDeps = {
 
   /** 末日保护模块 */
   readonly doomsdayProtection: DoomsdayProtection;
-
-  /** 获取全局状态的函数 */
-  readonly getLastState: () => LastState;
 
   /** 获取是否半日市的函数 */
   readonly getIsHalfDay: () => boolean;

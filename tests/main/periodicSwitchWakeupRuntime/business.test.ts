@@ -13,7 +13,7 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
-import type { SeatState } from '../../../src/types/seat.js';
+import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
 import type { MonitorContext } from '../../../src/types/state.js';
 import type {
   OrderStateChangedEvent,
@@ -47,7 +47,7 @@ function hkMs(dateKey: string, hour: number, minute: number): number {
   );
 }
 
-function createActiveSeat(symbol: string, lastSeatActivatedAt: number): SeatState {
+function createActiveSeat(symbol: string, lastSeatActivatedAt: number): RuntimeWritableSeatState {
   return {
     symbol,
     status: 'ACTIVE',

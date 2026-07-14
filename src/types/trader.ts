@@ -1,6 +1,16 @@
 import type { OrderStatus } from 'longbridge';
 
 /**
+ * 批量信号执行结果。
+ * 类型用途：以唯一订单 ID 列表表达真正发生的提交或 broker 已确认改单，避免数量与 ID 双真相分叉。
+ * 数据来源：OrderExecutor 对每个信号的 SUBMITTED/REPLACED 动作结果汇总。
+ * 使用范围：Trader.executeSignals 及清仓、换标等消费者。
+ */
+export type ExecuteSignalsResult = {
+  readonly executedOrderIds: ReadonlyArray<string>;
+};
+
+/**
  * 订单关闭原因。
  * 类型用途：统一表示订单终态关闭语义，供撤单结果、订单监控与终态结算共享。
  * 数据来源：撤单 API 返回、WebSocket 终态事件、单订单权威状态确认结果。
@@ -20,7 +30,9 @@ export type OrderStateCheckResult =
       readonly closedReason: OrderClosedReason;
       readonly executedPrice: number | null;
       readonly executedQuantity: number | null;
-      readonly executedTimeMs: number | null;
+
+      /** 经纪商订单事实 revision；不能直接解释为最后成交时间。 */
+      readonly orderUpdatedAtMs: number | null;
       readonly status: OrderStatus;
     }
   | {
@@ -126,4 +138,14 @@ export type TradeRecord = {
 
   /** 是否为保护性清仓（浮亏超阈值触发） */
   readonly isProtectiveClearance: boolean | null;
+};
+
+/**
+ * 可持久化交易记录。
+ * 类型用途：在标准 TradeRecord 上补充执行时间戳，用于按香港交易日切分 mixed trade log。
+ * 数据来源：订单状态变化事件中的成交字段。
+ * 使用范围：订单事件持久化与 MixedTradeLogRepository。
+ */
+export type PersistableTradeRecord = TradeRecord & {
+  readonly executedAtMs: number;
 };

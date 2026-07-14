@@ -133,12 +133,7 @@ export function createQuoteSubscriptionRuntime(
     const seatSymbols: string[] = [];
     for (const direction of ['LONG', 'SHORT'] as const) {
       const seatState = deps.symbolRegistry.getSeatState(direction);
-      if (
-        seatState.symbol &&
-        (seatState.status === 'SWITCHING' ||
-          seatState.status === 'ACTIVATING' ||
-          seatState.status === 'ACTIVE')
-      ) {
+      if (seatState.status !== 'EMPTY' && seatState.status !== 'SEARCHING') {
         seatSymbols.push(seatState.symbol);
       }
     }

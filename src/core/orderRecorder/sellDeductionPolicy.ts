@@ -16,6 +16,25 @@ import { logger } from '../../utils/logger/index.js';
 import type { OrderRecord } from '../../types/services.js';
 
 /**
+ * 比较两笔买单的卖出扣减优先级。
+ *
+ * @param left 左侧买单
+ * @param right 右侧买单
+ * @returns 负数表示 left 优先，正数表示 right 优先，零表示完全相同
+ */
+export function compareBuyOrdersBySellPriority(left: OrderRecord, right: OrderRecord): number {
+  if (left.executedPrice !== right.executedPrice) {
+    return left.executedPrice - right.executedPrice;
+  }
+
+  if (left.executedTime !== right.executedTime) {
+    return left.executedTime - right.executedTime;
+  }
+
+  return left.orderId.localeCompare(right.orderId);
+}
+
+/**
  * 从买入订单列表中扣减卖出数量
  *
  * 算法逻辑：
@@ -52,20 +71,7 @@ export function deductSellQuantityFromBuyOrders(
   }
 
   // 稳定排序: executedPrice asc → executedTime asc → orderId asc
-  const sortedOrders = [...candidateBuyOrders].sort((a, b) => {
-    // 第一级: 价格从低到高
-    if (a.executedPrice !== b.executedPrice) {
-      return a.executedPrice - b.executedPrice;
-    }
-
-    // 第二级: 时间从早到晚
-    if (a.executedTime !== b.executedTime) {
-      return a.executedTime - b.executedTime;
-    }
-
-    // 第三级: orderId 字典序
-    return a.orderId.localeCompare(b.orderId);
-  });
+  const sortedOrders = [...candidateBuyOrders].sort(compareBuyOrdersBySellPriority);
 
   // 整笔扣减: 从低到高遍历,订单数量 <= 剩余扣减量则消除,否则整笔保留
   const remainingOrders: OrderRecord[] = [];

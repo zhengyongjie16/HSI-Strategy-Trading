@@ -9,6 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
+import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { initMonitorState } from '../../src/utils/helpers/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
@@ -17,6 +18,7 @@ import type {
   MonitorTaskStatus,
 } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/types.js';
+import type { SwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/types.js';
 
 import {
   createMarketDataClientDouble,
@@ -48,6 +50,7 @@ function createLastState(): LastState {
     cachedPositions: [],
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
+    tradingCalendarSnapshot: new Map(),
     monitorState: initMonitorState(createMonitorConfigDouble()),
     allTradingSymbols: new Set(),
   };
@@ -74,11 +77,7 @@ function schedulePeriodicTick(
 ): void {
   const { monitorTaskQueue, monitorContext, direction, currentTimeMs } = params;
   const seatSnapshot = monitorContext.symbolRegistry.getSeatState(direction);
-  if (
-    seatSnapshot.status !== 'ACTIVE' ||
-    seatSnapshot.symbol === null ||
-    seatSnapshot.lastSeatActivatedAt === null
-  ) {
+  if (seatSnapshot.status !== 'ACTIVE' || seatSnapshot.lastSeatActivatedAt === null) {
     return;
   }
 
@@ -93,6 +92,37 @@ function schedulePeriodicTick(
       currentTimeMs,
     },
   });
+}
+
+function createStartedSwitchWakeupRuntime(
+  params: Readonly<{
+    monitorContext: MonitorContext;
+    trader: Parameters<typeof createSwitchWakeupRuntime>[0]['trader'];
+    lastState: LastState;
+    now: () => Date;
+  }>,
+): SwitchWakeupRuntime {
+  const runtime = createSwitchWakeupRuntime({
+    marketDataClient: createMarketDataClientDouble(),
+    trader: params.trader,
+    symbolRegistry: params.monitorContext.symbolRegistry,
+    monitorContext: params.monitorContext,
+    lastState: params.lastState,
+    postTradeConsistencyRuntime: {
+      waitForFresh: async () => {},
+      getStatus: () => ({ started: true, currentVersion: 0, staleVersion: 0 }),
+      onFreshReached: () => () => {},
+    },
+    quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
+    doomsdayProtectionEnabled: false,
+    now: params.now,
+    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (handle) => {
+      clearTimeout(handle);
+    },
+  });
+  runtime.start();
+  return runtime;
 }
 
 describe('periodic auto-symbol full chain integration', () => {
@@ -188,7 +218,10 @@ describe('periodic auto-symbol full chain integration', () => {
       dailyLossTracker: {
         resetAll: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        }),
         getLossOffset: () => 0,
       },
       riskChecker,
@@ -200,17 +233,22 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
+    const lastState = createLastState();
+    const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
+      monitorContext,
+      trader,
+      lastState,
+      now: () => new Date(currentNowMs),
+    });
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
-      switchWakeupRuntime: {
-        handoffPendingSwitch: () => {},
-      },
+      switchWakeupRuntime,
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState: createLastState(),
+      lastState,
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -270,6 +308,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();
+      await switchWakeupRuntime.stopAndDrain();
     }
   });
 
@@ -363,7 +402,10 @@ describe('periodic auto-symbol full chain integration', () => {
       dailyLossTracker: {
         resetAll: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        }),
         getLossOffset: () => 0,
       },
       riskChecker,
@@ -375,17 +417,22 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
+    const lastState = createLastState();
+    const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
+      monitorContext,
+      trader,
+      lastState,
+      now: () => new Date(currentNowMs),
+    });
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
-      switchWakeupRuntime: {
-        handoffPendingSwitch: () => {},
-      },
+      switchWakeupRuntime,
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState: createLastState(),
+      lastState,
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -417,6 +464,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
+      await switchWakeupRuntime.stopAndDrain();
     }
   });
 
@@ -510,7 +558,10 @@ describe('periodic auto-symbol full chain integration', () => {
       dailyLossTracker: {
         resetAll: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        }),
         getLossOffset: () => 0,
       },
       riskChecker,
@@ -522,17 +573,22 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
+    const lastState = createLastState();
+    const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
+      monitorContext,
+      trader,
+      lastState,
+      now: () => new Date(currentNowMs),
+    });
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
-      switchWakeupRuntime: {
-        handoffPendingSwitch: () => {},
-      },
+      switchWakeupRuntime,
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState: createLastState(),
+      lastState,
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -564,6 +620,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
+      await switchWakeupRuntime.stopAndDrain();
     }
   });
 
@@ -657,7 +714,10 @@ describe('periodic auto-symbol full chain integration', () => {
       dailyLossTracker: {
         resetAll: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {},
+        recordCumulativeExecution: () => ({
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        }),
         getLossOffset: () => 0,
       },
       riskChecker,
@@ -669,17 +729,22 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
     const statuses: MonitorTaskStatus[] = [];
+    const lastState = createLastState();
+    const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
+      monitorContext,
+      trader,
+      lastState,
+      now: () => new Date(currentNowMs),
+    });
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue,
       monitorContext,
       trader,
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
-      switchWakeupRuntime: {
-        handoffPendingSwitch: () => {},
-      },
+      switchWakeupRuntime,
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState: createLastState(),
+      lastState,
       getCanTradeNow: () => true,
       onProcessed: (_task, status) => {
         statuses.push(status);
@@ -726,6 +791,7 @@ describe('periodic auto-symbol full chain integration', () => {
 
       await waitUntil(() => statuses.length > 0);
       expect(statuses).toEqual(['processed']);
+      await waitUntil(() => symbolRegistry.getSeatState('LONG').status === 'ACTIVATING');
 
       const switchingSeat = symbolRegistry.getSeatState('LONG');
       expect(switchingSeat.status).toBe('ACTIVATING');
@@ -734,6 +800,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();
+      await switchWakeupRuntime.stopAndDrain();
     }
   });
 });

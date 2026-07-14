@@ -174,8 +174,7 @@ function createDefaultStaticLiquidationHarness(): RuntimeHarness &
         }
 
         return {
-          submittedCount: signals.length,
-          submittedOrderIds: [],
+          executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
         };
       },
     }),
@@ -214,6 +213,7 @@ function createDefaultDistanceSwitchHarness(
     readonly canTrade?: boolean | null;
     readonly switchFailure?: Error;
     readonly onFatalError?: (error: unknown) => void;
+    readonly invalidStartedResult?: boolean;
   } = {},
 ): RuntimeHarness &
   Readonly<{
@@ -249,6 +249,40 @@ function createDefaultDistanceSwitchHarness(
       frozenTradingDayKey: null,
     },
   });
+  const autoSymbolManager = createAutoSymbolManagerDouble({
+    startSwitchOnDistance: async ({ direction }) => {
+      startSwitchDirections.push(direction);
+      if (params.switchFailure) {
+        throw params.switchFailure;
+      }
+
+      if (params.waitForDistanceResult) {
+        const result = await params.waitForDistanceResult;
+        return result[0] ?? { started: false, direction, driveResult: { kind: 'NOOP' } };
+      }
+
+      return {
+        started: true,
+        direction,
+        driveResult: {
+          kind: 'WAIT',
+          wakeups: [
+            { kind: 'ORDER_EVENT', symbols: [direction === 'LONG' ? 'BULL.HK' : 'BEAR.HK'] },
+          ],
+        },
+      };
+    },
+  });
+  if (params.invalidStartedResult) {
+    Object.defineProperty(autoSymbolManager, 'startSwitchOnDistance', {
+      value: async ({ direction }: { readonly direction: 'LONG' | 'SHORT' }) => ({
+        started: true,
+        direction,
+        driveResult: { kind: 'COMPLETED' },
+      }),
+    });
+  }
+
   const monitorContext = createMonitorContextDouble({
     config: createMonitorConfig({
       monitorSymbol: 'HSI.HK',
@@ -268,30 +302,7 @@ function createDefaultDistanceSwitchHarness(
       shortSymbol: 'BEAR.HK',
     }),
     symbolRegistry,
-    autoSymbolManager: createAutoSymbolManagerDouble({
-      startSwitchOnDistance: async ({ direction }) => {
-        startSwitchDirections.push(direction);
-        if (params.switchFailure) {
-          throw params.switchFailure;
-        }
-
-        if (params.waitForDistanceResult) {
-          const result = await params.waitForDistanceResult;
-          return result[0] ?? { started: false, direction, driveResult: { kind: 'NOOP' } };
-        }
-
-        return {
-          started: true,
-          direction,
-          driveResult: {
-            kind: 'WAIT',
-            wakeups: [
-              { kind: 'ORDER_EVENT', symbols: [direction === 'LONG' ? 'BULL.HK' : 'BEAR.HK'] },
-            ],
-          },
-        };
-      },
-    }),
+    autoSymbolManager,
   });
   const runtime = createDefaultMonitorQuoteEventRuntime({
     marketDataClient: {
@@ -488,8 +499,7 @@ function createDefaultStaticWaitHarness(
 
         submittedActions.push(...signals.map((signal) => signal.action));
         return {
-          submittedCount: signals.length,
-          submittedOrderIds: signals.map((_, index) => `ORDER-${submittedActions.length}-${index}`),
+          executedOrderIds: signals.map((_, index) => `ORDER-${submittedActions.length}-${index}`),
         };
       },
     }),
@@ -560,7 +570,7 @@ function createDefaultStaticWaitHarness(
         status: 'ACTIVE',
         lastSwitchAt: null,
         lastSearchAt: null,
-        lastSeatActivatedAt: null,
+        lastSeatActivatedAt: 1,
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });
@@ -930,6 +940,27 @@ describe('monitorQuoteEventRuntime contract', () => {
     await waitTick();
 
     expect(fatalErrors).toEqual([routeError]);
+    await harness.runtime.stopAndDrain();
+  });
+
+  it('fails fast when started distance switch does not return WAIT', async () => {
+    const fatalErrors: unknown[] = [];
+    const harness = createDefaultDistanceSwitchHarness({
+      invalidStartedResult: true,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    harness.runtime.start();
+    harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
+    await waitTick();
+
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]).toMatchObject({
+      message: '[MonitorQuoteEventRuntime] started switch must return WAIT',
+    });
+    expect(harness.switchWakeupHandoffs).toEqual([]);
     await harness.runtime.stopAndDrain();
   });
 });

@@ -11,7 +11,10 @@ import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProt
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
 import { logger } from '../../utils/logger/index.js';
-import type { SwitchDriveResult } from '../../types/monitorContextPorts.js';
+import type {
+  AdvancePendingSwitchResult,
+  SwitchDriveResult,
+} from '../../types/monitorContextPorts.js';
 import { areStringSetsEqual } from './setUtils.js';
 import type {
   SwitchWakeupHandoffParams,
@@ -45,6 +48,112 @@ function isWaitDriveResult(
   driveResult: SwitchDriveResult,
 ): driveResult is Extract<SwitchDriveResult, { kind: 'WAIT' }> {
   return driveResult.kind === 'WAIT';
+}
+
+function assertNonEmptyWaitResult(driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>): void {
+  if (driveResult.wakeups.length === 0) {
+    throw new Error('[SwitchWakeupRuntime] WAIT must contain at least one wakeup owner');
+  }
+
+  if (!driveResult.wakeups.every(assertValidWakeup)) {
+    throw new Error('[SwitchWakeupRuntime] WAIT contains an invalid wakeup owner');
+  }
+}
+
+function isUnknownRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null;
+}
+
+function assertValidWakeup(wakeup: unknown): boolean {
+  if (!isUnknownRecord(wakeup) || typeof wakeup['kind'] !== 'string') {
+    return false;
+  }
+
+  if (wakeup['kind'] === 'FRESHNESS') {
+    return true;
+  }
+
+  if (wakeup['kind'] === 'SYMBOL_QUOTE') {
+    return typeof wakeup['symbol'] === 'string' && wakeup['symbol'].length > 0;
+  }
+
+  if (wakeup['kind'] === 'RETRY_TIMER') {
+    return typeof wakeup['atMs'] === 'number' && Number.isFinite(wakeup['atMs']);
+  }
+
+  if (wakeup['kind'] === 'ORDER_EVENT') {
+    return (
+      Array.isArray(wakeup['symbols']) &&
+      wakeup['symbols'].length > 0 &&
+      wakeup['symbols'].every((symbol) => typeof symbol === 'string' && symbol.length > 0)
+    );
+  }
+
+  return false;
+}
+
+function assertValidAdvanceResult(
+  result: AdvancePendingSwitchResult,
+  expectedDirection: 'LONG' | 'SHORT',
+): void {
+  const uncheckedResult: unknown = result;
+  if (!isUnknownRecord(uncheckedResult)) {
+    throw new Error('[SwitchWakeupRuntime] advance result must be an object');
+  }
+
+  const driveResult = uncheckedResult['driveResult'];
+  if (!isUnknownRecord(driveResult) || typeof driveResult['kind'] !== 'string') {
+    throw new Error('[SwitchWakeupRuntime] advance result must contain a drive result');
+  }
+
+  if (uncheckedResult['direction'] !== expectedDirection) {
+    throw new Error('[SwitchWakeupRuntime] advance result direction mismatch');
+  }
+
+  const kind = driveResult['kind'];
+  if (kind !== 'NOOP' && kind !== 'COMPLETED' && kind !== 'FAILED' && kind !== 'WAIT') {
+    throw new Error('[SwitchWakeupRuntime] advance result contains an invalid drive kind');
+  }
+
+  if (kind === 'FAILED' && (typeof driveResult['reason'] !== 'string' || !driveResult['reason'])) {
+    throw new Error('[SwitchWakeupRuntime] FAILED result requires a non-empty reason');
+  }
+
+  if (kind === 'WAIT') {
+    const wakeups = driveResult['wakeups'];
+    if (!Array.isArray(wakeups) || wakeups.length === 0 || !wakeups.every(assertValidWakeup)) {
+      throw new Error('[SwitchWakeupRuntime] WAIT requires valid non-empty wakeups');
+    }
+  }
+
+  if (uncheckedResult['advanced'] === false) {
+    if (uncheckedResult['stillPending'] !== false || driveResult['kind'] !== 'NOOP') {
+      throw new Error('[SwitchWakeupRuntime] advanced=false requires stillPending=false and NOOP');
+    }
+
+    return;
+  }
+
+  if (uncheckedResult['advanced'] !== true) {
+    throw new Error('[SwitchWakeupRuntime] advanced must be a boolean literal');
+  }
+
+  if (uncheckedResult['stillPending'] === true) {
+    const wakeups = driveResult['wakeups'];
+    if (driveResult['kind'] !== 'WAIT' || !Array.isArray(wakeups) || wakeups.length === 0) {
+      throw new Error('[SwitchWakeupRuntime] stillPending=true requires a non-empty WAIT result');
+    }
+
+    return;
+  }
+
+  if (uncheckedResult['stillPending'] !== false) {
+    throw new Error('[SwitchWakeupRuntime] stillPending must be a boolean literal');
+  }
+
+  if (driveResult['kind'] === 'WAIT') {
+    throw new Error('[SwitchWakeupRuntime] stillPending=false must not return WAIT');
+  }
 }
 
 /**
@@ -411,7 +520,11 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @param routeKey 路由键
    * @param driveResult 单步推进结果
    */
-  function updateWakeups(routeKey: SwitchWakeupRouteKey, driveResult: SwitchDriveResult): void {
+  function updateWakeups(
+    routeKey: SwitchWakeupRouteKey,
+    driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>,
+  ): void {
+    assertNonEmptyWaitResult(driveResult);
     const routeState = routeStates.get(routeKey);
     if (routeState === undefined) {
       return;
@@ -421,12 +534,6 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     removeRouteWakeupIndexes(routeKey);
 
     if (!running) {
-      routeState.wakeups = [];
-      releaseSwitchWakeupRetain(routeKey);
-      return;
-    }
-
-    if (!isWaitDriveResult(driveResult)) {
       routeState.wakeups = [];
       releaseSwitchWakeupRetain(routeKey);
       return;
@@ -536,6 +643,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           direction: authoritativeRoute.direction,
           positions: deps.lastState.cachedPositions,
         });
+        assertValidAdvanceResult(result, authoritativeRoute.direction);
 
         if (!result.advanced) {
           deleteRoute(routeKey);
@@ -686,9 +794,11 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @param params handoff 参数
    */
   function handoffPendingSwitch(params: SwitchWakeupHandoffParams): void {
-    if (!running || !isWaitDriveResult(params.driveResult)) {
+    if (!running) {
       return;
     }
+
+    assertNonEmptyWaitResult(params.driveResult);
 
     if (deps.monitorContext !== params.monitorContext) {
       throw new Error('[SwitchWakeupRuntime] handoff monitorContext identity mismatch');

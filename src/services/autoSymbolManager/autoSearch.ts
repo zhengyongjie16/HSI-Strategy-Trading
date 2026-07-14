@@ -5,13 +5,13 @@
  * 职责：自动寻标开盘延迟（在早盘延迟窗口内跳过寻标）、失败冻结与成功后席位 ACTIVATING 更新。
  * 执行流程：maybeSearchOnEvent 检查席位状态与冷却 → 调用 findBestWarrant → 成功则更新为 ACTIVATING，失败则累计失败计数或冻结。
  */
-import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type { AutoSearchDeps, AutoSearchManager, SearchOnEventParams } from './types.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { isSeatFrozenToday, resolveNextSearchFailureState } from './utils.js';
 
 /**
  * 创建自动寻标子模块，管理空席位的寻标触发、冷却控制与失败冻结逻辑；事件唤醒时检查席位状态，满足条件时调用 findBestWarrant 并更新席位。
- * @param deps - 依赖（autoSearchConfig、symbolRegistry、buildSeatState、updateSeatState、resolveDirectionalAutoSearchPolicy、buildFindBestWarrantInput、findBestWarrant 等）
+ * @param deps - 依赖（autoSearchConfig、symbolRegistry、updateSeatState、resolveDirectionalAutoSearchPolicy、buildFindBestWarrantInput、findBestWarrant 等）
  * @returns AutoSearchManager 实例（maybeSearchOnEvent）
  */
 export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
@@ -19,7 +19,6 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
     autoSearchConfig,
     monitorSymbol,
     symbolRegistry,
-    buildSeatState,
     updateSeatState,
     resolveDirectionalAutoSearchPolicy,
     buildFindBestWarrantInput,
@@ -30,6 +29,37 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
     maxSearchFailuresPerDay,
     logger,
   } = deps;
+
+  /** 将一次已经真实进入 SEARCHING 的失败统一收口为 EMPTY，并推进当日失败计数。 */
+  function recordSearchFailure(direction: 'LONG' | 'SHORT', currentTime: Date): void {
+    const currentSeat = symbolRegistry.getSeatState(direction);
+    const nowMs = currentTime.getTime();
+    const { nextFailCount, frozenTradingDayKey, shouldFreeze } = resolveNextSearchFailureState({
+      currentSeat,
+      hkDateKey: getHKDateKey(currentTime),
+      maxSearchFailuresPerDay,
+    });
+    if (shouldFreeze) {
+      logger.warn(
+        `[自动寻标] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
+      );
+    }
+
+    updateSeatState(
+      direction,
+      {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: currentSeat.lastSwitchAt ?? null,
+        lastSearchAt: nowMs,
+        lastSeatActivatedAt: currentSeat.lastSeatActivatedAt ?? null,
+        callPrice: null,
+        searchFailCountToday: nextFailCount,
+        frozenTradingDayKey,
+      },
+      false,
+    );
+  }
 
   /**
    * 在席位为空时执行自动寻标，受自动寻标开盘延迟与冷却时间限制。
@@ -75,7 +105,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
 
     updateSeatState(
       direction,
-      buildSeatState({
+      {
         symbol: null,
         status: 'SEARCHING',
         lastSwitchAt: seatState.lastSwitchAt ?? null,
@@ -84,7 +114,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
         callPrice: null,
         searchFailCountToday: seatState.searchFailCountToday,
         frozenTradingDayKey: seatState.frozenTradingDayKey,
-      }),
+      },
       false,
     );
 
@@ -96,63 +126,23 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       });
       best = await findBestWarrant(input);
     } catch (err) {
-      const currentSeat = symbolRegistry.getSeatState(direction);
-      updateSeatState(
-        direction,
-        buildSeatState({
-          symbol: null,
-          status: 'EMPTY',
-          lastSwitchAt: currentSeat.lastSwitchAt ?? null,
-          lastSearchAt: seatState.lastSearchAt ?? null,
-          lastSeatActivatedAt: currentSeat.lastSeatActivatedAt ?? null,
-          callPrice: null,
-          searchFailCountToday: currentSeat.searchFailCountToday,
-          frozenTradingDayKey: currentSeat.frozenTradingDayKey,
-        }),
-        false,
-      );
-
+      recordSearchFailure(direction, currentTime);
       if (isExternalApiRequestError(err)) {
         logger.warn(
-          `[自动寻标] ${monitorSymbol} ${direction} API 请求失败，等待事件重试: ${err.message}`,
+          `[自动寻标] ${monitorSymbol} ${direction} 外部请求失败，等待 cooldown owner 重试: ${err.message}`,
         );
+        return;
       }
 
       throw err;
     }
 
     if (!best) {
-      const currentSeat = symbolRegistry.getSeatState(direction);
-      const hkDateKey = getHKDateKey(currentTime);
-      const { nextFailCount, frozenTradingDayKey, shouldFreeze } = resolveNextSearchFailureState({
-        currentSeat,
-        hkDateKey,
-        maxSearchFailuresPerDay,
-      });
-      if (shouldFreeze) {
-        logger.warn(
-          `[自动寻标] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
-        );
-      }
-
-      updateSeatState(
-        direction,
-        buildSeatState({
-          symbol: null,
-          status: 'EMPTY',
-          lastSwitchAt: currentSeat.lastSwitchAt ?? null,
-          lastSearchAt: nowMs,
-          lastSeatActivatedAt: currentSeat.lastSeatActivatedAt ?? null,
-          callPrice: null,
-          searchFailCountToday: nextFailCount,
-          frozenTradingDayKey,
-        }),
-        false,
-      );
+      recordSearchFailure(direction, currentTime);
       return;
     }
 
-    const nextState = buildSeatState({
+    const nextState = {
       symbol: best.symbol,
       status: 'ACTIVATING',
       lastSwitchAt: nowMs,
@@ -161,7 +151,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       callPrice: best.callPrice,
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
-    });
+    } as const;
     updateSeatState(direction, nextState, true);
   }
 

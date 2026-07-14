@@ -12,8 +12,6 @@ import { createAccountSnapshotDouble, createPositionDouble } from '../../../help
 function createMockMonitorState(monitorSymbol: string): MonitorState {
   return {
     monitorSymbol,
-    signal: null,
-    pendingDelayedSignals: [],
     lastMonitorSnapshot: null,
     incrementalIndicatorRuntime: null,
   };
@@ -47,6 +45,7 @@ describe('createGlobalStateDomain', () => {
         get: () => null,
       },
       cachedTradingDayInfo: null,
+      tradingCalendarSnapshot: new Map(),
       monitorState,
       allTradingSymbols: new Set(['12345.HK']),
     };
@@ -72,8 +71,6 @@ describe('createGlobalStateDomain', () => {
     expect(lastState.cachedPositions).toHaveLength(0);
     expect(positionCacheUpdateSizes).toEqual([0]);
     expect(lastState.cachedTradingDayInfo).toBe(null);
-    expect(monitorState.signal).toBe(null);
-    expect(monitorState.pendingDelayedSignals).toHaveLength(0);
     expect(monitorState.lastMonitorSnapshot).toBe(null);
 
     expect(runOpenRebuildCalled).toBe(false);
@@ -108,6 +105,7 @@ describe('createGlobalStateDomain', () => {
       cachedPositions: [],
       positionCache: { update: () => {}, get: () => null },
       cachedTradingDayInfo: null,
+      tradingCalendarSnapshot: new Map(),
       monitorState,
       allTradingSymbols: new Set(),
     };
@@ -142,6 +140,7 @@ describe('createGlobalStateDomain', () => {
       cachedPositions: [],
       positionCache: { update: () => {}, get: () => null },
       cachedTradingDayInfo: null,
+      tradingCalendarSnapshot: new Map(),
       monitorState: createMockMonitorState('HSI.HK'),
       allTradingSymbols: new Set(),
     };

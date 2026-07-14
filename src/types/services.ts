@@ -19,7 +19,7 @@ import type { Quote, IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { MonitorConfig } from './config.js';
 import type { TradingCalendarSnapshot } from './tradingCalendar.js';
-import type { CancelOrderOutcome, OrderClosedReason } from './trader.js';
+import type { CancelOrderOutcome, ExecuteSignalsResult, OrderClosedReason } from './trader.js';
 import type { CandleData } from './data.js';
 import type { ExternalApiRetryConfig } from '../utils/apiFailure/types.js';
 import type { DecimalLike } from '../utils/helpers/types.js';
@@ -694,10 +694,8 @@ export interface Trader {
   /** 生命周期开盘重建：基于快照恢复订单追踪 */
   recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<RawOrderFromAPI>) => Promise<void>;
 
-  /** 执行交易信号；返回实际提交数量与订单 ID 列表（保护性清仓等仅在真正提交后才更新缓存） */
-  executeSignals: (
-    signals: ReadonlyArray<ExecutableSignal>,
-  ) => Promise<{ submittedCount: number; submittedOrderIds: ReadonlyArray<string> }>;
+  /** 执行交易信号；返回真正新提交或 broker 已确认改单的唯一订单 ID 列表 */
+  executeSignals: (signals: ReadonlyArray<ExecutableSignal>) => Promise<ExecuteSignalsResult>;
 }
 
 /**
@@ -842,7 +840,7 @@ export type UnrealizedLossCheckResult = {
 
 /**
  * 持仓缓存接口。
- * 类型用途：依赖注入用接口，提供基于标的代码的 O(1) 持仓查找，作为 LastState.positionCache、RiskCheckContext 等类型。
+ * 类型用途：依赖注入用接口，提供基于标的代码的 O(1) 持仓查找，作为 LastState.positionCache 等类型。
  * 数据来源：由刷新流程根据 getStockPositions 结果调用 update 维护。
  * 使用范围：LastState、RiskChecker、业务事件链路等；全项目可引用。
  */
@@ -858,7 +856,7 @@ export interface PositionCache {
  * 末日保护买入门禁最小契约。
  * 类型用途：仅约束风险检查链路对末日保护买入截止窗口的依赖行为，避免类型层反向依赖业务实现。
  * 数据来源：由 doomsdayProtection 模块实现并注入。
- * 使用范围：RiskCheckContext 与买入风险检查链路使用。
+ * 使用范围：BuyRiskCheckContext 与买入风险检查链路使用。
  */
 interface DoomsdayBuyGuard {
   /** 检查买入截止窗口当前是否生效 */
@@ -866,12 +864,12 @@ interface DoomsdayBuyGuard {
 }
 
 /**
- * 风险检查上下文。
- * 类型用途：执行信号处理与风控时的完整上下文（交易器、风控器、行情、账户、配置等），作为 processSignal、风控检查的入参。
- * 数据来源：由 businessEventProgram 与异步处理器根据 MonitorContext 与 LastState 组装传入。
- * 使用范围：信号处理、风控检查等；全项目可引用。
+ * 买入风险检查上下文。
+ * 类型用途：承载固定买入风控流水线所需的交易器、风控器、实时行情与配置依赖。
+ * 数据来源：由 BuyProcessor 根据当前 MonitorContext 与执行时行情组装传入。
+ * 使用范围：仅买入信号风控链路使用。
  */
-export type RiskCheckContext = {
+export type BuyRiskCheckContext = {
   /** 交易器 */
   readonly trader: Trader;
 
@@ -904,19 +902,6 @@ export type RiskCheckContext = {
 
   /** 做空标的名称 */
   readonly shortSymbolName: string | null;
-
-  /** 账户缓存（卖出基础风险检查与日志共用） */
-  readonly account: AccountSnapshot | null;
-
-  /** 持仓缓存（卖出基础风险检查与日志共用） */
-  readonly positions: ReadonlyArray<Position>;
-
-  /** 全局状态引用 */
-  readonly lastState: {
-    cachedAccount?: AccountSnapshot | null;
-    cachedPositions?: ReadonlyArray<Position>;
-    positionCache: PositionCache;
-  };
 
   /** 当前时间 */
   readonly currentTime: Date;

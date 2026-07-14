@@ -43,6 +43,7 @@ import type {
   SwitchWakeupRequirement,
 } from '../../types/monitorContextPorts.js';
 import { resolveNextSearchFailureState } from './utils.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 
 /**
  * 从持仓列表中提取指定标的的持仓信息。
@@ -109,7 +110,7 @@ function createNoopDriveResult(): Extract<SwitchDriveResult, { kind: 'NOOP' }> {
  * @returns WAIT 结果
  */
 function createWaitDriveResult(
-  wakeups: ReadonlyArray<SwitchWakeupRequirement>,
+  wakeups: readonly [SwitchWakeupRequirement, ...SwitchWakeupRequirement[]],
 ): Extract<SwitchDriveResult, { kind: 'WAIT' }> {
   return {
     kind: 'WAIT',
@@ -236,7 +237,6 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     resolveSuppression,
     markSuppression,
     enterSwitchingSeat,
-    buildSeatState,
     updateSeatState,
     resolveDirectionalAutoSearchPolicy,
     buildFindBestWarrantInput,
@@ -266,7 +266,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   ): Promise<Awaited<ReturnType<SwitchStateMachineDeps['trader']['executeSignals']>> | null> {
     const executionResult = await trader.executeSignals([signal]);
 
-    if (executionResult.submittedCount <= 0) {
+    if (executionResult.executedOrderIds.length === 0) {
       logger.warn(submitFailedMessage);
       return null;
     }
@@ -321,7 +321,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       maxSearchFailuresPerDay,
     });
 
-    const nextState = buildSeatState({
+    const nextState = {
       symbol: null,
       status: 'EMPTY',
       lastSwitchAt,
@@ -330,7 +330,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       callPrice: null,
       searchFailCountToday: nextFailCount,
       frozenTradingDayKey,
-    });
+    } as const;
 
     if (bumpVersion) {
       symbolRegistry.updateSeatStateWithVersionBump(direction, nextState);
@@ -511,11 +511,23 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
+    await trader.getPendingOrders([latestSeatState.symbol]);
+    const admittedSeatState = symbolRegistry.getSeatState(direction);
+    const admittedSeatVersion = symbolRegistry.getSeatVersion(direction);
+    if (
+      !isSeatActive(admittedSeatState) ||
+      admittedSeatVersion !== seatVersionAtStart ||
+      admittedSeatState.symbol !== seatSymbol
+    ) {
+      clearPeriodicPending(direction);
+      return createNoopDriveResult();
+    }
+
     if (switchMode === 'PERIODIC') {
       const periodicBlockSource = resolvePeriodicSeatBlockSource({
         orderRecorder,
         trader,
-        symbol: latestSeatState.symbol,
+        symbol: admittedSeatState.symbol,
         direction,
       });
       if (periodicBlockSource !== 'EMPTY') {
@@ -527,9 +539,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
     }
 
-    if (next?.symbol === latestSeatState.symbol) {
+    if (next?.symbol === admittedSeatState.symbol) {
       if (suppressionTriggerKind !== null) {
-        markSuppression(direction, latestSeatState.symbol, suppressionTriggerKind);
+        markSuppression(direction, admittedSeatState.symbol, suppressionTriggerKind);
         logger.info(`[自动换标] ${monitorSymbol} ${direction} 预寻标命中同标的，记录当日抑制`);
       }
 
@@ -555,7 +567,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       switchMode,
       seatVersion,
       stage: 'CANCEL_PENDING',
-      oldSymbol: latestSeatState.symbol,
+      oldSymbol: admittedSeatState.symbol,
       nextSymbol: next?.symbol ?? null,
       nextCallPrice: next?.callPrice ?? null,
       sellSubmitted: false,
@@ -568,14 +580,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       cancelRequestSubmitted: false,
     });
 
-    const startedState = switchStates.get(direction);
-    if (!startedState) {
-      return createNoopDriveResult();
-    }
-
-    const pendingOrdersForOldSymbol = await trader.getPendingOrders([startedState.oldSymbol]);
-    const driveContext = distanceContext ?? { direction, positions: [] };
-    return await processSwitchState(driveContext, startedState, pendingOrdersForOldSymbol);
+    return createWaitDriveResult([{ kind: 'RETRY_TIMER', atMs: now().getTime() }]);
   }
 
   /**
@@ -620,12 +625,14 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     }
 
     function createQuoteRetryWait(symbol: string): Extract<SwitchDriveResult, { kind: 'WAIT' }> {
-      const wakeups: SwitchWakeupRequirement[] = [{ kind: 'SYMBOL_QUOTE', symbol }];
-      if (state.quoteRetryNextAt !== null) {
-        wakeups.push({ kind: 'RETRY_TIMER', atMs: state.quoteRetryNextAt });
+      if (state.quoteRetryNextAt === null) {
+        return createWaitDriveResult([{ kind: 'SYMBOL_QUOTE', symbol }]);
       }
 
-      return createWaitDriveResult(wakeups);
+      return createWaitDriveResult([
+        { kind: 'SYMBOL_QUOTE', symbol },
+        { kind: 'RETRY_TIMER', atMs: state.quoteRetryNextAt },
+      ]);
     }
 
     function failAndClear(reason: string): Extract<SwitchDriveResult, { kind: 'FAILED' }> {
@@ -649,7 +656,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       } else {
         updateSeatState(
           direction,
-          buildSeatState({
+          {
             symbol: null,
             status: 'EMPTY',
             lastSwitchAt: currentSeat.lastSwitchAt,
@@ -658,7 +665,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
             callPrice: null,
             searchFailCountToday: 0,
             frozenTradingDayKey: null,
-          }),
+          },
           false,
         );
       }
@@ -799,7 +806,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         }
 
         state.sellSubmitted = true;
-        state.sellOrderId = executionResult.submittedOrderIds[0] ?? null;
+        state.sellOrderId = executionResult.executedOrderIds[0] ?? null;
         return createOrderAndFreshnessWait(state.oldSymbol);
       }
 
@@ -840,7 +847,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       const currentSeat = symbolRegistry.getSeatState(direction);
       updateSeatState(
         direction,
-        buildSeatState({
+        {
           symbol: nextSymbol,
           status: 'SWITCHING',
           lastSwitchAt: bindNowMs,
@@ -849,7 +856,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           callPrice: null,
           searchFailCountToday: 0,
           frozenTradingDayKey: null,
-        }),
+        },
         false,
       );
 
@@ -983,7 +990,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         const completeNowMs = now().getTime();
         updateSeatState(
           direction,
-          buildSeatState({
+          {
             symbol: nextSymbol,
             status: 'ACTIVATING',
             lastSwitchAt: completeNowMs,
@@ -992,7 +999,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
             callPrice: state.nextCallPrice ?? null,
             searchFailCountToday: 0,
             frozenTradingDayKey: null,
-          }),
+          },
           false,
         );
       }
@@ -1221,6 +1228,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       };
     }
 
+    if (driveResult.kind !== 'WAIT') {
+      throw new Error('[自动换标] distance switch 启动后必须返回 WAIT owner');
+    }
+
     return {
       started: true,
       direction,
@@ -1254,16 +1265,50 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       };
     }
 
-    const pendingOrdersForOldSymbol = await trader.getPendingOrders([pendingSwitch.oldSymbol]);
+    let pendingOrdersForOldSymbol: ReadonlyArray<PendingOrder>;
+    try {
+      pendingOrdersForOldSymbol = await trader.getPendingOrders([pendingSwitch.oldSymbol]);
+    } catch (error) {
+      if (!isExternalApiRequestError(error)) {
+        throw error;
+      }
+
+      return {
+        advanced: true,
+        direction,
+        stillPending: true,
+        driveResult: createWaitDriveResult([
+          { kind: 'RETRY_TIMER', atMs: now().getTime() + ORDER_QUOTE_RETRY.INTERVAL_MS },
+        ]),
+      };
+    }
+
     const driveResult = await processSwitchState(
       { direction, positions },
       pendingSwitch,
       pendingOrdersForOldSymbol,
     );
+    if (hasPendingSwitch(direction)) {
+      if (driveResult.kind !== 'WAIT') {
+        throw new Error('[自动换标] pending switch 推进后必须返回 WAIT owner');
+      }
+
+      return {
+        advanced: true,
+        direction,
+        stillPending: true,
+        driveResult,
+      };
+    }
+
+    if (driveResult.kind === 'WAIT') {
+      throw new Error('[自动换标] 已完成 switch 不得返回 WAIT owner');
+    }
+
     return {
       advanced: true,
       direction,
-      stillPending: hasPendingSwitch(direction),
+      stillPending: false,
       driveResult,
     };
   }

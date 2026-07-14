@@ -8,6 +8,59 @@ import { describe, expect, it } from 'bun:test';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
 
 describe('protectiveLiquidationEpisodeTracker business flow', () => {
+  it('prepares a flat partial-canceled episode only after the direction has no other pending protective order', () => {
+    const tracker = createProtectiveLiquidationEpisodeTracker();
+    tracker.recordProtectiveFillProgress({
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      executedTimeMs: 2_000,
+    });
+
+    expect(
+      tracker.prepareCompletion({
+        direction: 'LONG',
+        isDirectionFlat: true,
+        hasPendingProtectiveOrders: true,
+      }),
+    ).toBeNull();
+    const prepared = tracker.prepareCompletion({
+      direction: 'LONG',
+      isDirectionFlat: true,
+      hasPendingProtectiveOrders: false,
+    });
+
+    expect(prepared).toEqual({
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      boundaryExecutedTimeMs: 2_000,
+    });
+    expect(tracker.getInProgressEpisodes()).toHaveLength(1);
+    if (prepared === null) {
+      throw new Error('expected prepared completion');
+    }
+
+    tracker.commitCompletion(prepared);
+    expect(tracker.getInProgressEpisodes()).toEqual([]);
+  });
+
+  it('does not prepare completion while the original liquidation symbol still has position', () => {
+    const tracker = createProtectiveLiquidationEpisodeTracker();
+    tracker.recordProtectiveFillProgress({
+      direction: 'SHORT',
+      symbol: 'BEAR.HK',
+      executedTimeMs: 3_000,
+    });
+
+    expect(
+      tracker.prepareCompletion({
+        direction: 'SHORT',
+        isDirectionFlat: false,
+        hasPendingProtectiveOrders: false,
+      }),
+    ).toBeNull();
+    expect(tracker.getInProgressEpisodes()).toHaveLength(1);
+  });
+
   it('fails fast when record path sees a different symbol for the same in-progress direction', () => {
     const tracker = createProtectiveLiquidationEpisodeTracker();
     tracker.recordProtectiveFillProgress({

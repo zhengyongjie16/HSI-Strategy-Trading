@@ -1,5 +1,4 @@
 import type { Config } from 'longbridge';
-import type { TradeRecord } from '../types/trader.js';
 import type {
   RuntimeSymbolValidationInput,
   RuntimeSymbolValidationResult,
@@ -31,6 +30,7 @@ import type {
   WarrantListCacheConfig,
 } from '../services/autoSymbolFinder/types.js';
 import type { LiquidationCooldownTracker } from '../services/liquidationCooldown/types.js';
+import type { MixedTradeLogRepository } from '../services/mixedTradeLogRepository/types.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { DoomsdayProtection } from '../core/doomsdayProtection/types.js';
 import type { SignalProcessor } from '../core/signalProcessor/types.js';
@@ -400,16 +400,6 @@ export type CreatePostGateRuntimeParams = Readonly<{
 }>;
 
 /**
- * 可持久化交易记录。
- * 类型用途：在标准 TradeRecord 上补充执行时间戳，用于写入按交易日切分的 trade log。
- * 数据来源：订单状态变化事件中的成交字段。
- * 使用范围：仅 createPostGateRuntime 的 trade log 持久化链路使用。
- */
-export type PersistableTradeRecord = TradeRecord & {
-  readonly executedAtMs: number;
-};
-
-/**
  * 启动后阶段共享运行时对象。
  * 类型用途：集中表达 post-gate 阶段唯一创建并跨模块共享的对象所有权。
  * 数据来源：由 createPostGateRuntime 创建。
@@ -520,6 +510,7 @@ export type PostTradeConsistencyRuntimeBusinessDeps = Readonly<{
   dailyLossTracker: DailyLossTracker;
   liquidationCooldownTracker: LiquidationCooldownTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
+  mixedTradeLogRepository: Pick<MixedTradeLogRepository, 'appendCompletionIdempotent'>;
 }>;
 
 /**

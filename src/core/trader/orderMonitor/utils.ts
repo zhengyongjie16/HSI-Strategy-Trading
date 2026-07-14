@@ -9,7 +9,6 @@ import {
   ORDER_PRICE_DIFF_THRESHOLD,
   ORDER_API_RETRYABLE_MESSAGE_HINTS,
   ORDER_API_TRANSIENT_STATUS_CODE_SET,
-  PENDING_ORDER_STATUSES,
   REPLACE_TEMP_BLOCKED_BY_STATUS_ERROR_CODE_SET,
   REPLACE_UNSUPPORTED_BY_TYPE_ERROR_CODE_SET,
 } from '../../../constants/index.js';
@@ -21,6 +20,7 @@ import type {
 import { isRecord } from '../../../utils/helpers/index.js';
 import { toDecimal } from '../utils.js';
 import { logger } from '../../../utils/logger/index.js';
+import { isOpenOrderStatus, isTerminalOrderStatus } from '../../orderStatusLifecycle/utils.js';
 
 /**
  * 构建订单监控配置（秒转毫秒）。
@@ -94,13 +94,7 @@ export function resolveSubmittedAtMs(submittedAt: unknown): number | null {
  * @returns true 表示订单处于关闭态（成交/撤销/拒绝/过期/部分撤单）
  */
 export function isClosedStatus(status: OrderStatus): boolean {
-  return (
-    status === OrderStatus.Filled ||
-    status === OrderStatus.Canceled ||
-    status === OrderStatus.Rejected ||
-    status === OrderStatus.Expired ||
-    status === OrderStatus.PartialWithdrawal
-  );
+  return isTerminalOrderStatus(status);
 }
 
 /**
@@ -146,7 +140,7 @@ export function isWaitWsOnlyReplaceMode(
 
 /**
  * 解析追踪订单初始状态。
- * 默认行为：缺失或非 pending 状态回退为 New。
+ * 默认行为：缺失时使用 New；终态或未知状态属于调用契约错误。
  *
  * @param initialStatus 可选初始状态
  * @returns 追踪状态
@@ -156,8 +150,8 @@ export function resolveInitialTrackedStatus(initialStatus?: OrderStatus): OrderS
     return OrderStatus.New;
   }
 
-  if (!PENDING_ORDER_STATUSES.has(initialStatus)) {
-    return OrderStatus.New;
+  if (!isOpenOrderStatus(initialStatus)) {
+    throw new Error(`[订单监控] 初始追踪状态必须为 OPEN: ${String(initialStatus)}`);
   }
 
   return initialStatus;

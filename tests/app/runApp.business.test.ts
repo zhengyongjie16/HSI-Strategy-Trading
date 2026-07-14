@@ -27,9 +27,9 @@ import type {
   WarrantListCacheEntry,
   WarrantListItem,
 } from '../../src/services/autoSymbolFinder/types.js';
-import type { Signal } from '../../src/types/signal.js';
+import type { BuySignal, Signal } from '../../src/types/signal.js';
 import type { LastState } from '../../src/types/state.js';
-import type { RiskCheckContext } from '../../src/types/services.js';
+import type { BuyRiskCheckContext } from '../../src/types/services.js';
 import {
   createAutoSearchWakeupRuntimeDouble,
   createDailyLossTrackerDouble,
@@ -86,10 +86,9 @@ function createMinimalLastState(): LastState {
       get: () => null,
     },
     cachedTradingDayInfo: null,
+    tradingCalendarSnapshot: new Map(),
     monitorState: {
       monitorSymbol: 'HSI.HK',
-      signal: null,
-      pendingDelayedSignals: [],
       lastMonitorSnapshot: null,
       incrementalIndicatorRuntime: null,
     },
@@ -223,10 +222,10 @@ function createMockPostGateRuntime(
 ): PostGateRuntime {
   const signalProcessor: SignalProcessor = {
     processSellSignals: ({ signals }: ProcessSellSignalsParams): Signal[] => signals,
-    applyRiskChecks: async <TSignal extends Signal>(
-      signals: TSignal[],
-      _context: RiskCheckContext,
-    ): Promise<TSignal[]> => signals,
+    applyRiskChecks: async (
+      signals: ReadonlyArray<BuySignal>,
+      _context: BuyRiskCheckContext,
+    ): Promise<ReadonlyArray<BuySignal>> => signals,
     resetRiskCheckCooldown: () => {},
   };
 

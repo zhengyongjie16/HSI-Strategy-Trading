@@ -255,7 +255,7 @@ export function createStaticLiquidationExecutor(
       }
 
       const executionResult = await trader.executeSignals([candidate.signal]);
-      if (executionResult.submittedCount !== 1) {
+      if (executionResult.executedOrderIds.length !== 1) {
         continue;
       }
 

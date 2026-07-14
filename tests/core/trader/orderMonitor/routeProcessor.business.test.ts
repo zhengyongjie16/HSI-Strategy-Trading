@@ -14,6 +14,7 @@ import { createOrderStorage } from '../../../../src/core/orderRecorder/orderStor
 import { createRouteProcessor } from '../../../../src/core/trader/orderMonitor/routeProcessor.js';
 import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
 import type {
+  FinalizeOrderSettlementParams,
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
   ReplaceOrderOutcome,
@@ -90,6 +91,7 @@ function createTrackedOrder(
     executedQuantity: params.executedQuantity ?? 0,
     executedPrice: params.executedPrice ?? null,
     lastExecutedTimeMs: params.lastExecutedTimeMs ?? null,
+    lastOrderUpdateAtMs: params.lastOrderUpdateAtMs ?? null,
     status: params.status ?? OrderStatus.New,
     submittedAt: params.submittedAt ?? now - 5_000,
     lastPriceUpdateAt: params.lastPriceUpdateAt ?? now - 5_000,
@@ -233,11 +235,21 @@ function createSettlementFlowForRouteProcessor(params: {
     orderRecorder: params.orderRecorder,
     dailyLossTracker: {
       resetAll: () => {},
-      startNewProtectionEpisode: () => {},
+      prepareProtectionBoundary: (boundaryParams) => ({
+        ...boundaryParams,
+        orderBaselines: [],
+      }),
+      commitProtectionBoundary: () => {},
+      restoreExecutionSnapshot: () => {},
+      restoreProtectionBoundary: () => {},
       recalculateFromAllOrders: () => {},
-      recordFilledOrder: () => {},
+      recordCumulativeExecution: () => ({
+        authoritativeFactChanged: false,
+        executionAdvanced: false,
+      }),
       getLossOffset: () => 0,
     },
+    persistProtectiveLiquidationExecutionProgress: () => {},
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
     postTradeConsistencyRuntime: {
       recordSettlementRefreshNeed: () => {},
@@ -269,6 +281,7 @@ function createTimeoutSellHandoffHarness(orderId: string): {
         executedPrice: 0,
         executedQuantity: 0,
         executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
+        orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
       },
     }),
   ]);
@@ -512,6 +525,7 @@ describe('orderMonitor routeProcessor', () => {
           executedPrice: 0,
           executedQuantity: 0,
           executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
+          orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
         },
       }),
     ]);
@@ -569,6 +583,7 @@ describe('orderMonitor routeProcessor', () => {
           executedPrice: 0,
           executedQuantity: 100,
           executedTimeMs: Date.now(),
+          orderUpdatedAtMs: Date.now(),
         },
         submittedQuantity: 100,
         executedQuantity: 0,
@@ -754,6 +769,7 @@ describe('orderMonitor routeProcessor', () => {
           executedPrice: 0,
           executedQuantity: 0,
           executedTimeMs: Date.now(),
+          orderUpdatedAtMs: Date.now(),
         },
       }),
     ]);
@@ -880,6 +896,7 @@ describe('orderMonitor routeProcessor', () => {
           executedPrice: 0,
           executedQuantity: null,
           executedTimeMs: Date.now(),
+          orderUpdatedAtMs: Date.now(),
         },
       }),
     ]);
@@ -1024,7 +1041,7 @@ describe('orderMonitor routeProcessor', () => {
     expect(trackedOrders).toEqual([]);
   });
 
-  it('卖单 timeout 转市价在 broker 已接受后若 runtime 停止则拒绝本地写回', async () => {
+  it('卖单 timeout 转市价在 broker 已接受后即使 runtime 停止也承认远端订单事实', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
       'SELL-TIMEOUT-STOPPED-AFTER-SUBMIT',
     );
@@ -1061,12 +1078,14 @@ describe('orderMonitor routeProcessor', () => {
     runtime.runtimeState = 'STOPPED';
     submitFinished.resolve(null);
 
-    expect(processPromise).rejects.toThrow(/stale timeout market conversion commit/i);
-    expect(trackedOrders).toEqual([]);
-    expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([]);
+    await processPromise;
+    expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['MOCK-000001']);
+    expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
+      'MOCK-000001',
+    ]);
   });
 
-  it('卖单 timeout 转市价在 broker 已接受后若 route generation 变化则拒绝本地写回', async () => {
+  it('卖单 timeout 转市价在 broker 已接受后即使 route generation 变化也承认远端订单事实', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
       'SELL-TIMEOUT-GENERATION-CHANGED',
     );
@@ -1107,9 +1126,34 @@ describe('orderMonitor routeProcessor', () => {
     runtime.latestRouteGenerationBySymbol.set('BULL.HK', 2);
     submitFinished.resolve(null);
 
-    expect(processPromise).rejects.toThrow(/stale timeout market conversion commit/i);
-    expect(trackedOrders).toEqual([]);
-    expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([]);
+    await processPromise;
+    expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['MOCK-000001']);
+    expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
+      'MOCK-000001',
+    ]);
+  });
+
+  it('broker ack 后 trackOrder 抛错仍保留旧 placeholder 且错误携带 newOrderId', async () => {
+    const { runtime, storage, orderRecorder, settlementFlow } =
+      createTimeoutSellHandoffHarness('SELL-TIMEOUT-TRACK-FAIL');
+    const trackAttempts: string[] = [];
+    const { deps } = createDeps({
+      runtime,
+      orderRecorder,
+      settleOrder: settlementFlow.settleOrder,
+      trackOrder: (params) => {
+        trackAttempts.push(params.orderId);
+        throw new Error('track local fact failed');
+      },
+    });
+
+    const errorMessage = await captureTimeoutMarketRouteError(deps);
+
+    expect(trackAttempts).toEqual(['MOCK-000001']);
+    expect(errorMessage).toContain('order submitted but local sync failed: MOCK-000001');
+    expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
+      'SELL-TIMEOUT-TRACK-FAIL',
+    ]);
   });
 
   it('ORDER_EVENT 唤醒会基于 latestQuote 继续推进 replace', async () => {
@@ -1508,7 +1552,7 @@ describe('orderMonitor routeProcessor', () => {
             closedReason: 'CANCELED',
             executedPrice: null,
             executedQuantity: 0,
-            executedTimeMs: Date.now(),
+            orderUpdatedAtMs: Date.now(),
             status: OrderStatus.Canceled,
           },
         });
@@ -1533,13 +1577,199 @@ describe('orderMonitor routeProcessor', () => {
       latestQuote: createQuoteDouble('BULL.HK', 1.02),
     });
 
-    expect(settlementCalls).toEqual([
+    expect(settlementCalls).toMatchObject([
       {
         orderId: 'SELL-REPLACE-TERMINAL',
         closedReason: 'CANCELED',
       },
     ]);
     expect(runtime.latestReplaceOutcomeByOrderId.has('SELL-REPLACE-TERMINAL')).toBe(false);
+  });
+
+  it('replace 终态查询陈旧时使用 tracked 已知的更强成交事实结算', async () => {
+    const runtime = createRuntimeStore();
+    const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
+    attachTrackedOrders(runtime, 'BULL.HK', [
+      createTrackedOrder({
+        orderId: 'SELL-REPLACE-STALE-TERMINAL',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        submittedAt: Date.now() - 1_000,
+        lastPriceUpdateAt: 0,
+        executedQuantity: 50,
+        executedPrice: 1.05,
+        lastExecutedTimeMs: trackedExecutedAtMs,
+        lastOrderUpdateAtMs: trackedExecutedAtMs,
+        status: OrderStatus.PartialFilled,
+      }),
+    ]);
+    const settlementCalls: Array<
+      Readonly<{
+        executedPrice?: number | null;
+        executedQuantity?: number | null;
+        executedTimeMs?: number | null;
+        orderUpdatedAtMs?: number | null;
+      }>
+    > = [];
+    const { deps } = createDeps({
+      runtime,
+      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
+      replaceOrderPrice: async (orderId) => {
+        setLatestReplaceOutcome(runtime, orderId, {
+          kind: 'TERMINAL_CONFIRMED',
+          terminalState: {
+            kind: 'TERMINAL',
+            closedReason: 'CANCELED',
+            executedPrice: 0.9,
+            executedQuantity: 20,
+            orderUpdatedAtMs: trackedExecutedAtMs - 100,
+            status: OrderStatus.Canceled,
+          },
+        });
+      },
+      settleOrder: (params) => {
+        settlementCalls.push(params);
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+    });
+
+    await createRouteProcessor(deps).processRoute({
+      symbol: 'BULL.HK',
+      generation: 1,
+      wakeupKind: 'QUOTE',
+      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+    });
+
+    expect(settlementCalls).toMatchObject([
+      {
+        executedPrice: 1.05,
+        executedQuantity: 50,
+        executedTimeMs: trackedExecutedAtMs,
+        orderUpdatedAtMs: trackedExecutedAtMs,
+      },
+    ]);
+  });
+
+  it('replace 等量较新终态可修订成交价但不推进成交时间', async () => {
+    const runtime = createRuntimeStore();
+    const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.100Z');
+    const terminalRevisionAtMs = Date.parse('2026-04-08T09:00:00.200Z');
+    attachTrackedOrders(runtime, 'BULL.HK', [
+      createTrackedOrder({
+        orderId: 'SELL-REPLACE-EQUAL-QTY-PRICE-REVISION',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        submittedAt: Date.now() - 1_000,
+        lastPriceUpdateAt: 0,
+        executedQuantity: 40,
+        executedPrice: 1,
+        lastExecutedTimeMs: trackedExecutedAtMs,
+        lastOrderUpdateAtMs: trackedExecutedAtMs,
+        status: OrderStatus.PartialFilled,
+      }),
+    ]);
+    const settlementCalls: FinalizeOrderSettlementParams[] = [];
+    const { deps } = createDeps({
+      runtime,
+      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
+      replaceOrderPrice: async (orderId) => {
+        setLatestReplaceOutcome(runtime, orderId, {
+          kind: 'TERMINAL_CONFIRMED',
+          terminalState: {
+            kind: 'TERMINAL',
+            closedReason: 'CANCELED',
+            executedPrice: 1.1,
+            executedQuantity: 40,
+            orderUpdatedAtMs: terminalRevisionAtMs,
+            status: OrderStatus.Canceled,
+          },
+        });
+      },
+      settleOrder: (params) => {
+        settlementCalls.push(params);
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+    });
+
+    await createRouteProcessor(deps).processRoute({
+      symbol: 'BULL.HK',
+      generation: 1,
+      wakeupKind: 'QUOTE',
+      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+    });
+
+    expect(settlementCalls).toMatchObject([
+      {
+        executedPrice: 1.1,
+        executedQuantity: 40,
+        executedTimeMs: trackedExecutedAtMs,
+        orderUpdatedAtMs: terminalRevisionAtMs,
+      },
+    ]);
+  });
+
+  it('replace 终态查询成交量更大但 revision 更旧时成交时间仍保持单调', async () => {
+    const runtime = createRuntimeStore();
+    const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
+    attachTrackedOrders(runtime, 'BULL.HK', [
+      createTrackedOrder({
+        orderId: 'SELL-REPLACE-NEW-QTY-OLD-REVISION',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        submittedAt: Date.now() - 1_000,
+        lastPriceUpdateAt: 0,
+        executedQuantity: 50,
+        executedPrice: 1.05,
+        lastExecutedTimeMs: trackedExecutedAtMs,
+        lastOrderUpdateAtMs: trackedExecutedAtMs,
+        status: OrderStatus.PartialFilled,
+      }),
+    ]);
+    const settlementCalls: Array<
+      Readonly<{
+        executedPrice?: number | null;
+        executedQuantity?: number | null;
+        executedTimeMs?: number | null;
+        orderUpdatedAtMs?: number | null;
+      }>
+    > = [];
+    const { deps } = createDeps({
+      runtime,
+      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
+      replaceOrderPrice: async (orderId) => {
+        setLatestReplaceOutcome(runtime, orderId, {
+          kind: 'TERMINAL_CONFIRMED',
+          terminalState: {
+            kind: 'TERMINAL',
+            closedReason: 'CANCELED',
+            executedPrice: 0.9,
+            executedQuantity: 80,
+            orderUpdatedAtMs: trackedExecutedAtMs - 100,
+            status: OrderStatus.Canceled,
+          },
+        });
+      },
+      settleOrder: (params) => {
+        settlementCalls.push(params);
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+    });
+
+    await createRouteProcessor(deps).processRoute({
+      symbol: 'BULL.HK',
+      generation: 1,
+      wakeupKind: 'QUOTE',
+      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+    });
+
+    expect(settlementCalls).toMatchObject([
+      {
+        executedPrice: 0.9,
+        executedQuantity: 80,
+        executedTimeMs: trackedExecutedAtMs,
+        orderUpdatedAtMs: trackedExecutedAtMs,
+      },
+    ]);
   });
 
   it('买单 timeout 在 cancel 返回 ALREADY_CLOSED 时会立即结算', async () => {
@@ -1557,7 +1787,7 @@ describe('orderMonitor routeProcessor', () => {
       closedReason: 'CANCELED',
       executedPrice: null,
       executedQuantity: 0,
-      executedTimeMs: Date.now(),
+      orderUpdatedAtMs: Date.now(),
       status: OrderStatus.Canceled,
     });
     const settlementCalls: Array<{ readonly orderId: string; readonly closedReason: string }> = [];
@@ -1589,12 +1819,126 @@ describe('orderMonitor routeProcessor', () => {
       latestQuote: null,
     });
 
-    expect(settlementCalls).toEqual([
+    expect(settlementCalls).toMatchObject([
       {
         orderId: 'BUY-TIMEOUT-ALREADY-CLOSED',
         closedReason: 'CANCELED',
       },
     ]);
+  });
+
+  it('买单 timeout 终态查询陈旧时不否认 tracked 已知部分成交', async () => {
+    const runtime = createRuntimeStore();
+    const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
+    attachTrackedOrders(runtime, 'BULL.HK', [
+      createTrackedOrder({
+        orderId: 'BUY-TIMEOUT-STALE-TERMINAL',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        executedQuantity: 50,
+        executedPrice: 1.05,
+        lastExecutedTimeMs: trackedExecutedAtMs,
+        lastOrderUpdateAtMs: trackedExecutedAtMs,
+        status: OrderStatus.PartialFilled,
+      }),
+    ]);
+
+    runtime.queriedTerminalStateByOrderId.set('BUY-TIMEOUT-STALE-TERMINAL', {
+      kind: 'TERMINAL',
+      closedReason: 'CANCELED',
+      executedPrice: 0.9,
+      executedQuantity: 20,
+      orderUpdatedAtMs: trackedExecutedAtMs - 100,
+      status: OrderStatus.Canceled,
+    });
+    const settlementCalls: Array<
+      Readonly<{
+        executedPrice?: number | null;
+        executedQuantity?: number | null;
+        executedTimeMs?: number | null;
+        orderUpdatedAtMs?: number | null;
+      }>
+    > = [];
+    const { deps } = createDeps({
+      runtime,
+      cancelOrder: async () => ({
+        kind: 'ALREADY_CLOSED',
+        closedReason: 'CANCELED',
+        source: 'API_ERROR',
+        relatedBuyOrderIds: null,
+      }),
+      settleOrder: (params) => {
+        settlementCalls.push(params);
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+    });
+
+    await createRouteProcessor(deps).processRoute({
+      symbol: 'BULL.HK',
+      generation: 1,
+      wakeupKind: 'TIMER',
+      latestQuote: null,
+    });
+
+    expect(settlementCalls).toMatchObject([
+      {
+        executedPrice: 1.05,
+        executedQuantity: 50,
+        executedTimeMs: trackedExecutedAtMs,
+        orderUpdatedAtMs: trackedExecutedAtMs,
+      },
+    ]);
+  });
+
+  it('卖单 timeout 使用规范化成交量计算补卖数量', async () => {
+    const runtime = createRuntimeStore();
+    const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
+    attachTrackedOrders(runtime, 'BULL.HK', [
+      createTrackedOrder({
+        orderId: 'SELL-TIMEOUT-NORMALIZED-REMAINDER',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        submittedQuantity: 100,
+        executedQuantity: 50,
+        executedPrice: 1.05,
+        lastExecutedTimeMs: trackedExecutedAtMs,
+        lastOrderUpdateAtMs: trackedExecutedAtMs,
+        status: OrderStatus.PartialFilled,
+      }),
+    ]);
+
+    runtime.queriedTerminalStateByOrderId.set('SELL-TIMEOUT-NORMALIZED-REMAINDER', {
+      kind: 'TERMINAL',
+      closedReason: 'CANCELED',
+      executedPrice: 0.9,
+      executedQuantity: 20,
+      orderUpdatedAtMs: trackedExecutedAtMs - 100,
+      status: OrderStatus.Canceled,
+    });
+    const trackedOrders: TrackOrderParams[] = [];
+    const { deps } = createDeps({
+      runtime,
+      cancelOrder: async () => ({
+        kind: 'ALREADY_CLOSED',
+        closedReason: 'CANCELED',
+        source: 'API_ERROR',
+        relatedBuyOrderIds: null,
+      }),
+      settleOrder: () => ({ handled: true, relatedBuyOrderIds: ['BUY-1'] }),
+      trackOrder: (params) => {
+        trackedOrders.push(params);
+      },
+    });
+
+    await createRouteProcessor(deps).processRoute({
+      symbol: 'BULL.HK',
+      generation: 1,
+      wakeupKind: 'TIMER',
+      latestQuote: null,
+    });
+
+    expect(trackedOrders).toHaveLength(1);
+    expect(trackedOrders[0]?.quantity).toBe(50);
   });
 
   it('route generation 已推进时，旧的 timeout->market continuation 不会再提交 MO', async () => {
@@ -1612,6 +1956,7 @@ describe('orderMonitor routeProcessor', () => {
           executedPrice: 0,
           executedQuantity: 0,
           executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
+          orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
         },
       }),
     ]);

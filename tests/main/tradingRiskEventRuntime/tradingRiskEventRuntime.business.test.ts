@@ -595,7 +595,10 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     const runtime = createTradingRiskEventRuntime(deps);
 
     runtime.start();
-    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 1,
+    });
     emitQuoteUpdated('BULL.HK', 1.23);
     await waitTick();
 
@@ -711,6 +714,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       symbolRegistry.updateSeatState('SHORT', {
         ...hsiShort,
         symbol: 'BULL.HK',
+        lastSeatActivatedAt: 1,
       });
     }).not.toThrow();
 
@@ -726,6 +730,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     symbolRegistry.updateSeatStateWithVersionBump('SHORT', {
       ...hsiShort,
       symbol: 'BEAR2.HK',
+      lastSeatActivatedAt: 1,
     });
     emitQuoteUpdated('BULL.HK', 2.34);
     await waitTick();
@@ -798,6 +803,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         symbolRegistry.updateSeatState('SHORT', {
           ...hsiShort,
           symbol: 'BULL.HK',
+          lastSeatActivatedAt: 1,
         });
       }).not.toThrow();
       consistencyPort.resolveFresh();
@@ -941,7 +947,10 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     emitQuoteUpdated('BULL.HK', 1.23);
     await waitTick();
 
-    symbolRegistry.updateSeatStateWithVersionBump('LONG', symbolRegistry.getSeatState('LONG'));
+    symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 1,
+    });
     consistencyPort.resolveFresh();
     await waitTick();
 
@@ -1087,7 +1096,7 @@ describe('unrealizedLossMonitor directional execution', () => {
           });
         }
 
-        return { submittedCount: signals.length, submittedOrderIds: [] };
+        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
     const riskChecker = createRiskCheckerDouble({

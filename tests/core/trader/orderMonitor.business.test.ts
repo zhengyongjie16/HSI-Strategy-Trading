@@ -20,6 +20,7 @@ import { createPushOrderChanged } from '../../../mock/factories/tradeFactory.js'
 import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
 import {
   createMarketDataClientDouble,
+  createDailyLossTrackerDouble,
   createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteDouble,
@@ -193,6 +194,7 @@ function createDeps(params?: {
     readonly refreshPositions: boolean;
   }) => void;
   readonly onThrottle?: () => void;
+  readonly onFatalError?: (error: unknown) => void;
 }): {
   deps: OrderMonitorDeps;
   tradeCtx: ReturnType<typeof createTradeContextMock>;
@@ -371,9 +373,18 @@ function createDeps(params?: {
     orderRecorder,
     dailyLossTracker: params?.dailyLossTrackerOverride ?? {
       resetAll: () => {},
-      startNewProtectionEpisode: () => {},
+      prepareProtectionBoundary: (boundaryParams) => ({
+        ...boundaryParams,
+        orderBaselines: [],
+      }),
+      commitProtectionBoundary: () => {},
+      restoreExecutionSnapshot: () => {},
+      restoreProtectionBoundary: () => {},
       recalculateFromAllOrders: () => {},
-      recordFilledOrder: () => {},
+      recordCumulativeExecution: () => ({
+        authoritativeFactChanged: false,
+        executionAdvanced: false,
+      }),
       getLossOffset: () => 0,
     },
     orderHoldRegistry: {
@@ -387,6 +398,7 @@ function createDeps(params?: {
     protectiveLiquidationEpisodeTracker:
       params?.protectiveLiquidationEpisodeTrackerOverride ??
       createProtectiveLiquidationEpisodeTrackerDouble(),
+    persistProtectiveLiquidationExecutionProgress: () => {},
     postTradeConsistencyRuntime: {
       recordSettlementRefreshNeed: (need) => {
         params?.onRecordSettlementRefreshNeed?.(need);
@@ -395,6 +407,7 @@ function createDeps(params?: {
     tradingConfig,
     symbolRegistry,
     isExecutionAllowed: params?.gateOpen ?? (() => true),
+    ...(params?.onFatalError ? { onFatalError: params.onFatalError } : {}),
   };
 
   return {
@@ -1222,10 +1235,14 @@ describe('orderMonitor business flow', () => {
     expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
   });
 
-  it('surfaces timeout market sell local sync failures after broker submit succeeds', async () => {
+  it('broker ack 后 submitSellOrder 抛错会保留新 tracked fact、旧 placeholder 并上报 fatal', async () => {
     const pendingSellSnapshot = new Map<string, PendingSellInfo>();
+    const fatalErrors: unknown[] = [];
     const { deps, tradeCtx } = createDeps({
       sellTimeoutSeconds: 0,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
       orderRecorderOverride: createOrderRecorderDouble({
         allocateRelatedBuyOrderIdsForRecovery: () => ['BUY-1'],
         submitSellOrder: (
@@ -1320,8 +1337,14 @@ describe('orderMonitor business flow', () => {
     );
 
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
-    expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
+    expect(monitor.getPendingSellOrders('BULL.HK').map((order) => order.orderId)).toEqual([
+      'MOCK-000001',
+    ]);
     expect([...pendingSellSnapshot.keys()]).toEqual(['SELL-TIMEOUT-LOCAL-SYNC-FAIL']);
+    expect(fatalErrors).toHaveLength(1);
+    expect((fatalErrors[0] as Error).message).toContain(
+      'order submitted but local sync failed: MOCK-000001',
+    );
   });
 
   it('does not allocate replacement relatedBuyOrderIds when timeout sell cancel request succeeds', async () => {
@@ -1521,7 +1544,7 @@ describe('orderMonitor business flow', () => {
             status: OrderStatus.New,
           }),
         ]),
-      /不匹配但权威终态存在成交事实/,
+      /不匹配但.*存在成交事实/,
     );
 
     expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
@@ -1650,9 +1673,16 @@ describe('orderMonitor business flow', () => {
       symbol: string;
       executedTimeMs: number;
     }> = [];
+    let cumulativeCallCount = 0;
     const executedTimeMs = Date.parse('2026-02-25T03:20:00.000Z');
     const { deps, tradeCtx } = createDeps({
       liquidationTriggerLimit: 3,
+      dailyLossTrackerOverride: createDailyLossTrackerDouble({
+        recordCumulativeExecution: () => {
+          cumulativeCallCount += 1;
+          return { authoritativeFactChanged: true, executionAdvanced: cumulativeCallCount === 1 };
+        },
+      }),
       protectiveLiquidationEpisodeTrackerOverride: createProtectiveLiquidationEpisodeTrackerDouble({
         recordProtectiveFillProgress: (params) => {
           progressCalls.push(params);
@@ -2054,10 +2084,14 @@ describe('orderMonitor business flow', () => {
       orderRecorderOverride: orderRecorder,
       dailyLossTrackerOverride: {
         resetAll: () => {},
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {},
+        restoreExecutionSnapshot: () => {},
+        restoreProtectionBoundary: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {
+        recordCumulativeExecution: () => {
           dailyLossCalls += 1;
+          return { authoritativeFactChanged: true, executionAdvanced: dailyLossCalls === 1 };
         },
         getLossOffset: () => 0,
       },
@@ -2139,9 +2173,13 @@ describe('orderMonitor business flow', () => {
     expect(cancelCount).toBe(1);
     expect(recordLocalSellCalls).toHaveLength(1);
     expect(recordLocalSellCalls[0]?.relatedBuyOrderIds).toEqual(['BUY-1']);
-    expect(dailyLossCalls).toBe(1);
+    expect(dailyLossCalls).toBe(3);
     expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
     expect(refreshNeeds).toEqual([
+      {
+        refreshAccount: true,
+        refreshPositions: true,
+      },
       {
         refreshAccount: true,
         refreshPositions: true,
@@ -2246,10 +2284,14 @@ describe('orderMonitor business flow', () => {
       orderRecorderOverride: orderRecorder,
       dailyLossTrackerOverride: {
         resetAll: () => {},
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {},
+        restoreExecutionSnapshot: () => {},
+        restoreProtectionBoundary: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {
+        recordCumulativeExecution: () => {
           dailyLossCalls += 1;
+          return { authoritativeFactChanged: true, executionAdvanced: dailyLossCalls === 1 };
         },
         getLossOffset: () => 0,
       },
@@ -2331,9 +2373,13 @@ describe('orderMonitor business flow', () => {
     expect(cancelCount).toBe(1);
     expect(recordLocalSellCalls).toHaveLength(1);
     expect(recordLocalSellCalls[0]?.relatedBuyOrderIds).toEqual(['BUY-1']);
-    expect(dailyLossCalls).toBe(1);
+    expect(dailyLossCalls).toBe(3);
     expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
     expect(refreshNeeds).toEqual([
+      {
+        refreshAccount: true,
+        refreshPositions: true,
+      },
       {
         refreshAccount: true,
         refreshPositions: true,
@@ -3186,6 +3232,121 @@ describe('orderMonitor business flow', () => {
     ]);
   });
 
+  it('public cancelOrder 不会让陈旧终态否认 tracked 已知成交', async () => {
+    const localBuyCalls: Array<
+      Readonly<{ executedPrice: number; executedQuantity: number; executedTimeMs: number }>
+    > = [];
+    const dailyLossCalls: Array<
+      Readonly<{
+        factStage: 'OPEN' | 'TERMINAL';
+        executedQuantity: number;
+        executedTimeMs: number;
+        orderUpdatedAtMs: number;
+      }>
+    > = [];
+    const orderStateEvents: OrderStateChangedEvent[] = [];
+    const { deps, tradeCtx } = createDeps({
+      orderRecorderOverride: createOrderRecorderDouble({
+        recordLocalBuy: (_symbol, executedPrice, executedQuantity, _isLong, executedTimeMs) => {
+          localBuyCalls.push({ executedPrice, executedQuantity, executedTimeMs });
+        },
+      }),
+      dailyLossTrackerOverride: createDailyLossTrackerDouble({
+        recordCumulativeExecution: (input) => {
+          dailyLossCalls.push(input);
+          return { authoritativeFactChanged: true, executionAdvanced: true };
+        },
+      }),
+    });
+    tradeCtx.setFailureRule('cancelOrder', {
+      failAtCalls: [1],
+      maxFailures: 1,
+      errorMessage: 'openapi error: code=601011: Order already cancelled',
+    });
+
+    tradeCtx.seedTodayOrders([
+      createPendingRecoveryOrder({
+        orderId: 'BUY-PUBLIC-CANCEL-STALE-TERMINAL',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.PartialWithdrawal,
+        quantity: 100,
+        executedQuantity: 20,
+        executedPrice: 0.9,
+        updatedAt: new Date('2026-02-25T03:11:00.100Z'),
+      }) as unknown as Order,
+    ]);
+    const monitor = createOrderMonitor(deps);
+    monitor.onOrderStateChanged((event) => {
+      orderStateEvents.push(event);
+    });
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+    monitor.trackOrder({
+      orderId: 'BUY-PUBLIC-CANCEL-STALE-TERMINAL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      price: 1,
+      initialSubmittedPrice: 1,
+      quantity: 100,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    await emitOrderChanged(
+      tradeCtx,
+      createPushOrderChanged({
+        orderId: 'BUY-PUBLIC-CANCEL-STALE-TERMINAL',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 50,
+        executedPrice: 1.05,
+        updatedAtMs: Date.parse('2026-02-25T03:11:00.200Z'),
+      }),
+    );
+
+    const outcome = await monitor.cancelOrder('BUY-PUBLIC-CANCEL-STALE-TERMINAL', {
+      kind: 'ORDER_FACT',
+    });
+
+    expect(outcome.kind).toBe('ALREADY_CLOSED');
+    expect(localBuyCalls).toEqual([
+      {
+        executedPrice: 1.05,
+        executedQuantity: 50,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.200Z'),
+      },
+    ]);
+
+    expect(dailyLossCalls).toMatchObject([
+      {
+        factStage: 'OPEN',
+        executedQuantity: 50,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.200Z'),
+        orderUpdatedAtMs: Date.parse('2026-02-25T03:11:00.200Z'),
+      },
+      {
+        factStage: 'TERMINAL',
+        executedQuantity: 50,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.200Z'),
+        orderUpdatedAtMs: Date.parse('2026-02-25T03:11:00.200Z'),
+      },
+    ]);
+
+    expect(orderStateEvents).toMatchObject([
+      {
+        orderId: 'BUY-PUBLIC-CANCEL-STALE-TERMINAL',
+        status: 'CANCELED',
+        executedPrice: 1.05,
+        executedQuantity: 50,
+        executedTimeMs: Date.parse('2026-02-25T03:11:00.200Z'),
+      },
+    ]);
+  });
+
   it('public cancelOrder returns already-closed for untracked filled order (601012)', async () => {
     const { deps, tradeCtx } = createDeps();
     tradeCtx.setFailureRule('cancelOrder', {
@@ -3353,10 +3514,14 @@ describe('orderMonitor business flow', () => {
       }),
       dailyLossTrackerOverride: {
         resetAll: () => {},
-        startNewProtectionEpisode: () => {},
+        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
+        commitProtectionBoundary: () => {},
+        restoreExecutionSnapshot: () => {},
+        restoreProtectionBoundary: () => {},
         recalculateFromAllOrders: () => {},
-        recordFilledOrder: () => {
+        recordCumulativeExecution: () => {
           dailyLossCount += 1;
+          return { authoritativeFactChanged: true, executionAdvanced: dailyLossCount === 1 };
         },
         getLossOffset: () => 0,
       },
@@ -3398,8 +3563,12 @@ describe('orderMonitor business flow', () => {
     );
 
     expect(localBuyCount).toBe(1);
-    expect(dailyLossCount).toBe(1);
+    expect(dailyLossCount).toBe(2);
     expect(refreshNeeds).toEqual([
+      {
+        refreshAccount: true,
+        refreshPositions: true,
+      },
       {
         refreshAccount: true,
         refreshPositions: true,

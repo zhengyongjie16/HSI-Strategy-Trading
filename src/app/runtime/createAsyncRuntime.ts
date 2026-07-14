@@ -87,7 +87,6 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     trader,
     marketDataClient,
     doomsdayProtection,
-    getLastState: () => lastState,
     getIsHalfDay: () => lastState.isHalfDay ?? false,
     getCanProcessTask: canProcessOrdinaryTradeTask,
     onFatalError: handleFatalError,

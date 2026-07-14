@@ -5,7 +5,7 @@
  * - 验证风险检查管道相关场景意图、边界条件与业务期望。
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
-import type { RiskCheckContext } from '../../../src/types/services.js';
+import type { BuyRiskCheckContext } from '../../../src/types/services.js';
 import { createRiskCheckPipeline } from '../../../src/core/signalProcessor/riskCheckPipeline.js';
 import {
   createAccountSnapshotDouble,
@@ -13,7 +13,6 @@ import {
   createLiquidationCooldownTrackerDouble,
   createMonitorConfigDouble,
   createOrderRecorderDouble,
-  createPositionCacheDouble,
   createPositionDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
@@ -23,6 +22,7 @@ import {
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createBuyThrottle } from '../../../src/core/trader/orderExecutor/buyThrottle.js';
 import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import type { BuySignal } from '../../../src/types/signal.js';
 
 function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
   const originalNow = Date.now;
@@ -37,12 +37,8 @@ function createContext(params: {
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
   readonly doomsdayProtection?: ReturnType<typeof createDoomsdayProtectionDouble>;
-  readonly account?: ReturnType<typeof createAccountSnapshotDouble>;
-  readonly positions?: ReadonlyArray<RiskCheckContext['positions'][number]>;
-}): RiskCheckContext {
+}): BuyRiskCheckContext {
   const monitorConfig = createMonitorConfigDouble();
-  const account = params.account ?? createAccountSnapshotDouble(100000);
-  const positions = params.positions ?? [];
 
   return {
     trader: params.trader,
@@ -66,13 +62,6 @@ function createContext(params: {
     shortSymbol: 'BEAR.HK',
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
-    account,
-    positions,
-    lastState: {
-      cachedAccount: account,
-      cachedPositions: positions,
-      positionCache: createPositionCacheDouble(positions),
-    },
     currentTime: new Date('2026-02-16T10:00:00+08:00'),
     isHalfDay: false,
     doomsdayProtection: params.doomsdayProtection ?? createDoomsdayProtectionDouble(),
@@ -306,15 +295,7 @@ describe('riskCheckPipeline business flow', () => {
     expect(buyTradeCheck.canTrade).toBe(true);
   });
 
-  it('uses realtime account and positions for buy base risk check instead of cached context', async () => {
-    const cachedAccount = createAccountSnapshotDouble(30_000);
-    const cachedPositions = [
-      createPositionDouble({
-        symbol: 'BULL.HK',
-        quantity: 100,
-        availableQuantity: 100,
-      }),
-    ];
+  it('uses realtime account and positions for buy base risk check', async () => {
     const realtimeAccount = createAccountSnapshotDouble(90_000);
     const realtimePositions = [
       createPositionDouble({
@@ -344,17 +325,11 @@ describe('riskCheckPipeline business flow', () => {
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => ({ allowed: true }),
             checkBeforeOrder: ({ account, positions }) => ({
-              allowed:
-                account === realtimeAccount &&
-                positions === realtimePositions &&
-                account !== cachedAccount &&
-                positions !== cachedPositions,
-              reason: 'buy base risk check should use realtime context',
+              allowed: account === realtimeAccount && positions === realtimePositions,
+              reason: 'buy base risk check should use realtime account and positions',
             }),
           }),
           orderRecorder: createOrderRecorderDouble(),
-          account: cachedAccount,
-          positions: cachedPositions,
         }),
       ),
     );
@@ -1017,30 +992,26 @@ describe('riskCheckPipeline business flow', () => {
     expect(positionsFetchIndex).toBeGreaterThan(warrantRiskIndex);
   });
 
-  it('stays on cooldown after business rejection in mixed buy and sell batch', async () => {
-    const steps: string[] = [];
-    const cachedAccount = createAccountSnapshotDouble(67890);
-    const cachedPositions = [
-      createPositionDouble({
-        symbol: 'BULL.HK',
-        quantity: 600,
-        availableQuantity: 450,
-      }),
-    ];
-    const buySignal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const sellSignal = createSignalDouble('SELLCALL', 'BULL.HK');
-
+  it('fails fast for a forced sell signal before any buy-risk side effect', async () => {
+    let canTradeNowCount = 0;
+    let accountCallCount = 0;
+    let positionCallCount = 0;
+    let liquidationCooldownCount = 0;
+    let latestBuyOrderPriceCount = 0;
+    let buyCutoffCheckCount = 0;
+    let warrantRiskCheckCount = 0;
+    let baseRiskCheckCount = 0;
     const trader = createTraderDouble({
       canTradeNow: () => {
-        steps.push('canTradeNow');
+        canTradeNowCount += 1;
         return { canTrade: true };
       },
       getAccountSnapshot: async () => {
-        steps.push('getAccountSnapshot');
+        accountCallCount += 1;
         return createAccountSnapshotDouble(100000);
       },
       getStockPositions: async () => {
-        steps.push('getStockPositions');
+        positionCallCount += 1;
         return [];
       },
     });
@@ -1049,61 +1020,57 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         getRemainingMs: () => {
-          steps.push('getRemainingMs');
+          liquidationCooldownCount += 1;
           return 0;
         },
       }),
       lastRiskCheckTime,
     });
-
-    const result = await withMockedNow(120_000, async () =>
-      pipeline(
-        [buySignal, sellSignal],
+    const forcedSellSignal = createSignalDouble('SELLCALL', 'BULL.HK') as unknown as BuySignal;
+    let caught: unknown = null;
+    try {
+      await pipeline(
+        [forcedSellSignal],
         createContext({
           trader,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => {
-              steps.push('checkWarrantRisk');
+              warrantRiskCheckCount += 1;
               return { allowed: true };
             },
-            checkBeforeOrder: ({ account, positions, signal }) => {
-              steps.push(`checkBeforeOrder:${signal?.action ?? 'UNKNOWN'}`);
-              if (signal?.action === 'SELLCALL') {
-                return {
-                  allowed: account === cachedAccount && positions === cachedPositions,
-                  reason: 'sell should use cached context',
-                };
-              }
-
-              return {
-                allowed: false,
-                reason: 'buy should be blocked by base risk',
-              };
+            checkBeforeOrder: () => {
+              baseRiskCheckCount += 1;
+              return { allowed: true };
             },
           }),
           orderRecorder: createOrderRecorderDouble({
             getLatestBuyOrderPrice: () => {
-              steps.push('getLatestBuyOrderPrice');
+              latestBuyOrderPriceCount += 1;
               return null;
             },
           }),
           doomsdayProtection: createDoomsdayProtectionDouble({
             isBuyCutoffWindowActive: () => {
-              steps.push('isBuyCutoffWindowActive');
+              buyCutoffCheckCount += 1;
               return false;
             },
           }),
-          account: cachedAccount,
-          positions: cachedPositions,
         }),
-      ),
-    );
+      );
+    } catch (error) {
+      caught = error;
+    }
 
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(sellSignal);
-    expect(buySignal.reason).toBeUndefined();
-    expect(lastRiskCheckTime.has('BULL.HK_BUY')).toBe(true);
-    expect(steps).toContain('checkBeforeOrder:SELLCALL');
-    expect(steps).toContain('checkBeforeOrder:BUYCALL');
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain('买入风控只接受 BUYCALL 或 BUYPUT');
+    expect(lastRiskCheckTime.size).toBe(0);
+    expect(canTradeNowCount).toBe(0);
+    expect(accountCallCount).toBe(0);
+    expect(positionCallCount).toBe(0);
+    expect(liquidationCooldownCount).toBe(0);
+    expect(latestBuyOrderPriceCount).toBe(0);
+    expect(buyCutoffCheckCount).toBe(0);
+    expect(warrantRiskCheckCount).toBe(0);
+    expect(baseRiskCheckCount).toBe(0);
   });
 });

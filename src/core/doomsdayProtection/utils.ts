@@ -37,6 +37,33 @@ export function isWithinDoomsdayBuyCutoffWindow(
 }
 
 /**
+ * 判断香港当日是否已经达到末日保护买入截止起点。
+ * 与撤单窗口不同，本判定一旦达到截止起点便持续到香港日期结束，专供最终 broker mutation 前拒买授权使用。
+ *
+ * @param date 时间对象（UTC）
+ * @param isHalfDay 是否为半日交易日
+ * @returns 已达到正常日 15:45 或半日市 11:45 时返回 true
+ */
+export function hasReachedDoomsdayBuyCutoff(
+  date: Date | null | undefined,
+  isHalfDay: boolean,
+): boolean {
+  if (!date) {
+    return false;
+  }
+
+  const hkTime = resolveHKTime(date);
+  if (!hkTime) {
+    return false;
+  }
+
+  const closeHour = isHalfDay ? 12 : 16;
+  const cutoffMinutes = closeHour * 60 - DOOMSDAY.BUY_CUTOFF_MINUTES_BEFORE_CLOSE;
+  const currentMinutes = hkTime.hkHour * 60 + hkTime.hkMinute;
+  return currentMinutes >= cutoffMinutes;
+}
+
+/**
  * 判断是否处于末日保护的清仓接管窗口。默认行为：date 无效返回 false；半日市按 12:00 收盘计算。
  *
  * @param date 时间对象（UTC）
