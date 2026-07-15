@@ -249,7 +249,6 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
         isBuyCutoffWindowActive: () => false,
         executeClearance: async () => ({
           executed: false,
-          signalCount: 0,
           nextRetryAtMs: null,
         }),
         cancelPendingBuyOrders: async () => ({

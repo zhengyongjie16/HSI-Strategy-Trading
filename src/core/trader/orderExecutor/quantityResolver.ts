@@ -12,7 +12,7 @@ import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { isDefined } from '../../utils.js';
 import type { Signal } from '../../../types/signal.js';
-import type { QuantityResolver } from './types.js';
+import type { QuantityResolver, SellQuantityResolution } from './types.js';
 import {
   calculateLotQuantityByNotional,
   decimalToNumberValue,
@@ -29,11 +29,13 @@ const HIGH_FRESHNESS_API_RETRY_CONFIG = {
 /**
  * 解析买入数量来源并执行显式数量校验。
  *
- * @param signal 交易信号
+ * @param finalPrice mutation permit 内读取的最终价格
+ * @param finalLotSize mutation permit 内读取的最终每手股数
  * @returns 数量来源判定结果
  */
 function resolveBuyQuantitySource(
   signal: Signal,
+  finalLotSize: number | undefined,
 ):
   | { readonly source: 'NOTIONAL' }
   | { readonly source: 'EXPLICIT'; readonly quantity: number; readonly lotSize: number }
@@ -57,7 +59,7 @@ function resolveBuyQuantitySource(
     };
   }
 
-  const lotSize = signal.lotSize;
+  const lotSize = finalLotSize;
   if (
     typeof lotSize !== 'number' ||
     !Number.isFinite(lotSize) ||
@@ -93,13 +95,13 @@ function resolveBuyQuantitySource(
  * @returns 计算后的买入数量（Decimal）
  */
 function calculateBuyQuantity(
-  signal: Signal,
+  finalPrice: number,
+  finalLotSize: number | undefined,
   isShortSymbol: boolean,
   targetNotional: number,
 ): Decimal {
-  const priceNum = Number(signal.price ?? null);
-  if (!Number.isFinite(priceNum) || priceNum <= 0) {
-    logger.warn(`[跳过订单] 无法获取有效价格，无法按金额计算买入数量，price=${priceNum}`);
+  if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
+    logger.warn(`[跳过订单] 无法获取有效价格，无法按金额计算买入数量，price=${finalPrice}`);
     return Decimal.ZERO();
   }
 
@@ -110,7 +112,7 @@ function calculateBuyQuantity(
   }
 
   const notional = targetNotional;
-  const lotSize: number = signal.lotSize ?? 0;
+  const lotSize: number = finalLotSize ?? 0;
   if (!Number.isFinite(lotSize) || lotSize <= 0) {
     logger.error(`[跳过订单] lotSize 无效(${lotSize})，这不应该发生，请检查配置验证逻辑`);
     return Decimal.ZERO();
@@ -118,12 +120,12 @@ function calculateBuyQuantity(
 
   const alignedQuantity = calculateLotQuantityByNotional({
     notional,
-    price: priceNum,
+    price: finalPrice,
     lotSize,
   });
   if (!alignedQuantity) {
     logger.warn(
-      `[跳过订单] 目标金额(${notional}) 相对于价格(${priceNum}) 太小，按每手 ${lotSize} 股无法凑整手，跳过提交订单`,
+      `[跳过订单] 目标金额(${notional}) 相对于价格(${finalPrice}) 太小，按每手 ${lotSize} 股无法凑整手，跳过提交订单`,
     );
     return Decimal.ZERO();
   }
@@ -131,7 +133,7 @@ function calculateBuyQuantity(
   const rawQty = decimalToNumberValue(alignedQuantity);
   const actionType = isShortSymbol ? '买入做空标的（做空）' : '买入做多标的（做多）';
   logger.debug(
-    `[仓位计算] 按目标金额 ${notional} 计算得到${actionType}数量=${rawQty} 股（${lotSize} 股一手），单价≈${priceNum}`,
+    `[仓位计算] 按目标金额 ${notional} 计算得到${actionType}数量=${rawQty} 股（${lotSize} 股一手），单价≈${finalPrice}`,
   );
   return alignedQuantity;
 }
@@ -148,8 +150,10 @@ function resolveBuyQuantity(
   signal: Signal,
   isShortSymbol: boolean,
   targetNotional: number,
+  finalPrice: number,
+  finalLotSize: number | undefined,
 ): Decimal {
-  const buyQuantitySource = resolveBuyQuantitySource(signal);
+  const buyQuantitySource = resolveBuyQuantitySource(signal, finalLotSize);
   if (buyQuantitySource.source === 'INVALID') {
     logger.warn(
       `[跳过订单] 显式买入数量校验失败: ${buyQuantitySource.reason}, symbol=${signal.symbol}`,
@@ -165,7 +169,7 @@ function resolveBuyQuantity(
     return toDecimal(buyQuantitySource.quantity);
   }
 
-  return calculateBuyQuantity(signal, isShortSymbol, targetNotional);
+  return calculateBuyQuantity(finalPrice, finalLotSize, isShortSymbol, targetNotional);
 }
 
 /**
@@ -180,26 +184,17 @@ export function createQuantityResolver(deps: {
   const { rateLimiter } = deps;
 
   /**
-   * 计算卖出数量（基于可用持仓并支持信号显式 quantity 限制）。
+   * 读取当前标的的权威可用卖出数量。
+   * 普通卖出与末日清仓共用同一份新鲜仓位事实，二者仅在后续是否允许信号数量裁剪上分叉。
    *
    * @param ctx TradeContext
    * @param symbol 交易标的
-   * @param signal 交易信号
-   * @returns 卖出数量（Decimal）
+   * @returns 当前可用卖出数量；无可用持仓时返回 0
    */
-  async function calculateSellQuantity(
+  async function readFreshAvailableSellQuantity(
     ctx: TradeContext,
     symbol: string,
-    signal: Signal,
-  ): Promise<Decimal> {
-    let targetQuantity: number | null = null;
-    if (isDefined(signal.quantity)) {
-      const signalQty = signal.quantity;
-      if (isValidPositiveNumber(signalQty)) {
-        targetQuantity = signalQty;
-      }
-    }
-
+  ): Promise<number> {
     await rateLimiter.throttle();
     const resp = await wrapExternalApiRequest({
       operation: 'TradeContext.stockPositions.quantityResolver',
@@ -226,22 +221,76 @@ export function createQuantityResolver(deps: {
       logger.warn(
         `[跳过订单] 当前无可用持仓，无需平仓。symbol=${symbol}, available=${totalAvailable}`,
       );
-      return Decimal.ZERO();
+      return 0;
+    }
+
+    return totalAvailable;
+  }
+
+  /**
+   * 计算普通卖出数量（基于新鲜可用持仓并支持信号显式 quantity 限制）。
+   *
+   * @param ctx TradeContext
+   * @param symbol 交易标的
+   * @param signal 交易信号
+   * @returns Promise<SellQuantityResolution>，包含实时可用持仓与按有效 signal.quantity 限制后的提交数量
+   */
+  async function calculateSellQuantity(
+    ctx: TradeContext,
+    symbol: string,
+    signal: Signal,
+  ): Promise<SellQuantityResolution> {
+    const totalAvailable = await readFreshAvailableSellQuantity(ctx, symbol);
+    if (totalAvailable <= 0) {
+      return {
+        availableQuantity: 0,
+        submittedQuantity: Decimal.ZERO(),
+      };
+    }
+
+    let targetQuantity: number | null = null;
+    if (isDefined(signal.quantity)) {
+      const signalQty = signal.quantity;
+      if (isValidPositiveNumber(signalQty)) {
+        targetQuantity = signalQty;
+      }
     }
 
     if (targetQuantity === null) {
-      return toDecimal(totalAvailable);
+      return {
+        availableQuantity: totalAvailable,
+        submittedQuantity: toDecimal(totalAvailable),
+      };
     }
 
     const actualQty = Math.min(targetQuantity, totalAvailable);
     logger.debug(
       `[部分卖出] 信号指定卖出数量=${targetQuantity}，可用数量=${totalAvailable}，实际卖出=${actualQty}`,
     );
-    return toDecimal(actualQty);
+    return {
+      availableQuantity: totalAvailable,
+      submittedQuantity: toDecimal(actualQty),
+    };
+  }
+
+  /**
+   * 解析末日清仓数量。
+   * 末日专用命令不携带普通 signal.quantity，因此必须直接使用本轮权威可用持仓全量清仓。
+   *
+   * @param ctx TradeContext
+   * @param symbol 交易标的
+   * @returns 当前新鲜可用持仓数量；无可用持仓时返回 Decimal.ZERO()
+   */
+  async function resolveDoomsdayClearanceQuantity(
+    ctx: TradeContext,
+    symbol: string,
+  ): Promise<Decimal> {
+    return toDecimal(await readFreshAvailableSellQuantity(ctx, symbol));
   }
 
   return {
     calculateSellQuantity,
+    resolveDoomsdayClearanceQuantity,
     resolveBuyQuantity,
   };
 }

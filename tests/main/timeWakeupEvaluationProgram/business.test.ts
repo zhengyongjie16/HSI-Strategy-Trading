@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { TRADING } from '../../../src/constants/index.js';
 import { timeWakeupEvaluationProgram } from '../../../src/main/timeWakeupEvaluationProgram/index.js';
+import type { AutoSearchAuthorizationChangedEvent } from '../../../src/main/tradingGateEventRuntime/types.js';
 import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import type { TimeWakeupEvaluationContext } from '../../../src/main/timeWakeupEvaluationProgram/types.js';
 import type { LastState } from '../../../src/types/state.js';
@@ -35,12 +36,14 @@ import {
 
 type TimeWakeupEvaluationHarnessOptions = Readonly<{
   now: Date;
+  getNow?: () => Date;
   initialCanTrade?: boolean | null;
   morningProtectionMinutes?: number | null;
   afternoonProtectionMinutes?: number | null;
   verifier?: DelayedSignalVerifierPort;
   lifecycleTick?: (now: Date, runtime: LifecycleRuntimeFlags) => Promise<DayLifecycleTickResult>;
   emitGateStateChanged?: () => void;
+  emitAutoSearchAuthorizationChanged?: (event: AutoSearchAuthorizationChangedEvent) => void;
   doomsdayClearanceResult?: DoomsdayClearanceResult;
   cancelPendingBuyOrdersResult?: CancelPendingBuyOrdersResult;
   onCancelPendingBuyOrders?: () => void;
@@ -167,7 +170,6 @@ function createTimeWakeupEvaluationHarness(
         return (
           options.doomsdayClearanceResult ?? {
             executed: false,
-            signalCount: 0,
             nextRetryAtMs: null,
           }
         );
@@ -180,6 +182,7 @@ function createTimeWakeupEvaluationHarness(
     monitorContext,
     tradingGateEventRuntime: {
       emitGateStateChanged: options.emitGateStateChanged ?? (() => {}),
+      emitAutoSearchAuthorizationChanged: options.emitAutoSearchAuthorizationChanged ?? (() => {}),
     },
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble({
       reconcilePositionHoldFromCurrentTruth: async () => {
@@ -194,7 +197,7 @@ function createTimeWakeupEvaluationHarness(
           pendingOpenRebuild: false,
         })),
     },
-    now: () => options.now,
+    now: options.getNow ?? (() => options.now),
   };
 }
 
@@ -293,20 +296,105 @@ describe('timeWakeupEvaluationProgram', () => {
     expect(calls).toEqual(['lifecycle', 'gate']);
   });
 
+  it('正常日与半日末日清仓接管都会发布自动寻标授权关闭', async () => {
+    const normalDayEvents: AutoSearchAuthorizationChangedEvent[] = [];
+    const normalDayContext = createTimeWakeupEvaluationHarness({
+      now: new Date('2026-04-29T15:55:00.000+08:00'),
+      initialCanTrade: true,
+      emitAutoSearchAuthorizationChanged: (event) => {
+        normalDayEvents.push(event);
+      },
+    });
+    const halfDayEvents: AutoSearchAuthorizationChangedEvent[] = [];
+    const halfDayContext = createTimeWakeupEvaluationHarness({
+      now: new Date('2026-04-29T11:55:00.000+08:00'),
+      initialCanTrade: true,
+      cachedTradingDayInfo: {
+        dateKey: '2026-04-29',
+        info: { isTradingDay: true, isHalfDay: true },
+      },
+      emitAutoSearchAuthorizationChanged: (event) => {
+        halfDayEvents.push(event);
+      },
+    });
+
+    await timeWakeupEvaluationProgram(normalDayContext);
+    await timeWakeupEvaluationProgram(halfDayContext);
+
+    expect(normalDayEvents).toEqual([{ previousAuthorized: null, nextAuthorized: false }]);
+    expect(halfDayEvents).toEqual([{ previousAuthorized: null, nextAuthorized: false }]);
+  });
+
+  it('lifecycle 禁用与开盘重建恢复即使连续交易门禁不变也发布自动寻标授权转换', async () => {
+    const authorizationEvents: AutoSearchAuthorizationChangedEvent[] = [];
+    const gateCalls: string[] = [];
+    let lifecycleState: LastState | null = null;
+    let shouldEnableTrading = false;
+    const context = createTimeWakeupEvaluationHarness({
+      now: new Date('2026-04-29T10:00:00.000+08:00'),
+      initialCanTrade: true,
+      lifecycleTick: async () => {
+        if (lifecycleState === null) {
+          throw new Error('lifecycle state is unavailable');
+        }
+
+        lifecycleState.isTradingEnabled = shouldEnableTrading;
+        return { nextRetryAtMs: null, pendingOpenRebuild: !shouldEnableTrading };
+      },
+      emitGateStateChanged: () => {
+        gateCalls.push('gate');
+      },
+      emitAutoSearchAuthorizationChanged: (event) => {
+        authorizationEvents.push(event);
+      },
+    });
+    lifecycleState = context.lastState;
+
+    await timeWakeupEvaluationProgram(context);
+    shouldEnableTrading = true;
+    await timeWakeupEvaluationProgram(context);
+
+    expect(gateCalls).toEqual([]);
+    expect(authorizationEvents).toEqual([
+      { previousAuthorized: null, nextAuthorized: false },
+      { previousAuthorized: false, nextAuthorized: true },
+    ]);
+  });
+
+  it('自动寻标授权消费方的内部错误保持 fail-fast', async () => {
+    const context = createTimeWakeupEvaluationHarness({
+      now: new Date('2026-04-29T10:00:00.000+08:00'),
+      emitAutoSearchAuthorizationChanged: () => {
+        throw new TypeError('auto-search authorization listener contract broken');
+      },
+    });
+
+    await expectPromiseRejectsWithMessage(
+      timeWakeupEvaluationProgram(context),
+      /auto-search authorization listener contract broken/,
+    );
+  });
+
   it('开盘保护保持 canTrade 为 true 且只标记 openProtectionActive', async () => {
+    const authorizationEvents: AutoSearchAuthorizationChangedEvent[] = [];
     const context = createTimeWakeupEvaluationHarness({
       now: new Date('2026-04-29T09:31:00.000+08:00'),
       morningProtectionMinutes: 5,
+      emitAutoSearchAuthorizationChanged: (event) => {
+        authorizationEvents.push(event);
+      },
     });
 
     await timeWakeupEvaluationProgram(context);
 
     expect(context.lastState.canTrade).toBe(true);
     expect(context.lastState.openProtectionActive).toBe(true);
+    expect(authorizationEvents).toEqual([{ previousAuthorized: null, nextAuthorized: true }]);
   });
 
   it('12:00 关闭连续交易门禁并取消普通延迟验证', async () => {
     let cancelAllCalls = 0;
+    const authorizationEvents: AutoSearchAuthorizationChangedEvent[] = [];
     const verifier = createDelayedSignalVerifierDouble({
       getPendingCount: () => 2,
       cancelAll: () => {
@@ -318,12 +406,39 @@ describe('timeWakeupEvaluationProgram', () => {
       now: new Date('2026-04-29T12:00:00.000+08:00'),
       initialCanTrade: true,
       verifier,
+      emitAutoSearchAuthorizationChanged: (event) => {
+        authorizationEvents.push(event);
+      },
     });
 
     await timeWakeupEvaluationProgram(context);
 
     expect(context.lastState.canTrade).toBe(false);
     expect(cancelAllCalls).toBe(1);
+    expect(authorizationEvents).toEqual([{ previousAuthorized: null, nextAuthorized: false }]);
+  });
+
+  it('午休结束后在连续交易恢复时发布自动寻标授权恢复', async () => {
+    let currentTime = new Date('2026-04-29T12:00:00.000+08:00');
+    const authorizationEvents: AutoSearchAuthorizationChangedEvent[] = [];
+    const context = createTimeWakeupEvaluationHarness({
+      now: currentTime,
+      getNow: () => currentTime,
+      initialCanTrade: true,
+      emitAutoSearchAuthorizationChanged: (event) => {
+        authorizationEvents.push(event);
+      },
+    });
+
+    await timeWakeupEvaluationProgram(context);
+    currentTime = new Date('2026-04-29T13:00:00.000+08:00');
+    await timeWakeupEvaluationProgram(context);
+
+    expect(context.lastState.canTrade).toBe(true);
+    expect(authorizationEvents).toEqual([
+      { previousAuthorized: null, nextAuthorized: false },
+      { previousAuthorized: false, nextAuthorized: true },
+    ]);
   });
 
   it('返回包含 lifecycle 与 doomsday retry 候选的 planner 输出', async () => {
@@ -336,7 +451,6 @@ describe('timeWakeupEvaluationProgram', () => {
       }),
       doomsdayClearanceResult: {
         executed: false,
-        signalCount: 0,
         nextRetryAtMs: now.getTime() + 45_000,
       },
     });
@@ -619,7 +733,6 @@ describe('timeWakeupEvaluationProgram', () => {
       },
       doomsdayClearanceResult: {
         executed: false,
-        signalCount: 1,
         nextRetryAtMs: retryAtMs,
       },
     });

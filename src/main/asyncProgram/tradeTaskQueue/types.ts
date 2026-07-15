@@ -1,4 +1,4 @@
-import type { BuySignal, SellSignal, Signal } from '../../../types/signal.js';
+import type { BuySignal, ExecutableSellSignal, Signal } from '../../../types/signal.js';
 
 /**
  * 任务添加回调函数类型。
@@ -33,7 +33,7 @@ export type SellTaskType = 'IMMEDIATE_SELL' | 'VERIFIED_SELL';
 export type TaskSignal<TType extends string> = TType extends BuyTaskType
   ? BuySignal
   : TType extends SellTaskType
-    ? SellSignal
+    ? ExecutableSellSignal
     : Signal;
 
 /**

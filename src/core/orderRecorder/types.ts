@@ -26,25 +26,24 @@ export type OrderCache = {
 
 /**
  * 订单统计信息类型。
- * 类型用途：用于调试输出或内部汇总（数量、金额、均价）。
+ * 类型用途：用于调试输出或内部汇总（数量、均价）。
  * 数据来源：如适用（由模块内部根据订单列表计算）。
  * 使用范围：仅 orderRecorder 模块使用。
  */
 export type OrderStatistics = {
   readonly totalQuantity: number;
-  readonly totalValue: number;
   readonly averagePrice: number;
 };
 
 /**
  * 订单重建分类结果。
- * 类型用途：启动/开盘重建阶段在单标的维度将全量订单按成交状态与买卖方向分流。
+ * 类型用途：启动/开盘重建阶段在单标的维度将全量订单按生命周期、有效成交事实与买卖方向分流。
  * 数据来源：由 classifyOrdersForRebuild 从 RawOrderFromAPI 转换得到。
  * 使用范围：orderRecorder 重建链路内部使用。
  */
 export type OrderRebuildClassification = {
-  readonly filledBuyOrders: ReadonlyArray<OrderRecord>;
-  readonly filledSellOrders: ReadonlyArray<OrderRecord>;
+  readonly executedBuyOrders: ReadonlyArray<OrderRecord>;
+  readonly executedSellOrders: ReadonlyArray<OrderRecord>;
   readonly pendingBuyOrders: ReadonlyArray<RawOrderFromAPI>;
   readonly pendingSellOrders: ReadonlyArray<RawOrderFromAPI>;
 };

@@ -15,7 +15,6 @@
         "@types/bun": "^1.3.14",
         "concurrently": "^10.0.3",
         "cross-env": "^10.1.0",
-        "dotenv-cli": "^11.0.0",
         "eslint": "^10.4.1",
         "eslint-config-prettier": "^10.1.8",
         "eslint-plugin-sonarjs": "^4.0.3",
@@ -599,32 +598,6 @@
       {},
       "sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw=="
     ],
-    "dotenv-cli": [
-      "dotenv-cli@11.0.0",
-      "",
-      {
-        "dependencies": {
-          "cross-spawn": "^7.0.6",
-          "dotenv": "^17.1.0",
-          "dotenv-expand": "^12.0.0",
-          "minimist": "^1.2.6"
-        },
-        "bin": {
-          "dotenv": "cli.js"
-        }
-      },
-      "sha512-r5pA8idbk7GFWuHEU7trSTflWcdBpQEK+Aw17UrSHjS6CReuhrrPcyC3zcQBPQvhArRHnBo/h6eLH1fkCvNlww=="
-    ],
-    "dotenv-expand": [
-      "dotenv-expand@12.0.3",
-      "",
-      {
-        "dependencies": {
-          "dotenv": "^16.4.5"
-        }
-      },
-      "sha512-uc47g4b+4k/M/SeaW1y4OApx+mtLWl92l5LMPP0GNXctZqELk+YGgOPIIC5elYmUH4OuoK3JLhuRUYegeySiFA=="
-    ],
     "electron-to-chromium": [
       "electron-to-chromium@1.5.302",
       "",
@@ -1139,12 +1112,6 @@
         }
       },
       "sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg=="
-    ],
-    "minimist": [
-      "minimist@1.2.8",
-      "",
-      {},
-      "sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA=="
     ],
     "minipass": [
       "minipass@7.1.3",
@@ -1748,18 +1715,6 @@
       "",
       {},
       "sha512-vbRorB5FUQWvla16U8R/qgaFIya2qGzwDrNmCZuYKrbdSUMG6I1ZCGQRefkRVhuOkIGVne7BQ35DSfo1qvJqFg=="
-    ],
-    "dotenv-cli/dotenv": [
-      "dotenv@17.2.4",
-      "",
-      {},
-      "sha512-mudtfb4zRB4bVvdj0xRo+e6duH1csJRM8IukBqfTRvHotn9+LBXB8ynAidP9zHqoRC/fsllXgk4kCKlR21fIhw=="
-    ],
-    "dotenv-expand/dotenv": [
-      "dotenv@16.6.1",
-      "",
-      {},
-      "sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow=="
     ],
     "eslint/eslint-visitor-keys": [
       "eslint-visitor-keys@5.0.1",

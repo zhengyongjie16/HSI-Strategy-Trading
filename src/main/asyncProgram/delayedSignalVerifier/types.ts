@@ -58,5 +58,7 @@ export type VerifiedCallback = (signal: Signal) => void;
  */
 export type DelayedSignalVerifierDeps = {
   readonly indicatorCache: IndicatorCache;
-  readonly onFatalError?: (error: unknown) => void;
+
+  /** 内部不变量或下游回调异常的统一 fatal 上报入口，由运行时装配提供。 */
+  readonly onFatalError: (error: unknown) => void;
 };

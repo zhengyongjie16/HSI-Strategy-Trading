@@ -48,7 +48,7 @@ import type { Processor } from '../types.js';
 import type { SellProcessorDeps, SellRetryState } from './types.js';
 import type { Task, SellTaskType } from '../tradeTaskQueue/types.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
-import type { SellSignal, Signal } from '../../../types/signal.js';
+import type { ExecutableSellSignal, Signal } from '../../../types/signal.js';
 
 /**
  * 复制卖出信号，用于 quote retry 的 delayed re-enqueue。
@@ -56,7 +56,7 @@ import type { SellSignal, Signal } from '../../../types/signal.js';
  * @param signal 原始卖出信号
  * @returns 可重新入队的卖出信号副本
  */
-function cloneSellSignal(signal: SellSignal): SellSignal {
+function cloneSellSignal(signal: ExecutableSellSignal): ExecutableSellSignal {
   return {
     ...signal,
     triggerTime: signal.triggerTime ? new Date(signal.triggerTime) : null,
@@ -65,7 +65,7 @@ function cloneSellSignal(signal: SellSignal): SellSignal {
   };
 }
 
-function toExecutableSellSignal(signal: Signal): SellSignal | null {
+function toExecutableSellSignal(signal: Signal): ExecutableSellSignal | null {
   if (signal.action !== 'SELLCALL' && signal.action !== 'SELLPUT') {
     return null;
   }
@@ -73,6 +73,15 @@ function toExecutableSellSignal(signal: Signal): SellSignal | null {
   const seatVersion = signal.seatVersion;
   if (typeof seatVersion !== 'number' || !Number.isFinite(seatVersion)) {
     return null;
+  }
+
+  if (signal.isProtectiveLiquidation === true) {
+    return {
+      ...signal,
+      action: signal.action,
+      seatVersion,
+      isProtectiveLiquidation: true,
+    };
   }
 
   return {
@@ -88,7 +97,7 @@ function toExecutableSellSignal(signal: Signal): SellSignal | null {
  * 同一标的同方向的不同业务动作（原因、数量、订单类型等）必须独立重试，
  * 避免被错误合并导致语义丢失。
  */
-function buildSellRetryKey(params: { readonly signal: SellSignal }): string {
+function buildSellRetryKey(params: { readonly signal: ExecutableSellSignal }): string {
   const { signal } = params;
   const relatedOrderIds = signal.relatedBuyOrderIds?.join(',') ?? '';
   const triggerTimeMs = signal.triggerTime instanceof Date ? signal.triggerTime.getTime() : -1;

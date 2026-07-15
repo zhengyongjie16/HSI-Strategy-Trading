@@ -30,8 +30,40 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
     logger,
   } = deps;
 
-  /** 将一次已经真实进入 SEARCHING 的失败统一收口为 EMPTY，并推进当日失败计数。 */
-  function recordSearchFailure(direction: 'LONG' | 'SHORT', currentTime: Date): void {
+  /**
+   * 判断异步寻标结果是否仍属于当前 SEARCHING owner。
+   *
+   * 仅方向与席位版本共同标识 owner；普通交易授权关闭、版本变更或状态离开 SEARCHING 时，
+   * 外部结果必须直接丢弃，不能再写入候选或失败事实。
+   */
+  function isSearchOwnerCurrent(params: {
+    readonly direction: 'LONG' | 'SHORT';
+    readonly seatVersion: number;
+    readonly canContinue: () => boolean;
+  }): boolean {
+    if (!params.canContinue()) {
+      return false;
+    }
+
+    if (symbolRegistry.getSeatVersion(params.direction) !== params.seatVersion) {
+      return false;
+    }
+
+    return symbolRegistry.getSeatState(params.direction).status === 'SEARCHING';
+  }
+
+  /** 将一次仍归属当前 owner 的寻标失败统一收口为 EMPTY，并推进当日失败计数。 */
+  function recordSearchFailure(params: {
+    readonly direction: 'LONG' | 'SHORT';
+    readonly currentTime: Date;
+    readonly seatVersion: number;
+    readonly canContinue: () => boolean;
+  }): boolean {
+    if (!isSearchOwnerCurrent(params)) {
+      return false;
+    }
+
+    const { direction, currentTime } = params;
     const currentSeat = symbolRegistry.getSeatState(direction);
     const nowMs = currentTime.getTime();
     const { nextFailCount, frozenTradingDayKey, shouldFreeze } = resolveNextSearchFailureState({
@@ -59,6 +91,8 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       },
       false,
     );
+
+    return true;
   }
 
   /**
@@ -67,13 +101,14 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
   async function maybeSearchOnEvent({
     direction,
     currentTime,
-    canTradeNow,
+    canContinue,
   }: SearchOnEventParams): Promise<void> {
-    if (!autoSearchConfig.autoSearchEnabled || !canTradeNow) {
+    if (!autoSearchConfig.autoSearchEnabled || !canContinue()) {
       return;
     }
 
     const seatState = symbolRegistry.getSeatState(direction);
+    const seatVersion = symbolRegistry.getSeatVersion(direction);
     if (seatState.status !== 'EMPTY') {
       return;
     }
@@ -103,6 +138,14 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       return;
     }
 
+    if (
+      !canContinue() ||
+      symbolRegistry.getSeatVersion(direction) !== seatVersion ||
+      symbolRegistry.getSeatState(direction).status !== 'EMPTY'
+    ) {
+      return;
+    }
+
     updateSeatState(
       direction,
       {
@@ -118,27 +161,43 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       false,
     );
 
+    if (!isSearchOwnerCurrent({ direction, seatVersion, canContinue })) {
+      return;
+    }
+
     let best: { readonly symbol: string; readonly callPrice: number } | null;
     try {
       const input = await buildFindBestWarrantInput({
         currentTime,
         policy,
       });
+      if (!isSearchOwnerCurrent({ direction, seatVersion, canContinue })) {
+        return;
+      }
+
       best = await findBestWarrant(input);
     } catch (err) {
-      recordSearchFailure(direction, currentTime);
       if (isExternalApiRequestError(err)) {
+        if (!recordSearchFailure({ direction, currentTime, seatVersion, canContinue })) {
+          return;
+        }
+
         logger.warn(
           `[自动寻标] ${monitorSymbol} ${direction} 外部请求失败，等待 cooldown owner 重试: ${err.message}`,
         );
         return;
       }
 
+      recordSearchFailure({ direction, currentTime, seatVersion, canContinue });
       throw err;
     }
 
+    if (!isSearchOwnerCurrent({ direction, seatVersion, canContinue })) {
+      return;
+    }
+
     if (!best) {
-      recordSearchFailure(direction, currentTime);
+      recordSearchFailure({ direction, currentTime, seatVersion, canContinue });
       return;
     }
 

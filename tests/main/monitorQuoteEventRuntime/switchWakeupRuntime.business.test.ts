@@ -33,6 +33,10 @@ import type {
 import type { MonitorContext } from '../../../src/types/state.js';
 import type { SymbolRegistry } from '../../../src/types/seat.js';
 import type { QuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/types.js';
+import type {
+  TradingGateEventRuntime,
+  TradingGateStateChangedEvent,
+} from '../../../src/main/tradingGateEventRuntime/types.js';
 
 function createDeferred<voidValue = void>(): {
   readonly promise: Promise<voidValue>;
@@ -132,6 +136,29 @@ function createTimerHarness(nowMs: number = 1_000) {
   };
 }
 
+function createTradingGateHarness(): Readonly<{
+  port: Pick<TradingGateEventRuntime, 'onGateStateChanged'>;
+  emit: (event: TradingGateStateChangedEvent) => void;
+}> {
+  let listener: ((event: TradingGateStateChangedEvent) => void) | null = null;
+
+  return {
+    port: {
+      onGateStateChanged: (nextListener) => {
+        listener = nextListener;
+        return () => {
+          if (listener === nextListener) {
+            listener = null;
+          }
+        };
+      },
+    },
+    emit: (event) => {
+      listener?.(event);
+    },
+  };
+}
+
 describe('switchWakeupRuntime', () => {
   let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | null;
   let orderStateChangedListener: ((event: OrderStateChangedEvent) => void) | null;
@@ -160,6 +187,7 @@ describe('switchWakeupRuntime', () => {
         QuoteSubscriptionRuntime,
         'retainSymbols' | 'releaseRetain'
       >;
+      readonly tradingGateEventRuntime?: Pick<TradingGateEventRuntime, 'onGateStateChanged'>;
       readonly onFatalError?: (error: unknown) => void;
     } = {},
   ): Readonly<{
@@ -237,6 +265,9 @@ describe('switchWakeupRuntime', () => {
         };
       },
     });
+    const tradingGateEventRuntime = params.tradingGateEventRuntime ?? {
+      onGateStateChanged: () => () => {},
+    };
     const runtimeDeps = {
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -253,6 +284,7 @@ describe('switchWakeupRuntime', () => {
       monitorContext,
       lastState,
       postTradeConsistencyRuntime: consistencyHarness.port,
+      tradingGateEventRuntime,
       doomsdayProtectionEnabled: params.doomsdayProtectionEnabled ?? false,
       now:
         params.now ??
@@ -361,6 +393,76 @@ describe('switchWakeupRuntime', () => {
       name: 'ExternalApiRequestError',
       operation: 'AutoSymbolManager.advancePendingSwitch',
     });
+  });
+
+  it('reports a malformed advance result when the lifecycle gate closes during advance', async () => {
+    const fatalErrors: unknown[] = [];
+    const advanceStarted = createDeferred();
+    const releaseAdvance = createDeferred();
+    let advanceCalls = 0;
+    const runtimeHarness = createBaseHarness({
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async () => {
+          advanceCalls += 1;
+          advanceStarted.resolve();
+          await releaseAdvance.promise;
+
+          return {
+            advanced: true,
+            direction: 'SHORT',
+            stillPending: true,
+            driveResult: createWaitResult([
+              { kind: 'RETRY_TIMER', atMs: 1_100 },
+              { kind: 'SYMBOL_QUOTE', symbol: 'NEXT.HK' },
+            ]),
+          };
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
+    });
+    runtimeHarness.consistencyHarness.emitFreshReached();
+    await advanceStarted.promise;
+
+    runtimeHarness.lastState.isTradingEnabled = false;
+    releaseAdvance.resolve();
+    await waitTick();
+    await waitTick();
+
+    expect(fatalErrors).toEqual([
+      expect.objectContaining({
+        message: '[SwitchWakeupRuntime] advance result direction mismatch',
+      }),
+    ]);
+    expect(runtimeHarness.timerHarness.getPendingTimerCount()).toBe(0);
+
+    runtimeHarness.lastState.isTradingEnabled = true;
+    emitQuoteUpdated('NEXT.HK', 1.23);
+    await waitTick();
+
+    expect(advanceCalls).toBe(1);
+    await runtimeHarness.runtime.stopAndDrain();
   });
 
   it('re-drives the same pending switch on order, freshness, quote and retry-timer wakeups', async () => {
@@ -516,6 +618,7 @@ describe('switchWakeupRuntime', () => {
       currentVersion: 1,
       staleVersion: 2,
     });
+    const tradingGateHarness = createTradingGateHarness();
     consistencyHarness.blockFreshWait();
     const monitorContext = createMonitorContextDouble({
       config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
@@ -575,6 +678,7 @@ describe('switchWakeupRuntime', () => {
         cachedPositions: [],
       },
       postTradeConsistencyRuntime: consistencyHarness.port,
+      tradingGateEventRuntime: tradingGateHarness.port,
       doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-07T02:00:00.000Z'),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -1558,7 +1662,7 @@ describe('switchWakeupRuntime', () => {
     expect(advanceCalls).toBe(1);
   });
 
-  it('does not advance when baseline is stale or lifecycle gate is closed', async () => {
+  it('does not retain a pending-switch handoff while the lifecycle gate is closed', async () => {
     let advanceCalls = 0;
     const runtimeHarness = createBaseHarness({
       consistencyStatus: {
@@ -1620,7 +1724,242 @@ describe('switchWakeupRuntime', () => {
     runtimeHarness.consistencyHarness.emitFreshReached();
     await waitTick();
 
+    expect(advanceCalls).toBe(0);
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  it('keeps an existing pending switch route through lunch and re-drives it when the gate reopens', async () => {
+    let advanceCalls = 0;
+    const tradingGateHarness = createTradingGateHarness();
+    const runtimeHarness = createBaseHarness({
+      tradingGateEventRuntime: tradingGateHarness.port,
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async (params) => {
+          advanceCalls += 1;
+          return {
+            advanced: true,
+            direction: params.direction,
+            stillPending: false,
+            driveResult: { kind: 'COMPLETED' },
+          };
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
+    });
+
+    runtimeHarness.lastState.canTrade = false;
+    tradingGateHarness.emit({ previousCanTrade: true, nextCanTrade: false });
+    await waitTick();
+    expect(advanceCalls).toBe(0);
+
+    runtimeHarness.lastState.canTrade = true;
+    tradingGateHarness.emit({ previousCanTrade: false, nextCanTrade: true });
+    await waitTick();
+
     expect(advanceCalls).toBe(1);
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  it('retains the current route when lunch aborts an in-flight advance and re-drives it after the gate reopens', async () => {
+    const advanceStarted = createDeferred();
+    const releaseFirstAdvance = createDeferred();
+    const canContinueDuringLunch: boolean[] = [];
+    let advanceCalls = 0;
+    const tradingGateHarness = createTradingGateHarness();
+    const runtimeHarness = createBaseHarness({
+      tradingGateEventRuntime: tradingGateHarness.port,
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async (params) => {
+          advanceCalls += 1;
+          if (advanceCalls === 1) {
+            advanceStarted.resolve();
+            await releaseFirstAdvance.promise;
+            const canContinue = params.canContinue();
+            canContinueDuringLunch.push(canContinue);
+            if (!canContinue) {
+              return {
+                advanced: false,
+                direction: params.direction,
+                stillPending: false,
+                driveResult: { kind: 'NOOP' },
+              };
+            }
+          }
+
+          return {
+            advanced: true,
+            direction: params.direction,
+            stillPending: false,
+            driveResult: { kind: 'COMPLETED' },
+          };
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
+    });
+    runtimeHarness.consistencyHarness.emitFreshReached();
+    await advanceStarted.promise;
+
+    runtimeHarness.lastState.canTrade = false;
+    tradingGateHarness.emit({ previousCanTrade: true, nextCanTrade: false });
+    releaseFirstAdvance.resolve();
+    await waitTick();
+    await waitTick();
+
+    expect(canContinueDuringLunch).toEqual([false]);
+    expect(advanceCalls).toBe(1);
+
+    runtimeHarness.lastState.canTrade = true;
+    tradingGateHarness.emit({ previousCanTrade: false, nextCanTrade: true });
+    await waitTick();
+    await waitTick();
+
+    expect(advanceCalls).toBe(2);
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  it('revokes in-flight manager continuation before stopAndDrain waits for the route to drain', async () => {
+    const advanceStarted = createDeferred();
+    const releaseAdvance = createDeferred();
+    const observedCanContinue: boolean[] = [];
+    let managerStateMutations = 0;
+    const runtimeHarness = createBaseHarness({
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async (params) => {
+          advanceStarted.resolve();
+          await releaseAdvance.promise;
+          const canContinue = params.canContinue();
+          observedCanContinue.push(canContinue);
+          if (canContinue) {
+            managerStateMutations += 1;
+          }
+
+          return {
+            advanced: false,
+            direction: params.direction,
+            stillPending: false,
+            driveResult: { kind: 'NOOP' },
+          };
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
+    });
+    runtimeHarness.consistencyHarness.emitFreshReached();
+    await advanceStarted.promise;
+
+    const stopPromise = runtimeHarness.runtime.stopAndDrain();
+    releaseAdvance.resolve();
+    await stopPromise;
+
+    expect(observedCanContinue).toEqual([false]);
+    expect(managerStateMutations).toBe(0);
+  });
+
+  it('deletes an existing pending switch route when the lifecycle gate closes', async () => {
+    let advanceCalls = 0;
+    const tradingGateHarness = createTradingGateHarness();
+    const runtimeHarness = createBaseHarness({
+      tradingGateEventRuntime: tradingGateHarness.port,
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async (params) => {
+          advanceCalls += 1;
+          return {
+            advanced: true,
+            direction: params.direction,
+            stillPending: false,
+            driveResult: { kind: 'COMPLETED' },
+          };
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+          pendingSinceMs: null,
+        }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
+    });
+
+    runtimeHarness.lastState.isTradingEnabled = false;
+    runtimeHarness.lastState.canTrade = false;
+    tradingGateHarness.emit({ previousCanTrade: true, nextCanTrade: false });
+    await waitTick();
+
+    runtimeHarness.lastState.isTradingEnabled = true;
+    runtimeHarness.lastState.canTrade = true;
+    runtimeHarness.consistencyHarness.emitFreshReached();
+    await waitTick();
+
+    expect(advanceCalls).toBe(0);
     await runtimeHarness.runtime.stopAndDrain();
   });
 
@@ -1695,6 +2034,56 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
 
     expect(observedPositionQuantities).toEqual([[100], [300]]);
+    await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  it('does not requeue a pending switch after doomsday takeover begins during advance', async () => {
+    const beforeTakeoverMs = Date.parse('2026-02-16T07:54:59.000Z');
+    const takeoverMs = Date.parse('2026-02-16T07:55:00.000Z');
+    let currentNowMs = beforeTakeoverMs;
+    const advanceStarted = createDeferred();
+    const releaseAdvance = createDeferred();
+    const runtimeHarness = createBaseHarness({
+      doomsdayProtectionEnabled: true,
+      now: () => new Date(currentNowMs),
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async (params) => {
+          advanceStarted.resolve();
+          await releaseAdvance.promise;
+          return {
+            advanced: true,
+            direction: params.direction,
+            stillPending: true,
+            driveResult: createWaitResult([{ kind: 'RETRY_TIMER', atMs: takeoverMs + 1_000 }]),
+          };
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({ pending: false, pendingSinceMs: null }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+    });
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await advanceStarted.promise;
+
+    currentNowMs = takeoverMs;
+    releaseAdvance.resolve();
+    await waitTick();
+
+    expect(runtimeHarness.timerHarness.getPendingTimerCount()).toBe(0);
     await runtimeHarness.runtime.stopAndDrain();
   });
 });

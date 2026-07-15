@@ -23,6 +23,7 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import type { CreatePostGateRuntimeParams } from '../../../src/app/types.js';
+import type { TraderDeps } from '../../../src/core/trader/types.js';
 import type { OrderStateChangedEvent } from '../../../src/types/services.js';
 
 const TEST_LOG_ROOT_DIR = path.join(process.cwd(), 'tests', 'logs', 'post-gate-runtime');
@@ -152,6 +153,57 @@ describe('createPostGateRuntime trade log persistence', () => {
 
     expect(subscribed).toEqual([['POS.HK']]);
     expect(runtime.lastState.allTradingSymbols).toEqual(new Set(['POS.HK']));
+  });
+
+  it('injects a continuous-trading authorization that requires lifecycle and canTrade', async () => {
+    const captured: {
+      continuousTradingAuthorization: TraderDeps['isContinuousTradingAllowed'] | null;
+    } = {
+      continuousTradingAuthorization: null,
+    };
+    const createPostGateRuntime = createPostGateRuntimeFactory({
+      createMonitorContext,
+      createTrader: async (deps) => {
+        captured.continuousTradingAuthorization = deps.isContinuousTradingAllowed;
+        return createTraderDouble();
+      },
+    });
+    const runtime = await createPostGateRuntime(createRuntimeParams());
+
+    expect(captured.continuousTradingAuthorization).toBeTypeOf('function');
+    if (captured.continuousTradingAuthorization === null) {
+      throw new Error('expected createPostGateRuntime to inject continuous trading authorization');
+    }
+
+    const continuousTradingAuthorization = captured.continuousTradingAuthorization;
+
+    runtime.lastState.isTradingEnabled = true;
+    runtime.lastState.canTrade = false;
+    expect(continuousTradingAuthorization()).toBe(false);
+
+    runtime.lastState.canTrade = true;
+    expect(continuousTradingAuthorization()).toBe(true);
+
+    runtime.lastState.isTradingEnabled = false;
+    expect(continuousTradingAuthorization()).toBe(false);
+
+    runtime.lastState.canTrade = null;
+    expect(continuousTradingAuthorization()).toBe(false);
+  });
+
+  it('constructs Trader and MonitorContext with the same unrealized-loss checker instance', async () => {
+    let capturedUnrealizedLossBuyGate: unknown = null;
+    const createPostGateRuntime = createPostGateRuntimeFactory({
+      createMonitorContext,
+      createTrader: async (deps) => {
+        capturedUnrealizedLossBuyGate = Reflect.get(deps, 'unrealizedLossBuyGate');
+        return createTraderDouble();
+      },
+    });
+
+    const runtime = await createPostGateRuntime(createRuntimeParams());
+
+    expect(capturedUnrealizedLossBuyGate).toBe(runtime.monitorContext.riskChecker);
   });
 
   it('registers trader listener disposal before a later post-gate factory failure', async () => {

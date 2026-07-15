@@ -13,8 +13,6 @@ import type {
   SeatTruthChangedListener,
   SymbolRegistry,
 } from '../../types/seat.js';
-import { formatError } from '../../utils/error/index.js';
-import { logger } from '../../utils/logger/index.js';
 import { isSeatActive, isSeatVersionMatch } from '../../utils/seat/guards.js';
 import type {
   SeatEntry,
@@ -259,9 +257,12 @@ export function resolveSeatOnStartup({
 }
 
 /**
- * 断言席位状态满足基本不变量。
+ * 断言席位状态满足注册表存储前的基础不变量。
  *
  * @param seatState 待校验的席位状态
+ * @param allowStaticBootstrap 是否允许仅在构造期出现、尚无激活时间的静态 ACTIVE 席位
+ * @returns 无返回值；校验通过后调用方可将状态写入注册表
+ * @throws {Error} 状态与标的绑定、时间字段或 ACTIVE 激活时间约束不一致时抛出
  */
 function assertSeatStateInvariant(
   seatState: SeatStateCandidate,
@@ -304,7 +305,13 @@ function assertSeatStateInvariant(
   }
 }
 
-/** 断言 public mutation 输入是合法运行时状态，并排除构造期静态 bootstrap 成员。 */
+/**
+ * 断言 public mutation 输入是可写入的运行时席位状态，并排除构造期静态 bootstrap 例外。
+ *
+ * @param seatState 待写入 SymbolRegistry 的候选席位状态
+ * @returns 无返回值；断言成功后将参数收窄为 RuntimeWritableSeatState
+ * @throws {Error} 运行时状态不满足席位不变量时抛出
+ */
 function assertRuntimeSeatStateInvariant(
   seatState: SeatStateCandidate,
 ): asserts seatState is RuntimeWritableSeatState {
@@ -312,8 +319,10 @@ function assertRuntimeSeatStateInvariant(
 }
 
 /**
- * 创建席位条目（内部工厂函数）
+ * 创建包含当前状态、版本与事件版本的内部席位条目。
+ *
  * @param state 已满足判别联合约束的初始席位状态
+ * @param allowStaticBootstrap 是否允许构造期静态 ACTIVE 席位缺少激活时间
  * @returns 包含状态和版本号的席位条目，初始版本号为 1
  */
 function createSeatEntry(state: SeatState, allowStaticBootstrap: boolean): SeatEntry {
@@ -346,6 +355,19 @@ function normalizeSeatState(nextState: RuntimeWritableSeatState): RuntimeWritabl
  */
 function resolveSeatEntry(seatStore: SymbolSeatEntry, direction: 'LONG' | 'SHORT'): SeatEntry {
   return direction === 'LONG' ? seatStore.long : seatStore.short;
+}
+
+/**
+ * 在所有同步 listener 都已尝试执行后，将收集到的错误暴露给上游运行时。
+ *
+ * @param listenerErrors listener 执行过程中收集的错误
+ * @returns 无返回值；无错误时正常返回
+ * @throws {AggregateError} 任一 listener 执行失败时抛出，已提交的席位真相不会回滚
+ */
+function throwIfListenerErrors(listenerErrors: ReadonlyArray<unknown>): void {
+  if (listenerErrors.length > 0) {
+    throw new AggregateError(listenerErrors, 'SymbolRegistry listener 执行失败');
+  }
 }
 
 /**
@@ -416,29 +438,43 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
   };
 
   /**
-   * 广播席位状态变化事件。
+   * 广播席位状态变化事件，并收集 listener 错误供 mutation 完成全部事件广播后统一抛出。
    * 事件由状态写入或原子状态版本更新发布，单独 bump 版本不发布状态变化事件。
+   *
+   * @param event 已提交的状态变化事件，含方向、前后状态与事件版本
+   * @param listenerErrors 本次 mutation 共享的错误收集器，用于保证后续 state/truth listener 仍会执行
+   * @returns 无返回值；所有 state listener 均已尝试执行
    */
-  function emitSeatStateChanged(event: Parameters<SeatStateChangedListener>[0]): void {
+  function emitSeatStateChanged(
+    event: Parameters<SeatStateChangedListener>[0],
+    listenerErrors: unknown[],
+  ): void {
     for (const listener of listeners) {
       try {
         listener(event);
       } catch (error) {
-        logger.error('SymbolRegistry 席位状态 listener 执行失败', formatError(error));
+        listenerErrors.push(error);
       }
     }
   }
 
   /**
-   * 广播席位 truth 变化事件。
-   * 事件在 public mutation 完整提交并完成细粒度事件发布后同步发出。
+   * 广播已提交席位 truth 的变化事件，并继续收集 listener 错误。
+   * 事件在 public mutation 完整提交并完成细粒度状态事件发布后同步发出。
+   *
+   * @param event 已提交 truth 的方向事件
+   * @param listenerErrors 与 state event 共享的错误收集器，确保 truth listener 不被前序失败阻断
+   * @returns 无返回值；所有 truth listener 均已尝试执行
    */
-  function emitSeatTruthChanged(event: Parameters<SeatTruthChangedListener>[0]): void {
+  function emitSeatTruthChanged(
+    event: Parameters<SeatTruthChangedListener>[0],
+    listenerErrors: unknown[],
+  ): void {
     for (const listener of truthListeners) {
       try {
         listener(event);
       } catch (error) {
-        logger.error('SymbolRegistry 席位 truth listener 执行失败', formatError(error));
+        listenerErrors.push(error);
       }
     }
   }
@@ -488,14 +524,19 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
       const previousVersion = seatEntry.lastEventVersion;
       seatEntry.state = normalizeSeatState(nextState);
       seatEntry.lastEventVersion = seatEntry.version;
-      emitSeatStateChanged({
-        direction,
-        previousState,
-        nextState: seatEntry.state,
-        previousVersion,
-        nextVersion: seatEntry.version,
-      });
-      emitSeatTruthChanged({ direction });
+      const listenerErrors: unknown[] = [];
+      emitSeatStateChanged(
+        {
+          direction,
+          previousState,
+          nextState: seatEntry.state,
+          previousVersion,
+          nextVersion: seatEntry.version,
+        },
+        listenerErrors,
+      );
+      emitSeatTruthChanged({ direction }, listenerErrors);
+      throwIfListenerErrors(listenerErrors);
       return seatEntry.state;
     },
     updateSeatStateWithVersionBump(
@@ -508,14 +549,19 @@ export function createSymbolRegistry(monitor: MonitorConfig): SymbolRegistry {
       seatEntry.state = normalizeSeatState(nextState);
       seatEntry.version += 1;
       seatEntry.lastEventVersion = seatEntry.version;
-      emitSeatStateChanged({
-        direction,
-        previousState,
-        nextState: seatEntry.state,
-        previousVersion: previousStateEventVersion,
-        nextVersion: seatEntry.version,
-      });
-      emitSeatTruthChanged({ direction });
+      const listenerErrors: unknown[] = [];
+      emitSeatStateChanged(
+        {
+          direction,
+          previousState,
+          nextState: seatEntry.state,
+          previousVersion: previousStateEventVersion,
+          nextVersion: seatEntry.version,
+        },
+        listenerErrors,
+      );
+      emitSeatTruthChanged({ direction }, listenerErrors);
+      throwIfListenerErrors(listenerErrors);
       return { seatState: seatEntry.state, seatVersion: seatEntry.version };
     },
     onSeatStateChanged(listener: SeatStateChangedListener): () => void {

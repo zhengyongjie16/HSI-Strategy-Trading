@@ -7,17 +7,26 @@
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderType } from 'longbridge';
 import { toMockDecimal } from '../../../mock/longbridge/decimal.js';
-import { createSwitchStateMachine } from '../../../src/services/autoSymbolManager/switchStateMachine.js';
+import { createSeatRuntimeCleanupDispatcher } from '../../../src/main/seatRuntimeCleanupDispatcher/index.js';
+import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
+import {
+  createBuyTaskQueue,
+  createSellTaskQueue,
+} from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
+import { createAutoSymbolManager } from '../../../src/services/autoSymbolManager/index.js';
+import { createSwitchStateMachine as createProductionSwitchStateMachine } from '../../../src/services/autoSymbolManager/switchStateMachine.js';
 import { createSeatStateManager } from '../../../src/services/autoSymbolManager/seatStateManager.js';
+import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import {
   createSignalBuilder,
   calculateBuyQuantityByNotional,
   resolveDirectionSymbols,
 } from '../../../src/services/autoSymbolManager/signalBuilder.js';
 import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
-import { PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
+import { ORDER_QUOTE_RETRY, PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
 import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import type { PeriodicSwitchPendingState } from '../../../src/types/monitorContextPorts.js';
+import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type {
   SwitchStateMachineDeps,
   SwitchState,
@@ -29,7 +38,9 @@ import {
   createWarrantDistanceInfoDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
+  createMonitorContextDouble,
   createOrderRecorderDouble,
+  createPositionDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
@@ -42,6 +53,60 @@ import {
   createWarrantCandidateWithOverrides,
   getDefaultAutoSearchConfig,
 } from './utils.js';
+
+type TestStartSwitchParams = Omit<
+  Parameters<ReturnType<typeof createProductionSwitchStateMachine>['startSwitchOnDistance']>[0],
+  'canContinue'
+> & {
+  readonly canContinue?: () => boolean;
+};
+
+type TestAdvanceSwitchParams = Omit<
+  Parameters<ReturnType<typeof createProductionSwitchStateMachine>['advancePendingSwitch']>[0],
+  'canContinue'
+> & {
+  readonly canContinue?: () => boolean;
+};
+
+type TestPeriodicSwitchParams = Omit<
+  Parameters<ReturnType<typeof createProductionSwitchStateMachine>['evaluatePeriodicSwitchDue']>[0],
+  'canContinue'
+> & {
+  readonly canContinue?: () => boolean;
+};
+
+type TestSwitchStateMachine = Omit<
+  ReturnType<typeof createProductionSwitchStateMachine>,
+  'startSwitchOnDistance' | 'advancePendingSwitch' | 'evaluatePeriodicSwitchDue'
+> & {
+  readonly startSwitchOnDistance: (
+    params: TestStartSwitchParams,
+  ) => ReturnType<ReturnType<typeof createProductionSwitchStateMachine>['startSwitchOnDistance']>;
+  readonly advancePendingSwitch: (
+    params: TestAdvanceSwitchParams,
+  ) => ReturnType<ReturnType<typeof createProductionSwitchStateMachine>['advancePendingSwitch']>;
+  readonly evaluatePeriodicSwitchDue: (
+    params: TestPeriodicSwitchParams,
+  ) => ReturnType<
+    ReturnType<typeof createProductionSwitchStateMachine>['evaluatePeriodicSwitchDue']
+  >;
+};
+
+function createSwitchStateMachine(deps: SwitchStateMachineDeps): TestSwitchStateMachine {
+  const machine = createProductionSwitchStateMachine(deps);
+  return {
+    ...machine,
+    startSwitchOnDistance: (params) =>
+      machine.startSwitchOnDistance({ ...params, canContinue: params.canContinue ?? (() => true) }),
+    advancePendingSwitch: (params) =>
+      machine.advancePendingSwitch({ ...params, canContinue: params.canContinue ?? (() => true) }),
+    evaluatePeriodicSwitchDue: (params) =>
+      machine.evaluatePeriodicSwitchDue({
+        ...params,
+        canContinue: params.canContinue ?? (() => true),
+      }),
+  };
+}
 
 function createQuotes(prices: Readonly<Record<string, number>>): ReadonlyMap<string, Quote | null> {
   const map = new Map<string, Quote | null>();
@@ -78,8 +143,21 @@ function createPeriodicSwitchPendingMap(): Map<'LONG' | 'SHORT', PeriodicSwitchP
   return new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
 }
 
+function createDeferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+
+  return { promise, resolve };
+}
+
 function createLongSwitchAdmissionHarness(params: {
   readonly nowMs: number;
+  readonly now?: () => Date;
   readonly traderOverrides?: Partial<Trader>;
   readonly orderRecorder?: OrderRecorder;
   readonly findBestWarrant?: SwitchStateMachineDeps['findBestWarrant'];
@@ -105,11 +183,12 @@ function createLongSwitchAdmissionHarness(params: {
   });
   const switchStates = createSwitchStatesMap();
   const switchSuppressions = createSwitchSuppressionsMap();
+  const now = params.now ?? (() => new Date(params.nowMs));
   const seatStateManager = createSeatStateManager({
     symbolRegistry,
     switchStates,
     switchSuppressions,
-    now: () => new Date(params.nowMs),
+    now,
     logger: createLoggerStub(),
     getHKDateKey,
   });
@@ -128,7 +207,7 @@ function createLongSwitchAdmissionHarness(params: {
           distanceToStrikePercent: 0.1,
         }),
     }),
-    now: () => new Date(params.nowMs),
+    now,
     switchStates,
     periodicSwitchPending: createPeriodicSwitchPendingMap(),
     resolveSuppression: seatStateManager.resolveSuppression,
@@ -160,27 +239,179 @@ function createLongSwitchAdmissionHarness(params: {
 
 async function runDistanceSwitch(
   machine: ReturnType<typeof createSwitchStateMachine>,
-  params: Parameters<ReturnType<typeof createSwitchStateMachine>['startSwitchOnDistance']>[0],
+  params: Omit<
+    Parameters<ReturnType<typeof createSwitchStateMachine>['startSwitchOnDistance']>[0],
+    'canContinue'
+  >,
 ): Promise<void> {
+  const switchParams = { ...params, canContinue: () => true };
   if (machine.hasPendingSwitch(params.direction)) {
-    await machine.advancePendingSwitch(params);
+    await machine.advancePendingSwitch(switchParams);
     return;
   }
 
-  const startResult = await machine.startSwitchOnDistance(params);
+  const startResult = await machine.startSwitchOnDistance(switchParams);
   if (startResult.started) {
-    await machine.advancePendingSwitch(params);
+    await machine.advancePendingSwitch(switchParams);
   }
 }
 
 describe('autoSymbolManager switchStateMachine business flow', () => {
-  it('keeps distance-switch seat ACTIVE when pending-order admission read fails', async () => {
+  it('将 cleanup listener 的聚合失败上抛给距离换标 admission，且不写入 pending switch', async () => {
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    const monitorConfig = createMonitorConfigDouble({
+      autoSearchConfig: {
+        ...getDefaultAutoSearchConfig(),
+        switchIntervalMinutes: 1,
+      },
+    });
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: nowMs - 31 * 60_000,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    });
+
+    const cleanupError = new Error('cleanup listener failed');
+    const riskChecker = createRiskCheckerDouble({
+      clearLongWarrantInfo: () => {
+        throw cleanupError;
+      },
+      getWarrantDistanceInfo: () =>
+        createWarrantDistanceInfoDouble({
+          warrantType: 'BULL',
+          distanceToStrikePercent: 0.1,
+        }),
+    });
+    const autoSymbolManager = createAutoSymbolManager({
+      monitorConfig,
+      symbolRegistry,
+      marketDataClient: createMarketDataClientDouble(),
+      trader: createTraderDouble(),
+      orderRecorder: createOrderRecorderDouble(),
+      riskChecker,
+      findBestWarrant: async () => createWarrantCandidate('NEW_BULL.HK'),
+      getTradingCalendarSnapshot: () => createTradingCalendarSnapshot(),
+      now: () => new Date(nowMs),
+    });
+    const dispatcher = createSeatRuntimeCleanupDispatcher({
+      symbolRegistry,
+      monitorContext: createMonitorContextDouble({
+        config: monitorConfig,
+        symbolRegistry,
+        autoSymbolManager,
+        riskChecker,
+      }),
+      buyTaskQueue: createBuyTaskQueue(),
+      sellTaskQueue: createSellTaskQueue(),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
+    });
+    const observedListeners: string[] = [];
+
+    dispatcher.start();
+    const unsubscribeStateFirst = symbolRegistry.onSeatStateChanged(() => {
+      observedListeners.push('state:first');
+    });
+    const unsubscribeStateSecond = symbolRegistry.onSeatStateChanged(() => {
+      observedListeners.push('state:second');
+    });
+    const unsubscribeTruthFirst = symbolRegistry.onSeatTruthChanged(() => {
+      observedListeners.push('truth:first');
+    });
+    const unsubscribeTruthSecond = symbolRegistry.onSeatTruthChanged(() => {
+      observedListeners.push('truth:second');
+    });
+
+    let caught: unknown = null;
+    try {
+      await autoSymbolManager.startSwitchOnDistance({
+        direction: 'LONG',
+        monitorPrice: 20_000,
+        positions: [],
+        canContinue: () => true,
+      });
+    } catch (error) {
+      caught = error;
+    } finally {
+      unsubscribeStateFirst();
+      unsubscribeStateSecond();
+      unsubscribeTruthFirst();
+      unsubscribeTruthSecond();
+      dispatcher.stop();
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    if (!(caught instanceof AggregateError)) {
+      throw new Error('预期距离换标 admission 接管 cleanup listener 的 AggregateError');
+    }
+
+    expect(caught.errors).toEqual([cleanupError]);
+    expect(observedListeners).toEqual([
+      'state:first',
+      'state:second',
+      'truth:first',
+      'truth:second',
+    ]);
+
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      symbol: 'OLD_BULL.HK',
+      status: 'SWITCHING',
+    });
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
+    expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
+  });
+
+  it('keeps distance-switch seat ACTIVE when candidate precheck has a true external failure', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    const candidateError = createExternalApiRequestError({
+      operation: 'test.findBestWarrant',
+      attempts: 1,
+      cause: new Error('candidate query unavailable'),
+    });
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs,
+      findBestWarrant: async () => {
+        throw candidateError;
+      },
+    });
+
+    let caught: unknown = null;
+    try {
+      await harness.machine.startSwitchOnDistance({
+        direction: 'LONG',
+        monitorPrice: 20_000,
+        positions: [],
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(candidateError);
+    expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'ACTIVE',
+      symbol: 'OLD_BULL.HK',
+    });
+    expect(harness.symbolRegistry.getSeatVersion('LONG')).toBe(1);
+    expect(harness.switchStates.size).toBe(0);
+  });
+
+  it('keeps distance-switch seat ACTIVE when pending-order admission has a true external failure', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    const pendingOrderError = createExternalApiRequestError({
+      operation: 'test.getPendingOrders',
+      attempts: 1,
+      cause: new Error('pending orders unavailable'),
+    });
     const harness = createLongSwitchAdmissionHarness({
       nowMs,
       traderOverrides: {
         getPendingOrders: async () => {
-          throw new Error('pending orders unavailable');
+          throw pendingOrderError;
         },
       },
     });
@@ -196,7 +427,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       caught = error;
     }
 
-    expect(caught).toMatchObject({ message: 'pending orders unavailable' });
+    expect(caught).toBe(pendingOrderError);
 
     expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
       status: 'ACTIVE',
@@ -222,7 +453,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       await harness.machine.evaluatePeriodicSwitchDue({
         direction: 'LONG',
         currentTime: new Date(nowMs),
-        canTradeNow: true,
+        canContinue: () => true,
       });
     } catch (error) {
       caught = error;
@@ -395,6 +626,243 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   });
 
+  it('replaces a consumed timer when SELL_OUT quote read has an external failure', async () => {
+    const clock = { nowMs: Date.parse('2026-02-16T01:31:00.000Z') };
+    const availableOldPosition = createPositionDouble({
+      symbol: 'OLD_BULL.HK',
+      quantity: 100,
+      availableQuantity: 100,
+    });
+    let quoteCalls = 0;
+    let executeCalls = 0;
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs: clock.nowMs,
+      now: () => new Date(clock.nowMs),
+      traderOverrides: {
+        getPendingOrders: async () => [],
+        executeSignals: async () => {
+          executeCalls += 1;
+          return { executedOrderIds: ['SELL-ORDER-1'] };
+        },
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          quoteCalls += 1;
+          if (quoteCalls === 1) {
+            throw createExternalApiRequestError({
+              operation: 'test.sellOutQuote',
+              attempts: 1,
+              cause: new Error('sell quote unavailable'),
+            });
+          }
+
+          return new Map(createQuotes({ 'OLD_BULL.HK': 1 }));
+        },
+      }),
+    });
+
+    const startResult = await harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [],
+    });
+    expect(startResult.started).toBeTrue();
+
+    const failedQuoteAdvance = await harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [availableOldPosition],
+    });
+    expect(failedQuoteAdvance).toEqual({
+      advanced: true,
+      direction: 'LONG',
+      stillPending: true,
+      driveResult: {
+        kind: 'WAIT',
+        wakeups: [
+          { kind: 'SYMBOL_QUOTE', symbol: 'OLD_BULL.HK' },
+          { kind: 'RETRY_TIMER', atMs: clock.nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS },
+        ],
+      },
+    });
+    expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
+    expect(executeCalls).toBe(0);
+
+    clock.nowMs += ORDER_QUOTE_RETRY.INTERVAL_MS;
+    const successfulQuoteAdvance = await harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [availableOldPosition],
+    });
+    expect(successfulQuoteAdvance).toEqual({
+      advanced: true,
+      direction: 'LONG',
+      stillPending: true,
+      driveResult: {
+        kind: 'WAIT',
+        wakeups: [{ kind: 'ORDER_EVENT', symbols: ['OLD_BULL.HK'] }, { kind: 'FRESHNESS' }],
+      },
+    });
+    expect(quoteCalls).toBe(2);
+    expect(executeCalls).toBe(1);
+  });
+
+  it('replaces a consumed timer when WAIT_QUOTE read has an external failure without submitting rebuy', async () => {
+    const clock = { nowMs: Date.parse('2026-02-16T01:31:00.000Z') };
+    const availableOldPosition = createPositionDouble({
+      symbol: 'OLD_BULL.HK',
+      quantity: 100,
+      availableQuantity: 100,
+    });
+    const executedActions: string[] = [];
+    let nextQuoteCalls = 0;
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs: clock.nowMs,
+      now: () => new Date(clock.nowMs),
+      traderOverrides: {
+        getPendingOrders: async () => [],
+        executeSignals: async (signals) => {
+          const action = signals[0]?.action;
+          if (action === undefined) {
+            throw new Error('expected switch signal');
+          }
+
+          executedActions.push(action);
+          return { executedOrderIds: [`${action}-ORDER-1`] };
+        },
+      },
+      orderRecorder: createOrderRecorderDouble({
+        getSellRecordByOrderId: (orderId) =>
+          orderId === 'SELLCALL-ORDER-1'
+            ? {
+                orderId,
+                symbol: 'OLD_BULL.HK',
+                executedPrice: 2,
+                executedQuantity: 100,
+                executedTime: clock.nowMs,
+                submittedAt: undefined,
+                updatedAt: undefined,
+              }
+            : null,
+      }),
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async (symbols) => {
+          const [symbol] = symbols;
+          if (symbol === 'OLD_BULL.HK') {
+            return new Map(createQuotes({ 'OLD_BULL.HK': 1 }));
+          }
+
+          nextQuoteCalls += 1;
+          if (nextQuoteCalls === 1) {
+            throw createExternalApiRequestError({
+              operation: 'test.waitQuote',
+              attempts: 1,
+              cause: new Error('next quote unavailable'),
+            });
+          }
+
+          return new Map(createQuotes({ 'NEW_BULL.HK': 1 }));
+        },
+      }),
+    });
+
+    await harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [availableOldPosition],
+    });
+
+    await harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [availableOldPosition],
+    });
+
+    await harness.machine.advancePendingSwitch({ direction: 'LONG', positions: [] });
+
+    const failedWaitQuoteAdvance = await harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [],
+    });
+
+    expect(failedWaitQuoteAdvance).toEqual({
+      advanced: true,
+      direction: 'LONG',
+      stillPending: true,
+      driveResult: {
+        kind: 'WAIT',
+        wakeups: [
+          { kind: 'SYMBOL_QUOTE', symbol: 'NEW_BULL.HK' },
+          { kind: 'RETRY_TIMER', atMs: clock.nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS },
+        ],
+      },
+    });
+
+    expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      symbol: 'NEW_BULL.HK',
+      status: 'SWITCHING',
+    });
+    expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
+    expect(executedActions).toEqual(['SELLCALL']);
+
+    clock.nowMs += ORDER_QUOTE_RETRY.INTERVAL_MS;
+    const successfulWaitQuoteAdvance = await harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [],
+    });
+
+    expect(successfulWaitQuoteAdvance).toMatchObject({
+      advanced: true,
+      direction: 'LONG',
+      stillPending: false,
+      driveResult: { kind: 'COMPLETED' },
+    });
+    expect(executedActions).toEqual(['SELLCALL', 'BUYCALL']);
+  });
+
+  it('propagates external failure from SELL_OUT order submission', async () => {
+    const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+    const availableOldPosition = createPositionDouble({
+      symbol: 'OLD_BULL.HK',
+      quantity: 100,
+      availableQuantity: 100,
+    });
+    const submitError = createExternalApiRequestError({
+      operation: 'test.sellOutSubmit',
+      attempts: 1,
+      cause: new Error('sell submission unavailable'),
+    });
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs,
+      traderOverrides: {
+        getPendingOrders: async () => [],
+        executeSignals: async () => {
+          throw submitError;
+        },
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => new Map(createQuotes({ 'OLD_BULL.HK': 1 })),
+      }),
+    });
+
+    const startResult = await harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [],
+    });
+    expect(startResult.started).toBeTrue();
+
+    let caught: unknown = null;
+    try {
+      await harness.machine.advancePendingSwitch({
+        direction: 'LONG',
+        positions: [availableOldPosition],
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(submitError);
+    expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
+  });
+
   it('treats periodic no-candidate as business closeout instead of state-machine failure', async () => {
     const monitorConfig = createMonitorConfigDouble({
       autoSearchConfig: {
@@ -485,7 +953,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     await machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs),
-      canTradeNow: true,
+      canContinue: () => true,
     });
 
     const seat = symbolRegistry.getSeatState('LONG');
@@ -1732,6 +2200,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         closedReason: 'FILLED',
         source: 'API_ERROR',
         relatedBuyOrderIds: null,
+        terminalExecution: {
+          submittedQuantity: 100,
+          executedQuantity: 100,
+        },
       }),
     });
     const machine = createSwitchStateMachine({
@@ -1788,7 +2260,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     await machine.evaluatePeriodicSwitchDue({
       direction: 'LONG',
       currentTime: new Date(nowMs),
-      canTradeNow: true,
+      canContinue: () => true,
     });
 
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
@@ -1865,6 +2337,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         closedReason: 'FILLED',
         source: 'API_ERROR',
         relatedBuyOrderIds: null,
+        terminalExecution: {
+          submittedQuantity: 100,
+          executedQuantity: 100,
+        },
       }),
       executeSignals: async () => {
         executeCalls += 1;
@@ -1991,6 +2467,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         closedReason: 'FILLED',
         source: 'API_ERROR',
         relatedBuyOrderIds: null,
+        terminalExecution: {
+          submittedQuantity: 100,
+          executedQuantity: 100,
+        },
       }),
       executeSignals: async (signals) => {
         executedActions.push(signals[0]?.action ?? null);
@@ -3403,5 +3883,109 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       seatStateManager.resolveSuppression('SHORT', 'OLD_BEAR.HK', 'DISTANCE_SAFE_SIDE'),
     ).toBeNull();
     expect(machine.hasPendingSwitch('SHORT')).toBeFalse();
+  });
+
+  it('abandons distance-switch admission when takeover begins during candidate lookup', async () => {
+    const beforeTakeoverMs = Date.parse('2026-02-16T07:54:59.000Z');
+    const takeoverMs = Date.parse('2026-02-16T07:55:00.000Z');
+    let currentNowMs = beforeTakeoverMs;
+    const candidateLookupStarted = createDeferred();
+    const candidateLookup = createDeferred<ReturnType<typeof createWarrantCandidate>>();
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs: beforeTakeoverMs,
+      now: () => new Date(currentNowMs),
+      findBestWarrant: async () => {
+        candidateLookupStarted.resolve();
+        return await candidateLookup.promise;
+      },
+    });
+
+    const startPromise = harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [],
+      canContinue: () => currentNowMs < takeoverMs,
+    });
+
+    await candidateLookupStarted.promise;
+    currentNowMs = takeoverMs;
+    candidateLookup.resolve(createWarrantCandidate('NEW_BULL.HK'));
+
+    const result = await startPromise;
+
+    expect(result).toEqual({
+      started: false,
+      direction: 'LONG',
+      driveResult: { kind: 'NOOP' },
+    });
+
+    expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'ACTIVE',
+      symbol: 'OLD_BULL.HK',
+    });
+    expect(harness.switchStates.size).toBe(0);
+  });
+
+  it('leaves a pending distance switch untouched when takeover begins during pending-order refresh', async () => {
+    const beforeTakeoverMs = Date.parse('2026-02-16T07:54:59.000Z');
+    const takeoverMs = Date.parse('2026-02-16T07:55:00.000Z');
+    let currentNowMs = beforeTakeoverMs;
+    let pendingOrderReads = 0;
+    const pendingOrderReadStarted = createDeferred();
+    const pendingOrderRead = createDeferred<ReadonlyArray<never>>();
+    let executeSignalsCalls = 0;
+    const harness = createLongSwitchAdmissionHarness({
+      nowMs: beforeTakeoverMs,
+      now: () => new Date(currentNowMs),
+      traderOverrides: {
+        getPendingOrders: async () => {
+          pendingOrderReads += 1;
+          if (pendingOrderReads === 1) {
+            return [];
+          }
+
+          pendingOrderReadStarted.resolve();
+          return await pendingOrderRead.promise;
+        },
+        executeSignals: async () => {
+          executeSignalsCalls += 1;
+          return { executedOrderIds: [] };
+        },
+      },
+    });
+    const canContinue = (): boolean => currentNowMs < takeoverMs;
+
+    const started = await harness.machine.startSwitchOnDistance({
+      direction: 'LONG',
+      monitorPrice: 20_000,
+      positions: [],
+      canContinue,
+    });
+    expect(started.started).toBeTrue();
+
+    const advancePromise = harness.machine.advancePendingSwitch({
+      direction: 'LONG',
+      positions: [],
+      canContinue,
+    });
+    await pendingOrderReadStarted.promise;
+    currentNowMs = takeoverMs;
+    pendingOrderRead.resolve([]);
+
+    const result = await advancePromise;
+
+    expect(result).toEqual({
+      advanced: false,
+      direction: 'LONG',
+      stillPending: false,
+      driveResult: { kind: 'NOOP' },
+    });
+
+    expect(harness.symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'SWITCHING',
+      symbol: 'OLD_BULL.HK',
+    });
+    expect(harness.machine.hasPendingSwitch('LONG')).toBeTrue();
+    expect(executeSignalsCalls).toBe(0);
   });
 });

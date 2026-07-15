@@ -7,21 +7,28 @@ import type {
   TimeInForceType,
   TradeContext,
 } from 'longbridge';
-import type { ExecutableSignal, SignalType, OrderTypeConfig } from '../../types/signal.js';
+import type {
+  DoomsdayClearanceCommand,
+  ExecutableSignal,
+  SignalType,
+  OrderTypeConfig,
+} from '../../types/signal.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
-import type { MonitorConfig, TradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type {
   PendingOrder,
   PostTradeConsistencyRuntimePort,
   TradeCheckResult,
   RateLimiter,
+  TradeMutationPermit,
   RawOrderFromAPI,
   OrderRecorder,
   MarketDataClient,
   OrderStateChangedEvent,
   OrderHoldSymbolsChangedEvent,
+  RiskChecker,
   TradingDayInfo,
   Unsubscribe,
 } from '../../types/services.js';
@@ -29,7 +36,13 @@ import type {
   DailyLossTracker,
   ProtectiveLiquidationExecutionProgressInput,
 } from '../../types/risk.js';
-import type { CancelOrderOutcome, ExecuteSignalsResult } from '../../types/trader.js';
+import type {
+  CancelOrderOutcome,
+  DoomsdayCancelOrderOutcome,
+  DoomsdayCancelOrderRequest,
+  DoomsdayClearanceExecutionResult,
+  ExecuteSignalsResult,
+} from '../../types/trader.js';
 import type { ProtectiveLiquidationEpisodeTracker } from './protectiveLiquidationEpisodeTracker/types.js';
 
 /**
@@ -127,15 +140,14 @@ export type OrderTypeResolutionConfig = {
 };
 
 /**
- * 错误类型标识。
- * 类型用途：识别 API 错误的具体类型，便于针对性处理（如重试、跳过、记录日志）。
- * 数据来源：由 identifyErrorType 等根据 API 抛错或返回结果解析得到。
- * 使用范围：仅在 trader 模块内部使用。
+ * 订单提交错误日志分类。
+ * 类型用途：标识订单提交失败日志应使用的分类文本，不参与重试、跳过或交易决策。
+ * 数据来源：由 orderExecutor/identifyErrorType 根据 API 错误消息解析得到。
+ * 使用范围：仅 orderExecutor 的提交失败日志路径使用。
  */
 export type ErrorTypeIdentifier = {
   readonly isShortSellingNotSupported: boolean;
   readonly isInsufficientFunds: boolean;
-  readonly isOrderNotFound: boolean;
   readonly isNetworkError: boolean;
   readonly isRateLimited: boolean;
 };
@@ -205,14 +217,32 @@ export interface OrderMonitor {
   /** 开始追踪订单 */
   trackOrder: (params: TrackOrderParams) => void;
 
-  /** 撤销订单；若 tracked order 已被权威确认为终态，会先完成本地结算再返回结果 */
+  /** 常规撤单；若 tracked order 已被权威确认为终态，会先完成本地结算再返回结果。 */
   cancelOrder: (orderId: string, request: OrderMutationRequest) => Promise<CancelOrderOutcome>;
+
+  /** 末日保护撤单；保留 permit 内门禁失效且 broker 未调用的专用结果。 */
+  cancelDoomsdayOrder: (
+    orderId: string,
+    request: DoomsdayCancelOrderRequest,
+  ) => Promise<DoomsdayCancelOrderOutcome>;
 
   /** 修改订单价格 */
   replaceOrderPrice: (
     orderId: string,
     newPrice: number,
     request: OrderMutationRequest,
+    quantity?: number | null,
+  ) => Promise<ReplaceOrderPriceOutcome>;
+
+  /**
+   * 在调用方已取得的 mutation permit 内执行一次信号驱动的改单。
+   * permit 为必填，禁止在该路径降级为重新排队或使用旧价格调用。
+   */
+  replaceOrderPriceWithPermit: (
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    permit: TradeMutationPermit,
     quantity?: number | null,
   ) => Promise<ReplaceOrderPriceOutcome>;
 
@@ -245,6 +275,11 @@ export interface OrderMonitor {
 export interface OrderExecutor {
   canTradeNow: (signalAction: SignalType) => TradeCheckResult;
   executeSignals: (signals: ReadonlyArray<ExecutableSignal>) => Promise<ExecuteSignalsResult>;
+
+  /** 末日清仓专用入口；仅该入口可构造末日清仓执行目的。 */
+  executeDoomsdayClearanceSignals: (
+    commands: ReadonlyArray<DoomsdayClearanceCommand>,
+  ) => Promise<DoomsdayClearanceExecutionResult>;
 
   /** 清空 lastBuyTime（买入节流状态） */
   resetBuyThrottle: () => void;
@@ -312,12 +347,6 @@ export type TrackedOrder = {
 
   /** 是否为保护性清仓订单（用于触发买入冷却） */
   readonly isProtectiveLiquidation: boolean;
-
-  /** 触发买入冷却所需的保护性清仓次数 */
-  readonly liquidationTriggerLimit: number;
-
-  /** 保护性清仓冷却配置（用于触发计数分段与冷却激活计算） */
-  readonly liquidationCooldownConfig: MonitorConfig['liquidationCooldown'];
 
   /** 订单类型（用于合并和改单判断） */
   readonly orderType: OrderType;
@@ -406,7 +435,6 @@ export type SellMergeDecisionInput = {
   readonly symbol: string;
   readonly pendingOrders: ReadonlyArray<PendingSellOrderSnapshot>;
   readonly newOrderQuantity: number;
-  readonly newOrderPrice: number | null;
   readonly newOrderType: OrderType;
   readonly isProtectiveLiquidation: boolean;
 };
@@ -423,7 +451,6 @@ export type SellMergeDecision = {
   readonly action: SellMergeDecisionAction;
   readonly mergedQuantity: number;
   readonly targetOrderId: string | null;
-  readonly price: number | null;
   readonly pendingOrderIds: ReadonlyArray<string>;
   readonly pendingRemainingQuantity: number;
   readonly reason:
@@ -525,11 +552,11 @@ export type OrderMonitorDeps = {
   /** 成交后一致性运行时（负责收口成交后的最小补刷需求） */
   readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntimePort;
 
-  /** 运行时执行门禁（卖单超时转市价单时校验，禁止门禁关闭时新开单） */
-  readonly isExecutionAllowed: IsExecutionAllowed;
+  /** 连续交易授权（仅用于订单监控派生的新订单与自动改单） */
+  readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
 
-  /** 运行期 route 处理失败的 fatal 通道 */
-  readonly onFatalError?: (error: unknown) => void;
+  /** 运行期订单监控失败的统一 fatal 通道。 */
+  readonly onFatalError: (error: unknown) => void;
 };
 
 /**
@@ -539,6 +566,14 @@ export type OrderMonitorDeps = {
  * 使用范围：Trader、OrderMonitor、OrderExecutor 依赖注入使用。
  */
 type IsExecutionAllowed = () => boolean;
+
+/**
+ * 连续交易订单授权。
+ * 类型用途：仅允许订单监控在连续交易时段发起新的超时市价单或自动改单；每次 SDK attempt 都必须重新读取。
+ * 数据来源：运行态的生命周期交易开关与连续交易门禁。
+ * 使用范围：OrderMonitor route 与连续交易授权 mutation 请求。
+ */
+type ContinuousTradingOrderAuthorization = () => boolean;
 
 /**
  * 信号派生订单副作用授权阶段。
@@ -566,7 +601,7 @@ export type OrderActionAuthorization = (stage: OrderActionAuthorizationStage) =>
  * 数据来源：app runtime 的 LastState.cachedTradingDayInfo。
  * 使用范围：Trader 与 OrderExecutor 的末日保护最终买入授权。
  */
-export type CurrentTradingDayInfo = Readonly<{
+type CurrentTradingDayInfo = Readonly<{
   dateKey: string;
   info: TradingDayInfo;
 }>;
@@ -577,12 +612,12 @@ export type CurrentTradingDayInfo = Readonly<{
  * 数据来源：由 app runtime 注入。
  * 使用范围：Trader 与 OrderExecutor。
  */
-export type CurrentTradingDayInfoReader = () => CurrentTradingDayInfo | null;
+type CurrentTradingDayInfoReader = () => CurrentTradingDayInfo | null;
 
 /**
  * 订单 mutation 请求来源。
- * 类型用途：强制调用方区分公共订单事实操作与必须逐次授权的信号派生操作。
- * 数据来源：订单 owner 或 OrderExecutor 信号链路创建。
+ * 类型用途：强制调用方区分公共订单事实、信号派生与连续交易派生的常规 mutation 授权来源。
+ * 数据来源：订单 owner、OrderExecutor 信号链路或 OrderMonitor 连续交易链路创建。
  * 使用范围：OrderMonitor cancel/replace API。
  */
 export type OrderMutationRequest =
@@ -590,7 +625,19 @@ export type OrderMutationRequest =
   | {
       readonly kind: 'SIGNAL_AUTHORIZED';
       readonly authorize: OrderActionAuthorization;
+    }
+  | {
+      readonly kind: 'CONTINUOUS_TRADING_AUTHORIZED';
+      readonly authorize: ContinuousTradingOrderAuthorization;
     };
+
+/**
+ * 撤单 mutation 请求来源。
+ * 类型用途：在常规 mutation 授权外，允许末日保护将其专用 permit 内门禁显式带到撤单边界，禁止该授权用于改单。
+ * 数据来源：订单 owner、OrderExecutor、OrderMonitor route 与 DoomsdayProtection。
+ * 使用范围：OrderMonitor.cancelOrder、OrderMonitor.cancelDoomsdayOrder 与 OrderOps.cancelOrder。
+ */
+export type CancelOrderMutationRequest = OrderMutationRequest | DoomsdayCancelOrderRequest;
 
 /**
  * 改单执行结果。
@@ -611,11 +658,17 @@ export type ReplaceOrderPriceOutcome =
 export type OrderExecutorDeps = {
   readonly ctx: TradeContext;
   readonly rateLimiter: RateLimiter;
+
+  /** 与 Trader 共用的行情客户端；仅最终订单 callback permit 内读取执行行情。 */
+  readonly marketDataClient: MarketDataClient;
   readonly cacheManager: OrderCacheManager;
   readonly orderMonitor: OrderMonitor;
 
   /** 订单记录器（用于卖出订单防重追踪） */
   readonly orderRecorder: OrderRecorder;
+
+  /** 与运行时共享的浮亏买入门禁；仅在最终 BUY 提交边界读取。 */
+  readonly unrealizedLossBuyGate: Pick<RiskChecker, 'checkUnrealizedLoss'>;
 
   /** 全局交易配置 */
   readonly tradingConfig: TradingConfig;
@@ -625,6 +678,9 @@ export type OrderExecutorDeps = {
 
   /** 运行时执行门禁（单一状态源注入，执行层统一判定） */
   readonly isExecutionAllowed: IsExecutionAllowed;
+
+  /** 连续交易授权；最终 SDK mutation 前必须再次读取。 */
+  readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
 
   /** 最终订单授权使用的实时钟。 */
   readonly now: () => Date;
@@ -643,6 +699,9 @@ export type TraderDeps = {
   readonly config: Config;
   readonly tradingConfig: TradingConfig;
   readonly marketDataClient: MarketDataClient;
+
+  /** 与 MonitorContext 共用的浮亏买入门禁，保证读取同一 R1/N1 与当日亏损偏移缓存。 */
+  readonly unrealizedLossBuyGate: Pick<RiskChecker, 'checkUnrealizedLoss'>;
   readonly rateLimiterConfig?: RateLimiterConfig;
 
   /** 标的注册表（用于动态标的映射） */
@@ -659,12 +718,15 @@ export type TraderDeps = {
   /** 运行时执行门禁（单一状态源注入，执行层统一判定） */
   readonly isExecutionAllowed: IsExecutionAllowed;
 
+  /** 连续交易授权（仅由 OrderMonitor 派生新订单与自动改单使用） */
+  readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
+
   /** 最终订单授权使用的实时钟。 */
   readonly now: () => Date;
 
   /** 最终订单授权使用的权威当日交易日事实读取器。 */
   readonly readCurrentTradingDayInfo: CurrentTradingDayInfoReader;
 
-  /** 运行期异步错误 fatal 通道 */
-  readonly onFatalError?: (error: unknown) => void;
+  /** 运行期异步错误的统一 fatal 通道。 */
+  readonly onFatalError: (error: unknown) => void;
 };

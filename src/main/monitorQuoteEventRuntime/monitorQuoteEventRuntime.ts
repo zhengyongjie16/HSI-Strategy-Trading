@@ -8,9 +8,12 @@
  * - 在 autoSearch 开启时启动距离换标，在关闭时接管静态距回收价清仓 WAIT owner
  */
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
+import { TRADING } from '../../constants/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
 import { logger } from '../../utils/logger/index.js';
+import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { StartSwitchOnDistanceResult } from '../../types/monitorContextPorts.js';
 import { areStringSetsEqual } from './setUtils.js';
 import type { MonitorContext } from '../../types/state.js';
@@ -20,6 +23,7 @@ import { createStaticLiquidationExecutor } from './staticLiquidationExecutor.js'
 import type {
   CreateDefaultMonitorQuoteEventRuntimeDeps,
   CreateMonitorQuoteEventRuntimeDeps,
+  DistanceSwitchPrecheckSnapshot,
   MonitorQuoteEventRuntime,
   MonitorQuoteEventExecutor,
   MonitorQuoteRouteMode,
@@ -99,6 +103,7 @@ function isBaselineReady(deps: CreateMonitorQuoteEventRuntimeDeps): boolean {
 function createRouteState(mode: MonitorQuoteRouteMode): MonitorQuoteRouteState {
   return {
     generation: 0,
+    monitorQuoteGeneration: 0,
     latestEvent: null,
     wakeupSymbols: new Set(),
     retainedQuoteSymbols: new Set(),
@@ -108,7 +113,30 @@ function createRouteState(mode: MonitorQuoteRouteMode): MonitorQuoteRouteState {
     dirty: false,
     retryAttempts: 0,
     retryTimerHandle: null,
+    distanceSwitchPrecheckRetryTimer: null,
+    distanceSwitchPrecheckRetryConsumed: false,
     submittedLiquidationDirections: new Set(),
+  };
+}
+
+/**
+ * 读取单侧距离换标预检事实。
+ *
+ * @param monitorContext 当前唯一监控上下文
+ * @param direction 席位方向
+ * @returns 调用 startSwitchOnDistance 前的单侧权威快照
+ */
+function captureDistanceSwitchPrecheckDirection(
+  monitorContext: Pick<MonitorContext, 'symbolRegistry' | 'autoSymbolManager'>,
+  direction: 'LONG' | 'SHORT',
+): DistanceSwitchPrecheckSnapshot[number] {
+  const seatState = monitorContext.symbolRegistry.getSeatState(direction);
+  return {
+    direction,
+    seatStatus: seatState.status,
+    seatSymbol: seatState.symbol,
+    seatVersion: monitorContext.symbolRegistry.getSeatVersion(direction),
+    hasPendingSwitch: monitorContext.autoSymbolManager.hasPendingSwitch(direction),
   };
 }
 
@@ -156,6 +184,7 @@ function createDefaultStartDistanceSwitchExecutor(
           direction: 'LONG',
           monitorPrice,
           positions,
+          canContinue: params.canContinue,
         }),
       );
     }
@@ -166,6 +195,7 @@ function createDefaultStartDistanceSwitchExecutor(
           direction: 'SHORT',
           monitorPrice,
           positions,
+          canContinue: params.canContinue,
         }),
       );
     }
@@ -265,12 +295,16 @@ function createMonitorQuoteEventRuntime(
           routeState.retryTimerHandle = null;
         }
 
+        clearDistanceSwitchPrecheckRetryTimer(routeState);
+
         clearStaticWakeupIndexes();
         releaseStaticLiquidationRetain();
         routeState.generation += 1;
+        routeState.monitorQuoteGeneration += 1;
         routeState.mode = mode;
         routeState.wakeupSymbols = new Set();
         routeState.retryAttempts = 0;
+        routeState.distanceSwitchPrecheckRetryConsumed = false;
         routeState.submittedLiquidationDirections.clear();
       }
 
@@ -296,6 +330,32 @@ function createMonitorQuoteEventRuntime(
       running &&
       routeState === params.routeState &&
       params.routeState.generation === params.generation
+    );
+  }
+
+  /**
+   * 判断一次距离换标执行是否仍对应启动时的 monitor quote。
+   *
+   * 距离换标会按 LONG、SHORT 顺序跨 await 执行；新 quote 到达后，旧 quote
+   * 不得再用旧价格启动尚未开始的另一方向，但已经成功创建的 pending owner
+   * 仍由外层按 route 身份交接。
+   *
+   * @param params 本次距离换标执行捕获的 route 与 quote 身份
+   * @returns route、quote generation 与 quote 事件身份均未变化时返回 true
+   */
+  function isDistanceExecutionCurrent(params: {
+    readonly routeState: MonitorQuoteRouteState;
+    readonly generation: number;
+    readonly monitorQuoteGeneration: number;
+    readonly event: QuoteUpdatedEvent;
+  }): boolean {
+    return (
+      isRouteExecutionCurrent({
+        routeState: params.routeState,
+        generation: params.generation,
+      }) &&
+      params.routeState.monitorQuoteGeneration === params.monitorQuoteGeneration &&
+      params.routeState.latestEvent === params.event
     );
   }
 
@@ -410,6 +470,100 @@ function createMonitorQuoteEventRuntime(
 
     clearTimer(targetRouteState.retryTimerHandle);
     targetRouteState.retryTimerHandle = null;
+  }
+
+  /**
+   * 取消距离换标预检失败的 route 专属 one-shot RETRY_TIMER。
+   *
+   * @param targetRouteState 需要清理 retry 的 route 状态
+   */
+  function clearDistanceSwitchPrecheckRetryTimer(targetRouteState: MonitorQuoteRouteState): void {
+    if (targetRouteState.distanceSwitchPrecheckRetryTimer === null) {
+      return;
+    }
+
+    targetRouteState.distanceSwitchPrecheckRetryTimer.cancel();
+    targetRouteState.distanceSwitchPrecheckRetryTimer = null;
+  }
+
+  /**
+   * 读取距离换标预检前的权威席位与 pending state。
+   *
+   * 只有两侧状态均未改变且都没有 pending switch，才能证明 ExternalApiRequestError
+   * 发生在状态机创建前；任何部分启动都必须保留 fatal 语义。
+   *
+   * @returns 本次距离换标预检快照
+   */
+  function captureDistanceSwitchPrecheckSnapshot(): DistanceSwitchPrecheckSnapshot {
+    return [
+      captureDistanceSwitchPrecheckDirection(monitorContext, 'LONG'),
+      captureDistanceSwitchPrecheckDirection(monitorContext, 'SHORT'),
+    ];
+  }
+
+  /**
+   * 校验 ExternalApiRequestError 后仍处于无副作用的距离换标预检阶段。
+   *
+   * @param snapshot 调用 startSwitchOnDistance 前记录的权威快照
+   * @returns 尚未创建 switch state 且席位事实未变化时返回 true
+   */
+  function isDistanceSwitchPrecheckRetrySafe(snapshot: DistanceSwitchPrecheckSnapshot): boolean {
+    return snapshot.every((entry) => {
+      const seatState = monitorContext.symbolRegistry.getSeatState(entry.direction);
+      return (
+        !entry.hasPendingSwitch &&
+        !monitorContext.autoSymbolManager.hasPendingSwitch(entry.direction) &&
+        seatState.status === entry.seatStatus &&
+        seatState.symbol === entry.seatSymbol &&
+        monitorContext.symbolRegistry.getSeatVersion(entry.direction) === entry.seatVersion
+      );
+    });
+  }
+
+  /**
+   * 为无副作用的距离换标预检外部失败安排 route 专属 one-shot RETRY_TIMER。
+   *
+   * 计时器到期后只触发 latest-only route，因此会用届时保存的最新 monitor quote
+   * 完整重跑距离判断，不会伪造 pending switch 或复用其他业务 owner。
+   *
+   * @param params 当前 route 与 generation 身份
+   */
+  function scheduleDistanceSwitchPrecheckRetry(params: {
+    readonly routeState: MonitorQuoteRouteState;
+    readonly generation: number;
+    readonly monitorQuoteGeneration: number;
+  }): void {
+    const targetRouteState = params.routeState;
+    clearDistanceSwitchPrecheckRetryTimer(targetRouteState);
+
+    const now = deps.now ?? (() => new Date());
+    const retryAtMs = now().getTime() + TRADING.INTERVAL_MS;
+    const timerHandle = scheduleBoundedOneShotAt({
+      atMs: retryAtMs,
+      now,
+      scheduleTimer,
+      clearTimer,
+      onDue: () => {
+        if (targetRouteState.distanceSwitchPrecheckRetryTimer !== timerHandle) {
+          return;
+        }
+
+        targetRouteState.distanceSwitchPrecheckRetryTimer = null;
+        if (
+          targetRouteState.mode !== 'DISTANCE_SWITCH' ||
+          !isRouteExecutionCurrent({
+            routeState: targetRouteState,
+            generation: params.generation,
+          }) ||
+          targetRouteState.monitorQuoteGeneration !== params.monitorQuoteGeneration
+        ) {
+          return;
+        }
+
+        triggerRoute();
+      },
+    });
+    targetRouteState.distanceSwitchPrecheckRetryTimer = timerHandle;
   }
 
   /**
@@ -538,48 +692,72 @@ function createMonitorQuoteEventRuntime(
         }
 
         const executionGeneration = activeRouteState.generation;
+        const monitorQuoteGeneration = activeRouteState.monitorQuoteGeneration;
+        const canContinueDistanceExecution = (): boolean =>
+          isExecutionGateOpen(deps) &&
+          isDistanceExecutionCurrent({
+            routeState: activeRouteState,
+            generation: executionGeneration,
+            monitorQuoteGeneration,
+            event: snapshotEvent,
+          });
 
         const canExecute = await waitForExecutionFreshness();
         if (!canExecute) {
           return;
         }
 
-        if (
-          !isRouteExecutionCurrent({
-            routeState: activeRouteState,
-            generation: executionGeneration,
-          })
-        ) {
-          continue;
-        }
-
         if (activeRouteState.mode === 'DISTANCE_SWITCH') {
+          if (!canContinueDistanceExecution()) {
+            continue;
+          }
+
           if (!startDistanceSwitch) {
             continue;
           }
 
-          const results = await startDistanceSwitch({
-            monitorContext,
-            event: snapshotEvent,
-            canContinue: () =>
-              isRouteExecutionCurrent({
+          const precheckSnapshot = captureDistanceSwitchPrecheckSnapshot();
+          let results: ReadonlyArray<StartSwitchOnDistanceResult>;
+          try {
+            results = await startDistanceSwitch({
+              monitorContext,
+              event: snapshotEvent,
+              canContinue: canContinueDistanceExecution,
+            });
+          } catch (error) {
+            if (!canContinueDistanceExecution()) {
+              continue;
+            }
+
+            if (
+              isExternalApiRequestError(error) &&
+              isDistanceSwitchPrecheckRetrySafe(precheckSnapshot) &&
+              !activeRouteState.distanceSwitchPrecheckRetryConsumed
+            ) {
+              activeRouteState.distanceSwitchPrecheckRetryConsumed = true;
+              scheduleDistanceSwitchPrecheckRetry({
                 routeState: activeRouteState,
                 generation: executionGeneration,
-              }),
-          });
+                monitorQuoteGeneration,
+              });
+              continue;
+            }
 
-          if (
-            !isRouteExecutionCurrent({
-              routeState: activeRouteState,
-              generation: executionGeneration,
-            })
-          ) {
+            throw error;
+          }
+
+          if (!canContinueDistanceExecution()) {
             continue;
           }
 
           for (const result of results) {
             assertValidStartedSwitchResult(result);
-            if (isRuntimeRunning() && handoffPendingSwitch && result.started) {
+            if (
+              isRuntimeRunning() &&
+              canContinueDistanceExecution() &&
+              handoffPendingSwitch &&
+              result.started
+            ) {
               handoffPendingSwitch({
                 direction: result.direction,
                 monitorContext,
@@ -588,6 +766,16 @@ function createMonitorQuoteEventRuntime(
             }
           }
 
+          continue;
+        }
+
+        const canContinueStaticLiquidation = (): boolean =>
+          isExecutionGateOpen(deps) &&
+          isRouteExecutionCurrent({
+            routeState: activeRouteState,
+            generation: executionGeneration,
+          });
+        if (!canContinueStaticLiquidation()) {
           continue;
         }
 
@@ -600,29 +788,15 @@ function createMonitorQuoteEventRuntime(
           event: snapshotEvent,
           retryAttempts: activeRouteState.retryAttempts,
           excludedDirections: activeRouteState.submittedLiquidationDirections,
-          canContinue: () =>
-            isRouteExecutionCurrent({
-              routeState: activeRouteState,
-              generation: executionGeneration,
-            }),
+          canContinue: canContinueStaticLiquidation,
           onDirectionSubmitted: (direction) => {
-            if (
-              isRouteExecutionCurrent({
-                routeState: activeRouteState,
-                generation: executionGeneration,
-              })
-            ) {
+            if (canContinueStaticLiquidation()) {
               activeRouteState.submittedLiquidationDirections.add(direction);
             }
           },
         });
 
-        if (
-          !isRouteExecutionCurrent({
-            routeState: activeRouteState,
-            generation: executionGeneration,
-          })
-        ) {
+        if (!canContinueStaticLiquidation()) {
           continue;
         }
 
@@ -666,8 +840,12 @@ function createMonitorQuoteEventRuntime(
         : 'STATIC_LIQUIDATION';
       const currentRouteState = getOrCreateRouteState(mode);
       currentRouteState.latestEvent = event;
+      currentRouteState.monitorQuoteGeneration += 1;
       if (mode === 'STATIC_LIQUIDATION') {
         clearRouteRetryTimer(currentRouteState);
+      } else {
+        clearDistanceSwitchPrecheckRetryTimer(currentRouteState);
+        currentRouteState.distanceSwitchPrecheckRetryConsumed = false;
       }
 
       triggerRoute();
@@ -702,6 +880,7 @@ function createMonitorQuoteEventRuntime(
 
     if (routeState !== null) {
       clearRouteRetryTimer(routeState);
+      clearDistanceSwitchPrecheckRetryTimer(routeState);
       clearStaticWakeupIndexes();
       releaseStaticLiquidationRetain();
       routeState.wakeupSymbols = new Set();
@@ -713,6 +892,7 @@ function createMonitorQuoteEventRuntime(
 
     if (routeState !== null) {
       clearRouteRetryTimer(routeState);
+      clearDistanceSwitchPrecheckRetryTimer(routeState);
       clearStaticWakeupIndexes();
       releaseStaticLiquidationRetain();
       routeState.wakeupSymbols = new Set();

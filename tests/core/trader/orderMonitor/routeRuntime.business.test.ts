@@ -183,8 +183,6 @@ function createTrackedOrder(
     isLongSymbol: params.isLongSymbol ?? true,
     monitorSymbol: params.monitorSymbol ?? 'HSI.HK',
     isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
-    liquidationTriggerLimit: params.liquidationTriggerLimit ?? 1,
-    liquidationCooldownConfig: params.liquidationCooldownConfig ?? null,
     orderType: params.orderType ?? OrderType.ELO,
     submittedPrice: params.submittedPrice ?? 1,
     initialSubmittedPrice: params.initialSubmittedPrice ?? 1,

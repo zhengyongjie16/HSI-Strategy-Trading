@@ -2,8 +2,8 @@
  * 风险控制模块入口（门面模式）
  *
  * 功能/职责：协调 warrantRiskChecker、positionLimitChecker、unrealizedLossChecker 三个子检查器，
- * 对外提供统一的 RiskChecker 接口（订单前检查、牛熊证风险、浮亏刷新与清仓判定等）。
- * 执行流程：依赖注入子检查器 → createRiskChecker 创建门面实例 → 调用方在订单前调用 checkBeforeOrder，
+ * 对外提供统一的 RiskChecker 接口（买入订单前检查、牛熊证风险、浮亏刷新与清仓判定等）。
+ * 执行流程：依赖注入子检查器 → createRiskChecker 创建门面实例 → 调用方在买入订单前调用 checkBeforeOrder，
  * 买入前可选 checkWarrantRisk，浮亏监控侧调用 refreshUnrealizedLossData / checkUnrealizedLoss / checkWarrantDistanceLiquidation。
  *
  * 风险阈值（均为配置项，具体数值以 constants/index.ts 为准）：
@@ -11,7 +11,7 @@
  * - 单标的市值上限：maxPositionNotional（由监控配置提供）
  * - 保护性清仓触发阈值：maxUnrealizedLossPerSymbol（浮亏低于阈值时触发保护性清仓）
  */
-import { isBuyAction, isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import {
   decimalLt,
   decimalMul,
@@ -21,7 +21,7 @@ import {
   toDecimalValue,
 } from '../../utils/numeric/index.js';
 import type { Position, AccountSnapshot, CashInfo } from '../../types/account.js';
-import type { Signal, SignalType } from '../../types/signal.js';
+import type { BuySignal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
 import type {
   MarketDataClient,
@@ -42,7 +42,7 @@ import type {
 /**
  * 创建风险检查器（门面模式）。
  * 聚合牛熊证、持仓限制、浮亏三个子检查器，对外提供统一 checkBeforeOrder / checkWarrantRisk / refreshUnrealizedLossData 等接口。
- * 订单前风控、牛熊证距离、浮亏刷新与清仓判定需在同一入口按固定顺序执行，门面统一依赖注入与调用顺序。
+ * 买入订单前风控、牛熊证距离、浮亏刷新与清仓判定需在同一入口按固定顺序执行，门面统一依赖注入与调用顺序。
  * @param deps 依赖（warrantRiskChecker、positionLimitChecker、unrealizedLossChecker）
  * @returns 实现 RiskChecker 接口的门面实例
  */
@@ -102,69 +102,42 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     };
   }
 
-  /**
-   * 订单前综合风险检查，按顺序执行：账户数据有效性 → 港币可用现金 → 持仓市值限制。
-   * 卖出操作跳过浮亏与现金检查；账户数据缺失时买入拒绝、卖出放行。
-   */
+  /** 买入订单前综合风险检查，按顺序执行：账户数据有效性 → 港币可用现金 → 持仓市值限制。 */
   function checkBeforeOrder(params: {
     readonly account: AccountSnapshot | null;
     readonly positions: ReadonlyArray<Position> | null;
-    readonly signal: Signal | null;
+    readonly signal: BuySignal;
     readonly orderNotional: number;
   }): RiskCheckResult {
     const { account, positions, signal, orderNotional } = params;
 
-    // HOLD 信号不需要检查
-    if (!signal || signal.action === 'HOLD') {
-      return { allowed: true };
-    }
-
-    // 判断是否为买入操作
-    const isBuy = isBuyAction(signal.action);
-
-    // 对于买入操作，账户数据是必需的（用于浮亏检查）
-    if (isBuy && !account) {
+    if (!account) {
       return {
         allowed: false,
         reason: '账户数据不可用，无法进行风险检查，禁止买入操作',
       };
     }
 
-    // 对于卖出操作，如果没有账户数据，允许继续（卖出操作不检查浮亏）
-    if (!account) {
-      return { allowed: true };
-    }
-
     const { netAssets, totalCash } = account;
 
-    // 验证账户数据有效性
     if (!Number.isFinite(netAssets) || !Number.isFinite(totalCash)) {
-      // 对于买入操作，账户数据无效必须拒绝
-      if (isBuy) {
-        return {
-          allowed: false,
-          reason: `账户数据无效（netAssets=${netAssets}, totalCash=${totalCash}），无法进行风险检查，禁止买入操作`,
-        };
-      }
-
-      // 对于卖出操作，账户数据无效时允许继续
-      return { allowed: true };
+      return {
+        allowed: false,
+        reason: `账户数据无效（netAssets=${netAssets}, totalCash=${totalCash}），无法进行风险检查，禁止买入操作`,
+      };
     }
 
-    // 对于买入操作，检查港币可用现金是否足够
-    if (isBuy) {
-      const hkdCashInfo = account.cashInfos.find((c: CashInfo) => c.currency === 'HKD');
-      const availableCash = hkdCashInfo?.availableCash ?? 0;
+    const hkdCashInfo = account.cashInfos.find((c: CashInfo) => c.currency === 'HKD');
+    const availableCash = hkdCashInfo?.availableCash ?? 0;
 
-      if (decimalLt(availableCash, orderNotional)) {
-        return {
-          allowed: false,
-          reason: `港币可用现金 ${formatDecimal(availableCash, 2)} HKD 不足以支付买入金额 ${formatDecimal(
-            orderNotional,
-            2,
-          )} HKD`,
-        };
-      }
+    if (decimalLt(availableCash, orderNotional)) {
+      return {
+        allowed: false,
+        reason: `港币可用现金 ${formatDecimal(availableCash, 2)} HKD 不足以支付买入金额 ${formatDecimal(
+          orderNotional,
+          2,
+        )} HKD`,
+      };
     }
 
     // 检查单标的最大持仓市值限制

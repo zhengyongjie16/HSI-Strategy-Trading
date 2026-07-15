@@ -186,7 +186,12 @@ describe('registerDelayedSignalHandlers business flow', () => {
     const triggerTimeMs = new Date('2026-03-09T12:59:50+08:00').getTime();
     const timerHarness = createTimerHarness(triggerTimeMs);
     const indicatorCache = createIndicatorCache({});
-    const delayedSignalVerifier = createDelayedSignalVerifier({ indicatorCache });
+    const delayedSignalVerifier = createDelayedSignalVerifier({
+      indicatorCache,
+      onFatalError: (error) => {
+        throw error;
+      },
+    });
     const harness = createHarness();
     const lastState = createLastState({
       isTradingEnabled: true,

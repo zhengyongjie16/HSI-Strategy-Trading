@@ -12,17 +12,25 @@ import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
 import { toDecimal } from '../utils.js';
 import { isOpenOrderStatus } from '../../orderStatusLifecycle/utils.js';
 import type {
+  CancelOrderMutationRequest,
   OrderMutationRequest,
   OrderMonitor,
   OrderMonitorDeps,
   PendingSellOrderSnapshot,
 } from '../types.js';
-import type { OrderStateChangedEvent, RawOrderFromAPI } from '../../../types/services.js';
 import type {
+  OrderStateChangedEvent,
+  RawOrderFromAPI,
+  TradeMutationPermit,
+} from '../../../types/services.js';
+import type {
+  CancelOrderBeforeBrokerMutation,
+  CancelOrderPreflightOutcome,
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
   OrderMonitorWakeupKind,
   RouteRuntime,
+  TerminalStateSnapshot,
 } from './types.js';
 import { buildOrderMonitorConfig } from './utils.js';
 import { createRecoveryFlow } from './recoveryFlow.js';
@@ -30,14 +38,33 @@ import { createEventFlow } from './eventFlow.js';
 import { createSettlementFlow } from './settlementFlow.js';
 import { createOrderStatusQuery } from './orderStatusQuery.js';
 import {
-  consumeQueriedTerminalState,
+  acknowledgeLatestReplaceOutcome,
+  acknowledgeQueriedTerminalState,
+  clearOrderReplaceTransientRuntimeState,
   createOrderOps,
-  resetOrderReplaceRuntimeState,
+  peekLatestReplaceOutcome,
+  peekQueriedTerminalState,
 } from './orderOps.js';
 import { createRouteRuntime } from './routeRuntime.js';
 import { createRouteProcessor } from './routeProcessor.js';
-import type { CancelOrderOutcome } from '../../../types/trader.js';
-import { normalizeTerminalStateSnapshot } from './orderFactMerge.js';
+import type {
+  CancelOrderOutcome,
+  DoomsdayCancelOrderOutcome,
+  DoomsdayCancelOrderRequest,
+} from '../../../types/trader.js';
+import {
+  assertProtectiveSellRawTerminalStateFactsReady,
+  normalizeTerminalStateSnapshot,
+} from './orderFactMerge.js';
+
+/** 将只允许 route 内部使用的撤单结果阻断在公共 API 边界。 */
+function requirePublicCancelOrderOutcome(outcome: CancelOrderPreflightOutcome): CancelOrderOutcome {
+  if (outcome.kind === 'CANCEL_NOT_STARTED') {
+    throw new Error('[订单监控] 常规撤单不得返回 CANCEL_NOT_STARTED');
+  }
+
+  return outcome;
+}
 
 /**
  * 创建订单监控器。
@@ -59,7 +86,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     postTradeConsistencyRuntime,
     tradingConfig,
     symbolRegistry,
-    isExecutionAllowed,
+    isContinuousTradingAllowed,
   } = deps;
   const config = buildOrderMonitorConfig(tradingConfig.global);
   const thresholdDecimal = toDecimal(config.priceDiffThreshold);
@@ -132,7 +159,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     tradingConfig,
     symbolRegistry,
     trackOrder: orderOps.trackOrder,
-    cancelOrder: (orderId) => orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' }),
+    cancelOrder: async (orderId) =>
+      requirePublicCancelOrderOutcome(await orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' })),
     settleOrder: settlementFlow.settleOrder,
     handleOrderChangedWhenActive: (event) => {
       if (!activeHandler) {
@@ -149,11 +177,19 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     recordCumulativeExecution: (params) => {
       settlementFlow.recordCumulativeExecution(params);
     },
+    prepareProtectiveTerminalExecution: settlementFlow.prepareProtectiveTerminalExecution,
     settleOrder: settlementFlow.settleOrder,
     cacheBootstrappingEvent: recoveryFlow.cacheBootstrappingEvent,
     triggerRoute,
   });
   activeHandler = eventFlow.handleOrderChangedWhenActive;
+
+  function cancelOrderForRoute(
+    orderId: string,
+    beforeBrokerCancel?: CancelOrderBeforeBrokerMutation,
+  ): Promise<CancelOrderPreflightOutcome> {
+    return orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' }, beforeBrokerCancel);
+  }
 
   const routeProcessor = createRouteProcessor({
     runtime,
@@ -162,12 +198,15 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     orderRecorder,
     ctx,
     rateLimiter,
-    isExecutionAllowed,
+    isContinuousTradingAllowed,
     trackOrder: orderOps.trackOrder,
-    cancelOrder: (orderId) => orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' }),
+    cancelOrder: cancelOrderForRoute,
     settleOrder: settlementFlow.settleOrder,
     replaceOrderPrice: async (orderId, newPrice) => {
-      await orderOps.replaceOrderPrice(orderId, newPrice, { kind: 'ORDER_FACT' });
+      await orderOps.replaceOrderPrice(orderId, newPrice, {
+        kind: 'CONTINUOUS_TRADING_AUTHORIZED',
+        authorize: isContinuousTradingAllowed,
+      });
     },
   });
 
@@ -176,7 +215,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     config,
     marketDataClient,
     processRoute: routeProcessor.processRoute,
-    ...(deps.onFatalError ? { onFatalError: deps.onFatalError } : {}),
+    onFatalError: deps.onFatalError,
   });
 
   async function recoverOrderTrackingFromSnapshot(
@@ -190,35 +229,25 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     routeRuntime.bootstrapActiveRoutes();
   }
 
-  async function cancelOrder(
+  /**
+   * 活跃订单 state-check 终态的唯一收口入口。
+   *
+   * 调用方必须先 peek 原始 broker snapshot；本入口只接受通过严格 raw 准入后的
+   * canonical 事实。结算失败时不确认缓存，使同一原始观察能安全重试。
+   */
+  function settleActiveTerminalFromRaw(
     orderId: string,
-    request: OrderMutationRequest,
-  ): Promise<CancelOrderOutcome> {
-    const outcome = await orderOps.cancelOrder(orderId, request);
-    if (outcome.kind !== 'ALREADY_CLOSED') {
-      return outcome;
-    }
-
-    const trackedOrder = runtime.trackedOrders.get(orderId);
-    if (!trackedOrder) {
-      resetOrderReplaceRuntimeState(runtime, orderId);
-      return outcome;
-    }
-
-    const terminalState = consumeQueriedTerminalState(runtime, orderId);
-    if (terminalState === null) {
-      logger.error(
-        `[订单监控] 订单 ${orderId} 已确认终态，但缺少权威终态快照，拒绝向调用方暴露半成品结果`,
-      );
-      return {
-        kind: 'UNKNOWN_FAILURE',
-        errorCode: null,
-        message: `missing terminal state snapshot for settled cancel order ${orderId}`,
-      };
-    }
-
-    const normalizedTerminalState = normalizeTerminalStateSnapshot(trackedOrder, terminalState);
-
+    trackedOrder: OrderMonitorTrackedOrder,
+    terminalState: TerminalStateSnapshot,
+  ) {
+    assertProtectiveSellRawTerminalStateFactsReady(trackedOrder, terminalState);
+    const isProtectiveSell =
+      trackedOrder.side === OrderSide.Sell && trackedOrder.isProtectiveLiquidation;
+    const normalizedTerminalState = normalizeTerminalStateSnapshot(
+      trackedOrder,
+      terminalState,
+      isProtectiveSell,
+    );
     const alreadySettled = runtime.closedOrderIds.has(orderId);
     const settlementResult = settlementFlow.settleOrder({
       orderId,
@@ -229,8 +258,61 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       executedTimeMs: normalizedTerminalState.executedTimeMs,
       orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
     });
-    resetOrderReplaceRuntimeState(runtime, orderId);
-    if (!settlementResult.handled && !alreadySettled) {
+
+    return {
+      alreadySettled,
+      normalizedTerminalState,
+      settlementResult,
+    };
+  }
+
+  /**
+   * 在统一撤单 mutation 后完成权威终态的本地结算。
+   * 普通与末日入口共享 broker/终态事实链路，仅在公开结果是否允许
+   * `CANCEL_NOT_STARTED` 上分流，避免两条路径的结算语义漂移。
+   *
+   * @param orderId 订单唯一标识
+   * @param request 撤单 mutation 授权来源
+   * @returns 包含 permit 内未开始事实或已完成本地结算的撤单结果
+   */
+  async function cancelAndSettle(
+    orderId: string,
+    request: CancelOrderMutationRequest,
+  ): Promise<CancelOrderPreflightOutcome> {
+    const outcome = await orderOps.cancelOrder(orderId, request);
+    if (outcome.kind === 'CANCEL_NOT_STARTED') {
+      return outcome;
+    }
+
+    if (outcome.kind !== 'ALREADY_CLOSED') {
+      return outcome;
+    }
+
+    const trackedOrder = runtime.trackedOrders.get(orderId);
+    if (!trackedOrder) {
+      const terminalState = peekQueriedTerminalState(runtime, orderId);
+      if (terminalState !== null) {
+        acknowledgeQueriedTerminalState(runtime, orderId, terminalState);
+      }
+
+      clearOrderReplaceTransientRuntimeState(runtime, orderId);
+      return outcome;
+    }
+
+    const terminalState = peekQueriedTerminalState(runtime, orderId);
+    if (terminalState === null) {
+      logger.error(
+        `[订单监控] 订单 ${orderId} 已确认终态，但缺少 raw terminal snapshot，拒绝向调用方暴露半成品结果`,
+      );
+      return {
+        kind: 'UNKNOWN_FAILURE',
+        errorCode: null,
+        message: `missing raw terminal snapshot for settled cancel order ${orderId}`,
+      };
+    }
+
+    const terminalSettlement = settleActiveTerminalFromRaw(orderId, trackedOrder, terminalState);
+    if (!terminalSettlement.settlementResult.handled && !terminalSettlement.alreadySettled) {
       logger.error(
         `[订单监控] 订单 ${orderId} 已确认终态，但本地结算失败，拒绝向调用方暴露未结算结果`,
       );
@@ -241,10 +323,132 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       };
     }
 
+    acknowledgeQueriedTerminalState(runtime, orderId, terminalState);
+    clearOrderReplaceTransientRuntimeState(runtime, orderId);
+
+    const terminalExecution = {
+      submittedQuantity: terminalState.submittedQuantity,
+      // 结算可使用已知事实防止陈旧查询倒退；重规划则必须保留经纪商原始成交量是否缺失。
+      executedQuantity:
+        terminalState.executedQuantity === null
+          ? null
+          : terminalSettlement.normalizedTerminalState.executedQuantity,
+    };
+
     return {
       ...outcome,
-      relatedBuyOrderIds: settlementResult.relatedBuyOrderIds,
+      relatedBuyOrderIds: terminalSettlement.settlementResult.relatedBuyOrderIds,
+      terminalExecution,
     };
+  }
+
+  /**
+   * 执行常规撤单，并阻断只允许末日路径观察的未开始结果。
+   *
+   * @param orderId 订单唯一标识
+   * @param request 常规 mutation 授权来源
+   * @returns 常规撤单结果
+   */
+  async function cancelOrder(
+    orderId: string,
+    request: OrderMutationRequest,
+  ): Promise<CancelOrderOutcome> {
+    return requirePublicCancelOrderOutcome(await cancelAndSettle(orderId, request));
+  }
+
+  /**
+   * 执行末日保护撤单，保留 permit 内门禁失效且 broker 未调用的事实。
+   *
+   * @param orderId 订单唯一标识
+   * @param request 末日窗口授权请求
+   * @returns 末日保护撤单结果
+   */
+  function cancelDoomsdayOrder(
+    orderId: string,
+    request: DoomsdayCancelOrderRequest,
+  ): Promise<DoomsdayCancelOrderOutcome> {
+    return cancelAndSettle(orderId, request);
+  }
+
+  /**
+   * 公开改单入口也必须同步消费已确认终态。
+   *
+   * 不能把 `TERMINAL_CONFIRMED` 留给未来未必发生的 route wakeup；否则保护性成交
+   * 的 durable progress 与本地结算会脱离同一 raw broker observation。
+   */
+  async function replaceOrderPrice(
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    quantity?: number | null,
+  ) {
+    const result = await orderOps.replaceOrderPrice(orderId, newPrice, request, quantity);
+    const replaceOutcome = peekLatestReplaceOutcome(runtime, orderId);
+    if (replaceOutcome?.kind !== 'TERMINAL_CONFIRMED') {
+      return result;
+    }
+
+    const trackedOrder = runtime.trackedOrders.get(orderId);
+    if (trackedOrder === undefined) {
+      return result;
+    }
+
+    const terminalSettlement = settleActiveTerminalFromRaw(
+      orderId,
+      trackedOrder,
+      replaceOutcome.terminalState,
+    );
+    if (!terminalSettlement.settlementResult.handled && !terminalSettlement.alreadySettled) {
+      throw new Error(`[订单监控] 订单 ${orderId} 改单终态已确认但本地结算失败`);
+    }
+
+    acknowledgeLatestReplaceOutcome(runtime, orderId, replaceOutcome);
+    acknowledgeQueriedTerminalState(runtime, orderId, replaceOutcome.terminalState);
+    clearOrderReplaceTransientRuntimeState(runtime, orderId);
+    return result;
+  }
+
+  /**
+   * 在外层最终报价 callback permit 内执行信号驱动改单，并沿用同一终态结算收口。
+   * 该入口没有可选 permit 或重新排队分支，防止 final quote 与 SDK replace 之间出现 TOCTOU。
+   */
+  async function replaceOrderPriceWithPermit(
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    permit: TradeMutationPermit,
+    quantity?: number | null,
+  ) {
+    const result = await orderOps.replaceOrderPriceWithPermit(
+      orderId,
+      newPrice,
+      request,
+      permit,
+      quantity,
+    );
+    const replaceOutcome = peekLatestReplaceOutcome(runtime, orderId);
+    if (replaceOutcome?.kind !== 'TERMINAL_CONFIRMED') {
+      return result;
+    }
+
+    const trackedOrder = runtime.trackedOrders.get(orderId);
+    if (trackedOrder === undefined) {
+      return result;
+    }
+
+    const terminalSettlement = settleActiveTerminalFromRaw(
+      orderId,
+      trackedOrder,
+      replaceOutcome.terminalState,
+    );
+    if (!terminalSettlement.settlementResult.handled && !terminalSettlement.alreadySettled) {
+      throw new Error(`[订单监控] 订单 ${orderId} 改单终态已确认但本地结算失败`);
+    }
+
+    acknowledgeLatestReplaceOutcome(runtime, orderId, replaceOutcome);
+    acknowledgeQueriedTerminalState(runtime, orderId, replaceOutcome.terminalState);
+    clearOrderReplaceTransientRuntimeState(runtime, orderId);
+    return result;
   }
 
   /**
@@ -268,7 +472,11 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         return;
       }
 
-      eventFlow.handleOrderChanged(event);
+      try {
+        eventFlow.handleOrderChanged(event);
+      } catch (error: unknown) {
+        deps.onFatalError(error);
+      }
     });
 
     await wrapExternalApiRequest({
@@ -381,7 +589,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     onOrderStateChanged,
     trackOrder: orderOps.trackOrder,
     cancelOrder,
-    replaceOrderPrice: orderOps.replaceOrderPrice,
+    cancelDoomsdayOrder,
+    replaceOrderPrice,
+    replaceOrderPriceWithPermit,
     startRuntime: routeRuntime.start,
     stopRuntimeAndDrain,
     recoverOrderTrackingFromSnapshot,

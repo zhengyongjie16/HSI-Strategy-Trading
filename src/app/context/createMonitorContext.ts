@@ -3,16 +3,13 @@
  *
  * 职责：
  * - 创建单 monitor 的 MonitorContext
+ * - 消费 post-gate 已创建的唯一 RiskChecker，不在上下文内重复创建浮亏缓存
  * - 以 SymbolRegistry 作为席位真相，仅根据启动 quotesMap 派生标的名称缓存
  * - 将唯一 monitor 配置装配为纯返回值，由调用方持有唯一上下文
  * - 固化 monitorState 与 tradingConfig.monitor 的一一对应装配不变量
  */
 import { createMultiIndicatorTradingStrategy } from '../../core/strategy/index.js';
-import { createPositionLimitChecker } from '../../core/riskController/positionLimitChecker.js';
-import { createRiskChecker } from '../../core/riskController/index.js';
-import { createUnrealizedLossChecker } from '../../core/riskController/unrealizedLossChecker.js';
 import { createUnrealizedLossMonitor } from '../../core/riskController/unrealizedLossMonitor.js';
-import { createWarrantRiskChecker } from '../../core/riskController/warrantRiskChecker.js';
 import { createDelayedSignalVerifier } from '../../main/asyncProgram/delayedSignalVerifier/index.js';
 import { createAutoSymbolManager } from '../../services/autoSymbolManager/index.js';
 import { compileIndicatorUsageProfile } from '../../services/indicators/profile/index.js';
@@ -132,6 +129,7 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
 
   const monitorConfig = preGateRuntime.tradingConfig.monitor;
   const monitorState = postGateRuntime.lastState.monitorState;
+  const { riskChecker } = postGateRuntime;
   requireTradingCalendarSnapshot(postGateRuntime.lastState.tradingCalendarSnapshot);
 
   if (monitorState.monitorSymbol !== monitorConfig.monitorSymbol) {
@@ -140,15 +138,6 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     );
   }
 
-  const riskChecker = createRiskChecker({
-    warrantRiskChecker: createWarrantRiskChecker(),
-    positionLimitChecker: createPositionLimitChecker({
-      maxPositionNotional: monitorConfig.maxPositionNotional,
-    }),
-    unrealizedLossChecker: createUnrealizedLossChecker({
-      maxUnrealizedLossPerSymbol: monitorConfig.maxUnrealizedLossPerSymbol,
-    }),
-  });
   const autoSymbolManager = createAutoSymbolManager({
     monitorConfig,
     symbolRegistry: preGateRuntime.symbolRegistry,
@@ -177,6 +166,7 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     }),
     delayedSignalVerifier: createDelayedSignalVerifier({
       indicatorCache: postGateRuntime.indicatorCache,
+      onFatalError: postGateRuntime.onFatalError,
     }),
     autoSymbolManager,
   });

@@ -275,17 +275,17 @@ export const PENDING_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set(
 );
 
 /** 不可改单的订单状态集合（包含改单中与撤单中状态） */
-export const NON_REPLACEABLE_ORDER_STATUSES = new Set<OrderStatus>([
+export const NON_REPLACEABLE_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
   OrderStatus.WaitToReplace,
   OrderStatus.PendingReplace,
   OrderStatus.WaitToCancel,
   OrderStatus.PendingCancel,
-]) as ReadonlySet<OrderStatus>;
+]);
 
 /** 不可改单的订单类型集合（MO 市价单不支持改单） */
-export const NON_REPLACEABLE_ORDER_TYPES = new Set<OrderType>([
+export const NON_REPLACEABLE_ORDER_TYPES: ReadonlySet<OrderType> = new Set<OrderType>([
   OrderType.MO,
-]) as ReadonlySet<OrderType>;
+]);
 
 /** 风险检查相关常量（牛熊证） */
 /** 牛证最低距离回收价百分比（低于此值拒绝买入） */

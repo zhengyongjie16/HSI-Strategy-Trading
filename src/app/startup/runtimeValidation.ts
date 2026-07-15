@@ -61,7 +61,7 @@ function createRuntimeValidationCollector(): MutableRuntimeValidationCollector {
  * 收集监控标的、席位标的与持仓标的的运行时校验输入。
  *
  * @param params 收集所需的配置、席位注册表与持仓缓存
- * @returns 已填充的运行时校验收集器
+ * @returns 完成去重后的运行时校验输入
  */
 export function collectRuntimeValidationSymbols(
   params: RuntimeValidationCollectionParams,
@@ -107,5 +107,7 @@ export function collectRuntimeValidationSymbols(
     });
   }
 
-  return collector;
+  return {
+    runtimeValidationInputs: collector.runtimeValidationInputs,
+  };
 }

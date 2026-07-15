@@ -52,24 +52,6 @@ import * as orderOwnershipParser from './orderOwnershipParser.js';
 import * as orderRecorderUtils from './utils.js';
 
 /**
- * 验证订单参数有效性
- * @param price - 订单价格
- * @param quantity - 订单数量
- * @param symbol - 标的代码
- * @returns 参数有效返回 true，否则返回 false
- */
-function validateOrderParams(price: number, quantity: number, symbol: string): boolean {
-  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
-    logger.warn(
-      `[现存订单记录] 订单参数无效，跳过记录：symbol=${symbol}, price=${price}, quantity=${quantity}`,
-    );
-    return false;
-  }
-
-  return true;
-}
-
-/**
  * 记录订单刷新结果日志。
  * @param params 日志参数（含买卖历史统计、最终记录数与待成交分类）
  */
@@ -138,6 +120,33 @@ function formatOrderStatsLine(stats: OrderStatistics): string {
 }
 
 /**
+ * 按标的筛选同一份订单快照，并使用重建分类器校验其订单事实。
+ * 此函数不写入缓存或本地存储，供席位刷新预检与实际刷新共用，确保二者的过滤、生命周期和方向边界完全一致。
+ * @param symbol 待重建的交易标的
+ * @param allOrders 同一次 API 获取的完整订单快照
+ * @returns 该标的的原始订单及其统一分类结果
+ */
+function classifyRebuildSnapshotForSymbol(
+  symbol: string,
+  allOrders: ReadonlyArray<RawOrderFromAPI>,
+) {
+  const filteredOrders = allOrders.filter((order) => order.symbol === symbol);
+  const classified = orderRecorderUtils.classifyOrdersForRebuild(filteredOrders);
+
+  return { filteredOrders, classified };
+}
+
+/**
+ * 预检指定标的的已获取订单快照。
+ * 只执行与实际刷新相同的筛选和分类，不写入 API 缓存或本地订单记录。
+ * @param symbol 待重建的交易标的
+ * @param allOrders 同一次 API 获取的完整订单快照
+ */
+function validateRebuildSnapshot(symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>): void {
+  classifyRebuildSnapshotForSymbol(symbol, allOrders);
+}
+
+/**
  * 创建订单记录器（门面模式），协调存储、API 和过滤引擎，提供本地订单记录与盈利卖单计算。
  * @param deps 依赖注入（storage、apiManager、filteringEngine）
  * @returns OrderRecorder 接口实例
@@ -173,7 +182,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
   function applyOrdersRefreshForLong(
     symbol: string,
     allBuyOrders: ReadonlyArray<OrderRecord>,
-    filledSellOrders: ReadonlyArray<OrderRecord>,
+    executedSellOrders: ReadonlyArray<OrderRecord>,
     pendingClassification: PendingOrderClassificationForRebuild,
     quote?: Quote | null,
   ): OrderRecord[] {
@@ -192,7 +201,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
       return [];
     }
 
-    if (filledSellOrders.length === 0) {
+    if (executedSellOrders.length === 0) {
       const buyOrdersArray = [...allBuyOrders];
       storage.setBuyOrdersListForLong(symbol, buyOrdersArray);
       logRefreshResult({
@@ -209,14 +218,14 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     }
 
     const finalBuyOrders = [
-      ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, filledSellOrders),
+      ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, executedSellOrders),
     ];
     storage.setBuyOrdersListForLong(symbol, finalBuyOrders);
     logRefreshResult({
       symbol,
       isLongSymbol: true,
       originalBuyCount: allBuyOrders.length,
-      sellCount: filledSellOrders.length,
+      sellCount: executedSellOrders.length,
       recordedCount: finalBuyOrders.length,
       pendingClassification,
       quote,
@@ -229,7 +238,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
   function applyOrdersRefreshForShort(
     symbol: string,
     allBuyOrders: ReadonlyArray<OrderRecord>,
-    filledSellOrders: ReadonlyArray<OrderRecord>,
+    executedSellOrders: ReadonlyArray<OrderRecord>,
     pendingClassification: PendingOrderClassificationForRebuild,
     quote?: Quote | null,
   ): OrderRecord[] {
@@ -248,7 +257,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
       return [];
     }
 
-    if (filledSellOrders.length === 0) {
+    if (executedSellOrders.length === 0) {
       const buyOrdersArray = [...allBuyOrders];
       storage.setBuyOrdersListForShort(symbol, buyOrdersArray);
       logRefreshResult({
@@ -265,14 +274,14 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     }
 
     const finalBuyOrders = [
-      ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, filledSellOrders),
+      ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, executedSellOrders),
     ];
     storage.setBuyOrdersListForShort(symbol, finalBuyOrders);
     logRefreshResult({
       symbol,
       isLongSymbol: false,
       originalBuyCount: allBuyOrders.length,
-      sellCount: filledSellOrders.length,
+      sellCount: executedSellOrders.length,
       recordedCount: finalBuyOrders.length,
       pendingClassification,
       quote,
@@ -293,17 +302,8 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     isLongSymbol: boolean,
     executedTimeMs: number,
   ): void {
-    const price = executedPrice;
-    const quantity = executedQuantity;
-    const executedTime = executedTimeMs;
-
-    if (!validateOrderParams(price, quantity, symbol)) {
-      return;
-    }
-
-    const validExecutedTime = isValidPositiveNumber(executedTime) ? executedTime : Date.now();
-
-    storage.addBuyOrder(symbol, price, quantity, isLongSymbol, validExecutedTime);
+    orderRecorderUtils.assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
+    storage.addBuyOrder(symbol, executedPrice, executedQuantity, isLongSymbol, executedTimeMs);
     debugOutputOrders(symbol, isLongSymbol);
   }
 
@@ -322,17 +322,12 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     orderId?: string | null,
     relatedBuyOrderIds?: ReadonlyArray<string> | null,
   ): void {
-    const price = executedPrice;
-    const quantity = executedQuantity;
-
-    if (!validateOrderParams(price, quantity, symbol)) {
-      return;
-    }
+    orderRecorderUtils.assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
 
     storage.updateAfterSell(
       symbol,
-      price,
-      quantity,
+      executedPrice,
+      executedQuantity,
       isLongSymbol,
       executedTimeMs,
       orderId,
@@ -381,15 +376,14 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     quote?: Quote | null,
   ): Promise<ReadonlyArray<OrderRecord>> {
-    const filteredOrders = allOrders.filter((order) => order.symbol === symbol);
-    const classified = orderRecorderUtils.classifyOrdersForRebuild(filteredOrders);
-    const allBuyOrders = classified.filledBuyOrders;
-    const filledSellOrders = classified.filledSellOrders;
+    const { filteredOrders, classified } = classifyRebuildSnapshotForSymbol(symbol, allOrders);
+    const allBuyOrders = classified.executedBuyOrders;
+    const executedSellOrders = classified.executedSellOrders;
 
-    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, filledSellOrders, filteredOrders);
+    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, executedSellOrders, filteredOrders);
 
     return Promise.resolve(
-      applyOrdersRefreshForLong(symbol, allBuyOrders, filledSellOrders, classified, quote),
+      applyOrdersRefreshForLong(symbol, allBuyOrders, executedSellOrders, classified, quote),
     );
   }
 
@@ -402,15 +396,14 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     quote?: Quote | null,
   ): Promise<ReadonlyArray<OrderRecord>> {
-    const filteredOrders = allOrders.filter((order) => order.symbol === symbol);
-    const classified = orderRecorderUtils.classifyOrdersForRebuild(filteredOrders);
-    const allBuyOrders = classified.filledBuyOrders;
-    const filledSellOrders = classified.filledSellOrders;
+    const { filteredOrders, classified } = classifyRebuildSnapshotForSymbol(symbol, allOrders);
+    const allBuyOrders = classified.executedBuyOrders;
+    const executedSellOrders = classified.executedSellOrders;
 
-    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, filledSellOrders, filteredOrders);
+    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, executedSellOrders, filteredOrders);
 
     return Promise.resolve(
-      applyOrdersRefreshForShort(symbol, allBuyOrders, filledSellOrders, classified, quote),
+      applyOrdersRefreshForShort(symbol, allBuyOrders, executedSellOrders, classified, quote),
     );
   }
 
@@ -527,6 +520,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     getLatestSellRecord,
     getSellRecordByOrderId,
     fetchAllOrdersFromAPI,
+    validateRebuildSnapshot,
     refreshOrdersFromAllOrdersForLong,
     refreshOrdersFromAllOrdersForShort,
     clearOrdersCacheForSymbol,

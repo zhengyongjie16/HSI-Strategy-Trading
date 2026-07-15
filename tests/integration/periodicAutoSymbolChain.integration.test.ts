@@ -10,6 +10,7 @@ import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/in
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
+import { createTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
 import { initMonitorState } from '../../src/utils/helpers/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
@@ -113,6 +114,7 @@ function createStartedSwitchWakeupRuntime(
       getStatus: () => ({ started: true, currentVersion: 0, staleVersion: 0 }),
       onFreshReached: () => () => {},
     },
+    tradingGateEventRuntime: createTradingGateEventRuntime(),
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
     doomsdayProtectionEnabled: false,
     now: params.now,

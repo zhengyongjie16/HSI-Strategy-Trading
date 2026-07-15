@@ -245,6 +245,115 @@ describe('riskCheckPipeline business flow', () => {
     expect(baseRiskIndex).toBeGreaterThan(positionsFetchIndex);
   });
 
+  it('rejects an exceeded unrealized loss before fetching account or positions', async () => {
+    let accountCallCount = 0;
+    let positionCallCount = 0;
+    let baseRiskCheckCount = 0;
+    let unrealizedLossCheckCount = 0;
+    const trader = createTraderDouble({
+      canTradeNow: () => ({ canTrade: true }),
+      getAccountSnapshot: async () => {
+        accountCallCount += 1;
+        return createAccountSnapshotDouble(100_000);
+      },
+      getStockPositions: async () => {
+        positionCallCount += 1;
+        return [];
+      },
+    });
+    const riskChecker = createRiskCheckerDouble({
+      checkWarrantRisk: () => ({ allowed: true }),
+      checkUnrealizedLoss: (symbol, currentPrice, isLongSymbol) => {
+        unrealizedLossCheckCount += 1;
+        expect(symbol).toBe('BULL.HK');
+        expect(currentPrice).toBe(10);
+        expect(isLongSymbol).toBeTrue();
+        return {
+          shouldLiquidate: true,
+          reason: 'current loss already exceeds the configured protection threshold',
+          quantity: 100,
+        };
+      },
+      checkBeforeOrder: () => {
+        baseRiskCheckCount += 1;
+        return { allowed: true };
+      },
+    });
+    const pipeline = createRiskCheckPipeline({
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      lastRiskCheckTime,
+    });
+
+    const result = await withMockedNow(35_000, async () =>
+      pipeline(
+        [createSignalDouble('BUYCALL', 'BULL.HK')],
+        createContext({
+          trader,
+          riskChecker,
+          orderRecorder: createOrderRecorderDouble(),
+        }),
+      ),
+    );
+
+    expect(result).toEqual([]);
+    expect(unrealizedLossCheckCount).toBe(1);
+    expect(accountCallCount).toBe(0);
+    expect(positionCallCount).toBe(0);
+    expect(baseRiskCheckCount).toBe(0);
+  });
+
+  it.each([
+    { label: 'the cache has not been refreshed', shouldLiquidate: false },
+    { label: 'the configured threshold is disabled', shouldLiquidate: false },
+  ])('continues when $label', async ({ shouldLiquidate }) => {
+    let unrealizedLossCheckCount = 0;
+    let accountCallCount = 0;
+    let positionCallCount = 0;
+    const trader = createTraderDouble({
+      canTradeNow: () => ({ canTrade: true }),
+      getAccountSnapshot: async () => {
+        accountCallCount += 1;
+        return createAccountSnapshotDouble(100_000);
+      },
+      getStockPositions: async () => {
+        positionCallCount += 1;
+        return [];
+      },
+    });
+    const riskChecker = createRiskCheckerDouble({
+      checkWarrantRisk: () => ({ allowed: true }),
+      checkUnrealizedLoss: (symbol, currentPrice, isLongSymbol) => {
+        unrealizedLossCheckCount += 1;
+        expect(symbol).toBe('BULL.HK');
+        expect(currentPrice).toBe(10);
+        expect(isLongSymbol).toBeTrue();
+        return { shouldLiquidate };
+      },
+    });
+    const pipeline = createRiskCheckPipeline({
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      lastRiskCheckTime,
+    });
+
+    const result = await withMockedNow(40_000, async () =>
+      pipeline(
+        [createSignalDouble('BUYCALL', 'BULL.HK')],
+        createContext({
+          trader,
+          riskChecker,
+          orderRecorder: createOrderRecorderDouble(),
+        }),
+      ),
+    );
+
+    expect(result).toHaveLength(1);
+    expect(unrealizedLossCheckCount).toBe(1);
+    expect(accountCallCount).toBe(1);
+    expect(positionCallCount).toBe(1);
+  });
+
   it('does not preempt same-direction buy slot in risk check stage', async () => {
     const monitorConfig = createMonitorConfigDouble();
     const buyThrottle = createBuyThrottle(monitorConfig.buyIntervalSeconds);
@@ -1026,6 +1135,7 @@ describe('riskCheckPipeline business flow', () => {
       }),
       lastRiskCheckTime,
     });
+    // 仅此负向测试故意绕过 TypeScript 静态边界，模拟恶意 JS 调用；不代表 SELL 可进入买入风控。
     const forcedSellSignal = createSignalDouble('SELLCALL', 'BULL.HK') as unknown as BuySignal;
     let caught: unknown = null;
     try {

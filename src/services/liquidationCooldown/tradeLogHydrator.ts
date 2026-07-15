@@ -1,7 +1,7 @@
 /**
  * 保护性清仓完成记录水化器
  *
- * 职责：严格读取 V1 completion records，恢复当日触发计数与仍有效冷却，并返回完成事实供 lifecycle 恢复。
+ * 职责：严格读取 V1 completion records，恢复当日触发计数与仍有效冷却。
  */
 import { getHKDateKey } from '../../utils/time/index.js';
 import type { ProtectiveLiquidationCompletionRecordV1 } from '../mixedTradeLogRepository/types.js';

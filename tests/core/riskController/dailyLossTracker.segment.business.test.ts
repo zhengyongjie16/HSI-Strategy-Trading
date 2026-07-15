@@ -731,6 +731,230 @@ describe('dailyLossTracker segment flow', () => {
     }).toThrow(/unexpected persisted baseline.*BUY-AFTER-BOUNDARY/);
   });
 
+  it('blocks restart when a collapsed cross-boundary ordinary BUY is absent from completion baselines', () => {
+    const tracker = createSegmentTracker();
+    const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+    const finalExecutionMs = boundaryMs + 60_000;
+    tracker.recalculateFromAllOrders(
+      [
+        // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只能给出折叠后的最终总值。
+        {
+          ...createExecutedOrder({
+            orderId: 'ORDINARY-BUY-CROSSING-BOUNDARY',
+            symbol: 'BULL.HK',
+            side: OrderSide.Buy,
+            executedPrice: 16,
+            executedQuantity: 100,
+            updatedAtMs: finalExecutionMs,
+          }),
+          submittedAt: new Date(boundaryMs - 60_000),
+        },
+        createExecutedOrder({
+          orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          executedPrice: 9,
+          executedQuantity: 40,
+          updatedAtMs: boundaryMs,
+        }),
+      ],
+      createMonitor(),
+      new Date(finalExecutionMs),
+      new Map(),
+    );
+
+    expect(() => {
+      tracker.restoreProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: boundaryMs,
+        orderBaselines: [
+          {
+            orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+            symbol: 'BULL.HK',
+            side: 'SELL',
+            cumulativeQuantity: '40',
+            cumulativeAmount: '360',
+            lastExecutionTimeMs: boundaryMs,
+            orderRevisionMs: boundaryMs,
+          },
+        ],
+      });
+    }).toThrow(/cannot reconstruct.*ORDINARY-BUY-CROSSING-BOUNDARY/i);
+  });
+
+  it('restores a collapsed cross-boundary ordinary BUY from its persisted completion baseline', () => {
+    const tracker = createSegmentTracker();
+    const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+    const preBoundaryExecutionMs = boundaryMs - 60_000;
+    const finalExecutionMs = boundaryMs + 60_000;
+    tracker.recalculateFromAllOrders(
+      [
+        // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只保留边界后的最终累计值。
+        {
+          ...createExecutedOrder({
+            orderId: 'ORDINARY-BUY-CROSSING-PERSISTED-BASELINE',
+            symbol: 'BULL.HK',
+            side: OrderSide.Buy,
+            executedPrice: 16,
+            executedQuantity: 100,
+            updatedAtMs: finalExecutionMs,
+          }),
+          submittedAt: new Date(boundaryMs - 120_000),
+        },
+        createExecutedOrder({
+          orderId: 'PROTECTIVE-SELL-AT-PERSISTED-BOUNDARY',
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          executedPrice: 9,
+          executedQuantity: 40,
+          updatedAtMs: boundaryMs,
+        }),
+      ],
+      createMonitor(),
+      new Date(finalExecutionMs),
+      new Map(),
+    );
+
+    expect(() => {
+      tracker.restoreProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: boundaryMs,
+        orderBaselines: [
+          {
+            orderId: 'ORDINARY-BUY-CROSSING-PERSISTED-BASELINE',
+            symbol: 'BULL.HK',
+            side: 'BUY',
+            cumulativeQuantity: '40',
+            cumulativeAmount: '400',
+            lastExecutionTimeMs: preBoundaryExecutionMs,
+            orderRevisionMs: preBoundaryExecutionMs,
+          },
+          {
+            orderId: 'PROTECTIVE-SELL-AT-PERSISTED-BOUNDARY',
+            symbol: 'BULL.HK',
+            side: 'SELL',
+            cumulativeQuantity: '40',
+            cumulativeAmount: '360',
+            lastExecutionTimeMs: boundaryMs,
+            orderRevisionMs: boundaryMs,
+          },
+        ],
+      });
+    }).not.toThrow();
+  });
+
+  it('allows a collapsed post-boundary ordinary BUY to be absent from completion baselines', () => {
+    const tracker = createSegmentTracker();
+    const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+    const finalExecutionMs = boundaryMs + 60_000;
+    tracker.recalculateFromAllOrders(
+      [
+        {
+          ...createExecutedOrder({
+            orderId: 'ORDINARY-BUY-SUBMITTED-AFTER-BOUNDARY',
+            symbol: 'BULL.HK',
+            side: OrderSide.Buy,
+            executedPrice: 16,
+            executedQuantity: 100,
+            updatedAtMs: finalExecutionMs,
+          }),
+          submittedAt: new Date(boundaryMs + 1),
+        },
+        createExecutedOrder({
+          orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          executedPrice: 9,
+          executedQuantity: 40,
+          updatedAtMs: boundaryMs,
+        }),
+      ],
+      createMonitor(),
+      new Date(finalExecutionMs),
+      new Map(),
+    );
+
+    expect(() => {
+      tracker.restoreProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: boundaryMs,
+        orderBaselines: [
+          {
+            orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+            symbol: 'BULL.HK',
+            side: 'SELL',
+            cumulativeQuantity: '40',
+            cumulativeAmount: '360',
+            lastExecutionTimeMs: boundaryMs,
+            orderRevisionMs: boundaryMs,
+          },
+        ],
+      });
+    }).not.toThrow();
+  });
+
+  for (const testCase of [
+    { name: 'missing submittedAt', resolveSubmittedAt: (_boundaryMs: number) => null },
+    {
+      name: 'invalid submittedAt',
+      resolveSubmittedAt: (_boundaryMs: number) => new Date(Number.NaN),
+    },
+    {
+      name: 'submittedAt equal to the boundary',
+      resolveSubmittedAt: (boundaryMs: number) => new Date(boundaryMs),
+    },
+  ]) {
+    it(`blocks a collapsed ordinary BUY without a strict post-boundary submission proof: ${testCase.name}`, () => {
+      const tracker = createSegmentTracker();
+      const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+      const finalExecutionMs = boundaryMs + 60_000;
+      tracker.recalculateFromAllOrders(
+        [
+          {
+            ...createExecutedOrder({
+              orderId: 'ORDINARY-BUY-UNPROVEN-BOUNDARY',
+              symbol: 'BULL.HK',
+              side: OrderSide.Buy,
+              executedPrice: 16,
+              executedQuantity: 100,
+              updatedAtMs: finalExecutionMs,
+            }),
+            submittedAt: testCase.resolveSubmittedAt(boundaryMs),
+          },
+          createExecutedOrder({
+            orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+            symbol: 'BULL.HK',
+            side: OrderSide.Sell,
+            executedPrice: 9,
+            executedQuantity: 40,
+            updatedAtMs: boundaryMs,
+          }),
+        ],
+        createMonitor(),
+        new Date(finalExecutionMs),
+        new Map(),
+      );
+
+      expect(() => {
+        tracker.restoreProtectionBoundary({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: boundaryMs,
+          orderBaselines: [
+            {
+              orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+              symbol: 'BULL.HK',
+              side: 'SELL',
+              cumulativeQuantity: '40',
+              cumulativeAmount: '360',
+              lastExecutionTimeMs: boundaryMs,
+              orderRevisionMs: boundaryMs,
+            },
+          ],
+        });
+      }).toThrow(/cannot reconstruct.*ORDINARY-BUY-UNPROVEN-BOUNDARY/i);
+    });
+  }
+
   it('blocks crash-gap completion when a collapsed startup order cannot reconstruct the boundary baseline', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
@@ -1275,6 +1499,148 @@ describe('dailyLossTracker segment flow', () => {
         });
       }).toThrow(/same-order.*identity mismatch/);
     }
+  });
+
+  it('keeps same-day state intact when full recalculation rejects a conflicting order identity', () => {
+    const tracker = createSegmentTracker();
+    const monitor = createMonitor();
+    const now = new Date('2026-03-03T02:00:00.000Z');
+    const initialOrders = [
+      createExecutedOrder({
+        orderId: 'CONFLICT-ID',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        executedPrice: 10,
+        executedQuantity: 10,
+        updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+      }),
+      createExecutedOrder({
+        orderId: 'SELL-ID',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        executedPrice: 9,
+        executedQuantity: 10,
+        updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+      }),
+    ];
+
+    tracker.recalculateFromAllOrders(initialOrders, monitor, now);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+
+    expect(() => {
+      tracker.recalculateFromAllOrders(
+        [
+          createExecutedOrder({
+            orderId: 'CONFLICT-ID',
+            symbol: 'BULL.HK',
+            side: OrderSide.Sell,
+            executedPrice: 10,
+            executedQuantity: 1,
+            updatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
+          }),
+        ],
+        monitor,
+        now,
+      );
+    }).toThrow(/CONFLICT-ID.*identity mismatch/);
+
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+
+    tracker.recalculateFromAllOrders(initialOrders, monitor, now);
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+  });
+
+  it('keeps the existing protection boundary when same-day recalculation rejects a revision conflict', () => {
+    const tracker = createSegmentTracker();
+    const monitor = createMonitor();
+    const now = new Date('2026-03-03T02:00:00.000Z');
+    const boundaryMs = Date.parse('2026-03-03T01:00:00.000Z');
+    const executionMs = boundaryMs + 1_000;
+
+    tracker.recalculateFromAllOrders([], monitor, now);
+    tracker.recordCumulativeExecution({
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      executedPrice: 10,
+      executedQuantity: 10,
+      executedTimeMs: boundaryMs,
+      orderUpdatedAtMs: boundaryMs,
+      orderId: 'PRE-BOUNDARY-BUY-ID',
+    });
+
+    tracker.recordCumulativeExecution({
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      executedPrice: 9,
+      executedQuantity: 10,
+      executedTimeMs: boundaryMs,
+      orderUpdatedAtMs: boundaryMs,
+      orderId: 'PRE-BOUNDARY-SELL-ID',
+    });
+
+    tracker.recordCumulativeExecution({
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      executedPrice: 10,
+      executedQuantity: 10,
+      executedTimeMs: executionMs,
+      orderUpdatedAtMs: executionMs,
+      orderId: 'REVISION-CONFLICT-ID',
+    });
+
+    tracker.recordCumulativeExecution({
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      executedPrice: 9,
+      executedQuantity: 10,
+      executedTimeMs: executionMs + 1,
+      orderUpdatedAtMs: executionMs + 1,
+      orderId: 'POST-BOUNDARY-SELL-ID',
+    });
+
+    commitPreparedBoundary(tracker, {
+      direction: 'LONG',
+      boundaryExecutedTimeMs: boundaryMs,
+    });
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+
+    expect(() => {
+      tracker.recalculateFromAllOrders(
+        [
+          createExecutedOrder({
+            orderId: 'REVISION-CONFLICT-ID',
+            symbol: 'BULL.HK',
+            side: OrderSide.Buy,
+            executedPrice: 11,
+            executedQuantity: 10,
+            updatedAtMs: executionMs,
+          }),
+        ],
+        monitor,
+        now,
+      );
+    }).toThrow(/REVISION-CONFLICT-ID.*revision conflict/);
+
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
+
+    expect(
+      tracker.recordCumulativeExecution({
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        executedPrice: 10,
+        executedQuantity: 10,
+        executedTimeMs: boundaryMs,
+        orderUpdatedAtMs: boundaryMs,
+        orderId: 'BOUNDARY-IGNORED-BUY-ID',
+      }),
+    ).toEqual({ authoritativeFactChanged: false, executionAdvanced: false });
+
+    expect(tracker.getLossOffset('LONG')).toBe(-10);
   });
 
   it('keeps only fills strictly after a newly completed protection boundary', () => {
@@ -1859,5 +2225,121 @@ describe('dailyLossTracker segment flow', () => {
         new Set(['BULL.HK', 'BEAR.HK']),
       );
     }).toThrow(/相关成交订单无法归属.*BULL\.HK/);
+  });
+
+  for (const testCase of [
+    { name: 'BUY with null updatedAt', side: OrderSide.Buy, updatedAt: null },
+    {
+      name: 'BUY with Invalid Date updatedAt',
+      side: OrderSide.Buy,
+      updatedAt: new Date(Number.NaN),
+    },
+    { name: 'BUY with epoch updatedAt', side: OrderSide.Buy, updatedAt: new Date(0) },
+    { name: 'SELL with null updatedAt', side: OrderSide.Sell, updatedAt: null },
+    {
+      name: 'SELL with Invalid Date updatedAt',
+      side: OrderSide.Sell,
+      updatedAt: new Date(Number.NaN),
+    },
+    { name: 'SELL with epoch updatedAt', side: OrderSide.Sell, updatedAt: new Date(0) },
+  ] as const) {
+    it(`fails closed before replacing tracker state for an attributable ordinary ${testCase.name}`, () => {
+      const tracker = createSegmentTracker();
+      const monitor = createMonitor();
+      const now = new Date('2026-03-03T02:00:00.000Z');
+      const validBuy = createExecutedOrder({
+        orderId: 'valid-buy-before-invalid-rebuild',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        executedPrice: 10,
+        executedQuantity: 10,
+        updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+      });
+      const validSell = createExecutedOrder({
+        orderId: 'valid-sell-before-invalid-rebuild',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        executedPrice: 9,
+        executedQuantity: 10,
+        updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+      });
+      tracker.recalculateFromAllOrders([validBuy, validSell], monitor, now);
+
+      expect(tracker.getLossOffset('LONG')).toBe(-10);
+
+      const validOrder = testCase.side === OrderSide.Buy ? validBuy : validSell;
+      const invalidOrder: RawOrderFromAPI = {
+        ...validOrder,
+        orderId: `ordinary-${testCase.side}-missing-updated-at`,
+        updatedAt: testCase.updatedAt,
+      };
+
+      expect(() => {
+        tracker.recalculateFromAllOrders([invalidOrder], monitor, now);
+      }).toThrow(/缺少有效更新时间.*ordinary-/);
+
+      expect(tracker.getLossOffset('LONG')).toBe(-10);
+    });
+  }
+
+  it('rejects a related executed order before a historical timestamp can hide missing ownership', () => {
+    const tracker = createDailyLossTracker({
+      ...createDailyLossOrderAnalysisDeps(),
+      resolveOrderOwnership: () => null,
+      toHongKongTimeIso,
+    });
+    const monitor = createMonitor();
+
+    expect(() => {
+      tracker.recalculateFromAllOrders(
+        [
+          createExecutedOrder({
+            orderId: 'related-historical-unowned-order',
+            symbol: 'BULL.HK',
+            stockName: 'Unparseable Warrant',
+            side: OrderSide.Buy,
+            executedPrice: 10,
+            executedQuantity: 10,
+            updatedAtMs: Date.parse('2026-03-02T01:00:00.000Z'),
+          }),
+        ],
+        monitor,
+        new Date('2026-03-03T02:00:00.000Z'),
+        undefined,
+        new Set(['BULL.HK']),
+      );
+    }).toThrow(/相关成交订单无法归属.*related-historical-unowned-order/);
+  });
+
+  it('skips an external unfilled order and a known historical owned execution', () => {
+    const tracker = createSegmentTracker();
+    const monitor = createMonitor();
+    const now = new Date('2026-03-03T02:00:00.000Z');
+    const externalUnfilledOrder: RawOrderFromAPI = {
+      ...createExecutedOrder({
+        orderId: 'external-unfilled-noise',
+        symbol: 'EXTERNAL.HK',
+        side: OrderSide.Buy,
+        executedPrice: 10,
+        executedQuantity: 10,
+        updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+      }),
+      executedPrice: 0,
+      executedQuantity: 0,
+      updatedAt: null,
+    };
+    const historicalOwnedOrder = createExecutedOrder({
+      orderId: 'historical-owned-execution',
+      symbol: 'BULL.HK',
+      side: OrderSide.Buy,
+      executedPrice: 10,
+      executedQuantity: 10,
+      updatedAtMs: Date.parse('2026-03-02T01:00:00.000Z'),
+    });
+
+    expect(() => {
+      tracker.recalculateFromAllOrders([externalUnfilledOrder, historicalOwnedOrder], monitor, now);
+    }).not.toThrow();
+    expect(tracker.getLossOffset('LONG')).toBe(0);
   });
 });

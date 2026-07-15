@@ -42,6 +42,7 @@ function wrapStorageAsRecorder(storage: OrderStorage): OrderRecorder {
     getLatestSellRecord: () => null,
     getSellRecordByOrderId: () => null,
     fetchAllOrdersFromAPI: async () => [],
+    validateRebuildSnapshot: () => {},
     refreshOrdersFromAllOrdersForLong: async () => [],
     refreshOrdersFromAllOrdersForShort: async () => [],
     clearOrdersCacheForSymbol: () => {},

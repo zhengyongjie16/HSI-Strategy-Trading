@@ -8,6 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType, TopicType, type TradeContext } from 'longbridge';
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
+import type { DailyLossCumulativeExecutionInput } from '../../src/types/risk.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
@@ -15,6 +16,7 @@ import {
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
 
@@ -22,7 +24,18 @@ describe('protective-liquidation integration', () => {
   it('records protective episode progress + local sell update after protective liquidation fill event', async () => {
     let recordLocalSellCount = 0;
     let markSellFilledCount = 0;
-    let executionRecorded = false;
+    const terminalExecutionFacts: Array<
+      Pick<
+        DailyLossCumulativeExecutionInput,
+        | 'direction'
+        | 'executedPrice'
+        | 'executedQuantity'
+        | 'factStage'
+        | 'orderId'
+        | 'side'
+        | 'symbol'
+      >
+    > = [];
     const episodeProgressPayloads: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -36,9 +49,7 @@ describe('protective-liquidation integration', () => {
     const tradeCtx = createTradeContextMock();
     const deps: OrderMonitorDeps = {
       ctx: tradeCtx as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
       cacheManager: {
         clearCache: () => {},
         getPendingOrders: async () => [],
@@ -60,12 +71,17 @@ describe('protective-liquidation integration', () => {
         restoreExecutionSnapshot: () => {},
         restoreProtectionBoundary: () => {},
         recalculateFromAllOrders: () => {},
-        recordCumulativeExecution: () => {
-          if (executionRecorded) {
-            return { authoritativeFactChanged: false, executionAdvanced: false };
-          }
+        recordCumulativeExecution: (input) => {
+          terminalExecutionFacts.push({
+            factStage: input.factStage,
+            orderId: input.orderId,
+            direction: input.direction,
+            symbol: input.symbol,
+            side: input.side,
+            executedPrice: input.executedPrice,
+            executedQuantity: input.executedQuantity,
+          });
 
-          executionRecorded = true;
           return { authoritativeFactChanged: true, executionAdvanced: true };
         },
         getLossOffset: () => 0,
@@ -91,7 +107,10 @@ describe('protective-liquidation integration', () => {
       },
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
-      isExecutionAllowed: () => true,
+      isContinuousTradingAllowed: () => true,
+      onFatalError: (error) => {
+        throw error;
+      },
     };
 
     const monitor = createOrderMonitor(deps);
@@ -129,6 +148,18 @@ describe('protective-liquidation integration', () => {
 
     expect(recordLocalSellCount).toBe(1);
     expect(markSellFilledCount).toBe(1);
+    expect(terminalExecutionFacts).toEqual([
+      {
+        factStage: 'TERMINAL',
+        orderId: 'PL-001',
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        executedPrice: 1,
+        executedQuantity: 200,
+      },
+    ]);
+
     expect(episodeProgressPayloads).toEqual([
       {
         direction: 'LONG',
@@ -138,10 +169,6 @@ describe('protective-liquidation integration', () => {
     ]);
 
     expect(refreshNeeds).toEqual([
-      {
-        refreshAccount: true,
-        refreshPositions: true,
-      },
       {
         refreshAccount: true,
         refreshPositions: true,

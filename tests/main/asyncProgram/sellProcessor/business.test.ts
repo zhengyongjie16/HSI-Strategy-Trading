@@ -1007,7 +1007,11 @@ describe('sellProcessor business flow', () => {
       processSellSignals: ({ signals }: { signals: Signal[] }) => {
         processSellCalls += 1;
         if (signals[0]) {
-          signals[0] = { ...signals[0], action: 'HOLD' as const };
+          signals[0] = {
+            ...signals[0],
+            action: 'HOLD' as const,
+            isProtectiveLiquidation: false,
+          };
         }
 
         return signals;

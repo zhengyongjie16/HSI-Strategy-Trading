@@ -47,43 +47,35 @@ export function buildOrderMonitorConfig(globalConfig: GlobalConfig): OrderMonito
 /**
  * 将时间字段解析为毫秒时间戳。
  *
- * @param value 时间字段
- * @returns 毫秒时间戳，无法解析时返回 null
+ * @param value SDK 返回的 Date 时间字段
+ * @returns 有效的正毫秒时间戳；无法解析或值无效时返回 null
  */
-function resolveTimeMs(value: unknown): number | null {
-  if (value instanceof Date) {
-    return value.getTime();
+function resolveTimeMs(value: Date | null | undefined): number | null {
+  if (!(value instanceof Date)) {
+    return null;
   }
 
-  if (typeof value === 'number') {
-    return value;
-  }
-
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }
-
-  return null;
+  const timeMs = value.getTime();
+  return Number.isFinite(timeMs) && timeMs > 0 ? timeMs : null;
 }
 
 /**
  * 解析 updatedAt 为毫秒时间戳。
  *
- * @param updatedAt 更新时间字段
- * @returns 毫秒时间戳，无法解析时返回 null
+ * @param updatedAt SDK 返回的更新时间字段
+ * @returns 有效的正毫秒时间戳；无法解析或值无效时返回 null
  */
-export function resolveUpdatedAtMs(updatedAt: unknown): number | null {
+export function resolveUpdatedAtMs(updatedAt: Date | null | undefined): number | null {
   return resolveTimeMs(updatedAt);
 }
 
 /**
  * 解析 submittedAt 为毫秒时间戳。
  *
- * @param submittedAt 提交时间字段
- * @returns 毫秒时间戳，无法解析时返回 null
+ * @param submittedAt SDK 返回的提交时间字段
+ * @returns 有效的正毫秒时间戳；无法解析或值无效时返回 null
  */
-export function resolveSubmittedAtMs(submittedAt: unknown): number | null {
+export function resolveSubmittedAtMs(submittedAt: Date | null | undefined): number | null {
   return resolveTimeMs(submittedAt);
 }
 

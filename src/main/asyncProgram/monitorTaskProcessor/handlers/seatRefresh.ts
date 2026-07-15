@@ -234,12 +234,17 @@ export function createSeatRefreshHandler({
         return 'skipped';
       }
 
+      const relatedTradingSymbols = collectSeatRefreshRelatedTradingSymbols(context, data);
+      for (const symbol of relatedTradingSymbols) {
+        context.orderRecorder.validateRebuildSnapshot(symbol, allOrders);
+      }
+
       context.dailyLossTracker.recalculateFromAllOrders(
         allOrders,
         context.config,
         new Date(),
         undefined,
-        collectSeatRefreshRelatedTradingSymbols(context, data),
+        relatedTradingSymbols,
       );
 
       await (isLong
@@ -254,7 +259,27 @@ export function createSeatRefreshHandler({
             nextExecutionQuote,
           ));
 
+      const seatStateAfterOrderRefresh = resolveActivatingSeatSnapshot(context, data);
+      if (!seatStateAfterOrderRefresh) {
+        logSeatRefreshSkipped({
+          context,
+          data,
+          reason: 'seat snapshot changed during order refresh',
+        });
+        return 'skipped';
+      }
+
       await helpers.refreshAccountCaches();
+
+      const seatStateAfterAccountCacheRefresh = resolveActivatingSeatSnapshot(context, data);
+      if (!seatStateAfterAccountCacheRefresh) {
+        logSeatRefreshSkipped({
+          context,
+          data,
+          reason: 'seat snapshot changed during account cache refresh',
+        });
+        return 'skipped';
+      }
 
       const dailyLossOffset = context.dailyLossTracker.getLossOffset(isLong ? 'LONG' : 'SHORT');
       await context.riskChecker.refreshUnrealizedLossData(
@@ -265,6 +290,16 @@ export function createSeatRefreshHandler({
         dailyLossOffset,
       );
 
+      const latestSeatState = resolveActivatingSeatSnapshot(context, data);
+      if (!latestSeatState) {
+        logSeatRefreshSkipped({
+          context,
+          data,
+          reason: 'seat snapshot changed during risk refresh',
+        });
+        return 'skipped';
+      }
+
       if (data.previousSymbol && data.previousSymbol !== data.nextSymbol) {
         const previousExecutionQuote = executionQuotes.get(data.previousSymbol) ?? null;
         const existingSeat = context.symbolRegistry.resolveSeatBySymbol(data.previousSymbol);
@@ -272,16 +307,6 @@ export function createSeatRefreshHandler({
           context.orderRecorder.clearBuyOrders(data.previousSymbol, isLong, previousExecutionQuote);
           context.orderRecorder.clearOrdersCacheForSymbol(data.previousSymbol);
         }
-      }
-
-      const latestSeatState = resolveActivatingSeatSnapshot(context, data);
-      if (!latestSeatState) {
-        logSeatRefreshSkipped({
-          context,
-          data,
-          reason: 'seat snapshot changed during refresh',
-        });
-        return 'skipped';
       }
 
       const warrantRefreshResult = context.riskChecker.setWarrantInfoFromCallPrice(

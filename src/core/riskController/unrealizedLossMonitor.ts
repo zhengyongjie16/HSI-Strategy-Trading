@@ -9,7 +9,10 @@
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatError } from '../../utils/error/index.js';
-import { isUnconfirmedOrderSubmissionError } from '../../utils/apiFailure/index.js';
+import {
+  isExternalApiRequestError,
+  isUnconfirmedOrderSubmissionError,
+} from '../../utils/apiFailure/index.js';
 import { logger } from '../../utils/logger/index.js';
 import type { Quote } from '../../types/quote.js';
 import type {
@@ -17,23 +20,9 @@ import type {
   DirectionalUnrealizedLossMonitorContext,
   UnrealizedLossMonitor,
 } from '../../types/risk.js';
-import type { SellSignal } from '../../types/signal.js';
+import type { ProtectiveLiquidationSellSignal } from '../../types/signal.js';
 import type { OrderRecorder, RiskChecker, Trader } from '../../types/services.js';
 import type { UnrealizedLossMonitorDeps } from './types.js';
-
-/**
- * 判断是否属于“远端订单已提交成功，但本地跟踪同步失败”。
- *
- * 这类错误会让真实保护性清仓订单脱离本地状态机，必须立即上抛，由上层进入 fail-fast 处置。
- *
- * @param error 待分类错误
- * @returns true 表示命中了 submitFlow 的本地同步失败契约
- */
-function isSubmittedOrderLocalSyncFailure(error: unknown): boolean {
-  return (
-    error instanceof Error && error.message.startsWith('order submitted but local sync failed:')
-  );
-}
 
 /**
  * 创建浮亏监控器。
@@ -94,7 +83,7 @@ export const createUnrealizedLossMonitor = (
         : lossCheck.reason;
     logger.error(liquidationReason);
 
-    const liquidationSignal: SellSignal = {
+    const liquidationSignal: ProtectiveLiquidationSellSignal = {
       symbol,
       symbolName: quote.name ?? null,
       action: isLong ? 'SELLCALL' : 'SELLPUT',
@@ -111,7 +100,7 @@ export const createUnrealizedLossMonitor = (
       const executionResult = await trader.executeSignals([liquidationSignal]);
       executedOrderCount = executionResult.executedOrderIds.length;
     } catch (error) {
-      if (isUnconfirmedOrderSubmissionError(error) || isSubmittedOrderLocalSyncFailure(error)) {
+      if (!isExternalApiRequestError(error) || isUnconfirmedOrderSubmissionError(error)) {
         throw error;
       }
 

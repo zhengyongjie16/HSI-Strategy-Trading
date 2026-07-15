@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderType, type TradeContext } from 'longbridge';
 
+import { API } from '../../src/constants/index.js';
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
 
@@ -16,20 +17,33 @@ import {
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
   createSymbolRegistryDouble,
   createQuoteDouble,
 } from '../helpers/testDoubles.js';
 
-async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+async function waitForObservedCondition(params: {
+  readonly description: string;
+  readonly isSatisfied: () => boolean;
+}): Promise<void> {
+  const maxMicrotaskTurns = 100;
+  for (let microtaskTurn = 0; microtaskTurn < maxMicrotaskTurns; microtaskTurn += 1) {
+    if (params.isSatisfied()) {
+      return;
+    }
+
+    await Promise.resolve();
+  }
+
+  throw new Error(
+    `[测试] 等待${params.description}超时，已推进 ${String(maxMicrotaskTurns)} 个 microtask turn`,
+  );
 }
 
 type RuntimeTimerHarness = {
   readonly advanceBy: (delayMs: number) => Promise<void>;
   readonly restore: () => void;
+  readonly waitForTimerAt: (delayMs: number) => Promise<void>;
 };
 
 function createRuntimeTimerHarness(initialNowMs: number): RuntimeTimerHarness {
@@ -77,23 +91,42 @@ function createRuntimeTimerHarness(initialNowMs: number): RuntimeTimerHarness {
   globalThis.setTimeout = fakeSetTimeout;
   globalThis.clearTimeout = fakeClearTimeout;
 
-  return {
-    advanceBy: async (delayMs: number) => {
-      nowMs += delayMs;
-      const dueTimers = [...timers.entries()].filter(([, timer]) => timer.atMs <= nowMs);
+  function collectDueTimers() {
+    return [...timers.entries()].filter(([, timer]) => timer.atMs <= nowMs);
+  }
+
+  function runDueTimers(): void {
+    let dueTimers = collectDueTimers();
+    while (dueTimers.length > 0) {
       for (const [handle, timer] of dueTimers) {
         timers.delete(handle);
         timer.callback();
       }
 
-      await flushMicrotasks();
-      await flushMicrotasks();
+      dueTimers = collectDueTimers();
+    }
+  }
+
+  async function waitForTimerAt(delayMs: number): Promise<void> {
+    const expectedAtMs = nowMs + delayMs;
+    await waitForObservedCondition({
+      description: `atMs=${String(expectedAtMs)} 的 timer 注册`,
+      isSatisfied: () => [...timers.values()].some((timer) => timer.atMs === expectedAtMs),
+    });
+  }
+
+  return {
+    advanceBy: async (delayMs: number) => {
+      runDueTimers();
+      nowMs += delayMs;
+      runDueTimers();
     },
     restore: () => {
       Date.now = originalNow;
       globalThis.setTimeout = originalSetTimeout;
       globalThis.clearTimeout = originalClearTimeout;
     },
+    waitForTimerAt,
   };
 }
 
@@ -104,9 +137,7 @@ function createOrderMonitorDeps(params?: {
   const tradeCtx = createTradeContextMock();
   const deps: OrderMonitorDeps = {
     ctx: tradeCtx as unknown as TradeContext,
-    rateLimiter: {
-      throttle: async () => {},
-    },
+    rateLimiter: createRateLimiterDouble(),
     cacheManager: {
       clearCache: () => {},
       getPendingOrders: async () => [],
@@ -159,7 +190,10 @@ function createOrderMonitorDeps(params?: {
       },
     }),
     symbolRegistry: createSymbolRegistryDouble(),
-    isExecutionAllowed: () => true,
+    isContinuousTradingAllowed: () => true,
+    onFatalError: (error) => {
+      throw error;
+    },
   };
 
   return { deps, tradeCtx };
@@ -186,7 +220,7 @@ describe('chaos: api flaky recovery', () => {
     tradeCtx.setFailureRule('cancelOrder', {
       failAtCalls: [1],
       maxFailures: 1,
-      errorMessage: 'transient cancelOrder failure',
+      errorMessage: 'network timeout',
     });
 
     const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T03:00:00.000Z'));
@@ -208,15 +242,18 @@ describe('chaos: api flaky recovery', () => {
         isProtectiveLiquidation: false,
         orderType: OrderType.ELO,
       });
-      await flushMicrotasks();
+      await runtimeTimers.waitForTimerAt(API.DEFAULT_RETRY_DELAY_MS);
 
       expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
       expect(tradeCtx.getCalls('orderDetail')).toHaveLength(0);
       expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
 
-      await flushMicrotasks();
-      await flushMicrotasks();
-      await runtimeTimers.advanceBy(2_100);
+      await runtimeTimers.advanceBy(API.DEFAULT_RETRY_DELAY_MS);
+      await waitForObservedCondition({
+        description: '第二次 cancelOrder 调用',
+        isSatisfied: () => tradeCtx.getCalls('cancelOrder').length >= 2,
+      });
+      await runtimeTimers.waitForTimerAt(0);
 
       expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(2);
       expect(tradeCtx.getCalls('orderDetail')).toHaveLength(0);

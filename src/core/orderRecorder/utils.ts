@@ -1,7 +1,7 @@
-import { OrderSide, OrderStatus } from 'longbridge';
+import { OrderSide } from 'longbridge';
 import { TIME } from '../../constants/index.js';
 import { classifyOrderStatusLifecycle } from '../orderStatusLifecycle/index.js';
-import { decimalToNumber } from '../../utils/helpers/index.js';
+import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { calculateTradingDurationMsBetween } from '../../utils/time/index.js';
 import {
   decimalAdd,
@@ -16,11 +16,36 @@ import type { OrderTimeoutCheckParams } from '../../types/tradingCalendar.js';
 import type { OrderRebuildClassification, OrderStatistics } from './types.js';
 
 /**
+ * 断言写入本地订单记录所需的 broker 执行事实完整有效。
+ *
+ * @param executedPrice 权威成交价格
+ * @param executedQuantity 权威成交数量
+ * @param executedTimeMs 权威成交时间戳（毫秒）
+ * @returns 无返回值；任一事实缺失、非有限或非正时抛错
+ */
+export function assertCompleteExecutionFact(
+  executedPrice: number,
+  executedQuantity: number,
+  executedTimeMs: number,
+): void {
+  if (
+    !isValidPositiveNumber(executedPrice) ||
+    !isValidPositiveNumber(executedQuantity) ||
+    !isValidPositiveNumber(executedTimeMs)
+  ) {
+    throw new Error(
+      `[订单记录] 执行事实不完整或无效: price=${executedPrice}, ` +
+        `quantity=${executedQuantity}, executedTimeMs=${executedTimeMs}`,
+    );
+  }
+}
+
+/**
  * 计算订单列表的统计信息（用于调试输出与成本均价计算）。
  * 默认行为：价格或数量无效的订单按 0 参与累加；无订单时均价为 0。
  *
  * @param orders 订单记录列表
- * @returns 包含总数量、总价值、均价的统计对象
+ * @returns 包含总数量与均价的统计对象
  */
 export function calculateOrderStatistics(orders: ReadonlyArray<OrderRecord>): OrderStatistics {
   let totalQuantity = toDecimalValue(0);
@@ -38,7 +63,6 @@ export function calculateOrderStatistics(orders: ReadonlyArray<OrderRecord>): Or
     : 0;
   return {
     totalQuantity: decimalToNumberValue(totalQuantity),
-    totalValue: decimalToNumberValue(totalValue),
     averagePrice,
   };
 }
@@ -122,6 +146,24 @@ function convertOrderToRecord(order: RawOrderFromAPI, isBuyOrder: boolean): Orde
 }
 
 /**
+ * 在重建分类前校验非零累计成交所对应的完整 broker 执行事实。
+ * 零累计成交不代表执行事实：OPEN 订单仍需进入 pending，终态订单则直接忽略。
+ *
+ * @param order 原始 API 订单数据
+ * @returns 无返回值；非零累计成交的价格、数量或更新时间无效时抛错
+ */
+function assertNonZeroRebuildExecutionFact(order: RawOrderFromAPI): void {
+  const executedQuantity = decimalToNumber(order.executedQuantity);
+  if (executedQuantity === 0) {
+    return;
+  }
+
+  const executedPrice = decimalToNumber(order.executedPrice);
+  const executedTimeMs = order.updatedAt?.getTime() ?? Number.NaN;
+  assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
+}
+
+/**
  * 将原始 API 订单列表按买卖方向分类并转换为内部 OrderRecord 格式。
  * 默认行为：处理所有存在有效成交事实的订单（不限终态），价格/数量/时间无效的订单被跳过。
  *
@@ -161,60 +203,65 @@ export function classifyAndConvertOrders(orders: ReadonlyArray<RawOrderFromAPI>)
 /**
  * 启动/重建阶段对单标的全量订单做统一分类与分流。
  * 默认行为：
- * - Filled 订单会转换为 OrderRecord 参与重建（无效价格/数量/时间会被跳过）
- * - Pending 订单保留原始结构，交由恢复阶段继续跟踪或撤单
- * - 其他关闭状态（Canceled/Rejected 等）直接忽略
+ * - 非零累计成交必须先具备完整有效的 broker 执行事实，否则阻断重建
+ * - 无法归属 Buy/Sell 的非零执行或 OPEN 订单直接阻断，避免丢失执行事实或无法恢复挂单
+ * - Buy/Sell 的 OPEN 订单保留原始结构进入 pending，交由恢复阶段继续跟踪或撤单
+ * - 零累计成交的无法归属 TERMINAL 订单不代表执行事实，可直接忽略
  *
  * @param orders 单标的全量订单
- * @returns Filled/Pending 按买卖方向分流后的分类结果
+ * @returns Execution/Pending 按买卖方向分流后的分类结果
  */
 export function classifyOrdersForRebuild(
   orders: ReadonlyArray<RawOrderFromAPI>,
 ): OrderRebuildClassification {
-  const filledBuyOrders: OrderRecord[] = [];
-  const filledSellOrders: OrderRecord[] = [];
+  const executedBuyOrders: OrderRecord[] = [];
+  const executedSellOrders: OrderRecord[] = [];
   const pendingBuyOrders: RawOrderFromAPI[] = [];
   const pendingSellOrders: RawOrderFromAPI[] = [];
 
   for (const order of orders) {
-    if (order.status === OrderStatus.Filled) {
-      const isBuyOrder = order.side === OrderSide.Buy;
-      const isSellOrder = order.side === OrderSide.Sell;
-      if (!isBuyOrder && !isSellOrder) {
-        continue;
+    const lifecycle = classifyOrderStatusLifecycle(order.status);
+    assertNonZeroRebuildExecutionFact(order);
+
+    const isBuyOrder = order.side === OrderSide.Buy;
+    const isSellOrder = order.side === OrderSide.Sell;
+    if (!isBuyOrder && !isSellOrder) {
+      const executedQuantity = decimalToNumber(order.executedQuantity);
+      if (executedQuantity !== 0 || lifecycle === 'OPEN') {
+        throw new Error(
+          `[订单记录] 订单方向不可归属: side=${order.side}, ` +
+            `lifecycle=${lifecycle}, executedQuantity=${executedQuantity}`,
+        );
       }
 
-      const converted = convertOrderToRecord(order, isBuyOrder);
-      if (!converted) {
-        continue;
-      }
+      continue;
+    }
 
+    if (lifecycle === 'OPEN') {
       if (isBuyOrder) {
-        filledBuyOrders.push(converted);
+        pendingBuyOrders.push(order);
       } else {
-        filledSellOrders.push(converted);
+        pendingSellOrders.push(order);
       }
 
       continue;
     }
 
-    if (classifyOrderStatusLifecycle(order.status) === 'TERMINAL') {
+    const converted = convertOrderToRecord(order, isBuyOrder);
+    if (!converted) {
       continue;
     }
 
-    if (order.side === OrderSide.Buy) {
-      pendingBuyOrders.push(order);
-      continue;
-    }
-
-    if (order.side === OrderSide.Sell) {
-      pendingSellOrders.push(order);
+    if (isBuyOrder) {
+      executedBuyOrders.push(converted);
+    } else {
+      executedSellOrders.push(converted);
     }
   }
 
   return {
-    filledBuyOrders,
-    filledSellOrders,
+    executedBuyOrders,
+    executedSellOrders,
     pendingBuyOrders,
     pendingSellOrders,
   };

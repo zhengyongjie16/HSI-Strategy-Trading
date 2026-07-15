@@ -6,7 +6,8 @@
  * - recovery restore 在 BOOTSTRAPPING 期间不触发 TRACKED，恢复成功后仅切换到 ACTIVE，不直接拥有 route bootstrap
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
+import { Decimal, OrderSide, OrderStatus, OrderType, type Order } from 'longbridge';
+import { createOrderRecorder } from '../../../../src/core/orderRecorder/index.js';
 import { createRecoveryFlow } from '../../../../src/core/trader/orderMonitor/recoveryFlow.js';
 import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
 import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
@@ -15,14 +16,17 @@ import type {
   OrderMonitorTrackedOrder,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderHoldRegistry, TrackOrderParams } from '../../../../src/core/trader/types.js';
-import type { RawOrderFromAPI } from '../../../../src/types/services.js';
+import type { OrderRecorder, RawOrderFromAPI } from '../../../../src/types/services.js';
 import type { MonitorConfig } from '../../../../src/types/config.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import { attachTrackedOrder } from '../../../../src/core/trader/orderMonitor/routingIndex.js';
 import {
   createOrderRecorderDouble,
+  createRateLimiterDouble,
   createSymbolRegistryDouble,
+  createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
+import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 
 function createRuntimeStore(): OrderMonitorRuntimeStore {
   return {
@@ -66,8 +70,6 @@ function createTrackedOrder(
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: false,
-    liquidationTriggerLimit: 1,
-    liquidationCooldownConfig: null,
     orderType: OrderType.ELO,
     submittedPrice: 1,
     initialSubmittedPrice: 1,
@@ -130,7 +132,128 @@ function createPendingOrder(params: {
   };
 }
 
+function createSdkPendingSellOrder(params: {
+  readonly submittedAt: Date;
+  readonly updatedAt: Date;
+}): Order {
+  // SDK 未公开 Order 构造函数；该 fixture 已覆盖 orderApiManager 消费的完整字段。
+  return {
+    orderId: 'ORDER-INVALID-SDK-SUBMITTED-AT',
+    symbol: 'BULL.HK',
+    stockName: 'HSI RC',
+    side: OrderSide.Sell,
+    status: OrderStatus.New,
+    orderType: OrderType.ELO,
+    remark: '',
+    price: new Decimal('1.01'),
+    quantity: new Decimal('100'),
+    executedPrice: new Decimal('0'),
+    executedQuantity: new Decimal('0'),
+    submittedAt: params.submittedAt,
+    updatedAt: params.updatedAt,
+  } as unknown as Order;
+}
+
+const invalidSdkTimestampCases = [
+  { label: 'Invalid Date', createDate: () => new Date(Number.NaN) },
+  { label: 'epoch timestamp', createDate: () => new Date(0) },
+  { label: 'negative timestamp', createDate: () => new Date(-1) },
+] as const;
+
+async function assertInvalidSdkTimestampStopsRecovery(params: {
+  readonly field: 'submittedAt' | 'updatedAt';
+  readonly invalidDate: Date;
+}): Promise<void> {
+  const runtime = createRuntimeStore();
+  const tradeCtx = createTradeContextMock();
+  const validSubmittedAt = new Date('2026-04-08T09:00:00.000Z');
+  const validUpdatedAt = new Date('2026-04-08T09:01:00.000Z');
+  tradeCtx.seedHistoryOrders([]);
+  tradeCtx.seedTodayOrders([
+    createSdkPendingSellOrder({
+      submittedAt: params.field === 'submittedAt' ? params.invalidDate : validSubmittedAt,
+      updatedAt: params.field === 'updatedAt' ? params.invalidDate : validUpdatedAt,
+    }),
+  ]);
+  const orderRecorder = createOrderRecorder({
+    ctx: createTradeContextDouble(tradeCtx),
+    rateLimiter: createRateLimiterDouble(),
+  });
+  let trackCalls = 0;
+  let pendingSellCalls = 0;
+  const observedOrderRecorder: OrderRecorder = {
+    ...orderRecorder,
+    submitSellOrder: (...submitParams) => {
+      pendingSellCalls += 1;
+      orderRecorder.submitSellOrder(...submitParams);
+    },
+  };
+  const recoveryFlow = createRecoveryFlow({
+    runtime,
+    orderHoldRegistry: createOrderHoldRegistry(),
+    orderRecorder: observedOrderRecorder,
+    tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+    symbolRegistry: createSymbolRegistryDouble(),
+    trackOrder: (trackParams) => {
+      trackCalls += 1;
+      runtime.trackedOrders.set(
+        trackParams.orderId,
+        createTrackedOrder(trackParams.orderId, trackParams.symbol, trackParams.initialStatus),
+      );
+      attachTrackedOrder(runtime, trackParams.symbol, trackParams.orderId);
+    },
+    cancelOrder: async () => ({
+      kind: 'CANCEL_CONFIRMED',
+      closedReason: 'CANCELED',
+      source: 'API',
+      relatedBuyOrderIds: null,
+    }),
+    settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
+    handleOrderChangedWhenActive: () => {},
+  });
+  const originalNow = Date.now;
+  let dateNowCalls = 0;
+  Date.now = () => {
+    dateNowCalls += 1;
+    return Date.parse('2026-04-08T09:00:00.000Z');
+  };
+  let caught: unknown = null;
+
+  try {
+    const allOrders = await orderRecorder.fetchAllOrdersFromAPI(true);
+    await recoveryFlow.recoverOrderTrackingFromSnapshot(allOrders);
+  } catch (error) {
+    caught = error;
+  } finally {
+    Date.now = originalNow;
+  }
+
+  expect(caught).toBeInstanceOf(TypeError);
+  if (!(caught instanceof Error)) {
+    throw new Error('expected API boundary failure');
+  }
+
+  expect(caught.message).toContain('TradeContext.todayOrders 订单数据结构无效');
+  expect(trackCalls).toBe(0);
+  expect(runtime.trackedOrders.size).toBe(0);
+  expect(runtime.trackedOrderIdsBySymbol.size).toBe(0);
+  expect(pendingSellCalls).toBe(0);
+  expect(orderRecorder.getPendingSellSnapshot()).toEqual([]);
+  expect(dateNowCalls).toBe(0);
+}
+
 describe('orderMonitor recoveryFlow', () => {
+  for (const field of ['submittedAt', 'updatedAt'] as const) {
+    for (const invalidTimestampCase of invalidSdkTimestampCases) {
+      it(`rejects invalid SDK ${field} (${invalidTimestampCase.label}) before recovery tracks or creates a pending sell`, async () => {
+        await assertInvalidSdkTimestampStopsRecovery({
+          field,
+          invalidDate: invalidTimestampCase.createDate(),
+        });
+      });
+    }
+  }
+
   it('恢复 qty=0 订单仍保留 order updatedAt，并拒绝更旧 WS 覆盖', async () => {
     const runtime = createRuntimeStore();
     const snapshotUpdatedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
@@ -174,6 +297,7 @@ describe('orderMonitor recoveryFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -322,6 +446,57 @@ describe('orderMonitor recoveryFlow', () => {
     expect(runtime.runtimeState).toBe('ACTIVE');
   });
 
+  it('恢复快照的累计成交量超过委托量时不创建跟踪或 pending sell 占用', async () => {
+    const runtime = createRuntimeStore();
+    let trackCalls = 0;
+    let pendingSellCalls = 0;
+    const recorder = createOrderRecorderDouble({
+      submitSellOrder: () => {
+        pendingSellCalls += 1;
+      },
+    });
+    const recoveryFlow = createRecoveryFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: recorder,
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: (params) => {
+        trackCalls += 1;
+        runtime.trackedOrders.set(
+          params.orderId,
+          createTrackedOrder(params.orderId, params.symbol, params.initialStatus),
+        );
+        attachTrackedOrder(runtime, params.symbol, params.orderId);
+      },
+      cancelOrder: async () => ({
+        kind: 'CANCEL_CONFIRMED',
+        closedReason: 'CANCELED',
+        source: 'API',
+        relatedBuyOrderIds: null,
+      }),
+      settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
+      handleOrderChangedWhenActive: () => {},
+    });
+
+    await expect(
+      recoveryFlow.recoverOrderTrackingFromSnapshot([
+        createPendingOrder({
+          orderId: 'ORDER-RECOVER-EXCEEDS-SUBMITTED',
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          executedPrice: 1.02,
+          executedQuantity: 101,
+        }),
+      ]),
+    ).rejects.toThrow(/累计成交量超过有效委托数量/);
+
+    expect(trackCalls).toBe(0);
+    expect(pendingSellCalls).toBe(0);
+    expect(runtime.trackedOrders.size).toBe(0);
+    expect(runtime.runtimeState).toBe('STOPPED');
+  });
+
   it('blocks recovery when mismatched pending buy terminal state contains executed quantity', async () => {
     const runtime = createRuntimeStore();
     const recoveryFlow = createRecoveryFlow({
@@ -339,6 +514,7 @@ describe('orderMonitor recoveryFlow', () => {
           closedReason: 'FILLED',
           executedPrice: 1.02,
           executedQuantity: 100,
+          submittedQuantity: 100,
           orderUpdatedAtMs: Date.parse('2026-04-08T09:01:00.000Z'),
           status: OrderStatus.Filled,
         });
@@ -347,6 +523,10 @@ describe('orderMonitor recoveryFlow', () => {
           closedReason: 'FILLED',
           source: 'API_ERROR',
           relatedBuyOrderIds: null,
+          terminalExecution: {
+            submittedQuantity: 100,
+            executedQuantity: 100,
+          },
         };
       },
       settleOrder: () => {
@@ -386,6 +566,7 @@ describe('orderMonitor recoveryFlow', () => {
           closedReason: 'CANCELED',
           executedPrice: null,
           executedQuantity: 0,
+          submittedQuantity: 100,
           orderUpdatedAtMs: Date.parse('2026-04-08T09:00:00.100Z'),
           status: OrderStatus.Canceled,
         });
@@ -394,6 +575,10 @@ describe('orderMonitor recoveryFlow', () => {
           closedReason: 'CANCELED',
           source: 'API_ERROR',
           relatedBuyOrderIds: null,
+          terminalExecution: {
+            submittedQuantity: 100,
+            executedQuantity: 0,
+          },
         };
       },
       settleOrder: () => {

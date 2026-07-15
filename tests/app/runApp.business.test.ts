@@ -462,7 +462,6 @@ function createRunAppHarness(
       };
     },
     collectRuntimeValidationSymbols: () => ({
-      requiredSymbols: new Set<string>(),
       runtimeValidationInputs: [],
     }),
     createRebuildTradingDayState: () => async () => {

@@ -8,6 +8,7 @@ import type {
 } from '../../../types/risk.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
 import type {
+  CancelOrderNotStartedOutcome,
   CancelOrderOutcome,
   OrderClosedReason,
   OrderStateCheckResult,
@@ -19,11 +20,13 @@ import type {
   RawOrderFromAPI,
   MarketDataClient,
   OrderStateChangedEvent,
+  TradeMutationPermit,
   Unsubscribe,
 } from '../../../types/services.js';
 import type { BoundedOneShotTimerController } from '../../../utils/timer/types.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../protectiveLiquidationEpisodeTracker/types.js';
 import type {
+  CancelOrderMutationRequest,
   OrderCacheManager,
   OrderMutationRequest,
   OrderMonitorConfig,
@@ -65,6 +68,7 @@ export type TerminalSettlementInput = {
     readonly executedQuantity: number | null;
     readonly executedTimeMs: number | null;
     readonly orderUpdatedAtMs: number | null;
+    readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
   };
   readonly queriedExecutedQuantity: number | null;
 };
@@ -91,6 +95,26 @@ export type SellTimeoutResolution =
       readonly kind: 'SETTLE_AND_CONVERT';
       readonly settlementInput: TerminalSettlementInput;
       readonly marketConversionQuantity: number;
+    };
+
+/**
+ * 卖单超时转市价跟进单的 permit 内提交结果。
+ * 类型用途：将前置跳过、broker 已确认响应与 broker 请求开始后的未知结果显式传给 route 外层，
+ * 使旧 pending-sell 占位只按可确认的提交阶段处理。
+ * 数据来源：routeProcessor 的 timeout 市价单提交 callback。
+ * 使用范围：仅 orderMonitor/routeProcessor.ts 使用。
+ */
+export type TimeoutMarketConversionSubmitOutcome =
+  | {
+      readonly kind: 'PRECHECK_SKIPPED';
+    }
+  | {
+      readonly kind: 'BROKER_RESPONSE';
+      readonly brokerResponse: Awaited<ReturnType<TradeContext['submitOrder']>>;
+    }
+  | {
+      readonly kind: 'BROKER_REQUEST_STARTED_UNKNOWN';
+      readonly error: unknown;
     };
 
 /**
@@ -151,6 +175,31 @@ export type ReplaceOrderOutcome =
       readonly errorCode: string | null;
       readonly message: string;
     };
+
+/**
+ * 改单 broker mutation 的 permit 内执行结果。
+ * 类型用途：区分 broker 已确认、订单成交事实已变化与授权失效，防止未执行的改动被误写为成功。
+ * 数据来源：orderOps.replaceOrderPriceWithRunner 的 permit 内复核。
+ * 使用范围：仅 orderMonitor/orderOps.ts 的改单执行链路。
+ */
+type ReplaceMutationOutcome =
+  | { readonly kind: 'BROKER_CONFIRMED' }
+  | { readonly kind: 'EXECUTION_FACT_CHANGED' }
+  | { readonly kind: 'AUTHORIZATION_REVOKED' };
+
+/**
+ * 改单 permit 执行器。
+ * 类型用途：约束调用方在每个取得的 mutation permit 边界内执行改单复核与 broker mutation。
+ * 数据来源：orderOps 的普通改单与外层 signal callback permit 两条执行路径。
+ * 使用范围：仅 orderMonitor/orderOps.ts 的 replaceOrderPriceWithRunner。
+ */
+export interface ReplacePermitRunner {
+  // 行为契约按项目规范使用 interface；call signature 是该契约唯一的公开调用面。
+  // eslint-disable-next-line @typescript-eslint/prefer-function-type
+  (
+    mutation: (permit: TradeMutationPermit) => Promise<ReplaceMutationOutcome>,
+  ): Promise<ReplaceMutationOutcome>;
+}
 
 /**
  * 订单监控唤醒类型。
@@ -272,6 +321,7 @@ export type TimeoutMarketConversionTerminalState = Readonly<{
   readonly executedQuantity: number | null;
   readonly executedTimeMs: number | null;
   readonly orderUpdatedAtMs: number | null;
+  readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
 }>;
 
 /**
@@ -302,7 +352,7 @@ export type OrderCumulativeExecutionParams = Readonly<{
  */
 export type OrderObservedFact = Readonly<{
   status: OrderStatus;
-  executedQuantity: number;
+  executedQuantity: number | null;
   executedPrice: number | null;
   executedTimeMs: number | null;
   updatedAtMs: number | null;
@@ -324,13 +374,14 @@ export type MonotonicOrderFact = Readonly<{
 
 /**
  * 单调合并所需的已知订单事实。
- * 类型用途：限制 orderFactMerge 只读取订单标识、生命周期、累计成交与 revision 字段。
+ * 类型用途：限制 orderFactMerge 只读取订单标识、有效委托量、生命周期、累计成交与 revision 字段。
  * 数据来源：orderMonitor 当前 tracked order 或同结构的已知事实快照。
  * 使用范围：仅 orderMonitor/orderFactMerge.ts 使用。
  */
 export type KnownOrderFact = Pick<
   OrderMonitorTrackedOrder,
   | 'orderId'
+  | 'submittedQuantity'
   | 'status'
   | 'executedQuantity'
   | 'executedPrice'
@@ -366,6 +417,20 @@ export type OrderMonitorTrackedOrder = TrackedOrder & {
   /** 卖单超时等待阶段已收到的终态快照 */
   timeoutMarketConversionTerminalState: TimeoutMarketConversionTerminalState | null;
 };
+
+/**
+ * 602013 state-check 发起时的改单阻塞 owner 快照。
+ * 类型用途：在异步查询返回后确认 WS 未解除并重新分配该阻塞 owner。
+ * 数据来源：orderOps.handleReplaceTempBlockedByStatus 发起第五次 state-check 前的 tracked order。
+ * 使用范围：仅 orderMonitor/orderOps.ts 使用。
+ */
+export type ReplaceBlockOwnerSnapshot = Readonly<{
+  readonly replaceCapability: OrderMonitorTrackedOrder['replaceCapability'];
+  readonly replaceTempBlockedCount: OrderMonitorTrackedOrder['replaceTempBlockedCount'];
+  readonly replaceResumeMode: OrderMonitorTrackedOrder['replaceResumeMode'];
+  readonly replaceBlockedUntilAt: OrderMonitorTrackedOrder['replaceBlockedUntilAt'];
+  readonly lastPriceUpdateAt: OrderMonitorTrackedOrder['lastPriceUpdateAt'];
+}>;
 
 /**
  * 订单监控运行态容器。
@@ -431,6 +496,11 @@ export type EventFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderRecorder: OrderRecorder;
   readonly recordCumulativeExecution: (params: OrderCumulativeExecutionParams) => void;
+
+  /** timeout 卖单终态在写入运行态快照前提交保护性累计成交事实。 */
+  readonly prepareProtectiveTerminalExecution: (
+    params: FinalizeOrderSettlementParams,
+  ) => DailyLossCumulativeExecutionResult | null;
   readonly settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
   readonly cacheBootstrappingEvent: (event: PushOrderChanged) => void;
   readonly triggerRoute: (symbol: string, wakeupKind: OrderMonitorWakeupKind) => void;
@@ -488,6 +558,22 @@ export type OrderOpsDeps = {
 };
 
 /**
+ * 撤单 mutation 前置检查。
+ * 类型用途：仅允许 route owner 在已取得 mutation permit 后、实际调用 broker 前同步确认本次撤单仍归当前 route 所有。
+ * 数据来源：routeProcessor 的 timeout->MO 处理链路。
+ * 使用范围：仅 orderOps.cancelOrder 的内部 route 调用。
+ */
+export type CancelOrderBeforeBrokerMutation = () => boolean;
+
+/**
+ * 带 permit 内前置检查的撤单结果。
+ * 类型用途：显式区分 broker 尚未调用的授权失效，与 broker 已确认或常规失败结果，禁止将前者映射为可重试失败。
+ * 数据来源：orderOps.cancelOrder 在 permit 内执行 route 或末日保护前置检查后的结果。
+ * 使用范围：routeProcessor 与末日保护撤单链路。
+ */
+export type CancelOrderPreflightOutcome = CancelOrderOutcome | CancelOrderNotStartedOutcome;
+
+/**
  * 订单操作流接口。
  * 类型用途：封装订单追踪、撤单、改单的运行态修改行为。
  * 数据来源：createOrderOps 工厂返回。
@@ -495,11 +581,22 @@ export type OrderOpsDeps = {
  */
 export interface OrderOps {
   trackOrder: (params: TrackOrderParams) => void;
-  cancelOrder: (orderId: string, request: OrderMutationRequest) => Promise<CancelOrderOutcome>;
+  cancelOrder: (
+    orderId: string,
+    request: CancelOrderMutationRequest,
+    beforeBrokerCancel?: CancelOrderBeforeBrokerMutation,
+  ) => Promise<CancelOrderPreflightOutcome>;
   replaceOrderPrice: (
     orderId: string,
     newPrice: number,
     request: OrderMutationRequest,
+    quantity?: number | null,
+  ) => Promise<ReplaceOrderPriceOutcome>;
+  replaceOrderPriceWithPermit: (
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    permit: TradeMutationPermit,
     quantity?: number | null,
   ) => Promise<ReplaceOrderPriceOutcome>;
 }
@@ -517,9 +614,12 @@ export type RouteProcessorDeps = {
   readonly orderRecorder: OrderRecorder;
   readonly ctx: TradeContext;
   readonly rateLimiter: RateLimiter;
-  readonly isExecutionAllowed: () => boolean;
+  readonly isContinuousTradingAllowed: () => boolean;
   readonly trackOrder: (params: TrackOrderParams) => void;
-  readonly cancelOrder: (orderId: string) => Promise<CancelOrderOutcome>;
+  readonly cancelOrder: (
+    orderId: string,
+    beforeBrokerCancel?: CancelOrderBeforeBrokerMutation,
+  ) => Promise<CancelOrderPreflightOutcome>;
   readonly settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
   readonly replaceOrderPrice: (
     orderId: string,
@@ -572,8 +672,9 @@ export type FinalizeOrderSettlementParams = {
   readonly monitorSymbol?: string | null;
   readonly isLongSymbol?: boolean;
   readonly isProtectiveLiquidation?: boolean;
-  readonly liquidationTriggerLimit?: number;
-  readonly liquidationCooldownConfig?: MonitorConfig['liquidationCooldown'];
+
+  /** 已在 timeout WS 路径完成 durable progress 的保护性终态结果。 */
+  readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
   readonly pendingSellDisposition?: PendingSellDisposition;
 };
 
@@ -614,6 +715,10 @@ export type SettlementFlowDeps = {
  * 使用范围：orderMonitor/index.ts 及子流程调用。
  */
 export interface SettlementFlow {
+  /** timeout WS 写运行态终态快照前，先提交保护性 SELL 的 durable progress。 */
+  prepareProtectiveTerminalExecution: (
+    params: FinalizeOrderSettlementParams,
+  ) => DailyLossCumulativeExecutionResult | null;
   recordCumulativeExecution: (
     params: OrderCumulativeExecutionParams,
   ) => DailyLossCumulativeExecutionResult;

@@ -52,10 +52,15 @@ function createIndicatorCache(retentionWindowMs: number) {
 
 function createDelayedSignalVerifier(params: {
   readonly indicatorCache: ReturnType<typeof createIndicatorCacheImpl>;
+  readonly onFatalError: (error: unknown) => void;
 }) {
   return createDelayedSignalVerifierImpl({
     ...params,
   });
+}
+
+function rethrowFatalError(error: unknown): never {
+  throw error;
 }
 import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import {
@@ -260,7 +265,7 @@ describe('full business simulation integration', () => {
 
     const riskChecker = createRiskCheckerDouble({
       checkBeforeOrder: ({ signal }) =>
-        signal?.action === 'BUYCALL'
+        signal.action === 'BUYCALL'
           ? { allowed: false, reason: '模拟风险规则：买入被拒绝' }
           : { allowed: true },
     });
@@ -285,6 +290,7 @@ describe('full business simulation integration', () => {
 
     const delayedSignalVerifier = createDelayedSignalVerifier({
       indicatorCache,
+      onFatalError: rethrowFatalError,
     });
 
     const strategy = {
@@ -621,11 +627,13 @@ describe('full business simulation integration', () => {
       riskChecker,
       findBestWarrant: async () => autoSymbolCandidates.shift() ?? null,
       now: () => new Date('2026-02-16T01:00:00.000Z'),
+      getTradingCalendarSnapshot: () => lastState.tradingCalendarSnapshot,
     });
     const runtimeNow = () => new Date('2026-02-16T01:00:00.000Z');
 
     const delayedSignalVerifier = createDelayedSignalVerifier({
       indicatorCache,
+      onFatalError: rethrowFatalError,
     });
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
@@ -669,6 +677,7 @@ describe('full business simulation integration', () => {
       monitorContext,
       lastState,
       postTradeConsistencyRuntime,
+      tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: runtimeNow,
       scheduleTimer: (callback, delayMs) => {
@@ -684,6 +693,7 @@ describe('full business simulation integration', () => {
       monitorContext,
       lastState,
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: runtimeNow,
       scheduleTimer: (callback, delayMs) => {
         return setTimeout(callback, delayMs);

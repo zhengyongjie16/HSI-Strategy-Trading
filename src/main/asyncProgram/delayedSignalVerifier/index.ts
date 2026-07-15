@@ -22,7 +22,7 @@ import { formatSymbolDisplay } from '../../../utils/display/index.js';
 /**
  * 创建延迟信号验证器。负责管理待验证信号、定时触发验证、调用 performVerification，并在验证通过时触发回调。
  *
- * @param deps 依赖注入，包含 indicatorCache
+ * @param deps 依赖注入，包含 indicatorCache 与统一 fatal 上报入口
  * @returns DelayedSignalVerifierPort 实例（addSignal、onVerified、cancelAll 等）
  */
 export function createDelayedSignalVerifier(
@@ -67,7 +67,7 @@ export function createDelayedSignalVerifier(
             callback(signal);
           } catch (err) {
             logger.error('[延迟验证] 执行 onVerified 回调时发生错误', err);
-            onFatalError?.(err);
+            onFatalError(err);
           }
         }
       } else {
@@ -77,12 +77,7 @@ export function createDelayedSignalVerifier(
       }
     } catch (err) {
       logger.error('[延迟验证] 执行验证流程时发生错误', err);
-      if (onFatalError) {
-        onFatalError(err);
-        return;
-      }
-
-      throw err;
+      onFatalError(err);
     }
   }
   return {

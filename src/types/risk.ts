@@ -30,7 +30,7 @@ export type DailyLossCumulativeExecutionInput = {
 
 /**
  * 待持久化的累计成交权威快照。
- * 类型用途：DailyLossTracker 在提交内存事实前，把执行推进或合法终态金额修订暴露给持久化边界。
+ * 类型用途：DailyLossTracker 在提交未封存的权威成交事实前，把 progress 快照暴露给持久化边界。
  * 数据来源：recordCumulativeExecution 的单调合并结果。
  * 使用范围：SettlementFlow 保护性清仓 progress 持久化。
  */
@@ -48,7 +48,7 @@ export type DailyLossAuthoritativeFactSnapshot = Readonly<{
  * 数据来源：PROTECTIVE_LIQUIDATION_EXECUTION_PROGRESS V1。
  * 使用范围：lifecycle 启动恢复。
  */
-export type RestoreDailyLossExecutionSnapshotParams = Readonly<{
+type RestoreDailyLossExecutionSnapshotParams = Readonly<{
   factStage: 'OPEN' | 'TERMINAL';
   direction: 'LONG' | 'SHORT';
   symbol: string;
@@ -63,7 +63,7 @@ export type RestoreDailyLossExecutionSnapshotParams = Readonly<{
 /**
  * 保护性清仓累计成交进度持久化输入。
  * 类型用途：隔离 OrderMonitor 与具体 mixed-log repository，实现持久化成功后才提交内存事实。
- * 数据来源：SettlementFlow 与 DailyLossTracker 的 execution-advance snapshot。
+ * 数据来源：SettlementFlow 与 DailyLossTracker 的未封存权威成交事实快照。
  * 使用范围：Trader 装配边界。
  */
 export type ProtectiveLiquidationExecutionProgressInput = Readonly<{
@@ -134,7 +134,7 @@ export interface DailyLossTracker {
   /** 显式重置 dayKey 与 states（含分段元数据） */
   resetAll: (now: Date) => void;
 
-  /** 使用完整订单列表重新计算当日状态，作为启动初始化或纠偏手段。 */
+  /** 使用完整订单列表全量重算当日状态，供启动恢复或 SEAT_REFRESH 纠偏使用。 */
   recalculateFromAllOrders: (
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,

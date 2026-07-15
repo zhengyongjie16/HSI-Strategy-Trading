@@ -3,7 +3,8 @@
  *
  * 职责：
  * - 接管已启动 pending switch 的后续推进 owner
- * - 监听 ORDER_EVENT / FRESHNESS / SYMBOL_QUOTE / RETRY_TIMER 四类显式唤醒源
+ * - WAIT 结果通过 ORDER_EVENT / FRESHNESS / SYMBOL_QUOTE / RETRY_TIMER 四类显式唤醒源重驱
+ * - 连续交易门禁进入开放态（含首次初始化）时，额外重驱当前持有的 pending switch route
  * - 每次唤醒时重新读取权威快照，并以 single-flight + latest-only collapse 推进 advancePendingSwitch
  * - 以 direction + seatVersion 作为 route key，确保旧 seatVersion 注册自然失效
  */
@@ -11,6 +12,7 @@ import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProt
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
 import { logger } from '../../utils/logger/index.js';
+import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
   AdvancePendingSwitchResult,
   SwitchDriveResult,
@@ -168,21 +170,30 @@ function isBaselineReady(deps: SwitchWakeupRuntimeDeps): boolean {
 }
 
 /**
- * 判断当前 lifecycle/runtime gate 是否允许推进 pending switch。
+ * 判断当前 pending switch route 是否必须终止。
+ * 午休只暂停推进并保留 owner；仅生命周期关闭或末日清仓接管会终止 route。
  *
  * @param deps runtime 依赖
- * @returns 可推进时返回 true
+ * @returns 当前 pending switch route 必须终止时返回 true
  */
-function isExecutionGateOpen(deps: SwitchWakeupRuntimeDeps): boolean {
-  if (!deps.lastState.isTradingEnabled || deps.lastState.canTrade !== true) {
-    return false;
-  }
-
-  if (!deps.doomsdayProtectionEnabled) {
+function shouldTerminatePendingSwitchRoute(deps: SwitchWakeupRuntimeDeps): boolean {
+  if (!deps.lastState.isTradingEnabled) {
     return true;
   }
 
-  return !isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false);
+  return (
+    deps.doomsdayProtectionEnabled &&
+    isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false)
+  );
+}
+
+/**
+ * 判断当前连续交易门禁是否允许推进 pending switch route。
+ * @param deps runtime 依赖
+ * @returns 连续交易时段且 route 未被终止时返回 true
+ */
+function isExecutionGateOpen(deps: SwitchWakeupRuntimeDeps): boolean {
+  return !shouldTerminatePendingSwitchRoute(deps) && deps.lastState.canTrade === true;
 }
 
 /**
@@ -273,6 +284,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeOrderStateChanged: (() => void) | null = null;
   let unsubscribeFreshReached: (() => void) | null = null;
+  let unsubscribeGateStateChanged: (() => void) | null = null;
   const routeStates = new Map<SwitchWakeupRouteKey, SwitchWakeupRouteState>();
   const quoteWakeupsBySymbol = new Map<string, Set<SwitchWakeupRouteKey>>();
   const orderWakeupsBySymbol = new Map<string, Set<SwitchWakeupRouteKey>>();
@@ -370,6 +382,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       .then(() => {
         if (
           routeState.retainedQuoteSymbols !== requestedSymbols ||
+          !isExecutionGateOpen(deps) ||
           !isRouteCurrent(routeState.route)
         ) {
           return;
@@ -492,6 +505,17 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   }
 
   /**
+   * 创建单次 pending switch 推进的跨 await 授权门禁。
+   * runtime 停止、连续交易门禁关闭或席位身份变化后，manager 不得继续写入本地状态机。
+   *
+   * @param route 本轮推进开始时确认的权威 route
+   * @returns 仍可继续本地推进时返回 true 的判断函数
+   */
+  function createPendingSwitchCanContinue(route: SwitchWakeupRoute): () => boolean {
+    return () => running && isExecutionGateOpen(deps) && isRouteCurrent(route);
+  }
+
+  /**
    * 获取当前权威 route；若已失效则返回 null。
    *
    * @param routeState route 状态
@@ -524,6 +548,11 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     routeKey: SwitchWakeupRouteKey,
     driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>,
   ): void {
+    if (shouldTerminatePendingSwitchRoute(deps)) {
+      deleteRoute(routeKey);
+      return;
+    }
+
     assertNonEmptyWaitResult(driveResult);
     const routeState = routeStates.get(routeKey);
     if (routeState === undefined) {
@@ -563,6 +592,15 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   function triggerRoute(routeKey: SwitchWakeupRouteKey, source: string): void {
     const routeState = routeStates.get(routeKey);
     if (routeState === undefined || !running) {
+      return;
+    }
+
+    if (shouldTerminatePendingSwitchRoute(deps)) {
+      deleteRoute(routeKey);
+      return;
+    }
+
+    if (!isExecutionGateOpen(deps)) {
       return;
     }
 
@@ -608,6 +646,11 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       while (running && routeState.dirty) {
         routeState.dirty = false;
 
+        if (shouldTerminatePendingSwitchRoute(deps)) {
+          deleteRoute(routeKey);
+          return;
+        }
+
         if (!isExecutionGateOpen(deps) || !isBaselineReady(deps)) {
           return;
         }
@@ -627,6 +670,11 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           throw error;
         }
 
+        if (shouldTerminatePendingSwitchRoute(deps)) {
+          deleteRoute(routeKey);
+          return;
+        }
+
         if (!isExecutionGateOpen(deps) || !isBaselineReady(deps)) {
           return;
         }
@@ -637,21 +685,50 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           return;
         }
 
+        if (shouldTerminatePendingSwitchRoute(deps)) {
+          deleteRoute(routeKey);
+          return;
+        }
+
+        if (!isExecutionGateOpen(deps)) {
+          return;
+        }
+
         routeState.route = authoritativeRoute;
 
         const result = await deps.monitorContext.autoSymbolManager.advancePendingSwitch({
           direction: authoritativeRoute.direction,
           positions: deps.lastState.cachedPositions,
+          canContinue: createPendingSwitchCanContinue(authoritativeRoute),
         });
         assertValidAdvanceResult(result, authoritativeRoute.direction);
 
-        if (!result.advanced) {
+        if (shouldTerminatePendingSwitchRoute(deps)) {
           deleteRoute(routeKey);
           return;
         }
 
+        if (!result.advanced) {
+          if (!isRouteCurrent(routeState.route)) {
+            deleteRoute(routeKey);
+          }
+
+          return;
+        }
+
         if (!result.stillPending) {
+          // 终态由状态机在最后一次真实 gate 与席位身份校验后同步完成；
+          // 此时 hasPendingSwitch 必然为 false，不能再用 isRouteCurrent 否定其结果。
           deleteRoute(routeKey);
+          return;
+        }
+
+        if (!isRouteCurrent(routeState.route)) {
+          deleteRoute(routeKey);
+          return;
+        }
+
+        if (!isExecutionGateOpen(deps)) {
           return;
         }
 
@@ -729,7 +806,29 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   }
 
   /**
-   * 启动 runtime 并订阅三类事件源。
+   * 连续交易门禁恢复时重驱仍由本 runtime 持有的 pending switch route。
+   * 午休只暂停推进；生命周期关闭或末日接管才终止 owner。
+   */
+  function handleGateStateChanged(event: TradingGateStateChangedEvent): void {
+    if (shouldTerminatePendingSwitchRoute(deps)) {
+      for (const routeKey of routeStates.keys()) {
+        deleteRoute(routeKey);
+      }
+
+      return;
+    }
+
+    if (event.previousCanTrade === true || !event.nextCanTrade) {
+      return;
+    }
+
+    for (const routeKey of routeStates.keys()) {
+      triggerRoute(routeKey, 'TRADING_GATE_OPEN');
+    }
+  }
+
+  /**
+   * 启动 runtime 并订阅行情、订单状态、freshness 追平和交易门禁变化四类事件源。
    */
   function start(): void {
     if (running) {
@@ -749,6 +848,9 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     unsubscribeFreshReached = subscribeFreshReached(() => {
       handleFreshReached();
     });
+
+    unsubscribeGateStateChanged =
+      deps.tradingGateEventRuntime.onGateStateChanged(handleGateStateChanged);
   }
 
   /**
@@ -762,6 +864,8 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     unsubscribeOrderStateChanged = null;
     unsubscribeFreshReached?.();
     unsubscribeFreshReached = null;
+    unsubscribeGateStateChanged?.();
+    unsubscribeGateStateChanged = null;
 
     for (const routeState of routeStates.values()) {
       clearRetryTimer(routeState);
@@ -794,7 +898,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @param params handoff 参数
    */
   function handoffPendingSwitch(params: SwitchWakeupHandoffParams): void {
-    if (!running) {
+    if (!running || shouldTerminatePendingSwitchRoute(deps)) {
       return;
     }
 

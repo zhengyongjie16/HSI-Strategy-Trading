@@ -27,6 +27,21 @@ function isValidPositionAndQuote(
 }
 
 /**
+ * 判断候选买入价是否满足最新已成交买入价限制。
+ * 默认行为：最新成交价或候选价格缺失时不在此处拦截；两者均存在时，候选价必须严格低于最新成交价。
+ *
+ * @param candidatePrice 候选买入价格
+ * @param latestBuyPrice 同方向标的最新已成交买入价
+ * @returns true 表示允许继续后续检查或提交
+ */
+export function isBuyPriceWithinLatestOrderLimit(
+  candidatePrice: number | null,
+  latestBuyPrice: number | null,
+): boolean {
+  return !(candidatePrice !== null && latestBuyPrice !== null && candidatePrice >= latestBuyPrice);
+}
+
+/**
  * 构建卖出原因文本（将原始原因与详细说明用中文逗号拼接）。
  * 默认行为：原始原因为空或仅空白时直接返回 detail。
  *

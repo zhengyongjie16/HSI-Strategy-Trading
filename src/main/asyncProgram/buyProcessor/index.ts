@@ -34,7 +34,6 @@ import type { Processor } from '../types.js';
 import type { BuyProcessorDeps } from './types.js';
 import type { Task, BuyTaskType } from '../tradeTaskQueue/types.js';
 import type { BuyRiskCheckContext } from '../../../types/services.js';
-import type { BuySignal } from '../../../types/signal.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 
 /**
@@ -147,40 +146,8 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         return; // 处理成功（虽然被拦截了）
       }
 
-      // 买入委托价必须以执行时行情为准，与卖出逻辑一致；lotSize 为按金额计算数量所必需
-      const finalExecutionQuotes = await marketDataClient.getQuotes([signal.symbol]);
-      const finalExecutionQuote = finalExecutionQuotes.get(signal.symbol);
-      if (!finalExecutionQuote) {
-        logger.warn(`[BuyProcessor] 买入标的行情缺失，跳过: ${symbolDisplay}`);
-        return;
-      }
-
-      if (!Number.isFinite(finalExecutionQuote.price) || finalExecutionQuote.price <= 0) {
-        logger.warn(
-          `[BuyProcessor] 买入标的行情缺失或价格无效，跳过: ${symbolDisplay}，quote.price=${finalExecutionQuote.price}`,
-        );
-        return;
-      }
-
-      const lotSizeValid =
-        finalExecutionQuote.lotSize !== undefined &&
-        Number.isFinite(finalExecutionQuote.lotSize) &&
-        finalExecutionQuote.lotSize > 0;
-      if (!lotSizeValid) {
-        logger.warn(
-          `[BuyProcessor] 买入标的 lotSize 缺失或无效，无法按手数计算数量，跳过: ${symbolDisplay}，quote.lotSize=${finalExecutionQuote.lotSize}`,
-        );
-        return;
-      }
-
-      const signalWithQuote: BuySignal = {
-        ...signal,
-        price: finalExecutionQuote.price,
-        lotSize: finalExecutionQuote.lotSize,
-      };
-
       const executionSeatValidation = validateSignalSeat({
-        signal: signalWithQuote,
+        signal,
         symbolRegistry: ctx.symbolRegistry,
       });
       if (!executionSeatValidation.valid) {
@@ -193,7 +160,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       await executeSignalsWithLifecycleGate({
         getCanProcessTask,
         trader,
-        signal: signalWithQuote,
+        signal,
         symbolDisplay,
         loggerPrefix: 'BuyProcessor',
         successMessage: '买入订单执行完成',

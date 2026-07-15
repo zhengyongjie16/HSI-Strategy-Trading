@@ -10,8 +10,10 @@ import type {
   StartSwitchOnDistanceResult,
   SwitchDriveResult,
 } from '../../types/monitorContextPorts.js';
-import type { SymbolRegistry } from '../../types/seat.js';
+import type { SeatStatus, SymbolRegistry } from '../../types/seat.js';
 import type { QuoteSubscriptionRuntime } from '../quoteSubscriptionRuntime/types.js';
+import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.js';
+import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
 
 /**
  * Monitor quote freshness 状态快照。
@@ -145,13 +147,40 @@ export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
 export type MonitorQuoteRouteMode = 'STATIC_LIQUIDATION' | 'DISTANCE_SWITCH';
 
 /**
+ * 距离换标预检快照。
+ * 类型用途：记录调用 startSwitchOnDistance 前两侧席位与 pending switch 的权威事实，
+ * 用于证明外部错误发生时尚未创建 switch state，才允许由 monitor quote route 重试。
+ * 数据来源：MonitorQuoteEventRuntime 从 SymbolRegistry 与 AutoSymbolManager 实时读取。
+ * 使用范围：仅 monitorQuoteEventRuntime 的距离换标预检错误边界使用。
+ */
+export type DistanceSwitchPrecheckSnapshot = ReadonlyArray<
+  Readonly<{
+    /** 席位方向 */
+    direction: 'LONG' | 'SHORT';
+
+    /** 预检前席位状态 */
+    seatStatus: SeatStatus;
+
+    /** 预检前席位标的 */
+    seatSymbol: string | null;
+
+    /** 预检前席位版本 */
+    seatVersion: number;
+
+    /** 预检前是否已有状态机 owner */
+    hasPendingSwitch: boolean;
+  }>
+>;
+
+/**
  * Monitor quote route 状态。
- * 类型用途：维护单 monitor route 的 latest-only collapse、静态清仓 WAIT 唤醒和 retry timer。
+ * 类型用途：维护单 monitor route 的 latest-only collapse、静态清仓 WAIT 唤醒，以及按 quote generation 限定的距离换标预检 retry。
  * 数据来源：monitorQuoteEventRuntime 在 quote event 与 WAIT 结果到达时写入。
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
 export type MonitorQuoteRouteState = {
   generation: number;
+  monitorQuoteGeneration: number;
   latestEvent: QuoteUpdatedEvent | null;
   wakeupSymbols: ReadonlySet<string>;
   retainedQuoteSymbols: ReadonlySet<string>;
@@ -161,6 +190,8 @@ export type MonitorQuoteRouteState = {
   dirty: boolean;
   retryAttempts: number;
   retryTimerHandle: ReturnType<typeof setTimeout> | null;
+  distanceSwitchPrecheckRetryTimer: BoundedOneShotTimerController | null;
+  distanceSwitchPrecheckRetryConsumed: boolean;
   submittedLiquidationDirections: Set<'LONG' | 'SHORT'>;
 };
 
@@ -276,6 +307,9 @@ export type SwitchWakeupRuntimeDeps = Readonly<{
 
   /** 成交后一致性 freshness 端口 */
   postTradeConsistencyRuntime: SwitchWakeupFreshnessDeps;
+
+  /** 连续交易门禁事件源；用于午休结束后重驱仍有效的 pending switch route。 */
+  tradingGateEventRuntime: Pick<TradingGateEventRuntime, 'onGateStateChanged'>;
 
   /** quote 订阅 retain 端口 */
   quoteSubscriptionRuntime?: Pick<QuoteSubscriptionRuntime, 'retainSymbols' | 'releaseRetain'>;

@@ -191,6 +191,7 @@ export const processSellSignals = (
         return {
           ...sig,
           action: 'HOLD' as const,
+          isProtectiveLiquidation: false,
           reason: `${sig.reason}，但持仓对象无效`,
         };
       }
@@ -216,6 +217,7 @@ export const processSellSignals = (
       return {
         ...sig,
         action: 'HOLD' as const,
+        isProtectiveLiquidation: false,
         reason: result.reason,
         relatedBuyOrderIds: null,
       };

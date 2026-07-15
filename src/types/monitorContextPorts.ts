@@ -38,7 +38,7 @@ export type SwitchWakeupRequirement =
  * 数据来源：由换标状态机在返回 WAIT 时构造。
  * 使用范围：switch drive result 与 runtime handoff 边界。
  */
-export type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
+type NonEmptyReadonlyArray<T> = readonly [T, ...T[]];
 
 /**
  * 距离换标单步推进结果。
@@ -108,11 +108,14 @@ export type AdvancePendingSwitchResult =
 
 /**
  * 周期换标阻塞来源（有效阻塞值）。
- * 类型用途：用于表达会阻断周期换标的本地占用来源。
- * 数据来源：由 autoSymbolManager 周期换标入口基于订单归属和本地在途订单判定。
+ * 类型用途：用于表达会阻断周期换标的席位占用来源。
+ * 数据来源：由 autoSymbolManager 周期换标入口基于订单归属、本地在途订单与 broker 未完成订单判定。
  * 使用范围：MonitorContext 行为端口、autoSymbolManager 与监控任务处理器。
  */
-export type PeriodicSeatBlockingReason = 'ORDER_RECORDER' | 'LOCAL_PENDING_ORDER';
+export type PeriodicSeatBlockingReason =
+  | 'ORDER_RECORDER'
+  | 'LOCAL_PENDING_ORDER'
+  | 'BROKER_PENDING_ORDER';
 
 /**
  * 周期换标等待状态。
@@ -136,21 +139,31 @@ export interface AutoSymbolManagerPort {
   maybeSearchOnEvent: (params: {
     readonly direction: 'LONG' | 'SHORT';
     readonly currentTime: Date;
-    readonly canTradeNow: boolean;
+
+    /** 必须在每个异步边界后重新读取的普通交易授权。 */
+    readonly canContinue: () => boolean;
   }) => Promise<void>;
   evaluatePeriodicSwitchDue: (params: {
     readonly direction: 'LONG' | 'SHORT';
     readonly currentTime: Date;
-    readonly canTradeNow: boolean;
+
+    /** 必须在每个异步边界后重新读取的普通交易授权。 */
+    readonly canContinue: () => boolean;
   }) => Promise<SwitchDriveResult>;
   startSwitchOnDistance: (params: {
     readonly direction: 'LONG' | 'SHORT';
     readonly monitorPrice: number | null;
     readonly positions: ReadonlyArray<Position>;
+
+    /** 必须在每个异步边界后重新读取的普通交易授权。 */
+    readonly canContinue: () => boolean;
   }) => Promise<StartSwitchOnDistanceResult>;
   advancePendingSwitch: (params: {
     readonly direction: 'LONG' | 'SHORT';
     readonly positions: ReadonlyArray<Position>;
+
+    /** 必须在每个异步边界后重新读取的普通交易授权。 */
+    readonly canContinue: () => boolean;
   }) => Promise<AdvancePendingSwitchResult>;
   hasPendingSwitch: (direction: 'LONG' | 'SHORT') => boolean;
   getPeriodicSwitchPendingState: (direction: 'LONG' | 'SHORT') => PeriodicSwitchPendingState;

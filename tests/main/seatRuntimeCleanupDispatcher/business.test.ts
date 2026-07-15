@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createSeatRuntimeCleanupDispatcher } from '../../../src/main/seatRuntimeCleanupDispatcher/index.js';
+import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
@@ -300,7 +301,7 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     expect(clearLongCalls).toBe(1);
   });
 
-  it('seat truth 事件只按方向处理，不再要求 monitorSymbol fail-fast', () => {
+  it('seat state event 只按方向处理，不再要求 monitorSymbol fail-fast', () => {
     const symbolRegistry = createSymbolRegistryDouble({
       longSeat: createActiveSeatState('BULL.HK'),
     });
@@ -323,14 +324,31 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     expect(symbolRegistry.getSeatStateChangedListenerCount()).toBe(0);
   });
 
-  it('席位状态 listener 失败后仍执行后续 listener 并向写入方暴露错误', () => {
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: createActiveSeatState('BULL.HK'),
+  it('真实 cleanup listener 失败后仍执行后续 listener 并向 SymbolRegistry 写入方暴露错误', () => {
+    const symbolRegistry = createSymbolRegistry(
+      createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+        longSymbol: 'BULL.HK',
+      }),
+    );
+    const cleanupError = new Error('cleanup listener failed');
+    const monitorContext = createMonitorContextDouble({
+      symbolRegistry,
+      riskChecker: createRiskCheckerDouble({
+        clearLongWarrantInfo: () => {
+          throw cleanupError;
+        },
+      }),
+    });
+    const dispatcher = createSeatRuntimeCleanupDispatcher({
+      symbolRegistry,
+      monitorContext,
+      buyTaskQueue: createBuyTaskQueue(),
+      sellTaskQueue: createSellTaskQueue(),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
     });
     let observedBySecondListener = false;
-    const unsubscribeFailing = symbolRegistry.onSeatStateChanged(() => {
-      throw new Error('first listener failed');
-    });
+    dispatcher.start();
     const unsubscribeSecond = symbolRegistry.onSeatStateChanged(() => {
       observedBySecondListener = true;
     });
@@ -341,13 +359,22 @@ describe('SeatRuntimeCleanupDispatcher business flow', () => {
     } catch (err) {
       caught = err;
     } finally {
-      unsubscribeFailing();
       unsubscribeSecond();
+      dispatcher.stop();
     }
 
     expect(observedBySecondListener).toBeTrue();
     expect(caught).toBeInstanceOf(AggregateError);
-    expect(symbolRegistry.getSeatStateListenerErrors()).toHaveLength(1);
+    if (!(caught instanceof AggregateError)) {
+      throw new Error('预期 SymbolRegistry 暴露 cleanup listener 的 AggregateError');
+    }
+
+    expect(caught.errors).toEqual([cleanupError]);
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      symbol: null,
+      status: 'EMPTY',
+    });
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
   });
 
   it('start 和 stop 保持幂等且 stop 后不再消费事件', () => {

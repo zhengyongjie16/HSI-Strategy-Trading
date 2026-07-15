@@ -162,6 +162,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       readonly symbolRegistry?: SymbolRegistry;
       readonly trader?: ReturnType<typeof createTraderDouble>;
       readonly unrealizedLossMonitor?: ReturnType<typeof createUnrealizedLossMonitorDouble>;
+      readonly riskChecker?: ReturnType<typeof createRiskCheckerDouble>;
     } = {},
   ) {
     const symbolRegistry =
@@ -198,6 +199,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
         symbolRegistry,
         unrealizedLossMonitor,
+        ...(params.riskChecker === undefined ? {} : { riskChecker: params.riskChecker }),
       });
     const consistencyPort =
       params.consistencyPort ??
@@ -282,6 +284,45 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     expect(fatalErrors).toHaveLength(1);
     expect(fatalErrors[0]).toBeInstanceOf(TypeError);
     expect((fatalErrors[0] as Error).message).toContain('risk route broken');
+  });
+
+  it('routes internal protective-liquidation execution errors to the fatal handler', async () => {
+    const internalError = new TypeError('trader execution invariant broken');
+    const fatalErrors: unknown[] = [];
+    let executionAttempts = 0;
+    const { deps } = createRuntimeDeps({
+      trader: createTraderDouble({
+        executeSignals: async () => {
+          executionAttempts += 1;
+          throw internalError;
+        },
+      }),
+      riskChecker: createRiskCheckerDouble({
+        checkUnrealizedLoss: () => ({
+          shouldLiquidate: true,
+          reason: 'loss limit',
+          quantity: 100,
+        }),
+      }),
+      unrealizedLossMonitor: createUnrealizedLossMonitor({
+        maxUnrealizedLossPerSymbol: 1_000,
+      }),
+    });
+    const runtime = createTradingRiskEventRuntime({
+      ...deps,
+      onFatalError: (error: unknown) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    runtime.start();
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await waitTick();
+    await waitTick();
+    await runtime.stopAndDrain();
+
+    expect(executionAttempts).toBe(1);
+    expect(fatalErrors).toEqual([internalError]);
   });
 
   it('exposes protective liquidation submitOrder uncertainty to fatal handler', async () => {

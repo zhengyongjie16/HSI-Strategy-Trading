@@ -4,7 +4,7 @@
  * 功能：
  * - 按测试需求生成可定制字段的交易信号对象
  */
-import type { Signal } from '../../src/types/signal.js';
+import type { OrdinarySignal } from '../../src/types/signal.js';
 import type { SignalFactoryParams } from './types.js';
 
 /**
@@ -12,7 +12,7 @@ import type { SignalFactoryParams } from './types.js';
  */
 export function createSignal<TAction extends SignalFactoryParams['action']>(
   params: SignalFactoryParams & { readonly action: TAction },
-): Signal & { readonly action: TAction; readonly seatVersion: number } {
+): OrdinarySignal<TAction> & { readonly seatVersion: number } {
   return {
     symbol: params.symbol,
     symbolName: params.symbol,

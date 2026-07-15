@@ -20,10 +20,6 @@ import {
   PENDING_ORDER_STATUSES,
 } from '../../constants/index.js';
 import type {
-  TradingCalendarDayInfo,
-  TradingCalendarSnapshot,
-} from '../../types/tradingCalendar.js';
-import type {
   AutoSymbolManagerPort,
   PeriodicSwitchPendingState,
 } from '../../types/monitorContextPorts.js';
@@ -53,11 +49,10 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     riskChecker,
     orderRecorder,
     warrantListCacheConfig,
+    getTradingCalendarSnapshot,
   } = deps;
   const now = deps.now ?? (() => new Date());
   const injectedFindBestWarrant = deps.findBestWarrant ?? findBestWarrant;
-  const getTradingCalendarSnapshot: () => TradingCalendarSnapshot =
-    deps.getTradingCalendarSnapshot ?? (() => new Map<string, TradingCalendarDayInfo>());
   const monitorSymbol = monitorConfig.monitorSymbol;
   const autoSearchConfig = monitorConfig.autoSearchConfig;
   const switchStates = new Map<'LONG' | 'SHORT', SwitchState>();

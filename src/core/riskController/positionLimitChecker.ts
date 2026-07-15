@@ -1,21 +1,21 @@
 /**
  * 持仓市值限制检查模块
  *
- * 检查单标的持仓市值是否超过限制：
- * - 下单金额不能超过 maxPositionNotional
- * - 现有持仓市值 + 下单金额不能超过限制
+ * 检查买入后单标的持仓市值是否超过限制：
+ * - 买入金额不能超过 maxPositionNotional
+ * - 现有持仓市值 + 买入金额不能超过限制
  * - 已有持仓时使用成本价计算市值
  */
 import type { Position } from '../../types/account.js';
-import type { Signal } from '../../types/signal.js';
+import type { BuySignal } from '../../types/signal.js';
 import type { RiskCheckResult } from '../../types/services.js';
 import { decimalAdd, decimalGt, decimalMul, formatDecimal } from '../../utils/numeric/index.js';
 import type { PositionLimitChecker, PositionLimitCheckerDeps } from './types.js';
 
 /**
- * 构建下单金额超限的拒绝原因文本，供多处复用以保持消息格式一致。
+ * 构建买入金额超限的拒绝原因文本，供多处复用以保持消息格式一致。
  *
- * @param orderNotional 本次计划下单金额
+ * @param orderNotional 本次计划买入金额
  * @param max 单标的最大持仓市值限制
  * @returns 格式化的拒绝原因字符串
  */
@@ -47,7 +47,7 @@ export const createPositionLimitChecker = (
 ): PositionLimitChecker => {
   const maxPositionNotional = deps.maxPositionNotional;
 
-  /** 仅检查下单金额是否超限（无持仓时使用） */
+  /** 仅检查买入金额是否超限（无持仓时使用） */
   const checkOrderNotionalOnly = (orderNotional: number): RiskCheckResult => {
     if (maxPositionNotional !== null && decimalGt(orderNotional, maxPositionNotional)) {
       return {
@@ -59,7 +59,7 @@ export const createPositionLimitChecker = (
     return { allowed: true };
   };
 
-  /** 检查有持仓时的市值限制（现有市值 + 下单金额） */
+  /** 检查有持仓时的市值限制（现有市值 + 买入金额） */
   const checkWithExistingHoldings = (pos: Position, orderNotional: number): RiskCheckResult => {
     // 验证持仓数量有效性
     const posQuantity = pos.quantity || 0;
@@ -100,15 +100,15 @@ export const createPositionLimitChecker = (
   };
 
   /**
-   * 检查单标的最大持仓市值限制：先验证下单金额，再叠加现有持仓市值判断是否超限。
-   * 有持仓时仅使用成本价估算市值；成本价无效时仅检查下单金额，不回退到当前市价。
+   * 检查买入后单标的最大持仓市值限制：先验证买入金额，再叠加现有持仓市值判断是否超限。
+   * 有持仓时仅使用成本价估算市值；成本价无效时仅检查买入金额，不回退到当前市价。
    */
   const checkLimit = (
-    signal: Signal,
+    signal: BuySignal,
     positions: ReadonlyArray<Position> | null,
     orderNotional: number,
   ): RiskCheckResult => {
-    // 验证下单金额有效性
+    // 验证买入金额有效性
     if (!Number.isFinite(orderNotional) || orderNotional < 0) {
       return {
         allowed: false,
@@ -116,7 +116,7 @@ export const createPositionLimitChecker = (
       };
     }
 
-    // 检查下单金额是否超过限制（无持仓时）
+    // 检查买入金额是否超过限制（无持仓时）
     if (maxPositionNotional !== null && decimalGt(orderNotional, maxPositionNotional)) {
       return {
         allowed: false,
@@ -127,7 +127,7 @@ export const createPositionLimitChecker = (
     const symbol = signal.symbol;
     const pos = findPosition(positions, symbol);
 
-    // 如果没有持仓，直接通过（下单金额已在上面检查）
+    // 如果没有持仓，直接通过（买入金额已在上面检查）
     if (!pos?.quantity || pos.quantity <= 0) {
       return { allowed: true };
     }

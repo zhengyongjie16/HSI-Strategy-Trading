@@ -7,6 +7,20 @@ import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderStatus, OrderType, type TradeContext } from 'longbridge';
 
 import { createOrderCacheManager } from '../../../src/core/trader/orderCacheManager.js';
+import type { RateLimiter, TradeMutationPermit } from '../../../src/types/services.js';
+
+/** 构造订单缓存读取测试使用的无副作用限流器。 */
+function createRateLimiterDouble(): RateLimiter {
+  return {
+    throttle: async () => {},
+    withTradeMutation: async <T>(
+      callback: (permit: TradeMutationPermit) => Promise<T>,
+    ): Promise<T> =>
+      callback({
+        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
+      }),
+  };
+}
 
 describe('orderCacheManager business flow', () => {
   it('returns pending orders from valid SDK todayOrders payload', async () => {
@@ -27,9 +41,7 @@ describe('orderCacheManager business flow', () => {
 
     const orderCacheManager = createOrderCacheManager({
       ctx,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     const orders = await orderCacheManager.getPendingOrders();
@@ -71,9 +83,7 @@ describe('orderCacheManager business flow', () => {
 
     const orderCacheManager = createOrderCacheManager({
       ctx,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -104,9 +114,7 @@ describe('orderCacheManager business flow', () => {
 
     const orderCacheManager = createOrderCacheManager({
       ctx,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;

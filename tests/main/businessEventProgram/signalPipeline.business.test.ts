@@ -15,15 +15,17 @@ import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 
 import type { Signal } from '../../../src/types/signal.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
-import type { MonitorContext } from '../../../src/types/state.js';
-import type { SignalPipelineParams } from '../../../src/main/businessEventProgram/types.js';
 
 import {
+  createDelayedSignalVerifierDouble,
   createIndicatorUsageProfileDouble,
+  createMonitorContextDouble,
   createOrderRecorderDouble,
   createSignalDouble,
   createSymbolRegistryDouble,
+  createStrategyDouble,
 } from '../../helpers/testDoubles.js';
+import { createLastState } from '../asyncProgram/utils.js';
 
 function createSnapshot(): IndicatorSnapshot {
   return {
@@ -83,8 +85,8 @@ function createPipelineHarness(params: {
     shortVersion: 11,
   });
 
-  const monitorContext = {
-    strategy: {
+  const monitorContext = createMonitorContextDouble({
+    strategy: createStrategyDouble({
       generateSignals: () => {
         generateSignalsCallCount += 1;
         return {
@@ -92,26 +94,26 @@ function createPipelineHarness(params: {
           delayedSignals: params.delayedSignals,
         };
       },
-    },
+    }),
     orderRecorder: createOrderRecorderDouble(),
     symbolRegistry,
     indicatorProfile: createIndicatorUsageProfileDouble(),
-    delayedSignalVerifier: {
-      addSignal: (queuedSignal: { readonly signal: Signal }) => {
-        delayedAdded.push(queuedSignal);
+    delayedSignalVerifier: createDelayedSignalVerifierDouble({
+      addSignal: (queuedSignal) => {
+        delayedAdded.push({ signal: queuedSignal.signal });
       },
-    },
-  } as unknown as MonitorContext;
+    }),
+  });
 
   const tradingConfig = createTradingConfig();
 
-  const mainContext: SignalPipelineParams['mainContext'] = {
-    lastState: {
+  const mainContext = {
+    lastState: createLastState({
       isTradingEnabled: params.isTradingEnabled ?? true,
       canTrade: params.canTradeNow ?? true,
       openProtectionActive: params.openProtectionActive ?? false,
       isHalfDay: false,
-    } as SignalPipelineParams['mainContext']['lastState'],
+    }),
     tradingConfig: {
       ...tradingConfig,
       global: {

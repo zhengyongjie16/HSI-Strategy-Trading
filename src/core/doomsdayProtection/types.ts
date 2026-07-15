@@ -13,9 +13,6 @@ export type ClearanceSignalParams = {
   readonly symbol: string;
   readonly symbolName: string | null;
   readonly action: SellSignalAction;
-  readonly price: number | null;
-  readonly lotSize: number | null;
-  readonly positionType: 'long' | 'short';
   readonly seatVersion: number;
 };
 
@@ -28,6 +25,9 @@ export type ClearanceSignalParams = {
 export type DoomsdayClearanceContext = {
   readonly currentTime: Date;
   readonly isHalfDay: boolean;
+
+  /** 调用方提供的实时执行门禁；窗口失效或生命周期关闭时立即停止后续副作用。 */
+  readonly isLive: () => boolean;
   readonly positions: ReadonlyArray<Position>;
   readonly monitorContext: MonitorContext;
   readonly trader: Trader;
@@ -44,7 +44,6 @@ export type DoomsdayClearanceContext = {
  */
 export type DoomsdayClearanceResult = {
   readonly executed: boolean;
-  readonly signalCount: number;
   readonly nextRetryAtMs: number | null;
 };
 
@@ -57,6 +56,9 @@ export type DoomsdayClearanceResult = {
 export type CancelPendingBuyOrdersContext = {
   readonly currentTime: Date;
   readonly isHalfDay: boolean;
+
+  /** 调用方提供的实时执行门禁；窗口失效或生命周期关闭时立即停止后续副作用。 */
+  readonly isLive: () => boolean;
   readonly monitorContext: MonitorContext;
   readonly trader: Trader;
 };

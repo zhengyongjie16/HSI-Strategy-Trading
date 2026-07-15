@@ -22,9 +22,13 @@ function createIndicatorCache(): IndicatorCache {
 
 function createDelayedSignalVerifier(params: {
   readonly indicatorCache: IndicatorCache;
-  readonly onFatalError?: (error: unknown) => void;
+  readonly onFatalError: (error: unknown) => void;
 }) {
   return createDelayedSignalVerifierImpl(params);
+}
+
+function rethrowFatalError(error: unknown): never {
+  throw error;
 }
 
 function withMockedNowSync<T>(nowMs: number, run: () => T): T {
@@ -61,6 +65,7 @@ describe('delayedSignalVerifier business flow', () => {
     const indicatorCache = createIndicatorCache();
     const verifier = createDelayedSignalVerifier({
       indicatorCache,
+      onFatalError: rethrowFatalError,
     });
 
     for (const sample of [
@@ -133,11 +138,53 @@ describe('delayedSignalVerifier business flow', () => {
     expect((errors[0] as Error).message).toContain('indicator cache broken');
   });
 
+  it('exposes verified callback exceptions to fatal handler', async () => {
+    const baseTime = 92_000;
+    const errors: unknown[] = [];
+    const indicatorCache = createIndicatorCache();
+    for (const sample of [
+      { values: createSampleK(11), timestamp: baseTime },
+      { values: createSampleK(12), timestamp: baseTime + 5_000 },
+      { values: createSampleK(13), timestamp: baseTime + 10_000 },
+    ]) {
+      indicatorCache.push(sample.values, sample.timestamp);
+    }
+
+    const verifier = createDelayedSignalVerifier({
+      indicatorCache,
+      onFatalError: (error) => {
+        errors.push(error);
+      },
+    });
+    verifier.onVerified(() => {
+      throw new TypeError('verified callback invariant broken');
+    });
+
+    withMockedNowSync(baseTime + 10_000, () => {
+      verifier.addSignal({
+        signal: createSignal({
+          symbol: 'BULL.HK',
+          action: 'BUYCALL',
+          triggerTimeMs: baseTime,
+          indicators1: { K: 10 },
+        }),
+        verificationIndicators: K_VERIFICATION_INDICATORS,
+      });
+    });
+
+    await Bun.sleep(20);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(TypeError);
+    expect((errors[0] as Error).message).toBe('verified callback invariant broken');
+  });
+
   it('passes BUYCALL plus ADX when all verification points decline', async () => {
     const baseTime = 500_000;
     const indicatorCache = createIndicatorCache();
     const verifier = createDelayedSignalVerifier({
       indicatorCache,
+      onFatalError: rethrowFatalError,
     });
 
     for (const sample of [
@@ -203,6 +250,7 @@ describe('delayedSignalVerifier business flow', () => {
     const indicatorCache = createIndicatorCache();
     const verifier = createDelayedSignalVerifier({
       indicatorCache,
+      onFatalError: rethrowFatalError,
     });
 
     const now = 500_000;

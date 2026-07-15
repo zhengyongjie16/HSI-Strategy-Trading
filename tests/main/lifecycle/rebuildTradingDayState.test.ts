@@ -7,6 +7,7 @@
  * - 预热失败时重建 fail-fast
  */
 import { describe, it, expect } from 'bun:test';
+import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { TIME } from '../../../src/constants/index.js';
 import {
   captureSeatActivationCarryover,
@@ -14,6 +15,7 @@ import {
 } from '../../../src/main/lifecycle/seatActivationCarryover.js';
 import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
 import { listHKDateKeysBetween } from '../../../src/main/lifecycle/utils.js';
+import { classifyOrdersForRebuild } from '../../../src/core/orderRecorder/utils.js';
 import type { RebuildTradingDayStateDeps } from '../../../src/main/lifecycle/types.js';
 import type { MonitorContext } from '../../../src/types/state.js';
 import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
@@ -334,6 +336,156 @@ describe('createRebuildTradingDayState', () => {
       /\[Lifecycle\] 重建交易日状态失败/,
     );
   });
+
+  it('正成交事实无效时在席位激活、恢复追踪和展示前阻断 open rebuild', async () => {
+    let activationWrites = 0;
+    let recoverOrderTrackingCalls = 0;
+    let displayCalls = 0;
+    const registry = createSymbolRegistry('ACTIVE');
+    const updateSeatState = registry.updateSeatState;
+    registry.updateSeatState = (direction, nextState) => {
+      if (nextState.status === 'ACTIVE') {
+        activationWrites += 1;
+      }
+
+      return updateSeatState(direction, nextState);
+    };
+    const monitorContext = createMonitorContext({
+      symbolRegistry: registry,
+      onRefreshLong: async (_symbol, allOrders) =>
+        classifyOrdersForRebuild(allOrders).executedBuyOrders,
+    });
+    const malformedPositiveExecution: RawOrderFromAPI = {
+      orderId: 'INVALID-OPEN-REBUILD-EXECUTION',
+      symbol: 'BULL.HK',
+      stockName: 'Bull',
+      side: OrderSide.Buy,
+      status: OrderStatus.Filled,
+      orderType: OrderType.ELO,
+      price: 1,
+      quantity: 100,
+      executedPrice: 0,
+      executedQuantity: 100,
+      submittedAt: new Date('2026-03-13T02:00:00.000Z'),
+      updatedAt: new Date('2026-03-13T02:01:00.000Z'),
+    };
+    const rebuild = createRebuildTradingDayState(
+      createRebuildDeps({
+        symbolRegistry: registry,
+        monitorContext,
+        trader: {
+          recoverOrderTrackingFromSnapshot: async () => {
+            recoverOrderTrackingCalls += 1;
+          },
+        } as unknown as Trader,
+        displayAccountAndPositions: () => {
+          displayCalls += 1;
+        },
+      }),
+    );
+
+    let caughtError: unknown = null;
+    try {
+      await rebuild({ allOrders: [malformedPositiveExecution], quotesMap: emptyQuotesMap });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    if (!(caughtError instanceof Error)) {
+      throw new Error('expected malformed execution fact to block open rebuild');
+    }
+
+    expect(caughtError.message).toMatch(/\[Lifecycle\] 重建交易日状态失败/);
+    expect(activationWrites).toBe(0);
+    expect(recoverOrderTrackingCalls).toBe(0);
+    expect(displayCalls).toBe(0);
+  });
+
+  for (const unknownSideCase of [
+    {
+      label: 'Filled with positive execution',
+      status: OrderStatus.Filled,
+      executedPrice: 1,
+      executedQuantity: 100,
+    },
+    {
+      label: 'PartialFilled with zero execution',
+      status: OrderStatus.PartialFilled,
+      executedPrice: 0,
+      executedQuantity: 0,
+    },
+  ]) {
+    it(`Unknown-side ${unknownSideCase.label} blocks open rebuild before activation, recovery, and display`, async () => {
+      let activationWrites = 0;
+      let recoverOrderTrackingCalls = 0;
+      let displayCalls = 0;
+      const registry = createSymbolRegistry('ACTIVE');
+      const updateSeatState = registry.updateSeatState;
+      registry.updateSeatState = (direction, nextState) => {
+        if (nextState.status === 'ACTIVE') {
+          activationWrites += 1;
+        }
+
+        return updateSeatState(direction, nextState);
+      };
+      const monitorContext = createMonitorContext({
+        symbolRegistry: registry,
+        onRefreshLong: async (_symbol, allOrders) =>
+          classifyOrdersForRebuild(allOrders).executedBuyOrders,
+      });
+      const unknownSideOrder: RawOrderFromAPI = {
+        orderId: `UNKNOWN-OPEN-REBUILD-${unknownSideCase.label}`,
+        symbol: 'BULL.HK',
+        stockName: 'Bull',
+        side: OrderSide.Unknown,
+        status: unknownSideCase.status,
+        orderType: OrderType.ELO,
+        price: 1,
+        quantity: 100,
+        executedPrice: unknownSideCase.executedPrice,
+        executedQuantity: unknownSideCase.executedQuantity,
+        submittedAt: new Date('2026-03-13T02:00:00.000Z'),
+        updatedAt: new Date('2026-03-13T02:01:00.000Z'),
+      };
+      const rebuild = createRebuildTradingDayState(
+        createRebuildDeps({
+          symbolRegistry: registry,
+          monitorContext,
+          trader: {
+            recoverOrderTrackingFromSnapshot: async () => {
+              recoverOrderTrackingCalls += 1;
+            },
+          } as unknown as Trader,
+          displayAccountAndPositions: () => {
+            displayCalls += 1;
+          },
+        }),
+      );
+
+      let caughtError: unknown = null;
+      try {
+        await rebuild({ allOrders: [unknownSideOrder], quotesMap: emptyQuotesMap });
+      } catch (error) {
+        caughtError = error;
+      }
+
+      const rebuildWasBlocked =
+        caughtError instanceof Error &&
+        caughtError.message.includes('[Lifecycle] 重建交易日状态失败');
+
+      expect({
+        rebuildWasBlocked,
+        activationWrites,
+        recoverOrderTrackingCalls,
+        displayCalls,
+      }).toEqual({
+        rebuildWasBlocked: true,
+        activationWrites: 0,
+        recoverOrderTrackingCalls: 0,
+        displayCalls: 0,
+      });
+    });
+  }
 
   it('交易日历预热失败时，rebuildTradingDayState 会抛错', async () => {
     const registry = createSymbolRegistry('ACTIVE');

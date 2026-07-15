@@ -1,7 +1,7 @@
 /**
  * AutoSearchWakeupRuntime 业务测试
  *
- * 覆盖：runtime start seed 与 gate-open 事件唤醒 EMPTY seat，不依赖 AUTO_SYMBOL_TICK。
+ * 覆盖：runtime start seed 与自动寻标授权恢复事件唤醒 EMPTY seat，不依赖 AUTO_SYMBOL_TICK。
  */
 import { describe, expect, it } from 'bun:test';
 import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../../src/constants/index.js';
@@ -115,8 +115,10 @@ describe('AutoSearchWakeupRuntime', () => {
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
+        isHalfDay: false,
       },
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -131,10 +133,10 @@ describe('AutoSearchWakeupRuntime', () => {
     expect(
       calls.map((call) => call.direction).sort((left, right) => left.localeCompare(right)),
     ).toEqual(['LONG']);
-    expect(calls.every((call) => call.canTradeNow)).toBe(true);
+    expect(calls.every((call) => typeof call.canContinue === 'function')).toBe(true);
   });
 
-  it('同一路由 seed 搜索未完成时 gate-open 不重复启动搜索', async () => {
+  it('同一路由 seed 搜索未完成时自动寻标授权恢复不重复启动搜索', async () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
@@ -158,6 +160,7 @@ describe('AutoSearchWakeupRuntime', () => {
     const lastState = {
       canTrade: true,
       isTradingEnabled: true,
+      isHalfDay: false,
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
@@ -165,6 +168,7 @@ describe('AutoSearchWakeupRuntime', () => {
       monitorContext,
       lastState,
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -174,9 +178,9 @@ describe('AutoSearchWakeupRuntime', () => {
 
     runtime.start();
     await Bun.sleep(0);
-    tradingGateEventRuntime.emitGateStateChanged({
-      previousCanTrade: false,
-      nextCanTrade: true,
+    tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
+      previousAuthorized: false,
+      nextAuthorized: true,
     });
     await Bun.sleep(0);
 
@@ -185,7 +189,7 @@ describe('AutoSearchWakeupRuntime', () => {
     await runtime.stopAndDrain();
   });
 
-  it('gate 从关闭变为打开时唤醒已经存在的 EMPTY seat', async () => {
+  it('自动寻标授权从关闭变为打开时唤醒已经存在的 EMPTY seat', async () => {
     const monitorConfig = createAutoSearchEnabledMonitorConfig();
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     makeSeatEmpty(symbolRegistry, monitorConfig.monitorSymbol);
@@ -202,6 +206,7 @@ describe('AutoSearchWakeupRuntime', () => {
     const lastState = {
       canTrade: false,
       isTradingEnabled: true,
+      isHalfDay: false,
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
@@ -209,6 +214,7 @@ describe('AutoSearchWakeupRuntime', () => {
       monitorContext,
       lastState,
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -221,9 +227,9 @@ describe('AutoSearchWakeupRuntime', () => {
     expect(calls).toHaveLength(0);
 
     lastState.canTrade = true;
-    tradingGateEventRuntime.emitGateStateChanged({
-      previousCanTrade: false,
-      nextCanTrade: true,
+    tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
+      previousAuthorized: false,
+      nextAuthorized: true,
     });
     await Bun.sleep(0);
     await runtime.stopAndDrain();
@@ -253,8 +259,10 @@ describe('AutoSearchWakeupRuntime', () => {
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
+        isHalfDay: false,
       },
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -314,8 +322,9 @@ describe('AutoSearchWakeupRuntime', () => {
     const runtime = createAutoSearchWakeupRuntime({
       symbolRegistry,
       monitorContext,
-      lastState: { canTrade: true, isTradingEnabled: true },
+      lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
       tradingGateEventRuntime: createTradingGateEventRuntime(),
+      doomsdayProtectionEnabled: false,
       now: timers.now,
       scheduleTimer: timers.scheduleTimer,
       clearTimer: timers.clearTimer,
@@ -367,8 +376,10 @@ describe('AutoSearchWakeupRuntime', () => {
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
+        isHalfDay: false,
       },
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: timers.now,
       scheduleTimer: timers.scheduleTimer,
       clearTimer: timers.clearTimer,
@@ -443,8 +454,10 @@ describe('AutoSearchWakeupRuntime', () => {
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
+        isHalfDay: false,
       },
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: timers.now,
       scheduleTimer: timers.scheduleTimer,
       clearTimer: timers.clearTimer,
@@ -527,8 +540,9 @@ describe('AutoSearchWakeupRuntime', () => {
     const runtime = createAutoSearchWakeupRuntime({
       symbolRegistry,
       monitorContext,
-      lastState: { canTrade: true, isTradingEnabled: true },
+      lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
       tradingGateEventRuntime: createTradingGateEventRuntime(),
+      doomsdayProtectionEnabled: false,
       now: timers.now,
       scheduleTimer: timers.scheduleTimer,
       clearTimer: timers.clearTimer,
@@ -612,8 +626,9 @@ describe('AutoSearchWakeupRuntime', () => {
     const runtime = createAutoSearchWakeupRuntime({
       symbolRegistry,
       monitorContext,
-      lastState: { canTrade: true, isTradingEnabled: true },
+      lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
       tradingGateEventRuntime: createTradingGateEventRuntime(),
+      doomsdayProtectionEnabled: false,
       now: timers.now,
       scheduleTimer: timers.scheduleTimer,
       clearTimer: timers.clearTimer,
@@ -660,8 +675,10 @@ describe('AutoSearchWakeupRuntime', () => {
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
+        isHalfDay: false,
       },
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: timers.now,
       scheduleTimer: timers.scheduleTimer,
       clearTimer: timers.clearTimer,
@@ -709,8 +726,10 @@ describe('AutoSearchWakeupRuntime', () => {
       lastState: {
         canTrade: true,
         isTradingEnabled: true,
+        isHalfDay: false,
       },
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {

@@ -9,8 +9,10 @@ import { describe, expect, it } from 'bun:test';
 
 import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
 import { createStaticLiquidationExecutor } from '../../../src/main/monitorQuoteEventRuntime/staticLiquidationExecutor.js';
+import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import type { RuntimeWritableSeatState, SeatState } from '../../../src/types/seat.js';
+import type { MarketDataClient } from '../../../src/types/services.js';
 import {
   createMarketDataClientDouble,
   createMonitorContextDouble,
@@ -27,6 +29,25 @@ const EXECUTION_TIME_MS = new Date(EXECUTION_TIME_ISO).getTime();
 const WAIT_RESOLVED_TIME_MS = EXECUTION_TIME_MS + 750;
 const EXPECTED_RETRY_AT_MS = EXECUTION_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
 const EXPECTED_WAIT_RESOLVED_RETRY_AT_MS = WAIT_RESOLVED_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
+
+type TestStaticLiquidationParams = Omit<
+  Parameters<ReturnType<typeof createStaticLiquidationExecutor>>[0],
+  'canContinue'
+> & {
+  readonly canContinue?: () => boolean;
+};
+
+function createDeferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+
+  return { promise, resolve };
+}
 
 function createLongSeatState(status: SeatState['status']): RuntimeWritableSeatState {
   if (status === 'EMPTY' || status === 'SEARCHING') {
@@ -81,6 +102,9 @@ function createExecutorHarness(
     readonly monitorQuoteAvailable?: boolean;
     readonly executionMonitorPrice?: number;
     readonly waitResolvedTimeMs?: number;
+    readonly getQuotes?: MarketDataClient['getQuotes'];
+    readonly onExecuteSignalsStarted?: () => void;
+    readonly waitForExecuteSignals?: Promise<void>;
   } = {},
 ) {
   const submittedActions: string[] = [];
@@ -187,6 +211,9 @@ function createExecutorHarness(
         }
       }
 
+      params.onExecuteSignalsStarted?.();
+      await params.waitForExecuteSignals;
+
       if (params.bumpLongSeatVersionAfterSubmission) {
         const currentSeat = symbolRegistry.getSeatState('LONG');
         if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
@@ -209,25 +236,27 @@ function createExecutorHarness(
     },
   });
 
-  const executor = createStaticLiquidationExecutor({
+  const productionExecutor = createStaticLiquidationExecutor({
     trader,
     marketDataClient: createMarketDataClientDouble({
-      getQuotes: async () => {
-        if (params.waitResolvedTimeMs !== undefined) {
-          currentNowMs = params.waitResolvedTimeMs;
-        }
+      getQuotes:
+        params.getQuotes ??
+        (async () => {
+          if (params.waitResolvedTimeMs !== undefined) {
+            currentNowMs = params.waitResolvedTimeMs;
+          }
 
-        return new Map([
-          [
-            'HSI.HK',
-            params.monitorQuoteAvailable === false
-              ? null
-              : createQuoteDouble('HSI.HK', params.executionMonitorPrice ?? 20_000, 100),
-          ],
-          ['BULL.HK', longQuoteAvailable ? createQuoteDouble('BULL.HK', 1, 100) : null],
-          ['BEAR.HK', shortQuoteAvailable ? createQuoteDouble('BEAR.HK', 1, 100) : null],
-        ]);
-      },
+          return new Map([
+            [
+              'HSI.HK',
+              params.monitorQuoteAvailable === false
+                ? null
+                : createQuoteDouble('HSI.HK', params.executionMonitorPrice ?? 20_000, 100),
+            ],
+            ['BULL.HK', longQuoteAvailable ? createQuoteDouble('BULL.HK', 1, 100) : null],
+            ['BEAR.HK', shortQuoteAvailable ? createQuoteDouble('BEAR.HK', 1, 100) : null],
+          ]);
+        }),
     }),
     lastState: {
       positionCache: {
@@ -255,6 +284,11 @@ function createExecutorHarness(
     },
     now: () => new Date(currentNowMs),
   });
+  const executor = (executionParams: TestStaticLiquidationParams) =>
+    productionExecutor({
+      ...executionParams,
+      canContinue: executionParams.canContinue ?? (() => true),
+    });
 
   return {
     executor,
@@ -316,6 +350,37 @@ describe('staticLiquidationExecutor', () => {
 
     expect(result.wakeupSymbols).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
     expect(result.retryAtMs).toBe(EXPECTED_RETRY_AT_MS);
+    expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('returns the existing finite WAIT owner when the side-effect-free quote batch has an external failure', async () => {
+    const externalFailure = createExternalApiRequestError({
+      operation: 'test.staticLiquidationQuotes',
+      attempts: 1,
+      cause: new Error('quotes unavailable'),
+    });
+    const harness = createExecutorHarness({
+      getQuotes: async () => {
+        throw externalFailure;
+      },
+    });
+
+    const result = await harness.executor({
+      monitorContext: harness.monitorContext,
+      event: {
+        symbol: 'HSI.HK',
+        quote: createQuoteDouble('HSI.HK', 20_000, 100),
+      },
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({
+      kind: 'WAIT',
+      wakeupSymbols: ['HSI.HK', 'BULL.HK', 'BEAR.HK'],
+      retryAtMs: EXPECTED_RETRY_AT_MS,
+    });
     expect(harness.submittedActions).toEqual([]);
     expect(harness.getClearedOrders()).toBe(0);
     expect(harness.getRefreshUnrealizedCalls()).toBe(0);
@@ -620,6 +685,44 @@ describe('staticLiquidationExecutor', () => {
     });
 
     expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('does not continue static liquidation after takeover begins while a submission is in flight', async () => {
+    const submissionStarted = createDeferred();
+    const releaseSubmission = createDeferred();
+    let canContinue = true;
+    const submittedDirections: Array<'LONG' | 'SHORT'> = [];
+    const harness = createExecutorHarness({
+      onExecuteSignalsStarted: () => {
+        submissionStarted.resolve();
+      },
+      waitForExecuteSignals: releaseSubmission.promise,
+    });
+
+    const executionPromise = harness.executor({
+      monitorContext: harness.monitorContext,
+      event: {
+        symbol: 'HSI.HK',
+        quote: createQuoteDouble('HSI.HK', 20_000, 100),
+      },
+      retryAttempts: 0,
+      canContinue: () => canContinue,
+      onDirectionSubmitted: (direction) => {
+        submittedDirections.push(direction);
+      },
+    });
+
+    await submissionStarted.promise;
+    canContinue = false;
+    releaseSubmission.resolve();
+
+    const result = await executionPromise;
+
+    expect(result).toEqual({ kind: 'COMPLETED' });
+    expect(harness.submittedActions).toEqual(['SELLCALL']);
+    expect(submittedDirections).toEqual([]);
     expect(harness.getClearedOrders()).toBe(0);
     expect(harness.getRefreshUnrealizedCalls()).toBe(0);
   });

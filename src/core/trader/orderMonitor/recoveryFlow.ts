@@ -19,11 +19,18 @@ import type {
   TrackOrderParams,
 } from '../types.js';
 import type { RecoveryFlow, RecoveryFlowDeps } from './types.js';
-import { consumeQueriedTerminalState, resetOrderReplaceRuntimeState } from './orderOps.js';
+import {
+  acknowledgeQueriedTerminalState,
+  clearOrderReplaceTransientRuntimeState,
+  peekQueriedTerminalState,
+} from './orderOps.js';
 import { resolveSubmittedAtMs, resolveUpdatedAtMs } from './utils.js';
 import { hasProtectiveLiquidationRemark } from '../utils.js';
 import { resetRoutingIndex } from './routingIndex.js';
-import { normalizeTerminalStateSnapshot } from './orderFactMerge.js';
+import {
+  assertExecutionQuantityWithinSubmittedQuantity,
+  normalizeTerminalStateSnapshot,
+} from './orderFactMerge.js';
 
 /**
  * 创建恢复流程处理器。
@@ -100,7 +107,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
   function resetRecoveryTrackingState(): void {
     for (const trackedOrder of runtime.trackedOrders.values()) {
       orderHoldRegistry.markOrderClosed(trackedOrder.orderId);
-      resetOrderReplaceRuntimeState(runtime, trackedOrder.orderId);
+      clearOrderReplaceTransientRuntimeState(runtime, trackedOrder.orderId);
     }
 
     runtime.trackedOrders.clear();
@@ -301,6 +308,11 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const trackedPrice = isValidPositiveNumber(trackedPriceRaw) ? trackedPriceRaw : 0;
     const submittedAtMs = resolveSubmittedAtMs(order.submittedAt);
     const executedQuantity = decimalToNumber(order.executedQuantity);
+    assertExecutionQuantityWithinSubmittedQuantity(
+      order.orderId,
+      submittedQuantity,
+      executedQuantity,
+    );
     const isProtectiveLiquidation = hasProtectiveLiquidationRemark(order.remark);
     const trackOrderParams: TrackOrderParams = {
       orderId: order.orderId,
@@ -401,7 +413,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               throw new Error(`[订单监控] 买单 ${order.orderId} 不匹配且撤单失败，阻断恢复`);
             }
 
-            const queriedTerminalState = consumeQueriedTerminalState(runtime, order.orderId);
+            const queriedTerminalState = peekQueriedTerminalState(runtime, order.orderId);
             if (queriedTerminalState === null) {
               throw new Error(`[订单监控] 买单 ${order.orderId} 缺少权威终态查询结果，阻断恢复`);
             }
@@ -409,9 +421,20 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
             const snapshotExecutedQuantity = decimalToNumber(order.executedQuantity);
             const snapshotExecutedPrice = decimalToNumber(order.executedPrice);
             const snapshotUpdatedAtMs = resolveUpdatedAtMs(order.updatedAt);
+            const snapshotSubmittedQuantity = decimalToNumber(order.quantity);
+            if (!isValidPositiveNumber(snapshotSubmittedQuantity)) {
+              throw new Error(`[订单监控] 买单 ${order.orderId} 委托数量无效，阻断恢复`);
+            }
+
+            assertExecutionQuantityWithinSubmittedQuantity(
+              order.orderId,
+              snapshotSubmittedQuantity,
+              snapshotExecutedQuantity,
+            );
             const normalizedTerminalState = normalizeTerminalStateSnapshot(
               {
                 orderId: order.orderId,
+                submittedQuantity: snapshotSubmittedQuantity,
                 status: order.status,
                 executedQuantity: Number.isFinite(snapshotExecutedQuantity)
                   ? snapshotExecutedQuantity
@@ -442,8 +465,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               side: 'BUY',
               monitorSymbol: ownership?.monitorSymbol ?? null,
               isProtectiveLiquidation: hasProtectiveLiquidationRemark(order.remark),
-              liquidationTriggerLimit: monitorConfig.liquidationTriggerLimit,
-              liquidationCooldownConfig: monitorConfig.liquidationCooldown,
               ...(ownership?.isLongSymbol === undefined
                 ? {}
                 : { isLongSymbol: ownership.isLongSymbol }),
@@ -453,6 +474,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               throw new Error(`[订单监控] 买单 ${order.orderId} 终态已确认但结算失败，阻断恢复`);
             }
 
+            acknowledgeQueriedTerminalState(runtime, order.orderId, queriedTerminalState);
             closedMismatchedBuyOrderIds.add(order.orderId);
             continue;
           }

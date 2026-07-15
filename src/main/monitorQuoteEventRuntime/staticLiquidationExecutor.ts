@@ -11,6 +11,7 @@ import type { SellSignal } from '../../types/signal.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { QuoteUpdatedEvent } from '../../types/services.js';
 import { isSeatActive } from '../../utils/seat/guards.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type {
   CreateStaticLiquidationExecutorDeps,
   StaticLiquidationCandidate,
@@ -151,7 +152,7 @@ export function createStaticLiquidationExecutor(
   readonly event: QuoteUpdatedEvent;
   readonly retryAttempts: number;
   readonly excludedDirections?: ReadonlySet<'LONG' | 'SHORT'>;
-  readonly canContinue?: () => boolean;
+  readonly canContinue: () => boolean;
   readonly onDirectionSubmitted?: (direction: 'LONG' | 'SHORT') => void;
 }) => Promise<StaticLiquidationRuntimeResult> {
   const { trader, marketDataClient, lastState, now } = deps;
@@ -161,9 +162,13 @@ export function createStaticLiquidationExecutor(
     readonly event: QuoteUpdatedEvent;
     readonly retryAttempts: number;
     readonly excludedDirections?: ReadonlySet<'LONG' | 'SHORT'>;
-    readonly canContinue?: () => boolean;
+    readonly canContinue: () => boolean;
     readonly onDirectionSubmitted?: (direction: 'LONG' | 'SHORT') => void;
   }): Promise<StaticLiquidationRuntimeResult> {
+    if (!params.canContinue()) {
+      return { kind: 'NOOP' };
+    }
+
     const { monitorContext } = params;
     const executionTime = now();
     const monitorSymbol = monitorContext.config.monitorSymbol;
@@ -180,8 +185,26 @@ export function createStaticLiquidationExecutor(
       return { kind: 'NOOP' };
     }
 
-    const executionQuotes = await marketDataClient.getQuotes(wakeupSymbols);
-    if (params.canContinue?.() === false) {
+    let executionQuotes: Awaited<ReturnType<typeof marketDataClient.getQuotes>>;
+    try {
+      executionQuotes = await marketDataClient.getQuotes(wakeupSymbols);
+    } catch (error) {
+      if (!isExternalApiRequestError(error)) {
+        throw error;
+      }
+
+      if (!params.canContinue()) {
+        return { kind: 'NOOP' };
+      }
+
+      return createStaticLiquidationWaitResult(
+        wakeupSymbols,
+        params.retryAttempts,
+        now().getTime(),
+      );
+    }
+
+    if (!params.canContinue()) {
       return { kind: 'NOOP' };
     }
 
@@ -242,7 +265,7 @@ export function createStaticLiquidationExecutor(
     let hasSubmittedCandidate = false;
 
     for (const candidate of candidates) {
-      if (params.canContinue?.() === false) {
+      if (!params.canContinue()) {
         return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'NOOP' };
       }
 
@@ -254,7 +277,17 @@ export function createStaticLiquidationExecutor(
         continue;
       }
 
+      if (!params.canContinue()) {
+        return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'NOOP' };
+      }
+
       const executionResult = await trader.executeSignals([candidate.signal]);
+      if (!params.canContinue()) {
+        return executionResult.executedOrderIds.length > 0 || hasSubmittedCandidate
+          ? { kind: 'COMPLETED' }
+          : { kind: 'NOOP' };
+      }
+
       if (executionResult.executedOrderIds.length !== 1) {
         continue;
       }
@@ -262,7 +295,15 @@ export function createStaticLiquidationExecutor(
       hasSubmittedCandidate = true;
 
       const isLongDirection = candidate.signal.action === 'SELLCALL';
+      if (!params.canContinue()) {
+        return { kind: 'COMPLETED' };
+      }
+
       params.onDirectionSubmitted?.(isLongDirection ? 'LONG' : 'SHORT');
+      if (!params.canContinue()) {
+        return { kind: 'COMPLETED' };
+      }
+
       monitorContext.orderRecorder.clearBuyOrders(
         candidate.signal.symbol,
         isLongDirection,
@@ -271,6 +312,10 @@ export function createStaticLiquidationExecutor(
       const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(
         isLongDirection ? 'LONG' : 'SHORT',
       );
+      if (!params.canContinue()) {
+        return { kind: 'COMPLETED' };
+      }
+
       await monitorContext.riskChecker.refreshUnrealizedLossData(
         monitorContext.orderRecorder,
         candidate.signal.symbol,
@@ -278,9 +323,17 @@ export function createStaticLiquidationExecutor(
         candidate.quote,
         dailyLossOffset,
       );
+
+      if (!params.canContinue()) {
+        return { kind: 'COMPLETED' };
+      }
     }
 
     if (hasPendingWait) {
+      if (!params.canContinue()) {
+        return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'NOOP' };
+      }
+
       return createStaticLiquidationWaitResult(
         wakeupSymbols,
         params.retryAttempts,

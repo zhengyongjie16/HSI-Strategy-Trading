@@ -83,7 +83,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: now,
-      canTradeNow: true,
+      canContinue: () => true,
     });
 
     expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
@@ -140,7 +140,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
       await autoSearch.maybeSearchOnEvent({
         direction: 'LONG',
         currentTime: now,
-        canTradeNow: true,
+        canContinue: () => true,
       });
     } catch (error) {
       caught = error;
@@ -206,7 +206,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canTradeNow: true,
+      canContinue: () => true,
     });
     const seat = symbolRegistry.getSeatState('LONG');
     expect(findCalls).toBe(1);
@@ -264,7 +264,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canTradeNow: true,
+      canContinue: () => true,
     });
     const seat = symbolRegistry.getSeatState('LONG');
     expect(findCalls).toBe(1);
@@ -321,7 +321,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: now,
-      canTradeNow: true,
+      canContinue: () => true,
     });
     expect(findCalls).toBe(0);
   });
@@ -378,7 +378,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'SHORT',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canTradeNow: true,
+      canContinue: () => true,
     });
     const seat = symbolRegistry.getSeatState('SHORT');
     expect(findCalls).toBe(1);

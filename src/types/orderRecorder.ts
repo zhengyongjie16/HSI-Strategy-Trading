@@ -20,6 +20,6 @@ export type OrderOwnership = {
 export interface OrderFilteringEngine {
   applyFilteringAlgorithm: (
     allBuyOrders: ReadonlyArray<OrderRecord>,
-    filledSellOrders: ReadonlyArray<OrderRecord>,
+    executedSellOrders: ReadonlyArray<OrderRecord>,
   ) => ReadonlyArray<OrderRecord>;
 }

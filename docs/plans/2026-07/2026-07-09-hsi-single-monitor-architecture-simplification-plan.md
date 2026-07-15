@@ -263,7 +263,7 @@ Modify or delete:
 - `tests/main/seatRuntimeCleanupDispatcher/business.test.ts`
 - `tests/main/periodicSwitchWakeupRuntime/business.test.ts`
 - `tests/services/liquidationCooldown/tradeLogHydrator.business.test.ts`
-- `tests/integration/liquidation-cooldown-recovery.integration.test.ts`
+- `tests/integration/liquidationCooldownRecovery.integration.test.ts`
 - `docs/plans/2026-07/2026-07-07-hsi-single-monitor-refactor-plan.md`
 - `README.md`
 - `.env.example`

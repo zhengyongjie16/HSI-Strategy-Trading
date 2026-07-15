@@ -8,20 +8,112 @@ import { describe, expect, it } from 'bun:test';
 
 import { createBuyTaskQueue } from '../../../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createBuyProcessor } from '../../../../src/main/asyncProgram/buyProcessor/index.js';
+import { createSignalProcessor } from '../../../../src/core/signalProcessor/index.js';
 import { createExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
+import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 
 import type { BuySignal, Signal } from '../../../../src/types/signal.js';
 
 import {
   createDoomsdayProtectionDouble,
+  createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
+  createOrderRecorderDouble,
   createQuoteDouble,
+  createRiskCheckerDouble,
   createSignalDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
 import { createMonitorContext, runProcessorFlow } from '../utils.js';
 
+async function runBuyPriceLimitScenario(finalQuotePrice: number): Promise<{
+  readonly executeCalls: number;
+  readonly submittedPrices: ReadonlyArray<number | null | undefined>;
+  readonly quoteRequests: ReadonlyArray<ReadonlyArray<string>>;
+}> {
+  const queue = createBuyTaskQueue();
+  const tradingConfig = createTradingConfig();
+  const orderRecorder = createOrderRecorderDouble({
+    getLatestBuyOrderPrice: () => 1,
+  });
+  const monitorContext = createMonitorContext({
+    config: tradingConfig.monitor,
+    orderRecorder,
+    riskChecker: createRiskCheckerDouble(),
+  });
+  const signalProcessor = createSignalProcessor({
+    tradingConfig,
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+  });
+  let executeCalls = 0;
+  const submittedPrices: Array<number | null | undefined> = [];
+  const trader = createTraderDouble({
+    executeSignals: async (signals) => {
+      executeCalls += 1;
+      submittedPrices.push(signals[0]?.price);
+      return { executedOrderIds: ['EXECUTED-ORDER-1'] };
+    },
+  });
+  const quoteRequests: string[][] = [];
+  const processor = createBuyProcessor({
+    taskQueue: queue,
+    monitorContext,
+    signalProcessor,
+    trader,
+    marketDataClient: createMarketDataClientDouble({
+      getQuotes: async (symbols) => {
+        quoteRequests.push([...symbols]);
+        if (quoteRequests.length === 1) {
+          return new Map([
+            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', 0.99, 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+          ]);
+        }
+
+        return new Map([['BULL.HK', createQuoteDouble('BULL.HK', finalQuotePrice, 100)]]);
+      },
+    }),
+    doomsdayProtection: createDoomsdayProtectionDouble({
+      isBuyCutoffWindowActive: () => false,
+    }),
+    getIsHalfDay: () => false,
+    getCanProcessTask: () => true,
+  });
+  let signal = createSignalDouble('BUYCALL', 'BULL.HK');
+  signal = { ...signal, seatVersion: 2 };
+
+  await runProcessorFlow({
+    processor,
+    pushTask: () => {
+      queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+    },
+    waitCondition: () => queue.isEmpty(),
+  });
+
+  return {
+    executeCalls,
+    submittedPrices,
+    quoteRequests,
+  };
+}
+
 describe('buyProcessor business flow', () => {
+  it('rejects a final buy quote that reaches the latest buy price after risk checks', async () => {
+    const result = await runBuyPriceLimitScenario(1.01);
+
+    expect(result.quoteRequests).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK'], ['BULL.HK']]);
+    expect(result.executeCalls).toBe(0);
+    expect(result.submittedPrices).toEqual([]);
+  });
+
+  it('submits when both risk-time and final buy quotes remain below the latest buy price', async () => {
+    const result = await runBuyPriceLimitScenario(0.99);
+
+    expect(result.executeCalls).toBe(1);
+    expect(result.submittedPrices).toEqual([0.99]);
+  });
+
   it('runs risk pipeline then executes buy order with execution-time realtime quote price/lotSize', async () => {
     const queue = createBuyTaskQueue();
     const monitorContext = createMonitorContext();

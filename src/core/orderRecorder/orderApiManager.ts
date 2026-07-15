@@ -55,6 +55,21 @@ function isNullableFiniteDecimalLike(value: unknown): boolean {
   return value === null || isFiniteDecimalLike(value);
 }
 
+/**
+ * 校验 SDK 订单时间为可用于内部订单事实的正有限时间点。
+ *
+ * @param value SDK 返回的时间字段
+ * @returns 时间字段是否为有效的正有限 Date
+ */
+function isValidOrderTimestamp(value: unknown): value is Date {
+  if (!(value instanceof Date)) {
+    return false;
+  }
+
+  const timestampMs = value.getTime();
+  return Number.isFinite(timestampMs) && timestampMs > 0;
+}
+
 function isValidOrderSide(value: unknown): value is OrderSide {
   switch (value) {
     case OrderSide.Unknown:
@@ -125,10 +140,10 @@ function assertValidOrder(value: unknown, operation: string): asserts value is O
     !isFiniteDecimalLike(value['quantity']) ||
     !isNullableFiniteDecimalLike(value['executedPrice']) ||
     !isFiniteDecimalLike(value['executedQuantity']) ||
-    !(value['submittedAt'] instanceof Date) ||
+    !isValidOrderTimestamp(value['submittedAt']) ||
     (value['updatedAt'] !== undefined &&
       value['updatedAt'] !== null &&
-      !(value['updatedAt'] instanceof Date))
+      !isValidOrderTimestamp(value['updatedAt']))
   ) {
     throw new TypeError(`[订单记录] ${operation} 订单数据结构无效`);
   }

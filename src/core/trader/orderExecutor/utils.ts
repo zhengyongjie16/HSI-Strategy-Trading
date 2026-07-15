@@ -1,4 +1,4 @@
-import { OrderSide, OrderType } from 'longbridge';
+import { OrderType } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { SIGNAL_ACTION_DESCRIPTIONS } from '../../../constants/index.js';
 import type { OrderTypeConfig, Signal } from '../../../types/signal.js';
@@ -71,34 +71,6 @@ export function isLiquidationSignal(signal: Signal): boolean {
 }
 
 /**
- * 根据信号动作解析订单方向。
- * 默认行为：HOLD 或未知动作返回 null。
- *
- * @param action 信号动作
- * @returns 订单方向或 null
- */
-export function resolveOrderSide(action: Signal['action']): OrderSide | null {
-  switch (action) {
-    case 'BUYCALL':
-    case 'BUYPUT': {
-      return OrderSide.Buy;
-    }
-    case 'SELLCALL':
-    case 'SELLPUT': {
-      return OrderSide.Sell;
-    }
-
-    case 'HOLD': {
-      return null;
-    }
-
-    default: {
-      return null;
-    }
-  }
-}
-
-/**
  * 识别错误类型（通过错误消息关键词匹配）。
  *
  * @param errorMessage 错误消息原文（将转为小写后匹配关键词）
@@ -116,8 +88,6 @@ function identifyErrorType(errorMessage: string): ErrorTypeIdentifier {
       lowerMsg.includes('insufficient') ||
       lowerMsg.includes('资金不足') ||
       lowerMsg.includes('余额不足'),
-    isOrderNotFound:
-      lowerMsg.includes('not found') || lowerMsg.includes('不存在') || lowerMsg.includes('找不到'),
     isNetworkError:
       lowerMsg.includes('network') ||
       lowerMsg.includes('网络') ||

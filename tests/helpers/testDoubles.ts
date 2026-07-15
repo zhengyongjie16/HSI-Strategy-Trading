@@ -20,8 +20,10 @@ import type {
   MarketQuoteContext,
   PendingOrder,
   PositionCache,
+  RateLimiter,
   RiskChecker,
   RiskCheckResult,
+  TradeMutationPermit,
   Trader,
   WarrantDistanceInfo,
   WarrantDistanceLiquidationResult,
@@ -54,6 +56,7 @@ import type {
   DelayedSignalVerifierPort,
 } from '../../src/types/monitorContextPorts.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
+import type { OrderMonitor } from '../../src/core/trader/types.js';
 import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
 import type { TradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/types.js';
 import type { AutoSearchWakeupRuntime } from '../../src/main/autoSearchWakeupRuntime/types.js';
@@ -181,6 +184,7 @@ export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}
     getLatestSellRecord: () => null,
     getSellRecordByOrderId: () => null,
     fetchAllOrdersFromAPI: async () => [],
+    validateRebuildSnapshot: () => {},
     refreshOrdersFromAllOrdersForLong: async () => [],
     refreshOrdersFromAllOrdersForShort: async () => [],
     clearOrdersCacheForSymbol: () => {},
@@ -228,6 +232,12 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
       source: 'API',
       relatedBuyOrderIds: null,
     }),
+    cancelDoomsdayOrder: async () => ({
+      kind: 'CANCEL_CONFIRMED',
+      closedReason: 'CANCELED',
+      source: 'API',
+      relatedBuyOrderIds: null,
+    }),
     startOrderMonitorRuntime: () => {},
     stopOrderMonitorRuntimeAndDrain: async () => {},
     hasPendingProtectiveLiquidationOrders: () => false,
@@ -238,12 +248,135 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
     resetRuntimeState: () => {},
     recoverOrderTrackingFromSnapshot: async () => {},
     executeSignals: async () => ({ executedOrderIds: [] }),
+    executeDoomsdayClearanceSignals: async () => ({
+      executedOrderIds: [],
+      awaitingAuthoritativeTerminalSymbols: [],
+      unresolvedQuoteSymbols: [],
+    }),
   };
 
   return {
     ...base,
     ...overrides,
     orderRecorder: overrides.orderRecorder ?? base.orderRecorder,
+  };
+}
+
+type RateLimiterDoubleOptions = {
+  /** 读取动作进入同一 FIFO 序列后执行的测试钩子。 */
+  readonly onThrottle?: () => void | Promise<void>;
+
+  /** mutation callback 取得 FIFO 席位后执行的测试钩子。 */
+  readonly onMutationPermitAcquired?: () => void | Promise<void>;
+
+  /** permit 内实际 SDK mutation 开始前执行的测试钩子。 */
+  readonly onMutationInvoked?: () => void | Promise<void>;
+};
+
+/**
+ * 创建具备真实 FIFO permit 语义的 RateLimiter 测试替身。
+ *
+ * callback 和读取动作共享同一队列；一个 permit 最多只能执行一次真实 mutation。
+ * 无最终行情或授权失败时业务代码可合法地不调用 invoke，因此不把“零次调用”误判为契约错误。
+ *
+ * @param options 用于时间与并发场景的最小观察钩子
+ * @returns 可注入生产依赖边界的 RateLimiter
+ */
+export function createRateLimiterDouble(options: RateLimiterDoubleOptions = {}): RateLimiter {
+  let sequenceTail = Promise.resolve();
+
+  async function runInSequence<T>(operation: () => Promise<T>): Promise<T> {
+    const predecessor = sequenceTail;
+    let releaseCurrentTurn!: () => void;
+    const currentTurn = new Promise<void>((resolve) => {
+      releaseCurrentTurn = resolve;
+    });
+    sequenceTail = predecessor.then(() => currentTurn);
+
+    await predecessor;
+    try {
+      return await operation();
+    } finally {
+      releaseCurrentTurn();
+    }
+  }
+
+  async function throttle(): Promise<void> {
+    await runInSequence(async () => {
+      await options.onThrottle?.();
+    });
+  }
+
+  async function withTradeMutation<T>(
+    callback: (permit: TradeMutationPermit) => Promise<T>,
+  ): Promise<T> {
+    return runInSequence(async () => {
+      await options.onMutationPermitAcquired?.();
+      let invoked = false;
+      const permit: TradeMutationPermit = {
+        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => {
+          if (invoked) {
+            throw new Error('[test double] 一个 trade mutation permit 只能调用一次');
+          }
+
+          invoked = true;
+          await options.onMutationInvoked?.();
+          return operation();
+        },
+      };
+      return callback(permit);
+    });
+  }
+
+  return {
+    throttle,
+    withTradeMutation,
+  };
+}
+
+/**
+ * 创建订单监控器测试替身。
+ *
+ * 默认 REPLACE 均 fail-fast，避免没有明确业务断言的测试意外走到改单路径。
+ * 需要验证 REPLACE 的测试必须显式覆盖 replaceOrderPriceWithPermit，且在传入 permit.invoke 内模拟 broker mutation。
+ *
+ * @param overrides 当前测试确实需要观察或驱动的行为
+ * @returns 完整的 OrderMonitor 契约测试替身
+ */
+export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}): OrderMonitor {
+  const base: OrderMonitor = {
+    initialize: async () => {},
+    onOrderStateChanged: () => () => {},
+    trackOrder: () => {},
+    cancelOrder: async () => ({
+      kind: 'CANCEL_CONFIRMED',
+      closedReason: 'CANCELED',
+      source: 'API',
+      relatedBuyOrderIds: null,
+    }),
+    cancelDoomsdayOrder: async () => ({
+      kind: 'CANCEL_CONFIRMED',
+      closedReason: 'CANCELED',
+      source: 'API',
+      relatedBuyOrderIds: null,
+    }),
+    replaceOrderPrice: async () => {
+      throw new Error('[test double] 未预期的旧版 REPLACE 调用');
+    },
+    replaceOrderPriceWithPermit: async () => {
+      throw new Error('[test double] 未预期的 permit REPLACE 调用');
+    },
+    startRuntime: () => {},
+    stopRuntimeAndDrain: async () => {},
+    recoverOrderTrackingFromSnapshot: async () => {},
+    getPendingSellOrders: () => [],
+    hasPendingProtectiveLiquidationOrders: () => false,
+    clearTrackedOrders: () => {},
+  };
+
+  return {
+    ...base,
+    ...overrides,
   };
 }
 
@@ -447,6 +580,8 @@ export function createTradingGateEventRuntimeDouble(
   const base: TradingGateEventRuntime = {
     emitGateStateChanged: () => {},
     onGateStateChanged: () => () => {},
+    emitAutoSearchAuthorizationChanged: () => {},
+    onAutoSearchAuthorizationChanged: () => () => {},
   };
 
   return {
@@ -706,7 +841,6 @@ export function createDoomsdayProtectionDouble(
       _context: DoomsdayClearanceContext,
     ): Promise<DoomsdayClearanceResult> => ({
       executed: false,
-      signalCount: 0,
       nextRetryAtMs: null,
     }),
     cancelPendingBuyOrders: async (

@@ -63,8 +63,12 @@ export function createOrderStatusQuery(deps: OrderStatusQueryDeps): OrderStatusQ
         shouldRetry: isRetryableOrderApiError,
       });
       const status = detail.status;
+      const submittedQuantityNumber = decimalToNumber(detail.quantity);
       const executedPriceNumber = decimalToNumber(detail.executedPrice);
       const executedQuantityNumber = decimalToNumber(detail.executedQuantity);
+      const submittedQuantity = Number.isFinite(submittedQuantityNumber)
+        ? submittedQuantityNumber
+        : null;
       const executedPrice = Number.isFinite(executedPriceNumber) ? executedPriceNumber : null;
       const executedQuantity = Number.isFinite(executedQuantityNumber)
         ? executedQuantityNumber
@@ -78,6 +82,7 @@ export function createOrderStatusQuery(deps: OrderStatusQueryDeps): OrderStatusQ
           status,
           executedPrice,
           executedQuantity,
+          submittedQuantity,
           orderUpdatedAtMs: updatedAtMs,
         };
       }

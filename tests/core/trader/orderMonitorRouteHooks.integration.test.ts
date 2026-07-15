@@ -25,7 +25,11 @@ import type {
   RouteRuntimeDeps,
   RouteRuntimeProcessParams,
 } from '../../../src/core/trader/orderMonitor/types.js';
-import type { QuoteUpdatedEvent, RawOrderFromAPI } from '../../../src/types/services.js';
+import type {
+  QuoteUpdatedEvent,
+  RawOrderFromAPI,
+  TradeMutationPermit,
+} from '../../../src/types/services.js';
 
 function flushMicrotasks(): Promise<void> {
   return Promise.resolve()
@@ -118,6 +122,13 @@ function createDeps(): {
     ctx: tradeCtx as unknown as TradeContext,
     rateLimiter: {
       throttle: async () => {},
+      withTradeMutation: async <T>(
+        callback: (permit: TradeMutationPermit) => Promise<T>,
+      ): Promise<T> =>
+        callback({
+          invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> =>
+            operation(),
+        }),
     },
     cacheManager: {
       clearCache: () => {},
@@ -158,7 +169,10 @@ function createDeps(): {
       },
     }),
     symbolRegistry: createSymbolRegistryDouble(),
-    isExecutionAllowed: () => true,
+    isContinuousTradingAllowed: () => true,
+    onFatalError: (error) => {
+      throw error;
+    },
   };
 
   return { deps, tradeCtx };

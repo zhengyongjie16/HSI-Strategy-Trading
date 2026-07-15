@@ -160,6 +160,24 @@ function createLoadParams(
   };
 }
 
+async function expectPromiseToRejectWithMessage(
+  promise: Promise<unknown>,
+  messagePattern: RegExp,
+): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error;
+    }
+
+    expect(error.message).toMatch(messagePattern);
+    return;
+  }
+
+  throw new Error(`Expected promise to reject with message matching ${messagePattern.source}`);
+}
+
 function createProtectiveMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitor'] {
   return createMonitorConfigDouble({
     monitorSymbol: 'HSI.HK',
@@ -260,6 +278,7 @@ function createBoundaryCaptureDailyLossTracker(
 function createCompletionRecord(params: {
   readonly direction: 'LONG' | 'SHORT';
   readonly boundaryExecutedTimeMs: number;
+  readonly monitorSymbol?: string;
   readonly orderBaselines?: ReadonlyArray<{
     readonly orderId: string;
     readonly symbol: string;
@@ -270,12 +289,14 @@ function createCompletionRecord(params: {
     readonly orderRevisionMs: number;
   }>;
 }) {
+  const monitorSymbol = params.monitorSymbol ?? 'HSI.HK';
   return {
     recordType: 'PROTECTIVE_LIQUIDATION_COMPLETION' as const,
     schemaVersion: 1 as const,
-    completionId: `v1:2026-03-13:HSI.HK:${params.direction}:${String(params.boundaryExecutedTimeMs)}`,
+    completionId:
+      `v1:2026-03-13:${monitorSymbol}:${params.direction}:` + String(params.boundaryExecutedTimeMs),
     tradingDayKey: '2026-03-13',
-    monitorSymbol: 'HSI.HK',
+    monitorSymbol,
     direction: params.direction,
     boundaryExecutedTimeMs: params.boundaryExecutedTimeMs,
     orderBaselines: params.orderBaselines ?? [],
@@ -347,6 +368,69 @@ function createProtectiveTrackerRecorder(): {
     }),
     restoreCompletedCalls,
     restoreInProgressCalls,
+  };
+}
+
+/** 记录恢复链路的关键副作用，用于验证 damaged persisted facts 在消费前被拒绝。 */
+function createRecoverySideEffectRecorder(): {
+  readonly tracker: ProtectiveLiquidationEpisodeTracker;
+  readonly dailyLossTracker: LoadTradingDayRuntimeSnapshotDeps['dailyLossTracker'];
+  readonly effects: {
+    restoreCompletedBoundary: number;
+    restoreInProgressEpisode: number;
+    restoreExecutionSnapshot: number;
+    restoreProtectionBoundary: number;
+    prepareProtectionBoundary: number;
+    commitProtectionBoundary: number;
+    commitCompletion: number;
+    hydrate: number;
+  };
+} {
+  const episodeTracker = createProtectiveLiquidationEpisodeTracker();
+  const effects = {
+    restoreCompletedBoundary: 0,
+    restoreInProgressEpisode: 0,
+    restoreExecutionSnapshot: 0,
+    restoreProtectionBoundary: 0,
+    prepareProtectionBoundary: 0,
+    commitProtectionBoundary: 0,
+    commitCompletion: 0,
+    hydrate: 0,
+  };
+  const tracker: ProtectiveLiquidationEpisodeTracker = {
+    ...episodeTracker,
+    restoreCompletedBoundary: (params) => {
+      effects.restoreCompletedBoundary += 1;
+      episodeTracker.restoreCompletedBoundary(params);
+    },
+    restoreInProgressEpisode: (params) => {
+      effects.restoreInProgressEpisode += 1;
+      episodeTracker.restoreInProgressEpisode(params);
+    },
+    commitCompletion: (params) => {
+      effects.commitCompletion += 1;
+      episodeTracker.commitCompletion(params);
+    },
+  };
+
+  return {
+    tracker,
+    dailyLossTracker: createDailyLossTrackerDouble({
+      restoreExecutionSnapshot: () => {
+        effects.restoreExecutionSnapshot += 1;
+      },
+      restoreProtectionBoundary: () => {
+        effects.restoreProtectionBoundary += 1;
+      },
+      prepareProtectionBoundary: (params) => {
+        effects.prepareProtectionBoundary += 1;
+        return { ...params, orderBaselines: [] };
+      },
+      commitProtectionBoundary: () => {
+        effects.commitProtectionBoundary += 1;
+      },
+    }),
+    effects,
   };
 }
 
@@ -713,6 +797,168 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(callOrder).toEqual(['recalculate', 'hydrate']);
   });
 
+  it('fails a normal attributable execution without updatedAt before restoring a persisted completion or later stages', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const existingBoundaryMs = Date.parse('2026-03-13T02:10:00.000Z');
+    const completionBoundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
+    const protectiveRevisionMs = Date.parse('2026-03-13T02:30:00.000Z');
+    const monitor = createProtectiveMonitor();
+    const ordinaryOrder: RawOrderFromAPI = {
+      ...createProtectiveOrder({
+        orderId: 'ordinary-in-day-missing-updated-at',
+        status: OrderStatus.Filled,
+        price: 10,
+        quantity: 10,
+        executedPrice: 10,
+        executedQuantity: 10,
+        updatedAtMs: protectiveRevisionMs,
+      }),
+      side: OrderSide.Buy,
+      orderType: OrderType.ELO,
+      remark: 'AUTO',
+      updatedAt: null,
+    };
+    const protectiveOrder = createProtectiveOrder({
+      orderId: 'protective-progress-after-daily-loss-preflight',
+      status: OrderStatus.PartialFilled,
+      price: 9,
+      quantity: 10,
+      executedPrice: 9,
+      executedQuantity: 5,
+      updatedAtMs: protectiveRevisionMs,
+    });
+    const actualDailyLossTracker = createDailyLossTracker({
+      ...createDailyLossOrderAnalysisDeps(),
+      resolveOrderOwnership: (order) =>
+        order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
+      toHongKongTimeIso,
+    });
+    actualDailyLossTracker.commitProtectionBoundary(
+      actualDailyLossTracker.prepareProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: existingBoundaryMs,
+      }),
+    );
+    const laterEffects = {
+      restoreExecutionSnapshot: 0,
+      restoreProtectionBoundary: 0,
+      hydrate: 0,
+      appendCompletion: 0,
+      resetSubscriptions: 0,
+      subscribeSymbols: 0,
+      subscribeCandlesticks: 0,
+      getQuotes: 0,
+    };
+    const dailyLossTracker = {
+      ...actualDailyLossTracker,
+      restoreExecutionSnapshot: (params) => {
+        laterEffects.restoreExecutionSnapshot += 1;
+        actualDailyLossTracker.restoreExecutionSnapshot(params);
+      },
+      restoreProtectionBoundary: (params) => {
+        laterEffects.restoreProtectionBoundary += 1;
+        actualDailyLossTracker.restoreProtectionBoundary(params);
+      },
+    } satisfies LoadTradingDayRuntimeSnapshotDeps['dailyLossTracker'];
+    const actualEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
+    actualEpisodeTracker.restoreCompletedBoundary({
+      direction: 'LONG',
+      boundaryExecutedTimeMs: existingBoundaryMs,
+    });
+    let resetAllCalls = 0;
+    const tracker: ProtectiveLiquidationEpisodeTracker = {
+      ...actualEpisodeTracker,
+      resetAll: () => {
+        resetAllCalls += 1;
+        actualEpisodeTracker.resetAll();
+      },
+    };
+    const marketDataClient = createMarketDataClientDouble({
+      resetRuntimeSubscriptionsAndCaches: async () => {
+        laterEffects.resetSubscriptions += 1;
+      },
+      subscribeSymbols: async () => {
+        laterEffects.subscribeSymbols += 1;
+      },
+      subscribeCandlesticks: async () => {
+        laterEffects.subscribeCandlesticks += 1;
+        return [];
+      },
+      getQuotes: async () => {
+        laterEffects.getQuotes += 1;
+        return new Map();
+      },
+    });
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader({
+        fetchAllOrdersFromAPI: async () => [ordinaryOrder, protectiveOrder],
+      }),
+      dailyLossTracker,
+      protectiveLiquidationEpisodeTracker: tracker,
+      marketDataClient,
+      tradeLogHydrator: {
+        hydrate: () => {
+          laterEffects.hydrate += 1;
+          return new Map();
+        },
+      },
+      mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
+        loadCompletionRecords: () => [
+          createCompletionRecord({
+            direction: 'LONG',
+            boundaryExecutedTimeMs: completionBoundaryMs,
+          }),
+        ],
+        loadExecutionProgressRecords: () => [
+          createExecutionProgressRecord({
+            orderId: protectiveOrder.orderId,
+            direction: 'LONG',
+            cumulativeQuantity: '5',
+            cumulativeAmount: '45',
+            lastExecutionTimeMs: protectiveRevisionMs - 10_000,
+            orderRevisionMs: protectiveRevisionMs,
+          }),
+        ],
+        appendCompletionIdempotent: () => {
+          laterEffects.appendCompletion += 1;
+          return 'APPENDED';
+        },
+      }),
+    });
+
+    await expectPromiseToRejectWithMessage(
+      createLoadTradingDayRuntimeSnapshot(deps)(
+        createLoadParams({
+          now,
+          hydrateCooldownFromTradeLog: true,
+          resetRuntimeSubscriptions: true,
+        }),
+      ),
+      /DailyLossTracker.*缺少有效更新时间.*ordinary-in-day-missing-updated-at/i,
+    );
+
+    expect(laterEffects).toEqual({
+      restoreExecutionSnapshot: 0,
+      restoreProtectionBoundary: 0,
+      hydrate: 0,
+      appendCompletion: 0,
+      resetSubscriptions: 0,
+      subscribeSymbols: 0,
+      subscribeCandlesticks: 0,
+      getQuotes: 0,
+    });
+    expect(resetAllCalls).toBe(0);
+    expect(tracker.getLatestProtectionBoundaryByDirection().get('LONG')).toBe(existingBoundaryMs);
+    expect(tracker.getInProgressEpisodes()).toEqual([]);
+    expect(() =>
+      actualDailyLossTracker.prepareProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: existingBoundaryMs,
+      }),
+    ).toThrow(/protection boundary .*推进/);
+  });
+
   it('does not infer a completed boundary from a canceled protective order without a completion record', async () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const executedAtMs = Date.parse('2026-03-13T02:30:00.000Z');
@@ -904,6 +1150,156 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(receivedBoundaryMap?.get('LONG')).toBe(completedBoundaryMs);
   });
 
+  it('fails startup recovery when a completion omits a collapsed cross-boundary ordinary BUY baseline', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const boundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
+    const finalExecutionMs = boundaryMs + 60_000;
+    const monitor = createProtectiveMonitor();
+    const ordinaryBuy: RawOrderFromAPI = {
+      ...createProtectiveOrder({
+        orderId: 'ordinary-buy-crossing-persisted-boundary',
+        status: OrderStatus.Filled,
+        price: 16,
+        quantity: 100,
+        executedPrice: 16,
+        executedQuantity: 100,
+        updatedAtMs: finalExecutionMs,
+      }),
+      side: OrderSide.Buy,
+      orderType: OrderType.ELO,
+      remark: 'AUTO',
+      submittedAt: new Date(boundaryMs - 60_000),
+    };
+    const protectiveOrder = createProtectiveOrder({
+      orderId: 'protective-sell-at-persisted-boundary',
+      status: OrderStatus.Canceled,
+      price: 9,
+      quantity: 40,
+      executedPrice: 9,
+      executedQuantity: 40,
+      updatedAtMs: boundaryMs,
+    });
+    const dailyLossTracker = createDailyLossTracker({
+      ...createDailyLossOrderAnalysisDeps(),
+      resolveOrderOwnership: (order) =>
+        order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
+      toHongKongTimeIso,
+    });
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader({
+        fetchAllOrdersFromAPI: async () => [ordinaryBuy, protectiveOrder],
+      }),
+      dailyLossTracker,
+      mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
+        loadCompletionRecords: () => [
+          createCompletionRecord({
+            direction: 'LONG',
+            boundaryExecutedTimeMs: boundaryMs,
+            orderBaselines: [
+              {
+                orderId: protectiveOrder.orderId,
+                symbol: protectiveOrder.symbol,
+                side: 'SELL',
+                cumulativeQuantity: '40',
+                cumulativeAmount: '360',
+                lastExecutionTimeMs: boundaryMs,
+                orderRevisionMs: boundaryMs,
+              },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    await expectPromiseToRejectWithMessage(
+      createLoadTradingDayRuntimeSnapshot(deps)(
+        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      ),
+      /cannot reconstruct.*ordinary-buy-crossing-persisted-boundary/i,
+    );
+  });
+
+  it('restores a persisted cross-boundary ordinary BUY baseline during startup recovery', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const boundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
+    const preBoundaryExecutionMs = boundaryMs - 60_000;
+    const finalExecutionMs = boundaryMs + 60_000;
+    const monitor = createProtectiveMonitor();
+    const ordinaryBuy: RawOrderFromAPI = {
+      ...createProtectiveOrder({
+        orderId: 'ordinary-buy-crossing-restored-boundary',
+        status: OrderStatus.Filled,
+        price: 16,
+        quantity: 100,
+        executedPrice: 16,
+        executedQuantity: 100,
+        updatedAtMs: finalExecutionMs,
+      }),
+      side: OrderSide.Buy,
+      orderType: OrderType.ELO,
+      remark: 'AUTO',
+      submittedAt: new Date(boundaryMs - 120_000),
+    };
+    const protectiveOrder = createProtectiveOrder({
+      orderId: 'protective-sell-at-restored-boundary',
+      status: OrderStatus.Canceled,
+      price: 9,
+      quantity: 40,
+      executedPrice: 9,
+      executedQuantity: 40,
+      updatedAtMs: boundaryMs,
+    });
+    const dailyLossTracker = createDailyLossTracker({
+      ...createDailyLossOrderAnalysisDeps(),
+      resolveOrderOwnership: (order) =>
+        order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
+      toHongKongTimeIso,
+    });
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader({
+        fetchAllOrdersFromAPI: async () => [ordinaryBuy, protectiveOrder],
+      }),
+      dailyLossTracker,
+      mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
+        loadCompletionRecords: () => [
+          createCompletionRecord({
+            direction: 'LONG',
+            boundaryExecutedTimeMs: boundaryMs,
+            orderBaselines: [
+              {
+                orderId: ordinaryBuy.orderId,
+                symbol: ordinaryBuy.symbol,
+                side: 'BUY',
+                cumulativeQuantity: '40',
+                cumulativeAmount: '400',
+                lastExecutionTimeMs: preBoundaryExecutionMs,
+                orderRevisionMs: preBoundaryExecutionMs,
+              },
+              {
+                orderId: protectiveOrder.orderId,
+                symbol: protectiveOrder.symbol,
+                side: 'SELL',
+                cumulativeQuantity: '40',
+                cumulativeAmount: '360',
+                lastExecutionTimeMs: boundaryMs,
+                orderRevisionMs: boundaryMs,
+              },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
+      createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+    );
+
+    expect(snapshot.allOrders).toEqual([ordinaryBuy, protectiveOrder]);
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe(0);
+  });
+
   it('restores hydrated protective boundary from direction-only key', async () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const completedBoundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
@@ -940,6 +1336,166 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         boundaryExecutedTimeMs: completedBoundaryMs,
       },
     ]);
+  });
+
+  it('rejects a foreign completion before protective recovery consumes any persisted fact', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const completionBoundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
+    const orderRevisionMs = Date.parse('2026-03-13T02:30:00.000Z');
+    const lastExecutionTimeMs = orderRevisionMs - 10_000;
+    const monitor = createProtectiveMonitor();
+    const { tracker, dailyLossTracker, effects } = createRecoverySideEffectRecorder();
+    const appendedRecords: Array<
+      Parameters<MixedTradeLogRepository['appendCompletionIdempotent']>[0]
+    > = [];
+    const protectiveOrder = createProtectiveOrder({
+      orderId: 'protective-foreign-completion-progress',
+      status: OrderStatus.Canceled,
+      price: 9,
+      quantity: 10,
+      executedPrice: 9,
+      executedQuantity: 5,
+      updatedAtMs: orderRevisionMs,
+    });
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader({
+        fetchAllOrdersFromAPI: async () => [protectiveOrder],
+      }),
+      dailyLossTracker,
+      protectiveLiquidationEpisodeTracker: tracker,
+      tradeLogHydrator: {
+        hydrate: () => {
+          effects.hydrate += 1;
+          return new Map();
+        },
+      },
+      mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
+        loadCompletionRecords: () => [
+          createCompletionRecord({
+            monitorSymbol: 'FOREIGN.HK',
+            direction: 'LONG',
+            boundaryExecutedTimeMs: completionBoundaryMs,
+            orderBaselines: [
+              {
+                orderId: 'foreign-completion-baseline',
+                symbol: 'FOREIGN-BULL.HK',
+                side: 'SELL',
+                cumulativeQuantity: '1',
+                cumulativeAmount: '9',
+                lastExecutionTimeMs: completionBoundaryMs,
+                orderRevisionMs: completionBoundaryMs,
+              },
+            ],
+          }),
+        ],
+        loadExecutionProgressRecords: () => [
+          createExecutionProgressRecord({
+            orderId: protectiveOrder.orderId,
+            direction: 'LONG',
+            cumulativeQuantity: '5',
+            cumulativeAmount: '45',
+            lastExecutionTimeMs,
+            orderRevisionMs,
+          }),
+        ],
+        appendCompletionIdempotent: (record) => {
+          appendedRecords.push(record);
+          return 'APPENDED';
+        },
+      }),
+    });
+
+    await expectPromiseToRejectWithMessage(
+      createLoadTradingDayRuntimeSnapshot(deps)(
+        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      ),
+      /completion.*monitorSymbol/i,
+    );
+
+    expect(effects).toEqual({
+      restoreCompletedBoundary: 0,
+      restoreInProgressEpisode: 0,
+      restoreExecutionSnapshot: 0,
+      restoreProtectionBoundary: 0,
+      prepareProtectionBoundary: 0,
+      commitProtectionBoundary: 0,
+      commitCompletion: 0,
+      hydrate: 0,
+    });
+    expect(appendedRecords).toEqual([]);
+  });
+
+  it('rejects a progress record forged from an ordinary sell before protective recovery side effects', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const orderRevisionMs = Date.parse('2026-03-13T02:30:00.000Z');
+    const lastExecutionTimeMs = orderRevisionMs - 10_000;
+    const monitor = createProtectiveMonitor();
+    const { tracker, dailyLossTracker, effects } = createRecoverySideEffectRecorder();
+    const appendedRecords: Array<
+      Parameters<MixedTradeLogRepository['appendCompletionIdempotent']>[0]
+    > = [];
+    const ordinarySellOrder: RawOrderFromAPI = {
+      ...createProtectiveOrder({
+        orderId: 'ordinary-sell-forged-progress',
+        status: OrderStatus.Canceled,
+        price: 9,
+        quantity: 10,
+        executedPrice: 9,
+        executedQuantity: 5,
+        updatedAtMs: orderRevisionMs,
+      }),
+      remark: 'AUTO',
+    };
+    const deps = createBaseDeps({
+      tradingConfig: createTradingConfig(monitor),
+      trader: createReadyTrader({
+        fetchAllOrdersFromAPI: async () => [ordinarySellOrder],
+      }),
+      dailyLossTracker,
+      protectiveLiquidationEpisodeTracker: tracker,
+      tradeLogHydrator: {
+        hydrate: () => {
+          effects.hydrate += 1;
+          return new Map();
+        },
+      },
+      mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
+        loadExecutionProgressRecords: () => [
+          createExecutionProgressRecord({
+            orderId: ordinarySellOrder.orderId,
+            direction: 'LONG',
+            cumulativeQuantity: '5',
+            cumulativeAmount: '45',
+            lastExecutionTimeMs,
+            orderRevisionMs,
+          }),
+        ],
+        appendCompletionIdempotent: (record) => {
+          appendedRecords.push(record);
+          return 'APPENDED';
+        },
+      }),
+    });
+
+    await expectPromiseToRejectWithMessage(
+      createLoadTradingDayRuntimeSnapshot(deps)(
+        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      ),
+      /progress.*保护性清仓/i,
+    );
+
+    expect(effects).toEqual({
+      restoreCompletedBoundary: 0,
+      restoreInProgressEpisode: 0,
+      restoreExecutionSnapshot: 0,
+      restoreProtectionBoundary: 0,
+      prepareProtectionBoundary: 0,
+      commitProtectionBoundary: 0,
+      commitCompletion: 0,
+      hydrate: 0,
+    });
+    expect(appendedRecords).toEqual([]);
   });
 
   it('fails fast when protective order ownership cannot be resolved to the unique monitor', async () => {

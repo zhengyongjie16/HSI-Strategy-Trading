@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## 项目简介
 
 基于 Longbridge OpenAPI SDK for Node.js / bun / TypeScript 的港股自动化量化交易系统。
@@ -21,23 +17,20 @@ src/
 └── utils/        # 工具模块
 ```
 
+除特别指定或要求外，不要读取docs/下的文件
+
 ## 第一性原理
 
 请使用第一性原理思考。你不能总是假设我非常清楚自己想要什么和该怎么得到。请保持审慎，从原始需求和问题出发，如果动机和目标不清晰，停下来和我讨论。
 
-## 代码基础规范
+## 代码与设计规范
 
-当你需要编写任何TypeScript代码时，强制使用typescript-project-specifications skill
-
-## 方案设计规范
-
-当需要你给出修改或重构方案时必须符合以下规范:
-
+- 当你需要编写任何TypeScript代码时，强制使用typescript-project-specifications skill
 - 优先考虑事件驱动设计
-- 程序逻辑优先以fail-fast原则为主，部分允许直接丢弃或者重试的逻辑不允许fatal阻断（若不确认必须停下进行确认）
-- 不允许给出兼容性或补丁性的方案
+- 程序逻辑优先以fail-fast原则为主，注意部分允许直接丢弃或者重试的逻辑不允许fatal阻断（若不确认必须停下进行确认）
+- 不允许给出兼容性或补丁性的设计方案
 - 不允许过度设计，优先以最短路径实现且不能违反上一条内容
-- 不允许自行给出我提供的需求以外的方案，例如一些兜底、降级和重试方案，这可能导致业务逻辑偏移问题
+- 不允许为几乎不会发生的情况或几乎不可达的边界情况（可能的边界问题）进行兜底、降级设计（若不确认必须停下进行确认）
 - 必须确保方案的逻辑正确，必须经过全链路的逻辑验证
 
 ## 代码修改流程

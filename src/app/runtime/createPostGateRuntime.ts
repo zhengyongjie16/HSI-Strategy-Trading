@@ -3,6 +3,7 @@
  *
  * 职责：
  * - 创建 startup gate 之后才能初始化的共享运行时对象
+ * - 在 Trader 创建前组装唯一 RiskChecker，统一浮亏缓存与买入门禁读取
  * - 固定 lastState、trader、快照加载器与异步基础设施的唯一创建点
  * - 保持 post-gate 对象所有权清单集中
  */
@@ -10,6 +11,10 @@ import { INDICATOR_CACHE, TIME, VERIFICATION } from '../../constants/index.js';
 import { createTrader } from '../../core/trader/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
+import { createRiskChecker } from '../../core/riskController/index.js';
+import { createPositionLimitChecker } from '../../core/riskController/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../core/riskController/unrealizedLossChecker.js';
+import { createWarrantRiskChecker } from '../../core/riskController/warrantRiskChecker.js';
 import { createDoomsdayProtection } from '../../core/doomsdayProtection/index.js';
 import { createSignalProcessor } from '../../core/signalProcessor/index.js';
 import { createMonitorContext } from '../context/createMonitorContext.js';
@@ -227,6 +232,15 @@ export function createPostGateRuntimeFactory(
       startupTradingDayInfo,
       warrantListCacheConfig,
     } = preGateRuntime;
+    const riskChecker = createRiskChecker({
+      warrantRiskChecker: createWarrantRiskChecker(),
+      positionLimitChecker: createPositionLimitChecker({
+        maxPositionNotional: tradingConfig.monitor.maxPositionNotional,
+      }),
+      unrealizedLossChecker: createUnrealizedLossChecker({
+        maxUnrealizedLossPerSymbol: tradingConfig.monitor.maxUnrealizedLossPerSymbol,
+      }),
+    });
     const liquidationCooldownTracker = createLiquidationCooldownTracker({
       nowMs: () => Date.now(),
     });
@@ -340,6 +354,7 @@ export function createPostGateRuntimeFactory(
       config,
       tradingConfig,
       marketDataClient,
+      unrealizedLossBuyGate: riskChecker,
       symbolRegistry,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
@@ -351,6 +366,7 @@ export function createPostGateRuntimeFactory(
       },
       postTradeConsistencyRuntime,
       isExecutionAllowed: () => lastState.isTradingEnabled,
+      isContinuousTradingAllowed: () => lastState.isTradingEnabled && lastState.canTrade === true,
       now: () => new Date(Date.now()),
       readCurrentTradingDayInfo: () => lastState.cachedTradingDayInfo,
       onFatalError: handleFatalError,
@@ -459,8 +475,10 @@ export function createPostGateRuntimeFactory(
       postGateRuntime: {
         trader,
         dailyLossTracker,
+        riskChecker,
         indicatorCache,
         lastState,
+        onFatalError: handleFatalError,
       },
       quotesMap: null,
     });
@@ -503,6 +521,7 @@ export function createPostGateRuntimeFactory(
       monitorContext,
       lastState,
       postTradeConsistencyRuntime,
+      tradingGateEventRuntime,
       doomsdayProtectionEnabled,
       quoteSubscriptionRuntime,
       now: () => new Date(),
@@ -599,6 +618,7 @@ export function createPostGateRuntimeFactory(
       monitorContext,
       lastState,
       tradingGateEventRuntime,
+      doomsdayProtectionEnabled,
       now: () => new Date(),
       scheduleTimer: (callback, delayMs) => {
         return setTimeout(callback, delayMs);

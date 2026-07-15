@@ -160,12 +160,11 @@ export type MutableRuntimeValidationCollector = {
 
 /**
  * 运行时标的校验收集结果。
- * 类型用途：对外暴露 runtimeValidationInputs 与 requiredSymbols 的只读视图，避免调用方越过收集流程直接改写。
+ * 类型用途：仅向调用方暴露完成去重后的运行时校验输入。
  * 数据来源：由 collectRuntimeValidationSymbols 返回。
  * 使用范围：仅 app 顶层装配与测试替身使用。
  */
 export type RuntimeValidationCollector = Readonly<{
-  requiredSymbols: ReadonlySet<string>;
   runtimeValidationInputs: ReadonlyArray<RuntimeSymbolValidationInput>;
 }>;
 
@@ -447,8 +446,14 @@ export type PostGateRuntime = Readonly<{
 export type MonitorContextBootstrapRuntime = Readonly<{
   readonly trader: Trader;
   readonly dailyLossTracker: DailyLossTracker;
+
+  /** 与 Trader 共用的唯一风险检查器，统一持有浮亏 R1/N1 与当日亏损偏移缓存。 */
+  readonly riskChecker: RiskChecker;
   readonly indicatorCache: IndicatorCache;
   readonly lastState: LastState;
+
+  /** 延迟验证器内部异常进入 post-gate 统一 drain 的 fatal 上报入口。 */
+  readonly onFatalError: (error: unknown) => void;
 }>;
 
 /**

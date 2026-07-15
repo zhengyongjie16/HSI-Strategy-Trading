@@ -136,9 +136,11 @@ function applySequentialFiltering(
  */
 function applyFilteringAlgorithm(
   allBuyOrders: ReadonlyArray<OrderRecord>,
-  filledSellOrders: ReadonlyArray<OrderRecord>,
+  executedSellOrders: ReadonlyArray<OrderRecord>,
 ): ReadonlyArray<OrderRecord> {
-  const sortedSellOrders = [...filledSellOrders].sort((a, b) => a.executedTime - b.executedTime);
+  const sortedSellOrders = [...executedSellOrders].sort(
+    (left, right) => left.executedTime - right.executedTime,
+  );
 
   if (sortedSellOrders.length === 0) {
     return allBuyOrders;

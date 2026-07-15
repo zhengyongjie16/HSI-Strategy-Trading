@@ -1,11 +1,12 @@
 import type { Position } from '../../types/account.js';
 import type { OrderSide } from 'longbridge';
-import type { Signal, SignalType } from '../../types/signal.js';
+import type { BuySignal, SignalType } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
 import type {
   MarketDataClient,
   OrderRecorder,
   OrderRecord,
+  RawOrderFromAPI,
   BullBearWarrantType,
   RiskCheckResult,
   WarrantDistanceInfo,
@@ -73,13 +74,13 @@ export interface WarrantRiskChecker {
 
 /**
  * 持仓限制检查器接口。
- * 类型用途：依赖注入，由 RiskChecker 门面聚合，提供单标的最大持仓市值限制检查。
+ * 类型用途：依赖注入，由 RiskChecker 门面聚合，提供买入前单标的最大持仓市值限制检查。
  * 数据来源：如适用（配置中的 maxPositionNotional）。
  * 使用范围：仅 riskController 模块实现；主程序通过 RiskChecker 使用。
  */
 export interface PositionLimitChecker {
   checkLimit: (
-    signal: Signal,
+    signal: BuySignal,
     positions: ReadonlyArray<Position> | null,
     orderNotional: number,
   ) => RiskCheckResult;
@@ -165,6 +166,17 @@ export type DailyLossState = {
 export type DailyLossDirection = 'LONG' | 'SHORT';
 
 /**
+ * 预校验后可参与当日亏损重算的归属成交订单。
+ * 类型用途：把无副作用信任边界已确认的 RawOrder 与方向一起传给 DailyLossTracker 的状态重建阶段。
+ * 数据来源：DailyLossTracker 的订单归属与更新时间预校验。
+ * 使用范围：仅 riskController 模块内部使用。
+ */
+export type DailyLossOwnedInDayExecution = {
+  readonly order: RawOrderFromAPI;
+  readonly direction: DailyLossDirection;
+};
+
+/**
  * 单笔订单的一次累计成交推进快照。
  * 类型用途：在保护边界晚于后续成交到达时，恢复该订单在边界时的累计数量与金额。
  * 数据来源：全量订单快照或运行期新增成交 revision。
@@ -189,6 +201,9 @@ export type DailyLossOrderFact = {
   readonly direction: DailyLossDirection;
   readonly symbol: string;
   readonly side: OrderSide.Buy | OrderSide.Sell;
+
+  /** 原始 API submittedAt 的可信毫秒值；null 表示不能证明订单在保护边界后才创建。 */
+  readonly submittedAtMs: number | null;
   readonly factStage: 'OPEN' | 'TERMINAL';
   readonly cumulativeQuantity: number;
   readonly cumulativeAmount: number;

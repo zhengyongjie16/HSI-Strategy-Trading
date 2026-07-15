@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderType, type OrderDetail, type TradeContext } from 'longbridge';
 import { createOrderStatusQuery } from '../../../../src/core/trader/orderMonitor/orderStatusQuery.js';
+import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
 
 const OPEN_API_ORDER_STATUS_FILLED = 5;
 const OPEN_API_ORDER_STATUS_REJECTED = 14;
@@ -15,6 +16,19 @@ const OPEN_API_ORDER_STATUS_CANCELED = 15;
 const OPEN_API_ORDER_STATUS_EXPIRED = 16;
 const OPEN_API_ORDER_STATUS_PARTIAL_WITHDRAWAL = 17;
 const OPEN_API_ORDER_STATUS_PENDING_CANCEL = 12;
+
+/** 构造权威订单查询测试使用的无副作用限流器。 */
+function createRateLimiterDouble(): RateLimiter {
+  return {
+    throttle: async () => {},
+    withTradeMutation: async <T>(
+      callback: (permit: TradeMutationPermit) => Promise<T>,
+    ): Promise<T> =>
+      callback({
+        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
+      }),
+  };
+}
 
 function createOrderSnapshot(params: {
   readonly orderId: string;
@@ -40,6 +54,13 @@ function createOrderSnapshot(params: {
   } as unknown as OrderDetail;
 }
 
+/**
+ * 在测试中构造 SDK 运行时边界可能返回的损坏字段，不把错误载荷伪装成静态 OrderDetail 契约。
+ */
+function overwriteUpdatedAtAtRuntimeBoundary(snapshot: OrderDetail, updatedAt: unknown): void {
+  Reflect.set(snapshot, 'updatedAt', updatedAt);
+}
+
 function createOrderNotFoundError(orderId: string): Error {
   return new Error(`openapi error: code=603001: Order not found, orderId=${orderId}`);
 }
@@ -56,9 +77,7 @@ function createQueryContext(params?: {
   };
   const orderStatusQuery = createOrderStatusQuery({
     ctx: ctx as unknown as TradeContext,
-    rateLimiter: {
-      throttle: async () => {},
-    },
+    rateLimiter: createRateLimiterDouble(),
   });
   return {
     orderStatusQuery,
@@ -147,6 +166,68 @@ describe('orderStatusQuery business flow', () => {
       expect(partialWithdrawalResult.executedQuantity).toBe(20);
     }
   });
+
+  it.each([
+    ['invalid Date', new Date(Number.NaN), null],
+    ['zero Date', new Date(0), null],
+    ['negative Date', new Date(-1), null],
+    ['zero number', 0, null],
+    ['negative number', -1, null],
+    ['invalid number', Number.NaN, null],
+    ['zero-like string', '0', null],
+    ['negative-like string', '-1', null],
+    ['epoch string', '1970-01-01T00:00:00.000Z', null],
+    ['invalid string', 'not-a-date', null],
+    ['null', null, null],
+    ['undefined', undefined, null],
+    ['positive Date', new Date('2026-02-25T03:00:10.000Z'), 1_771_988_410_000],
+    ['positive number', 1_771_988_410_000, null],
+    ['positive ISO string', '2026-02-25T03:00:10.000Z', null],
+  ] as const)(
+    'accepts only a valid Date for orderDetail updatedAt in both OPEN and TERMINAL state checks',
+    async (_description, updatedAt, expectedUpdatedAtMs) => {
+      const openOrderId = 'ORDER-OPEN-UPDATED-AT';
+      const terminalOrderId = 'ORDER-TERMINAL-UPDATED-AT';
+      const openSnapshot = createOrderSnapshot({
+        orderId: openOrderId,
+        status: OPEN_API_ORDER_STATUS_PENDING_CANCEL,
+      });
+      const terminalSnapshot = createOrderSnapshot({
+        orderId: terminalOrderId,
+        status: OPEN_API_ORDER_STATUS_FILLED,
+        executedQuantity: 100,
+        executedPrice: 1.01,
+      });
+      overwriteUpdatedAtAtRuntimeBoundary(openSnapshot, updatedAt);
+      overwriteUpdatedAtAtRuntimeBoundary(terminalSnapshot, updatedAt);
+      const { orderStatusQuery } = createQueryContext({
+        orderDetail: async (orderId) => {
+          if (orderId === openOrderId) {
+            return openSnapshot;
+          }
+
+          if (orderId === terminalOrderId) {
+            return terminalSnapshot;
+          }
+
+          throw createOrderNotFoundError(orderId);
+        },
+      });
+
+      const openResult = await orderStatusQuery.checkOrderState(openOrderId);
+      const terminalResult = await orderStatusQuery.checkOrderState(terminalOrderId);
+
+      expect(openResult).toMatchObject({
+        kind: 'OPEN',
+        updatedAtMs: expectedUpdatedAtMs,
+      });
+
+      expect(terminalResult).toMatchObject({
+        kind: 'TERMINAL',
+        orderUpdatedAtMs: expectedUpdatedAtMs,
+      });
+    },
+  );
 
   it('retries orderDetail request failures before mapping the authoritative state', async () => {
     let attempts = 0;

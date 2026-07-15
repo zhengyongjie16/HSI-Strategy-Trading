@@ -103,33 +103,34 @@ describe('app runtimeValidation', () => {
       ],
     });
 
-    expect(collector.runtimeValidationInputs).toEqual([
-      {
-        symbol: 'HSI.HK',
-        label: '监控标的',
-        requireLotSize: false,
-        required: true,
-      },
-      {
-        symbol: 'BULL.HK',
-        label: '做多席位标的',
-        requireLotSize: true,
-        required: true,
-      },
-      {
-        symbol: 'BEAR.HK',
-        label: '做空席位标的',
-        requireLotSize: true,
-        required: true,
-      },
-      {
-        symbol: 'EXTRA.HK',
-        label: '持仓标的',
-        requireLotSize: false,
-        required: false,
-      },
-    ]);
-    expect([...collector.requiredSymbols]).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
+    expect(collector).toEqual({
+      runtimeValidationInputs: [
+        {
+          symbol: 'HSI.HK',
+          label: '监控标的',
+          requireLotSize: false,
+          required: true,
+        },
+        {
+          symbol: 'BULL.HK',
+          label: '做多席位标的',
+          requireLotSize: true,
+          required: true,
+        },
+        {
+          symbol: 'BEAR.HK',
+          label: '做空席位标的',
+          requireLotSize: true,
+          required: true,
+        },
+        {
+          symbol: 'EXTRA.HK',
+          label: '持仓标的',
+          requireLotSize: false,
+          required: false,
+        },
+      ],
+    });
   });
 
   it('marks seat symbols as optional when auto search is enabled', () => {
@@ -178,6 +179,6 @@ describe('app runtimeValidation', () => {
       required: false,
     });
 
-    expect([...collector.requiredSymbols]).toEqual(['HSCEI.HK']);
+    expect(collector).not.toHaveProperty('requiredSymbols');
   });
 });

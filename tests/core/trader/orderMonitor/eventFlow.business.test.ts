@@ -8,7 +8,7 @@
  * - 未追踪订单的 closed event 不触发 route wakeup
  */
 import { describe, expect, it, mock } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
+import { OrderSide, OrderStatus, OrderType, type PushOrderChanged } from 'longbridge';
 import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
 import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../../src/constants/index.js';
@@ -62,8 +62,6 @@ function createTrackedOrder(params: {
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
-    liquidationTriggerLimit: 1,
-    liquidationCooldownConfig: null,
     orderType: OrderType.ELO,
     submittedPrice: 1,
     initialSubmittedPrice: 1,
@@ -91,7 +89,405 @@ function createTrackedOrder(params: {
 }
 
 describe('orderMonitor eventFlow', () => {
-  it('records a live partial cumulative execution before an equal-quantity terminal revision', () => {
+  it.each([
+    [
+      '成交价',
+      (event: PushOrderChanged) => {
+        Object.assign(event, { executedPrice: null });
+      },
+    ],
+    [
+      '累计成交数量',
+      (event: PushOrderChanged) => {
+        Object.assign(event, { executedQuantity: null });
+      },
+    ],
+    [
+      '原始执行/修订时间',
+      (event: PushOrderChanged) => {
+        Object.assign(event, { updatedAt: new Date(Number.NaN) });
+      },
+    ],
+  ] as const)(
+    '保护性 SELL PartialFilled WS 缺少原始%s时不得借用 tracked 事实推进本地状态',
+    (_missingField, removeRawField) => {
+      const runtime = createRuntimeStore();
+      const trackedOrder = createTrackedOrder({
+        orderId: 'ORDER-PROTECTIVE-RAW-PARTIAL',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        status: OrderStatus.PartialFilled,
+        isProtectiveLiquidation: true,
+      });
+      trackedOrder.executedQuantity = 40;
+      trackedOrder.executedPrice = 1;
+      trackedOrder.lastExecutedTimeMs = 100;
+      trackedOrder.lastOrderUpdateAtMs = 100;
+      runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+      const partialFills: number[] = [];
+      let durableProgressCalls = 0;
+      const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
+      const eventFlow = createEventFlow({
+        runtime,
+        orderRecorder: createOrderRecorderDouble({
+          markSellPartialFilled: (_orderId, filledQuantity) => {
+            partialFills.push(filledQuantity);
+            return null;
+          },
+        }),
+        recordCumulativeExecution: () => {
+          durableProgressCalls += 1;
+        },
+        prepareProtectiveTerminalExecution: () => null,
+        settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+        cacheBootstrappingEvent: () => {},
+        triggerRoute: (symbol, kind) => {
+          routeWakeups.push({ symbol, kind });
+        },
+      });
+      const event = createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 1.02,
+        updatedAtMs: 200,
+      });
+      removeRawField(event);
+
+      expect(() => {
+        eventFlow.handleOrderChangedWhenActive(event);
+      }).toThrow(/保护性 SELL/);
+
+      expect(trackedOrder).toMatchObject({
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 1,
+        lastExecutedTimeMs: 100,
+        lastOrderUpdateAtMs: 100,
+      });
+      expect(partialFills).toEqual([]);
+      expect(durableProgressCalls).toBe(0);
+      expect(routeWakeups).toEqual([]);
+    },
+  );
+
+  it('保护性 SELL PartialFilled WS 的 durable progress 抛错时不得写入 tracked 或 pending sell', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-PROTECTIVE-OPEN-DURABLE-FIRST',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isProtectiveLiquidation: true,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const persistenceError = new Error('protective open progress persistence failed');
+    const partialFills: number[] = [];
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble({
+        markSellPartialFilled: (_orderId, filledQuantity) => {
+          partialFills.push(filledQuantity);
+          return null;
+        },
+      }),
+      recordCumulativeExecution: () => {
+        throw persistenceError;
+      },
+      prepareProtectiveTerminalExecution: () => null,
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    expect(() => {
+      eventFlow.handleOrderChangedWhenActive(
+        createPushOrderChanged({
+          orderId: trackedOrder.orderId,
+          symbol: trackedOrder.symbol,
+          side: trackedOrder.side,
+          status: OrderStatus.PartialFilled,
+          executedQuantity: 40,
+          executedPrice: 1.02,
+          updatedAtMs: 200,
+        }),
+      );
+    }).toThrow(persistenceError);
+
+    expect(trackedOrder).toMatchObject({
+      status: OrderStatus.New,
+      executedQuantity: 0,
+      executedPrice: null,
+      lastExecutedTimeMs: null,
+      lastOrderUpdateAtMs: null,
+    });
+    expect(partialFills).toEqual([]);
+  });
+
+  it('保护性 SELL FILLED WS 的累计成交量超过有效委托量时在任何结算前拒绝', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-PROTECTIVE-FILLED-EXCEEDS-SUBMITTED',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isProtectiveLiquidation: true,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    let settlementCalls = 0;
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
+      settleOrder: () => {
+        settlementCalls += 1;
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    expect(() => {
+      eventFlow.handleOrderChangedWhenActive(
+        createPushOrderChanged({
+          orderId: trackedOrder.orderId,
+          symbol: trackedOrder.symbol,
+          side: trackedOrder.side,
+          status: OrderStatus.Filled,
+          executedQuantity: 101,
+          executedPrice: 1.02,
+          updatedAtMs: 200,
+        }),
+      );
+    }).toThrow(/累计成交量超过有效委托数量/);
+
+    expect(trackedOrder.executedQuantity).toBe(0);
+    expect(settlementCalls).toBe(0);
+  });
+
+  it.each([OrderStatus.Canceled, OrderStatus.Rejected] as const)(
+    '已有部分成交的保护性 SELL 收到 %s WS 零值/缺失终态事实时不得由 tracked 值收口',
+    (terminalStatus) => {
+      const runtime = createRuntimeStore();
+      const trackedOrder = createTrackedOrder({
+        orderId: 'ORDER-PROTECTIVE-RAW-TERMINAL',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        status: OrderStatus.PartialFilled,
+        isProtectiveLiquidation: true,
+      });
+      trackedOrder.executedQuantity = 40;
+      trackedOrder.executedPrice = 1.02;
+      trackedOrder.lastExecutedTimeMs = 100;
+      trackedOrder.lastOrderUpdateAtMs = 100;
+      runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+      let settlementCalls = 0;
+      const eventFlow = createEventFlow({
+        runtime,
+        orderRecorder: createOrderRecorderDouble(),
+        recordCumulativeExecution: () => {},
+        prepareProtectiveTerminalExecution: () => null,
+        settleOrder: () => {
+          settlementCalls += 1;
+          return { handled: true, relatedBuyOrderIds: null };
+        },
+        cacheBootstrappingEvent: () => {},
+        triggerRoute: () => {},
+      });
+      const terminalEvent = createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: terminalStatus,
+        executedQuantity: 0,
+        executedPrice: 0,
+        updatedAtMs: 200,
+      });
+      Object.assign(terminalEvent, { updatedAt: new Date(Number.NaN) });
+
+      expect(() => {
+        eventFlow.handleOrderChangedWhenActive(terminalEvent);
+      }).toThrow(/保护性 SELL/);
+
+      expect(trackedOrder).toMatchObject({
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 1.02,
+        lastExecutedTimeMs: 100,
+        lastOrderUpdateAtMs: 100,
+      });
+      expect(settlementCalls).toBe(0);
+    },
+  );
+
+  it('does not commit a protective terminal tracked fact before durable settlement succeeds', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-PROTECTIVE-TERMINAL-DURABLE-FIRST',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isProtectiveLiquidation: true,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const persistenceError = new Error('protective progress persistence failed');
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {
+        throw new Error('terminal execution must be delegated to settlement');
+      },
+      prepareProtectiveTerminalExecution: () => null,
+      settleOrder: () => {
+        throw persistenceError;
+      },
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    expect(() => {
+      eventFlow.handleOrderChangedWhenActive(
+        createPushOrderChanged({
+          orderId: trackedOrder.orderId,
+          symbol: trackedOrder.symbol,
+          side: trackedOrder.side,
+          status: OrderStatus.Filled,
+          executedQuantity: 100,
+          executedPrice: 1.02,
+          updatedAtMs: 200,
+        }),
+      );
+    }).toThrow(persistenceError);
+
+    expect(trackedOrder).toMatchObject({
+      status: OrderStatus.New,
+      executedQuantity: 0,
+      executedPrice: null,
+      lastExecutedTimeMs: null,
+      lastOrderUpdateAtMs: null,
+    });
+  });
+
+  it('does not commit a protective timeout terminal snapshot before durable progress succeeds', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-PROTECTIVE-TIMEOUT-DURABLE-FIRST',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isProtectiveLiquidation: true,
+      timeoutMarketConversionPending: true,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const persistenceError = new Error('protective timeout progress persistence failed');
+    const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: (symbol, kind) => {
+        routeWakeups.push({ symbol, kind });
+      },
+      prepareProtectiveTerminalExecution: () => {
+        throw persistenceError;
+      },
+    });
+
+    expect(() => {
+      eventFlow.handleOrderChangedWhenActive(
+        createPushOrderChanged({
+          orderId: trackedOrder.orderId,
+          symbol: trackedOrder.symbol,
+          side: trackedOrder.side,
+          status: OrderStatus.Canceled,
+          executedQuantity: 40,
+          executedPrice: 1.02,
+          updatedAtMs: 200,
+        }),
+      );
+    }).toThrow(persistenceError);
+
+    expect(trackedOrder).toMatchObject({
+      status: OrderStatus.New,
+      executedQuantity: 0,
+      executedPrice: null,
+      lastExecutedTimeMs: null,
+      lastOrderUpdateAtMs: null,
+      timeoutMarketConversionTerminalState: null,
+    });
+    expect(routeWakeups).toEqual([]);
+  });
+
+  it('保护性 SELL timeout 终态将已准备的 durable progress 写入 route settlement snapshot', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-PROTECTIVE-TIMEOUT-PREPARED-PROGRESS',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isProtectiveLiquidation: true,
+      timeoutMarketConversionPending: true,
+    });
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const preparedExecution = {
+      authoritativeFactChanged: true,
+      executionAdvanced: true,
+    };
+    const preparationInputs: FinalizeOrderSettlementParams[] = [];
+    const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
+    let settlementCalls = 0;
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: (params) => {
+        preparationInputs.push(params);
+        return preparedExecution;
+      },
+      settleOrder: () => {
+        settlementCalls += 1;
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: (symbol, kind) => {
+        routeWakeups.push({ symbol, kind });
+      },
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.Canceled,
+        executedQuantity: 40,
+        executedPrice: 1.02,
+        updatedAtMs: 200,
+      }),
+    );
+
+    expect(preparationInputs).toEqual([
+      {
+        orderId: trackedOrder.orderId,
+        closedReason: 'CANCELED',
+        source: 'WS',
+        executedPrice: 1.02,
+        executedQuantity: 40,
+        executedTimeMs: 200,
+        orderUpdatedAtMs: 200,
+      },
+    ]);
+
+    expect(trackedOrder.timeoutMarketConversionTerminalState).toMatchObject({
+      closedReason: 'CANCELED',
+      source: 'WS',
+      preparedProtectiveTerminalExecution: preparedExecution,
+    });
+    expect(settlementCalls).toBe(0);
+    expect(routeWakeups).toEqual([{ symbol: 'BULL.HK', kind: 'ORDER_EVENT' }]);
+  });
+
+  it('records only live partial execution and delegates an equal-quantity terminal revision to settlement', () => {
     const runtime = createRuntimeStore();
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDER-LIVE-PARTIAL',
@@ -113,6 +509,7 @@ describe('orderMonitor eventFlow', () => {
           orderUpdatedAtMs: params.orderUpdatedAtMs ?? -1,
         });
       },
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: (params) => {
         settlements.push(params);
         return { handled: true, relatedBuyOrderIds: null };
@@ -145,11 +542,13 @@ describe('orderMonitor eventFlow', () => {
       }),
     );
 
-    expect(cumulativeExecutions).toEqual([
-      { executedQuantity: 40, orderUpdatedAtMs: 100 },
-      { executedQuantity: 40, orderUpdatedAtMs: 200 },
-    ]);
+    expect(cumulativeExecutions).toEqual([{ executedQuantity: 40, orderUpdatedAtMs: 100 }]);
     expect(settlements).toHaveLength(1);
+    expect(settlements[0]).toMatchObject({
+      executedQuantity: 40,
+      executedTimeMs: 100,
+      orderUpdatedAtMs: 200,
+    });
     expect(settlements[0]).not.toHaveProperty('hasNewExecution');
   });
 
@@ -173,6 +572,7 @@ describe('orderMonitor eventFlow', () => {
         runtime,
         orderRecorder: createOrderRecorderDouble(),
         recordCumulativeExecution: () => {},
+        prepareProtectiveTerminalExecution: () => null,
         settleOrder: (params) => {
           settlements.push(params);
           return { handled: true, relatedBuyOrderIds: null };
@@ -225,6 +625,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: (params) => {
         settlements.push(params);
         return { handled: true, relatedBuyOrderIds: null };
@@ -279,6 +680,7 @@ describe('orderMonitor eventFlow', () => {
         recordCumulativeExecution: () => {
           cumulativeExecutionCount += 1;
         },
+        prepareProtectiveTerminalExecution: () => null,
         settleOrder: () => {
           settlementCount += 1;
           return { handled: true, relatedBuyOrderIds: null };
@@ -333,6 +735,7 @@ describe('orderMonitor eventFlow', () => {
           runtime,
           orderRecorder: createOrderRecorderDouble(),
           recordCumulativeExecution: () => {},
+          prepareProtectiveTerminalExecution: () => null,
           settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
           cacheBootstrappingEvent: () => {},
           triggerRoute: () => {},
@@ -374,6 +777,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -410,6 +814,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -451,6 +856,7 @@ describe('orderMonitor eventFlow', () => {
         runtime,
         orderRecorder: createOrderRecorderDouble(),
         recordCumulativeExecution: () => {},
+        prepareProtectiveTerminalExecution: () => null,
         settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
         cacheBootstrappingEvent: () => {},
         triggerRoute: () => {},
@@ -487,6 +893,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -527,6 +934,7 @@ describe('orderMonitor eventFlow', () => {
         },
       }),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -569,6 +977,7 @@ describe('orderMonitor eventFlow', () => {
         },
       }),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -624,6 +1033,7 @@ describe('orderMonitor eventFlow', () => {
         },
       }),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -670,6 +1080,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},
@@ -717,6 +1128,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => {
         settlementCalls += 1;
         return { handled: false, relatedBuyOrderIds: null };
@@ -759,6 +1171,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: (symbol: string, kind: string) => {
@@ -799,6 +1212,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: (symbol: string, kind: string) => {
@@ -852,6 +1266,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: (params) => {
         settlementPayloads.push({
           orderId: params.orderId,
@@ -930,6 +1345,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: (params) => {
         runtime.trackedOrders.delete(params.orderId);
         runtime.trackedOrderLifecycles.set(params.orderId, 'CLOSED');
@@ -976,6 +1392,7 @@ describe('orderMonitor eventFlow', () => {
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
       cacheBootstrappingEvent: () => {},
       triggerRoute: (symbol: string, kind: string) => {
@@ -993,5 +1410,127 @@ describe('orderMonitor eventFlow', () => {
     );
 
     expect(routeWakeups).toEqual([]);
+  });
+
+  it.each([OrderStatus.PendingCancel, OrderStatus.WaitToCancel] as const)(
+    '已有部分成交的保护性 SELL 收到 %s WS 零值原始事实时拒绝推进',
+    (status) => {
+      const runtime = createRuntimeStore();
+      const trackedOrder = createTrackedOrder({
+        orderId: `ORDER-PROTECTIVE-${String(status)}-RAW-ZERO`,
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        status: OrderStatus.PartialFilled,
+        isProtectiveLiquidation: true,
+      });
+      trackedOrder.executedQuantity = 40;
+      trackedOrder.executedPrice = 1.02;
+      trackedOrder.lastExecutedTimeMs = 200;
+      trackedOrder.lastOrderUpdateAtMs = 200;
+      runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+      const partialFills: number[] = [];
+      let durableProgressCalls = 0;
+      let settlementCalls = 0;
+      const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
+      const eventFlow = createEventFlow({
+        runtime,
+        orderRecorder: createOrderRecorderDouble({
+          markSellPartialFilled: (_orderId, filledQuantity) => {
+            partialFills.push(filledQuantity);
+            return null;
+          },
+        }),
+        recordCumulativeExecution: () => {
+          durableProgressCalls += 1;
+        },
+        prepareProtectiveTerminalExecution: () => null,
+        settleOrder: () => {
+          settlementCalls += 1;
+          return { handled: true, relatedBuyOrderIds: null };
+        },
+        cacheBootstrappingEvent: () => {},
+        triggerRoute: (symbol, kind) => {
+          routeWakeups.push({ symbol, kind });
+        },
+      });
+
+      expect(() => {
+        eventFlow.handleOrderChangedWhenActive(
+          createPushOrderChanged({
+            orderId: trackedOrder.orderId,
+            symbol: trackedOrder.symbol,
+            side: trackedOrder.side,
+            status,
+            executedQuantity: 0,
+            executedPrice: 0,
+            updatedAtMs: 300,
+          }),
+        );
+      }).toThrow(/保护性 SELL/);
+
+      expect(trackedOrder).toMatchObject({
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 1.02,
+        lastExecutedTimeMs: 200,
+        lastOrderUpdateAtMs: 200,
+      });
+      expect(partialFills).toEqual([]);
+      expect(durableProgressCalls).toBe(0);
+      expect(settlementCalls).toBe(0);
+      expect(routeWakeups).toEqual([]);
+    },
+  );
+
+  it('保护性 SELL 原始累计成交推进但 broker revision 倒退时拒绝 WS 终态', () => {
+    const runtime = createRuntimeStore();
+    const trackedOrder = createTrackedOrder({
+      orderId: 'ORDER-PROTECTIVE-OLDER-REVISION-WS',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      status: OrderStatus.PartialFilled,
+      isProtectiveLiquidation: true,
+    });
+    trackedOrder.executedQuantity = 40;
+    trackedOrder.executedPrice = 1.02;
+    trackedOrder.lastExecutedTimeMs = 190;
+    trackedOrder.lastOrderUpdateAtMs = 200;
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    let settlementCalls = 0;
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      prepareProtectiveTerminalExecution: () => null,
+      settleOrder: () => {
+        settlementCalls += 1;
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    expect(() => {
+      eventFlow.handleOrderChangedWhenActive(
+        createPushOrderChanged({
+          orderId: trackedOrder.orderId,
+          symbol: trackedOrder.symbol,
+          side: trackedOrder.side,
+          status: OrderStatus.Canceled,
+          executedQuantity: 80,
+          executedPrice: 1.01,
+          updatedAtMs: 100,
+        }),
+      );
+    }).toThrow(/revision/);
+
+    expect(settlementCalls).toBe(0);
+    expect(trackedOrder).toMatchObject({
+      status: OrderStatus.PartialFilled,
+      executedQuantity: 40,
+      executedPrice: 1.02,
+      lastExecutedTimeMs: 190,
+      lastOrderUpdateAtMs: 200,
+    });
   });
 });

@@ -9,8 +9,8 @@
  * 2. 初始化订单监控订阅（进入 BOOTSTRAPPING）
  * 3. 刷新账户和持仓数据
  * 4. 获取全量订单并解析席位绑定（prepareSeatsForRuntime）
- * 5. 从交易日志水合冷却状态，并基于订单/持仓恢复保护性清仓边界（可选）
- * 6. 基于保护性清仓边界回算日内亏损追踪
+ * 5. 收集相关交易标的，并全量重算日内亏损以预校验所有相关成交订单
+ * 6. 从交易日志水合冷却状态，并基于订单/持仓恢复保护性清仓边界（可选）
  * 7. 重置行情订阅（可选）
  * 8. 收集并订阅所有交易标的的行情和 K 线
  * 9. 返回全量订单和行情快照，供后续重建使用
@@ -41,7 +41,11 @@ import type {
   LoadTradingDayRuntimeSnapshotResult,
 } from './types.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
-import type { ProtectiveLiquidationExecutionProgressRecordV1 } from '../../services/mixedTradeLogRepository/types.js';
+import type { RawOrderFromAPI } from '../../types/services.js';
+import type {
+  ProtectiveLiquidationCompletionRecordV1,
+  ProtectiveLiquidationExecutionProgressRecordV1,
+} from '../../services/mixedTradeLogRepository/types.js';
 
 /** OPEN 必须先于 TERMINAL 恢复，终态才能覆盖同 identity 的开放态观察。 */
 function compareFactStage(left: 'OPEN' | 'TERMINAL', right: 'OPEN' | 'TERMINAL'): number {
@@ -79,24 +83,84 @@ function compareExecutionProgressRecency(
   );
 }
 
-function restoreCompletedBoundary(params: {
-  readonly protectiveLiquidationEpisodeTracker: LoadTradingDayRuntimeSnapshotDeps['protectiveLiquidationEpisodeTracker'];
-  readonly restoredBoundaryByDirection: Map<ProtectiveLiquidationDirection, number>;
-  readonly direction: ProtectiveLiquidationDirection;
-  readonly boundaryExecutedTimeMs: number;
-}): void {
-  const {
-    protectiveLiquidationEpisodeTracker,
-    restoredBoundaryByDirection,
-    direction,
-    boundaryExecutedTimeMs,
-  } = params;
+/** 在任何恢复副作用前，拒绝不属于当前唯一 monitor 的 completion 事实。 */
+function assertCompletionRecordsMatchExpectedMonitor(
+  completionRecords: ReadonlyArray<ProtectiveLiquidationCompletionRecordV1>,
+  expectedMonitorSymbol: string,
+): void {
+  for (const record of completionRecords) {
+    if (record.monitorSymbol !== expectedMonitorSymbol) {
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] completion monitorSymbol 不匹配唯一配置: ` +
+          `${record.monitorSymbol} !== ${expectedMonitorSymbol}`,
+      );
+    }
+  }
+}
 
-  protectiveLiquidationEpisodeTracker.restoreCompletedBoundary({
-    direction,
-    boundaryExecutedTimeMs,
-  });
-  restoredBoundaryByDirection.set(direction, boundaryExecutedTimeMs);
+/** 按 orderId 建立原始保护性 SELL 事实索引，供 progress 恢复前做来源校验。 */
+function collectRawProtectiveSellOrdersById(
+  allOrders: ReadonlyArray<RawOrderFromAPI>,
+): ReadonlyMap<string, RawOrderFromAPI> {
+  const rawProtectiveSellOrdersById = new Map<string, RawOrderFromAPI>();
+  for (const order of allOrders) {
+    if (order.side !== OrderSide.Sell || !hasProtectiveLiquidationRemark(order.remark)) {
+      continue;
+    }
+
+    rawProtectiveSellOrdersById.set(order.orderId, order);
+  }
+
+  return rawProtectiveSellOrdersById;
+}
+
+/**
+ * 将 progress 绑定到当前 API 快照中的真实保护性 SELL，避免日志中的伪造或错归属事实污染恢复状态。
+ */
+function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
+  progressRecords: ReadonlyArray<ProtectiveLiquidationExecutionProgressRecordV1>,
+  rawProtectiveSellOrdersById: ReadonlyMap<string, RawOrderFromAPI>,
+  monitor: LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitor'],
+  expectedMonitorSymbol: string,
+): void {
+  for (const progress of progressRecords) {
+    if (progress.monitorSymbol !== expectedMonitorSymbol) {
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] progress monitorSymbol 不匹配唯一配置: ` +
+          `${progress.monitorSymbol} !== ${expectedMonitorSymbol}`,
+      );
+    }
+
+    const rawOrder = rawProtectiveSellOrdersById.get(progress.orderId);
+    if (rawOrder?.side !== OrderSide.Sell || !hasProtectiveLiquidationRemark(rawOrder.remark)) {
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] progress 无法锚定到保护性清仓 SELL 原始订单: ` +
+          progress.orderId,
+      );
+    }
+
+    const ownership = resolveOrderOwnership(rawOrder, monitor);
+    if (!ownership) {
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] progress 原始订单无法归属到唯一监控标的: ` +
+          progress.orderId,
+      );
+    }
+
+    if (ownership.monitorSymbol !== expectedMonitorSymbol) {
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] progress 原始订单 monitorSymbol 不匹配唯一配置: ` +
+          `${ownership.monitorSymbol} !== ${expectedMonitorSymbol}`,
+      );
+    }
+
+    if (progress.direction !== ownership.direction || progress.symbol !== rawOrder.symbol) {
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] progress 与保护性清仓原始订单归属不一致: ` +
+          progress.orderId,
+      );
+    }
+  }
 }
 
 /**
@@ -125,7 +189,7 @@ export function createLoadTradingDayRuntimeSnapshot(
 
   /**
    * 加载交易日完整运行时快照：验证交易日 → 刷新账户持仓 → 获取全量订单
-   * → 解析席位 → 水合冷却状态并恢复保护性清仓边界 → 回算日内亏损追踪
+   * → 解析席位 → 收集相关标的并全量重算日内亏损 → 水合冷却状态并恢复保护性清仓边界
    * → 重置行情订阅 → 订阅标的行情和 K 线 → 返回快照。
    */
   return async function loadTradingDayRuntimeSnapshot(
@@ -190,11 +254,29 @@ export function createLoadTradingDayRuntimeSnapshot(
       warrantListCacheConfig,
     });
     seatActivationDispatcher.dispatchCurrentActivatingSeats();
-    protectiveLiquidationEpisodeTracker.resetAll();
     const currentDayKey = getHKDateKey(now);
     if (hydrateCooldownFromTradeLog && currentDayKey === null) {
       throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
     }
+
+    const orderHoldSymbols = trader.getOrderHoldSymbols();
+    const allTradingSymbols = collectRuntimeQuoteSymbols(
+      tradingConfig.monitor,
+      symbolRegistry,
+      lastState.cachedPositions,
+      orderHoldSymbols,
+    );
+    const relatedTradingSymbols = new Set(allTradingSymbols);
+    relatedTradingSymbols.delete(tradingConfig.monitor.monitorSymbol);
+    dailyLossTracker.recalculateFromAllOrders(
+      allOrders,
+      tradingConfig.monitor,
+      now,
+      new Map(),
+      relatedTradingSymbols,
+    );
+
+    protectiveLiquidationEpisodeTracker.resetAll();
 
     const completionRecords =
       hydrateCooldownFromTradeLog && currentDayKey !== null
@@ -204,6 +286,16 @@ export function createLoadTradingDayRuntimeSnapshot(
       hydrateCooldownFromTradeLog && currentDayKey !== null
         ? [...mixedTradeLogRepository.loadExecutionProgressRecords(currentDayKey)]
         : [];
+    assertCompletionRecordsMatchExpectedMonitor(completionRecords, expectedMonitorSymbol);
+    if (executionProgressRecords.length > 0) {
+      assertExecutionProgressRecordsHaveRawProtectiveProvenance(
+        executionProgressRecords,
+        collectRawProtectiveSellOrdersById(allOrders),
+        tradingConfig.monitor,
+        expectedMonitorSymbol,
+      );
+    }
+
     const completedBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
     for (const record of completionRecords) {
       const previous = completedBoundaryByDirection.get(record.direction);
@@ -264,41 +356,14 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
     }
 
-    const restoredBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
     for (const [direction, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
-      restoreCompletedBoundary({
-        protectiveLiquidationEpisodeTracker,
-        restoredBoundaryByDirection,
+      protectiveLiquidationEpisodeTracker.restoreCompletedBoundary({
         direction,
         boundaryExecutedTimeMs,
       });
     }
 
-    const orderHoldSymbols = trader.getOrderHoldSymbols();
-    const allTradingSymbols = collectRuntimeQuoteSymbols(
-      tradingConfig.monitor,
-      symbolRegistry,
-      lastState.cachedPositions,
-      orderHoldSymbols,
-    );
-    const relatedTradingSymbols = new Set(allTradingSymbols);
-    relatedTradingSymbols.delete(tradingConfig.monitor.monitorSymbol);
-    dailyLossTracker.recalculateFromAllOrders(
-      allOrders,
-      tradingConfig.monitor,
-      now,
-      new Map(),
-      relatedTradingSymbols,
-    );
-
     for (const progress of [...executionProgressRecords].sort(compareExecutionProgressFacts)) {
-      if (progress.monitorSymbol !== expectedMonitorSymbol) {
-        throw new Error(
-          `[loadTradingDayRuntimeSnapshot] progress monitorSymbol 不匹配唯一配置: ` +
-            `${progress.monitorSymbol} !== ${expectedMonitorSymbol}`,
-        );
-      }
-
       dailyLossTracker.restoreExecutionSnapshot({
         factStage: progress.factStage,
         direction: progress.direction,

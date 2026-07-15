@@ -14,9 +14,9 @@ import { ordinarySignalGuard } from '../../main/ordinarySignalGuard/index.js';
 import { formatSymbolDisplay, isSellAction } from '../../utils/display/index.js';
 import { isBuyAction } from '../../utils/helpers/index.js';
 import type { RegisterDelayedSignalHandlersParams } from '../types.js';
-import type { BuySignal, SellSignal, Signal } from '../../types/signal.js';
+import type { BuySignal, ExecutableSellSignal, Signal } from '../../types/signal.js';
 
-function toSellSignal(signal: Signal): SellSignal | null {
+function toSellSignal(signal: Signal): ExecutableSellSignal | null {
   if (!isSellAction(signal.action)) {
     return null;
   }
@@ -24,6 +24,10 @@ function toSellSignal(signal: Signal): SellSignal | null {
   const seatVersion = signal.seatVersion;
   if (typeof seatVersion !== 'number' || !Number.isFinite(seatVersion)) {
     return null;
+  }
+
+  if (signal.isProtectiveLiquidation === true) {
+    return { ...signal, action: signal.action, seatVersion, isProtectiveLiquidation: true };
   }
 
   return { ...signal, action: signal.action, seatVersion };
@@ -37,6 +41,10 @@ function toBuySignal(signal: Signal): BuySignal | null {
   const seatVersion = signal.seatVersion;
   if (typeof seatVersion !== 'number' || !Number.isFinite(seatVersion)) {
     return null;
+  }
+
+  if (signal.isProtectiveLiquidation === true) {
+    throw new Error('[延迟验证通过] BUY 不得携带保护性清仓语义');
   }
 
   return { ...signal, action: signal.action, seatVersion };

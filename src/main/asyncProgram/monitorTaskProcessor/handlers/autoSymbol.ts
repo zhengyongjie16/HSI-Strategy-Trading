@@ -32,26 +32,44 @@ function buildPeriodicBaseline(data: AutoSymbolTickTaskData): PeriodicSwitchRout
 function handoffPeriodicWakeup(params: {
   readonly context: MonitorContext;
   readonly data: AutoSymbolTickTaskData;
+  readonly canContinue: () => boolean;
   readonly periodicSwitchWakeupRuntime: Pick<
     PeriodicSwitchWakeupRuntime,
     'markWaitingEmpty' | 'clearWaitingEmpty' | 'replanRouteAfterTask'
   >;
-}): void {
+}): boolean {
+  if (!params.canContinue()) {
+    return false;
+  }
+
   const baseline = buildPeriodicBaseline(params.data);
   const pendingState = params.context.autoSymbolManager.getPeriodicSwitchPendingState(
     params.data.direction,
   );
   if (pendingState.pending) {
+    if (!params.canContinue()) {
+      return false;
+    }
+
     params.periodicSwitchWakeupRuntime.markWaitingEmpty(baseline);
-    return;
+    return true;
+  }
+
+  if (!params.canContinue()) {
+    return false;
   }
 
   params.periodicSwitchWakeupRuntime.clearWaitingEmpty(baseline);
+  if (!params.canContinue()) {
+    return false;
+  }
+
   params.periodicSwitchWakeupRuntime.replanRouteAfterTask({
     ...baseline,
     taskTimeMs: params.data.currentTimeMs,
     status: 'processed',
   });
+  return true;
 }
 
 /**
@@ -83,11 +101,20 @@ export function createAutoSymbolHandlers({
     readonly context: MonitorContext;
     readonly direction: 'LONG' | 'SHORT';
     readonly result: SwitchDriveResult | AdvancePendingSwitchResult;
+    readonly canContinue: () => boolean;
   }): void {
     const { result } = params;
 
+    if (!params.canContinue()) {
+      return;
+    }
+
     if ('kind' in result) {
       if (result.kind !== 'WAIT') {
+        return;
+      }
+
+      if (!params.canContinue()) {
         return;
       }
 
@@ -104,6 +131,10 @@ export function createAutoSymbolHandlers({
     }
 
     if (!result.stillPending) {
+      return;
+    }
+
+    if (!params.canContinue()) {
       return;
     }
 
@@ -136,27 +167,36 @@ export function createAutoSymbolHandlers({
       return 'skipped';
     }
 
-    const canTradeNow = getCanTradeNow();
-    if (!canTradeNow) {
+    if (!getCanTradeNow()) {
       return 'blocked';
     }
 
     const dueResult = await context.autoSymbolManager.evaluatePeriodicSwitchDue({
       direction: data.direction,
       currentTime: new Date(data.currentTimeMs),
-      canTradeNow,
+      canContinue: getCanTradeNow,
     });
+    if (!getCanTradeNow()) {
+      return 'blocked';
+    }
+
     handoffPendingWakeup({
       context,
       direction: data.direction,
       result: dueResult,
+      canContinue: getCanTradeNow,
     });
 
-    handoffPeriodicWakeup({
-      context,
-      data,
-      periodicSwitchWakeupRuntime,
-    });
+    if (
+      !handoffPeriodicWakeup({
+        context,
+        data,
+        canContinue: getCanTradeNow,
+        periodicSwitchWakeupRuntime,
+      })
+    ) {
+      return 'blocked';
+    }
 
     return 'processed';
   }

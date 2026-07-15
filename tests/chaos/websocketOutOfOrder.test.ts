@@ -16,6 +16,7 @@ import {
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
 
@@ -28,9 +29,7 @@ function createDeps(params?: {
   const tradeCtx = createTradeContextMock();
   const deps: OrderMonitorDeps = {
     ctx: tradeCtx as unknown as TradeContext,
-    rateLimiter: {
-      throttle: async () => {},
-    },
+    rateLimiter: createRateLimiterDouble(),
     cacheManager: {
       clearCache: () => {},
       getPendingOrders: async () => [],
@@ -68,7 +67,10 @@ function createDeps(params?: {
     },
     tradingConfig: createTradingConfig(),
     symbolRegistry: createSymbolRegistryDouble(),
-    isExecutionAllowed: () => true,
+    isContinuousTradingAllowed: () => true,
+    onFatalError: (error) => {
+      throw error;
+    },
   };
 
   return { deps, tradeCtx };

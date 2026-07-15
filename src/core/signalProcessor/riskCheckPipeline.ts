@@ -6,11 +6,12 @@
  * - 维护风险检查冷却与交易频率控制
  * - 轻检查通过后实时拉取账户与持仓
  */
+import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { logger } from '../../utils/logger/index.js';
 import { formatSymbolDisplayFromQuote } from '../utils.js';
 import { VERIFICATION } from '../../constants/index.js';
 import { getDoomsdayBuyCutoffWindowRangeLabel } from '../doomsdayProtection/utils.js';
-import { getSymbolName } from './utils.js';
+import { getSymbolName, isBuyPriceWithinLatestOrderLimit } from './utils.js';
 import type { Quote } from '../../types/quote.js';
 import type { BuySignal } from '../../types/signal.js';
 import type { LiquidationCooldownConfig, TradingConfig } from '../../types/config.js';
@@ -185,8 +186,9 @@ export const createRiskCheckPipeline = ({
        * 4. 买入价格限制
        * 5. 末日保护程序
        * 6. 牛熊证风险
-       * 7. Promise.all([trader.getAccountSnapshot(), trader.getStockPositions()])
-       * 8. 基础风险检查（使用第 7 步实时数据）
+       * 7. 信号报价的浮亏保护预筛（P1 最终执行报价门禁由 submitFlow 在 mutation permit 内执行）
+       * 8. Promise.all([trader.getAccountSnapshot(), trader.getStockPositions()])
+       * 9. 基础风险检查（使用第 8 步实时数据）
        */
       const tradeCheck = trader.canTradeNow(sig.action);
       if (!tradeCheck.canTrade) {
@@ -209,17 +211,21 @@ export const createRiskCheckPipeline = ({
       }
 
       const latestBuyPrice = orderRecorder.getLatestBuyOrderPrice(sigSymbol, isLongBuyAction);
-      if (latestBuyPrice !== null && currentPrice !== null) {
+      if (
+        currentPrice !== null &&
+        latestBuyPrice !== null &&
+        !isBuyPriceWithinLatestOrderLimit(currentPrice, latestBuyPrice)
+      ) {
         const currentPriceStr = currentPrice.toFixed(3);
         const latestBuyPriceStr = latestBuyPrice.toFixed(3);
-        if (currentPrice >= latestBuyPrice) {
-          const reason = `买入价格限制：当前价格 ${currentPriceStr} 高于或等于最新买入订单价格 ${latestBuyPriceStr}`;
-          logger.warn(`[买入价格限制] ${directionDesc} ${reason}，拒绝买入：${signalLabel}`);
-          continue;
-        }
+        const reason = `买入价格限制：当前价格 ${currentPriceStr} 高于或等于最新买入订单价格 ${latestBuyPriceStr}`;
+        logger.warn(`[买入价格限制] ${directionDesc} ${reason}，拒绝买入：${signalLabel}`);
+        continue;
+      }
 
+      if (latestBuyPrice !== null && currentPrice !== null) {
         logger.debug(
-          `[买入价格限制] ${directionDesc} 当前价格 ${currentPriceStr} 低于最新买入订单价格 ${latestBuyPriceStr}，允许买入：${signalLabel}`,
+          `[买入价格限制] ${directionDesc} 当前价格 ${currentPrice.toFixed(3)} 低于最新买入订单价格 ${latestBuyPrice.toFixed(3)}，允许买入：${signalLabel}`,
         );
       }
 
@@ -256,6 +262,18 @@ export const createRiskCheckPipeline = ({
         const reason = warrantRiskResult.reason ?? '牛熊证风险检查未通过';
         logger.warn(`[牛熊证风险拦截] 信号被牛熊证风险控制拦截：${signalLabel} - ${reason}`);
         continue;
+      }
+
+      if (isValidPositiveNumber(currentPrice)) {
+        const unrealizedLossCheck = riskChecker.checkUnrealizedLoss(
+          sig.symbol,
+          currentPrice,
+          isLongBuyAction,
+        );
+        if (unrealizedLossCheck.shouldLiquidate) {
+          logger.warn(`[浮亏风险拦截] 当前浮亏已触发保护性清仓阈值，拒绝买入：${signalLabel}`);
+          continue;
+        }
       }
 
       const [realtimeAccount, realtimePositions] = await Promise.all([

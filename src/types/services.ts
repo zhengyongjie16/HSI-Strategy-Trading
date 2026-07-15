@@ -14,12 +14,24 @@ import type {
   WarrantStatus,
   WarrantType,
 } from 'longbridge';
-import type { ExecutableSignal, Signal, SignalType } from './signal.js';
+import type {
+  BuySignal,
+  DoomsdayClearanceCommand,
+  ExecutableSignal,
+  SignalType,
+} from './signal.js';
 import type { Quote, IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { MonitorConfig } from './config.js';
 import type { TradingCalendarSnapshot } from './tradingCalendar.js';
-import type { CancelOrderOutcome, ExecuteSignalsResult, OrderClosedReason } from './trader.js';
+import type {
+  DoomsdayCancelOrderOutcome,
+  DoomsdayCancelOrderRequest,
+  CancelOrderOutcome,
+  DoomsdayClearanceExecutionResult,
+  ExecuteSignalsResult,
+  OrderClosedReason,
+} from './trader.js';
 import type { CandleData } from './data.js';
 import type { ExternalApiRetryConfig } from '../utils/apiFailure/types.js';
 import type { DecimalLike } from '../utils/helpers/types.js';
@@ -400,14 +412,31 @@ export type TradeCheckResult = {
 };
 
 /**
+ * 交易 mutation permit。
+ * 类型用途：只在 RateLimiter.withTradeMutation 回调内使用，确保最终报价、同步授权与真实 SDK mutation 保持同一 FIFO 临界区。
+ * 数据来源：由 RateLimiter 在取得交易 mutation 序列席位后创建。
+ * 使用范围：订单提交、撤单、改单与超时市价转单的最终 SDK 调用边界。
+ */
+export interface TradeMutationPermit {
+  /** 在当前 permit 内执行唯一一次真实 SDK mutation；调用前才消耗 Trade API 配额。 */
+  invoke: <T>(operation: () => Promise<T>) => Promise<T>;
+}
+
+/**
  * API 频率限制器接口。
- * 类型用途：依赖注入用接口，在交易/行情等 API 调用前等待限流通过。
+ * 类型用途：依赖注入用接口，读取使用 throttle，订单 mutation 必须使用 callback permit。
  * 数据来源：如适用；实现由调用方提供。
  * 使用范围：Trader、行情客户端等限流场景；见调用方。
  */
 export interface RateLimiter {
-  /** 等待限流通过 */
+  /** 等待读取 API 的限流通过，并立即记入该次 API 配额。 */
   throttle: () => Promise<void>;
+
+  /**
+   * 在全局 FIFO trade mutation 序列内执行回调。
+   * 回调可先等待最终行情；仅 permit.invoke() 会在实际 SDK 调用前消耗配额，且每个 permit 只能 invoke 一次。
+   */
+  withTradeMutation: <T>(callback: (permit: TradeMutationPermit) => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -493,6 +522,12 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
 
   /** 从 API 获取全量订单 */
   fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
+
+  /**
+   * 预检同一次全量订单快照中指定标的的重建事实。
+   * 不写入 API 缓存或本地订单记录；与实际刷新共享同一筛选和分类口径。
+   */
+  validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => void;
 
   /** 使用全量订单刷新指定标的记录（做多标的） */
   refreshOrdersFromAllOrdersForLong: (
@@ -662,8 +697,14 @@ export interface Trader {
 
   // ========== 订单监控 ==========
 
-  /** 撤销订单 */
+  /** 常规撤单；该路径固定使用订单事实授权，不能产生未开始结果。 */
   cancelOrder: (orderId: string) => Promise<CancelOrderOutcome>;
+
+  /** 末日保护撤单；必须显式携带 permit 内实时门禁。 */
+  cancelDoomsdayOrder: (
+    orderId: string,
+    request: DoomsdayCancelOrderRequest,
+  ) => Promise<DoomsdayCancelOrderOutcome>;
 
   /** 启动订单监控 runtime */
   startOrderMonitorRuntime: () => void;
@@ -696,6 +737,11 @@ export interface Trader {
 
   /** 执行交易信号；返回真正新提交或 broker 已确认改单的唯一订单 ID 列表 */
   executeSignals: (signals: ReadonlyArray<ExecutableSignal>) => Promise<ExecuteSignalsResult>;
+
+  /** 执行末日清仓信号；该专用入口在最终订单命令中标记末日清仓目的。 */
+  executeDoomsdayClearanceSignals: (
+    commands: ReadonlyArray<DoomsdayClearanceCommand>,
+  ) => Promise<DoomsdayClearanceExecutionResult>;
 }
 
 /**
@@ -754,7 +800,7 @@ export type WarrantDistanceLiquidationResult = {
 
 /**
  * 风险检查结果。
- * 类型用途：订单前/牛熊证风险检查的返回值，表示是否允许交易、原因及牛熊证风险信息。
+ * 类型用途：买入订单前/牛熊证风险检查的返回值，表示是否允许交易、原因及牛熊证风险信息。
  * 数据来源：RiskChecker.checkBeforeOrder、checkWarrantRisk 等。
  * 使用范围：信号处理、买卖流程、风控链路；全项目可引用。
  */
@@ -939,11 +985,11 @@ export interface RiskChecker {
     symbolName?: string | null,
   ) => Promise<WarrantRefreshResult>;
 
-  /** 订单前风险检查（持仓限制） */
+  /** 买入订单前风险检查（现金与持仓限制） */
   checkBeforeOrder: (params: {
     readonly account: AccountSnapshot | null;
     readonly positions: ReadonlyArray<Position> | null;
-    readonly signal: Signal | null;
+    readonly signal: BuySignal;
     readonly orderNotional: number;
   }) => RiskCheckResult;
 

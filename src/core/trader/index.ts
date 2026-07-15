@@ -19,8 +19,14 @@
  */
 import { TradeContext } from 'longbridge';
 import { createOrderRecorder } from '../orderRecorder/index.js';
-import type { ExecutableSignal } from '../../types/signal.js';
-import type { ExecuteSignalsResult } from '../../types/trader.js';
+import type { DoomsdayClearanceCommand, ExecutableSignal } from '../../types/signal.js';
+import type {
+  CancelOrderOutcome,
+  DoomsdayCancelOrderOutcome,
+  DoomsdayCancelOrderRequest,
+  DoomsdayClearanceExecutionResult,
+  ExecuteSignalsResult,
+} from '../../types/trader.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { Trader, PendingOrder, RawOrderFromAPI } from '../../types/services.js';
 import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
@@ -39,7 +45,7 @@ import { createOrderHoldRegistry } from './orderHoldRegistry.js';
  * 按固定顺序创建 rateLimiter、accountService、orderCacheManager、orderRecorder、orderMonitor、orderExecutor 等子模块并组装为 Trader 接口。
  * createTrader 仅负责依赖装配，不执行运行期副作用（如 WebSocket 初始化、订单恢复），由上层显式调用。
  * 交易能力由多子模块协同完成，门面统一初始化顺序与依赖注入，保证 orderMonitor 依赖 orderRecorder、orderExecutor 依赖 orderMonitor 等约束。
- * @param deps 依赖（config、tradingConfig、symbolRegistry、dailyLossTracker、postTradeConsistencyRuntime、isExecutionAllowed 等）
+ * @param deps 依赖（config、tradingConfig、unrealizedLossBuyGate、symbolRegistry、dailyLossTracker、postTradeConsistencyRuntime、isExecutionAllowed 等）
  * @returns 实现 Trader 接口的实例（含 canTradeNow、executeSignals、getPendingOrders 等）
  */
 export function createTrader(deps: TraderDeps): Promise<Trader> {
@@ -48,12 +54,14 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       config,
       tradingConfig,
       marketDataClient,
+      unrealizedLossBuyGate,
       symbolRegistry,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
       persistProtectiveLiquidationExecutionProgress,
       postTradeConsistencyRuntime,
       isExecutionAllowed,
+      isContinuousTradingAllowed,
       now,
       readCurrentTradingDayInfo,
       onFatalError,
@@ -83,8 +91,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
     const orderMonitor = createOrderMonitor({
       ctx,
       rateLimiter,
-      cacheManager,
       marketDataClient,
+      cacheManager,
       orderRecorder,
       dailyLossTracker,
       orderHoldRegistry,
@@ -93,23 +101,37 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       postTradeConsistencyRuntime,
       tradingConfig,
       symbolRegistry,
-      isExecutionAllowed,
-      ...(onFatalError ? { onFatalError } : {}),
+      isContinuousTradingAllowed,
+      onFatalError,
     });
 
     // ========== 6. 创建 orderExecutor ==========
     const orderExecutor = createOrderExecutor({
       ctx,
       rateLimiter,
+      marketDataClient,
       cacheManager,
       orderMonitor,
       orderRecorder,
+      unrealizedLossBuyGate,
       tradingConfig,
       symbolRegistry,
       isExecutionAllowed,
+      isContinuousTradingAllowed,
       now,
       readCurrentTradingDayInfo,
     });
+
+    function cancelOrder(orderId: string): Promise<CancelOrderOutcome> {
+      return orderMonitor.cancelOrder(orderId, { kind: 'ORDER_FACT' });
+    }
+
+    function cancelDoomsdayOrder(
+      orderId: string,
+      request: DoomsdayCancelOrderRequest,
+    ): Promise<DoomsdayCancelOrderOutcome> {
+      return orderMonitor.cancelDoomsdayOrder(orderId, request);
+    }
 
     // 创建 Trader 实例
     const trader: Trader = {
@@ -153,9 +175,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
       // ==================== 订单监控相关方法 ====================
 
-      cancelOrder(orderId: string) {
-        return orderMonitor.cancelOrder(orderId, { kind: 'ORDER_FACT' });
-      },
+      cancelOrder,
+      cancelDoomsdayOrder,
 
       startOrderMonitorRuntime(): void {
         orderMonitor.startRuntime();
@@ -203,6 +224,12 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
       executeSignals(signals: ReadonlyArray<ExecutableSignal>): Promise<ExecuteSignalsResult> {
         return orderExecutor.executeSignals(signals);
+      },
+
+      executeDoomsdayClearanceSignals(
+        commands: ReadonlyArray<DoomsdayClearanceCommand>,
+      ): Promise<DoomsdayClearanceExecutionResult> {
+        return orderExecutor.executeDoomsdayClearanceSignals(commands);
       },
     };
 

@@ -62,7 +62,8 @@ type MinimalOrder = {
   status: OrderStatus;
   stockName: string;
   quantity: Decimal;
-  executedQuantity: Decimal;
+  // 外部 SDK 可能在终态详情中缺失累计成交数量；mock 必须保留该原始事实。
+  executedQuantity: Decimal | null;
   price: Decimal;
   executedPrice: Decimal;
   submittedAt: Date;
@@ -110,7 +111,8 @@ function cloneOrder(order: MinimalOrder): MinimalOrder {
   return {
     ...order,
     quantity: new Decimal(order.quantity.toString()),
-    executedQuantity: new Decimal(order.executedQuantity.toString()),
+    executedQuantity:
+      order.executedQuantity === null ? null : new Decimal(order.executedQuantity.toString()),
     price: new Decimal(order.price.toString()),
     executedPrice: new Decimal(order.executedPrice.toString()),
     submittedAt: new Date(order.submittedAt),

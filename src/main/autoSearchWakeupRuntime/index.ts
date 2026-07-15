@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 接管运行期 EMPTY seat 的自动寻标推进
- * - 消费 seat/gate/timer 显式唤醒源
+ * - 消费 seat/自动寻标授权/timer 显式唤醒源
  * - 每次唤醒重新读取权威状态，不维护 seat 事实副本
  */
 import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../constants/index.js';
@@ -16,13 +16,14 @@ import {
   resolveHKDayStartUtcMs,
   isWithinMorningOpenWindow,
 } from '../../utils/time/index.js';
-import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
+import type { AutoSearchAuthorizationChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
   AutoSearchRouteKey,
   AutoSearchWakeupRuntime,
   AutoSearchWakeupRuntimeDeps,
 } from './types.js';
 import { isSeatFrozenToday } from '../../services/autoSymbolManager/utils.js';
+import { ordinarySignalGuard } from '../ordinarySignalGuard/index.js';
 
 const AUTO_SEARCH_DIRECTIONS: ReadonlyArray<'LONG' | 'SHORT'> = ['LONG', 'SHORT'];
 
@@ -57,7 +58,7 @@ export function createAutoSearchWakeupRuntime(
 ): AutoSearchWakeupRuntime {
   let running = false;
   let unsubscribeSeatStateChanged: (() => void) | null = null;
-  let unsubscribeGateStateChanged: (() => void) | null = null;
+  let unsubscribeAutoSearchAuthorizationChanged: (() => void) | null = null;
   const timers = new Map<AutoSearchRouteKey, BoundedOneShotTimerController>();
   const activeRouteKeys = new Set<AutoSearchRouteKey>();
   const activePromises = new Set<Promise<void>>();
@@ -124,6 +125,61 @@ export function createAutoSearchWakeupRuntime(
     });
   }
 
+  /**
+   * 判断自动寻标是否仍被时间控制平面授权推进。
+   *
+   * 自动寻标不能只依赖启动时的授权快照；生命周期、连续交易时段与末日清仓接管都必须在
+   * 每次异步边界后按当前事实重读。开盘保护不属于该授权，它只阻断普通信号生成。
+   */
+  function isSearchExecutionAllowed(): boolean {
+    if (!running) {
+      return false;
+    }
+
+    return ordinarySignalGuard({
+      lastState: deps.lastState,
+      now: deps.now(),
+      doomsdayProtectionEnabled: deps.doomsdayProtectionEnabled,
+    });
+  }
+
+  /**
+   * 取消本 runtime 仍拥有的 SEARCHING owner。
+   *
+   * 只允许 direction + seatVersion 匹配的 active route 取消当前席位；保留已经发生的
+   * 搜索时间与失败计数，并通过版本递增使尚未返回的外部结果永久失效。
+   */
+  function cancelRuntimeOwnedSearchingSeat(direction: 'LONG' | 'SHORT'): void {
+    const seatVersion = deps.symbolRegistry.getSeatVersion(direction);
+    const routeKey = buildRouteKey({ direction, seatVersion });
+    if (!activeRouteKeys.has(routeKey)) {
+      return;
+    }
+
+    const seatState = deps.symbolRegistry.getSeatState(direction);
+    if (seatState.status !== 'SEARCHING') {
+      return;
+    }
+
+    deps.symbolRegistry.updateSeatStateWithVersionBump(direction, {
+      symbol: null,
+      status: 'EMPTY',
+      lastSwitchAt: seatState.lastSwitchAt,
+      lastSearchAt: seatState.lastSearchAt,
+      lastSeatActivatedAt: seatState.lastSeatActivatedAt,
+      callPrice: null,
+      searchFailCountToday: seatState.searchFailCountToday,
+      frozenTradingDayKey: seatState.frozenTradingDayKey,
+    });
+  }
+
+  /** 在自动寻标授权关闭或 runtime 停止时同步取消两条可能的自动寻标 owner。 */
+  function cancelRuntimeOwnedSearchingSeats(): void {
+    for (const direction of AUTO_SEARCH_DIRECTIONS) {
+      cancelRuntimeOwnedSearchingSeat(direction);
+    }
+  }
+
   function triggerSeat(direction: 'LONG' | 'SHORT', expectedSeatVersion?: number): void {
     if (!running) {
       return;
@@ -145,9 +201,7 @@ export function createAutoSearchWakeupRuntime(
   /** 基于一次真实寻标完成后的权威席位事实，交接唯一 cooldown owner。 */
   function handoffAuthoritativeCooldownOwner(direction: 'LONG' | 'SHORT'): void {
     if (
-      !running ||
-      !deps.lastState.isTradingEnabled ||
-      deps.lastState.canTrade !== true ||
+      !isSearchExecutionAllowed() ||
       !deps.monitorContext.config.autoSearchConfig.autoSearchEnabled
     ) {
       return;
@@ -187,7 +241,7 @@ export function createAutoSearchWakeupRuntime(
   ): Promise<void> {
     let shouldHandoffCooldownOwner = false;
     try {
-      if (!deps.lastState.isTradingEnabled || deps.lastState.canTrade !== true) {
+      if (!isSearchExecutionAllowed()) {
         return;
       }
 
@@ -239,10 +293,15 @@ export function createAutoSearchWakeupRuntime(
       await monitorContext.autoSymbolManager.maybeSearchOnEvent({
         direction,
         currentTime: now,
-        canTradeNow: deps.lastState.canTrade,
+        canContinue: isSearchExecutionAllowed,
       });
       shouldHandoffCooldownOwner = true;
     } finally {
+      // finder 返回后授权可能已失效，必须在释放 route owner 前同步取消仍归属本 runtime 的 SEARCHING seat。
+      if (!isSearchExecutionAllowed()) {
+        cancelRuntimeOwnedSearchingSeat(direction);
+      }
+
       activeRouteKeys.delete(activeRouteKey);
       if (shouldHandoffCooldownOwner) {
         handoffAuthoritativeCooldownOwner(direction);
@@ -259,6 +318,10 @@ export function createAutoSearchWakeupRuntime(
       return;
     }
 
+    if (!isSearchExecutionAllowed()) {
+      return;
+    }
+
     const routeKey = buildRouteKey({
       direction: event.direction,
       seatVersion: event.nextVersion,
@@ -270,8 +333,13 @@ export function createAutoSearchWakeupRuntime(
     triggerSeat(event.direction);
   }
 
-  function handleGateStateChanged(event: TradingGateStateChangedEvent): void {
-    if (!event.nextCanTrade || event.previousCanTrade) {
+  function handleAutoSearchAuthorizationChanged(event: AutoSearchAuthorizationChangedEvent): void {
+    if (!event.nextAuthorized) {
+      cancelRuntimeOwnedSearchingSeats();
+      return;
+    }
+
+    if (event.previousAuthorized === true || !isSearchExecutionAllowed()) {
       return;
     }
 
@@ -288,6 +356,10 @@ export function createAutoSearchWakeupRuntime(
   }
 
   function seedEmptySeats(): void {
+    if (!isSearchExecutionAllowed()) {
+      return;
+    }
+
     for (const direction of AUTO_SEARCH_DIRECTIONS) {
       if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
         continue;
@@ -307,17 +379,20 @@ export function createAutoSearchWakeupRuntime(
 
     running = true;
     unsubscribeSeatStateChanged = deps.symbolRegistry.onSeatStateChanged(handleSeatStateChanged);
-    unsubscribeGateStateChanged =
-      deps.tradingGateEventRuntime.onGateStateChanged(handleGateStateChanged);
+    unsubscribeAutoSearchAuthorizationChanged =
+      deps.tradingGateEventRuntime.onAutoSearchAuthorizationChanged(
+        handleAutoSearchAuthorizationChanged,
+      );
     seedEmptySeats();
   }
 
   async function stopAndDrain(): Promise<void> {
     running = false;
+    cancelRuntimeOwnedSearchingSeats();
     unsubscribeSeatStateChanged?.();
     unsubscribeSeatStateChanged = null;
-    unsubscribeGateStateChanged?.();
-    unsubscribeGateStateChanged = null;
+    unsubscribeAutoSearchAuthorizationChanged?.();
+    unsubscribeAutoSearchAuthorizationChanged = null;
     for (const routeKey of timers.keys()) {
       clearRouteTimer(routeKey);
     }

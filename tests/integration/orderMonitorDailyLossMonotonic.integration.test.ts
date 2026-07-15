@@ -4,7 +4,7 @@
  * 覆盖同一订单更新时间内累计成交继续增长时，事件合并、亏损投影、保护 episode 与刷新副作用必须共同推进。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType, TopicType, type TradeContext } from 'longbridge';
+import { OrderSide, OrderStatus, OrderType, TopicType } from 'longbridge';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createOrder, createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
@@ -27,7 +27,9 @@ import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
   createMarketDataClientDouble,
   createOrderRecorderDouble,
+  createRateLimiterDouble,
   createSymbolRegistryDouble,
+  createTradeContextDouble,
 } from '../helpers/testDoubles.js';
 
 async function emitOrderChanged(
@@ -74,9 +76,9 @@ describe('order monitor cumulative execution integration', () => {
   it('settles a stale SELL state-check terminal without rolling back tracked partial execution', async () => {
     const revisionMs = Date.parse('2026-07-11T02:00:00.000Z');
     const tradeCtx = createTradeContextMock();
-    const rateLimiter = { throttle: async (): Promise<void> => {} };
+    const rateLimiter = createRateLimiterDouble();
     const orderRecorder = createOrderRecorder({
-      ctx: tradeCtx as unknown as TradeContext,
+      ctx: createTradeContextDouble(tradeCtx),
       rateLimiter,
     });
     orderRecorder.recordLocalBuy('BULL.HK', 0.8, 60, true, revisionMs - 2_000);
@@ -132,7 +134,7 @@ describe('order monitor cumulative execution integration', () => {
     const orderHoldRegistry = createRealOrderHoldRegistry();
     const stateChanges: string[] = [];
     const monitor = createOrderMonitor({
-      ctx: tradeCtx as unknown as TradeContext,
+      ctx: createTradeContextDouble(tradeCtx),
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
@@ -149,7 +151,10 @@ describe('order monitor cumulative execution integration', () => {
       postTradeConsistencyRuntime: {
         recordSettlementRefreshNeed: () => {},
       },
-      isExecutionAllowed: () => true,
+      isContinuousTradingAllowed: () => true,
+      onFatalError: (error) => {
+        throw error;
+      },
     });
     monitor.onOrderStateChanged((event) => {
       stateChanges.push(`${event.orderId}:${event.status}`);
@@ -278,6 +283,123 @@ describe('order monitor cumulative execution integration', () => {
     expect(refreshCount).toBe(0);
   });
 
+  it('records one TERMINAL DailyLoss fact and one additional refresh when a partial protective WS closes at the same quantity', () => {
+    const revisionMs = Date.parse('2026-07-11T02:00:00.000Z');
+    const runtime = createRuntime();
+    const dailyLossTracker = createDailyLossTracker({
+      ...createDailyLossOrderAnalysisDeps(),
+      resolveOrderOwnership: () => null,
+      toHongKongTimeIso,
+    });
+    dailyLossTracker.resetAll(new Date('2026-07-11T01:00:00.000Z'));
+    const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
+    const persistedProgress: Array<{
+      readonly factStage: 'OPEN' | 'TERMINAL';
+      readonly cumulativeQuantity: string;
+      readonly cumulativeAmount: string;
+    }> = [];
+    let refreshCount = 0;
+    const settlementFlow = createSettlementFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      dailyLossTracker,
+      protectiveLiquidationEpisodeTracker,
+      persistProtectiveLiquidationExecutionProgress: (progress) => {
+        persistedProgress.push({
+          factStage: progress.factStage,
+          cumulativeQuantity: progress.cumulativeQuantity,
+          cumulativeAmount: progress.cumulativeAmount,
+        });
+      },
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: () => {
+          refreshCount += 1;
+        },
+      },
+      emitOrderStateChanged: () => {},
+    });
+    const trackedOrder: OrderMonitorTrackedOrder = {
+      orderId: 'PROTECTIVE-PARTIAL-TERMINAL-ONCE',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: true,
+      orderType: OrderType.ELO,
+      submittedPrice: 1,
+      initialSubmittedPrice: 1,
+      submittedQuantity: 100,
+      executedQuantity: 0,
+      executedPrice: null,
+      lastExecutedTimeMs: null,
+      lastOrderUpdateAtMs: null,
+      status: OrderStatus.New,
+      submittedAt: revisionMs - 10,
+      lastPriceUpdateAt: revisionMs - 10,
+      convertedToMarket: false,
+      nextCancelAttemptAt: revisionMs,
+      cancelRetryCount: 0,
+      replaceCapability: 'SUPPORTED',
+      replaceBlockedUntilAt: null,
+      quoteRetryAttempts: 0,
+      quoteRetryNextAt: null,
+      quoteRetryExhausted: false,
+      replaceTempBlockedCount: 0,
+      replaceResumeMode: 'TIME_BACKOFF',
+      timeoutMarketConversionPending: false,
+      timeoutMarketConversionTerminalState: null,
+    };
+    runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
+    const eventFlow = createEventFlow({
+      runtime,
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: (params) => {
+        settlementFlow.recordCumulativeExecution(params);
+      },
+      prepareProtectiveTerminalExecution: settlementFlow.prepareProtectiveTerminalExecution,
+      settleOrder: settlementFlow.settleOrder,
+      cacheBootstrappingEvent: () => {},
+      triggerRoute: () => {},
+    });
+
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.PartialFilled,
+        executedQuantity: 40,
+        executedPrice: 0.9,
+        updatedAtMs: revisionMs,
+      }),
+    );
+    const refreshCountAfterPartial = refreshCount;
+    eventFlow.handleOrderChangedWhenActive(
+      createPushOrderChanged({
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        side: trackedOrder.side,
+        status: OrderStatus.Canceled,
+        executedQuantity: 40,
+        executedPrice: 0.9,
+        updatedAtMs: revisionMs,
+      }),
+    );
+
+    expect(persistedProgress).toEqual([
+      { factStage: 'OPEN', cumulativeQuantity: '40', cumulativeAmount: '36' },
+      { factStage: 'TERMINAL', cumulativeQuantity: '40', cumulativeAmount: '36' },
+    ]);
+
+    expect(persistedProgress.filter((progress) => progress.factStage === 'TERMINAL')).toHaveLength(
+      1,
+    );
+    expect(refreshCountAfterPartial).toBe(1);
+    expect(refreshCount).toBe(2);
+    expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(true);
+  });
+
   it('advances same-revision cumulative execution through event, daily loss, episode, and settlement', () => {
     const revisionMs = Date.parse('2026-07-11T02:00:00.000Z');
     const runtime = createRuntime();
@@ -333,8 +455,6 @@ describe('order monitor cumulative execution integration', () => {
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
-      liquidationTriggerLimit: 1,
-      liquidationCooldownConfig: null,
       orderType: OrderType.ELO,
       submittedPrice: 1,
       initialSubmittedPrice: 1,
@@ -366,6 +486,7 @@ describe('order monitor cumulative execution integration', () => {
       recordCumulativeExecution: (params) => {
         settlementFlow.recordCumulativeExecution(params);
       },
+      prepareProtectiveTerminalExecution: settlementFlow.prepareProtectiveTerminalExecution,
       settleOrder: settlementFlow.settleOrder,
       cacheBootstrappingEvent: () => {},
       triggerRoute: () => {},

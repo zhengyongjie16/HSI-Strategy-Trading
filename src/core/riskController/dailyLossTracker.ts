@@ -35,6 +35,7 @@ import type {
   DailyLossExecutionSnapshot,
   DailyLossOrderBaseline,
   DailyLossOrderFact,
+  DailyLossOwnedInDayExecution,
   DailyLossState,
 } from './types.js';
 import { collectOrderOwnershipDiagnostics, resolveHongKongDayKey, sumOrderCost } from './utils.js';
@@ -78,6 +79,23 @@ function selectLatestExecutionSnapshotAtBoundary(
   }
 
   return selected;
+}
+
+/**
+ * 提取原始订单提交时间的可信毫秒值。
+ * submittedAt 仅用于证明订单严格晚于保护边界创建；缺失、无效或非正值都不能构成该证明。
+ */
+function resolveTrustedSubmittedAtMs(submittedAt: Date | null | undefined): number | null {
+  if (!(submittedAt instanceof Date)) {
+    return null;
+  }
+
+  const submittedAtMs = submittedAt.getTime();
+  if (!Number.isFinite(submittedAtMs) || submittedAtMs <= 0) {
+    return null;
+  }
+
+  return submittedAtMs;
 }
 
 /**
@@ -218,6 +236,40 @@ function buildStateFromFacts(
 }
 
 /**
+ * 基于候选订单事实构建单方向保护边界基线。
+ * @param facts 候选累计成交事实
+ * @param direction 目标方向
+ * @param boundaryMs 保护性清仓完成时刻
+ * @returns 对应方向的 per-order 累计成交基线
+ */
+function buildDirectionBaselines(
+  facts: ReadonlyMap<string, DailyLossOrderFact>,
+  direction: DailyLossDirection,
+  boundaryMs: number,
+): Map<string, DailyLossOrderBaseline> {
+  const nextBaselines = new Map<string, DailyLossOrderBaseline>();
+  for (const fact of facts.values()) {
+    if (fact.direction !== direction) {
+      continue;
+    }
+
+    const boundarySnapshot = selectLatestExecutionSnapshotAtBoundary(
+      fact.executionSnapshots,
+      boundaryMs,
+    );
+
+    if (boundarySnapshot) {
+      nextBaselines.set(fact.orderId, {
+        cumulativeQuantity: boundarySnapshot.cumulativeQuantity,
+        cumulativeAmount: boundarySnapshot.cumulativeAmount,
+      });
+    }
+  }
+
+  return nextBaselines;
+}
+
+/**
  * 将成交回报转换为订单记录，若数据不完整则返回 null。
  *
  * @param input 成交回报（订单 ID、标的、成交价、成交量、成交时间等）
@@ -250,6 +302,7 @@ function createOrderFactFromFill(
     symbol: input.symbol,
     direction: input.direction,
     side: input.side,
+    submittedAtMs: null,
     factStage: input.factStage,
     cumulativeQuantity: executedQuantity,
     cumulativeAmount,
@@ -304,6 +357,7 @@ function createOrderFactFromRawOrder(
     direction,
     symbol: record.symbol,
     side: order.side,
+    submittedAtMs: resolveTrustedSubmittedAtMs(order.submittedAt),
     factStage: classifyOrderStatusLifecycle(order.status),
     cumulativeQuantity: record.executedQuantity,
     cumulativeAmount,
@@ -533,6 +587,23 @@ function hasValidExecution(order: RawOrderFromAPI): boolean {
 }
 
 /**
+ * 提取 RawOrder 的可信更新时间。
+ * updatedAt 是启动重建中唯一可用于判定成交归属交易日与权威 revision 的时间，缺失、无效或非正值都不能继续计算亏损偏移。
+ */
+function resolveTrustedOrderUpdatedAt(updatedAt: Date | null | undefined): Date | null {
+  if (!(updatedAt instanceof Date)) {
+    return null;
+  }
+
+  const updatedAtMs = updatedAt.getTime();
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) {
+    return null;
+  }
+
+  return updatedAt;
+}
+
+/**
  * 相关交易标的的当日成交订单无法归属时直接阻断恢复，避免低估风控偏移。
  * @param params 订单、监控配置与相关交易标的集合
  */
@@ -556,9 +627,86 @@ function assertUnownedOrderIsNotRelevant(params: {
 }
 
 /**
+ * 在任何 tracker 状态写入前，筛选可安全参与当日亏损重算的已成交订单。
+ * 有效 BUY/SELL 成交必须先完成当前唯一 monitor 归属解析：相关但不可归属的数据直接阻断；
+ * 可归属订单必须有可信 updatedAt，只有已知为非当日的历史成交才可跳过。
+ */
+function collectOwnedInDayExecutionsForRecalculation(params: {
+  readonly allOrders: ReadonlyArray<RawOrderFromAPI>;
+  readonly monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>;
+  readonly currentDayKey: string | null;
+  readonly relatedTradingSymbols: ReadonlySet<string> | undefined;
+  readonly resolveOrderOwnership: DailyLossTrackerDeps['resolveOrderOwnership'];
+  readonly toHongKongTimeIso: DailyLossTrackerDeps['toHongKongTimeIso'];
+}): ReadonlyArray<DailyLossOwnedInDayExecution> {
+  const {
+    allOrders,
+    monitor,
+    currentDayKey,
+    relatedTradingSymbols,
+    resolveOrderOwnership,
+    toHongKongTimeIso,
+  } = params;
+  const ownedInDayExecutions: DailyLossOwnedInDayExecution[] = [];
+
+  for (const order of allOrders) {
+    if (
+      (order.side !== OrderSide.Buy && order.side !== OrderSide.Sell) ||
+      !hasValidExecution(order)
+    ) {
+      continue;
+    }
+
+    const ownership = resolveOrderOwnership(order, monitor);
+    if (!ownership) {
+      assertUnownedOrderIsNotRelevant({
+        order,
+        monitor,
+        relatedTradingSymbols,
+      });
+      continue;
+    }
+
+    if (ownership.monitorSymbol !== monitor.monitorSymbol) {
+      throw new Error(
+        `[DailyLossTracker] order ownership monitorSymbol mismatch: expected=${monitor.monitorSymbol} actual=${ownership.monitorSymbol}`,
+      );
+    }
+
+    const trustedUpdatedAt = resolveTrustedOrderUpdatedAt(order.updatedAt);
+    if (trustedUpdatedAt === null) {
+      throw new Error(
+        `[DailyLossTracker] 已成交订单缺少有效更新时间: ` +
+          `monitorSymbol=${monitor.monitorSymbol} symbol=${order.symbol} orderId=${order.orderId}`,
+      );
+    }
+
+    if (currentDayKey === null) {
+      throw new Error('[DailyLossTracker] 当前交易日无法解析，无法重算已成交订单');
+    }
+
+    const orderDayKey = resolveHongKongDayKey(toHongKongTimeIso, trustedUpdatedAt);
+    if (orderDayKey === null) {
+      throw new Error(
+        `[DailyLossTracker] 已成交订单无法解析香港交易日: ` +
+          `monitorSymbol=${monitor.monitorSymbol} symbol=${order.symbol} orderId=${order.orderId}`,
+      );
+    }
+
+    if (orderDayKey !== currentDayKey) {
+      continue;
+    }
+
+    ownedInDayExecutions.push({ order, direction: ownership.direction });
+  }
+
+  return ownedInDayExecutions;
+}
+
+/**
  * 创建当日亏损追踪器实例。
  * 按唯一 monitor 的 LONG/SHORT 方向维护当日买入/卖出订单与亏损偏移，支持 resetAll、全量重算、累计成交合并与事务化保护边界。
- * 风控与浮亏计算依赖当日已实现盈亏偏移，需在跨日时重置、启动时从全量订单初始化、成交时增量更新。
+ * 风控与浮亏计算依赖当日已实现盈亏偏移，需在跨日时重置、启动或 SEAT_REFRESH 时通过全量订单重算、成交时增量更新。
  * @param deps 依赖（filteringEngine、resolveOrderOwnership、classifyAndConvertOrders、toHongKongTimeIso）
  * @returns 实现 DailyLossTracker 接口的实例
  */
@@ -572,7 +720,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
   };
 
   /** 最新已完成保护性清仓边界：仅计入 executedTimeMs > boundary 的成交。 */
-  const latestProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
+  let latestProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
 
   /**
    * 显式重置 dayKey、states 与分段元数据。
@@ -597,24 +745,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
 
   /** 以最近一次不晚于边界的执行推进快照建立单方向 per-order baseline。 */
   function rebuildDirectionBaselines(direction: DailyLossDirection, boundaryMs: number): void {
-    const nextBaselines = new Map<string, DailyLossOrderBaseline>();
-    for (const fact of filledOrderFactsById.values()) {
-      if (fact.direction !== direction) {
-        continue;
-      }
-
-      const boundarySnapshot = selectLatestExecutionSnapshotAtBoundary(
-        fact.executionSnapshots,
-        boundaryMs,
-      );
-
-      if (boundarySnapshot) {
-        nextBaselines.set(fact.orderId, {
-          cumulativeQuantity: boundarySnapshot.cumulativeQuantity,
-          cumulativeAmount: boundarySnapshot.cumulativeAmount,
-        });
-      }
-    }
+    const nextBaselines = buildDirectionBaselines(filledOrderFactsById, direction, boundaryMs);
 
     if (direction === 'LONG') {
       baselinesByDirection = {
@@ -631,10 +762,11 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
   }
 
   /**
-   * 启动时根据历史成交订单初始化当日状态。
+   * 全量重算时根据历史成交订单初始化当日状态。
    * RawOrderFromAPI 只有 updatedAt 可用，因此首次快照将其同时视为该累计成交的 revision 与最后已知执行时点；
    * 后续等量终态 revision 由累计数量自行判定为非执行推进，不得推进执行时点。
    * protectionBoundaryByDirection 可选：按方向键恢复唯一 monitor 的方向级保护性边界。
+   * 订单事实合并、边界基线、诊断与双方向状态均先在局部 candidate 完成；任一失败不得改写现有运行态。
    */
   function initializeFromOrders(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
@@ -644,21 +776,33 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     relatedTradingSymbols?: ReadonlySet<string>,
   ): void {
     const nextKey = resolveHongKongDayKey(deps.toHongKongTimeIso, now);
+    const ownedInDayExecutions = collectOwnedInDayExecutionsForRecalculation({
+      allOrders,
+      monitor,
+      currentDayKey: nextKey,
+      relatedTradingSymbols,
+      resolveOrderOwnership: deps.resolveOrderOwnership,
+      toHongKongTimeIso: deps.toHongKongTimeIso,
+    });
     const previousDayKey = dayKey;
     const isSameTradingDay = previousDayKey !== null && previousDayKey === nextKey;
-    dayKey = nextKey;
-    statesByDirection = createEmptyDirectionStates();
     const previousFactsById = filledOrderFactsById;
     const preserveSameDaySegment = isSameTradingDay && protectionBoundaryByDirection === undefined;
-    const nextFactsById = new Map<string, DailyLossOrderFact>();
+    let nextFactsById = filledOrderFactsById;
+    let nextProtectionBoundaryByDirection = new Map(latestProtectionBoundaryByDirection);
+    let nextBaselinesByDirection = {
+      long: baselinesByDirection.long,
+      short: baselinesByDirection.short,
+    };
+    let nextStatesByDirection = createEmptyDirectionStates();
 
     // 边界来源优先级：
     // 1) 显式传入（启动恢复）；
     // 2) 同日重算沿用当前运行态边界（如 SEAT_REFRESH）；
     // 3) 跨日重算清空边界，避免旧日边界泄漏。
     if (protectionBoundaryByDirection) {
-      latestProtectionBoundaryByDirection.clear();
-      baselinesByDirection = {
+      nextProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
+      nextBaselinesByDirection = {
         long: new Map<string, DailyLossOrderBaseline>(),
         short: new Map<string, DailyLossOrderBaseline>(),
       };
@@ -669,104 +813,82 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         }
 
         const direction = parseProtectionBoundaryDirectionKey(key);
-        latestProtectionBoundaryByDirection.set(direction, boundaryMs);
+        nextProtectionBoundaryByDirection.set(direction, boundaryMs);
       }
     } else if (!isSameTradingDay) {
-      latestProtectionBoundaryByDirection.clear();
-      baselinesByDirection = {
+      nextProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
+      nextBaselinesByDirection = {
         long: new Map<string, DailyLossOrderBaseline>(),
         short: new Map<string, DailyLossOrderBaseline>(),
       };
     }
 
-    if (!nextKey) {
-      return;
-    }
+    if (nextKey) {
+      nextFactsById = new Map<string, DailyLossOrderFact>();
+      for (const { order, direction } of ownedInDayExecutions) {
+        const fact = createOrderFactFromRawOrder(order, direction, deps.classifyAndConvertOrders);
+        if (fact) {
+          const previousFact = preserveSameDaySegment
+            ? previousFactsById.get(fact.orderId)
+            : undefined;
+          if (previousFact) {
+            nextFactsById.set(fact.orderId, previousFact);
+          }
 
-    for (const order of allOrders) {
-      if (!(order.updatedAt instanceof Date)) {
-        continue;
+          const merged = resolveAuthoritativeOrderFactMerge(nextFactsById.get(fact.orderId), fact);
+          if (merged.nextFact !== null) {
+            nextFactsById.set(fact.orderId, merged.nextFact);
+          }
+        }
       }
 
-      const orderDayKey = resolveHongKongDayKey(deps.toHongKongTimeIso, order.updatedAt);
-      if (!orderDayKey || orderDayKey !== nextKey) {
-        continue;
+      for (const [direction, boundaryMs] of nextProtectionBoundaryByDirection) {
+        const nextBaselines = buildDirectionBaselines(nextFactsById, direction, boundaryMs);
+        nextBaselinesByDirection =
+          direction === 'LONG'
+            ? { long: nextBaselines, short: nextBaselinesByDirection.short }
+            : { long: nextBaselinesByDirection.long, short: nextBaselines };
       }
 
-      const ownership = deps.resolveOrderOwnership(order, monitor);
-      if (!ownership) {
-        assertUnownedOrderIsNotRelevant({
-          order,
-          monitor,
-          relatedTradingSymbols,
-        });
-        continue;
-      }
-
-      if (ownership.monitorSymbol !== monitor.monitorSymbol) {
-        throw new Error(
-          `[DailyLossTracker] order ownership monitorSymbol mismatch: expected=${monitor.monitorSymbol} actual=${ownership.monitorSymbol}`,
+      const diagnostics = collectOrderOwnershipDiagnostics({
+        orders: allOrders,
+        monitor,
+        now,
+        resolveOrderOwnership: deps.resolveOrderOwnership,
+        toHongKongTimeIso: deps.toHongKongTimeIso,
+        maxSamples: 3,
+      });
+      if (diagnostics && diagnostics.unmatchedFilled > 0) {
+        const sampleText = diagnostics.unmatchedSamples
+          .map((sample) => `${sample.symbol}:${sample.stockName}`)
+          .join(' | ');
+        logger.warn(
+          `[日内亏损追踪] 未归属订单: 当日成交${diagnostics.inDayFilled}笔, ` +
+            `未归属${diagnostics.unmatchedFilled}笔, 样例=${sampleText}`,
         );
       }
 
-      const fact = createOrderFactFromRawOrder(
-        order,
-        ownership.direction,
-        deps.classifyAndConvertOrders,
-      );
-      if (fact) {
-        const previousFact = preserveSameDaySegment
-          ? previousFactsById.get(fact.orderId)
-          : undefined;
-        if (previousFact) {
-          nextFactsById.set(fact.orderId, previousFact);
-        }
-
-        const merged = resolveAuthoritativeOrderFactMerge(nextFactsById.get(fact.orderId), fact);
-        if (merged.nextFact !== null) {
-          nextFactsById.set(fact.orderId, merged.nextFact);
-        }
-      }
+      nextStatesByDirection = {
+        long: buildStateFromFacts(
+          nextFactsById,
+          nextBaselinesByDirection.long,
+          'LONG',
+          deps.filteringEngine,
+        ),
+        short: buildStateFromFacts(
+          nextFactsById,
+          nextBaselinesByDirection.short,
+          'SHORT',
+          deps.filteringEngine,
+        ),
+      };
     }
 
+    dayKey = nextKey;
     filledOrderFactsById = nextFactsById;
-
-    for (const [direction, boundaryMs] of latestProtectionBoundaryByDirection) {
-      rebuildDirectionBaselines(direction, boundaryMs);
-    }
-
-    const diagnostics = collectOrderOwnershipDiagnostics({
-      orders: allOrders,
-      monitor,
-      now,
-      resolveOrderOwnership: deps.resolveOrderOwnership,
-      toHongKongTimeIso: deps.toHongKongTimeIso,
-      maxSamples: 3,
-    });
-    if (diagnostics && diagnostics.unmatchedFilled > 0) {
-      const sampleText = diagnostics.unmatchedSamples
-        .map((sample) => `${sample.symbol}:${sample.stockName}`)
-        .join(' | ');
-      logger.warn(
-        `[日内亏损追踪] 未归属订单: 当日成交${diagnostics.inDayFilled}笔, ` +
-          `未归属${diagnostics.unmatchedFilled}笔, 样例=${sampleText}`,
-      );
-    }
-
-    statesByDirection = {
-      long: buildStateFromFacts(
-        filledOrderFactsById,
-        baselinesByDirection.long,
-        'LONG',
-        deps.filteringEngine,
-      ),
-      short: buildStateFromFacts(
-        filledOrderFactsById,
-        baselinesByDirection.short,
-        'SHORT',
-        deps.filteringEngine,
-      ),
-    };
+    latestProtectionBoundaryByDirection = nextProtectionBoundaryByDirection;
+    baselinesByDirection = nextBaselinesByDirection;
+    statesByDirection = nextStatesByDirection;
   }
 
   function setDirectionState(direction: DailyLossDirection, nextState: DailyLossState): void {
@@ -797,7 +919,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
   }
 
   /**
-   * 使用完整订单重新计算状态，作为纠偏手段。
+   * 使用完整订单全量重算状态，供启动恢复或 SEAT_REFRESH 纠偏使用。
    * protectionBoundaryByDirection 可选：提供保护性边界以重建 per-order 分段基线。
    */
   function recalculateFromAllOrders(
@@ -853,25 +975,21 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       return merge.result;
     }
 
-    const isSameRevisionTerminalAmountCorrection =
-      currentFact?.factStage === 'OPEN' &&
-      merge.nextFact.factStage === 'TERMINAL' &&
-      currentFact.orderUpdatedAtMs === merge.nextFact.orderUpdatedAtMs &&
-      currentFact.cumulativeQuantity === merge.nextFact.cumulativeQuantity &&
-      !decimalEq(currentFact.cumulativeAmount, merge.nextFact.cumulativeAmount);
-    if (merge.result.executionAdvanced || isSameRevisionTerminalAmountCorrection) {
-      beforeAuthoritativeFactCommit?.({
-        factStage: merge.nextFact.factStage,
-        cumulativeQuantity: toDecimalValue(merge.nextFact.cumulativeQuantity).toString(),
-        cumulativeAmount: toDecimalValue(merge.nextFact.cumulativeAmount).toString(),
-        lastExecutionTimeMs: merge.nextFact.lastExecutionTimeMs,
-        orderRevisionMs: merge.nextFact.orderUpdatedAtMs,
-      });
+    const currentBoundary = latestProtectionBoundaryByDirection.get(directionKey);
+    if (currentBoundary !== undefined && merge.nextFact.lastExecutionTimeMs <= currentBoundary) {
+      return { authoritativeFactChanged: false, executionAdvanced: false };
     }
+
+    beforeAuthoritativeFactCommit?.({
+      factStage: merge.nextFact.factStage,
+      cumulativeQuantity: toDecimalValue(merge.nextFact.cumulativeQuantity).toString(),
+      cumulativeAmount: toDecimalValue(merge.nextFact.cumulativeAmount).toString(),
+      lastExecutionTimeMs: merge.nextFact.lastExecutionTimeMs,
+      orderRevisionMs: merge.nextFact.orderUpdatedAtMs,
+    });
 
     filledOrderFactsById.set(input.orderId, merge.nextFact);
 
-    const currentBoundary = latestProtectionBoundaryByDirection.get(directionKey);
     if (currentBoundary !== undefined) {
       rebuildDirectionBaselines(directionKey, currentBoundary);
     }
@@ -1024,7 +1142,11 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     recalculateDirectionState(prepared.direction);
   }
 
-  /** 严格校验持久化 baseline 的订单身份与累计事实单调性后恢复边界。 */
+  /**
+   * 严格校验持久化 baseline 的订单身份与累计事实单调性后恢复边界。
+   * 只有未持久化且历史折叠的 RawOrder，才能以可信 submittedAt 严格晚于边界证明零基线；
+   * 已持久化 baseline 继续由身份、时间与累计单调性校验恢复。
+   */
   function restoreProtectionBoundary(prepared: PreparedDailyLossProtectionBoundary): void {
     const persistedByOrderId = new Map(
       prepared.orderBaselines.map((baseline) => [baseline.orderId, baseline] as const),
@@ -1047,6 +1169,17 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       if (boundarySnapshot === undefined) {
         if (persisted !== undefined && fact.historyCompleteFromZero) {
           throw new Error(`[DailyLossTracker] unexpected persisted baseline: ${fact.orderId}`);
+        }
+
+        if (
+          persisted === undefined &&
+          !fact.historyCompleteFromZero &&
+          (fact.submittedAtMs === null || fact.submittedAtMs <= prepared.boundaryExecutedTimeMs)
+        ) {
+          throw new Error(
+            `[DailyLossTracker] cannot reconstruct protection boundary baseline: ` +
+              `orderId=${fact.orderId}`,
+          );
         }
 
         continue;

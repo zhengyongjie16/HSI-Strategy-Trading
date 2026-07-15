@@ -16,8 +16,10 @@ import { createStockPositionsResponse } from '../../mock/factories/tradeFactory.
 import {
   createMarketDataClientDouble,
   createMonitorConfigDouble,
+  createOrderMonitorDouble,
   createOrderRecorderDouble,
   createQuoteDouble,
+  createRateLimiterDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
   createTradeContextDouble,
@@ -26,19 +28,13 @@ import {
 } from '../helpers/testDoubles.js';
 import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
 import type { OrderExecutorDeps } from '../../src/core/trader/types.js';
-import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
 
-function createOrderExecutor(
-  deps: Omit<OrderExecutorDeps, 'now' | 'readCurrentTradingDayInfo'> &
-    Partial<Pick<OrderExecutorDeps, 'now' | 'readCurrentTradingDayInfo'>>,
-) {
-  const defaultNow = (): Date => new Date(Date.now());
+type OrderExecutorTestDeps = Omit<OrderExecutorDeps, 'unrealizedLossBuyGate'> &
+  Partial<Pick<OrderExecutorDeps, 'unrealizedLossBuyGate'>>;
+
+function createOrderExecutor(deps: OrderExecutorTestDeps) {
   return createOrderExecutorCore({
-    now: defaultNow,
-    readCurrentTradingDayInfo: () => ({
-      dateKey: getRequiredHKDateKey(defaultNow()),
-      info: { isTradingDay: true, isHalfDay: false },
-    }),
+    unrealizedLossBuyGate: createRiskCheckerDouble(),
     ...deps,
   });
 }
@@ -47,16 +43,20 @@ let candidateQueue: Array<ReturnType<typeof createWarrantCandidateWithOverrides>
 
 async function runDistanceSwitch(
   manager: ReturnType<typeof createAutoSymbolManager>,
-  params: Parameters<ReturnType<typeof createAutoSymbolManager>['startSwitchOnDistance']>[0],
+  params: Omit<
+    Parameters<ReturnType<typeof createAutoSymbolManager>['startSwitchOnDistance']>[0],
+    'canContinue'
+  >,
 ): Promise<void> {
+  const switchParams = { ...params, canContinue: () => true };
   if (manager.hasPendingSwitch(params.direction)) {
-    await manager.advancePendingSwitch(params);
+    await manager.advancePendingSwitch(switchParams);
     return;
   }
 
-  const startResult = await manager.startSwitchOnDistance(params);
+  const startResult = await manager.startSwitchOnDistance(switchParams);
   if (startResult.started) {
-    await manager.advancePendingSwitch(params);
+    await manager.advancePendingSwitch(switchParams);
   }
 }
 
@@ -175,12 +175,14 @@ describe('auto-symbol-switch integration', () => {
       riskChecker,
       findBestWarrant: async () => candidateQueue.shift() ?? null,
       now: () => new Date('2026-02-16T01:00:00.000Z'),
+      getTradingCalendarSnapshot: () =>
+        new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
 
     await manager.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canTradeNow: true,
+      canContinue: () => true,
     });
 
     const searchedSeat = symbolRegistry.getSeatState('LONG');
@@ -247,7 +249,7 @@ describe('auto-symbol-switch integration', () => {
   });
 
   it('uses real orderExecutor chain and submits rebuy quantity by sell-notional', async () => {
-    const fixedNowMs = Date.parse('2026-02-16T01:00:00.000Z');
+    const fixedNowMs = Date.parse('2026-02-16T02:00:00.000Z');
     setSystemTime(fixedNowMs);
     try {
       candidateQueue = [
@@ -321,41 +323,56 @@ describe('auto-symbol-switch integration', () => {
               }
             : null,
       });
+      const marketDataClient = createMarketDataClientDouble({
+        getQuotes: async (symbols) =>
+          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1, 100)])),
+      });
+      let rebuyLossGateCalls = 0;
+      const riskChecker = createRiskCheckerDouble({
+        checkUnrealizedLoss: (symbol, price, isLongSymbol) => {
+          rebuyLossGateCalls += 1;
+          expect(symbol).toBe('NEW_BULL.HK');
+          expect(price).toBe(1);
+          expect(isLongSymbol).toBeTrue();
+          return { shouldLiquidate: false };
+        },
+        getWarrantDistanceInfo: (isLongSymbol) => {
+          if (!isLongSymbol) {
+            return null;
+          }
+
+          return createWarrantDistanceInfoDouble({
+            warrantType: 'BULL',
+            distanceToStrikePercent: 0.1,
+          });
+        },
+      });
 
       const trackedOrders: Array<{ orderId: string; side: OrderSide; quantity: number }> = [];
       const orderExecutor = createOrderExecutor({
         ctx: createTradeContextDouble(tradeCtx),
-        rateLimiter: {
-          throttle: async () => {},
-        },
+        rateLimiter: createRateLimiterDouble(),
+        marketDataClient,
         cacheManager: {
           clearCache: () => {},
           getPendingOrders: async () => [],
         },
-        orderMonitor: {
-          initialize: async () => {},
+        orderMonitor: createOrderMonitorDouble({
           trackOrder: ({ orderId, side, quantity }) => {
             trackedOrders.push({ orderId, side, quantity });
           },
-          cancelOrder: async () => ({
-            kind: 'CANCEL_CONFIRMED',
-            closedReason: 'CANCELED',
-            source: 'API',
-            relatedBuyOrderIds: null,
-          }),
-          replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
-          startRuntime: () => {},
-          stopRuntimeAndDrain: async () => {},
-          recoverOrderTrackingFromSnapshot: async () => {},
-          getPendingSellOrders: () => [],
-          clearTrackedOrders: () => {},
-          onOrderStateChanged: () => () => {},
-          hasPendingProtectiveLiquidationOrders: () => false,
-        },
+        }),
         orderRecorder,
+        unrealizedLossBuyGate: riskChecker,
         tradingConfig,
         symbolRegistry,
         isExecutionAllowed: () => true,
+        isContinuousTradingAllowed: () => true,
+        now: () => new Date(fixedNowMs),
+        readCurrentTradingDayInfo: () => ({
+          dateKey: '2026-02-16',
+          info: { isTradingDay: true, isHalfDay: false },
+        }),
       });
 
       const trader = createTraderDouble({
@@ -369,37 +386,23 @@ describe('auto-symbol-switch integration', () => {
         }),
       });
 
-      const riskChecker = createRiskCheckerDouble({
-        getWarrantDistanceInfo: (isLongSymbol) => {
-          if (!isLongSymbol) {
-            return null;
-          }
-
-          return createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
-            distanceToStrikePercent: 0.1,
-          });
-        },
-      });
-
       const manager = createAutoSymbolManager({
         monitorConfig,
         symbolRegistry,
-        marketDataClient: createMarketDataClientDouble({
-          getQuotes: async (symbols) =>
-            new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1, 100)])),
-        }),
+        marketDataClient,
         trader,
         orderRecorder,
         riskChecker,
         findBestWarrant: async () => candidateQueue.shift() ?? null,
         now: () => new Date(fixedNowMs),
+        getTradingCalendarSnapshot: () =>
+          new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
       });
 
       await manager.maybeSearchOnEvent({
         direction: 'LONG',
         currentTime: new Date(fixedNowMs),
-        canTradeNow: true,
+        canContinue: () => true,
       });
 
       const searchedSeat = symbolRegistry.getSeatState('LONG');
@@ -451,6 +454,7 @@ describe('auto-symbol-switch integration', () => {
       expect(trackedOrders).toHaveLength(2);
       expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
       expect(trackedOrders[1]?.side).toBe(OrderSide.Buy);
+      expect(rebuyLossGateCalls).toBe(1);
 
       const sellPayload = submitCalls[0]?.args[0] as {
         readonly submittedQuantity: { readonly toString: () => string };
@@ -537,6 +541,8 @@ describe('auto-symbol-switch integration', () => {
         return candidateQueue.shift() ?? null;
       },
       now: () => new Date('2026-02-16T01:00:00.000Z'),
+      getTradingCalendarSnapshot: () =>
+        new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
 
     await runDistanceSwitch(manager, {
@@ -634,6 +640,8 @@ describe('auto-symbol-switch integration', () => {
         return candidateQueue.shift() ?? null;
       },
       now: () => new Date('2026-02-16T01:00:00.000Z'),
+      getTradingCalendarSnapshot: () =>
+        new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
 
     await runDistanceSwitch(manager, {
@@ -723,6 +731,8 @@ describe('auto-symbol-switch integration', () => {
       }),
       findBestWarrant: async () => candidateQueue.shift() ?? null,
       now: () => new Date('2026-02-16T01:00:00.000Z'),
+      getTradingCalendarSnapshot: () =>
+        new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
 
     await runDistanceSwitch(manager, {
@@ -739,7 +749,7 @@ describe('auto-symbol-switch integration', () => {
     await manager.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:11:00.000Z'),
-      canTradeNow: true,
+      canContinue: () => true,
     });
 
     const recoveredSeat = symbolRegistry.getSeatState('LONG');

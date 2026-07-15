@@ -30,7 +30,10 @@ export type TimeWakeupEvaluationContext = Readonly<{
   doomsdayProtection: DoomsdayProtection;
   tradingConfig: TradingConfig;
   monitorContext: MonitorContext;
-  tradingGateEventRuntime: Pick<TradingGateEventRuntime, 'emitGateStateChanged'>;
+  tradingGateEventRuntime: Pick<
+    TradingGateEventRuntime,
+    'emitGateStateChanged' | 'emitAutoSearchAuthorizationChanged'
+  >;
   quoteSubscriptionRuntime: Pick<QuoteSubscriptionRuntime, 'reconcilePositionHoldFromCurrentTruth'>;
   dayLifecycleManager: DayLifecycleManager;
   now?: () => Date;

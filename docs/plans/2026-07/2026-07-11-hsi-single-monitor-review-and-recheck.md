@@ -92,7 +92,7 @@
 - 在任何节流、下单、订单追踪或本地分账副作用前比较两个方向；不一致直接抛出内部不变量错误，不跳过、不重映射、不回退。
 - 仅在比较通过后从权威方向推导 isShortSymbol。
 
-**验证：** tests/integration/buy-flow.integration.test.ts 直接将 BUYPUT 与 BULL.HK（LONG 席位）送入最终执行器。红测时 Promise 实际 resolved 且已提交订单；修复后断言抛错，且 submitOrder 与 trackOrder 调用数均为 0。该测试保护 LONG/SHORT 账本不变量，并非“防多标的回归”测试。
+**验证：** tests/integration/buyFlow.integration.test.ts 直接将 BUYPUT 与 BULL.HK（LONG 席位）送入最终执行器。红测时 Promise 实际 resolved 且已提交订单；修复后断言抛错，且 submitOrder 与 trackOrder 调用数均为 0。该测试保护 LONG/SHORT 账本不变量，并非“防多标的回归”测试。
 
 ### F-02：Context 内保存席位镜像导致双真相（已修复，架构冗余）
 
@@ -177,7 +177,7 @@ Run:
 
 ```powershell
 rg -n "MonitorTaskContext|seatProjection|routesByKey|buildCooldownKey|getMonitorSymbol|SeatVersionChangedEvent|resolveMonitorContextRuntimeSnapshot|collectBoundSeatSymbols" src tests mock
-bun test tests/integration/buy-flow.integration.test.ts
+bun test tests/integration/buyFlow.integration.test.ts
 ```
 
 Expected: 第一条无活跃命中；买入集成测试包含“动作方向与席位方向不一致” fail-fast 场景并通过。
@@ -220,7 +220,7 @@ Expected: 全部 exit 0；git diff --check 允许 CRLF 提示，但不得有空�
 | 检查 | 结果 |
 | --- | --- |
 | 红测：错误 BUYPUT + LONG symbol | 修复前 buy-flow 明确失败：Promise 实际 resolved 且提交订单，证明问题可重现 |
-| 绿测：最终下单方向守卫 | bun test tests/integration/buy-flow.integration.test.ts：11 pass / 0 fail |
+| 绿测：最终下单方向守卫 | bun test tests/integration/buyFlow.integration.test.ts：11 pass / 0 fail |
 | 末日保护定向测试 | bun test tests/integration/doomsday.integration.test.ts：16 pass / 0 fail |
 | 测试/文档精简定向测试 | 5 个文件 24 pass / 0 fail |
 | 格式化 | 第二次 bun format exit 0；第一次暴露的 lint 问题已修正后重跑 |

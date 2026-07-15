@@ -14,6 +14,7 @@ import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js'
 import type {
   FinalizeOrderSettlementParams,
   FinalizeOrderSettlementResult,
+  OrderCumulativeExecutionParams,
   SettlementFlow,
   SettlementFlowDeps,
 } from './types.js';
@@ -156,16 +157,26 @@ function resolveCloseContext(params: {
 } {
   const { trackedOrder, closeParams } = params;
   const side = closeParams.side ?? (trackedOrder ? resolveOrderSideText(trackedOrder.side) : null);
+  const isProtectiveLiquidation =
+    trackedOrder?.isProtectiveLiquidation ?? closeParams.isProtectiveLiquidation ?? false;
+  const requiresAcceptedProtectiveExecution = isProtectiveLiquidation && side === 'SELL';
   return {
     side,
     symbol: trackedOrder?.symbol ?? closeParams.symbol ?? null,
     monitorSymbol: trackedOrder?.monitorSymbol ?? closeParams.monitorSymbol ?? null,
     isLongSymbol: trackedOrder?.isLongSymbol ?? closeParams.isLongSymbol,
-    isProtectiveLiquidation:
-      trackedOrder?.isProtectiveLiquidation ?? closeParams.isProtectiveLiquidation ?? false,
-    executedPrice: closeParams.executedPrice ?? trackedOrder?.executedPrice ?? null,
-    executedQuantity: closeParams.executedQuantity ?? trackedOrder?.executedQuantity ?? null,
-    executedTimeMs: closeParams.executedTimeMs ?? trackedOrder?.lastExecutedTimeMs ?? null,
+    isProtectiveLiquidation,
+    // 保护性 SELL 的正成交只能来自已通过 raw 准入的当前结算载荷；
+    // 禁止回填 tracked 历史价格、数量或时间，把缺失的 broker 事实伪装为可结算事实。
+    executedPrice: requiresAcceptedProtectiveExecution
+      ? (closeParams.executedPrice ?? null)
+      : (closeParams.executedPrice ?? trackedOrder?.executedPrice ?? null),
+    executedQuantity: requiresAcceptedProtectiveExecution
+      ? (closeParams.executedQuantity ?? null)
+      : (closeParams.executedQuantity ?? trackedOrder?.executedQuantity ?? null),
+    executedTimeMs: requiresAcceptedProtectiveExecution
+      ? (closeParams.executedTimeMs ?? null)
+      : (closeParams.executedTimeMs ?? trackedOrder?.lastExecutedTimeMs ?? null),
     orderUpdatedAtMs: closeParams.orderUpdatedAtMs ?? null,
   };
 }
@@ -202,6 +213,68 @@ function hasExecutionAttributionContext(params: {
 }): boolean {
   const { side, symbol, monitorSymbol, isLongSymbol } = params;
   return side !== null && symbol !== null && monitorSymbol !== null && isLongSymbol !== undefined;
+}
+
+/**
+ * 保护性 SELL 的正累计成交必须先具备可持久化的完整事实。
+ *
+ * 禁止把缺失的时间、revision 或归属降级为“未成交”：一旦允许后续本地结算，
+ * pending sell、订单追踪与状态事件会关闭，但不可恢复的保护性成交事实会永久丢失。
+ */
+function assertProtectiveSellExecutionFactsReady(params: {
+  readonly orderId: string;
+  readonly side: OrderCumulativeExecutionParams['side'] | null;
+  readonly symbol: string | null;
+  readonly monitorSymbol: string | null;
+  readonly isLongSymbol: boolean | undefined;
+  readonly isProtectiveLiquidation: boolean;
+  readonly executedPrice: number | null;
+  readonly executedQuantity: number | null;
+  readonly executedTimeMs: number | null;
+  readonly orderUpdatedAtMs: number | null;
+}): void {
+  const {
+    orderId,
+    side,
+    symbol,
+    monitorSymbol,
+    isLongSymbol,
+    isProtectiveLiquidation,
+    executedPrice,
+    executedQuantity,
+    executedTimeMs,
+    orderUpdatedAtMs,
+  } = params;
+  if (!isProtectiveLiquidation || side !== 'SELL' || !isValidPositiveNumber(executedQuantity)) {
+    return;
+  }
+
+  if (
+    !hasExecutionAttributionContext({
+      side,
+      symbol,
+      monitorSymbol,
+      isLongSymbol,
+    })
+  ) {
+    throw new Error(
+      `[订单监控] 订单 ${orderId} 存在成交事实但缺少唯一 monitor/direction 归因，阻断结算`,
+    );
+  }
+
+  if (
+    !isValidPositiveNumber(executedPrice) ||
+    !isValidPositiveNumber(executedTimeMs) ||
+    !isValidPositiveNumber(orderUpdatedAtMs)
+  ) {
+    throw new Error(
+      `[订单监控] 订单 ${orderId} 保护性 SELL 存在正累计成交但执行事实不完整，阻断结算`,
+    );
+  }
+
+  if (executedTimeMs > orderUpdatedAtMs) {
+    throw new Error(`[订单监控] 订单 ${orderId} 保护性 SELL 执行时间晚于 order revision，阻断结算`);
+  }
 }
 
 function reserveFollowUpSellOccupancy(params: {
@@ -269,19 +342,9 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     postTradeConsistencyRuntime.recordSettlementRefreshNeed(refreshNeed);
   }
 
-  function recordCumulativeExecution(params: {
-    readonly factStage: 'OPEN' | 'TERMINAL';
-    readonly orderId: string;
-    readonly side: 'BUY' | 'SELL';
-    readonly monitorSymbol: string | null;
-    readonly symbol: string;
-    readonly isLongSymbol: boolean;
-    readonly isProtectiveLiquidation: boolean;
-    readonly executedPrice: number | null;
-    readonly executedQuantity: number | null;
-    readonly executedTimeMs: number | null;
-    readonly orderUpdatedAtMs: number | null;
-  }): DailyLossCumulativeExecutionResult {
+  function recordCumulativeExecutionFact(
+    params: OrderCumulativeExecutionParams,
+  ): DailyLossCumulativeExecutionResult {
     const {
       orderId,
       side,
@@ -332,7 +395,22 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         : undefined,
     );
 
-    if (result.executionAdvanced && isProtectiveLiquidation && orderSide === OrderSide.Sell) {
+    return result;
+  }
+
+  function applyCumulativeExecutionSideEffects(
+    params: OrderCumulativeExecutionParams,
+    result: DailyLossCumulativeExecutionResult,
+  ): void {
+    const { isLongSymbol, isProtectiveLiquidation, side, symbol, executedTimeMs } = params;
+    const orderSide = resolveOrderSideFromText(side);
+    const direction = isLongSymbol ? 'LONG' : 'SHORT';
+    if (
+      result.executionAdvanced &&
+      isProtectiveLiquidation &&
+      orderSide === OrderSide.Sell &&
+      isValidPositiveNumber(executedTimeMs)
+    ) {
       protectiveLiquidationEpisodeTracker.recordProtectiveFillProgress({
         direction,
         symbol,
@@ -340,11 +418,101 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       });
     }
 
-    if (result.executionAdvanced) {
+    if (result.authoritativeFactChanged) {
       markPostTradeRefresh();
     }
+  }
 
+  function recordCumulativeExecution(
+    params: OrderCumulativeExecutionParams,
+  ): DailyLossCumulativeExecutionResult {
+    assertProtectiveSellExecutionFactsReady({
+      orderId: params.orderId,
+      side: params.side,
+      symbol: params.symbol,
+      monitorSymbol: params.monitorSymbol,
+      isLongSymbol: params.isLongSymbol,
+      isProtectiveLiquidation: params.isProtectiveLiquidation,
+      executedPrice: params.executedPrice,
+      executedQuantity: params.executedQuantity,
+      executedTimeMs: params.executedTimeMs,
+      orderUpdatedAtMs: params.orderUpdatedAtMs,
+    });
+    const result = recordCumulativeExecutionFact(params);
+    applyCumulativeExecutionSideEffects(params, result);
     return result;
+  }
+
+  /**
+   * 为超时转市价路径的保护性 SELL 终态先提交 durable progress。
+   * 该阶段只提交持久化与 DailyLoss fact，任何 recorder、runtime 或 episode 副作用都留给正式结算。
+   */
+  function prepareProtectiveTerminalExecution(
+    params: FinalizeOrderSettlementParams,
+  ): DailyLossCumulativeExecutionResult | null {
+    const trackedOrder = runtime.trackedOrders.get(params.orderId);
+    const context = resolveCloseContext({
+      trackedOrder,
+      closeParams: params,
+    });
+    assertProtectiveSellExecutionFactsReady({
+      orderId: params.orderId,
+      side: context.side,
+      symbol: context.symbol,
+      monitorSymbol: context.monitorSymbol,
+      isLongSymbol: context.isLongSymbol,
+      isProtectiveLiquidation: context.isProtectiveLiquidation,
+      executedPrice: context.executedPrice,
+      executedQuantity: context.executedQuantity,
+      executedTimeMs: context.executedTimeMs,
+      orderUpdatedAtMs: context.orderUpdatedAtMs,
+    });
+    const recordedExecution = resolveRecordedExecution({
+      executedPrice: context.executedPrice,
+      executedQuantity: context.executedQuantity,
+      executedTimeMs: context.executedTimeMs,
+    });
+    if (!context.isProtectiveLiquidation || context.side !== 'SELL' || recordedExecution === null) {
+      return null;
+    }
+
+    if (
+      !hasExecutionAttributionContext({
+        side: context.side,
+        symbol: context.symbol,
+        monitorSymbol: context.monitorSymbol,
+        isLongSymbol: context.isLongSymbol,
+      })
+    ) {
+      throw new Error(
+        `[订单监控] 订单 ${params.orderId} 存在成交事实但缺少唯一 monitor/direction 归因，阻断结算`,
+      );
+    }
+
+    if (!isValidPositiveNumber(context.orderUpdatedAtMs)) {
+      throw new Error(
+        `[订单监控] 订单 ${params.orderId} 存在成交事实但缺少 order revision，阻断结算`,
+      );
+    }
+
+    if (context.symbol === null || context.isLongSymbol === undefined) {
+      throw new Error(`[订单监控] 订单 ${params.orderId} 的保护性终态归因不完整，阻断结算`);
+    }
+
+    const executionParams = {
+      factStage: 'TERMINAL',
+      orderId: params.orderId,
+      side: context.side,
+      monitorSymbol: context.monitorSymbol,
+      symbol: context.symbol,
+      isLongSymbol: context.isLongSymbol,
+      isProtectiveLiquidation: true,
+      executedPrice: recordedExecution.executedPrice,
+      executedQuantity: recordedExecution.executedQuantity,
+      executedTimeMs: recordedExecution.executedTimeMs,
+      orderUpdatedAtMs: context.orderUpdatedAtMs,
+    } as const;
+    return recordCumulativeExecutionFact(executionParams);
   }
 
   function settleOrder(params: FinalizeOrderSettlementParams): FinalizeOrderSettlementResult {
@@ -368,6 +536,18 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     const executedQuantity = context.executedQuantity;
     const executedTimeMs = context.executedTimeMs;
     const orderUpdatedAtMs = context.orderUpdatedAtMs;
+    assertProtectiveSellExecutionFactsReady({
+      orderId,
+      side,
+      symbol,
+      monitorSymbol: context.monitorSymbol,
+      isLongSymbol,
+      isProtectiveLiquidation: context.isProtectiveLiquidation,
+      executedPrice,
+      executedQuantity,
+      executedTimeMs,
+      orderUpdatedAtMs,
+    });
     const recordedExecution = resolveRecordedExecution({
       executedPrice,
       executedQuantity,
@@ -392,6 +572,38 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       throw new Error(`[订单监控] 订单 ${orderId} 存在成交事实但缺少 order revision，阻断结算`);
     }
 
+    const protectiveTerminalExecutionParams =
+      context.isProtectiveLiquidation &&
+      side === 'SELL' &&
+      symbol !== null &&
+      isLongSymbol !== undefined &&
+      recordedExecution !== null
+        ? {
+            factStage: 'TERMINAL' as const,
+            orderId,
+            side,
+            monitorSymbol: context.monitorSymbol,
+            symbol,
+            isLongSymbol,
+            isProtectiveLiquidation: true,
+            executedPrice: recordedExecution.executedPrice,
+            executedQuantity: recordedExecution.executedQuantity,
+            executedTimeMs: recordedExecution.executedTimeMs,
+            orderUpdatedAtMs,
+          }
+        : null;
+    if (
+      params.preparedProtectiveTerminalExecution !== undefined &&
+      protectiveTerminalExecutionParams === null
+    ) {
+      throw new Error(`[订单监控] 订单 ${orderId} 缺少保护性终态归因，禁止消费已提交 progress`);
+    }
+
+    const protectiveTerminalExecutionResult =
+      params.preparedProtectiveTerminalExecution ??
+      (protectiveTerminalExecutionParams === null
+        ? null
+        : recordCumulativeExecutionFact(protectiveTerminalExecutionParams));
     let relatedBuyOrderIds: ReadonlyArray<string> | null = null;
 
     if (closedReason === 'FILLED') {
@@ -433,21 +645,33 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         relatedBuyOrderIds = settledSell.remainingRelatedBuyOrderIds;
       }
 
-      const executionResult = recordCumulativeExecution({
-        factStage: 'TERMINAL',
-        orderId,
-        side,
-        monitorSymbol: context.monitorSymbol,
-        symbol,
-        isLongSymbol,
-        isProtectiveLiquidation: context.isProtectiveLiquidation,
-        executedPrice,
-        executedQuantity,
-        executedTimeMs,
-        orderUpdatedAtMs,
-      });
+      const executionResult =
+        protectiveTerminalExecutionResult ??
+        recordCumulativeExecution({
+          factStage: 'TERMINAL',
+          orderId,
+          side,
+          monitorSymbol: context.monitorSymbol,
+          symbol,
+          isLongSymbol,
+          isProtectiveLiquidation: context.isProtectiveLiquidation,
+          executedPrice,
+          executedQuantity,
+          executedTimeMs,
+          orderUpdatedAtMs,
+        });
 
-      if (!executionResult.executionAdvanced) {
+      if (
+        protectiveTerminalExecutionParams !== null &&
+        protectiveTerminalExecutionResult !== null
+      ) {
+        applyCumulativeExecutionSideEffects(
+          protectiveTerminalExecutionParams,
+          protectiveTerminalExecutionResult,
+        );
+      }
+
+      if (!executionResult.authoritativeFactChanged) {
         markPostTradeRefresh();
       }
     }
@@ -501,21 +725,33 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       }
 
       if (symbol && side && isLongSymbol !== undefined && recordedExecution !== null) {
-        const executionResult = recordCumulativeExecution({
-          factStage: 'TERMINAL',
-          orderId,
-          side,
-          monitorSymbol: context.monitorSymbol,
-          symbol,
-          isLongSymbol,
-          isProtectiveLiquidation: context.isProtectiveLiquidation,
-          executedPrice: recordedExecution.executedPrice,
-          executedQuantity: recordedExecution.executedQuantity,
-          executedTimeMs: recordedExecution.executedTimeMs,
-          orderUpdatedAtMs,
-        });
+        const executionResult =
+          protectiveTerminalExecutionResult ??
+          recordCumulativeExecution({
+            factStage: 'TERMINAL',
+            orderId,
+            side,
+            monitorSymbol: context.monitorSymbol,
+            symbol,
+            isLongSymbol,
+            isProtectiveLiquidation: context.isProtectiveLiquidation,
+            executedPrice: recordedExecution.executedPrice,
+            executedQuantity: recordedExecution.executedQuantity,
+            executedTimeMs: recordedExecution.executedTimeMs,
+            orderUpdatedAtMs,
+          });
 
-        if (!executionResult.executionAdvanced) {
+        if (
+          protectiveTerminalExecutionParams !== null &&
+          protectiveTerminalExecutionResult !== null
+        ) {
+          applyCumulativeExecutionSideEffects(
+            protectiveTerminalExecutionParams,
+            protectiveTerminalExecutionResult,
+          );
+        }
+
+        if (!executionResult.authoritativeFactChanged) {
           markPostTradeRefresh();
         }
       }
@@ -543,6 +779,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
   }
 
   return {
+    prepareProtectiveTerminalExecution,
     recordCumulativeExecution,
     settleOrder,
   };

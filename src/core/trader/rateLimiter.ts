@@ -2,16 +2,13 @@
  * Trade API 频率限制器
  *
  * 职责：
- * - 控制 Trade API 调用频率，防止触发 Longbridge API 限流
- * - 支持并发调用（内部锁机制串行化请求）
- *
- * 限流规则：
- * - 30秒内最多 30 次调用
- * - 两次调用间隔不少于 30ms
+ * - 以单一 FIFO 序列协调读取 throttle 与订单 mutation。
+ * - 读取调用在通过限流时计入配额；mutation 只有 permit.invoke() 才在真实 SDK 调用前计入配额。
+ * - mutation callback 持有序列席位直到最终报价、授权、SDK 调用与回调收口完成，避免 quote-to-order TOCTOU。
  */
 import { logger } from '../../utils/logger/index.js';
 import { API } from '../../constants/index.js';
-import type { RateLimiter } from '../../types/services.js';
+import type { RateLimiter, TradeMutationPermit } from '../../types/services.js';
 import type { RateLimiterDeps, RateLimiterConfig } from './types.js';
 
 const DEFAULT_CONFIG: RateLimiterConfig = {
@@ -19,90 +16,118 @@ const DEFAULT_CONFIG: RateLimiterConfig = {
   windowMs: 30000,
 };
 
-const noop = (): void => undefined;
+/** 等待指定毫秒数。 */
+function wait(delayMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
+}
 
 /**
  * 创建频率限制器。
- * 在时间窗口内限制 Trade API 调用次数，throttle() 超限时自动等待。
- * Longbridge API 有频率限制，由单一实例保证全链路调用不超限。
+ * 所有读取和订单 mutation 共享同一 FIFO 序列；mutation callback 不会因取得席位而提前消耗 SDK 配额。
  *
  * @param deps 依赖配置（config 可选，缺省为 30 次/30 秒）
- * @returns RateLimiter 接口实例（throttle）
+ * @returns RateLimiter 接口实例（throttle、withTradeMutation）
  */
 export const createRateLimiter = (deps: RateLimiterDeps = {}): RateLimiter => {
   const config = deps.config ?? DEFAULT_CONFIG;
-  const maxCalls = config.maxCalls;
-  const windowMs = config.windowMs;
-
-  // 闭包捕获的私有状态
+  const { maxCalls, windowMs } = config;
   let callTimestamps: number[] = [];
-  let throttlePromise: Promise<void> | null = null;
+  let sequenceTail = Promise.resolve();
 
   /**
-   * 节流：在调用 API 前检查频率限制
-   * 超限时自动等待，支持并发调用（内部锁串行化）
+   * 在共享 FIFO 队列中运行一个动作，动作结束前不会释放后续调用。
+   *
+   * @param operation 当前队列动作
+   * @returns 当前动作结果
    */
-  const throttle = async (): Promise<void> => {
-    // 如果有正在执行的 throttle，等待它完成
-    while (throttlePromise) {
-      await throttlePromise;
-    }
-
-    // 设置并发锁
-    let releaseLock: () => void = noop;
-    throttlePromise = new Promise<void>((resolve) => {
-      releaseLock = resolve;
+  async function runInSequence<T>(operation: () => Promise<T>): Promise<T> {
+    const predecessor = sequenceTail;
+    let releaseCurrentTurn!: () => void;
+    const currentTurn = new Promise<void>((resolve) => {
+      releaseCurrentTurn = resolve;
     });
+    sequenceTail = predecessor.then(() => currentTurn);
 
+    await predecessor;
     try {
-      let now = performance.now();
-
-      // 1. 检查最小调用间隔（两次调用间隔不少于 API.MIN_CALL_INTERVAL_MS 毫秒）
-      const lastCallTime = callTimestamps.at(-1);
-      if (lastCallTime) {
-        while (now - lastCallTime < API.MIN_CALL_INTERVAL_MS) {
-          const waitTime = API.MIN_CALL_INTERVAL_MS - (now - lastCallTime);
-          await new Promise<void>((resolve) => {
-            setTimeout(resolve, waitTime);
-          });
-          now = performance.now();
-        }
-      }
-
-      // 2. 清理超出时间窗口的调用记录
-      callTimestamps = callTimestamps.filter((timestamp) => now - timestamp < windowMs);
-
-      // 3. 如果已达到最大调用次数，等待最早的调用过期
-      if (callTimestamps.length >= maxCalls) {
-        const oldestCall = callTimestamps[0];
-        if (!oldestCall) {
-          // 这种情况不应该发生，但为了类型安全还是检查一下
-          throw new Error('[频率限制] 调用时间戳数组异常');
-        }
-
-        const waitTime = windowMs - (now - oldestCall) + API.RATE_LIMIT_BUFFER_MS;
-        logger.warn(
-          `[频率限制] Trade API 调用频率达到上限 (${maxCalls}次/${windowMs}ms)，等待 ${waitTime}ms`,
-        );
-
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, waitTime);
-        });
-
-        const nowAfterWait = performance.now();
-        callTimestamps = callTimestamps.filter((timestamp) => nowAfterWait - timestamp < windowMs);
-      }
-
-      // 4. 记录本次调用时间
-      callTimestamps.push(performance.now());
+      return await operation();
     } finally {
-      // 释放并发锁
-      throttlePromise = null;
-      releaseLock();
+      releaseCurrentTurn();
     }
-  };
+  }
+
+  /** 等待当前 API 调用可执行，但不写入本次调用时间戳。 */
+  async function waitForApiSlot(): Promise<void> {
+    let now = performance.now();
+    const lastCallTime = callTimestamps.at(-1);
+    if (lastCallTime !== undefined) {
+      while (now - lastCallTime < API.MIN_CALL_INTERVAL_MS) {
+        await wait(API.MIN_CALL_INTERVAL_MS - (now - lastCallTime));
+        now = performance.now();
+      }
+    }
+
+    callTimestamps = callTimestamps.filter((timestamp) => now - timestamp < windowMs);
+    while (callTimestamps.length >= maxCalls) {
+      const oldestCall = callTimestamps[0];
+      if (oldestCall === undefined) {
+        throw new Error('[频率限制] 调用时间戳数组异常');
+      }
+
+      const waitTime = windowMs - (now - oldestCall) + API.RATE_LIMIT_BUFFER_MS;
+      logger.warn(
+        `[频率限制] Trade API 调用频率达到上限 (${maxCalls}次/${windowMs}ms)，等待 ${waitTime}ms`,
+      );
+      await wait(waitTime);
+      now = performance.now();
+      const currentNow = now;
+      callTimestamps = callTimestamps.filter((timestamp) => currentNow - timestamp < windowMs);
+    }
+  }
+
+  /** 在真实 API 调用即将开始时记录配额。 */
+  function recordApiInvocation(): void {
+    callTimestamps.push(performance.now());
+  }
+
+  /** 读取 API 的限流入口。 */
+  async function throttle(): Promise<void> {
+    await runInSequence(async () => {
+      await waitForApiSlot();
+      recordApiInvocation();
+    });
+  }
+
+  /**
+   * 在单一 mutation 席位中执行最终订单动作。
+   * callback 可以安全等待最终行情；若它提前跳过或抛错，配额不会被消耗。
+   */
+  async function withTradeMutation<T>(
+    callback: (permit: TradeMutationPermit) => Promise<T>,
+  ): Promise<T> {
+    return runInSequence(async () => {
+      await waitForApiSlot();
+      let invoked = false;
+      const permit: TradeMutationPermit = {
+        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => {
+          if (invoked) {
+            throw new Error('[频率限制] 单个 trade mutation permit 只能调用一次');
+          }
+
+          invoked = true;
+          recordApiInvocation();
+          return operation();
+        },
+      };
+
+      return callback(permit);
+    });
+  }
 
   return {
     throttle,
+    withTradeMutation,
   };
 };

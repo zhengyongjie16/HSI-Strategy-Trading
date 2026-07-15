@@ -14,12 +14,14 @@ import {
   wrapExternalApiRequest,
 } from '../../../utils/apiFailure/index.js';
 import type { CancelOrderOutcome, OrderStateCheckResult } from '../../../types/trader.js';
+import type { TradeMutationPermit } from '../../../types/services.js';
 import {
   ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS,
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
 } from '../../../constants/index.js';
 import { toDecimal } from '../utils.js';
 import type {
+  CancelOrderMutationRequest,
   OrderActionAuthorizationStage,
   OrderMutationRequest,
   ReplaceOrderPriceOutcome,
@@ -28,9 +30,14 @@ import type {
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
+  ReplaceBlockOwnerSnapshot,
+  OrderCumulativeExecutionParams,
+  CancelOrderBeforeBrokerMutation,
+  CancelOrderPreflightOutcome,
   OrderOps,
   OrderOpsDeps,
   ReplaceOrderOutcome,
+  ReplacePermitRunner,
   TerminalStateSnapshot,
 } from './types.js';
 import {
@@ -45,50 +52,67 @@ import {
   resolveInitialTrackedStatus,
 } from './utils.js';
 import { attachTrackedOrder } from './routingIndex.js';
-import { mergeMonotonicOrderFact } from './orderFactMerge.js';
+import {
+  assertStateCheckRawExecutionFactsReady,
+  mergeMonotonicOrderFact,
+} from './orderFactMerge.js';
 
 /**
- * 读取并消费单订单权威终态缓存。
- * 该缓存只允许被消费一次，避免同一终态被重复结算。
+ * 只读取权威终态原始快照，不提前删除。
+ *
+ * 活跃订单的终态必须在 raw 校验、持久化与本地结算全部成功后才能 ack，
+ * 否则同一 broker observation 无法安全重试。
  */
-export function consumeQueriedTerminalState(
+export function peekQueriedTerminalState(
   runtime: OrderMonitorRuntimeStore,
   orderId: string,
 ): TerminalStateSnapshot | null {
-  const state = runtime.queriedTerminalStateByOrderId.get(orderId) ?? null;
-  if (state !== null) {
-    runtime.queriedTerminalStateByOrderId.delete(orderId);
-  }
-
-  return state;
+  return runtime.queriedTerminalStateByOrderId.get(orderId) ?? null;
 }
 
-/**
- * 读取并消费最新改单结果缓存。
- * 调用方消费后即删除，保证 outcome 语义是“增量事件”而非“持久状态”。
- */
-export function consumeLatestReplaceOutcome(
+/** 仅在仍是同一 raw snapshot 时确认消费，避免删除期间到达的新观察。 */
+export function acknowledgeQueriedTerminalState(
+  runtime: OrderMonitorRuntimeStore,
+  orderId: string,
+  terminalState: TerminalStateSnapshot,
+): void {
+  if (runtime.queriedTerminalStateByOrderId.get(orderId) === terminalState) {
+    runtime.queriedTerminalStateByOrderId.delete(orderId);
+  }
+}
+
+/** 只读取改单 outcome，不在终态结算完成前删除。 */
+export function peekLatestReplaceOutcome(
   runtime: OrderMonitorRuntimeStore,
   orderId: string,
 ): ReplaceOrderOutcome | null {
-  const outcome = runtime.latestReplaceOutcomeByOrderId.get(orderId) ?? null;
-  if (outcome !== null) {
+  return runtime.latestReplaceOutcomeByOrderId.get(orderId) ?? null;
+}
+
+/** 仅在仍是同一 outcome 时确认消费，保留失败后的同一 raw 终态供重试。 */
+export function acknowledgeLatestReplaceOutcome(
+  runtime: OrderMonitorRuntimeStore,
+  orderId: string,
+  outcome: ReplaceOrderOutcome,
+): void {
+  if (runtime.latestReplaceOutcomeByOrderId.get(orderId) === outcome) {
     runtime.latestReplaceOutcomeByOrderId.delete(orderId);
   }
-
-  return outcome;
 }
 
 /**
- * 清理改单相关运行态缓存。
- * 用于终态结算、WS 推进或恢复重置后的状态收敛。
+ * 清理普通改单临时态。
+ *
+ * `TERMINAL_CONFIRMED` 及其 raw terminal snapshot 是待终态网关确认的保护性证据，
+ * route stale、runtime stop 和普通 WS 进展都只能停止后续 mutation，不能删除它们。
  */
-export function resetOrderReplaceRuntimeState(
+export function clearOrderReplaceTransientRuntimeState(
   runtime: OrderMonitorRuntimeStore,
   orderId: string,
 ): void {
-  runtime.latestReplaceOutcomeByOrderId.delete(orderId);
-  runtime.queriedTerminalStateByOrderId.delete(orderId);
+  if (runtime.latestReplaceOutcomeByOrderId.get(orderId)?.kind !== 'TERMINAL_CONFIRMED') {
+    runtime.latestReplaceOutcomeByOrderId.delete(orderId);
+  }
 }
 
 /** 将改单状态恢复到可继续尝试的初始值。 */
@@ -112,7 +136,7 @@ export function resumeOrderReplaceFromWsProgress(
   }
 
   resetTrackedOrderReplaceState(trackedOrder);
-  resetOrderReplaceRuntimeState(runtime, orderId);
+  clearOrderReplaceTransientRuntimeState(runtime, orderId);
 }
 
 /** 将单订单权威状态查询结果映射为统一撤单 outcome。 */
@@ -124,11 +148,16 @@ function mapStateCheckResultToCancelOutcome(
   const { runtime } = deps;
   if (queryResult.kind === 'TERMINAL') {
     runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
+
     return {
       kind: 'ALREADY_CLOSED',
       closedReason: queryResult.closedReason,
       source: 'API_ERROR',
       relatedBuyOrderIds: null,
+      terminalExecution: {
+        submittedQuantity: queryResult.submittedQuantity,
+        executedQuantity: queryResult.executedQuantity,
+      },
     };
   }
 
@@ -158,16 +187,39 @@ function applyOpenStateCheckFact(
     return;
   }
 
-  const previousExecutedQuantity = trackedOrder.executedQuantity;
-  const mergedFact = mergeMonotonicOrderFact(trackedOrder, {
+  const rawObservedFact = {
     status: queryResult.status,
-    executedQuantity: queryResult.executedQuantity ?? trackedOrder.executedQuantity,
+    executedQuantity: queryResult.executedQuantity,
     executedPrice: queryResult.executedPrice,
     executedTimeMs: queryResult.updatedAtMs,
     updatedAtMs: queryResult.updatedAtMs,
-  });
+  };
+  const previousExecutedQuantity = trackedOrder.executedQuantity;
+  const mergedFact = mergeMonotonicOrderFact(trackedOrder, rawObservedFact);
   if (mergedFact === null) {
     return;
+  }
+
+  const cumulativeExecutionParams: OrderCumulativeExecutionParams | null =
+    mergedFact.executedQuantity > 0
+      ? {
+          factStage: 'OPEN' as const,
+          orderId,
+          side: trackedOrder.side === OrderSide.Buy ? 'BUY' : 'SELL',
+          monitorSymbol: trackedOrder.monitorSymbol,
+          symbol: trackedOrder.symbol,
+          isLongSymbol: trackedOrder.isLongSymbol,
+          isProtectiveLiquidation: trackedOrder.isProtectiveLiquidation,
+          executedPrice: mergedFact.executedPrice,
+          executedQuantity: mergedFact.executedQuantity,
+          executedTimeMs: mergedFact.executedTimeMs,
+          orderUpdatedAtMs: mergedFact.updatedAtMs,
+        }
+      : null;
+  const isProtectiveSell =
+    trackedOrder.side === OrderSide.Sell && trackedOrder.isProtectiveLiquidation;
+  if (cumulativeExecutionParams !== null && isProtectiveSell) {
+    deps.recordCumulativeExecution(cumulativeExecutionParams);
   }
 
   trackedOrder.status = mergedFact.status;
@@ -175,27 +227,20 @@ function applyOpenStateCheckFact(
   trackedOrder.executedPrice = mergedFact.executedPrice;
   trackedOrder.lastExecutedTimeMs = mergedFact.executedTimeMs;
   trackedOrder.lastOrderUpdateAtMs = mergedFact.updatedAtMs;
-  if (mergedFact.executedQuantity <= previousExecutedQuantity) {
+  if (mergedFact.executedQuantity <= 0) {
     return;
   }
 
-  if (trackedOrder.side === OrderSide.Sell) {
+  if (
+    trackedOrder.side === OrderSide.Sell &&
+    mergedFact.executedQuantity > previousExecutedQuantity
+  ) {
     deps.orderRecorder.markSellPartialFilled(orderId, mergedFact.executedQuantity);
   }
 
-  deps.recordCumulativeExecution({
-    factStage: 'OPEN',
-    orderId,
-    side: trackedOrder.side === OrderSide.Buy ? 'BUY' : 'SELL',
-    monitorSymbol: trackedOrder.monitorSymbol,
-    symbol: trackedOrder.symbol,
-    isLongSymbol: trackedOrder.isLongSymbol,
-    isProtectiveLiquidation: trackedOrder.isProtectiveLiquidation,
-    executedPrice: trackedOrder.executedPrice,
-    executedQuantity: trackedOrder.executedQuantity,
-    executedTimeMs: trackedOrder.lastExecutedTimeMs,
-    orderUpdatedAtMs: trackedOrder.lastOrderUpdateAtMs,
-  });
+  if (cumulativeExecutionParams !== null && !isProtectiveSell) {
+    deps.recordCumulativeExecution(cumulativeExecutionParams);
+  }
 }
 
 /** 写入改单结果事件缓存，供 route owner 在后续推进中消费。 */
@@ -207,16 +252,52 @@ function setReplaceOutcome(
   runtime.latestReplaceOutcomeByOrderId.set(orderId, outcome);
 }
 
-/** 在每次真实 SDK mutation attempt 前检查订单事实来源或信号授权。 */
+/** 未覆盖的 mutation 请求来源必须立即暴露，不能降级为默认授权。 */
+function assertUnreachableOrderMutationRequest(request: never): never {
+  throw new Error(`[订单监控] 未覆盖的订单 mutation 请求来源: ${String(request)}`);
+}
+
+/** 在每次真实 SDK mutation attempt 前按请求来源检查授权。 */
 function isOrderMutationAuthorized(
   request: OrderMutationRequest,
   stage: OrderActionAuthorizationStage,
 ): boolean {
-  if (request.kind === 'ORDER_FACT') {
-    return true;
-  }
+  switch (request.kind) {
+    case 'ORDER_FACT': {
+      return true;
+    }
 
-  return request.authorize(stage);
+    case 'SIGNAL_AUTHORIZED': {
+      return request.authorize(stage);
+    }
+
+    case 'CONTINUOUS_TRADING_AUTHORIZED': {
+      return request.authorize();
+    }
+
+    default: {
+      return assertUnreachableOrderMutationRequest(request);
+    }
+  }
+}
+
+/**
+ * 在已取得的交易 mutation permit 内执行唯一一次 SDK 撤单。
+ *
+ * route owner、授权及前置检查必须先在同一 permit callback 内完成；这里仅保留真实 broker mutation
+ * 与 permit.invoke 的不可分割边界。
+ *
+ * @param permit 当前交易 mutation permit
+ * @param ctx 交易 SDK 上下文
+ * @param orderId 待撤销的订单 ID
+ * @returns broker 撤单完成后的 Promise
+ */
+async function invokeCancelOrderWithPermit(
+  permit: TradeMutationPermit,
+  ctx: OrderOpsDeps['ctx'],
+  orderId: string,
+): Promise<void> {
+  await permit.invoke(() => ctx.cancelOrder(orderId));
 }
 
 /** 清理单个订单的改单阻塞与查询缓存，进入“可重试”稳态。 */
@@ -226,8 +307,26 @@ function clearReplaceState(
   trackedOrder: OrderMonitorTrackedOrder,
 ): void {
   resetTrackedOrderReplaceState(trackedOrder);
-  runtime.latestReplaceOutcomeByOrderId.delete(orderId);
-  runtime.queriedTerminalStateByOrderId.delete(orderId);
+  clearOrderReplaceTransientRuntimeState(runtime, orderId);
+}
+
+/**
+ * 确认 state-check 等待期间未被 WS 进展解除并重分配当前 602013 阻塞 owner。
+ *
+ * state-check 的 OPEN 事实仍可按单调规则合并；但旧请求派生出的 WAIT_WS_ONLY
+ * 决策只能归属于启动查询时的同一 replace block，不能覆盖 WS 已重开的 route。
+ */
+function isReplaceBlockOwnerSnapshotCurrent(
+  trackedOrder: OrderMonitorTrackedOrder,
+  snapshot: ReplaceBlockOwnerSnapshot,
+): boolean {
+  return (
+    trackedOrder.replaceCapability === snapshot.replaceCapability &&
+    trackedOrder.replaceTempBlockedCount === snapshot.replaceTempBlockedCount &&
+    trackedOrder.replaceResumeMode === snapshot.replaceResumeMode &&
+    trackedOrder.replaceBlockedUntilAt === snapshot.replaceBlockedUntilAt &&
+    trackedOrder.lastPriceUpdateAt === snapshot.lastPriceUpdateAt
+  );
 }
 
 function resolveAttachedTrackedOrder(
@@ -244,6 +343,22 @@ function resolveAttachedTrackedOrder(
   }
 
   return runtime.trackedOrders.get(orderId) === trackedOrder ? trackedOrder : null;
+}
+
+/**
+ * 断言 602013 连续计数仍处于本 handler 可达的内部状态范围。
+ *
+ * 0..3 分别选择四档退避；4 表示四档均已完成，下一次必须进入权威状态查询。
+ */
+function assertReplaceTempBlockedRetryIndex(retryIndex: number): void {
+  if (
+    !Number.isFinite(retryIndex) ||
+    !Number.isInteger(retryIndex) ||
+    retryIndex < 0 ||
+    retryIndex > ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS.length
+  ) {
+    throw new Error(`[订单修改] 602013 重试计数无效: ${String(retryIndex)}`);
+  }
 }
 
 /**
@@ -291,7 +406,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       );
     }
 
-    resetOrderReplaceRuntimeState(runtime, orderId);
+    clearOrderReplaceTransientRuntimeState(runtime, orderId);
     const now = Date.now();
     const submittedAt =
       typeof submittedAtMs === 'number' && isValidPositiveNumber(submittedAtMs)
@@ -305,8 +420,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       isLongSymbol,
       monitorSymbol,
       isProtectiveLiquidation,
-      liquidationTriggerLimit: monitorConfig.liquidationTriggerLimit,
-      liquidationCooldownConfig: monitorConfig.liquidationCooldown,
       orderType,
       submittedPrice: price,
       initialSubmittedPrice,
@@ -349,24 +462,52 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
    * 撤销订单并返回 outcome。
    *
    * @param orderId 订单 ID
+   * @param request 撤单授权来源
+   * @param beforeBrokerCancel route owner 的 permit 内前置检查；返回 false 时不调用 broker
    * @returns 语义化撤单结果
    */
   async function cancelOrder(
     orderId: string,
-    request: OrderMutationRequest,
-  ): Promise<CancelOrderOutcome> {
+    request: CancelOrderMutationRequest,
+    beforeBrokerCancel?: CancelOrderBeforeBrokerMutation,
+  ): Promise<CancelOrderPreflightOutcome> {
+    const pendingTerminalState = peekQueriedTerminalState(runtime, orderId);
+    if (pendingTerminalState !== null) {
+      return {
+        kind: 'ALREADY_CLOSED',
+        closedReason: pendingTerminalState.closedReason,
+        source: 'API_ERROR',
+        relatedBuyOrderIds: null,
+        terminalExecution: {
+          submittedQuantity: pendingTerminalState.submittedQuantity,
+          executedQuantity: pendingTerminalState.executedQuantity,
+        },
+      };
+    }
+
     try {
-      await rateLimiter.throttle();
       const mutationOutcome = await wrapExternalApiRequest({
         operation: 'TradeContext.cancelOrder',
-        request: async () => {
-          if (!isOrderMutationAuthorized(request, 'cancelOrder.beforeApi')) {
-            return { kind: 'AUTHORIZATION_REVOKED' } as const;
-          }
+        request: () =>
+          rateLimiter.withTradeMutation(async (permit) => {
+            if (
+              request.kind !== 'DOOMSDAY_WINDOW' &&
+              !isOrderMutationAuthorized(request, 'cancelOrder.beforeApi')
+            ) {
+              return { kind: 'AUTHORIZATION_REVOKED' } as const;
+            }
 
-          await ctx.cancelOrder(orderId);
-          return { kind: 'BROKER_CONFIRMED' } as const;
-        },
+            if (request.kind === 'DOOMSDAY_WINDOW' && !request.beforeBrokerCancel()) {
+              return { kind: 'CANCEL_NOT_STARTED' } as const;
+            }
+
+            if (beforeBrokerCancel !== undefined && !beforeBrokerCancel()) {
+              return { kind: 'CANCEL_NOT_STARTED' } as const;
+            }
+
+            await invokeCancelOrderWithPermit(permit, ctx, orderId);
+            return { kind: 'BROKER_CONFIRMED' } as const;
+          }),
         shouldRetry: isRetryableOrderMutationError,
       });
       if (mutationOutcome.kind === 'AUTHORIZATION_REVOKED') {
@@ -375,6 +516,10 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
           errorCode: null,
           message: `signal authorization revoked before cancel order ${orderId}`,
         };
+      }
+
+      if (mutationOutcome.kind === 'CANCEL_NOT_STARTED') {
+        return mutationOutcome;
       }
 
       cacheManager.clearCache();
@@ -409,6 +554,15 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       }
 
       const queryResult = await orderStatusQuery.checkOrderState(orderId);
+      const currentTrackedOrder = runtime.trackedOrders.get(orderId);
+      const stateCheckTrackedOrder =
+        currentTrackedOrder === undefined
+          ? undefined
+          : resolveAttachedTrackedOrder(runtime, orderId, currentTrackedOrder);
+      if (queryResult.kind !== 'QUERY_FAILED') {
+        assertStateCheckRawExecutionFactsReady(stateCheckTrackedOrder, queryResult);
+      }
+
       if (queryResult.kind === 'OPEN') {
         applyOpenStateCheckFact(deps, orderId, queryResult);
       }
@@ -426,11 +580,18 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     trackedOrder: OrderMonitorTrackedOrder,
     now: number,
   ): Promise<void> {
-    const retryCount = trackedOrder.replaceTempBlockedCount + 1;
-    trackedOrder.replaceTempBlockedCount = retryCount;
+    const retryIndex = trackedOrder.replaceTempBlockedCount;
+    assertReplaceTempBlockedRetryIndex(retryIndex);
+    const retryCount = retryIndex + 1;
 
-    if (retryCount <= ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS.length) {
-      const backoffMs = ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS[retryCount - 1] ?? 8000;
+    if (retryIndex < ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS.length) {
+      const backoffMs = ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS[retryIndex];
+      if (backoffMs === undefined) {
+        throw new Error(`[订单修改] 602013 第 ${retryCount} 次退避配置缺失`);
+      }
+
+      trackedOrder.lastPriceUpdateAt = now;
+      trackedOrder.replaceTempBlockedCount = retryCount;
       trackedOrder.replaceCapability = 'TEMP_BLOCKED_BY_STATUS';
       trackedOrder.replaceBlockedUntilAt = now + backoffMs;
       trackedOrder.replaceResumeMode = 'TIME_BACKOFF';
@@ -447,6 +608,13 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       return;
     }
 
+    const replaceBlockOwnerAtStateCheck: ReplaceBlockOwnerSnapshot = {
+      replaceCapability: trackedOrder.replaceCapability,
+      replaceTempBlockedCount: trackedOrder.replaceTempBlockedCount,
+      replaceResumeMode: trackedOrder.replaceResumeMode,
+      replaceBlockedUntilAt: trackedOrder.replaceBlockedUntilAt,
+      lastPriceUpdateAt: trackedOrder.lastPriceUpdateAt,
+    };
     const queryResult = await orderStatusQuery.checkOrderState(orderId);
     const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
     if (attachedTrackedOrder === null) {
@@ -454,9 +622,18 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       return;
     }
 
+    if (queryResult.kind !== 'QUERY_FAILED') {
+      assertStateCheckRawExecutionFactsReady(attachedTrackedOrder, queryResult);
+    }
+
+    if (queryResult.kind === 'OPEN') {
+      applyOpenStateCheckFact(deps, orderId, queryResult);
+    }
+
     if (queryResult.kind === 'TERMINAL') {
-      runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
+      attachedTrackedOrder.lastPriceUpdateAt = now;
       clearReplaceState(runtime, orderId, attachedTrackedOrder);
+      runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
       setReplaceOutcome(runtime, orderId, {
         kind: 'TERMINAL_CONFIRMED',
         terminalState: queryResult,
@@ -465,10 +642,13 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       return;
     }
 
-    if (queryResult.kind === 'OPEN') {
-      applyOpenStateCheckFact(deps, orderId, queryResult);
+    if (!isReplaceBlockOwnerSnapshotCurrent(attachedTrackedOrder, replaceBlockOwnerAtStateCheck)) {
+      logger.debug(`[订单修改] 订单 ${orderId} 的 602013 state-check 已过期，丢弃旧阻塞决定`);
+      return;
     }
 
+    attachedTrackedOrder.lastPriceUpdateAt = now;
+    attachedTrackedOrder.replaceTempBlockedCount = retryCount;
     attachedTrackedOrder.replaceCapability = 'TEMP_BLOCKED_BY_STATUS';
     attachedTrackedOrder.replaceBlockedUntilAt = ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS;
     attachedTrackedOrder.replaceResumeMode = 'WAIT_WS_ONLY';
@@ -487,15 +667,22 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
    *
    * @param orderId 订单 ID
    * @param newPrice 新价格
+   * @param request 改单请求及其 API 前授权来源
    * @param quantity 可选新数量（默认剩余数量）
-   * @returns 无返回值
+   * @returns Promise<ReplaceOrderPriceOutcome>，区分经纪商确认改单与本地未执行
    */
-  async function replaceOrderPrice(
+  async function replaceOrderPriceWithRunner(
     orderId: string,
     newPrice: number,
     request: OrderMutationRequest,
-    quantity: number | null = null,
+    quantity: number | null,
+    runWithPermit: ReplacePermitRunner,
   ): Promise<ReplaceOrderPriceOutcome> {
+    if (peekLatestReplaceOutcome(runtime, orderId)?.kind === 'TERMINAL_CONFIRMED') {
+      logger.debug(`[订单修改] 订单 ${orderId} 存在未确认终态，拒绝再次改单`);
+      return { kind: 'NOT_EXECUTED' };
+    }
+
     const trackedOrder = runtime.trackedOrders.get(orderId);
     if (!trackedOrder) {
       setReplaceOutcome(runtime, orderId, {
@@ -547,6 +734,13 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       return { kind: 'NOT_EXECUTED' };
     }
 
+    const executionFactAtPlan = {
+      executedQuantity: trackedOrder.executedQuantity,
+      executedPrice: trackedOrder.executedPrice,
+      lastExecutedTimeMs: trackedOrder.lastExecutedTimeMs,
+      lastOrderUpdateAtMs: trackedOrder.lastOrderUpdateAtMs,
+    };
+
     const normalizedNewPriceText = normalizePriceText(newPrice);
     const normalizedNewPriceDecimal = toDecimal(normalizedNewPriceText);
     const normalizedNewPriceNumber = Number(normalizedNewPriceText);
@@ -557,25 +751,29 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     };
 
     try {
-      await rateLimiter.throttle();
-      if (resolveAttachedTrackedOrder(runtime, orderId, trackedOrder) === null) {
-        logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，跳过过期改单请求`);
-        return { kind: 'NOT_EXECUTED' };
-      }
+      const mutationOutcome = await runWithPermit(async (permit) => {
+        const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
+        if (attachedTrackedOrder === null) {
+          return { kind: 'EXECUTION_FACT_CHANGED' } as const;
+        }
 
-      const mutationOutcome = await wrapExternalApiRequest({
-        operation: 'TradeContext.replaceOrder',
-        request: async () => {
-          if (!isOrderMutationAuthorized(request, 'replaceOrder.beforeApi')) {
-            return { kind: 'AUTHORIZATION_REVOKED' } as const;
-          }
+        if (
+          attachedTrackedOrder.executedQuantity !== executionFactAtPlan.executedQuantity ||
+          attachedTrackedOrder.executedPrice !== executionFactAtPlan.executedPrice ||
+          attachedTrackedOrder.lastExecutedTimeMs !== executionFactAtPlan.lastExecutedTimeMs ||
+          attachedTrackedOrder.lastOrderUpdateAtMs !== executionFactAtPlan.lastOrderUpdateAtMs
+        ) {
+          return { kind: 'EXECUTION_FACT_CHANGED' } as const;
+        }
 
-          await ctx.replaceOrder(replacePayload);
-          return { kind: 'BROKER_CONFIRMED' } as const;
-        },
-        shouldRetry: isRetryableOrderMutationError,
+        if (!isOrderMutationAuthorized(request, 'replaceOrder.beforeApi')) {
+          return { kind: 'AUTHORIZATION_REVOKED' } as const;
+        }
+
+        await permit.invoke(() => ctx.replaceOrder(replacePayload));
+        return { kind: 'BROKER_CONFIRMED' } as const;
       });
-      if (mutationOutcome.kind === 'AUTHORIZATION_REVOKED') {
+      if (mutationOutcome.kind !== 'BROKER_CONFIRMED') {
         return { kind: 'NOT_EXECUTED' };
       }
 
@@ -609,11 +807,11 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         return { kind: 'NOT_EXECUTED' };
       }
 
-      attachedTrackedOrder.lastPriceUpdateAt = now;
       const errorCode = extractErrorCode(error);
       const message = extractErrorMessage(error);
 
       if (isReplaceUnsupportedByTypeError(error)) {
+        attachedTrackedOrder.lastPriceUpdateAt = now;
         attachedTrackedOrder.replaceCapability = 'UNSUPPORTED_BY_TYPE';
         attachedTrackedOrder.replaceBlockedUntilAt = null;
         attachedTrackedOrder.replaceResumeMode = 'TIME_BACKOFF';
@@ -632,6 +830,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       }
 
       if (isRetryableOrderMutationError(error)) {
+        attachedTrackedOrder.lastPriceUpdateAt = now;
         setReplaceOutcome(runtime, orderId, {
           kind: 'FAILED',
           reason: 'RETRYABLE',
@@ -657,9 +856,18 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
           return { kind: 'NOT_EXECUTED' };
         }
 
+        if (queryResult.kind !== 'QUERY_FAILED') {
+          assertStateCheckRawExecutionFactsReady(latestAttachedTrackedOrder, queryResult);
+        }
+
+        if (queryResult.kind === 'OPEN') {
+          applyOpenStateCheckFact(deps, orderId, queryResult);
+        }
+
+        latestAttachedTrackedOrder.lastPriceUpdateAt = now;
         if (queryResult.kind === 'TERMINAL') {
-          runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
           clearReplaceState(runtime, orderId, latestAttachedTrackedOrder);
+          runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
           setReplaceOutcome(runtime, orderId, {
             kind: 'TERMINAL_CONFIRMED',
             terminalState: queryResult,
@@ -669,7 +877,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         }
 
         if (queryResult.kind === 'OPEN') {
-          applyOpenStateCheckFact(deps, orderId, queryResult);
           setReplaceOutcome(runtime, orderId, {
             kind: 'FAILED',
             reason: 'QUERY_OPEN',
@@ -688,6 +895,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         return { kind: 'NOT_EXECUTED' };
       }
 
+      attachedTrackedOrder.lastPriceUpdateAt = now;
       setReplaceOutcome(runtime, orderId, {
         kind: 'FAILED',
         reason: 'UNKNOWN',
@@ -699,9 +907,56 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     }
   }
 
+  /** 由 OrderMonitor 自主 owner 发起的改单：每次 SDK retry 都重新取得一个 mutation permit。 */
+  async function replaceOrderPrice(
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    quantity: number | null = null,
+  ): Promise<ReplaceOrderPriceOutcome> {
+    return replaceOrderPriceWithRunner(orderId, newPrice, request, quantity, async (mutation) =>
+      wrapExternalApiRequest({
+        operation: 'TradeContext.replaceOrder',
+        request: () => rateLimiter.withTradeMutation(mutation),
+        shouldRetry: isRetryableOrderMutationError,
+      }),
+    );
+  }
+
+  /**
+   * 信号卖单合并在外层 callback permit 内完成最终 quote 后，使用同一 permit 执行唯一一次 SDK 改单。
+   * 此路径不重新排队，且不会接受无 permit 的兼容调用。
+   */
+  async function replaceOrderPriceWithPermit(
+    orderId: string,
+    newPrice: number,
+    request: OrderMutationRequest,
+    permit: TradeMutationPermit,
+    quantity: number | null = null,
+  ): Promise<ReplaceOrderPriceOutcome> {
+    const singleAttemptPermit: TradeMutationPermit = {
+      invoke: <T>(operation: () => Promise<T>): Promise<T> =>
+        permit.invoke(() =>
+          wrapExternalApiRequest({
+            operation: 'TradeContext.replaceOrder',
+            request: operation,
+            retryConfig: {
+              retries: 0,
+              delayMs: 0,
+            },
+          }),
+        ),
+    };
+
+    return replaceOrderPriceWithRunner(orderId, newPrice, request, quantity, async (mutation) =>
+      mutation(singleAttemptPermit),
+    );
+  }
+
   return {
     trackOrder,
     cancelOrder,
     replaceOrderPrice,
+    replaceOrderPriceWithPermit,
   };
 }

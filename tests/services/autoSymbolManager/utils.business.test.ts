@@ -12,8 +12,6 @@ import {
   describeSignalSeatValidationFailure,
   validateSignalSeat,
 } from '../../../src/services/autoSymbolManager/utils.js';
-import { logger } from '../../../src/utils/logger/index.js';
-import type { Logger } from '../../../src/utils/logger/types.js';
 import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
 import {
   createMonitorConfigDouble,
@@ -320,22 +318,19 @@ describe('autoSymbolManager utils business flow', () => {
     ]);
   });
 
-  it('logs listener errors without failing committed seat mutations', () => {
-    const originalErrorLogger = logger.error;
-    const errorLogs: Array<{ readonly message: string; readonly extra: unknown }> = [];
-    logger.error = ((message: string, extra?: unknown) => {
-      errorLogs.push({ message, extra });
-    }) satisfies Logger['error'];
+  it('提交席位状态与版本后汇总所有 listener 错误', () => {
     const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
     );
+    const stateListenerError = new Error('state listener failed');
+    const truthListenerError = new Error('truth listener failed');
     const events: string[] = [];
     symbolRegistry.onSeatStateChanged(() => {
       events.push('state:first');
-      throw new Error('state listener failed');
+      throw stateListenerError;
     });
 
     symbolRegistry.onSeatStateChanged(() => {
@@ -344,15 +339,16 @@ describe('autoSymbolManager utils business flow', () => {
 
     symbolRegistry.onSeatTruthChanged(() => {
       events.push('truth:first');
-      throw new Error('truth listener failed');
+      throw truthListenerError;
     });
 
     symbolRegistry.onSeatTruthChanged(() => {
       events.push('truth:second');
     });
 
+    let caught: unknown = null;
     try {
-      const result = symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      symbolRegistry.updateSeatStateWithVersionBump('LONG', {
         symbol: 'NEW_BULL.HK',
         status: 'ACTIVE',
         lastSwitchAt: 100,
@@ -362,51 +358,55 @@ describe('autoSymbolManager utils business flow', () => {
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });
-
-      expect(result.seatVersion).toBe(2);
-      expect(result.seatState.symbol).toBe('NEW_BULL.HK');
-      expect(symbolRegistry.getSeatState('LONG').symbol).toBe('NEW_BULL.HK');
-      expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
-      expect(events).toEqual(['state:first', 'state:second', 'truth:first', 'truth:second']);
-
-      expect(errorLogs).toEqual([
-        {
-          message: 'SymbolRegistry 席位状态 listener 执行失败',
-          extra: 'state listener failed',
-        },
-        {
-          message: 'SymbolRegistry 席位 truth listener 执行失败',
-          extra: 'truth listener failed',
-        },
-      ]);
-    } finally {
-      logger.error = originalErrorLogger;
+    } catch (error) {
+      caught = error;
     }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    if (!(caught instanceof AggregateError)) {
+      throw new Error('预期 SymbolRegistry 暴露 AggregateError');
+    }
+
+    expect(caught.errors).toEqual([stateListenerError, truthListenerError]);
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      symbol: 'NEW_BULL.HK',
+      status: 'ACTIVE',
+    });
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
+    expect(events).toEqual(['state:first', 'state:second', 'truth:first', 'truth:second']);
   });
 
-  it('logs state listener errors without failing non-version seat mutations', () => {
-    const originalErrorLogger = logger.error;
-    const errorLogs: Array<{ readonly message: string; readonly extra: unknown }> = [];
-    logger.error = ((message: string, extra?: unknown) => {
-      errorLogs.push({ message, extra });
-    }) satisfies Logger['error'];
+  it('无版本递增写入也在完成两类 listener 后暴露聚合错误', () => {
     const symbolRegistry = createSymbolRegistry(
       createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         longSymbol: 'OLD_BULL.HK',
       }),
     );
+    const stateListenerError = new Error('state listener failed');
+    const truthListenerError = new Error('truth listener failed');
+    const events: string[] = [];
+    symbolRegistry.onSeatStateChanged(() => {
+      events.push('state:first');
+      throw stateListenerError;
+    });
 
     symbolRegistry.onSeatStateChanged(() => {
-      throw new Error('state listener failed');
+      events.push('state:second');
     });
 
     symbolRegistry.onSeatTruthChanged(() => {
-      throw new Error('truth listener failed');
+      events.push('truth:first');
+      throw truthListenerError;
     });
 
+    symbolRegistry.onSeatTruthChanged(() => {
+      events.push('truth:second');
+    });
+
+    let caught: unknown = null;
     try {
-      const result = symbolRegistry.updateSeatState('LONG', {
+      symbolRegistry.updateSeatState('LONG', {
         symbol: 'OLD_BULL.HK',
         status: 'ACTIVATING',
         lastSwitchAt: 100,
@@ -416,23 +416,19 @@ describe('autoSymbolManager utils business flow', () => {
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });
-
-      expect(result.status).toBe('ACTIVATING');
-      expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
-      expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
-      expect(errorLogs).toEqual([
-        {
-          message: 'SymbolRegistry 席位状态 listener 执行失败',
-          extra: 'state listener failed',
-        },
-        {
-          message: 'SymbolRegistry 席位 truth listener 执行失败',
-          extra: 'truth listener failed',
-        },
-      ]);
-    } finally {
-      logger.error = originalErrorLogger;
+    } catch (error) {
+      caught = error;
     }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    if (!(caught instanceof AggregateError)) {
+      throw new Error('预期 SymbolRegistry 暴露 AggregateError');
+    }
+
+    expect(caught.errors).toEqual([stateListenerError, truthListenerError]);
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
+    expect(events).toEqual(['state:first', 'state:second', 'truth:first', 'truth:second']);
   });
 
   it('accepts signal when current seat version and symbol both match', () => {

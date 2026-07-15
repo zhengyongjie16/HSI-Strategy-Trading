@@ -35,6 +35,7 @@ function createCompletedRecord(params: {
 }) {
   const direction: 'LONG' | 'SHORT' = params.action === 'SELLCALL' ? 'LONG' : 'SHORT';
   const tradingDayKey = '2026-03-13';
+  const symbol = direction === 'LONG' ? 'BULL.HK' : 'BEAR.HK';
   return {
     recordType: 'PROTECTIVE_LIQUIDATION_COMPLETION' as const,
     schemaVersion: 1 as const,
@@ -43,7 +44,17 @@ function createCompletedRecord(params: {
     monitorSymbol: params.monitorSymbol,
     direction,
     boundaryExecutedTimeMs: params.executedAtMs,
-    orderBaselines: [],
+    orderBaselines: [
+      {
+        orderId: `PROTECTIVE-${direction}-${String(params.executedAtMs)}`,
+        symbol,
+        side: 'SELL' as const,
+        cumulativeQuantity: '100',
+        cumulativeAmount: '500',
+        lastExecutionTimeMs: params.executedAtMs,
+        orderRevisionMs: params.executedAtMs,
+      },
+    ],
   };
 }
 

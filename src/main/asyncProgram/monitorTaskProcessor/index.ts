@@ -100,6 +100,10 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return;
     }
 
+    if (!getCanTradeNow()) {
+      return;
+    }
+
     const baseline = buildPeriodicBaseline(task);
     periodicSwitchWakeupRuntime.replanRouteAfterTask({
       ...baseline,

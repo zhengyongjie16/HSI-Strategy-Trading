@@ -15,6 +15,7 @@ import {
 } from 'longbridge';
 import { createOrderAPIManager } from '../../../src/core/orderRecorder/orderApiManager.js';
 import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
+import { createRateLimiterDouble, createTradeContextDouble } from '../../helpers/testDoubles.js';
 
 function createSdkOrder(params: {
   readonly orderId: string;
@@ -23,7 +24,8 @@ function createSdkOrder(params: {
   readonly remark?: string;
   readonly side: OrderSide;
   readonly status: OrderStatus;
-  readonly updatedAt: Date;
+  readonly submittedAt?: Date;
+  readonly updatedAt?: Date | null;
 }): Order {
   return {
     orderId: params.orderId,
@@ -37,9 +39,70 @@ function createSdkOrder(params: {
     quantity: new Decimal('100'),
     executedPrice: new Decimal('1'),
     executedQuantity: new Decimal('100'),
-    submittedAt: new Date('2026-02-25T03:00:00.000Z'),
-    updatedAt: params.updatedAt,
+    submittedAt: params.submittedAt ?? new Date('2026-02-25T03:00:00.000Z'),
+    ...(params.updatedAt === undefined ? {} : { updatedAt: params.updatedAt }),
   } as unknown as Order;
+}
+
+const invalidSdkDateCases = [
+  {
+    label: 'Invalid Date',
+    createDate: () => new Date(Number.NaN),
+  },
+  {
+    label: 'epoch timestamp',
+    createDate: () => new Date(0),
+  },
+  {
+    label: 'negative timestamp',
+    createDate: () => new Date(-1),
+  },
+] as const;
+
+const optionalUpdatedAtCases = [
+  { label: 'null', orderFields: { updatedAt: null } },
+  { label: 'omitted', orderFields: {} },
+] as const;
+
+function createApiManagerWithSdkOrder(source: 'history' | 'today', order: Order) {
+  const tradeCtx = createTradeContextMock();
+  if (source === 'history') {
+    tradeCtx.seedHistoryOrders([order]);
+  } else {
+    tradeCtx.seedTodayOrders([order]);
+  }
+
+  return createOrderAPIManager({
+    ctx: createTradeContextDouble(tradeCtx),
+    rateLimiter: createRateLimiterDouble(),
+  });
+}
+
+function getOrderSnapshotOperation(source: 'history' | 'today'): string {
+  if (source === 'history') {
+    return 'TradeContext.historyOrders';
+  }
+
+  return 'TradeContext.todayOrders';
+}
+
+async function assertSdkOrderSnapshotFails(
+  apiManager: ReturnType<typeof createOrderAPIManager>,
+  source: 'history' | 'today',
+): Promise<void> {
+  let caught: unknown = null;
+  try {
+    await apiManager.fetchAllOrdersFromAPI(true);
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(caught).toBeInstanceOf(TypeError);
+  if (!(caught instanceof Error)) {
+    throw new Error('expected SDK order boundary failure');
+  }
+
+  expect(caught.message).toContain(`${getOrderSnapshotOperation(source)} 订单数据结构无效`);
 }
 
 describe('createOrderAPIManager', () => {
@@ -66,10 +129,8 @@ describe('createOrderAPIManager', () => {
     ]);
 
     const apiManager = createOrderAPIManager({
-      ctx: tradeCtx as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiterDouble(),
     });
 
     const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
@@ -99,10 +160,8 @@ describe('createOrderAPIManager', () => {
     ]);
 
     const apiManager = createOrderAPIManager({
-      ctx: tradeCtx as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiterDouble(),
     });
 
     const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
@@ -111,15 +170,101 @@ describe('createOrderAPIManager', () => {
     expect(allOrders[0]?.updatedAt?.toISOString()).toBe('2026-02-25T03:05:00.000Z');
   });
 
+  it('preserves SDK submittedAt in the RawOrder snapshot used by recovery gates', async () => {
+    const tradeCtx = createTradeContextMock();
+    const submittedAt = new Date('2026-02-25T03:00:00.000Z');
+    tradeCtx.seedHistoryOrders([]);
+    tradeCtx.seedTodayOrders([
+      createSdkOrder({
+        orderId: 'ORDER-SUBMITTED-AT',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.Filled,
+        submittedAt,
+        updatedAt: new Date('2026-02-25T03:05:00.000Z'),
+      }),
+    ]);
+
+    const apiManager = createOrderAPIManager({
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiterDouble(),
+    });
+
+    const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
+    expect(allOrders).toHaveLength(1);
+    expect(allOrders[0]?.submittedAt).toEqual(submittedAt);
+  });
+
+  for (const updatedAtCase of optionalUpdatedAtCases) {
+    it(`accepts SDK updatedAt ${updatedAtCase.label} and normalizes the RawOrder value to null`, async () => {
+      const tradeCtx = createTradeContextMock();
+      const sdkOrder = createSdkOrder({
+        orderId: `ORDER-OPTIONAL-UPDATED-AT-${updatedAtCase.label}`,
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        status: OrderStatus.New,
+        ...updatedAtCase.orderFields,
+      });
+      tradeCtx.seedHistoryOrders([]);
+      // mock 的深拷贝要求 updatedAt 为 Date；此处直通 SDK 合法的 nullable 原始字段。
+      tradeCtx.todayOrders = async () => [sdkOrder];
+      const apiManager = createOrderAPIManager({
+        ctx: createTradeContextDouble(tradeCtx),
+        rateLimiter: createRateLimiterDouble(),
+      });
+
+      const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
+      expect(allOrders).toHaveLength(1);
+      expect(allOrders[0]?.updatedAt).toBeNull();
+    });
+  }
+
+  for (const source of ['history', 'today'] as const) {
+    for (const invalidDateCase of invalidSdkDateCases) {
+      it(`fails fast when ${source} order submittedAt is ${invalidDateCase.label}`, async () => {
+        const apiManager = createApiManagerWithSdkOrder(
+          source,
+          createSdkOrder({
+            orderId: `ORDER-BAD-SUBMITTED-AT-${source}-${invalidDateCase.label}`,
+            symbol: 'BULL.HK',
+            side: OrderSide.Sell,
+            status: OrderStatus.New,
+            submittedAt: invalidDateCase.createDate(),
+            updatedAt: new Date('2026-02-25T03:05:00.000Z'),
+          }),
+        );
+
+        await assertSdkOrderSnapshotFails(apiManager, source);
+      });
+    }
+  }
+
+  for (const source of ['history', 'today'] as const) {
+    for (const invalidDateCase of invalidSdkDateCases) {
+      it(`fails fast when ${source} order updatedAt is ${invalidDateCase.label}`, async () => {
+        const apiManager = createApiManagerWithSdkOrder(
+          source,
+          createSdkOrder({
+            orderId: `ORDER-BAD-UPDATED-AT-${source}-${invalidDateCase.label}`,
+            symbol: 'BULL.HK',
+            side: OrderSide.Sell,
+            status: OrderStatus.New,
+            updatedAt: invalidDateCase.createDate(),
+          }),
+        );
+
+        await assertSdkOrderSnapshotFails(apiManager, source);
+      });
+    }
+  }
+
   it('fails fast when historyOrders returns non-array value', async () => {
     const apiManager = createOrderAPIManager({
       ctx: {
         historyOrders: async () => ({ [Symbol.iterator]: function* () {} }),
         todayOrders: async () => [],
       } as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -139,9 +284,7 @@ describe('createOrderAPIManager', () => {
         historyOrders: async () => [],
         todayOrders: async () => ({ [Symbol.iterator]: function* () {} }),
       } as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -171,9 +314,7 @@ describe('createOrderAPIManager', () => {
         ],
         todayOrders: async () => [],
       } as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -207,9 +348,7 @@ describe('createOrderAPIManager', () => {
           },
         ],
       } as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -243,9 +382,7 @@ describe('createOrderAPIManager', () => {
         ],
         todayOrders: async () => [],
       } as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -277,9 +414,7 @@ describe('createOrderAPIManager', () => {
         ],
         todayOrders: async () => [],
       } as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -314,9 +449,7 @@ describe('createOrderAPIManager', () => {
         ],
         todayOrders: async () => [],
       } as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -345,10 +478,8 @@ describe('createOrderAPIManager', () => {
     ]);
 
     const apiManager = createOrderAPIManager({
-      ctx: tradeCtx as unknown as TradeContext,
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiterDouble(),
     });
 
     const allOrders = await apiManager.fetchAllOrdersFromAPI(true);

@@ -91,6 +91,7 @@ function createGateIntegrationContext(
           nextCanTrade: event.nextCanTrade,
         });
       },
+      emitAutoSearchAuthorizationChanged: () => {},
     },
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
     dayLifecycleManager: {

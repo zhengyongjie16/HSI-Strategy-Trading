@@ -14,18 +14,28 @@ import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMoc
 import { createAccountService } from '../../../src/core/trader/accountService.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { TraderDeps } from '../../../src/core/trader/types.js';
-import type { Trader } from '../../../src/types/services.js';
+import type { RateLimiter, TradeMutationPermit, Trader } from '../../../src/types/services.js';
 import { getRequiredHKDateKey } from '../../../src/utils/time/index.js';
 import {
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createRiskCheckerDouble,
   createSymbolRegistryDouble,
   createTradeContextDouble,
 } from '../../helpers/testDoubles.js';
 
-type TestTraderDeps = Omit<TraderDeps, 'now' | 'readCurrentTradingDayInfo'> &
-  Partial<Pick<TraderDeps, 'now' | 'readCurrentTradingDayInfo'>>;
+type TestTraderDeps = Omit<
+  TraderDeps,
+  | 'now'
+  | 'readCurrentTradingDayInfo'
+  | 'isContinuousTradingAllowed'
+  | 'onFatalError'
+  | 'unrealizedLossBuyGate'
+> &
+  Partial<
+    Pick<TraderDeps, 'now' | 'readCurrentTradingDayInfo' | 'onFatalError' | 'unrealizedLossBuyGate'>
+  >;
 
 type TraderModuleShape = {
   readonly createTrader: (deps: TraderDeps) => Promise<Trader>;
@@ -55,6 +65,11 @@ async function loadCreateTraderWithStubbedTradeContext(
         dateKey: getRequiredHKDateKey(defaultNow()),
         info: { isTradingDay: true, isHalfDay: false },
       }),
+      isContinuousTradingAllowed: () => true,
+      unrealizedLossBuyGate: createRiskCheckerDouble(),
+      onFatalError: (error) => {
+        throw error;
+      },
       ...deps,
     });
   };
@@ -68,6 +83,19 @@ function createEmptyStockPositionsResponse(): StockPositionsResponse {
         channels: [],
       };
     },
+  };
+}
+
+/** 构造只用于账户读取场景的无副作用限流器。 */
+function createRateLimiterDouble(): RateLimiter {
+  return {
+    throttle: async () => {},
+    withTradeMutation: async <T>(
+      callback: (permit: TradeMutationPermit) => Promise<T>,
+    ): Promise<T> =>
+      callback({
+        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
+      }),
   };
 }
 
@@ -100,6 +128,39 @@ describe('trader facade business flow', () => {
     });
 
     expect('monitorAndManageOrders' in trader).toBe(false);
+  });
+
+  it('将末日撤单 permit 内授权透传到专用 Trader API，授权失效时不调用 broker', async () => {
+    const tradeCtx = createTradeContextMock();
+    const createTrader = await loadCreateTraderWithStubbedTradeContext(
+      'doomsday-cancel-preflight',
+      {
+        new(): object {
+          return createTradeContextDouble(tradeCtx);
+        },
+      },
+    );
+    const trader = await createTrader({
+      config: { refreshAccessToken: () => Promise.resolve('') },
+      tradingConfig: createTradingConfig(),
+      marketDataClient: createMarketDataClientDouble(),
+      symbolRegistry: createSymbolRegistryDouble(),
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      persistProtectiveLiquidationExecutionProgress: () => {},
+      postTradeConsistencyRuntime: {
+        recordSettlementRefreshNeed: () => {},
+      },
+      isExecutionAllowed: () => true,
+    });
+
+    const outcome = await trader.cancelDoomsdayOrder('DOOMSDAY-BUY', {
+      kind: 'DOOMSDAY_WINDOW',
+      beforeBrokerCancel: () => false,
+    });
+
+    expect(outcome).toEqual({ kind: 'CANCEL_NOT_STARTED' });
+    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(0);
   });
 
   it('createTrader 通过公开 orderRecorder 工厂组装真实订单记录器', async () => {
@@ -325,9 +386,7 @@ describe('account service contract boundary', () => {
 
     const accountService = createAccountService({
       ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -350,9 +409,7 @@ describe('account service contract boundary', () => {
 
     const accountService = createAccountService({
       ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     const positions = await accountService.getStockPositions();
@@ -370,9 +427,7 @@ describe('account service contract boundary', () => {
 
     const accountService = createAccountService({
       ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -413,9 +468,7 @@ describe('account service contract boundary', () => {
 
     const accountService = createAccountService({
       ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     let caught: unknown = null;
@@ -453,9 +506,7 @@ describe('account service contract boundary', () => {
 
     const accountService = createAccountService({
       ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: {
-        throttle: async () => {},
-      },
+      rateLimiter: createRateLimiterDouble(),
     });
 
     const snapshot = await accountService.getAccountSnapshot();

@@ -93,16 +93,20 @@ function toApiDistanceRatio(percentValue: number): number {
 
 async function runDistanceSwitch(
   machine: ReturnType<typeof createSwitchStateMachine>,
-  params: Parameters<ReturnType<typeof createSwitchStateMachine>['startSwitchOnDistance']>[0],
+  params: Omit<
+    Parameters<ReturnType<typeof createSwitchStateMachine>['startSwitchOnDistance']>[0],
+    'canContinue'
+  >,
 ): Promise<void> {
+  const switchParams = { ...params, canContinue: () => true };
   if (machine.hasPendingSwitch(params.direction)) {
-    await machine.advancePendingSwitch(params);
+    await machine.advancePendingSwitch(switchParams);
     return;
   }
 
-  const startResult = await machine.startSwitchOnDistance(params);
+  const startResult = await machine.startSwitchOnDistance(switchParams);
   if (startResult.started) {
-    await machine.advancePendingSwitch(params);
+    await machine.advancePendingSwitch(switchParams);
   }
 }
 
@@ -240,7 +244,7 @@ describe('auto search policy consistency integration', () => {
     await runtimeAutoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime,
-      canTradeNow: true,
+      canContinue: () => true,
     });
 
     const runtimeSeat = runtimeRegistry.getSeatState('LONG');
@@ -483,7 +487,7 @@ describe('auto search policy consistency integration', () => {
     await runtimeAutoSearch.maybeSearchOnEvent({
       direction: 'SHORT',
       currentTime,
-      canTradeNow: true,
+      canContinue: () => true,
     });
 
     const runtimeSeat = runtimeRegistry.getSeatState('SHORT');
@@ -681,7 +685,7 @@ describe('auto search policy consistency integration', () => {
     await runtimeAutoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime,
-      canTradeNow: true,
+      canContinue: () => true,
     });
     const runtimeSeat = runtimeRegistry.getSeatState('LONG');
     expect(runtimeSeat.symbol).toBe('BEST_BULL.HK');

@@ -4,7 +4,10 @@
  * 核心职责：执行一次权威时间语义评估，更新交易门禁、生命周期、末日保护，并返回下一次系统级时间唤醒计划。
  */
 import { DOOMSDAY, TIME, TRADING } from '../../constants/index.js';
-import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
+import {
+  isWithinDoomsdayBuyCutoffWindow,
+  isWithinDoomsdayClearanceTakeoverWindow,
+} from '../../core/doomsdayProtection/utils.js';
 import {
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
@@ -18,12 +21,17 @@ import {
   isWithinMorningOpenWindow,
   resolveHKDayStartUtcMs,
 } from '../../utils/time/index.js';
+import { ordinarySignalGuard } from '../ordinarySignalGuard/index.js';
 import { planNextTimeWakeup } from '../timeWakeupPlanner/index.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 import type { TimeWakeupCandidate } from '../timeWakeupPlanner/types.js';
 import type { TimeWakeupEvaluationContext, TimeWakeupEvaluationResult } from './types.js';
 
 const takeoverStateByLastState = new WeakMap<TimeWakeupEvaluationContext['lastState'], boolean>();
+const autoSearchAuthorizationByLastState = new WeakMap<
+  TimeWakeupEvaluationContext['lastState'],
+  boolean
+>();
 
 /**
  * 取消当前单实例中的普通延迟验证信号。
@@ -40,6 +48,40 @@ function cancelAllDelayedSignals(
   }
 
   return monitorContext.delayedSignalVerifier.cancelAll();
+}
+
+/**
+ * 发布自动寻标授权变化。
+ *
+ * 自动寻标授权由生命周期交易开关、连续交易门禁与末日清仓接管共同决定；开盘保护只阻断普通信号，
+ * 不在此授权中。该函数只在时间控制平面这一权威边界计算并发布，消费方不重复复制判断。
+ *
+ * @param context 已完成时间与生命周期评估的必要上下文
+ * @param currentTime 本次权威评估时间
+ * @returns 无返回值；授权变化时同步发布事件
+ */
+function publishAutoSearchAuthorizationChange(
+  context: Pick<
+    TimeWakeupEvaluationContext,
+    'lastState' | 'tradingConfig' | 'tradingGateEventRuntime'
+  >,
+  currentTime: Date,
+): void {
+  const previousAuthorized = autoSearchAuthorizationByLastState.get(context.lastState) ?? null;
+  const nextAuthorized = ordinarySignalGuard({
+    lastState: context.lastState,
+    now: currentTime,
+    doomsdayProtectionEnabled: context.tradingConfig.global.doomsdayProtection,
+  });
+  if (previousAuthorized === nextAuthorized) {
+    return;
+  }
+
+  autoSearchAuthorizationByLastState.set(context.lastState, nextAuthorized);
+  context.tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
+    previousAuthorized,
+    nextAuthorized,
+  });
 }
 
 function createEvaluationResult(
@@ -416,6 +458,14 @@ export async function timeWakeupEvaluationProgram({
   }
 
   takeoverStateByLastState.set(lastState, doomsdayTakeoverActive);
+  publishAutoSearchAuthorizationChange(
+    {
+      lastState,
+      tradingConfig,
+      tradingGateEventRuntime,
+    },
+    currentTime,
+  );
 
   if (!lastState.isTradingEnabled) {
     return createEvaluationResult(currentTime, candidates);
@@ -427,12 +477,22 @@ export async function timeWakeupEvaluationProgram({
 
   const tradeActionEnabled = canTradeNow;
   const positions = lastState.cachedPositions;
+  const isDoomsdayActionLive = (): boolean => {
+    const liveTime = now?.() ?? new Date(Date.now());
+    return (
+      lastState.isTradingEnabled &&
+      isInContinuousHKSession(liveTime, isHalfDayToday) &&
+      (isWithinDoomsdayBuyCutoffWindow(liveTime, isHalfDayToday) ||
+        isWithinDoomsdayClearanceTakeoverWindow(liveTime, isHalfDayToday))
+    );
+  };
 
   if (tradeActionEnabled && tradingConfig.global.doomsdayProtection) {
     try {
       const cancelResult = await doomsdayProtection.cancelPendingBuyOrders({
         currentTime,
         isHalfDay: isHalfDayToday,
+        isLive: isDoomsdayActionLive,
         monitorContext,
         trader,
       });
@@ -446,6 +506,7 @@ export async function timeWakeupEvaluationProgram({
       const clearanceResult = await doomsdayProtection.executeClearance({
         currentTime,
         isHalfDay: isHalfDayToday,
+        isLive: isDoomsdayActionLive,
         positions,
         monitorContext,
         trader,

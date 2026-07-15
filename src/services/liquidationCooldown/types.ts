@@ -3,15 +3,6 @@ import type { Logger } from '../../utils/logger/types.js';
 import type { MixedTradeLogRepository } from '../mixedTradeLogRepository/types.js';
 
 /**
- * 未解析的日志记录。
- * 类型用途：用于日志文件逐行解析后的中间结构；数据来源为日志文件解析；仅 liquidationCooldown 模块内部使用。
- * 使用范围：仅在当前模块及其直接依赖方使用。
- */
-export type RawRecord = {
-  readonly [key: string]: unknown;
-};
-
-/**
  * 记录清仓冷却的参数。
  * 类型用途：包含方向与保护性清仓成交时间戳，由 recordCooldown 消费。
  * 数据来源：外部 monitorSymbol 已在恢复边界校验，内部只按方向写入。

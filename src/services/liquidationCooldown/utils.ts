@@ -108,36 +108,6 @@ export function resolveCooldownEndMs(
 }
 
 /**
- * 将未知值转换为字符串，非空字符串时返回原值，否则返回 null。
- *
- * @param value 待转换的值
- * @returns 非空字符串时返回该字符串，否则返回 null
- */
-export function toStringOrNull(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value : null;
-}
-
-/**
- * 将未知值转换为有限数字，非有限数字时返回 null。
- *
- * @param value 待转换的值
- * @returns 有限数字时返回该数字，否则返回 null
- */
-export function toNumberOrNull(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-/**
- * 将未知值转换为布尔值，非布尔类型时返回 null。
- *
- * @param value 待转换的值
- * @returns 布尔值时返回该值，否则返回 null
- */
-export function toBooleanOrNull(value: unknown): boolean | null {
-  return typeof value === 'boolean' ? value : null;
-}
-
-/**
  * 模拟触发-冷却周期，计算当前周期计数与当前周期冷却激活时间。
  * 当记录时间跨过冷却结束时间时，视为进入新周期并重置计数。
  *

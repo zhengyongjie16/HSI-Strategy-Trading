@@ -20,6 +20,7 @@ import {
   createMonitorConfigDouble,
   createPositionCacheDouble,
   createQuoteDouble,
+  createRiskCheckerDouble,
   createSdkConfigDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
@@ -133,10 +134,14 @@ function createRuntime(
       allTradingSymbols: new Set<string>(),
     },
     trader,
+    riskChecker: createRiskCheckerDouble(),
     indicatorCache: {
       push: () => {},
       getClosest: () => null,
       clearAll: () => {},
+    },
+    onFatalError: (error) => {
+      throw error;
     },
   };
 

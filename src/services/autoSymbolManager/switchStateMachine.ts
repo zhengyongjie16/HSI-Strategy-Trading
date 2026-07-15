@@ -103,6 +103,15 @@ function createNoopDriveResult(): Extract<SwitchDriveResult, { kind: 'NOOP' }> {
   return { kind: 'NOOP' };
 }
 
+function createNoopAdvanceResult(direction: 'LONG' | 'SHORT'): AdvancePendingSwitchResult {
+  return {
+    advanced: false,
+    direction,
+    stillPending: false,
+    driveResult: createNoopDriveResult(),
+  };
+}
+
 /**
  * 构造等待外部事件的 switch drive 结果。
  *
@@ -166,16 +175,21 @@ function hasOpenBuyExposure(params: {
 }
 
 /**
- * 统一判定周期换标是否仍被本地席位占用阻塞。
- * 周期换标只关心当前席位标的是否仍有未平仓买单记录，或仍有任意本地 pending order 链路。
+ * 统一判定周期换标是否仍被席位占用阻塞。
+ * 周期换标必须同时检查订单归属、本地在途链路与本轮读取到的 broker pending orders。
  */
 function resolvePeriodicSeatBlockSource(params: {
   readonly orderRecorder: SwitchStateMachineDeps['orderRecorder'];
   readonly trader: SwitchStateMachineDeps['trader'];
   readonly symbol: string;
   readonly direction: 'LONG' | 'SHORT';
+  readonly brokerPendingOrders?: ReadonlyArray<PendingOrder>;
 }): PeriodicSeatBlockSource {
-  const { orderRecorder, trader, symbol, direction } = params;
+  const { orderRecorder, trader, symbol, direction, brokerPendingOrders } = params;
+  if (brokerPendingOrders?.some((order) => order.symbol === symbol)) {
+    return 'BROKER_PENDING_ORDER';
+  }
+
   const buyOrders = orderRecorder.getBuyOrdersForSymbol(symbol, direction === 'LONG');
   if (buyOrders.length > 0) {
     return 'ORDER_RECORDER';
@@ -263,8 +277,17 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   async function executeSwitchSignal(
     signal: ReturnType<SwitchStateMachineDeps['buildOrderSignal']>,
     submitFailedMessage: string,
+    canContinue: () => boolean,
   ): Promise<Awaited<ReturnType<SwitchStateMachineDeps['trader']['executeSignals']>> | null> {
+    if (!canContinue()) {
+      return null;
+    }
+
     const executionResult = await trader.executeSignals([signal]);
+
+    if (!canContinue()) {
+      return null;
+    }
 
     if (executionResult.executedOrderIds.length === 0) {
       logger.warn(submitFailedMessage);
@@ -275,8 +298,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   }
 
   /** 清除某方向的周期换标 pending 状态。 */
-  function clearPeriodicPending(direction: 'LONG' | 'SHORT'): void {
+  function clearPeriodicPending(direction: 'LONG' | 'SHORT', canContinue: () => boolean): boolean {
+    if (!canContinue()) {
+      return false;
+    }
+
     periodicSwitchPending.delete(direction);
+    return true;
   }
 
   /** 标记某方向已进入周期换标 pending（等待空仓）。 */
@@ -284,12 +312,18 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     direction: 'LONG' | 'SHORT',
     pendingSinceMs: number,
     blockedBy: PeriodicSeatBlockingReason,
-  ): void {
+    canContinue: () => boolean,
+  ): boolean {
+    if (!canContinue()) {
+      return false;
+    }
+
     periodicSwitchPending.set(direction, {
       pending: true,
       pendingSinceMs,
       blockedBy,
     });
+    return true;
   }
 
   /** 读取某方向的周期换标 pending 状态。 */
@@ -311,7 +345,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     readonly nowDate: Date;
     readonly lastSwitchAt: number | null;
     readonly bumpVersion: boolean;
-  }): void {
+  }): boolean {
     const { direction, currentSeat, nowDate, lastSwitchAt, bumpVersion } = params;
     const nowMs = nowDate.getTime();
     const hkDateKey = getHKDateKey(nowDate);
@@ -343,29 +377,46 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         `[自动换标] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
       );
     }
+
+    return true;
   }
 
   /**
    * 周期换标预寻标无候选时，按正常业务分支直接清空席位并复用失败计数/冻结模型。
    * 该分支不是状态机失败，因此不会进入 SWITCHING 或写入 switchStates。
    */
-  function clearSeatOnPeriodicNoCandidate(direction: 'LONG' | 'SHORT'): void {
+  function clearSeatOnPeriodicNoCandidate(
+    direction: 'LONG' | 'SHORT',
+    canContinue: () => boolean,
+  ): boolean {
+    if (!canContinue()) {
+      return false;
+    }
+
     const nowDate = now();
     const nowMs = nowDate.getTime();
     const currentSeat = symbolRegistry.getSeatState(direction);
 
-    clearSeatWithSearchFailure({
-      direction,
-      currentSeat,
-      nowDate,
-      lastSwitchAt: nowMs,
-      bumpVersion: true,
-    });
-    clearPeriodicPending(direction);
+    if (
+      !clearSeatWithSearchFailure({
+        direction,
+        currentSeat,
+        nowDate,
+        lastSwitchAt: nowMs,
+        bumpVersion: true,
+      })
+    ) {
+      return false;
+    }
+
+    if (!clearPeriodicPending(direction, canContinue)) {
+      return false;
+    }
 
     logger.info(
       `[自动换标] ${monitorSymbol} ${direction} 周期换标无候选，清空席位 oldSymbol=${currentSeat.symbol ?? 'null'}`,
     );
+    return true;
   }
 
   /** 判断指定方向是否存在有效的进行中换标流程 */
@@ -427,6 +478,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return false;
     }
 
+    // 终态仅能由已通过前置 gate 与席位身份校验的同一同步调用收口，
+    // 后续普通有效性检查不得再次授权终态 state 写入。
     if (state.stage === 'COMPLETE' || state.stage === 'FAILED') {
       if (currentState === state) {
         switchStates.delete(state.direction);
@@ -441,7 +494,12 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   /** 预寻标：在触发换标前查找候选标的，无合适标的时返回 null */
   async function findSwitchCandidate(
     direction: 'LONG' | 'SHORT',
+    canContinue: () => boolean,
   ): Promise<{ symbol: string; callPrice: number } | null> {
+    if (!canContinue()) {
+      return null;
+    }
+
     const policy = resolveDirectionalAutoSearchPolicy({
       direction,
       logPrefix: '[自动换标] 缺少阈值配置，无法预寻标',
@@ -454,7 +512,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       currentTime: now(),
       policy,
     });
+    if (!canContinue()) {
+      return null;
+    }
+
     const best = await findBestWarrant(input);
+    if (!canContinue()) {
+      return null;
+    }
+
     if (!best) {
       return null;
     }
@@ -471,6 +537,11 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
    * - 按需决定是否立即推进状态机（仅距离换标）
    */
   async function startSwitchFlow(params: StartSwitchFlowParams): Promise<SwitchDriveResult> {
+    const { canContinue } = params;
+    if (!canContinue()) {
+      return createNoopDriveResult();
+    }
+
     const isPeriodicTrigger = params.triggerKind === 'PERIODIC';
     const direction = isPeriodicTrigger ? params.direction : params.distanceContext.direction;
     const reason = params.reason;
@@ -485,7 +556,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
@@ -498,20 +569,28 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
-    const next = await findSwitchCandidate(direction);
+    const next = await findSwitchCandidate(direction, canContinue);
+    if (!canContinue()) {
+      return createNoopDriveResult();
+    }
+
     const latestSeatState = symbolRegistry.getSeatState(direction);
     const latestSeatVersion = symbolRegistry.getSeatVersion(direction);
     if (!isSeatActive(latestSeatState)) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
     if (latestSeatVersion !== seatVersionAtStart || latestSeatState.symbol !== seatSymbol) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
-    await trader.getPendingOrders([latestSeatState.symbol]);
+    const brokerPendingOrders = await trader.getPendingOrders([latestSeatState.symbol]);
+    if (!canContinue()) {
+      return createNoopDriveResult();
+    }
+
     const admittedSeatState = symbolRegistry.getSeatState(direction);
     const admittedSeatVersion = symbolRegistry.getSeatVersion(direction);
     if (
@@ -519,7 +598,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       admittedSeatVersion !== seatVersionAtStart ||
       admittedSeatState.symbol !== seatSymbol
     ) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
@@ -529,9 +608,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         trader,
         symbol: admittedSeatState.symbol,
         direction,
+        brokerPendingOrders,
       });
       if (periodicBlockSource !== 'EMPTY') {
-        markPeriodicPending(direction, now().getTime(), periodicBlockSource);
+        if (!markPeriodicPending(direction, now().getTime(), periodicBlockSource, canContinue)) {
+          return createNoopDriveResult();
+        }
+
         logger.warn(
           `[自动换标] ${monitorSymbol} ${direction} 周期换标触发前复核发现本地占用，继续等待 blockedBy=${periodicBlockSource}`,
         );
@@ -541,6 +624,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     if (next?.symbol === admittedSeatState.symbol) {
       if (suppressionTriggerKind !== null) {
+        if (!canContinue()) {
+          return createNoopDriveResult();
+        }
+
         markSuppression(direction, admittedSeatState.symbol, suppressionTriggerKind);
         logger.info(`[自动换标] ${monitorSymbol} ${direction} 预寻标命中同标的，记录当日抑制`);
       }
@@ -549,17 +636,31 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     }
 
     if (switchMode === 'PERIODIC' && next === null) {
-      clearSeatOnPeriodicNoCandidate(direction);
+      if (!clearSeatOnPeriodicNoCandidate(direction, canContinue)) {
+        return createNoopDriveResult();
+      }
+
+      return createNoopDriveResult();
+    }
+
+    if (!clearPeriodicPending(direction, canContinue)) {
+      return createNoopDriveResult();
+    }
+
+    if (!canContinue()) {
       return createNoopDriveResult();
     }
 
     const seatVersion = enterSwitchingSeat({ direction, reason });
-    clearPeriodicPending(direction);
 
     let shouldRebuy = false;
     if (distanceContext !== null) {
       const position = extractPosition(distanceContext.positions, latestSeatState.symbol);
       shouldRebuy = (position?.quantity ?? 0) > 0;
+    }
+
+    if (!canContinue()) {
+      return createNoopDriveResult();
     }
 
     switchStates.set(direction, {
@@ -592,12 +693,16 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     state: SwitchState,
     pendingOrders: ReadonlyArray<PendingOrder>,
   ): Promise<SwitchDriveResult> {
-    const { direction, positions } = params;
+    const { direction, positions, canContinue } = params;
     const { sellAction, buyAction } = resolveDirectionSymbols(direction);
     const seatVersion = symbolRegistry.getSeatVersion(direction);
     let cachedNextQuote: Quote | null | undefined;
 
     function stopIfSwitchInvalid(): SwitchDriveResult | null {
+      if (!canContinue()) {
+        return createNoopDriveResult();
+      }
+
       if (isCurrentSwitchStateValid(state)) {
         return null;
       }
@@ -615,7 +720,12 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         return null;
       }
 
-      cachedNextQuote = await fetchRealtimeQuote(marketDataClient, nextSymbol);
+      const nextQuote = await fetchRealtimeQuote(marketDataClient, nextSymbol);
+      if (!canContinue()) {
+        return null;
+      }
+
+      cachedNextQuote = nextQuote;
       return cachedNextQuote;
     }
 
@@ -635,16 +745,22 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       ]);
     }
 
-    function failAndClear(reason: string): Extract<SwitchDriveResult, { kind: 'FAILED' }> {
+    function failAndClear(reason: string): SwitchDriveResult {
+      const invalidResultBeforeFailure = stopIfSwitchInvalid();
+      if (invalidResultBeforeFailure !== null) {
+        return invalidResultBeforeFailure;
+      }
+
       logger.error(
         `[自动换标] 状态机失败并清席位 ` +
           `monitorSymbol=${monitorSymbol} direction=${direction} oldSymbol=${state.oldSymbol} ` +
           `nextSymbol=${state.nextSymbol ?? 'null'} stage=${state.stage} reason=${reason}`,
       );
-      state.stage = 'FAILED';
+
       const currentSeat = symbolRegistry.getSeatState(direction);
       const nowDate = now();
       const nowMs = nowDate.getTime();
+      state.stage = 'FAILED';
       if (state.nextSymbol === null) {
         clearSeatWithSearchFailure({
           direction,
@@ -683,16 +799,28 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       );
 
       if (cancelTargets.length > 0 && !state.cancelRequestSubmitted) {
-        const cancelOutcomes = await Promise.all(
-          cancelTargets.map((order) => trader.cancelOrder(order.orderId)),
-        );
-        const invalidResultAfterCancel = stopIfSwitchInvalid();
-        if (invalidResultAfterCancel !== null) {
-          return invalidResultAfterCancel;
+        const cancelOutcomes: CancelOrderOutcome[] = [];
+        for (const cancelTarget of cancelTargets) {
+          const invalidResultBeforeCancel = stopIfSwitchInvalid();
+          if (invalidResultBeforeCancel !== null) {
+            return invalidResultBeforeCancel;
+          }
+
+          const cancelOutcome = await trader.cancelOrder(cancelTarget.orderId);
+          const invalidResultAfterCancel = stopIfSwitchInvalid();
+          if (invalidResultAfterCancel !== null) {
+            return invalidResultAfterCancel;
+          }
+
+          cancelOutcomes.push(cancelOutcome);
         }
 
         const sawFilledOutcome = cancelOutcomes.some(isFilledCloseOutcome);
         if (sawFilledOutcome && state.switchMode === 'DISTANCE') {
+          if (!canContinue()) {
+            return createNoopDriveResult();
+          }
+
           state.shouldRebuy = true;
         }
 
@@ -704,6 +832,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           return failAndClear(
             `CANCEL_PENDING_FAILED:${formatCancelOutcomeTag(unconfirmedOutcome)}`,
           );
+        }
+
+        if (!canContinue()) {
+          return createNoopDriveResult();
         }
 
         state.cancelRequestSubmitted = true;
@@ -725,11 +857,27 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       }
 
       if (state.switchMode === 'DISTANCE' && openBuyExposure) {
+        if (!canContinue()) {
+          return createNoopDriveResult();
+        }
+
         state.shouldRebuy = true;
       }
 
+      if (!canContinue()) {
+        return createNoopDriveResult();
+      }
+
       state.cancelRequestSubmitted = false;
+      if (!canContinue()) {
+        return createNoopDriveResult();
+      }
+
       resetQuoteRetryState(state);
+      if (!canContinue()) {
+        return createNoopDriveResult();
+      }
+
       state.stage = state.switchMode === 'PERIODIC' ? 'BIND_NEW' : 'SELL_OUT';
     }
 
@@ -752,7 +900,37 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           return createQuoteRetryWait(state.oldSymbol);
         }
 
-        const quote = await fetchRealtimeQuote(marketDataClient, state.oldSymbol);
+        const invalidResultBeforeSellQuote = stopIfSwitchInvalid();
+        if (invalidResultBeforeSellQuote !== null) {
+          return invalidResultBeforeSellQuote;
+        }
+
+        let quote: Quote | null;
+        try {
+          quote = await fetchRealtimeQuote(marketDataClient, state.oldSymbol);
+        } catch (error) {
+          if (!isExternalApiRequestError(error)) {
+            throw error;
+          }
+
+          const invalidResultAfterSellQuoteFailure = stopIfSwitchInvalid();
+          if (invalidResultAfterSellQuoteFailure !== null) {
+            return invalidResultAfterSellQuoteFailure;
+          }
+
+          // 行情读取未产生不可逆副作用，必须交接新的 owner，避免已消费 timer 后永久挂起。
+          if (!canContinue()) {
+            return createNoopDriveResult();
+          }
+
+          advanceQuoteRetryState(state, nowMs);
+          if (state.quoteRetryExhausted) {
+            return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT');
+          }
+
+          return createQuoteRetryWait(state.oldSymbol);
+        }
+
         const invalidResultAfterSellQuote = stopIfSwitchInvalid();
         if (invalidResultAfterSellQuote !== null) {
           return invalidResultAfterSellQuote;
@@ -767,12 +945,20 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
             return failAndClear('INVALID_QUOTE:SELL_OUT');
           }
 
+          if (!canContinue()) {
+            return createNoopDriveResult();
+          }
+
           advanceQuoteRetryState(state, nowMs);
           if (state.quoteRetryExhausted) {
             return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT');
           }
 
           return createQuoteRetryWait(state.oldSymbol);
+        }
+
+        if (!canContinue()) {
+          return createNoopDriveResult();
         }
 
         resetQuoteRetryState(state);
@@ -787,9 +973,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           seatVersion,
         });
 
+        const invalidResultBeforeSellSubmit = stopIfSwitchInvalid();
+        if (invalidResultBeforeSellSubmit !== null) {
+          return invalidResultBeforeSellSubmit;
+        }
+
         const executionResult = await executeSwitchSignal(
           signal,
           `[自动换标] 移仓卖出未提交成功，等待重试: monitorSymbol=${monitorSymbol} direction=${direction} symbol=${state.oldSymbol}`,
+          canContinue,
         );
         const invalidResultAfterSellSubmit = stopIfSwitchInvalid();
         if (invalidResultAfterSellSubmit !== null) {
@@ -797,6 +989,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         }
 
         if (executionResult === null) {
+          if (!canContinue()) {
+            return createNoopDriveResult();
+          }
+
           advanceQuoteRetryState(state, now().getTime());
           if (state.quoteRetryExhausted) {
             return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT_SUBMIT');
@@ -805,7 +1001,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           return createQuoteRetryWait(state.oldSymbol);
         }
 
+        if (!canContinue()) {
+          return createNoopDriveResult();
+        }
+
         state.sellSubmitted = true;
+        if (!canContinue()) {
+          return createNoopDriveResult();
+        }
+
         state.sellOrderId = executionResult.executedOrderIds[0] ?? null;
         return createOrderAndFreshnessWait(state.oldSymbol);
       }
@@ -821,6 +1025,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           return createOrderAndFreshnessWait(state.oldSymbol);
         }
 
+        if (!canContinue()) {
+          return createNoopDriveResult();
+        }
+
         state.shouldRebuy = false;
       }
 
@@ -830,8 +1038,16 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           ? sellRecord.executedPrice * sellRecord.executedQuantity
           : Number.NaN;
         if (isValidPositiveNumber(actualNotional)) {
+          if (!canContinue()) {
+            return createNoopDriveResult();
+          }
+
           state.sellNotional = actualNotional;
         }
+      }
+
+      if (!canContinue()) {
+        return createNoopDriveResult();
       }
 
       state.stage = 'BIND_NEW';
@@ -841,6 +1057,11 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       const nextSymbol = state.nextSymbol;
       if (!nextSymbol) {
         return failAndClear('MISSING_NEXT_SYMBOL_ON_BIND');
+      }
+
+      const invalidResultBeforeBind = stopIfSwitchInvalid();
+      if (invalidResultBeforeBind !== null) {
+        return invalidResultBeforeBind;
       }
 
       const bindNowMs = now().getTime();
@@ -860,7 +1081,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         false,
       );
 
+      if (!canContinue()) {
+        return createNoopDriveResult();
+      }
+
       resetQuoteRetryState(state);
+      if (!canContinue()) {
+        return createNoopDriveResult();
+      }
+
       state.stage = state.shouldRebuy ? 'WAIT_QUOTE' : 'COMPLETE';
       if (state.stage === 'WAIT_QUOTE') {
         return createWaitDriveResult([{ kind: 'SYMBOL_QUOTE', symbol: nextSymbol }]);
@@ -877,7 +1106,27 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         return createQuoteRetryWait(nextSymbol);
       }
 
-      const quote = await getNextQuote();
+      let quote: Quote | null;
+      try {
+        quote = await getNextQuote();
+      } catch (error) {
+        if (!isExternalApiRequestError(error)) {
+          throw error;
+        }
+
+        const invalidResultAfterWaitQuoteFailure = stopIfSwitchInvalid();
+        if (invalidResultAfterWaitQuoteFailure !== null) {
+          return invalidResultAfterWaitQuoteFailure;
+        }
+
+        advanceQuoteRetryState(state, now().getTime());
+        if (state.quoteRetryExhausted) {
+          return failAndClear('QUOTE_RETRY_EXHAUSTED:WAIT_QUOTE');
+        }
+
+        return createQuoteRetryWait(nextSymbol);
+      }
+
       const invalidResultAfterWaitQuoteFetch = stopIfSwitchInvalid();
       if (invalidResultAfterWaitQuoteFetch !== null) {
         return invalidResultAfterWaitQuoteFetch;
@@ -889,12 +1138,20 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           return failAndClear('INVALID_QUOTE:WAIT_QUOTE');
         }
 
+        if (!canContinue()) {
+          return createNoopDriveResult();
+        }
+
         advanceQuoteRetryState(state, now().getTime());
         if (state.quoteRetryExhausted) {
           return failAndClear('QUOTE_RETRY_EXHAUSTED:WAIT_QUOTE');
         }
 
         return createQuoteRetryWait(nextSymbol);
+      }
+
+      if (!canContinue()) {
+        return createNoopDriveResult();
       }
 
       state.stage = 'REBUY';
@@ -920,13 +1177,25 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         }
 
         if (!hasQuoteRetryElapsed(state, nowMs)) {
+          if (!canContinue()) {
+            return createNoopDriveResult();
+          }
+
           state.stage = 'WAIT_QUOTE';
           return createQuoteRetryWait(nextSymbol);
+        }
+
+        if (!canContinue()) {
+          return createNoopDriveResult();
         }
 
         advanceQuoteRetryState(state, nowMs);
         if (state.quoteRetryExhausted) {
           return failAndClear('QUOTE_RETRY_EXHAUSTED:REBUY');
+        }
+
+        if (!canContinue()) {
+          return createNoopDriveResult();
         }
 
         state.stage = 'WAIT_QUOTE';
@@ -935,6 +1204,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
       if (!isRebuyQuoteReady(quote)) {
         return failAndClear('INVALID_QUOTE:REBUY');
+      }
+
+      if (!canContinue()) {
+        return createNoopDriveResult();
       }
 
       resetQuoteRetryState(state);
@@ -957,9 +1230,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           seatVersion,
         });
 
+        const invalidResultBeforeRebuySubmit = stopIfSwitchInvalid();
+        if (invalidResultBeforeRebuySubmit !== null) {
+          return invalidResultBeforeRebuySubmit;
+        }
+
         const executionResult = await executeSwitchSignal(
           signal,
           `[自动换标] 回补买入未提交成功，等待重试: monitorSymbol=${monitorSymbol} direction=${direction} symbol=${nextSymbol}`,
+          canContinue,
         );
         const invalidResultAfterRebuySubmit = stopIfSwitchInvalid();
         if (invalidResultAfterRebuySubmit !== null) {
@@ -967,9 +1246,17 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         }
 
         if (executionResult === null) {
+          if (!canContinue()) {
+            return createNoopDriveResult();
+          }
+
           advanceQuoteRetryState(state, now().getTime());
           if (state.quoteRetryExhausted) {
             return failAndClear('QUOTE_RETRY_EXHAUSTED:REBUY_SUBMIT');
+          }
+
+          if (!canContinue()) {
+            return createNoopDriveResult();
           }
 
           state.stage = 'WAIT_QUOTE';
@@ -979,6 +1266,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         logger.info(
           `[自动换标] 回补买入数量无效或过小，跳过回补: ${nextSymbol}, buyQuantity=${String(buyQuantity)}`,
         );
+      }
+
+      if (!canContinue()) {
+        return createNoopDriveResult();
       }
 
       state.stage = 'COMPLETE';
@@ -1004,6 +1295,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         );
       }
 
+      // COMPLETE 仅由前置同步 gate 与席位身份检查授权；此后 public pending 查询会按职责清理终态，
+      // 因而不得再次经 canContinue 重新授权本次收尾。
       switchStates.delete(direction);
       return { kind: 'COMPLETED' };
     }
@@ -1018,21 +1311,25 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   async function evaluatePeriodicSwitchDue({
     direction,
     currentTime,
-    canTradeNow,
+    canContinue,
   }: PeriodicSwitchDueParams): Promise<SwitchDriveResult> {
+    if (!canContinue()) {
+      return createNoopDriveResult();
+    }
+
     if (!autoSearchConfig.autoSearchEnabled || autoSearchConfig.switchIntervalMinutes <= 0) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
     if (hasPendingSwitch(direction)) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
     const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
@@ -1042,14 +1339,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       shouldResetPeriodicPendingBySeatActivatedAt({
         pendingSinceMs: periodicPendingState.pendingSinceMs,
         lastSeatActivatedAt: seatState.lastSeatActivatedAt,
-      })
+      }) &&
+      !clearPeriodicPending(direction, canContinue)
     ) {
-      clearPeriodicPending(direction);
+      return createNoopDriveResult();
     }
 
     const pendingStateAfterReset = resolvePeriodicPending(direction);
     if (pendingStateAfterReset.pending) {
-      if (!canTradeNow) {
+      if (!canContinue()) {
         return createNoopDriveResult();
       }
 
@@ -1066,31 +1364,43 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           );
         }
 
-        markPeriodicPending(
-          direction,
-          pendingStateAfterReset.pendingSinceMs ?? currentTime.getTime(),
-          blockSource,
-        );
+        if (
+          !markPeriodicPending(
+            direction,
+            pendingStateAfterReset.pendingSinceMs ?? currentTime.getTime(),
+            blockSource,
+            canContinue,
+          )
+        ) {
+          return createNoopDriveResult();
+        }
+
         return createNoopDriveResult();
       }
 
       logger.info(
         `[自动换标] ${monitorSymbol} ${direction} 周期换标等待结束，检测到本地空仓开始换标`,
       );
-      clearPeriodicPending(direction);
-      return await startSwitchFlow({
+
+      if (!clearPeriodicPending(direction, canContinue)) {
+        return createNoopDriveResult();
+      }
+
+      const driveResult = await startSwitchFlow({
         direction,
         reason: '周期换标触发',
         triggerKind: 'PERIODIC',
+        canContinue,
       });
+      return canContinue() ? driveResult : createNoopDriveResult();
     }
 
-    if (!canTradeNow) {
+    if (!canContinue()) {
       return createNoopDriveResult();
     }
 
     if (seatState.lastSeatActivatedAt === null) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return createNoopDriveResult();
     }
 
@@ -1113,7 +1423,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     if (blockSource !== 'EMPTY') {
       const pendingState = resolvePeriodicPending(direction);
       if (!pendingState.pending || pendingState.blockedBy !== blockSource) {
-        markPeriodicPending(direction, currentTime.getTime(), blockSource);
+        if (!markPeriodicPending(direction, currentTime.getTime(), blockSource, canContinue)) {
+          return createNoopDriveResult();
+        }
+
         logger.warn(
           `[自动换标] ${monitorSymbol} ${direction} 周期换标到期但本地仍被占用，进入等待空仓状态 blockedBy=${blockSource}`,
         );
@@ -1129,13 +1442,17 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       );
     }
 
-    clearPeriodicPending(direction);
+    if (!clearPeriodicPending(direction, canContinue)) {
+      return createNoopDriveResult();
+    }
 
-    return await startSwitchFlow({
+    const driveResult = await startSwitchFlow({
       direction,
       reason: '周期换标触发',
       triggerKind: 'PERIODIC',
+      canContinue,
     });
+    return canContinue() ? driveResult : createNoopDriveResult();
   }
 
   /**
@@ -1147,7 +1464,16 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     direction,
     monitorPrice,
     positions,
+    canContinue,
   }: StartSwitchOnDistanceParams): Promise<StartSwitchOnDistanceResult> {
+    if (!canContinue()) {
+      return {
+        started: false,
+        direction,
+        driveResult: createNoopDriveResult(),
+      };
+    }
+
     if (!autoSearchConfig.autoSearchEnabled) {
       return {
         started: false,
@@ -1174,7 +1500,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     const seatState = symbolRegistry.getSeatState(direction);
     if (!isSeatActive(seatState)) {
-      clearPeriodicPending(direction);
+      clearPeriodicPending(direction, canContinue);
       return {
         started: false,
         direction,
@@ -1217,8 +1543,17 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     const driveResult = await startSwitchFlow({
       reason: '距回收价阈值越界',
       triggerKind: distanceTriggerSide === 'SAFE' ? 'DISTANCE_SAFE_SIDE' : 'DISTANCE_DANGER_SIDE',
-      distanceContext: { direction, monitorPrice, positions },
+      distanceContext: { direction, monitorPrice, positions, canContinue },
+      canContinue,
     });
+
+    if (!canContinue()) {
+      return {
+        started: false,
+        direction,
+        driveResult: createNoopDriveResult(),
+      };
+    }
 
     if (driveResult.kind === 'NOOP') {
       return {
@@ -1245,30 +1580,29 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   async function advancePendingSwitch({
     direction,
     positions,
+    canContinue,
   }: AdvancePendingSwitchParams): Promise<AdvancePendingSwitchResult> {
+    if (!canContinue()) {
+      return createNoopAdvanceResult(direction);
+    }
+
     if (!autoSearchConfig.autoSearchEnabled || !hasPendingSwitch(direction)) {
-      return {
-        advanced: false,
-        direction,
-        stillPending: false,
-        driveResult: createNoopDriveResult(),
-      };
+      return createNoopAdvanceResult(direction);
     }
 
     const pendingSwitch = switchStates.get(direction);
     if (!pendingSwitch) {
-      return {
-        advanced: false,
-        direction,
-        stillPending: false,
-        driveResult: createNoopDriveResult(),
-      };
+      return createNoopAdvanceResult(direction);
     }
 
     let pendingOrdersForOldSymbol: ReadonlyArray<PendingOrder>;
     try {
       pendingOrdersForOldSymbol = await trader.getPendingOrders([pendingSwitch.oldSymbol]);
     } catch (error) {
+      if (!canContinue()) {
+        return createNoopAdvanceResult(direction);
+      }
+
       if (!isExternalApiRequestError(error)) {
         throw error;
       }
@@ -1283,11 +1617,28 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       };
     }
 
+    if (!canContinue()) {
+      return createNoopAdvanceResult(direction);
+    }
+
     const driveResult = await processSwitchState(
-      { direction, positions },
+      { direction, positions, canContinue },
       pendingSwitch,
       pendingOrdersForOldSymbol,
     );
+    if (driveResult.kind === 'COMPLETED' || driveResult.kind === 'FAILED') {
+      return {
+        advanced: true,
+        direction,
+        stillPending: false,
+        driveResult,
+      };
+    }
+
+    if (!canContinue()) {
+      return createNoopAdvanceResult(direction);
+    }
+
     if (hasPendingSwitch(direction)) {
       if (driveResult.kind !== 'WAIT') {
         throw new Error('[自动换标] pending switch 推进后必须返回 WAIT owner');

@@ -2,8 +2,8 @@
  * app/createAsyncRuntime 接线测试
  *
  * 覆盖：
- * - AUTO_SYMBOL_TICK 任务完成状态回传 PeriodicSwitchWakeupRuntime owner
- * - 清仓接管窗口内普通周期换标任务不会进入换标状态机
+ * - lifecycle/末日 gate 关闭时，AUTO_SYMBOL_TICK 不回写 PeriodicSwitchWakeupRuntime owner
+ * - 外部 API 失败时以 failed 状态回写 owner；非 API 错误进入异步 fatal 通道且不回写 periodic route
  */
 import { describe, expect, it } from 'bun:test';
 import { createAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
@@ -90,6 +90,8 @@ function createDeps(
       tradingGateEventRuntime: {
         emitGateStateChanged: () => {},
         onGateStateChanged: () => () => {},
+        emitAutoSearchAuthorizationChanged: () => {},
+        onAutoSearchAuthorizationChanged: () => () => {},
       },
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       seatActivationDispatcher: {
@@ -163,7 +165,7 @@ function createDeps(
 }
 
 describe('app createAsyncRuntime wiring', () => {
-  it('replans periodic switch route when AUTO_SYMBOL_TICK is skipped by lifecycle gate', async () => {
+  it('does not replan periodic route when lifecycle gate skips AUTO_SYMBOL_TICK', async () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     const runtime = createAsyncRuntime(
@@ -192,19 +194,10 @@ describe('app createAsyncRuntime wiring', () => {
       waitCondition: () => monitorTaskQueue.isEmpty(),
     });
 
-    expect(replanCalls).toEqual([
-      {
-        direction: 'LONG',
-        seatVersion: 7,
-        symbol: 'BULL.HK',
-        lastSeatActivatedAt: 1_000,
-        taskTimeMs: 2_000,
-        status: 'skipped',
-      },
-    ]);
+    expect(replanCalls).toEqual([]);
   });
 
-  it('blocks AUTO_SYMBOL_TICK switch flow during doomsday clearance takeover window', async () => {
+  it('does not replan periodic route when doomsday gate blocks AUTO_SYMBOL_TICK', async () => {
     const originalNow = Date.now;
     Date.now = () => Date.UTC(2026, 1, 16, 7, 56);
     try {
@@ -269,16 +262,7 @@ describe('app createAsyncRuntime wiring', () => {
       });
 
       expect(periodicDueCalls).toBe(0);
-      expect(replanCalls).toEqual([
-        {
-          direction: 'LONG',
-          seatVersion: 2,
-          symbol: 'BULL.HK',
-          lastSeatActivatedAt: 12_000,
-          taskTimeMs: 70_000,
-          status: 'blocked',
-        },
-      ]);
+      expect(replanCalls).toEqual([]);
     } finally {
       Date.now = originalNow;
     }

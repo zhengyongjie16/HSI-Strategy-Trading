@@ -13,7 +13,6 @@
  * - 避免每次查询都遍历整个数组
  */
 import { logger } from '../../utils/logger/index.js';
-import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { formatSymbolDisplayFromQuote } from '../utils.js';
 import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/index.js';
 import type { Quote } from '../../types/quote.js';
@@ -24,7 +23,12 @@ import type {
   SellableOrderSelectParams,
 } from '../../types/services.js';
 import type { OrderStorage } from './types.js';
-import { calculateOrderStatistics, calculateTotalQuantity, isOrderTimedOut } from './utils.js';
+import {
+  assertCompleteExecutionFact,
+  calculateOrderStatistics,
+  calculateTotalQuantity,
+  isOrderTimedOut,
+} from './utils.js';
 import {
   compareBuyOrdersBySellPriority,
   deductSellQuantityFromBuyOrders,
@@ -150,13 +154,13 @@ export const createOrderStorage = (): OrderStorage => {
     isLongSymbol: boolean,
     executedTimeMs: number,
   ): void => {
-    const executedTime = isValidPositiveNumber(executedTimeMs) ? executedTimeMs : Date.now();
+    assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
     const nextRecord: OrderRecord = {
-      orderId: createLocalOrderId('LOCAL', executedTime),
+      orderId: createLocalOrderId('LOCAL', executedTimeMs),
       symbol,
       executedPrice,
       executedQuantity,
-      executedTime,
+      executedTime: executedTimeMs,
       submittedAt: undefined,
       updatedAt: undefined,
     };
@@ -191,15 +195,15 @@ export const createOrderStorage = (): OrderStorage => {
     orderId?: string | null,
     relatedBuyOrderIds?: ReadonlyArray<string> | null,
   ): void => {
+    assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
     const list = getBuyOrdersList(symbol, isLongSymbol);
-    const executedTime = isValidPositiveNumber(executedTimeMs) ? executedTimeMs : Date.now();
 
     setLatestSellRecord(symbol, isLongSymbol, {
-      orderId: orderId ?? createLocalOrderId('LOCAL_SELL', executedTime),
+      orderId: orderId ?? createLocalOrderId('LOCAL_SELL', executedTimeMs),
       symbol,
       executedPrice,
       executedQuantity,
-      executedTime,
+      executedTime: executedTimeMs,
       submittedAt: undefined,
       updatedAt: undefined,
     });

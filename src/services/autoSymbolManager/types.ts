@@ -93,19 +93,21 @@ export type AutoSymbolManagerDeps = {
   readonly riskChecker: RiskChecker;
   readonly warrantListCacheConfig?: WarrantListCacheConfig;
   readonly findBestWarrant?: FindBestWarrant;
-  readonly getTradingCalendarSnapshot?: () => TradingCalendarSnapshot;
+  readonly getTradingCalendarSnapshot: () => TradingCalendarSnapshot;
   readonly now?: () => Date;
 };
 
 /**
  * 事件触发自动寻标的入参。
- * 类型用途：包含方向、当前时间与是否可交易标志，由 autoSearch.maybeSearchOnEvent 消费。
+ * 类型用途：包含方向、当前时间与可实时重读的普通交易授权，由 autoSearch.maybeSearchOnEvent 消费。
  * 使用范围：autoSymbolManager 模块及其调用方使用。
  */
 export type SearchOnEventParams = {
   readonly direction: 'LONG' | 'SHORT';
   readonly currentTime: Date;
-  readonly canTradeNow: boolean;
+
+  /** 每个异步边界后都必须重新读取的普通交易授权。 */
+  readonly canContinue: () => boolean;
 };
 
 /**
@@ -117,6 +119,9 @@ export type StartSwitchOnDistanceParams = {
   readonly direction: 'LONG' | 'SHORT';
   readonly monitorPrice: number | null;
   readonly positions: ReadonlyArray<Position>;
+
+  /** 每个异步边界后都必须重新读取的普通交易授权。 */
+  readonly canContinue: () => boolean;
 };
 
 /**
@@ -127,6 +132,9 @@ export type StartSwitchOnDistanceParams = {
 export type AdvancePendingSwitchParams = {
   readonly direction: 'LONG' | 'SHORT';
   readonly positions: ReadonlyArray<Position>;
+
+  /** 每个异步边界后都必须重新读取的普通交易授权。 */
+  readonly canContinue: () => boolean;
 };
 
 /**
@@ -138,6 +146,9 @@ export type AdvancePendingSwitchParams = {
 export type SwitchProcessParams = Readonly<{
   readonly direction: 'LONG' | 'SHORT';
   readonly positions: ReadonlyArray<Position>;
+
+  /** 当前 pending switch 继续推进前必须重新读取的普通交易授权。 */
+  readonly canContinue: () => boolean;
 }>;
 
 /**
@@ -148,7 +159,9 @@ export type SwitchProcessParams = Readonly<{
 export type PeriodicSwitchDueParams = {
   readonly direction: 'LONG' | 'SHORT';
   readonly currentTime: Date;
-  readonly canTradeNow: boolean;
+
+  /** 每个异步边界后都必须重新读取的普通交易授权。 */
+  readonly canContinue: () => boolean;
 };
 
 /**
@@ -183,11 +196,15 @@ export type SwitchState = {
 
 /**
  * 周期换标本地阻塞来源。
- * 类型用途：表达当前席位为何仍不能执行周期换标；EMPTY 表示本地已满足换标条件。
- * 数据来源：由周期换标入口基于 orderRecorder 与 trader.getOrderHoldSymbols() 联合判定。
+ * 类型用途：表达当前席位为何仍不能执行周期换标；EMPTY 表示已满足换标条件。
+ * 数据来源：由周期换标入口基于 orderRecorder、本地 in-flight 订单与 broker pending orders 联合判定。
  * 使用范围：仅 autoSymbolManager 模块内部使用。
  */
-export type PeriodicSeatBlockSource = 'ORDER_RECORDER' | 'LOCAL_PENDING_ORDER' | 'EMPTY';
+export type PeriodicSeatBlockSource =
+  | 'ORDER_RECORDER'
+  | 'LOCAL_PENDING_ORDER'
+  | 'BROKER_PENDING_ORDER'
+  | 'EMPTY';
 
 /**
  * 换标流程阶段枚举（内部类型）。
@@ -523,11 +540,17 @@ export type StartSwitchFlowParams =
       readonly direction: 'LONG' | 'SHORT';
       readonly reason: string;
       readonly triggerKind: Extract<SwitchTriggerKind, 'PERIODIC'>;
+
+      /** 每个异步边界后都必须重新读取的普通交易授权。 */
+      readonly canContinue: () => boolean;
     }
   | {
       readonly reason: string;
       readonly triggerKind: Exclude<SwitchTriggerKind, 'PERIODIC'>;
       readonly distanceContext: StartSwitchOnDistanceParams;
+
+      /** 每个异步边界后都必须重新读取的普通交易授权。 */
+      readonly canContinue: () => boolean;
     };
 
 /**

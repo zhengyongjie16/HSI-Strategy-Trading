@@ -19,8 +19,11 @@ export type AutoSearchRouteKey = `${'LONG' | 'SHORT'}:${number}`;
 export type AutoSearchWakeupRuntimeDeps = Readonly<{
   symbolRegistry: SymbolRegistry;
   monitorContext: MonitorContext;
-  lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled'>;
-  tradingGateEventRuntime: Pick<TradingGateEventRuntime, 'onGateStateChanged'>;
+  lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
+  tradingGateEventRuntime: Pick<TradingGateEventRuntime, 'onAutoSearchAuthorizationChanged'>;
+
+  /** 是否启用末日保护清仓接管门禁。 */
+  doomsdayProtectionEnabled: boolean;
   now: () => Date;
   scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer: (handle: ReturnType<typeof setTimeout>) => void;

@@ -28,4 +28,18 @@ describe('tradingGateEventRuntime', () => {
     }).not.toThrow();
     expect(calls).toEqual(['first', 'second']);
   });
+
+  it('自动寻标授权 listener 的内部错误必须向时间控制平面 fail-fast', () => {
+    const runtime = createTradingGateEventRuntime();
+    runtime.onAutoSearchAuthorizationChanged(() => {
+      throw new Error('auto-search authorization invariant broken');
+    });
+
+    expect(() => {
+      runtime.emitAutoSearchAuthorizationChanged({
+        previousAuthorized: true,
+        nextAuthorized: false,
+      });
+    }).toThrow('auto-search authorization invariant broken');
+  });
 });

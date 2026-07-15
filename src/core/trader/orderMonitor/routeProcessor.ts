@@ -33,12 +33,16 @@ import type {
   SellTimeoutResolution,
   TerminalClosedReason,
   TerminalSettlementInput,
+  TerminalStateSnapshot,
+  TimeoutMarketConversionSubmitOutcome,
   TimeoutMarketConversionTerminalState,
 } from './types.js';
 import {
-  consumeLatestReplaceOutcome,
-  consumeQueriedTerminalState,
-  resetOrderReplaceRuntimeState,
+  acknowledgeLatestReplaceOutcome,
+  acknowledgeQueriedTerminalState,
+  clearOrderReplaceTransientRuntimeState,
+  peekLatestReplaceOutcome,
+  peekQueriedTerminalState,
 } from './orderOps.js';
 import {
   calculatePriceDiffDecimal,
@@ -46,7 +50,10 @@ import {
   isWaitWsOnlyReplaceMode,
   normalizePriceText,
 } from './utils.js';
-import { normalizeTerminalStateSnapshot } from './orderFactMerge.js';
+import {
+  assertProtectiveSellRawTerminalStateFactsReady,
+  normalizeTerminalStateSnapshot,
+} from './orderFactMerge.js';
 
 function resolveCancelRetryDelayMs(retryCount: number): number {
   const delay = ORDER_MONITOR_CANCEL_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, retryCount - 1);
@@ -87,35 +94,46 @@ function isSupportedTerminalCloseReason(
 function resolveTerminalSettlementInput(
   deps: RouteProcessorDeps,
   orderId: string,
-  order: TrackedOrder,
-  closedReason: TerminalClosedReason,
-): TerminalSettlementInput | null {
-  const queriedTerminalState = consumeQueriedTerminalState(deps.runtime, orderId);
-  const normalizedTerminalState =
-    queriedTerminalState === null
-      ? null
-      : normalizeTerminalStateSnapshot(order, queriedTerminalState);
-  const resolvedClosedReason = normalizedTerminalState?.closedReason ?? closedReason;
-  if (!isSupportedTerminalCloseReason(resolvedClosedReason)) {
-    return null;
+  order: OrderMonitorTrackedOrder,
+): {
+  readonly settlementInput: TerminalSettlementInput;
+  readonly rawTerminalState: TerminalStateSnapshot;
+} {
+  const rawTerminalState = peekQueriedTerminalState(deps.runtime, orderId);
+  if (rawTerminalState === null) {
+    throw new Error(
+      `[订单监控] 订单 ${orderId} 已确认终态但缺少 raw terminal snapshot，阻断 timeout 收口`,
+    );
   }
 
-  let executedTimeMs = order.lastExecutedTimeMs;
-  if (normalizedTerminalState !== null) {
-    executedTimeMs = normalizedTerminalState.executedTimeMs;
+  assertProtectiveSellRawTerminalStateFactsReady(order, rawTerminalState);
+  const isProtectiveSell = order.side === OrderSide.Sell && order.isProtectiveLiquidation;
+  const normalizedTerminalState = normalizeTerminalStateSnapshot(
+    order,
+    rawTerminalState,
+    isProtectiveSell,
+  );
+  const resolvedClosedReason = normalizedTerminalState.closedReason;
+  if (!isSupportedTerminalCloseReason(resolvedClosedReason)) {
+    throw new Error(
+      `[订单监控] 订单 ${orderId} raw terminal snapshot 返回不支持的关闭原因: ${String(resolvedClosedReason)}`,
+    );
   }
 
   return {
-    params: {
-      orderId,
-      closedReason: resolvedClosedReason,
-      source: 'API',
-      executedPrice: normalizedTerminalState?.executedPrice ?? order.executedPrice ?? null,
-      executedQuantity: normalizedTerminalState?.executedQuantity ?? order.executedQuantity,
-      executedTimeMs,
-      orderUpdatedAtMs: normalizedTerminalState?.orderUpdatedAtMs ?? order.lastOrderUpdateAtMs,
+    settlementInput: {
+      params: {
+        orderId,
+        closedReason: resolvedClosedReason,
+        source: 'API',
+        executedPrice: normalizedTerminalState.executedPrice,
+        executedQuantity: normalizedTerminalState.executedQuantity,
+        executedTimeMs: normalizedTerminalState.executedTimeMs,
+        orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
+      },
+      queriedExecutedQuantity: normalizedTerminalState.executedQuantity,
     },
-    queriedExecutedQuantity: normalizedTerminalState?.executedQuantity ?? null,
+    rawTerminalState,
   };
 }
 
@@ -132,7 +150,7 @@ function resolveRemainingQuantityForConversion(
     return null;
   }
 
-  return Math.max(remaining, 0);
+  return remaining;
 }
 
 function canHandleClosedTimeoutRoute(order: OrderMonitorTrackedOrder): boolean {
@@ -146,6 +164,10 @@ function canHandleClosedTimeoutRoute(order: OrderMonitorTrackedOrder): boolean {
 function canAttemptTimeoutHandling(order: OrderMonitorTrackedOrder, now: number): boolean {
   if (isClosedStatus(order.status) && !canHandleClosedTimeoutRoute(order)) {
     return false;
+  }
+
+  if (canHandleClosedTimeoutRoute(order)) {
+    return true;
   }
 
   if (order.nextCancelAttemptAt > now) {
@@ -163,8 +185,30 @@ function clearTimeoutMarketConversionState(order: OrderMonitorTrackedOrder): voi
 
 function markTimeoutMarketConversionPending(order: OrderMonitorTrackedOrder): void {
   order.timeoutMarketConversionPending = true;
-  order.timeoutMarketConversionTerminalState = null;
   pauseCancelRetryAndWaitWs(order);
+}
+
+/**
+ * 在 mutation permit 内确认 timeout->MO owner 仍有效，再开始 broker 撤单。
+ *
+ * 该检查不能前移到 permit 排队前：route 可能在等待期间被 WS 终态结算。
+ * 标记必须早于 ctx.cancelOrder，才能让同一异步窗口抵达的 WS 终态归属 timeout->MO。
+ */
+function prepareTimeoutMarketConversionCancel(
+  params: RouteRuntimeProcessParams,
+  deps: RouteProcessorDeps,
+  order: OrderMonitorTrackedOrder,
+): boolean {
+  if (!isRouteGenerationCurrent(deps.runtime, params)) {
+    return false;
+  }
+
+  if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
+    return false;
+  }
+
+  markTimeoutMarketConversionPending(order);
+  return true;
 }
 
 function resolvePendingTimeoutSettlementInput(
@@ -184,6 +228,11 @@ function resolvePendingTimeoutSettlementInput(
       executedQuantity: terminalState.executedQuantity,
       executedTimeMs: terminalState.executedTimeMs,
       orderUpdatedAtMs: terminalState.orderUpdatedAtMs,
+      ...(terminalState.preparedProtectiveTerminalExecution === undefined
+        ? {}
+        : {
+            preparedProtectiveTerminalExecution: terminalState.preparedProtectiveTerminalExecution,
+          }),
     },
     queriedExecutedQuantity: terminalState.executedQuantity,
   };
@@ -295,6 +344,79 @@ function isTrackedOrderStillAttachedToRoute(
   return symbolBucket?.has(order.orderId) ?? false;
 }
 
+/**
+ * 消费已缓存的改单终态。
+ *
+ * 已确认的 terminal outcome 必须优先于后续 timeout 或 replace mutation；只有结算成功后
+ * 才能同时 ack outcome 与 raw terminal snapshot。
+ */
+function settlePendingReplaceTerminal(
+  deps: RouteProcessorDeps,
+  order: OrderMonitorTrackedOrder,
+): boolean {
+  const replaceOutcome = peekLatestReplaceOutcome(deps.runtime, order.orderId);
+  if (replaceOutcome?.kind !== 'TERMINAL_CONFIRMED') {
+    return false;
+  }
+
+  const rawTerminalState = peekQueriedTerminalState(deps.runtime, order.orderId);
+  if (rawTerminalState !== replaceOutcome.terminalState) {
+    throw new Error(
+      `[订单监控] 订单 ${order.orderId} 改单终态缺少同一 raw terminal snapshot，阻断后续 mutation`,
+    );
+  }
+
+  assertProtectiveSellRawTerminalStateFactsReady(order, rawTerminalState);
+  const isProtectiveSell = order.side === OrderSide.Sell && order.isProtectiveLiquidation;
+  const terminal = normalizeTerminalStateSnapshot(order, rawTerminalState, isProtectiveSell);
+  const settlementResult = deps.settleOrder({
+    orderId: order.orderId,
+    closedReason: terminal.closedReason,
+    source: 'STATE_CHECK',
+    executedPrice: terminal.executedPrice,
+    executedQuantity: terminal.executedQuantity,
+    executedTimeMs: terminal.executedTimeMs,
+    orderUpdatedAtMs: terminal.orderUpdatedAtMs,
+  });
+  if (!settlementResult.handled) {
+    logger.warn(`[订单监控] 订单 ${order.orderId} 改单失败后确认终态，但结算未执行`);
+    return true;
+  }
+
+  acknowledgeLatestReplaceOutcome(deps.runtime, order.orderId, replaceOutcome);
+  acknowledgeQueriedTerminalState(deps.runtime, order.orderId, rawTerminalState);
+  clearOrderReplaceTransientRuntimeState(deps.runtime, order.orderId);
+  return true;
+}
+
+/** 结算已缓存的撤单终态，成功后才确认 raw snapshot。 */
+function settleBuyOrderTimeoutTerminal(
+  deps: RouteProcessorDeps,
+  orderId: string,
+  order: OrderMonitorTrackedOrder,
+): boolean {
+  let resolvedTerminal: ReturnType<typeof resolveTerminalSettlementInput>;
+  try {
+    resolvedTerminal = resolveTerminalSettlementInput(deps, orderId, order);
+  } catch (error) {
+    pauseCancelRetryAndWaitWs(order);
+    throw error;
+  }
+
+  const settlementResult = deps.settleOrder(resolvedTerminal.settlementInput.params);
+  if (!settlementResult.handled) {
+    applyCancelRetryBackoff(order);
+    return true;
+  }
+
+  acknowledgeQueriedTerminalState(deps.runtime, orderId, resolvedTerminal.rawTerminalState);
+  clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
+  logger.info(
+    `[订单监控] 买入订单 ${orderId} 已确认终态=${resolvedTerminal.settlementInput.params.closedReason}`,
+  );
+  return true;
+}
+
 async function handleBuyOrderTimeout(
   params: RouteRuntimeProcessParams,
   deps: RouteProcessorDeps,
@@ -306,15 +428,23 @@ async function handleBuyOrderTimeout(
     return false;
   }
 
+  if (peekQueriedTerminalState(deps.runtime, orderId) !== null) {
+    return settleBuyOrderTimeoutTerminal(deps, orderId, order);
+  }
+
   const outcome = await deps.cancelOrder(orderId);
   if (!isRouteGenerationCurrent(deps.runtime, params)) {
-    resetOrderReplaceRuntimeState(deps.runtime, orderId);
+    clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
     return true;
   }
 
   if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
-    resetOrderReplaceRuntimeState(deps.runtime, orderId);
+    clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
     return false;
+  }
+
+  if (outcome.kind === 'CANCEL_NOT_STARTED') {
+    throw new Error(`[订单监控] 买入订单 ${orderId} 未提供 route preflight 却未发起撤单`);
   }
 
   if (outcome.kind === 'CANCEL_CONFIRMED') {
@@ -324,26 +454,7 @@ async function handleBuyOrderTimeout(
   }
 
   if (outcome.kind === 'ALREADY_CLOSED' && isSupportedTerminalCloseReason(outcome.closedReason)) {
-    const settlementInput = resolveTerminalSettlementInput(
-      deps,
-      orderId,
-      order,
-      outcome.closedReason,
-    );
-    if (settlementInput === null) {
-      applyCancelRetryBackoff(order);
-      return true;
-    }
-
-    const settlementResult = deps.settleOrder(settlementInput.params);
-    resetOrderReplaceRuntimeState(deps.runtime, orderId);
-    if (!settlementResult.handled) {
-      applyCancelRetryBackoff(order);
-      return true;
-    }
-
-    logger.info(`[订单监控] 买入订单 ${orderId} 已确认终态=${settlementInput.params.closedReason}`);
-    return true;
+    return settleBuyOrderTimeoutTerminal(deps, orderId, order);
   }
 
   applyCancelRetryBackoff(order);
@@ -356,7 +467,8 @@ async function handleBuyOrderTimeout(
  * 这里要求 old order 的 pending sell 占用在整个异步提交窗口内保持连续：
  * - 进入该函数前，settlementFlow 已把旧卖单占用保留为 follow-up placeholder
  * - 提交前若 route/gate 已失效，则释放 placeholder，避免生成不存在新单的假占用
- * - broker 未接受新单前若提交失败，则释放 placeholder，避免本地残留不存在的卖单占用
+ * - SDK 调用尚未发出时若提交失败，则释放 placeholder，避免本地残留不存在的卖单占用
+ * - SDK 调用已发出但结果不可确认时，保留 placeholder 并把错误交给运行期错误通道
  * - broker 返回新 orderId 后，远端事实不再受 route generation / stop 状态否认
  * - 先建立新 tracked order，再迁移 pending-sell 占用并移除旧 placeholder
  *
@@ -379,67 +491,82 @@ async function submitTimeoutMarketOrder(
   }
 
   const monitorSymbol = order.monitorSymbol;
+  const { ctx } = deps;
+  let timeoutConversionRemark = `超时转市价-原订单${order.orderId}`;
+  if (order.isProtectiveLiquidation) {
+    timeoutConversionRemark += TRADING.PROTECTIVE_LIQUIDATION_REMARK_SUFFIX;
+  }
+
+  // 先做无副作用预检；最终 route/gate 复核与 SDK submit 必须留在同一 callback permit。
   if (!isRouteGenerationCurrent(deps.runtime, params)) {
     deps.orderRecorder.markSellCancelled(order.orderId);
     return;
   }
 
-  if (!deps.isExecutionAllowed()) {
+  if (!deps.isContinuousTradingAllowed()) {
     deps.orderRecorder.markSellCancelled(order.orderId);
-    logger.info(`[执行门禁] 门禁关闭，卖出订单 ${order.orderId} 超时转市价单被阻止`);
+    logger.info(`[连续交易门禁] 连续交易关闭，卖出订单 ${order.orderId} 超时转市价单被阻止`);
     return;
   }
 
-  let brokerSubmissionAccepted = false;
-  let newOrderId: string | null = null;
+  let submitOutcome: TimeoutMarketConversionSubmitOutcome;
   try {
-    const { ctx } = deps;
-    if (!isRouteGenerationCurrent(deps.runtime, params)) {
-      deps.orderRecorder.markSellCancelled(order.orderId);
-      return;
-    }
+    submitOutcome = await deps.rateLimiter.withTradeMutation(async (permit) => {
+      if (!isRouteGenerationCurrent(deps.runtime, params)) {
+        return { kind: 'PRECHECK_SKIPPED' };
+      }
 
-    if (!deps.isExecutionAllowed()) {
-      deps.orderRecorder.markSellCancelled(order.orderId);
-      logger.info(`[执行门禁] 门禁已关闭，卖出订单 ${order.orderId} 转市价单被阻止`);
-      return;
-    }
+      if (!deps.isContinuousTradingAllowed()) {
+        logger.info(
+          `[连续交易门禁] 连续交易已关闭，卖出订单 ${order.orderId} 转市价单在提交前被阻止`,
+        );
+        return { kind: 'PRECHECK_SKIPPED' };
+      }
 
-    let timeoutConversionRemark = `超时转市价-原订单${order.orderId}`;
-    if (order.isProtectiveLiquidation) {
-      timeoutConversionRemark += TRADING.PROTECTIVE_LIQUIDATION_REMARK_SUFFIX;
-    }
-
-    await deps.rateLimiter.throttle();
-    if (!isRouteGenerationCurrent(deps.runtime, params)) {
-      deps.orderRecorder.markSellCancelled(order.orderId);
-      return;
-    }
-
-    if (!deps.isExecutionAllowed()) {
-      deps.orderRecorder.markSellCancelled(order.orderId);
-      logger.info(`[执行门禁] 门禁已关闭，卖出订单 ${order.orderId} 转市价单在提交前被阻止`);
-      return;
-    }
-
-    const response = await wrapExternalApiRequest({
-      operation: 'TradeContext.submitOrder.timeoutMarketConversion',
-      request: () =>
-        ctx.submitOrder({
-          symbol: order.symbol,
-          side: order.side,
-          orderType: OrderType.MO,
-          submittedQuantity: toDecimal(marketConversionQuantity),
-          timeInForce: TimeInForceType.Day,
-          remark: timeoutConversionRemark,
-        }),
-      retryConfig: {
-        retries: 0,
-        delayMs: 0,
-      },
+      return permit.invoke(async () => {
+        try {
+          const brokerResponse = await wrapExternalApiRequest({
+            operation: 'TradeContext.submitOrder.timeoutMarketConversion',
+            request: () =>
+              ctx.submitOrder({
+                symbol: order.symbol,
+                side: order.side,
+                orderType: OrderType.MO,
+                submittedQuantity: toDecimal(marketConversionQuantity),
+                timeInForce: TimeInForceType.Day,
+                remark: timeoutConversionRemark,
+              }),
+            retryConfig: {
+              retries: 0,
+              delayMs: 0,
+            },
+          });
+          return { kind: 'BROKER_RESPONSE', brokerResponse };
+        } catch (error: unknown) {
+          return { kind: 'BROKER_REQUEST_STARTED_UNKNOWN', error };
+        }
+      });
     });
-    brokerSubmissionAccepted = true;
-    newOrderId = extractOrderId(response);
+  } catch (error: unknown) {
+    deps.orderRecorder.markSellCancelled(order.orderId);
+    throw error;
+  }
+
+  if (submitOutcome.kind === 'PRECHECK_SKIPPED') {
+    deps.orderRecorder.markSellCancelled(order.orderId);
+    return;
+  }
+
+  if (submitOutcome.kind === 'BROKER_REQUEST_STARTED_UNKNOWN') {
+    logger.error(
+      `[订单监控] 卖出订单 ${order.orderId} 转市价单提交结果不可确认，保留旧占用等待订单事实收敛`,
+      submitOutcome.error,
+    );
+    throw submitOutcome.error;
+  }
+
+  const newOrderId = extractOrderId(submitOutcome.brokerResponse);
+  try {
     const direction: 'LONG' | 'SHORT' = order.isLongSymbol ? 'LONG' : 'SHORT';
     deps.trackOrder({
       orderId: newOrderId,
@@ -463,15 +590,6 @@ async function submitTimeoutMarketOrder(
     );
     deps.orderRecorder.markSellCancelled(order.orderId);
   } catch (error: unknown) {
-    if (!brokerSubmissionAccepted) {
-      deps.orderRecorder.markSellCancelled(order.orderId);
-      throw error;
-    }
-
-    if (newOrderId === null) {
-      throw error;
-    }
-
     logger.error(
       `[订单监控] 卖出订单 ${order.orderId} 转市价单已提交，但本地同步失败，订单ID=${newOrderId}`,
       error,
@@ -508,6 +626,7 @@ async function handleSellOrderTimeout(
   }
 
   let settlementInput: TerminalSettlementInput;
+  let rawTerminalStateToAcknowledge: TerminalStateSnapshot | null = null;
   if (order.timeoutMarketConversionPending && order.timeoutMarketConversionTerminalState !== null) {
     const resolvedSettlementInput = resolvePendingTimeoutSettlementInput(
       orderId,
@@ -520,43 +639,60 @@ async function handleSellOrderTimeout(
 
     settlementInput = resolvedSettlementInput;
   } else {
-    const outcome = await deps.cancelOrder(orderId);
-    if (!isRouteGenerationCurrent(deps.runtime, params)) {
-      resetOrderReplaceRuntimeState(deps.runtime, orderId);
-      return true;
-    }
+    const pendingTerminalState = peekQueriedTerminalState(deps.runtime, orderId);
+    if (pendingTerminalState === null) {
+      const outcome = await deps.cancelOrder(orderId, () =>
+        prepareTimeoutMarketConversionCancel(params, deps, order),
+      );
+      if (!isRouteGenerationCurrent(deps.runtime, params)) {
+        clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
+        return true;
+      }
 
-    if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
-      resetOrderReplaceRuntimeState(deps.runtime, orderId);
-      return false;
-    }
+      if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
+        clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
+        return false;
+      }
 
-    if (outcome.kind === 'CANCEL_CONFIRMED') {
-      markTimeoutMarketConversionPending(order);
-      logger.info(`[订单监控] 卖出订单 ${orderId} 撤单请求成功，等待 WS 非成交终态后再评估`);
-      return true;
-    }
+      if (outcome.kind === 'CANCEL_NOT_STARTED') {
+        return false;
+      }
 
-    if (
-      outcome.kind !== 'ALREADY_CLOSED' ||
-      !isSupportedTerminalCloseReason(outcome.closedReason)
-    ) {
-      applyCancelRetryBackoff(order);
-      return true;
-    }
+      if (outcome.kind === 'CANCEL_CONFIRMED') {
+        logger.info(`[订单监控] 卖出订单 ${orderId} 撤单请求成功，等待 WS 非成交终态后再评估`);
+        return true;
+      }
 
-    const resolvedSettlementInput = resolveTerminalSettlementInput(
-      deps,
-      orderId,
-      order,
-      outcome.closedReason,
-    );
-    if (resolvedSettlementInput === null) {
-      applyCancelRetryBackoff(order);
-      return true;
-    }
+      if (
+        outcome.kind !== 'ALREADY_CLOSED' ||
+        !isSupportedTerminalCloseReason(outcome.closedReason)
+      ) {
+        applyCancelRetryBackoff(order);
+        return true;
+      }
 
-    settlementInput = resolvedSettlementInput;
+      let resolvedTerminal: ReturnType<typeof resolveTerminalSettlementInput>;
+      try {
+        resolvedTerminal = resolveTerminalSettlementInput(deps, orderId, order);
+      } catch (error) {
+        pauseCancelRetryAndWaitWs(order);
+        throw error;
+      }
+
+      settlementInput = resolvedTerminal.settlementInput;
+      rawTerminalStateToAcknowledge = resolvedTerminal.rawTerminalState;
+    } else {
+      let resolvedTerminal: ReturnType<typeof resolveTerminalSettlementInput>;
+      try {
+        resolvedTerminal = resolveTerminalSettlementInput(deps, orderId, order);
+      } catch (error) {
+        pauseCancelRetryAndWaitWs(order);
+        throw error;
+      }
+
+      settlementInput = resolvedTerminal.settlementInput;
+      rawTerminalStateToAcknowledge = resolvedTerminal.rawTerminalState;
+    }
   }
 
   const timeoutResolution = resolveSellTimeoutResolution(order, settlementInput);
@@ -576,11 +712,16 @@ async function handleSellOrderTimeout(
         }
       : timeoutResolution.settlementInput.params;
   const settlementResult = deps.settleOrder(settlementParams);
-  resetOrderReplaceRuntimeState(deps.runtime, orderId);
   if (!settlementResult.handled) {
     applyCancelRetryBackoff(order);
     return false;
   }
+
+  if (rawTerminalStateToAcknowledge !== null) {
+    acknowledgeQueriedTerminalState(deps.runtime, orderId, rawTerminalStateToAcknowledge);
+  }
+
+  clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
 
   clearTimeoutMarketConversionState(order);
   resetCancelRetry(order);
@@ -797,6 +938,10 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
 
     const trackedOrders = getTrackedOrdersForSymbol(deps, params.symbol);
     for (const order of trackedOrders) {
+      if (settlePendingReplaceTerminal(deps, order)) {
+        return;
+      }
+
       if (!shouldHandleTimeout(deps, order)) {
         continue;
       }
@@ -865,33 +1010,46 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
         continue;
       }
 
+      const outcomeBeforeReplace = peekLatestReplaceOutcome(deps.runtime, order.orderId);
       await deps.replaceOrderPrice(order.orderId, latestQuote.price);
+      const outcomeAfterReplace = peekLatestReplaceOutcome(deps.runtime, order.orderId);
+      const replacedOutcomeFromCurrentAttempt =
+        outcomeAfterReplace?.kind === 'REPLACED' && outcomeAfterReplace !== outcomeBeforeReplace
+          ? outcomeAfterReplace
+          : null;
       if (!isRouteGenerationCurrent(deps.runtime, params)) {
-        resetOrderReplaceRuntimeState(deps.runtime, order.orderId);
+        if (replacedOutcomeFromCurrentAttempt !== null) {
+          acknowledgeLatestReplaceOutcome(
+            deps.runtime,
+            order.orderId,
+            replacedOutcomeFromCurrentAttempt,
+          );
+        }
+
         return;
       }
 
       if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
-        resetOrderReplaceRuntimeState(deps.runtime, order.orderId);
+        if (replacedOutcomeFromCurrentAttempt !== null) {
+          acknowledgeLatestReplaceOutcome(
+            deps.runtime,
+            order.orderId,
+            replacedOutcomeFromCurrentAttempt,
+          );
+        }
+
         continue;
       }
 
-      const replaceOutcome = consumeLatestReplaceOutcome(deps.runtime, order.orderId);
-      if (replaceOutcome?.kind === 'TERMINAL_CONFIRMED') {
-        const terminal = normalizeTerminalStateSnapshot(order, replaceOutcome.terminalState);
-        const settlementResult = deps.settleOrder({
-          orderId: order.orderId,
-          closedReason: terminal.closedReason,
-          source: 'STATE_CHECK',
-          executedPrice: terminal.executedPrice,
-          executedQuantity: terminal.executedQuantity,
-          executedTimeMs: terminal.executedTimeMs,
-          orderUpdatedAtMs: terminal.orderUpdatedAtMs,
-        });
-        resetOrderReplaceRuntimeState(deps.runtime, order.orderId);
-        if (!settlementResult.handled) {
-          logger.warn(`[订单监控] 订单 ${order.orderId} 改单失败后确认终态，但结算未执行`);
-        }
+      settlePendingReplaceTerminal(deps, order);
+
+      // 只有 await 区间写入的新 REPLACED 属于本次 route，可按身份确认消费。
+      if (replacedOutcomeFromCurrentAttempt !== null) {
+        acknowledgeLatestReplaceOutcome(
+          deps.runtime,
+          order.orderId,
+          replacedOutcomeFromCurrentAttempt,
+        );
       }
 
       return;

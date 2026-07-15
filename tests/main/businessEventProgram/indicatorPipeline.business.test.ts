@@ -9,13 +9,14 @@
 import { describe, expect, it } from 'bun:test';
 import { Period } from 'longbridge';
 
+import { runIndicatorPipeline } from '../../../src/main/businessEventProgram/indicatorPipeline.js';
 import type { CandleData } from '../../../src/types/data.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
 import type { MonitorContext } from '../../../src/types/state.js';
-import type { IndicatorPipelineParams } from '../../../src/main/businessEventProgram/types.js';
 import {
   createIndicatorUsageProfileDouble,
   createMonitorConfigDouble,
+  createMonitorContextDouble,
 } from '../../helpers/testDoubles.js';
 
 function createCandles(length: number, start: number, step: number): ReadonlyArray<CandleData> {
@@ -75,37 +76,24 @@ function createCacheSnapshot(params: {
 }
 
 function createMonitorContext(overrides: Partial<MonitorContext> = {}): MonitorContext {
-  const config = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-  return {
+  const config = overrides.config ?? createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
+  return createMonitorContextDouble({
     config,
-    state: {
+    state: overrides.state ?? {
       monitorSymbol: config.monitorSymbol,
       lastMonitorSnapshot: null,
       incrementalIndicatorRuntime: null,
     },
-    monitorSymbolName: config.monitorSymbol,
-    indicatorProfile: createIndicatorUsageProfileDouble(),
+    monitorSymbolName: overrides.monitorSymbolName ?? config.monitorSymbol,
+    indicatorProfile: overrides.indicatorProfile ?? createIndicatorUsageProfileDouble(),
     ...overrides,
-  } as unknown as MonitorContext;
-}
-
-type RunIndicatorPipelineFn = (
-  params: IndicatorPipelineParams,
-) => Promise<IndicatorSnapshot | null>;
-
-async function loadRunIndicatorPipeline(): Promise<RunIndicatorPipelineFn> {
-  const modulePath =
-    '../../../src/main/businessEventProgram/indicatorPipeline.js?real-indicator-pipeline-v2';
-  const module = await import(modulePath);
-  return module.runIndicatorPipeline as RunIndicatorPipelineFn;
+  });
 }
 
 describe('businessEventProgram indicatorPipeline business flow', () => {
-  it('returns null when local candlestick cache is missing or not initialized', async () => {
-    const runIndicatorPipeline = await loadRunIndicatorPipeline();
-
+  it('returns null when local candlestick cache is missing or not initialized', () => {
     const monitorContext = createMonitorContext();
-    const result = await runIndicatorPipeline({
+    const result = runIndicatorPipeline({
       monitorContext,
       mainContext: {
         marketDataClient: {
@@ -117,8 +105,7 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
     expect(result).toBeNull();
   });
 
-  it('advances from existing incremental runtime on repeated calls', async () => {
-    const runIndicatorPipeline = await loadRunIndicatorPipeline();
+  it('advances from existing incremental runtime on repeated calls', () => {
     const cacheSnapshot = createCacheSnapshot({
       candles: createCandles(60, 100, 0.2),
       version: 7,
@@ -133,7 +120,7 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
       },
     });
 
-    const result = await runIndicatorPipeline({
+    const result = runIndicatorPipeline({
       monitorContext,
       mainContext: {
         marketDataClient: {
@@ -150,8 +137,7 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
     expect(result).not.toBe(previousSnapshot);
   });
 
-  it('does not mutate detached previous snapshot when pipeline replaces lastMonitorSnapshot', async () => {
-    const runIndicatorPipeline = await loadRunIndicatorPipeline();
+  it('does not mutate detached previous snapshot when pipeline replaces lastMonitorSnapshot', () => {
     const cacheSnapshot = createCacheSnapshot({
       candles: createCandles(60, 100, 0.2),
       version: 8,
@@ -166,7 +152,7 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
       },
     });
 
-    await runIndicatorPipeline({
+    runIndicatorPipeline({
       monitorContext,
       mainContext: {
         marketDataClient: {
@@ -182,15 +168,14 @@ describe('businessEventProgram indicatorPipeline business flow', () => {
     expect(previousSnapshot.macd).toEqual({ macd: 1, dif: 0.5, dea: 0.4 });
   });
 
-  it('rebuilds snapshot from candlestick cache and更新 state', async () => {
-    const runIndicatorPipeline = await loadRunIndicatorPipeline();
+  it('rebuilds snapshot from candlestick cache and更新 state', () => {
     const cacheSnapshot = createCacheSnapshot({
       candles: createCandles(80, 120, 0.3),
       version: 11,
     });
     const monitorContext = createMonitorContext();
 
-    const result = await runIndicatorPipeline({
+    const result = runIndicatorPipeline({
       monitorContext,
       mainContext: {
         marketDataClient: {
