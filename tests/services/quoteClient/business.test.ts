@@ -864,6 +864,72 @@ describe('quoteClient business flow', () => {
     expect(latestClose).toBe(102);
   });
 
+  it('preserves retained candlestick snapshots across active replacement and full-window append', async () => {
+    const firstTimestampMs = Date.parse('2026-02-16T01:00:00.000Z');
+    const seedCandles = Array.from({ length: 200 }, (_value, index) =>
+      makeCandlestick(100 + index, new Date(firstTimestampMs + index * 60_000).toISOString()),
+    );
+    quoteMock.seedCandlesticks('BULL.HK', RealPeriod.Min_1, seedCandles);
+
+    const client = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: async () => quoteMock,
+    });
+    await client.subscribeCandlesticks('BULL.HK', RealPeriod.Min_1);
+
+    const seedSnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
+    expect(seedSnapshot).not.toBeNull();
+    if (!seedSnapshot) {
+      throw new Error('expected seeded candlestick snapshot');
+    }
+
+    quoteMock.emitCandlestick(
+      createPushCandlestickEvent({
+        symbol: 'BULL.HK',
+        close: 999,
+        timestampMs: firstTimestampMs + 199 * 60_000,
+        period: RealPeriod.Min_1,
+        isConfirmed: false,
+      }),
+    );
+    quoteMock.flushAllEvents();
+
+    const replacedSnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
+    expect(replacedSnapshot).not.toBeNull();
+    if (!replacedSnapshot) {
+      throw new Error('expected replaced candlestick snapshot');
+    }
+
+    expect(replacedSnapshot.candles).not.toBe(seedSnapshot.candles);
+    expect(Number(seedSnapshot.candles.at(-1)?.close?.toString() ?? Number.NaN)).toBe(299);
+    expect(Number(replacedSnapshot.candles.at(-1)?.close?.toString() ?? Number.NaN)).toBe(999);
+
+    quoteMock.emitCandlestick(
+      createPushCandlestickEvent({
+        symbol: 'BULL.HK',
+        close: 1000,
+        timestampMs: firstTimestampMs + 200 * 60_000,
+        period: RealPeriod.Min_1,
+        isConfirmed: false,
+      }),
+    );
+    quoteMock.flushAllEvents();
+
+    const appendedSnapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
+    expect(appendedSnapshot).not.toBeNull();
+    if (!appendedSnapshot) {
+      throw new Error('expected appended candlestick snapshot');
+    }
+
+    expect(appendedSnapshot.candles).not.toBe(replacedSnapshot.candles);
+    expect(replacedSnapshot.candles).toHaveLength(200);
+    expect(Number(replacedSnapshot.candles.at(0)?.close?.toString() ?? Number.NaN)).toBe(100);
+    expect(Number(replacedSnapshot.candles.at(-1)?.close?.toString() ?? Number.NaN)).toBe(999);
+    expect(appendedSnapshot.candles).toHaveLength(200);
+    expect(Number(appendedSnapshot.candles.at(0)?.close?.toString() ?? Number.NaN)).toBe(101);
+    expect(Number(appendedSnapshot.candles.at(-1)?.close?.toString() ?? Number.NaN)).toBe(1000);
+  });
+
   it('caches trading-day result and avoids duplicate API calls within TTL', async () => {
     const date = new Date('2026-02-16T01:00:00.000Z');
     const naive = new TestNaiveDate(2026, 2, 16);

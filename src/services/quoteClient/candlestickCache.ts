@@ -180,7 +180,7 @@ function buildSnapshot(params: {
     symbol: params.symbol,
     period: params.period,
     version: params.version,
-    candles: [...params.candles],
+    candles: params.candles,
     lastBarTimestamp,
     lastBarConfirmed: params.lastBarConfirmed,
     initialized: params.initialized,
