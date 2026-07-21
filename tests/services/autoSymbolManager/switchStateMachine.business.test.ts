@@ -24,7 +24,7 @@ import {
 } from '../../../src/services/autoSymbolManager/signalBuilder.js';
 import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
 import { ORDER_QUOTE_RETRY, PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { PeriodicSwitchPendingState } from '../../../src/types/monitorContextPorts.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type {
@@ -368,7 +368,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
   it('keeps distance-switch seat ACTIVE when candidate precheck has a true external failure', async () => {
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
-    const candidateError = createExternalApiRequestError({
+    const candidateError = await createExternalApiRequestError({
       operation: 'test.findBestWarrant',
       attempts: 1,
       cause: new Error('candidate query unavailable'),
@@ -402,7 +402,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
   it('keeps distance-switch seat ACTIVE when pending-order admission has a true external failure', async () => {
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
-    const pendingOrderError = createExternalApiRequestError({
+    const pendingOrderError = await createExternalApiRequestError({
       operation: 'test.getPendingOrders',
       attempts: 1,
       cause: new Error('pending orders unavailable'),
@@ -580,7 +580,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         getPendingOrders: async () => {
           pendingOrderCalls += 1;
           if (pendingOrderCalls === 2) {
-            throw createExternalApiRequestError({
+            throw await createExternalApiRequestError({
               operation: 'test.pendingOrders',
               attempts: 1,
               cause: new Error('pending orders unavailable'),
@@ -649,7 +649,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         getQuotes: async () => {
           quoteCalls += 1;
           if (quoteCalls === 1) {
-            throw createExternalApiRequestError({
+            throw await createExternalApiRequestError({
               operation: 'test.sellOutQuote',
               attempts: 1,
               cause: new Error('sell quote unavailable'),
@@ -752,7 +752,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
           nextQuoteCalls += 1;
           if (nextQuoteCalls === 1) {
-            throw createExternalApiRequestError({
+            throw await createExternalApiRequestError({
               operation: 'test.waitQuote',
               attempts: 1,
               cause: new Error('next quote unavailable'),
@@ -824,7 +824,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       quantity: 100,
       availableQuantity: 100,
     });
-    const submitError = createExternalApiRequestError({
+    const submitError = await createExternalApiRequestError({
       operation: 'test.sellOutSubmit',
       attempts: 1,
       cause: new Error('sell submission unavailable'),

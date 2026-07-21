@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 
 import { createMonitorTaskProcessor } from '../../../../src/main/asyncProgram/monitorTaskProcessor/index.js';
-import { createExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 import { API } from '../../../../src/constants/index.js';
 import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
 import { classifyOrdersForRebuild } from '../../../../src/core/orderRecorder/utils.js';
@@ -244,7 +244,7 @@ describe('monitorTaskProcessor business flow', () => {
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
-          throw createExternalApiRequestError({
+          throw await createExternalApiRequestError({
             operation: 'test.periodicDue',
             attempts: 1,
             cause: new Error('api unavailable'),
@@ -2391,7 +2391,7 @@ describe('monitorTaskProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
           getQuotesCalls += 1;
-          throw createExternalApiRequestError({
+          throw await createExternalApiRequestError({
             operation: 'test.seatRefreshQuotes',
             attempts: 1,
             cause: new Error('quote unavailable'),

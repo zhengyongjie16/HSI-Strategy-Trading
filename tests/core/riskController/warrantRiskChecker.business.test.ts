@@ -13,7 +13,7 @@ import {
   MIN_MONITOR_PRICE_THRESHOLD,
 } from '../../../src/constants/index.js';
 import { createWarrantRiskChecker } from '../../../src/core/riskController/warrantRiskChecker.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { MarketDataClient } from '../../../src/types/services.js';
 
 describe('warrantRiskChecker business boundaries', () => {
@@ -91,7 +91,7 @@ describe('warrantRiskChecker business boundaries', () => {
     const marketDataClient = {
       getQuoteContext: async () => ({
         warrantQuote: async () => {
-          throw createExternalApiRequestError({
+          throw await createExternalApiRequestError({
             operation: 'QuoteContext.warrantQuote',
             attempts: 1,
             cause: new Error('api down'),

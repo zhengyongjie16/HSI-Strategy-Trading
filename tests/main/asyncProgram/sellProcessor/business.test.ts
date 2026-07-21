@@ -14,7 +14,7 @@ import { createSellProcessor } from '../../../../src/main/asyncProgram/sellProce
 import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { clearMonitorDirectionQueues } from '../../../../src/main/seatRuntimeCleanupDispatcher/queueCleanup.js';
 import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 
 import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { Signal } from '../../../../src/types/signal.js';
@@ -1065,7 +1065,7 @@ describe('sellProcessor business flow', () => {
 
   it('sends submitOrder API failure to fatal channel', async () => {
     const queue = createSellTaskQueue();
-    const submitError = createExternalApiRequestError({
+    const submitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: new Error('submit timeout'),
@@ -1120,7 +1120,7 @@ describe('sellProcessor business flow', () => {
 
   it('consumes non-submit external API failures without fatal channel escalation', async () => {
     const queue = createSellTaskQueue();
-    const quoteError = createExternalApiRequestError({
+    const quoteError = await createExternalApiRequestError({
       operation: 'QuoteContext.realtimeQuote',
       attempts: 1,
       cause: new Error('quote timeout'),

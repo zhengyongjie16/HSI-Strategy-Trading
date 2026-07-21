@@ -59,9 +59,7 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
 
       const cycleResult = simulateTriggerCycle({
         records: group.map((record) => ({
-          direction,
           executedAtMs: record.boundaryExecutedTimeMs,
-          monitorSymbol: record.monitorSymbol,
         })),
         triggerLimit: monitorConfig.liquidationTriggerLimit,
         cooldownConfig,

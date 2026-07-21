@@ -30,7 +30,7 @@ export type SellTaskType = 'IMMEDIATE_SELL' | 'VERIFIED_SELL';
  * 数据来源：BuyTaskType/SellTaskType 与 Signal action 业务不变量。
  * 使用范围：Task 与 TaskQueue 类型边界。
  */
-export type TaskSignal<TType extends string> = TType extends BuyTaskType
+type TaskSignal<TType extends string> = TType extends BuyTaskType
   ? BuySignal
   : TType extends SellTaskType
     ? ExecutableSellSignal

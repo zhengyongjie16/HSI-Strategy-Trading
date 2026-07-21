@@ -17,7 +17,7 @@
  */
 import { logger } from '../../../utils/logger/index.js';
 import type { MonitorContext } from '../../../types/state.js';
-import type { CacheDomain, LifecycleContext } from '../types.js';
+import type { CacheDomain } from '../types.js';
 import type { SignalRuntimeDomainDeps } from './types.js';
 
 /**
@@ -87,7 +87,7 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
   } = deps;
 
   return {
-    async midnightClear(_ctx: LifecycleContext): Promise<void> {
+    async midnightClear(): Promise<void> {
       postTradeConsistencyRuntime.abortWaiting();
       await businessEventProgram.stopAndDrain();
       await tradingRiskEventRuntime.stopAndDrain();
@@ -120,7 +120,7 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
         `[Lifecycle][signalRuntime] 午夜清理完成: delayed=${removedDelayed}, buy=${queueResult.removedBuy}, sell=${queueResult.removedSell}, monitor=${queueResult.removedMonitor}`,
       );
     },
-    async openRebuild(_ctx: LifecycleContext): Promise<void> {
+    async openRebuild(): Promise<void> {
       postTradeConsistencyRuntime.resetAbort();
       postTradeConsistencyRuntime.start();
       postTradeConsistencyRuntime.completeRebuildBaseline();

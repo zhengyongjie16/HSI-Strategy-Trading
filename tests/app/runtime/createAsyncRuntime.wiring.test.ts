@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
@@ -278,7 +278,7 @@ describe('app createAsyncRuntime wiring', () => {
         autoSymbolManager: {
           maybeSearchOnEvent: async () => {},
           evaluatePeriodicSwitchDue: async () => {
-            throw createExternalApiRequestError({
+            throw await createExternalApiRequestError({
               operation: 'test.periodicDue',
               attempts: 1,
               cause: new Error('api unavailable'),

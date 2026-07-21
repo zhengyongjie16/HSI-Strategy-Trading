@@ -149,7 +149,6 @@ export function createStaticLiquidationExecutor(
   deps: CreateStaticLiquidationExecutorDeps,
 ): (params: {
   readonly monitorContext: MonitorContext;
-  readonly event: QuoteUpdatedEvent;
   readonly retryAttempts: number;
   readonly excludedDirections?: ReadonlySet<'LONG' | 'SHORT'>;
   readonly canContinue: () => boolean;
@@ -159,7 +158,6 @@ export function createStaticLiquidationExecutor(
 
   return async function executeStaticLiquidation(params: {
     readonly monitorContext: MonitorContext;
-    readonly event: QuoteUpdatedEvent;
     readonly retryAttempts: number;
     readonly excludedDirections?: ReadonlySet<'LONG' | 'SHORT'>;
     readonly canContinue: () => boolean;

@@ -6,59 +6,12 @@
  * - 保持启动快照失败后阻断交易并切换到开盘重建重试的语义不变
  * - 在唯一装配入口中复用 monitorContext，并组装 async runtime、lifecycle 与 cleanup
  */
-import { validateRuntimeSymbolsFromQuotesMap } from '../config/validator/index.js';
-import { createBusinessEventProgram } from '../main/businessEventProgram/index.js';
-import { createRebuildTradingDayState } from '../main/lifecycle/rebuildTradingDayState.js';
 import { timeWakeupEvaluationProgram } from '../main/timeWakeupEvaluationProgram/index.js';
-import { createTimeWakeupRuntime } from '../main/timeWakeupRuntime/index.js';
-import { applyStartupSnapshotFailureState } from '../main/lifecycle/startupFailureState.js';
-import { displayAccountAndPositions } from '../services/accountDisplay/index.js';
-import { logger } from '../utils/logger/index.js';
-import { formatError, toError } from '../utils/error/index.js';
+import { toError } from '../utils/error/index.js';
 import { isExternalApiRequestError } from '../utils/apiFailure/index.js';
-import { createCleanup } from './shutdown/createCleanup.js';
-import { createLifecycleRuntime } from './lifecycle/createLifecycleRuntime.js';
 import { syncMonitorContextSymbolNames } from './context/createMonitorContext.js';
-import { registerDelayedSignalHandlers } from './wiring/registerDelayedSignalHandlers.js';
-import { loadStartupSnapshot } from './startup/startupSnapshot.js';
-import { collectRuntimeValidationSymbols } from './startup/runtimeValidation.js';
-import { createAsyncRuntime } from './runtime/createAsyncRuntime.js';
-import { createPostGateRuntime } from './runtime/createPostGateRuntime.js';
-import { createPreGateRuntime } from './runtime/createPreGateRuntime.js';
+import { DEFAULT_RUN_APP_DEPS } from './runAppDeps.js';
 import type { AppEnvironmentParams, RunAppDeps } from './types.js';
-
-function waitForShutdownSignal(): Promise<void> {
-  return new Promise((resolve) => {
-    const handleShutdown = (): void => {
-      process.off('SIGINT', handleShutdown);
-      process.off('SIGTERM', handleShutdown);
-      resolve();
-    };
-
-    process.once('SIGINT', handleShutdown);
-    process.once('SIGTERM', handleShutdown);
-  });
-}
-
-const DEFAULT_RUN_APP_DEPS: RunAppDeps = {
-  createPreGateRuntime,
-  createPostGateRuntime,
-  loadStartupSnapshot,
-  collectRuntimeValidationSymbols,
-  createRebuildTradingDayState,
-  displayAccountAndPositions,
-  registerDelayedSignalHandlers,
-  createBusinessEventProgram,
-  createAsyncRuntime,
-  createLifecycleRuntime,
-  createCleanup,
-  createTimeWakeupRuntime,
-  waitForShutdownSignal,
-  logger,
-  formatError,
-  validateRuntimeSymbolsFromQuotesMap,
-  applyStartupSnapshotFailureState,
-};
 
 /**
  * 构造 app 运行期统一环境快照。
@@ -80,7 +33,7 @@ function buildAppRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * @param deps app 组装链路依赖
  * @returns runApp 函数
  */
-export function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promise<void> {
+function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promise<void> {
   const {
     createPreGateRuntime: buildPreGateRuntime,
     createPostGateRuntime: buildPostGateRuntime,

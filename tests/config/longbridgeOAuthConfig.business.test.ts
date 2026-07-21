@@ -124,8 +124,6 @@ describe('longbridge auth config validation', () => {
     });
 
     expect(error).not.toBeNull();
-    const validationError = error as { missingFields?: ReadonlyArray<string> };
-    expect(validationError.missingFields).toContain('LONGBRIDGE_AUTH_MODE');
   });
 
   it('rejects an invalid auth mode', async () => {
@@ -135,8 +133,6 @@ describe('longbridge auth config validation', () => {
     });
 
     expect(error).not.toBeNull();
-    const validationError = error as { missingFields?: ReadonlyArray<string> };
-    expect(validationError.missingFields).toContain('LONGBRIDGE_AUTH_MODE');
   });
 
   it('rejects the .env.example placeholder client id as missing config', async () => {
@@ -146,8 +142,6 @@ describe('longbridge auth config validation', () => {
     });
 
     expect(error).not.toBeNull();
-    const validationError = error as { missingFields?: ReadonlyArray<string> };
-    expect(validationError.missingFields).toContain('LONGBRIDGE_CLIENT_ID');
   });
 
   it('rejects an invalid callback port', async () => {
@@ -158,8 +152,6 @@ describe('longbridge auth config validation', () => {
     });
 
     expect(error).not.toBeNull();
-    const validationError = error as { missingFields?: ReadonlyArray<string> };
-    expect(validationError.missingFields).toContain('LONGBRIDGE_CALLBACK_PORT');
   });
 
   it('rejects invalid sdk extra config values', async () => {
@@ -174,16 +166,6 @@ describe('longbridge auth config validation', () => {
     });
 
     expect(error).not.toBeNull();
-    const validationError = error as { missingFields?: ReadonlyArray<string> };
-    expect(validationError.missingFields).toEqual(
-      expect.arrayContaining([
-        'LONGBRIDGE_HTTP_URL',
-        'LONGBRIDGE_LANGUAGE',
-        'LONGBRIDGE_PUSH_CANDLESTICK_MODE',
-        'LONGBRIDGE_ENABLE_OVERNIGHT',
-        'LONGBRIDGE_PRINT_QUOTE_PACKAGES',
-      ]),
-    );
   });
 
   it('accepts a complete apikey config', async () => {
@@ -205,8 +187,6 @@ describe('longbridge auth config validation', () => {
     });
 
     expect(error).not.toBeNull();
-    const validationError = error as { missingFields?: ReadonlyArray<string> };
-    expect(validationError.missingFields).toContain('LONGBRIDGE_ACCESS_TOKEN');
   });
 
   it('treats apikey placeholder values from .env.example as missing config', async () => {
@@ -218,14 +198,6 @@ describe('longbridge auth config validation', () => {
     });
 
     expect(error).not.toBeNull();
-    const validationError = error as { missingFields?: ReadonlyArray<string> };
-    expect(validationError.missingFields).toEqual(
-      expect.arrayContaining([
-        'LONGBRIDGE_APP_KEY',
-        'LONGBRIDGE_APP_SECRET',
-        'LONGBRIDGE_ACCESS_TOKEN',
-      ]),
-    );
   });
 
   it('createSdkConfigFromAuth rejects invalid callback port before OAuth.build', async () => {

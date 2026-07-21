@@ -52,16 +52,19 @@ function createValidTradingConfigForValidation() {
 async function validateWithEnv(
   env: NodeJS.ProcessEnv,
   tradingConfig = createValidTradingConfigForValidation(),
-): Promise<ReadonlyArray<string>> {
+): Promise<Error | null> {
   try {
     await validateAllConfig({
       env,
       tradingConfig,
     });
-    return [];
+    return null;
   } catch (error) {
-    const validationError = error as { readonly missingFields?: ReadonlyArray<string> };
-    return validationError.missingFields ?? [];
+    if (error instanceof Error) {
+      return error;
+    }
+
+    throw error;
   }
 }
 
@@ -270,14 +273,14 @@ describe('trading config fail-fast parsing', () => {
       }),
     });
 
-    const missingFields = await validateWithEnv(
+    const validationError = await validateWithEnv(
       createBaseEnv({
         AUTO_SEARCH_ENABLED: 'false',
         SWITCH_INTERVAL_MINUTES: '121',
       }),
       disabledAutoSearchTradingConfig,
     );
-    expect(missingFields).not.toContain('SWITCH_INTERVAL_MINUTES');
+    expect(validationError).toBeNull();
   });
 
   it('ignores invalid timeout seconds when the corresponding timeout is disabled', async () => {
@@ -309,7 +312,7 @@ describe('trading config fail-fast parsing', () => {
       },
     };
 
-    const missingFields = await validateWithEnv(
+    const validationError = await validateWithEnv(
       createBaseEnv({
         BUY_ORDER_TIMEOUT_ENABLED: 'false',
         BUY_ORDER_TIMEOUT_SECONDS: '601',
@@ -318,8 +321,7 @@ describe('trading config fail-fast parsing', () => {
       }),
       disabledTimeoutTradingConfig,
     );
-    expect(missingFields).not.toContain('BUY_ORDER_TIMEOUT_SECONDS');
-    expect(missingFields).not.toContain('SELL_ORDER_TIMEOUT_SECONDS');
+    expect(validationError).toBeNull();
   });
 
   it('fails fast when critical monitor-level keys are explicitly invalid or out of range', () => {
@@ -392,15 +394,14 @@ describe('trading config validator rules', () => {
       }),
     });
 
-    const missingFields = await validateWithEnv(
+    const validationError = await validateWithEnv(
       createBaseEnv({
         LONG_SYMBOL: '55131.HK',
         SHORT_SYMBOL: '55131.HK',
       }),
       tradingConfig,
     );
-    expect(missingFields).toContain('LONG_SYMBOL');
-    expect(missingFields).toContain('SHORT_SYMBOL');
+    expect(validationError).not.toBeNull();
   });
 });
 
@@ -409,37 +410,37 @@ describe('trading config fail-fast validator consistency', () => {
     const autoSearchEnabledTradingConfig = createAutoSearchEnabledTradingConfig();
 
     for (const testCase of invalidMonitorEnvCases) {
-      const missingFields = await validateWithEnv(
+      const validationError = await validateWithEnv(
         createBaseEnv({
           ...('extraEnv' in testCase ? testCase.extraEnv : {}),
           [testCase.envKey]: testCase.value,
         }),
         'extraEnv' in testCase ? autoSearchEnabledTradingConfig : undefined,
       );
-      expect(missingFields).toContain(testCase.envKey);
+      expect(validationError).not.toBeNull();
     }
   });
 
   it('matches parser semantics for critical global env keys', async () => {
     for (const testCase of invalidGlobalNumberEnvCases) {
-      const missingFields = await validateWithEnv(
+      const validationError = await validateWithEnv(
         createBaseEnv({
           ...('extraEnv' in testCase ? testCase.extraEnv : {}),
           [testCase.envKey]: testCase.value,
         }),
       );
-      expect(missingFields).toContain(testCase.envKey);
+      expect(validationError).not.toBeNull();
     }
   });
 
   it('matches parser semantics for explicit invalid boolean env keys', async () => {
     for (const testCase of [...invalidMonitorBooleanEnvCases, ...invalidGlobalBooleanEnvCases]) {
-      const missingFields = await validateWithEnv(
+      const validationError = await validateWithEnv(
         createBaseEnv({
           [testCase.envKey]: testCase.value,
         }),
       );
-      expect(missingFields).toContain(testCase.envKey);
+      expect(validationError).not.toBeNull();
     }
   });
 
@@ -462,7 +463,7 @@ describe('trading config fail-fast validator consistency', () => {
       }),
     });
 
-    const autoSearchExpiryMissingFields = await validateWithEnv(
+    const autoSearchExpiryValidationError = await validateWithEnv(
       createBaseEnv({
         AUTO_SEARCH_ENABLED: 'true',
         AUTO_SEARCH_EXPIRY_MIN_MONTHS: '121',
@@ -478,9 +479,9 @@ describe('trading config fail-fast validator consistency', () => {
         },
       },
     );
-    expect(autoSearchExpiryMissingFields).toContain('AUTO_SEARCH_EXPIRY_MIN_MONTHS');
+    expect(autoSearchExpiryValidationError).not.toBeNull();
 
-    const autoSearchOpenDelayMissingFields = await validateWithEnv(
+    const autoSearchOpenDelayValidationError = await validateWithEnv(
       createBaseEnv({
         AUTO_SEARCH_ENABLED: 'true',
         AUTO_SEARCH_OPEN_DELAY_MINUTES: '61',
@@ -496,9 +497,9 @@ describe('trading config fail-fast validator consistency', () => {
         },
       },
     );
-    expect(autoSearchOpenDelayMissingFields).toContain('AUTO_SEARCH_OPEN_DELAY_MINUTES');
+    expect(autoSearchOpenDelayValidationError).not.toBeNull();
 
-    const liquidationTriggerLimitMissingFields = await validateWithEnv(
+    const liquidationTriggerLimitValidationError = await validateWithEnv(
       createBaseEnv({
         LIQUIDATION_COOLDOWN_MINUTES: '10',
         LIQUIDATION_TRIGGER_LIMIT: '1.5',
@@ -511,6 +512,6 @@ describe('trading config fail-fast validator consistency', () => {
         },
       },
     );
-    expect(liquidationTriggerLimitMissingFields).toContain('LIQUIDATION_TRIGGER_LIMIT');
+    expect(liquidationTriggerLimitValidationError).not.toBeNull();
   });
 });

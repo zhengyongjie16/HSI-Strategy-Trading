@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { LastState } from '../../../src/types/state.js';
 
 import {
@@ -320,7 +320,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     expect(staleStatus.currentVersion).toBe(0);
 
     firstAccountRefresh.reject(
-      createExternalApiRequestError({
+      await createExternalApiRequestError({
         operation: 'TradeContext.accountBalance',
         attempts: 1,
         cause: new Error('first refresh fails'),
@@ -400,7 +400,7 @@ describe('createPostTradeConsistencyRuntime', () => {
           getAccountSnapshot: async () => {
             accountCallCount += 1;
             if (accountCallCount === 1) {
-              throw createExternalApiRequestError({
+              throw await createExternalApiRequestError({
                 operation: 'TradeContext.accountBalance',
                 attempts: 1,
                 cause: new Error('account API temporary unavailable'),

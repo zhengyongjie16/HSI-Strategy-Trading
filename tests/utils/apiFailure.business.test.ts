@@ -7,12 +7,12 @@ import { describe, expect, it } from 'bun:test';
 
 import {
   createExternalApiAggregateRequestError,
-  createExternalApiRequestError,
   isAllExternalApiRequestErrors,
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
   wrapExternalApiRequest,
 } from '../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 
 describe('apiFailure boundary', () => {
   it('wraps repeated request failures as ExternalApiRequestError', async () => {
@@ -115,8 +115,8 @@ describe('apiFailure boundary', () => {
     expect(isExternalApiRequestError(fake)).toBeFalse();
   });
 
-  it('rejects errors that copy all properties from a real ExternalApiRequestError', () => {
-    const real = createExternalApiRequestError({
+  it('rejects errors that copy all properties from a real ExternalApiRequestError', async () => {
+    const real = await createExternalApiRequestError({
       operation: 'TradeContext.accountBalance',
       attempts: 1,
       cause: new Error('network'),
@@ -129,13 +129,13 @@ describe('apiFailure boundary', () => {
     expect(isExternalApiRequestError(fake)).toBeFalse();
   });
 
-  it('classifies aggregate external API failures as ExternalApiRequestError', () => {
-    const first = createExternalApiRequestError({
+  it('classifies aggregate external API failures as ExternalApiRequestError', async () => {
+    const first = await createExternalApiRequestError({
       operation: 'QuoteContext.unsubscribe.quote.reset',
       attempts: 2,
       cause: new Error('quote unavailable'),
     });
-    const second = createExternalApiRequestError({
+    const second = await createExternalApiRequestError({
       operation: 'QuoteContext.unsubscribeCandlesticks.reset',
       attempts: 2,
       cause: new Error('kline unavailable'),
@@ -153,23 +153,23 @@ describe('apiFailure boundary', () => {
     expect(isAllExternalApiRequestErrors([first, new Error('internal')])).toBeFalse();
   });
 
-  it('classifies only submitOrder external failures as unconfirmed order submission errors', () => {
-    const submitError = createExternalApiRequestError({
+  it('classifies only submitOrder external failures as unconfirmed order submission errors', async () => {
+    const submitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: new Error('submit timeout'),
     });
-    const timeoutMarketConversionSubmitError = createExternalApiRequestError({
+    const timeoutMarketConversionSubmitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder.timeoutMarketConversion',
       attempts: 1,
       cause: new Error('market conversion submit timeout'),
     });
-    const positionError = createExternalApiRequestError({
+    const positionError = await createExternalApiRequestError({
       operation: 'TradeContext.stockPositions.quantityResolver',
       attempts: 1,
       cause: new Error('position timeout'),
     });
-    const quoteError = createExternalApiRequestError({
+    const quoteError = await createExternalApiRequestError({
       operation: 'QuoteContext.realtimeQuote',
       attempts: 1,
       cause: new Error('quote timeout'),

@@ -22,7 +22,7 @@ import { buildTradingRiskRoutingIndex } from '../../../src/main/tradingRiskEvent
 import { logger } from '../../../src/utils/logger/index.js';
 import { resolveTradingRiskRoute } from '../../../src/main/tradingRiskEventRuntime/routeValidation.js';
 import { createUnrealizedLossMonitor } from '../../../src/core/riskController/unrealizedLossMonitor.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { TradingRiskEventRuntimeDeps } from '../../../src/main/tradingRiskEventRuntime/types.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
@@ -326,7 +326,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
   });
 
   it('exposes protective liquidation submitOrder uncertainty to fatal handler', async () => {
-    const submitError = createExternalApiRequestError({
+    const submitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: new Error('submit timeout'),
@@ -356,7 +356,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
   });
 
   it('drops non-submit ExternalApiRequestError without entering fatal state', async () => {
-    const quoteError = createExternalApiRequestError({
+    const quoteError = await createExternalApiRequestError({
       operation: 'QuoteContext.realtimeQuote',
       attempts: 1,
       cause: new Error('quote timeout'),

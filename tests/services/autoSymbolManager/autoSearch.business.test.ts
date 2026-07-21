@@ -12,7 +12,7 @@ import type {
   SwitchSuppression,
 } from '../../../src/services/autoSymbolManager/types.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createMonitorConfigDouble,
   createSymbolRegistryDouble,
@@ -67,7 +67,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
       resolveDirectionalAutoSearchPolicy: () => createDirectionalAutoSearchPolicy('LONG'),
       buildFindBestWarrantInput: async () => createFindBestWarrantInputDouble(),
       findBestWarrant: async () => {
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.autoSearch',
           attempts: 1,
           cause: new Error('api unavailable'),

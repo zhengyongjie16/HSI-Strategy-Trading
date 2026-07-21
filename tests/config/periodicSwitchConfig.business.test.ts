@@ -126,8 +126,6 @@ describe('periodic switch config business flow', () => {
       }
 
       expect(caughtError).not.toBeNull();
-      const validationError = caughtError as { missingFields?: ReadonlyArray<string> };
-      expect(validationError.missingFields).toContain('SWITCH_INTERVAL_MINUTES');
     }
   });
 });

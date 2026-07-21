@@ -17,8 +17,8 @@ import type { Processor } from '../../../../src/main/asyncProgram/types.js';
 import type {
   BuyTaskType,
   SellTaskType,
+  Task,
   TaskQueue,
-  TaskSignal,
 } from '../../../../src/main/asyncProgram/tradeTaskQueue/types.js';
 import type { Signal } from '../../../../src/types/signal.js';
 import type { OrderedMethod } from '../types.js';
@@ -80,7 +80,7 @@ function createOrderedProcessor(name: string, globalCalls: string[]): Processor 
 }
 
 function createTaskQueueDouble<TType extends string>(
-  signals: ReadonlyArray<TaskSignal<TType>>,
+  signals: ReadonlyArray<Task<TType>['data']>,
   onClear: () => void,
 ): TaskQueue<TType> {
   return {

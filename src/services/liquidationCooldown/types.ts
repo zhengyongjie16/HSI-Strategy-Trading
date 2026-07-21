@@ -144,12 +144,10 @@ export interface TradeLogHydrator {
 
 /**
  * 冷却候选记录。
- * 类型用途：包含监控标的、方向与保护性清仓成交时间，作为恢复冷却状态的中间结果。
+ * 类型用途：包含保护性清仓成交时间，作为恢复冷却状态的中间结果。
  * 数据来源：由 tradeLogHydrator 从保护性清仓完成日志严格解析返回。
  * 使用范围：仅 liquidationCooldown 模块内部使用。
  */
 export type CooldownCandidate = {
-  readonly monitorSymbol: string;
-  readonly direction: 'LONG' | 'SHORT';
   readonly executedAtMs: number;
 };

@@ -25,7 +25,7 @@ import type {
 import type { SeatStateChangedEvent } from '../../../src/types/seat.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { TradingConfig } from '../../../src/types/config.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
 import { createTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
 import type { DayLifecycleTickResult } from '../../../src/main/lifecycle/types.js';
@@ -632,7 +632,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       });
 
       firstResult.reject(
-        createExternalApiRequestError({
+        await createExternalApiRequestError({
           operation: 'test.autoSearch.lifecycle-close',
           attempts: 1,
           cause: new Error('finder unavailable'),

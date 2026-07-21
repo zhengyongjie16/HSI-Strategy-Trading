@@ -629,9 +629,7 @@ order lane ownership 必须采用明确的双层函数：
 protective SELL 的 executor outer scope 与 route timeout conversion owner 都必须显式维护 disposition，而不是在无条件 `finally` 中释放：
 
 ```ts
-type ProtectiveAdmissionDisposition =
-  | 'SAFE_TO_RELEASE'
-  | 'RETAIN_UNTIL_RUNTIME_STOP';
+type ProtectiveAdmissionDisposition = 'SAFE_TO_RELEASE' | 'RETAIN_UNTIL_RUNTIME_STOP';
 ```
 
 精确边界：
@@ -2018,14 +2016,14 @@ chore: verify strict async mixed trade log refactor
 12. broker accepted 后 trackOrder 保持同步发布边界。
 13. protective admission 与 completion 通过同一 direction lane 形成单一线性化边界：executor admission 在 order 前独立登记；WS timeout 在 tracked status closed 前登记，terminal fact 后续更新始终继承同一 token identity，route 从最终 snapshot 复用且不重复 reserve；protective state 缺 token fail fast。token 可见性连续到最终 release/retain disposition，ambiguity 时保留到 fatal stop。
 14. ACTIVE FIFO、order lane、RateLimiter、direction lane、admission registry 与 repository writer chain 全部完成接线和 drain/reset。
-14. 严格 JSONL 协议、fatal UTF-8、raw CR 拒绝、prefix-before-truncate tail 规则、部分写与完整坏行 bytes 不变 fail-fast 均有测试。
-15. absent/empty/zero append 不 materialize 或 retention；UNCHANGED 不改变既有 retention 状态；APPENDED 设置 retentionRequired，open 已有非空合法文件恢复该标志以覆盖 finish 前崩溃。
-16. 生产代码已彻底移除同步全量 JSON 数组读改写。
-17. startup snapshot 与 cooldown hydration 不重复读取。
-18. 午夜与 shutdown 在关闭 repository 前停止并 drain 全部 producer。
-19. 单向迁移在同父目录同 volume sibling 上完成；受控两步 rename 前后终止、EMPTY、可重建派生 staging、预存 backup、跨卷与非法目录组合测试全部通过，且合法状态可确定性幂等续跑、其他状态修改前 fail fast。
-20. 最终 release artifact 已在生产完整备份副本运行离线 persistence verifier，只执行 migration、codec/repository strict open、恢复数据解析断言、费用工具与 close；生产目录 strict active 离线复核完成前 gate 保持关闭，verifier 不装配 trader、不连接或修改 broker、不启动 producer。
-21. offline migration equivalence 与 production activation committed 已分离；第一次生产 `active → backup` rename 开始后只允许 strict JSONL-compatible fix-forward，legacy backup 仅作审计；production writable startup/recovery 开始后 active 不再要求匹配 backup，发布编排封闭离线迁移阶段且生产 composition root 不接线迁移工具。
-22. 全量格式、静态检查、测试、构建、残留扫描和独立 code review 全部通过。
+15. 严格 JSONL 协议、fatal UTF-8、raw CR 拒绝、prefix-before-truncate tail 规则、部分写与完整坏行 bytes 不变 fail-fast 均有测试。
+16. absent/empty/zero append 不 materialize 或 retention；UNCHANGED 不改变既有 retention 状态；APPENDED 设置 retentionRequired，open 已有非空合法文件恢复该标志以覆盖 finish 前崩溃。
+17. 生产代码已彻底移除同步全量 JSON 数组读改写。
+18. startup snapshot 与 cooldown hydration 不重复读取。
+19. 午夜与 shutdown 在关闭 repository 前停止并 drain 全部 producer。
+20. 单向迁移在同父目录同 volume sibling 上完成；受控两步 rename 前后终止、EMPTY、可重建派生 staging、预存 backup、跨卷与非法目录组合测试全部通过，且合法状态可确定性幂等续跑、其他状态修改前 fail fast。
+21. 最终 release artifact 已在生产完整备份副本运行离线 persistence verifier，只执行 migration、codec/repository strict open、恢复数据解析断言、费用工具与 close；生产目录 strict active 离线复核完成前 gate 保持关闭，verifier 不装配 trader、不连接或修改 broker、不启动 producer。
+22. offline migration equivalence 与 production activation committed 已分离；第一次生产 `active → backup` rename 开始后只允许 strict JSONL-compatible fix-forward，legacy backup 仅作审计；production writable startup/recovery 开始后 active 不再要求匹配 backup，发布编排封闭离线迁移阶段且生产 composition root 不接线迁移工具。
+23. 全量格式、静态检查、测试、构建、残留扫描和独立 code review 全部通过。
 
 本文不授权在上述任一条件未满足时采用临时兼容、同步回退、双写或降低 durability 的方式上线。

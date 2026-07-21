@@ -6,7 +6,7 @@
  * - 支持注入自定义策略工厂并按唯一 monitor 配置调用
  */
 import { describe, expect, it } from 'bun:test';
-import type { MonitorContextBootstrapRuntime, PreGateRuntime } from '../../../src/app/types.js';
+import type { CreateMonitorContextParams, PreGateRuntime } from '../../../src/app/types.js';
 import { createMonitorContext } from '../../../src/app/context/createMonitorContext.js';
 import { parseSignalConfig } from '../../../src/config/utils.js';
 import type { TradingSignalStrategyFactory } from '../../../src/core/strategy/types.js';
@@ -80,7 +80,7 @@ function createRuntime(
   symbolRegistry = createSymbolRegistryDouble({}),
 ): {
   preGateRuntime: PreGateRuntime;
-  postGateRuntime: MonitorContextBootstrapRuntime;
+  postGateRuntime: CreateMonitorContextParams['postGateRuntime'];
   quotesMap: ReadonlyMap<string, Quote | null>;
 } {
   const monitorState = createMonitorState(monitor.monitorSymbol);
@@ -108,7 +108,7 @@ function createRuntime(
     },
   };
 
-  const postGateRuntime: MonitorContextBootstrapRuntime = {
+  const postGateRuntime: CreateMonitorContextParams['postGateRuntime'] = {
     dailyLossTracker: createDailyLossTrackerDouble(),
     lastState: {
       canTrade: true,

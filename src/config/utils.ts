@@ -26,16 +26,11 @@ import type {
  * 创建配置验证错误对象。
  *
  * @param message 错误消息
- * @param missingFields 缺失或非法的字段列表
- * @returns 带 `name` 与 `missingFields` 的 ConfigValidationError
+ * @returns 带 `name` 的 ConfigValidationError
  */
-export function createConfigValidationError(
-  message: string,
-  missingFields: ReadonlyArray<string> = [],
-): ConfigValidationError {
+export function createConfigValidationError(message: string): ConfigValidationError {
   return Object.assign(new Error(message), {
     name: 'ConfigValidationError' as const,
-    missingFields,
   });
 }
 
@@ -121,7 +116,7 @@ export function getBooleanConfig(
     return false;
   }
 
-  throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为 true 或 false）`, [envKey]);
+  throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为 true 或 false）`);
 }
 
 /**
@@ -275,9 +270,7 @@ export function parseVerificationDelay(
 
   const delay = Number(raw);
   if (!Number.isFinite(delay) || delay < 0 || delay > 120) {
-    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为数字，范围 0-120）`, [
-      envKey,
-    ]);
+    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为数字，范围 0-120）`);
   }
 
   return delay;
@@ -331,7 +324,7 @@ export function parseVerificationIndicators(
       return true;
     }
 
-    throw createConfigValidationError(`[配置错误] ${envKey} 包含无效值: ${item}`, [envKey]);
+    throw createConfigValidationError(`[配置错误] ${envKey} 包含无效值: ${item}`);
   }
 
   for (const item of items) {
@@ -348,7 +341,7 @@ export function parseVerificationIndicators(
       continue;
     }
 
-    throw createConfigValidationError(`[配置错误] ${envKey} 包含无效值: ${item}`, [envKey]);
+    throw createConfigValidationError(`[配置错误] ${envKey} 包含无效值: ${item}`);
   }
 
   return validItems.length > 0 ? validItems : null;
@@ -645,7 +638,6 @@ export function parseOrderTypeConfig(
 
     throw createConfigValidationError(
       `[配置错误] ${envKey} 值无效: ${value}，必须使用全大写: LO, ELO, MO`,
-      [envKey],
     );
   }
 

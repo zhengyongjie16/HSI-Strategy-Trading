@@ -43,18 +43,6 @@ export type ExternalApiAggregateRequestErrorParams = Readonly<{
 }>;
 
 /**
- * 外部 API 请求错误构造参数。
- * 类型用途：封装 ExternalApiRequestError 所需的请求标识、尝试次数和原始错误。
- * 数据来源：wrapExternalApiRequest 在重试耗尽后组装。
- * 使用范围：ExternalApiRequestError 构造函数。
- */
-export type ExternalApiRequestErrorParams = Readonly<{
-  operation: string;
-  attempts: number;
-  cause: unknown;
-}>;
-
-/**
  * 外部 API 请求包装参数。
  * 类型用途：封装单次外部 API 请求函数、操作名与 retry 配置。
  * 数据来源：各 Longbridge SDK / marketDataClient / trader 请求边界传入。

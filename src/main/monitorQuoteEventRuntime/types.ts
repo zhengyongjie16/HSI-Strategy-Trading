@@ -44,9 +44,6 @@ type MonitorQuoteFreshnessDeps = Readonly<{
 
   /** 读取 freshness 状态快照 */
   getStatus: () => MonitorQuoteFreshnessStatus;
-
-  /** 订阅 freshness 追平事件；monitor quote runtime 可不订阅 */
-  onFreshReached?: PostTradeConsistencyFreshnessPort['onFreshReached'];
 }>;
 
 /**

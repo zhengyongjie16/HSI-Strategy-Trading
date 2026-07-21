@@ -94,8 +94,6 @@ describe('smart close timeout config', () => {
       }
 
       expect(caughtError).not.toBeNull();
-      const validationError = caughtError as { missingFields?: ReadonlyArray<string> };
-      expect(validationError.missingFields).toContain('SMART_CLOSE_TIMEOUT_MINUTES');
     }
   });
 });

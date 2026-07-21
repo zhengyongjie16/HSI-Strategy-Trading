@@ -21,7 +21,7 @@ import {
 } from '../../helpers/testDoubles.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createBuyThrottle } from '../../../src/core/trader/orderExecutor/buyThrottle.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { BuySignal } from '../../../src/types/signal.js';
 
 function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
@@ -914,7 +914,7 @@ describe('riskCheckPipeline business flow', () => {
         accountCallCount += 1;
         steps.push('getAccountSnapshot');
         expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'TradeContext.accountBalance',
           attempts: 1,
           cause: new Error('temporary'),
@@ -1025,7 +1025,7 @@ describe('riskCheckPipeline business flow', () => {
         positionCallCount += 1;
         steps.push('getStockPositions');
         expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'TradeContext.stockPositions',
           attempts: 1,
           cause: new Error('positions api down'),

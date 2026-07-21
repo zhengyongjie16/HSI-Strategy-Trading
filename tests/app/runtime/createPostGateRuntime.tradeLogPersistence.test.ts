@@ -5,15 +5,14 @@
  * - 验证订单状态事件可落盘为 trade log
  * - 验证保护性 FILLED 订单不会提前写入 episode 完成语义
  */
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createTradingConfig, createMonitorConfig } from '../../../mock/factories/configFactory.js';
-import { createPostGateRuntimeFactory } from '../../../src/app/runtime/createPostGateRuntime.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
-import { createMonitorContext } from '../../../src/app/context/createMonitorContext.js';
 import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
+import { createSignal } from '../../../mock/factories/signalFactory.js';
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
@@ -22,12 +21,44 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
-import type { CreatePostGateRuntimeParams } from '../../../src/app/types.js';
+import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../../../src/app/types.js';
 import type { TraderDeps } from '../../../src/core/trader/types.js';
 import type { OrderStateChangedEvent } from '../../../src/types/services.js';
 
 const TEST_LOG_ROOT_DIR = path.join(process.cwd(), 'tests', 'logs', 'post-gate-runtime');
+const FATAL_DRAIN_TIMEOUT_MS = 100;
 let capturedOrderStateChangedListener: ((event: OrderStateChangedEvent) => void) | null = null;
+
+type CreateTraderForTest = (deps: TraderDeps) => Promise<ReturnType<typeof createTraderDouble>>;
+
+const { createMonitorContext: productionCreateMonitorContext } =
+  await import('../../../src/app/context/createMonitorContext.js');
+type CreateMonitorContextForTest = typeof productionCreateMonitorContext;
+
+let createTraderForTest: CreateTraderForTest = async (_deps) => createTraderDouble();
+let createMonitorContextForTest: CreateMonitorContextForTest = productionCreateMonitorContext;
+
+mock.module('../../../src/app/runtime/createPostGateRuntimeDeps.js', () => ({
+  DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS: {
+    createTrader: (deps: TraderDeps) => createTraderForTest(deps),
+    createMonitorContext: (params: Parameters<typeof productionCreateMonitorContext>[0]) =>
+      createMonitorContextForTest(params),
+  },
+}));
+
+const { createPostGateRuntime } = await import('../../../src/app/runtime/createPostGateRuntime.js');
+
+async function waitForFatalError(runtime: PostGateRuntime): Promise<Error> {
+  const fatalError = await Promise.race([
+    runtime.drainFatalError().catch((error: unknown) => error),
+    Bun.sleep(FATAL_DRAIN_TIMEOUT_MS).then(() => null),
+  ]);
+  if (!(fatalError instanceof Error)) {
+    throw new Error('expected delayed verifier failure to reject post-gate fatal drain');
+  }
+
+  return fatalError;
+}
 
 function createTestEnv(): NodeJS.ProcessEnv {
   return {
@@ -69,46 +100,40 @@ function createRuntimeParams(
   };
 }
 
-function createPostGateRuntimeForTest() {
-  return createPostGateRuntimeFactory({
-    createMonitorContext,
-    createTrader: async () =>
-      createTraderDouble({
-        onOrderStateChanged: (listener) => {
-          capturedOrderStateChangedListener = listener;
-          return () => {
-            if (capturedOrderStateChangedListener === listener) {
-              capturedOrderStateChangedListener = null;
-            }
-          };
-        },
-      }),
-  });
+function configurePostGateRuntimeTrader(): void {
+  createTraderForTest = async () =>
+    createTraderDouble({
+      onOrderStateChanged: (listener) => {
+        capturedOrderStateChangedListener = listener;
+        return () => {
+          if (capturedOrderStateChangedListener === listener) {
+            capturedOrderStateChangedListener = null;
+          }
+        };
+      },
+    });
 }
 
-function createPostGateRuntimeWithPositionRefreshForTest() {
-  return createPostGateRuntimeFactory({
-    createMonitorContext,
-    createTrader: async () =>
-      createTraderDouble({
-        getAccountSnapshot: async () => createAccountSnapshotDouble(88_000),
-        getStockPositions: async () => [
-          createPositionDouble({
-            symbol: 'POS.HK',
-            quantity: 100,
-            availableQuantity: 100,
-          }),
-        ],
-        onOrderStateChanged: (listener) => {
-          capturedOrderStateChangedListener = listener;
-          return () => {
-            if (capturedOrderStateChangedListener === listener) {
-              capturedOrderStateChangedListener = null;
-            }
-          };
-        },
-      }),
-  });
+function configurePostGateRuntimeTraderWithPositionRefresh(): void {
+  createTraderForTest = async () =>
+    createTraderDouble({
+      getAccountSnapshot: async () => createAccountSnapshotDouble(88_000),
+      getStockPositions: async () => [
+        createPositionDouble({
+          symbol: 'POS.HK',
+          quantity: 100,
+          availableQuantity: 100,
+        }),
+      ],
+      onOrderStateChanged: (listener) => {
+        capturedOrderStateChangedListener = listener;
+        return () => {
+          if (capturedOrderStateChangedListener === listener) {
+            capturedOrderStateChangedListener = null;
+          }
+        };
+      },
+    });
 }
 
 function requireCapturedOrderStateChangedListener(): (event: OrderStateChangedEvent) => void {
@@ -122,7 +147,7 @@ function requireCapturedOrderStateChangedListener(): (event: OrderStateChangedEv
 async function emitOrderStateChangedThroughPostGateRuntime(
   event: OrderStateChangedEvent,
 ): Promise<void> {
-  const createPostGateRuntime = createPostGateRuntimeForTest();
+  configurePostGateRuntimeTrader();
   await createPostGateRuntime(createRuntimeParams());
   requireCapturedOrderStateChangedListener()(event);
 }
@@ -131,6 +156,8 @@ describe('createPostGateRuntime trade log persistence', () => {
   beforeEach(() => {
     fs.rmSync(TEST_LOG_ROOT_DIR, { recursive: true, force: true });
     capturedOrderStateChangedListener = null;
+    createTraderForTest = async (_deps) => createTraderDouble();
+    createMonitorContextForTest = productionCreateMonitorContext;
   });
 
   it('wires positions committed hook to quote subscription runtime', async () => {
@@ -140,7 +167,7 @@ describe('createPostGateRuntime trade log persistence', () => {
         subscribed.push([...symbols]);
       },
     });
-    const createPostGateRuntime = createPostGateRuntimeWithPositionRefreshForTest();
+    configurePostGateRuntimeTraderWithPositionRefresh();
     const runtime = await createPostGateRuntime(createRuntimeParams({ marketDataClient }));
 
     runtime.postTradeConsistencyRuntime.recordSettlementRefreshNeed({
@@ -161,13 +188,10 @@ describe('createPostGateRuntime trade log persistence', () => {
     } = {
       continuousTradingAuthorization: null,
     };
-    const createPostGateRuntime = createPostGateRuntimeFactory({
-      createMonitorContext,
-      createTrader: async (deps) => {
-        captured.continuousTradingAuthorization = deps.isContinuousTradingAllowed;
-        return createTraderDouble();
-      },
-    });
+    createTraderForTest = async (deps) => {
+      captured.continuousTradingAuthorization = deps.isContinuousTradingAllowed;
+      return createTraderDouble();
+    };
     const runtime = await createPostGateRuntime(createRuntimeParams());
 
     expect(captured.continuousTradingAuthorization).toBeTypeOf('function');
@@ -193,13 +217,10 @@ describe('createPostGateRuntime trade log persistence', () => {
 
   it('constructs Trader and MonitorContext with the same unrealized-loss checker instance', async () => {
     let capturedUnrealizedLossBuyGate: unknown = null;
-    const createPostGateRuntime = createPostGateRuntimeFactory({
-      createMonitorContext,
-      createTrader: async (deps) => {
-        capturedUnrealizedLossBuyGate = Reflect.get(deps, 'unrealizedLossBuyGate');
-        return createTraderDouble();
-      },
-    });
+    createTraderForTest = async (deps) => {
+      capturedUnrealizedLossBuyGate = Reflect.get(deps, 'unrealizedLossBuyGate');
+      return createTraderDouble();
+    };
 
     const runtime = await createPostGateRuntime(createRuntimeParams());
 
@@ -209,17 +230,16 @@ describe('createPostGateRuntime trade log persistence', () => {
   it('registers trader listener disposal before a later post-gate factory failure', async () => {
     let unsubscribeCount = 0;
     const cleanup = createCleanup();
-    const createPostGateRuntime = createPostGateRuntimeFactory({
-      createTrader: async () =>
-        createTraderDouble({
-          onOrderStateChanged: () => () => {
-            unsubscribeCount += 1;
-          },
-        }),
-      createMonitorContext: () => {
-        throw new Error('monitor context wiring failed');
-      },
-    });
+    createTraderForTest = async () =>
+      createTraderDouble({
+        onOrderStateChanged: () => () => {
+          unsubscribeCount += 1;
+        },
+      });
+
+    createMonitorContextForTest = (_params) => {
+      throw new Error('monitor context wiring failed');
+    };
 
     let caught: unknown = null;
     try {
@@ -288,7 +308,7 @@ describe('createPostGateRuntime trade log persistence', () => {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     fs.writeFileSync(logFile, '{invalid json', 'utf8');
 
-    const createPostGateRuntime = createPostGateRuntimeForTest();
+    configurePostGateRuntimeTrader();
     const runtime = await createPostGateRuntime(createRuntimeParams());
     const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
     const listener = requireCapturedOrderStateChangedListener();
@@ -320,7 +340,7 @@ describe('createPostGateRuntime trade log persistence', () => {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     fs.writeFileSync(logFile, '{}', 'utf8');
 
-    const createPostGateRuntime = createPostGateRuntimeForTest();
+    configurePostGateRuntimeTrader();
     const runtime = await createPostGateRuntime(createRuntimeParams());
     const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
     const listener = requireCapturedOrderStateChangedListener();
@@ -373,5 +393,34 @@ describe('createPostGateRuntime trade log persistence', () => {
       reason: null,
       action: 'SELLCALL',
     });
+  });
+
+  it('drains a delayed verifier indicator-cache exception as a post-gate fatal error', async () => {
+    const params = createRuntimeParams();
+    const runtime = await createPostGateRuntime(params);
+    const originalGetClosest = runtime.indicatorCache.getClosest;
+    runtime.indicatorCache.getClosest = () => {
+      throw new TypeError('indicator cache invariant broken');
+    };
+
+    try {
+      runtime.monitorContext.delayedSignalVerifier.addSignal({
+        signal: createSignal({
+          symbol: 'BULL.HK',
+          action: 'BUYCALL',
+          triggerTimeMs: Date.now() - 11_000,
+          indicators1: { K: 10 },
+        }),
+        verificationIndicators: ['K'],
+      });
+
+      const fatalError = await waitForFatalError(runtime);
+
+      expect(fatalError).toBeInstanceOf(TypeError);
+      expect(fatalError.message).toBe('indicator cache invariant broken');
+    } finally {
+      runtime.indicatorCache.getClosest = originalGetClosest;
+      await params.cleanup.execute();
+    }
   });
 });

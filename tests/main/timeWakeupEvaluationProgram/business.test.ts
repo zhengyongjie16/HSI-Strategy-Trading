@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { TRADING } from '../../../src/constants/index.js';
 import { timeWakeupEvaluationProgram } from '../../../src/main/timeWakeupEvaluationProgram/index.js';
 import type { AutoSearchAuthorizationChangedEvent } from '../../../src/main/tradingGateEventRuntime/types.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { TimeWakeupEvaluationContext } from '../../../src/main/timeWakeupEvaluationProgram/types.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { TradingConfig } from '../../../src/types/config.js';
@@ -210,7 +210,7 @@ describe('timeWakeupEvaluationProgram', () => {
       initialCanTrade: false,
       cachedTradingDayInfo: null,
       isTradingDay: async () => {
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.isTradingDay',
           attempts: 1,
           cause: new Error('calendar unavailable'),
@@ -258,7 +258,7 @@ describe('timeWakeupEvaluationProgram', () => {
       now: new Date('2026-04-29T09:30:00.000+08:00'),
       initialCanTrade: false,
       lifecycleTick: async () => {
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.lifecycle',
           attempts: 1,
           cause: new Error('rebuild unavailable'),
@@ -754,7 +754,7 @@ describe('timeWakeupEvaluationProgram', () => {
     const calls: string[] = [];
     const context = createTimeWakeupEvaluationHarness({
       now: currentTime,
-      executeClearanceError: createExternalApiRequestError({
+      executeClearanceError: await createExternalApiRequestError({
         operation: 'TradeContext.submitOrder',
         attempts: 1,
         cause: new Error('submit outcome unknown'),

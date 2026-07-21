@@ -4,6 +4,7 @@
  * 验证普通 BUY/SELL 均不能携带保护性清仓语义，且保护性分支只能是 SELL + true。
  */
 import { describe, expect, it } from 'bun:test';
+import { createSignal } from '../../mock/factories/signalFactory.js';
 import type {
   BuySignal,
   ExecutableSignal,
@@ -57,6 +58,15 @@ const illegalProtectiveOrdinarySell: SellSignal = {
   isProtectiveLiquidation: true,
 };
 void illegalProtectiveOrdinarySell;
+
+const ordinarySellFromFactory = createSignal({
+  symbol: 'BULL.HK',
+  action: 'SELLCALL',
+});
+
+// @ts-expect-error 普通信号工厂不得生成保护性清仓信号。
+const illegalProtectiveFactorySell: ProtectiveLiquidationSellSignal = ordinarySellFromFactory;
+void illegalProtectiveFactorySell;
 
 const protectiveSell: ProtectiveLiquidationSellSignal = {
   symbol: 'BULL.HK',

@@ -16,7 +16,7 @@ import type {
   FindBestWarrantInput,
   WarrantCandidate,
 } from '../../../src/services/autoSymbolFinder/types.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
 import { createMonitorConfigDouble } from '../../helpers/testDoubles.js';
 import {
@@ -221,7 +221,7 @@ describe('autoSearch stale continuation business flow', () => {
     expect(finderStarted).toBe(true);
     canContinue = false;
     externalFailure.reject(
-      createExternalApiRequestError({
+      await createExternalApiRequestError({
         operation: 'test.autoSearch.stale',
         attempts: 1,
         cause: new Error('finder unavailable'),

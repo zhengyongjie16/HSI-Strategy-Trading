@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
 import { createBuyTaskQueue } from '../../../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createBuyProcessor } from '../../../../src/main/asyncProgram/buyProcessor/index.js';
 import { createSignalProcessor } from '../../../../src/core/signalProcessor/index.js';
-import { createExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 
 import type { BuySignal, Signal } from '../../../../src/types/signal.js';
@@ -426,7 +426,7 @@ describe('buyProcessor business flow', () => {
 
   it('sends submitOrder API failure to fatal channel', async () => {
     const queue = createBuyTaskQueue();
-    const submitError = createExternalApiRequestError({
+    const submitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: new Error('submit timeout'),
@@ -479,7 +479,7 @@ describe('buyProcessor business flow', () => {
 
   it('consumes non-submit external API failures without fatal channel escalation', async () => {
     const queue = createBuyTaskQueue();
-    const quoteError = createExternalApiRequestError({
+    const quoteError = await createExternalApiRequestError({
       operation: 'QuoteContext.realtimeQuote',
       attempts: 1,
       cause: new Error('quote timeout'),

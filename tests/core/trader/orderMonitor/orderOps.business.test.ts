@@ -1210,7 +1210,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('missing tracked order for excessive OPEN state-check test');
     }
 
-    await expect(
+    expect(
       orderOps.cancelOrder('SELL-CANCEL-OPEN-EXCEEDS-SUBMITTED', { kind: 'ORDER_FACT' }),
     ).rejects.toThrow(/累计成交量超过有效委托数量/);
 

@@ -44,33 +44,29 @@ export function formatLiquidationCooldownConfig(config: LiquidationCooldownConfi
 /**
  * 验证必填标的代码是否已配置且格式正确。
  * @param context 标的校验上下文
- * @returns 更新后的错误与缺失字段集合
+ * @returns 更新后的错误集合
  */
 function validateRequiredSymbol({
   prefix,
   symbol,
   envKey,
   errors,
-  missingFields,
 }: SymbolValidationContext): Readonly<{
   errors: ReadonlyArray<string>;
-  missingFields: ReadonlyArray<string>;
 }> {
   if (!symbol || symbol.trim() === '') {
     return {
       errors: [...errors, `${prefix}: ${envKey} 未配置`],
-      missingFields: [...missingFields, envKey],
     };
   }
 
   if (!isSymbolWithRegion(symbol)) {
     return {
       errors: [...errors, formatSymbolFormatError(prefix, envKey, symbol)],
-      missingFields,
     };
   }
 
-  return { errors, missingFields };
+  return { errors };
 }
 
 /**
@@ -137,7 +133,6 @@ export function validateLongbridgeAuthConfig(env: NodeJS.ProcessEnv): Validation
 
   return {
     errors: issues.map((issue) => issue.message),
-    missingFields: issues.map((issue) => issue.envKey),
   };
 }
 
@@ -289,7 +284,6 @@ export function validateMonitorConfig(
   env: NodeJS.ProcessEnv,
 ): ValidationResult {
   let errors: ReadonlyArray<string> = [];
-  let missingFields: ReadonlyArray<string> = [];
   const prefix = '监控标的';
 
   const result1 = validateRequiredSymbol({
@@ -297,10 +291,8 @@ export function validateMonitorConfig(
     symbol: config.monitorSymbol,
     envKey: 'MONITOR_SYMBOL',
     errors,
-    missingFields,
   });
   errors = result1.errors;
-  missingFields = result1.missingFields;
 
   const autoSearchEnabled = config.autoSearchConfig.autoSearchEnabled;
   const autoSearchEnabledValidationError = validateExplicitBooleanConfig({
@@ -309,7 +301,6 @@ export function validateMonitorConfig(
   });
   if (autoSearchEnabledValidationError !== null) {
     errors = [...errors, `${prefix}: ${autoSearchEnabledValidationError}`];
-    missingFields = [...missingFields, 'AUTO_SEARCH_ENABLED'];
   }
 
   if (config.orderOwnershipMapping.length === 0) {
@@ -317,7 +308,6 @@ export function validateMonitorConfig(
       ...errors,
       `${prefix}: ORDER_OWNERSHIP_MAPPING 未配置或为空（用于 stockName 归属解析）`,
     ];
-    missingFields = [...missingFields, 'ORDER_OWNERSHIP_MAPPING'];
   }
 
   if (!autoSearchEnabled) {
@@ -326,20 +316,16 @@ export function validateMonitorConfig(
       symbol: config.longSymbol,
       envKey: 'LONG_SYMBOL',
       errors,
-      missingFields,
     });
     errors = result2.errors;
-    missingFields = result2.missingFields;
 
     const result3 = validateRequiredSymbol({
       prefix,
       symbol: config.shortSymbol,
       envKey: 'SHORT_SYMBOL',
       errors,
-      missingFields,
     });
     errors = result3.errors;
-    missingFields = result3.missingFields;
   }
 
   if (
@@ -348,7 +334,6 @@ export function validateMonitorConfig(
     config.longSymbol === config.shortSymbol
   ) {
     errors = [...errors, `${prefix}: LONG_SYMBOL 与 SHORT_SYMBOL 不得相同`];
-    missingFields = [...missingFields, 'LONG_SYMBOL', 'SHORT_SYMBOL'];
   }
 
   const targetNotionalEnvKey = 'TARGET_NOTIONAL';
@@ -359,12 +344,10 @@ export function validateMonitorConfig(
   });
   if (targetNotionalValidationError !== null) {
     errors = [...errors, `${prefix}: ${targetNotionalValidationError}`];
-    missingFields = [...missingFields, targetNotionalEnvKey];
   }
 
   if (!Number.isFinite(config.targetNotional) || config.targetNotional <= 0) {
     errors = [...errors, `${prefix}: ${targetNotionalEnvKey} 未配置或无效（必须为正数）`];
-    missingFields = [...missingFields, targetNotionalEnvKey];
   }
 
   const maxPositionNotionalEnvKey = 'MAX_POSITION_NOTIONAL';
@@ -375,12 +358,10 @@ export function validateMonitorConfig(
   });
   if (maxPositionNotionalValidationError !== null) {
     errors = [...errors, `${prefix}: ${maxPositionNotionalValidationError}`];
-    missingFields = [...missingFields, maxPositionNotionalEnvKey];
   }
 
   if (!Number.isFinite(config.maxPositionNotional) || config.maxPositionNotional <= 0) {
     errors = [...errors, `${prefix}: ${maxPositionNotionalEnvKey} 未配置或无效（必须为正数）`];
-    missingFields = [...missingFields, maxPositionNotionalEnvKey];
   }
 
   const maxUnrealizedLossEnvKey = 'MAX_UNREALIZED_LOSS_PER_SYMBOL';
@@ -391,7 +372,6 @@ export function validateMonitorConfig(
   });
   if (maxUnrealizedLossValidationError !== null) {
     errors = [...errors, `${prefix}: ${maxUnrealizedLossValidationError}`];
-    missingFields = [...missingFields, maxUnrealizedLossEnvKey];
   }
 
   if (
@@ -399,7 +379,6 @@ export function validateMonitorConfig(
     config.maxUnrealizedLossPerSymbol < 0
   ) {
     errors = [...errors, `${prefix}: ${maxUnrealizedLossEnvKey} 无效（必须为非负数）`];
-    missingFields = [...missingFields, maxUnrealizedLossEnvKey];
   }
 
   const buyIntervalEnvKey = 'BUY_INTERVAL_SECONDS';
@@ -411,7 +390,6 @@ export function validateMonitorConfig(
   });
   if (buyIntervalValidationError !== null) {
     errors = [...errors, `${prefix}: ${buyIntervalValidationError}`];
-    missingFields = [...missingFields, buyIntervalEnvKey];
   }
 
   if (
@@ -420,7 +398,6 @@ export function validateMonitorConfig(
     config.buyIntervalSeconds > 600
   ) {
     errors = [...errors, `${prefix}: ${buyIntervalEnvKey} 无效（范围 10-600）`];
-    missingFields = [...missingFields, buyIntervalEnvKey];
   }
 
   const liquidationCooldownEnvKey = 'LIQUIDATION_COOLDOWN_MINUTES';
@@ -446,13 +423,11 @@ export function validateMonitorConfig(
   });
   if (liquidationTriggerLimitValidationError !== null) {
     errors = [...errors, `${prefix}: ${liquidationTriggerLimitValidationError}`];
-    missingFields = [...missingFields, 'LIQUIDATION_TRIGGER_LIMIT'];
   }
 
   const triggerLimit = config.liquidationTriggerLimit;
   if (!Number.isInteger(triggerLimit) || triggerLimit < 1 || triggerLimit > 10) {
     errors = [...errors, `${prefix}: LIQUIDATION_TRIGGER_LIMIT 无效（必须为整数，范围 1-10）`];
-    missingFields = [...missingFields, 'LIQUIDATION_TRIGGER_LIMIT'];
   }
 
   const verificationDelayEnvKeys = [
@@ -468,7 +443,6 @@ export function validateMonitorConfig(
     });
     if (verificationDelayValidationError !== null) {
       errors = [...errors, `${prefix}: ${verificationDelayValidationError}`];
-      missingFields = [...missingFields, envKey];
     }
   }
 
@@ -483,7 +457,6 @@ export function validateMonitorConfig(
     });
     if (verificationIndicatorsValidationError !== null) {
       errors = [...errors, `${prefix}: ${verificationIndicatorsValidationError}`];
-      missingFields = [...missingFields, envKey];
     }
   }
 
@@ -493,7 +466,6 @@ export function validateMonitorConfig(
   });
   if (smartCloseEnabledValidationError !== null) {
     errors = [...errors, `${prefix}: ${smartCloseEnabledValidationError}`];
-    missingFields = [...missingFields, 'SMART_CLOSE_ENABLED'];
   }
 
   const smartCloseTimeoutEnvKey = 'SMART_CLOSE_TIMEOUT_MINUTES';
@@ -508,7 +480,6 @@ export function validateMonitorConfig(
           ...errors,
           `${prefix}: ${smartCloseTimeoutEnvKey} 无效（必须为非负整数或留空/null）`,
         ];
-        missingFields = [...missingFields, smartCloseTimeoutEnvKey];
       }
     }
   }
@@ -531,7 +502,6 @@ export function validateMonitorConfig(
     const signalConfig = config.signalConfig[key];
     if (!signalConfig?.conditionGroups || signalConfig.conditionGroups.length === 0) {
       errors = [...errors, `${prefix}: ${envName} 未配置或解析失败（信号配置为必需项）`];
-      missingFields = [...missingFields, envName];
     }
   }
 
@@ -543,7 +513,6 @@ export function validateMonitorConfig(
   });
   if (autoSearchExpiryValidationError !== null) {
     errors = [...errors, `${prefix}: ${autoSearchExpiryValidationError}`];
-    missingFields = [...missingFields, 'AUTO_SEARCH_EXPIRY_MIN_MONTHS'];
   }
 
   if (
@@ -552,7 +521,6 @@ export function validateMonitorConfig(
     config.autoSearchConfig.autoSearchExpiryMinMonths > 120
   ) {
     errors = [...errors, `${prefix}: AUTO_SEARCH_EXPIRY_MIN_MONTHS 无效（范围 1-120）`];
-    missingFields = [...missingFields, 'AUTO_SEARCH_EXPIRY_MIN_MONTHS'];
   }
 
   const autoSearchOpenDelayValidationError = validateCriticalBoundedNumberConfig({
@@ -563,7 +531,6 @@ export function validateMonitorConfig(
   });
   if (autoSearchOpenDelayValidationError !== null) {
     errors = [...errors, `${prefix}: ${autoSearchOpenDelayValidationError}`];
-    missingFields = [...missingFields, 'AUTO_SEARCH_OPEN_DELAY_MINUTES'];
   }
 
   if (
@@ -572,7 +539,6 @@ export function validateMonitorConfig(
     config.autoSearchConfig.autoSearchOpenDelayMinutes > 60
   ) {
     errors = [...errors, `${prefix}: AUTO_SEARCH_OPEN_DELAY_MINUTES 无效（范围 0-60）`];
-    missingFields = [...missingFields, 'AUTO_SEARCH_OPEN_DELAY_MINUTES'];
   }
 
   if (autoSearchEnabled) {
@@ -600,7 +566,6 @@ export function validateMonitorConfig(
     for (const field of requiredNumberFields) {
       if (field.value === null || !Number.isFinite(field.value)) {
         errors = [...errors, `${prefix}: ${field.envKey} 未配置或无效`];
-        missingFields = [...missingFields, field.envKey];
       }
     }
 
@@ -612,7 +577,6 @@ export function validateMonitorConfig(
     });
     if (switchIntervalValidationError !== null) {
       errors = [...errors, `${prefix}: ${switchIntervalValidationError}`];
-      missingFields = [...missingFields, switchIntervalEnvKey];
     }
 
     if (
@@ -621,7 +585,6 @@ export function validateMonitorConfig(
       autoSearchConfig.switchIntervalMinutes > 120
     ) {
       errors = [...errors, `${prefix}: ${switchIntervalEnvKey} 无效（范围 0-120）`];
-      missingFields = [...missingFields, switchIntervalEnvKey];
     }
 
     const bullRange = autoSearchConfig.switchDistanceRangeBull;
@@ -635,7 +598,6 @@ export function validateMonitorConfig(
         ...errors,
         `${prefix}: SWITCH_DISTANCE_RANGE_BULL 未配置或无效（格式 min,max 且 min<=max）`,
       ];
-      missingFields = [...missingFields, 'SWITCH_DISTANCE_RANGE_BULL'];
     } else if (
       autoSearchConfig.autoSearchMinDistancePctBull !== null &&
       Number.isFinite(autoSearchConfig.autoSearchMinDistancePctBull)
@@ -662,7 +624,6 @@ export function validateMonitorConfig(
         ...errors,
         `${prefix}: SWITCH_DISTANCE_RANGE_BEAR 未配置或无效（格式 min,max 且 min<=max）`,
       ];
-      missingFields = [...missingFields, 'SWITCH_DISTANCE_RANGE_BEAR'];
     } else if (
       autoSearchConfig.autoSearchMinDistancePctBear !== null &&
       Number.isFinite(autoSearchConfig.autoSearchMinDistancePctBear)
@@ -679,8 +640,5 @@ export function validateMonitorConfig(
     }
   }
 
-  return {
-    errors,
-    missingFields,
-  };
+  return { errors };
 }

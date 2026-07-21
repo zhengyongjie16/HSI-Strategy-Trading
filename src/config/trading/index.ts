@@ -19,7 +19,7 @@ import {
 export function createTradingConfig({ env }: { env: NodeJS.ProcessEnv }): TradingConfig {
   const monitor = parseMonitorConfig(env);
   if (monitor === null) {
-    throw createConfigValidationError('[配置错误] MONITOR_SYMBOL 未配置', ['MONITOR_SYMBOL']);
+    throw createConfigValidationError('[配置错误] MONITOR_SYMBOL 未配置');
   }
 
   const buyOrderTimeoutEnabled = getBooleanConfig(env, 'BUY_ORDER_TIMEOUT_ENABLED', true);

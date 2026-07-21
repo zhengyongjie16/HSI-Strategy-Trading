@@ -14,7 +14,7 @@ import type {
 } from '../../../src/main/lifecycle/types.js';
 import { createDayLifecycleManager } from '../../../src/main/lifecycle/dayLifecycleManager.js';
 import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createMonitorContextDouble,
   createQuoteDouble,
@@ -150,9 +150,9 @@ describe('createDayLifecycleManager', () => {
           openRebuild: () => {},
         },
         {
-          midnightClear: () => {
+          midnightClear: async () => {
             order.push('2');
-            throw createExternalApiRequestError({
+            throw await createExternalApiRequestError({
               operation: 'test.midnightClear',
               attempts: 1,
               cause: new Error('midnight clear fail'),
@@ -185,8 +185,8 @@ describe('createDayLifecycleManager', () => {
       const mutableState = createMutableState({ currentDayKey: '2025-02-14' });
       const domains: ReadonlyArray<CacheDomain> = [
         {
-          midnightClear: () => {
-            throw createExternalApiRequestError({
+          midnightClear: async () => {
+            throw await createExternalApiRequestError({
               operation: 'test.lifecycle',
               attempts: 1,
               cause: new Error('fail'),
@@ -254,10 +254,10 @@ describe('createDayLifecycleManager', () => {
       const flags: boolean[] = [];
       const domains: ReadonlyArray<CacheDomain> = [
         {
-          midnightClear: () => {
+          midnightClear: async () => {
             midnightAttemptCount += 1;
             if (midnightAttemptCount === 1) {
-              throw createExternalApiRequestError({
+              throw await createExternalApiRequestError({
                 operation: 'test.beforeSeatDomain',
                 attempts: 1,
                 cause: new Error('fail before seat domain'),
@@ -419,9 +419,9 @@ describe('createDayLifecycleManager', () => {
         },
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async () => {
             order.push('B');
-            throw createExternalApiRequestError({
+            throw await createExternalApiRequestError({
               operation: 'test.openRebuild',
               attempts: 1,
               cause: new Error('open rebuild fail'),
@@ -463,7 +463,7 @@ describe('createDayLifecycleManager', () => {
           setWarrantInfoFromCallPrice: () => ({ status: 'ok', isWarrant: true }),
           refreshWarrantInfoForSymbol: async () => {
             warrantRefreshCalls += 1;
-            throw createExternalApiRequestError({
+            throw await createExternalApiRequestError({
               operation: 'QuoteContext.warrantQuote',
               attempts: 1,
               cause: new Error('warrant quote api down'),
@@ -536,8 +536,8 @@ describe('createDayLifecycleManager', () => {
       const domains: ReadonlyArray<CacheDomain> = [
         {
           midnightClear: () => {},
-          openRebuild: () => {
-            throw createExternalApiRequestError({
+          openRebuild: async () => {
+            throw await createExternalApiRequestError({
               operation: 'test.lifecycle',
               attempts: 1,
               cause: new Error('fail'),
@@ -622,11 +622,11 @@ describe('createDayLifecycleManager', () => {
           midnightClear: () => {
             order.push('midnight');
           },
-          openRebuild: () => {
+          openRebuild: async () => {
             openRebuildCallCount += 1;
             order.push('open');
             if (openRebuildCallCount === 1) {
-              throw createExternalApiRequestError({
+              throw await createExternalApiRequestError({
                 operation: 'test.openRebuild',
                 attempts: 1,
                 cause: new Error('open rebuild fail'),
@@ -679,8 +679,8 @@ describe('createDayLifecycleManager', () => {
         rebuildRetryDelayMs: 1_000,
         cacheDomains: [
           {
-            midnightClear: () => {
-              throw createExternalApiRequestError({
+            midnightClear: async () => {
+              throw await createExternalApiRequestError({
                 operation: 'test.clear',
                 attempts: 1,
                 cause: new Error('clear failed'),
@@ -718,8 +718,8 @@ describe('createDayLifecycleManager', () => {
         cacheDomains: [
           {
             midnightClear: () => {},
-            openRebuild: () => {
-              throw createExternalApiRequestError({
+            openRebuild: async () => {
+              throw await createExternalApiRequestError({
                 operation: 'test.rebuild',
                 attempts: 1,
                 cause: new Error('rebuild failed'),

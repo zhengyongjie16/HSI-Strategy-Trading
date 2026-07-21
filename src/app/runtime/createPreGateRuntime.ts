@@ -8,23 +8,16 @@
  */
 import { AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS } from '../../constants/index.js';
 import { validateAllConfig } from '../../config/validator/index.js';
-import { createSdkConfigFromAuth } from '../../config/auth/index.js';
 import { createTradingConfig } from '../../config/trading/index.js';
 import { createWarrantListCache } from '../../services/autoSymbolFinder/utils.js';
-import { createMarketDataClient } from '../../services/quoteClient/index.js';
 import { createSymbolRegistry } from '../../services/autoSymbolManager/utils.js';
 import { logger } from '../../utils/logger/index.js';
 import { getHKDateKey, getRequiredHKDateKey } from '../../utils/time/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { createTradingDayInfoResolver } from '../lifecycle/rebuild.js';
-import type { CreatePreGateRuntimeDeps } from './types.js';
+import { DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS } from './createPreGateRuntimeDeps.js';
 import type { CreatePreGateRuntimeParams, PreGateRuntime } from '../types.js';
-
-const DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS: CreatePreGateRuntimeDeps = {
-  createSdkConfigFromAuth,
-  createMarketDataClient,
-};
 
 /**
  * 创建 pre-gate runtime 工厂。
@@ -32,8 +25,8 @@ const DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS: CreatePreGateRuntimeDeps = {
  * @param deps pre-gate 创建链路中的可注入依赖
  * @returns pre-gate runtime 创建函数
  */
-export function createPreGateRuntimeFactory(
-  deps: CreatePreGateRuntimeDeps,
+function createPreGateRuntimeFactory(
+  deps: typeof DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS,
 ): (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime> {
   const {
     createSdkConfigFromAuth: buildSdkConfigFromAuth,

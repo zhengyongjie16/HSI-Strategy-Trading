@@ -73,6 +73,8 @@ import type {
   DayLifecycleManagerDeps,
 } from '../main/lifecycle/types.js';
 import type { Logger } from '../utils/logger/types.js';
+import type { DisplayAccountAndPositionsParams } from '../services/accountDisplay/types.js';
+import type { TimeWakeupRuntime, TimeWakeupRuntimeDeps } from '../main/timeWakeupRuntime/types.js';
 import type {
   GlobalStateDomainDeps,
   MarketDataDomainDeps,
@@ -81,8 +83,6 @@ import type {
   SeatDomainDeps,
   SignalRuntimeDomainDeps,
 } from '../main/lifecycle/cacheDomains/types.js';
-import type { TimeWakeupRuntime, TimeWakeupRuntimeDeps } from '../main/timeWakeupRuntime/types.js';
-import type { DisplayAccountAndPositionsParams } from '../services/accountDisplay/types.js';
 
 /**
  * app 环境参数。
@@ -92,6 +92,46 @@ import type { DisplayAccountAndPositionsParams } from '../services/accountDispla
  */
 export type AppEnvironmentParams = Readonly<{
   env: NodeJS.ProcessEnv;
+}>;
+
+/**
+ * runApp 默认装配协作者。
+ * 类型用途：将顶层运行链路的生产装配与测试替身限制在同一私有依赖边界。
+ * 数据来源：生产环境由 runAppDeps 组装，测试仅替换该模块。
+ * 使用范围：仅 runApp 与其业务测试。
+ */
+export type RunAppDeps = Readonly<{
+  createPreGateRuntime: (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime>;
+  createPostGateRuntime: (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime>;
+  loadStartupSnapshot: (params: LoadStartupSnapshotParams) => Promise<StartupSnapshotResult>;
+  collectRuntimeValidationSymbols: (
+    params: RuntimeValidationCollectionParams,
+  ) => RuntimeValidationCollector;
+  createRebuildTradingDayState: (
+    deps: RebuildTradingDayStateDeps,
+  ) => (params: RebuildTradingDayStateParams) => Promise<void>;
+  displayAccountAndPositions: (params: DisplayAccountAndPositionsParams) => void;
+  registerDelayedSignalHandlers: (params: RegisterDelayedSignalHandlersParams) => void;
+  createBusinessEventProgram: (deps: BusinessEventProgramDeps) => BusinessEventProgram;
+  createAsyncRuntime: (params: AsyncRuntimeFactoryDeps) => AsyncRuntime;
+  createLifecycleRuntime: (
+    params: LifecycleRuntimeFactoryDeps,
+    factories?: LifecycleRuntimeFactories,
+  ) => DayLifecycleManager;
+  createCleanup: () => CleanupController;
+  createTimeWakeupRuntime: <TTimerHandle>(
+    deps: TimeWakeupRuntimeDeps<TTimerHandle>,
+  ) => TimeWakeupRuntime;
+  waitForShutdownSignal: () => Promise<void>;
+  logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;
+  formatError: (error: unknown) => string;
+  validateRuntimeSymbolsFromQuotesMap: (
+    params: Readonly<{
+      inputs: ReadonlyArray<RuntimeSymbolValidationInput>;
+      quotesMap: ReadonlyMap<string, Quote | null>;
+    }>,
+  ) => RuntimeSymbolValidationResult;
+  applyStartupSnapshotFailureState: (lastState: LastState, now: Date) => void;
 }>;
 
 /**
@@ -443,7 +483,7 @@ export type PostGateRuntime = Readonly<{
  * 数据来源：由 createPostGateRuntime 在内部装配点按需组装。
  * 使用范围：仅 createMonitorContext 使用。
  */
-export type MonitorContextBootstrapRuntime = Readonly<{
+type MonitorContextBootstrapRuntime = Readonly<{
   readonly trader: Trader;
   readonly dailyLossTracker: DailyLossTracker;
 
@@ -557,41 +597,6 @@ export type LifecycleRuntimeFactoryDeps = Readonly<{
 }>;
 
 /**
- * app 主入口依赖集合。
- * 类型用途：为 app 主入口内部工厂显式描述装配链路依赖。
- * 数据来源：生产环境使用默认依赖对象。
- * 使用范围：仅 app 顶层入口装配使用。
- */
-export type RunAppDeps = Readonly<{
-  createPreGateRuntime: (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime>;
-  createPostGateRuntime: (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime>;
-  loadStartupSnapshot: (params: LoadStartupSnapshotParams) => Promise<StartupSnapshotResult>;
-  collectRuntimeValidationSymbols: (
-    params: RuntimeValidationCollectionParams,
-  ) => RuntimeValidationCollector;
-  createRebuildTradingDayState: (
-    deps: RebuildTradingDayStateDeps,
-  ) => (params: RebuildTradingDayStateParams) => Promise<void>;
-  displayAccountAndPositions: (params: DisplayAccountAndPositionsParams) => void;
-  registerDelayedSignalHandlers: (params: RegisterDelayedSignalHandlersParams) => void;
-  createBusinessEventProgram: (params: BusinessEventProgramDeps) => BusinessEventProgram;
-  createAsyncRuntime: (params: AsyncRuntimeFactoryDeps) => AsyncRuntime;
-  createLifecycleRuntime: (
-    params: LifecycleRuntimeFactoryDeps,
-    factories?: LifecycleRuntimeFactories,
-  ) => DayLifecycleManager;
-  createCleanup: () => CleanupController;
-  createTimeWakeupRuntime: (deps: TimeWakeupRuntimeDeps) => TimeWakeupRuntime;
-  waitForShutdownSignal: () => Promise<void>;
-  logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;
-  formatError: (error: unknown) => string;
-  validateRuntimeSymbolsFromQuotesMap: (
-    params: ValidateRuntimeSymbolsParams,
-  ) => RuntimeSymbolValidationResult;
-  applyStartupSnapshotFailureState: (lastState: LastState, now: Date) => void;
-}>;
-
-/**
  * 生命周期运行时工厂集合。
  * 类型用途：显式表达 cache domain 与 dayLifecycleManager 的创建依赖，便于装配测试复核接线路径。
  * 数据来源：生产环境使用默认工厂集合，测试可注入受控工厂。
@@ -606,15 +611,4 @@ export type LifecycleRuntimeFactories = Readonly<{
   createGlobalStateDomain: (deps: GlobalStateDomainDeps) => CacheDomain;
   executeTradingDayOpenRebuild: (params: RunTradingDayOpenRebuildParams) => Promise<void>;
   createDayLifecycleManager: (deps: DayLifecycleManagerDeps) => DayLifecycleManager;
-}>;
-
-/**
- * 运行时标的校验器入参。
- * 类型用途：封装 validateRuntimeSymbolsFromQuotesMap 所需的校验输入与 quotes 快照。
- * 数据来源：由 app 顶层装配在 startup snapshot 后组装。
- * 使用范围：仅 app 顶层入口依赖声明与测试替身使用。
- */
-type ValidateRuntimeSymbolsParams = Readonly<{
-  inputs: ReadonlyArray<RuntimeSymbolValidationInput>;
-  quotesMap: ReadonlyMap<string, Quote | null>;
 }>;

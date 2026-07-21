@@ -20,7 +20,7 @@ import type { DoomsdayClearanceCommand } from '../../src/types/signal.js';
 import type { MarketDataClient, Trader } from '../../src/types/services.js';
 import type { TimeWakeupEvaluationContext } from '../../src/main/timeWakeupEvaluationProgram/types.js';
 import type { CancelOrderOutcome } from '../../src/types/trader.js';
-import { createExternalApiRequestError } from '../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import { initMonitorState } from '../../src/utils/helpers/index.js';
 import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
 
@@ -1292,7 +1292,7 @@ describe('doomsday integration', () => {
     const trader = createTraderDouble({
       getPendingOrders: async () => {
         getPendingOrdersCalls += 1;
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.getPendingOrders',
           attempts: getPendingOrdersCalls,
           cause: new Error('pending orders unavailable'),
@@ -1934,7 +1934,7 @@ describe('doomsday integration', () => {
     let clearCalls = 0;
     const marketDataClient = createMarketDataClientDouble({
       getQuotes: async () => {
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.getQuotes',
           attempts: 1,
           cause: new Error('quote unavailable'),
@@ -1981,7 +1981,7 @@ describe('doomsday integration', () => {
     let clearCalls = 0;
     const trader = createTraderDouble({
       executeDoomsdayClearanceSignals: async () => {
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.executeSignals',
           attempts: 1,
           cause: new Error('submit unavailable'),

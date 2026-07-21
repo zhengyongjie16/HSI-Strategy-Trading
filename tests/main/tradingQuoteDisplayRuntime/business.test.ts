@@ -13,7 +13,7 @@ import {
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 import { createSymbolRegistry as createProductionSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 
 const warnLogs: string[] = [];
@@ -491,7 +491,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     const { createTradingQuoteDisplayRuntime } =
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     warnLogs.length = 0;
-    const quoteError = createExternalApiRequestError({
+    const quoteError = await createExternalApiRequestError({
       operation: 'QuoteContext.realtimeQuote',
       attempts: 1,
       cause: new Error('quote supplement failed'),

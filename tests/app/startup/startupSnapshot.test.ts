@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { loadStartupSnapshot } from '../../../src/app/startup/startupSnapshot.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { applyStartupSnapshotFailureState } from '../../../src/main/lifecycle/startupFailureState.js';
 import type { Quote } from '../../../src/types/quote.js';
 import type { LastState } from '../../../src/types/state.js';
@@ -95,7 +95,7 @@ describe('app startup snapshot branch', () => {
       now,
       lastState,
       loadTradingDayRuntimeSnapshot: async () => {
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.snapshot',
           attempts: 1,
           cause: new Error('snapshot failed'),

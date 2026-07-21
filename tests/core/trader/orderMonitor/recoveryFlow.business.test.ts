@@ -479,7 +479,7 @@ describe('orderMonitor recoveryFlow', () => {
       handleOrderChangedWhenActive: () => {},
     });
 
-    await expect(
+    expect(
       recoveryFlow.recoverOrderTrackingFromSnapshot([
         createPendingOrder({
           orderId: 'ORDER-RECOVER-EXCEEDS-SUBMITTED',

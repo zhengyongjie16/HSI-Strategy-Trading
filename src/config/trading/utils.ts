@@ -62,7 +62,6 @@ export function parseFailFastBoundedNumberConfig({
   if (!Number.isFinite(value) || value < min || value > max) {
     throw createConfigValidationError(
       `[配置错误] ${envKey} 无效（必须为数字，范围 ${min}-${max}）`,
-      [envKey],
     );
   }
 
@@ -90,7 +89,6 @@ function parseFailFastIntegerBoundedNumberConfig({
   if (!Number.isInteger(value) || value < min || value > max) {
     throw createConfigValidationError(
       `[配置错误] ${envKey} 无效（必须为整数，范围 ${min}-${max}）`,
-      [envKey],
     );
   }
 
@@ -115,9 +113,7 @@ function parseFailFastMinimumNumberConfig({
 
   const value = Number(raw);
   if (!Number.isFinite(value) || value < min) {
-    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为数字且 >= ${min}）`, [
-      envKey,
-    ]);
+    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为数字且 >= ${min}）`);
   }
 
   return value;

@@ -8,7 +8,7 @@
  */
 import type { Position } from '../../types/account.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
-import type { OrderHoldSymbolsChangedEvent, Unsubscribe } from '../../types/services.js';
+import type { Unsubscribe } from '../../types/services.js';
 import { formatError } from '../../utils/error/index.js';
 import { logger } from '../../utils/logger/index.js';
 import type {
@@ -167,7 +167,7 @@ export function createQuoteSubscriptionRuntime(
     });
   }
 
-  function handleOrderHoldChanged(_event: OrderHoldSymbolsChangedEvent): void {
+  function handleOrderHoldChanged(): void {
     projectOrderHold();
     void enqueueMutation().catch((error: unknown) => {
       logger.error('[QuoteSubscriptionRuntime] 处理订单保留订阅变化失败', formatError(error));

@@ -35,11 +35,9 @@ function validateTradingConfig(
   env: NodeJS.ProcessEnv,
 ): ValidationResult {
   let errors: ReadonlyArray<string> = [];
-  let missingFields: ReadonlyArray<string> = [];
 
   const monitorResult = validateMonitorConfig(tradingConfig.monitor, env);
   errors = [...errors, ...monitorResult.errors];
-  missingFields = [...missingFields, ...monitorResult.missingFields];
 
   const doomsdayProtectionValidationError = validateExplicitBooleanConfig({
     env,
@@ -47,7 +45,6 @@ function validateTradingConfig(
   });
   if (doomsdayProtectionValidationError !== null) {
     errors = [...errors, doomsdayProtectionValidationError];
-    missingFields = [...missingFields, 'DOOMSDAY_PROTECTION'];
   }
 
   if (tradingConfig.global.buyOrderTimeout.enabled) {
@@ -59,7 +56,6 @@ function validateTradingConfig(
     });
     if (buyOrderTimeoutValidationError !== null) {
       errors = [...errors, buyOrderTimeoutValidationError];
-      missingFields = [...missingFields, 'BUY_ORDER_TIMEOUT_SECONDS'];
     }
 
     if (
@@ -68,7 +64,6 @@ function validateTradingConfig(
       tradingConfig.global.buyOrderTimeout.timeoutSeconds > 600
     ) {
       errors = [...errors, 'BUY_ORDER_TIMEOUT_SECONDS 无效（范围 30-600）'];
-      missingFields = [...missingFields, 'BUY_ORDER_TIMEOUT_SECONDS'];
     }
   }
 
@@ -81,7 +76,6 @@ function validateTradingConfig(
     });
     if (sellOrderTimeoutValidationError !== null) {
       errors = [...errors, sellOrderTimeoutValidationError];
-      missingFields = [...missingFields, 'SELL_ORDER_TIMEOUT_SECONDS'];
     }
 
     if (
@@ -90,7 +84,6 @@ function validateTradingConfig(
       tradingConfig.global.sellOrderTimeout.timeoutSeconds > 600
     ) {
       errors = [...errors, 'SELL_ORDER_TIMEOUT_SECONDS 无效（范围 30-600）'];
-      missingFields = [...missingFields, 'SELL_ORDER_TIMEOUT_SECONDS'];
     }
   }
 
@@ -102,7 +95,6 @@ function validateTradingConfig(
   });
   if (orderMonitorIntervalValidationError !== null) {
     errors = [...errors, orderMonitorIntervalValidationError];
-    missingFields = [...missingFields, 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL'];
   }
 
   if (
@@ -111,7 +103,6 @@ function validateTradingConfig(
     tradingConfig.global.orderMonitorPriceUpdateInterval > 60
   ) {
     errors = [...errors, 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL 无效（范围 1-60）'];
-    missingFields = [...missingFields, 'ORDER_MONITOR_PRICE_UPDATE_INTERVAL'];
   }
 
   const { morning, afternoon } = tradingConfig.global.openProtection;
@@ -121,7 +112,6 @@ function validateTradingConfig(
         ...errors,
         'MORNING_OPENING_PROTECTION_MINUTES 未配置（启用早盘保护时为必填，范围 1-60）',
       ];
-      missingFields = [...missingFields, 'MORNING_OPENING_PROTECTION_MINUTES'];
     } else if (morning.minutes < 1 || morning.minutes > 60) {
       errors = [...errors, 'MORNING_OPENING_PROTECTION_MINUTES 无效（范围 1-60）'];
     }
@@ -133,16 +123,12 @@ function validateTradingConfig(
         ...errors,
         'AFTERNOON_OPENING_PROTECTION_MINUTES 未配置（启用午盘保护时为必填，范围 1-60）',
       ];
-      missingFields = [...missingFields, 'AFTERNOON_OPENING_PROTECTION_MINUTES'];
     } else if (afternoon.minutes < 1 || afternoon.minutes > 60) {
       errors = [...errors, 'AFTERNOON_OPENING_PROTECTION_MINUTES 无效（范围 1-60）'];
     }
   }
 
-  return {
-    errors,
-    missingFields,
-  };
+  return { errors };
 }
 
 /**
@@ -163,9 +149,6 @@ export async function validateAllConfig({
   const longbridgeAuthResult = await Promise.resolve(validateLongbridgeAuthConfig(env));
   const tradingResult = validateTradingConfig(tradingConfig, env);
   const allErrors = [...longbridgeAuthResult.errors, ...tradingResult.errors];
-  const allMissingFields = [
-    ...new Set([...longbridgeAuthResult.missingFields, ...tradingResult.missingFields]),
-  ];
 
   if (allErrors.length > 0) {
     logger.error('配置验证失败！');
@@ -181,10 +164,7 @@ export async function validateAllConfig({
     logger.error('参考 .env.example 文件了解配置说明。');
     logger.error('');
 
-    throw createConfigValidationError(
-      `配置验证失败：发现 ${allErrors.length} 个问题`,
-      allMissingFields,
-    );
+    throw createConfigValidationError(`配置验证失败：发现 ${allErrors.length} 个问题`);
   }
 
   const currentAuthMode = readAuthMode(env);

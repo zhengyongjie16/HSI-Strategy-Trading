@@ -5,14 +5,16 @@
  * - 启动快照进入 pending open rebuild 时仍启动系统级时间唤醒，但不启动稳态实时链路
  * - 启动初始重建失败时仍启动系统级时间唤醒，并保持稳态实时链路静止
  */
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { createRunApp } from '../../src/app/runApp.js';
+import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
-import { createExternalApiRequestError } from '../../src/utils/apiFailure/index.js';
 import type {
   AppEnvironmentParams,
   AsyncRuntime,
+  CreatePostGateRuntimeParams,
+  CreatePreGateRuntimeParams,
   PostGateRuntime,
   PreGateRuntime,
   RunAppDeps,
@@ -68,6 +70,61 @@ let steadyRuntimeStarts: string[] = [];
 let runtimeStartSteps: string[] = [];
 
 type RunAppFunction = (params: AppEnvironmentParams) => Promise<void>;
+
+let runAppImportSequence = 0;
+const runAppDepsContext = new AsyncLocalStorage<RunAppDeps>();
+
+function requireActiveRunAppDeps(): RunAppDeps {
+  const deps = runAppDepsContext.getStore();
+  if (deps === undefined) {
+    throw new Error('runApp deps mock used before harness initialization');
+  }
+
+  return deps;
+}
+
+const runAppDepsProxy: RunAppDeps = {
+  createPreGateRuntime: (params) => requireActiveRunAppDeps().createPreGateRuntime(params),
+  createPostGateRuntime: (params) => requireActiveRunAppDeps().createPostGateRuntime(params),
+  loadStartupSnapshot: (params) => requireActiveRunAppDeps().loadStartupSnapshot(params),
+  collectRuntimeValidationSymbols: (params) =>
+    requireActiveRunAppDeps().collectRuntimeValidationSymbols(params),
+  createRebuildTradingDayState: (deps) =>
+    requireActiveRunAppDeps().createRebuildTradingDayState(deps),
+  displayAccountAndPositions: (params) => {
+    requireActiveRunAppDeps().displayAccountAndPositions(params);
+  },
+  registerDelayedSignalHandlers: (params) => {
+    requireActiveRunAppDeps().registerDelayedSignalHandlers(params);
+  },
+  createBusinessEventProgram: (deps) => requireActiveRunAppDeps().createBusinessEventProgram(deps),
+  createAsyncRuntime: (params) => requireActiveRunAppDeps().createAsyncRuntime(params),
+  createLifecycleRuntime: (params, factories) =>
+    requireActiveRunAppDeps().createLifecycleRuntime(params, factories),
+  createCleanup: () => requireActiveRunAppDeps().createCleanup(),
+  createTimeWakeupRuntime: (deps) => requireActiveRunAppDeps().createTimeWakeupRuntime(deps),
+  waitForShutdownSignal: () => requireActiveRunAppDeps().waitForShutdownSignal(),
+  logger: {
+    debug: (...args) => {
+      requireActiveRunAppDeps().logger.debug(...args);
+    },
+    info: (...args) => {
+      requireActiveRunAppDeps().logger.info(...args);
+    },
+    warn: (...args) => {
+      requireActiveRunAppDeps().logger.warn(...args);
+    },
+    error: (...args) => {
+      requireActiveRunAppDeps().logger.error(...args);
+    },
+  },
+  formatError: (error) => requireActiveRunAppDeps().formatError(error),
+  validateRuntimeSymbolsFromQuotesMap: (params) =>
+    requireActiveRunAppDeps().validateRuntimeSymbolsFromQuotesMap(params),
+  applyStartupSnapshotFailureState: (lastState, now) => {
+    requireActiveRunAppDeps().applyStartupSnapshotFailureState(lastState, now);
+  },
+};
 
 function createMinimalLastState(): LastState {
   return {
@@ -345,7 +402,7 @@ function createShutdownController(): {
   };
 }
 
-function createRunAppHarness(
+function createRunAppHarnessState(
   options: {
     readonly rejectTimeWakeupDuringStart?: boolean;
     readonly cleanupError?: Error;
@@ -353,15 +410,7 @@ function createRunAppHarness(
     readonly wiringError?: Error;
     readonly postGateMonitorContext?: PostGateRuntime['monitorContext'];
   } = {},
-): {
-  readonly runApp: RunAppFunction;
-  readonly triggerShutdown: () => void;
-  readonly triggerTimeWakeupFatal: (error: Error) => void;
-  readonly triggerAutoSearchFatal: (error: Error) => void;
-  readonly triggerBusinessEventFatal: (error: Error) => void;
-  readonly triggerPostTradeFatal: (error: Error) => void;
-  readonly triggerPostGateFatal: (error: Error) => void;
-} {
+) {
   const lastState = createMinimalLastState();
   const shutdownController = createShutdownController();
   let rejectTimeWakeupFatal: ((error: Error) => void) | null = null;
@@ -384,8 +433,13 @@ function createRunAppHarness(
   const postGateFatalPromise = new Promise<never>((_, reject) => {
     rejectPostGateFatal = reject;
   });
+  void timeWakeupFatalPromise.catch(() => {});
+  void autoSearchFatalPromise.catch(() => {});
+  void businessEventFatalPromise.catch(() => {});
+  void postTradeFatalPromise.catch(() => {});
+  void postGateFatalPromise.catch(() => {});
   const deps = {
-    createPreGateRuntime: async ({ cleanup }) => {
+    createPreGateRuntime: async ({ cleanup }: CreatePreGateRuntimeParams) => {
       cleanup.register({
         phase: 'CLOSE_TRADING_GATE',
         step: '记录 cleanup 执行',
@@ -403,7 +457,7 @@ function createRunAppHarness(
       });
       return createMockPreGateRuntime();
     },
-    createPostGateRuntime: async ({ cleanup }) => {
+    createPostGateRuntime: async ({ cleanup }: CreatePostGateRuntimeParams) => {
       cleanup.register({
         phase: 'STOP_ORDER_MONITOR_RUNTIME',
         step: '停止测试订单监控',
@@ -467,7 +521,7 @@ function createRunAppHarness(
     createRebuildTradingDayState: () => async () => {
       rebuildCallCount += 1;
       if (currentScenario === 'initialRebuildApiFails') {
-        throw createExternalApiRequestError({
+        throw await createExternalApiRequestError({
           operation: 'test.initialRebuild',
           attempts: 1,
           cause: new Error('initial rebuild api unavailable'),
@@ -495,6 +549,7 @@ function createRunAppHarness(
       tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
     }),
     createCleanup,
+    waitForShutdownSignal: shutdownController.waitForShutdownSignal,
     createTimeWakeupRuntime: () => ({
       start: async () => {
         timeWakeupStartCount += 1;
@@ -509,7 +564,6 @@ function createRunAppHarness(
       stopAndDrain: async () => {},
       drainFatalError: () => timeWakeupFatalPromise,
     }),
-    waitForShutdownSignal: shutdownController.waitForShutdownSignal,
     logger: {
       debug: () => {},
       info: () => {},
@@ -528,23 +582,48 @@ function createRunAppHarness(
   } satisfies RunAppDeps;
 
   return {
-    runApp: createRunApp(deps),
+    deps,
     triggerShutdown: shutdownController.triggerShutdown,
-    triggerTimeWakeupFatal: (error) => {
+    triggerTimeWakeupFatal: (error: Error) => {
       rejectTimeWakeupFatal?.(error);
     },
-    triggerAutoSearchFatal: (error) => {
+    triggerAutoSearchFatal: (error: Error) => {
       rejectAutoSearchFatal?.(error);
     },
-    triggerBusinessEventFatal: (error) => {
+    triggerBusinessEventFatal: (error: Error) => {
       rejectBusinessEventFatal?.(error);
     },
-    triggerPostTradeFatal: (error) => {
+    triggerPostTradeFatal: (error: Error) => {
       rejectPostTradeFatal?.(error);
     },
-    triggerPostGateFatal: (error) => {
+    triggerPostGateFatal: (error: Error) => {
       rejectPostGateFatal?.(error);
     },
+  };
+}
+
+function createRunAppHarness(options: Parameters<typeof createRunAppHarnessState>[0] = {}) {
+  const harnessState = createRunAppHarnessState(options);
+  const runApp: RunAppFunction = (params) =>
+    runAppDepsContext.run(harnessState.deps, async () => {
+      mock.module('../../src/app/runAppDeps.js', () => ({
+        DEFAULT_RUN_APP_DEPS: runAppDepsProxy,
+      }));
+      const importedModule = await import(
+        `../../src/app/runApp.js?run-app-test=${runAppImportSequence++}`
+      );
+      const importedRunApp = importedModule.runApp as RunAppFunction;
+      return importedRunApp(params);
+    });
+
+  return {
+    runApp,
+    triggerShutdown: harnessState.triggerShutdown,
+    triggerTimeWakeupFatal: harnessState.triggerTimeWakeupFatal,
+    triggerAutoSearchFatal: harnessState.triggerAutoSearchFatal,
+    triggerBusinessEventFatal: harnessState.triggerBusinessEventFatal,
+    triggerPostTradeFatal: harnessState.triggerPostTradeFatal,
+    triggerPostGateFatal: harnessState.triggerPostGateFatal,
   };
 }
 
@@ -552,6 +631,20 @@ async function flushMicrotasks(times: number): Promise<void> {
   for (let index = 0; index < times; index += 1) {
     await Promise.resolve();
   }
+
+  await Bun.sleep(0);
+}
+
+async function waitForSteadyRuntimeStart(name: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (steadyRuntimeStarts.includes(name)) {
+      return;
+    }
+
+    await Bun.sleep(1);
+  }
+
+  throw new Error(`[测试] 未等到稳态运行时启动: ${name}`);
 }
 
 async function expectPromiseRejectsWithMessage(
@@ -584,7 +677,7 @@ async function runAppAndTriggerShutdown(
   await runPromise;
 }
 
-describe('runApp business flow', () => {
+describe.serial('runApp business flow', () => {
   beforeEach(() => {
     currentScenario = 'startupRebuildPending';
     startupFailureApplyCount = 0;
@@ -749,10 +842,8 @@ describe('runApp business flow', () => {
     const harness = createRunAppHarness();
     const runPromise = harness.runApp({ env: {} });
 
-    await flushMicrotasks(20);
+    await waitForSteadyRuntimeStart('monitorQuoteEventRuntime.start');
     harness.triggerPostGateFatal(new Error('post gate fatal'));
-    await flushMicrotasks(5);
-    harness.triggerShutdown();
 
     await expectPromiseRejectsWithMessage(runPromise, /post gate fatal/);
     expect(cleanupExecuteCount).toBe(1);
@@ -763,10 +854,8 @@ describe('runApp business flow', () => {
     const harness = createRunAppHarness();
     const runPromise = harness.runApp({ env: {} });
 
-    await flushMicrotasks(20);
+    await waitForSteadyRuntimeStart('monitorQuoteEventRuntime.start');
     harness.triggerPostTradeFatal(new Error('post trade fatal'));
-    await flushMicrotasks(5);
-    harness.triggerShutdown();
 
     await expectPromiseRejectsWithMessage(runPromise, /post trade fatal/);
     expect(cleanupExecuteCount).toBe(1);

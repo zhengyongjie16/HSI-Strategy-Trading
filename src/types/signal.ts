@@ -85,9 +85,9 @@ type SignalFields = {
  * 普通交易信号。
  * 类型用途：表达策略、延迟验证和静态清仓生成的非保护性信号。
  * 数据来源：普通业务信号生成链路。
- * 使用范围：Signal 可判别联合的非保护性分支，以及测试信号工厂。
+ * 使用范围：Signal 可判别联合的非保护性分支。
  */
-export type OrdinarySignal<TAction extends SignalType = SignalType> = SignalFields & {
+type OrdinarySignal<TAction extends SignalType = SignalType> = SignalFields & {
   readonly action: TAction;
   readonly isProtectiveLiquidation?: false | null;
 };

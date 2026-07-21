@@ -19,7 +19,7 @@ import {
 } from '../../helpers/testDoubles.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createSwitchWakeupRuntime } from '../../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type {
   AutoSymbolManagerPort,
   SwitchDriveResult,
@@ -360,7 +360,7 @@ describe('switchWakeupRuntime', () => {
           driveResult: { kind: 'NOOP' },
         }),
         advancePendingSwitch: async () => {
-          throw createExternalApiRequestError({
+          throw await createExternalApiRequestError({
             operation: 'AutoSymbolManager.advancePendingSwitch',
             attempts: 1,
             cause: new Error('switch route broken'),

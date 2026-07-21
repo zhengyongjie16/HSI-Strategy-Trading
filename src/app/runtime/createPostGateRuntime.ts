@@ -8,7 +8,6 @@
  * - 保持 post-gate 对象所有权清单集中
  */
 import { INDICATOR_CACHE, TIME, VERIFICATION } from '../../constants/index.js';
-import { createTrader } from '../../core/trader/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
 import { createRiskChecker } from '../../core/riskController/index.js';
@@ -17,7 +16,6 @@ import { createUnrealizedLossChecker } from '../../core/riskController/unrealize
 import { createWarrantRiskChecker } from '../../core/riskController/warrantRiskChecker.js';
 import { createDoomsdayProtection } from '../../core/doomsdayProtection/index.js';
 import { createSignalProcessor } from '../../core/signalProcessor/index.js';
-import { createMonitorContext } from '../context/createMonitorContext.js';
 import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import { createIndicatorCache } from '../../main/asyncProgram/indicatorCache/index.js';
@@ -53,6 +51,7 @@ import {
 } from '../../utils/time/index.js';
 import { logger } from '../../utils/logger/index.js';
 import { toError } from '../../utils/error/index.js';
+import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
 import type { LastState } from '../../types/state.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../types/risk.js';
 import type { OrderStateChangedEvent } from '../../types/services.js';
@@ -60,12 +59,6 @@ import type { MonitorTaskDataMap } from '../../main/asyncProgram/monitorTaskProc
 import type { QuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/types.js';
 import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../types.js';
 import type { PersistableTradeRecord } from '../../types/trader.js';
-import type { CreatePostGateRuntimeDeps, SingleAssignmentBinding } from './types.js';
-
-const DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS: CreatePostGateRuntimeDeps = {
-  createTrader,
-  createMonitorContext,
-};
 
 /**
  * 创建一次性运行时绑定，显式解决互相依赖对象的构造环。
@@ -73,7 +66,10 @@ const DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS: CreatePostGateRuntimeDeps = {
  * @param name 绑定名称，用于 fail-fast 错误
  * @returns 只允许绑定一次且禁止未绑定读取的端口
  */
-function createSingleAssignmentBinding<T>(name: string): SingleAssignmentBinding<T> {
+function createSingleAssignmentBinding<T>(name: string): Readonly<{
+  bind: (value: T) => void;
+  get: () => T;
+}> {
   let binding: Readonly<{ value: T }> | undefined;
 
   return {
@@ -215,8 +211,8 @@ function persistProtectiveLiquidationExecutionProgress(params: {
  * @param deps post-gate 创建链路中的可注入依赖
  * @returns post-gate runtime 创建函数
  */
-export function createPostGateRuntimeFactory(
-  deps: CreatePostGateRuntimeDeps,
+function createPostGateRuntimeFactory(
+  deps: typeof DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS,
 ): (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime> {
   const { createTrader: buildTrader, createMonitorContext: buildMonitorContext } = deps;
 
@@ -300,7 +296,9 @@ export function createPostGateRuntimeFactory(
     });
 
     const traderBinding =
-      createSingleAssignmentBinding<Awaited<ReturnType<typeof createTrader>>>('Trader');
+      createSingleAssignmentBinding<
+        Awaited<ReturnType<(typeof DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS)['createTrader']>>
+      >('Trader');
     const quoteSubscriptionRuntimeBinding = createSingleAssignmentBinding<QuoteSubscriptionRuntime>(
       'QuoteSubscriptionRuntime',
     );

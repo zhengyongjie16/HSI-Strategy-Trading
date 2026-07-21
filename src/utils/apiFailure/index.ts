@@ -4,7 +4,6 @@ import { isRecord } from '../helpers/index.js';
 import type {
   ExternalApiAggregateRequestErrorParams,
   ExternalApiRequestError,
-  ExternalApiRequestErrorParams,
   ExternalApiRetryConfig,
   ExternalApiRetryDecision,
   WrapExternalApiRequestParams,
@@ -54,8 +53,12 @@ const externalApiRequestErrors = new WeakSet<Error>();
  * @param params 外部 API 请求失败错误构造参数
  * @returns 携带 operation 与 attempts 的 Error 对象
  */
-export function createExternalApiRequestError(
-  params: ExternalApiRequestErrorParams,
+function createExternalApiRequestError(
+  params: Readonly<{
+    operation: string;
+    attempts: number;
+    cause: unknown;
+  }>,
 ): ExternalApiRequestError {
   const error = new Error(`[外部 API 请求失败] ${params.operation}: ${formatError(params.cause)}`, {
     cause: params.cause,

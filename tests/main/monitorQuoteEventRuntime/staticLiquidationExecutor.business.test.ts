@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
 import { createStaticLiquidationExecutor } from '../../../src/main/monitorQuoteEventRuntime/staticLiquidationExecutor.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import type { RuntimeWritableSeatState, SeatState } from '../../../src/types/seat.js';
 import type { MarketDataClient } from '../../../src/types/services.js';
@@ -307,17 +307,13 @@ function createExecutorHarness(
 }
 
 describe('staticLiquidationExecutor', () => {
-  it('executes static liquidation with fresh execution monitor quote instead of event monitor quote', async () => {
+  it('executes static liquidation with fresh execution monitor quote', async () => {
     const harness = createExecutorHarness({
       executionMonitorPrice: 19_500,
     });
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -336,10 +332,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -356,7 +348,7 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('returns the existing finite WAIT owner when the side-effect-free quote batch has an external failure', async () => {
-    const externalFailure = createExternalApiRequestError({
+    const externalFailure = await createExternalApiRequestError({
       operation: 'test.staticLiquidationQuotes',
       attempts: 1,
       cause: new Error('quotes unavailable'),
@@ -369,10 +361,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -394,10 +382,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -416,10 +400,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -444,10 +424,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -468,10 +444,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -498,10 +470,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -529,10 +497,6 @@ describe('staticLiquidationExecutor', () => {
 
     const firstResult = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
       onDirectionSubmitted: (direction) => {
         submittedDirections.add(direction);
@@ -546,10 +510,6 @@ describe('staticLiquidationExecutor', () => {
     harness.setLongQuoteAvailable(true);
     const secondResult = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'BULL.HK',
-        quote: createQuoteDouble('BULL.HK', 1, 100),
-      },
       retryAttempts: 1,
       excludedDirections: submittedDirections,
       onDirectionSubmitted: (direction) => {
@@ -570,10 +530,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -591,10 +547,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -614,10 +566,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -636,10 +584,6 @@ describe('staticLiquidationExecutor', () => {
 
     await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -655,10 +599,6 @@ describe('staticLiquidationExecutor', () => {
 
     const result = await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -677,10 +617,6 @@ describe('staticLiquidationExecutor', () => {
 
     await harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
     });
 
@@ -703,10 +639,6 @@ describe('staticLiquidationExecutor', () => {
 
     const executionPromise = harness.executor({
       monitorContext: harness.monitorContext,
-      event: {
-        symbol: 'HSI.HK',
-        quote: createQuoteDouble('HSI.HK', 20_000, 100),
-      },
       retryAttempts: 0,
       canContinue: () => canContinue,
       onDirectionSubmitted: (direction) => {

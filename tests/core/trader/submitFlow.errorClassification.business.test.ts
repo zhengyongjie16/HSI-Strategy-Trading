@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import type { SubmitOrderOptions, SubmitOrderResponse, TradeContext } from 'longbridge';
 import { createOrderExecutor } from '../../../src/core/trader/orderExecutor/index.js';
 import type { OrderMonitor, TrackOrderParams } from '../../../src/core/trader/types.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { logger } from '../../../src/utils/logger/index.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
 import type {
@@ -288,7 +288,7 @@ describe('submitFlow staged error classification', () => {
   });
 
   it('logs and skips an explicit structured broker business rejection, including one carried by the API wrapper', async () => {
-    const brokerRejection = createExternalApiRequestError({
+    const brokerRejection = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: Object.assign(new Error('broker denied the order'), { code: 601011 }),
@@ -317,7 +317,7 @@ describe('submitFlow staged error classification', () => {
   });
 
   it('throws an unconfirmed submit failure rather than silently treating it as a broker rejection', async () => {
-    const unconfirmedSubmission = createExternalApiRequestError({
+    const unconfirmedSubmission = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: new Error('submission outcome is unknown'),

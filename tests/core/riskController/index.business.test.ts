@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { createRiskChecker } from '../../../src/core/riskController/index.js';
 import { createUnrealizedLossChecker } from '../../../src/core/riskController/unrealizedLossChecker.js';
 import { createUnrealizedLossMonitor } from '../../../src/core/riskController/unrealizedLossMonitor.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { DailyLossTracker } from '../../../src/types/risk.js';
 import type { OrderRecorder, RiskChecker, Trader } from '../../../src/types/services.js';
 import type {
@@ -209,7 +209,7 @@ describe('riskController(index) business flow', () => {
     const monitor = createUnrealizedLossMonitor({
       maxUnrealizedLossPerSymbol: 1_000,
     });
-    const submitError = createExternalApiRequestError({
+    const submitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: new Error('submit timeout'),
@@ -289,7 +289,7 @@ describe('riskController(index) business flow', () => {
     const monitor = createUnrealizedLossMonitor({
       maxUnrealizedLossPerSymbol: 1_000,
     });
-    const externalError = createExternalApiRequestError({
+    const externalError = await createExternalApiRequestError({
       operation: 'QuoteContext.realtimeQuote',
       attempts: 1,
       cause: new Error('quote timeout'),

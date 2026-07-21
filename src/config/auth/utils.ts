@@ -222,12 +222,10 @@ export function validateLongbridgeConfig(
 
   if (authModeValue === null) {
     issues.push({
-      envKey: 'LONGBRIDGE_AUTH_MODE',
       message: 'LONGBRIDGE_AUTH_MODE 未配置',
     });
   } else if (!VALID_AUTH_MODE_VALUES.has(authModeValue) || authMode === null) {
     issues.push({
-      envKey: 'LONGBRIDGE_AUTH_MODE',
       message: 'LONGBRIDGE_AUTH_MODE 无效（仅支持 oauth / apikey）',
     });
   }
@@ -236,7 +234,6 @@ export function validateLongbridgeConfig(
     const oauthAuthConfig = readOAuthAuthConfig(env);
     if (oauthAuthConfig.clientId === null) {
       issues.push({
-        envKey: 'LONGBRIDGE_CLIENT_ID',
         message: 'LONGBRIDGE_CLIENT_ID 未配置',
       });
     }
@@ -244,7 +241,6 @@ export function validateLongbridgeConfig(
     const callbackPortValue = getStringConfig(env, 'LONGBRIDGE_CALLBACK_PORT');
     if (callbackPortValue !== null && oauthAuthConfig.callbackPort === null) {
       issues.push({
-        envKey: 'LONGBRIDGE_CALLBACK_PORT',
         message: 'LONGBRIDGE_CALLBACK_PORT 无效（必须为 1-65535 的整数端口）',
       });
     }
@@ -273,7 +269,6 @@ export function validateLongbridgeConfig(
       }
 
       issues.push({
-        envKey: field.envKey,
         message: `${field.envKey} 未配置`,
       });
     }
@@ -288,7 +283,6 @@ export function validateLongbridgeConfig(
     const urlValue = getStringConfig(env, urlConfigKey);
     if (urlValue !== null && !URL.canParse(urlValue)) {
       issues.push({
-        envKey: urlConfigKey,
         message: `${urlConfigKey} 无效（必须为合法 URL）`,
       });
     }
@@ -297,7 +291,6 @@ export function validateLongbridgeConfig(
   const languageValue = getStringConfig(env, 'LONGBRIDGE_LANGUAGE');
   if (languageValue !== null && !VALID_LONGBRIDGE_LANGUAGE_VALUES.has(languageValue)) {
     issues.push({
-      envKey: 'LONGBRIDGE_LANGUAGE',
       message: 'LONGBRIDGE_LANGUAGE 无效（仅支持 zh-CN / zh-HK / en）',
     });
   }
@@ -308,7 +301,6 @@ export function validateLongbridgeConfig(
     !VALID_LONGBRIDGE_PUSH_CANDLESTICK_MODE_VALUES.has(pushCandlestickModeValue)
   ) {
     issues.push({
-      envKey: 'LONGBRIDGE_PUSH_CANDLESTICK_MODE',
       message: 'LONGBRIDGE_PUSH_CANDLESTICK_MODE 无效（仅支持 realtime / confirmed）',
     });
   }
@@ -321,7 +313,6 @@ export function validateLongbridgeConfig(
     const booleanValue = getStringConfig(env, booleanConfigKey);
     if (booleanValue !== null && !VALID_BOOLEAN_CONFIG_VALUES.has(booleanValue)) {
       issues.push({
-        envKey: booleanConfigKey,
         message: `${booleanConfigKey} 无效（仅支持 true / false）`,
       });
     }

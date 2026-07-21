@@ -68,7 +68,7 @@ export function createSeatDomain(deps: SeatDomainDeps): CacheDomain {
 
       logger.debug(`[Lifecycle][seat] 午夜清理完成: seats=${changedSeats}`);
     },
-    openRebuild(_ctx: LifecycleContext): void {
+    openRebuild(): void {
       // 席位在统一开盘重建流水线中重建
     },
   };

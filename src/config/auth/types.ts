@@ -82,6 +82,5 @@ export type CreateSdkConfigFromAuthParams = {
  * 使用范围：仅 config/auth 模块与配置校验层使用。
  */
 export type LongbridgeConfigValidationIssue = Readonly<{
-  envKey: string;
   message: string;
 }>;

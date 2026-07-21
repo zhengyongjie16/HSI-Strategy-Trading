@@ -11,7 +11,6 @@ import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 function isConfigValidationError(error: unknown): error is {
   readonly name?: string;
   readonly message?: string;
-  readonly missingFields?: ReadonlyArray<string>;
 } {
   return typeof error === 'object' && error !== null;
 }
@@ -40,6 +39,5 @@ describe('app createPreGateRuntime config error contract', () => {
 
     expect(caughtError.name).toBe('ConfigValidationError');
     expect(caughtError.message).toContain('TARGET_NOTIONAL');
-    expect(caughtError.missingFields).toContain('TARGET_NOTIONAL');
   });
 });

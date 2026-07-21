@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type { RiskChecker } from '../../src/types/services.js';
-import type { OrdinarySignal, SellSignal } from '../../src/types/signal.js';
+import type { SellSignal, Signal } from '../../src/types/signal.js';
 
 const sellSignal: SellSignal = {
   symbol: 'BULL.HK',
@@ -14,7 +14,7 @@ const sellSignal: SellSignal = {
   seatVersion: 1,
 };
 
-const holdSignal: OrdinarySignal<'HOLD'> & { readonly seatVersion: number } = {
+const holdSignal: Signal & { readonly action: 'HOLD'; readonly seatVersion: number } = {
   symbol: 'BULL.HK',
   symbolName: null,
   action: 'HOLD',

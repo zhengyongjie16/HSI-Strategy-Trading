@@ -19,7 +19,7 @@ import {
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { ORDER_QUOTE_RETRY, TRADING } from '../../../src/constants/index.js';
 import { createDefaultMonitorQuoteEventRuntime } from '../../../src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type {
   CreateDefaultMonitorQuoteEventRuntimeDeps,
   MonitorQuoteEventRuntime,
@@ -131,7 +131,6 @@ function createFreshnessRuntimeDouble(): MonitorQuoteFreshnessDeps {
       currentVersion: 1,
       staleVersion: 1,
     }),
-    onFreshReached: () => () => {},
   };
 }
 
@@ -1072,7 +1071,7 @@ describe('monitorQuoteEventRuntime contract', () => {
     const fatalErrors: unknown[] = [];
     const nowMs = Date.parse('2026-04-08T02:00:00.000Z');
     const timerHarness = createDistanceSwitchTimerHarness(nowMs);
-    const precheckError = createExternalApiRequestError({
+    const precheckError = await createExternalApiRequestError({
       operation: 'AutoSymbolManager.startSwitchOnDistance',
       attempts: 1,
       cause: new Error('candidate query unavailable'),
@@ -1112,12 +1111,12 @@ describe('monitorQuoteEventRuntime contract', () => {
     const fatalErrors: unknown[] = [];
     const nowMs = Date.parse('2026-04-08T02:00:00.000Z');
     const timerHarness = createDistanceSwitchTimerHarness(nowMs);
-    const firstPrecheckError = createExternalApiRequestError({
+    const firstPrecheckError = await createExternalApiRequestError({
       operation: 'AutoSymbolManager.startSwitchOnDistance',
       attempts: 1,
       cause: new Error('candidate query unavailable'),
     });
-    const secondPrecheckError = createExternalApiRequestError({
+    const secondPrecheckError = await createExternalApiRequestError({
       operation: 'AutoSymbolManager.startSwitchOnDistance',
       attempts: 1,
       cause: new Error('candidate query remains unavailable'),
@@ -1149,7 +1148,7 @@ describe('monitorQuoteEventRuntime contract', () => {
     const fatalErrors: unknown[] = [];
     const timerHarness = createDistanceSwitchTimerHarness(Date.parse('2026-04-08T02:00:00.000Z'));
     const delayedPrecheckError = createDeferred<Error>();
-    const precheckError = createExternalApiRequestError({
+    const precheckError = await createExternalApiRequestError({
       operation: 'AutoSymbolManager.startSwitchOnDistance',
       attempts: 1,
       cause: new Error('candidate query unavailable after seat replacement'),
@@ -1244,7 +1243,7 @@ describe('monitorQuoteEventRuntime contract', () => {
   it('keeps a true external distance-switch failure fatal after a pending switch was created', async () => {
     const fatalErrors: unknown[] = [];
     const timerHarness = createDistanceSwitchTimerHarness(Date.parse('2026-04-08T02:00:00.000Z'));
-    const routeError = createExternalApiRequestError({
+    const routeError = await createExternalApiRequestError({
       operation: 'AutoSymbolManager.startSwitchOnDistance',
       attempts: 1,
       cause: new Error('post-admission state failure'),
@@ -1275,12 +1274,12 @@ describe('monitorQuoteEventRuntime contract', () => {
     const fatalErrors: unknown[] = [];
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [
-        createExternalApiRequestError({
+        await createExternalApiRequestError({
           operation: 'AutoSymbolManager.startSwitchOnDistance',
           attempts: 1,
           cause: new Error('candidate query unavailable'),
         }),
-        createExternalApiRequestError({
+        await createExternalApiRequestError({
           operation: 'AutoSymbolManager.startSwitchOnDistance',
           attempts: 1,
           cause: new Error('pending-order admission unavailable'),
@@ -1320,7 +1319,7 @@ describe('monitorQuoteEventRuntime contract', () => {
     const timerHarness = createDistanceSwitchTimerHarness(nowMs);
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [
-        createExternalApiRequestError({
+        await createExternalApiRequestError({
           operation: 'AutoSymbolManager.startSwitchOnDistance',
           attempts: 1,
           cause: new Error('candidate query unavailable'),
@@ -1349,7 +1348,7 @@ describe('monitorQuoteEventRuntime contract', () => {
     const timerHarness = createDistanceSwitchTimerHarness(nowMs);
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [
-        createExternalApiRequestError({
+        await createExternalApiRequestError({
           operation: 'AutoSymbolManager.startSwitchOnDistance',
           attempts: 1,
           cause: new Error('candidate query unavailable'),

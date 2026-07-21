@@ -11,8 +11,6 @@ import { simulateTriggerCycle } from '../../../src/services/liquidationCooldown/
 
 function createCandidate(executedAtMs: number): CooldownCandidate {
   return {
-    monitorSymbol: 'HSI.HK',
-    direction: 'LONG',
     executedAtMs,
   };
 }

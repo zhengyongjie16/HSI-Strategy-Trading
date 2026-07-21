@@ -10,7 +10,7 @@
  * - 行情订阅在统一开盘重建流水线（loadTradingDayRuntimeSnapshot）中重建，此处为空操作
  */
 import { logger } from '../../../utils/logger/index.js';
-import type { CacheDomain, LifecycleContext } from '../types.js';
+import type { CacheDomain } from '../types.js';
 import type { MarketDataDomainDeps } from './types.js';
 
 /**
@@ -23,11 +23,11 @@ import type { MarketDataDomainDeps } from './types.js';
 export function createMarketDataDomain(deps: MarketDataDomainDeps): CacheDomain {
   const { marketDataClient } = deps;
   return {
-    async midnightClear(_ctx: LifecycleContext): Promise<void> {
+    async midnightClear(): Promise<void> {
       await marketDataClient.resetRuntimeSubscriptionsAndCaches();
       logger.debug('[Lifecycle][marketData] 午夜清理完成');
     },
-    openRebuild(_ctx: LifecycleContext): void {
+    openRebuild(): void {
       // 行情订阅在统一开盘重建流水线中重建
     },
   };

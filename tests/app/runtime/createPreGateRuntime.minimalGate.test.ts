@@ -3,21 +3,17 @@
  *
  * 功能：验证启动阶段只初始化可靠交易日状态，不因非交易日或交易日接口异常阻断 pre-gate runtime 创建。
  */
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-import type { CreatePreGateRuntimeParams, PreGateRuntime } from '../../../src/app/types.js';
-import { createPreGateRuntimeFactory } from '../../../src/app/runtime/createPreGateRuntime.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
-import { createExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { createMarketDataClientDouble, createSdkConfigDouble } from '../../helpers/testDoubles.js';
 
 let isTradingDayCalls = 0;
 let tradingDayResolveError: Error | null = null;
 
-type CreatePreGateRuntimeFunction = (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime>;
-
-function createPreGateRuntimeForTest(): CreatePreGateRuntimeFunction {
-  return createPreGateRuntimeFactory({
+mock.module('../../../src/app/runtime/createPreGateRuntimeDeps.js', () => ({
+  DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS: {
     createSdkConfigFromAuth: async () => createSdkConfigDouble(),
     createMarketDataClient: async () =>
       createMarketDataClientDouble({
@@ -30,8 +26,10 @@ function createPreGateRuntimeForTest(): CreatePreGateRuntimeFunction {
           return { isTradingDay: false, isHalfDay: false };
         },
       }),
-  });
-}
+  },
+}));
+
+const { createPreGateRuntime } = await import('../../../src/app/runtime/createPreGateRuntime.js');
 
 describe('app createPreGateRuntime minimal startup gate', () => {
   beforeEach(() => {
@@ -40,7 +38,6 @@ describe('app createPreGateRuntime minimal startup gate', () => {
   });
 
   it('returns pre-gate runtime even when current day is not a trading day', async () => {
-    const createPreGateRuntime = createPreGateRuntimeForTest();
     const runtime = await createPreGateRuntime({
       cleanup: createCleanup(),
       env: {
@@ -68,12 +65,11 @@ describe('app createPreGateRuntime minimal startup gate', () => {
   });
 
   it('keeps startup trading day unknown when trading day API request fails', async () => {
-    tradingDayResolveError = createExternalApiRequestError({
+    tradingDayResolveError = await createExternalApiRequestError({
       operation: 'QuoteContext.isTradingDay',
       attempts: 1,
       cause: new Error('trading day service unavailable'),
     });
-    const createPreGateRuntime = createPreGateRuntimeForTest();
     const runtime = await createPreGateRuntime({
       cleanup: createCleanup(),
       env: {
@@ -99,8 +95,6 @@ describe('app createPreGateRuntime minimal startup gate', () => {
   it('rethrows non API startup trading day resolution errors', async () => {
     const internalError = new Error('trading day parser broken');
     tradingDayResolveError = internalError;
-    const createPreGateRuntime = createPreGateRuntimeForTest();
-
     let caught: unknown = null;
     try {
       await createPreGateRuntime({
