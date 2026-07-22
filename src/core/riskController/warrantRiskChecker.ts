@@ -364,7 +364,6 @@ async function checkWarrantType(
     isWarrant: true,
     warrantType,
     callPrice,
-    category: typeof category === 'number' || typeof category === 'string' ? category : 'UNKNOWN',
     symbol,
   };
 }
@@ -571,12 +570,10 @@ export function createWarrantRiskChecker(): WarrantRiskChecker {
     }
 
     const warrantType = isLongSymbol ? 'BULL' : 'BEAR';
-    const category = isLongSymbol ? 3 : 4;
     const warrantInfo: WarrantInfo = {
       isWarrant: true,
       warrantType,
       callPrice,
-      category,
       symbol,
     };
     if (isLongSymbol) {

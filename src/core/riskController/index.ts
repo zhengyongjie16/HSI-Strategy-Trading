@@ -224,8 +224,8 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
       isLongSymbol: boolean,
       quote?: Quote | null,
       dailyLossOffset?: number,
-    ): Promise<{ r1: number; n1: number } | null> {
-      return unrealizedLossChecker.refresh(
+    ): Promise<void> {
+      await unrealizedLossChecker.refresh(
         orderRecorder,
         symbol,
         isLongSymbol,

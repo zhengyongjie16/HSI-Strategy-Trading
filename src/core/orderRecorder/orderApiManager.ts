@@ -2,8 +2,8 @@
  * 订单 API 管理模块
  *
  * 职责：
- * - 从 Longbridge API 获取订单
- * - 管理订单缓存（缓存到显式清理/刷新为止）
+ * - 每次从 Longbridge API 拉取 historyOrders 与 todayOrders
+ * - 合并两份订单快照并按 orderId 去重
  * - 在信任边界将 SDK Order 转换为 RawOrderFromAPI
  */
 import { OrderSide, type OrderStatus, OrderType, type Order } from 'longbridge';
@@ -228,11 +228,11 @@ function shouldReplaceMergedEntry(
 }
 
 /**
- * 合并历史订单和今日订单，按 orderId 去重并保留最新快照。
+ * 合并历史订单和今日订单，按 orderId 去重；跨来源时 today 无条件优先，同一来源内按版本时间选择更新项。
  *
  * @param historyOrders 历史订单列表
  * @param todayOrders 今日订单列表
- * @returns 按 orderId 去重后的订单数组（同 ID 保留版本更新的一条）
+ * @returns 按 orderId 去重后的订单数组（跨来源保留 today，同来源保留版本时间更新的一条）
  */
 function mergeAndDeduplicateOrders(
   historyOrders: ReadonlyArray<RawOrderFromAPI>,
@@ -281,28 +281,15 @@ function mergeAndDeduplicateOrders(
 
 /**
  * 创建订单 API 管理器
- * 管理全量订单缓存（history + today 合并去重）和强制刷新；信任边界内将 SDK Order 转为 RawOrderFromAPI。
+ * 拉取 history + today 并合并去重；信任边界内将 SDK Order 转为 RawOrderFromAPI。
  * @param deps 依赖注入（ctx、rateLimiter）
- * @returns OrderAPIManager 接口实例（fetchAllOrdersFromAPI、clearCache）
+ * @returns OrderAPIManager 接口实例
  */
 export function createOrderAPIManager(deps: OrderAPIManagerDeps): OrderAPIManager {
   const { ctx, rateLimiter } = deps;
 
-  let allOrdersCache: RawOrderFromAPI[] | null = null;
-
-  /** 清空全量订单缓存 */
-  function clearCache(): void {
-    allOrdersCache = null;
-  }
-
-  /** 从 API 获取全量订单数据（history + today） */
-  async function fetchAllOrdersFromAPI(
-    forceRefresh = false,
-  ): Promise<ReadonlyArray<RawOrderFromAPI>> {
-    if (allOrdersCache && !forceRefresh) {
-      return [...allOrdersCache];
-    }
-
+  /** 每次从 API 拉取 historyOrders 与 todayOrders，并返回合并去重后的全量订单快照 */
+  async function fetchAllOrdersFromAPI(): Promise<ReadonlyArray<RawOrderFromAPI>> {
     await rateLimiter.throttle();
     const historyOrdersRaw: unknown = await wrapExternalApiRequest({
       operation: 'TradeContext.historyOrders',
@@ -326,12 +313,10 @@ export function createOrderAPIManager(deps: OrderAPIManagerDeps): OrderAPIManage
     const todayOrders = Array.from(todayOrdersRaw, orderToRawOrderFromAPI);
     const allOrders = mergeAndDeduplicateOrders(historyOrders, todayOrders);
 
-    allOrdersCache = allOrders;
     return [...allOrders];
   }
 
   return {
     fetchAllOrdersFromAPI,
-    clearCache,
   };
 }

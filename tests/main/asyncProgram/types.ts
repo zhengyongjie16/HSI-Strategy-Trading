@@ -16,7 +16,6 @@ export type CreateBusinessProcessorParams = Readonly<{
   readonly trader?: ReturnType<typeof createTraderDouble>;
   readonly marketDataClient?: MonitorTaskProcessorDeps['marketDataClient'];
   readonly quoteSubscriptionRuntime?: MonitorTaskProcessorDeps['quoteSubscriptionRuntime'];
-  readonly onProcessed?: MonitorTaskProcessorDeps['onProcessed'];
   readonly getCanProcessTask?: MonitorTaskProcessorDeps['getCanProcessTask'];
   readonly getCanTradeNow?: MonitorTaskProcessorDeps['getCanTradeNow'];
   readonly onFatalError?: MonitorTaskProcessorDeps['onFatalError'];

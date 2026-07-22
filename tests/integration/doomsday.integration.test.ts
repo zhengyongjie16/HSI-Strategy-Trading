@@ -153,7 +153,6 @@ function createLastState(): LastState {
     currentDayKey: '2026-02-16',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: createAccountSnapshotDouble(100_000),
     cachedPositions: [
@@ -236,7 +235,6 @@ function createTerminalCancelOutcome(params: {
   return {
     kind: 'ALREADY_CLOSED',
     closedReason: params.closedReason,
-    source: 'API_ERROR',
     relatedBuyOrderIds: ['OLD-BUY'],
     terminalExecution: {
       submittedQuantity: params.submittedQuantity,
@@ -398,8 +396,6 @@ describe('doomsday integration', () => {
         cancelOrderIds.push(orderId);
         return {
           kind: 'CANCEL_CONFIRMED' as const,
-          closedReason: 'CANCELED' as const,
-          source: 'API' as const,
           relatedBuyOrderIds: ['BUY-ORDINARY'],
         };
       },
@@ -554,8 +550,6 @@ describe('doomsday integration', () => {
           cancelOrderIds.push(orderId);
           return {
             kind: 'CANCEL_CONFIRMED',
-            closedReason: 'CANCELED',
-            source: 'API',
             relatedBuyOrderIds: null,
           };
         },
@@ -624,10 +618,7 @@ describe('doomsday integration', () => {
       const firstResult = await timeWakeupEvaluationProgram(context);
       const retryAtMs = currentTime.getTime() + retryIntervalMs;
 
-      expect(firstResult.plan.candidates).toContainEqual({
-        source: 'DOOMSDAY_RETRY',
-        atMs: retryAtMs,
-      });
+      expect(firstResult.plan.nextWakeupAtMs).toBe(retryAtMs);
       expect(cancelOrderIds).toEqual(['SELL-WAITING-WS']);
       expect(tradeContext.getCalls('submitOrder')).toHaveLength(0);
 
@@ -637,11 +628,7 @@ describe('doomsday integration', () => {
       setSystemTime(currentTime);
       const afterTerminalResult = await timeWakeupEvaluationProgram(context);
 
-      expect(
-        afterTerminalResult.plan.candidates.some(
-          (candidate) => candidate.source === 'DOOMSDAY_RETRY',
-        ),
-      ).toBeFalse();
+      expect(afterTerminalResult.plan.nextWakeupAtMs).not.toBe(retryAtMs);
       expect(cancelOrderIds).toEqual(['SELL-WAITING-WS']);
       expect(tradeContext.getCalls('stockPositions')).toHaveLength(1);
       expect(tradeContext.getCalls('submitOrder')).toHaveLength(1);
@@ -924,7 +911,6 @@ describe('doomsday integration', () => {
           cancelDoomsdayOrder: async () => ({
             kind: 'UNKNOWN_FAILURE',
             errorCode: null,
-            message: 'cancel result unknown',
           }),
         }),
       });
@@ -1072,7 +1058,6 @@ describe('doomsday integration', () => {
           cancelDoomsdayOrder: async () => ({
             kind: 'UNKNOWN_FAILURE',
             errorCode: null,
-            message: 'cancel result unknown',
           }),
         }),
       });
@@ -1100,7 +1085,6 @@ describe('doomsday integration', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1.1,
         triggerTimeMs: Date.now(),
         reason: 'ordinary-sell-during-takeover',
       }),
@@ -1165,8 +1149,6 @@ describe('doomsday integration', () => {
       ],
       cancelDoomsdayOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
     });
@@ -1264,7 +1246,6 @@ describe('doomsday integration', () => {
       cancelDoomsdayOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'FILLED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2093,8 +2074,6 @@ describe('doomsday integration', () => {
         cancelCalls += 1;
         return {
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         };
       },
@@ -2150,8 +2129,6 @@ describe('doomsday integration', () => {
         cancelSdkCalls += 1;
         return {
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         };
       },
@@ -2200,8 +2177,6 @@ describe('doomsday integration', () => {
         cancelSdkCalls += 1;
         return {
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         };
       },

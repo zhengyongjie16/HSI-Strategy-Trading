@@ -63,9 +63,8 @@ describe('tradeTaskQueue business behavior', () => {
     expect(queue.isEmpty()).toBeTrue();
   });
 
-  it('removeTasks removes only matched active tasks and calls onRemove in active queue order', () => {
+  it('removeTasks removes only matched active tasks', () => {
     const queue = createBuyTaskQueue();
-    const removedSymbols: string[] = [];
 
     pushBuyTask({
       queue,
@@ -87,20 +86,15 @@ describe('tradeTaskQueue business behavior', () => {
 
     const removed = queue.removeTasks(
       (task) => task.data.action === 'BUYCALL' && task.data.symbol.startsWith('BULL-'),
-      (task) => {
-        removedSymbols[removedSymbols.length] = task.data.symbol;
-      },
     );
 
     expect(removed).toBe(2);
-    expect(removedSymbols).toEqual(['BULL-1.HK', 'BULL-2.HK']);
     expect(queue.pop()?.data.symbol).toBe('BEAR-1.HK');
     expect(queue.isEmpty()).toBeTrue();
   });
 
   it('clearAll only clears tasks that have not been popped', () => {
     const queue = createBuyTaskQueue();
-    const clearedSymbols: string[] = [];
 
     pushBuyTask({
       queue,
@@ -116,12 +110,9 @@ describe('tradeTaskQueue business behavior', () => {
 
     expect(queue.pop()?.data.symbol).toBe('BULL-1.HK');
 
-    const cleared = queue.clearAll((task) => {
-      clearedSymbols[clearedSymbols.length] = task.data.symbol;
-    });
+    const cleared = queue.clearAll();
 
     expect(cleared).toBe(1);
-    expect(clearedSymbols).toEqual(['BULL-2.HK']);
     expect(queue.isEmpty()).toBeTrue();
   });
 

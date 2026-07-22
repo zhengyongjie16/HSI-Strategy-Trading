@@ -107,18 +107,12 @@ export const createUnrealizedLossChecker = (
    * dailyLossOffset 仅记录亏损偏移（<=0）；调整后 R1 按 baseR1 - dailyLossOffset 计算。
    */
   const refresh = (
-    orderRecorder: OrderRecorder | null,
+    orderRecorder: OrderRecorder,
     symbol: string,
     isLongSymbol: boolean,
     quote?: Quote | null,
     dailyLossOffset?: number,
-  ): Promise<{ r1: number; n1: number } | null> => {
-    if (!orderRecorder) {
-      const symbolDisplay = formatSymbolDisplayFromQuote(quote, symbol);
-      logger.warn(`[浮亏监控] 未提供 OrderRecorder 实例，无法刷新标的 ${symbolDisplay} 的浮亏数据`);
-      return Promise.resolve(null);
-    }
-
+  ): Promise<void> => {
     const buyOrders = orderRecorder.getBuyOrdersForSymbol(symbol, isLongSymbol);
     const { r1: baseR1, n1 } = calculateCostAndQuantity(buyOrders);
     const rawOffset =
@@ -142,7 +136,7 @@ export const createUnrealizedLossChecker = (
         `N1(持仓数量)=${n1}, 未平仓订单数=${buyOrders.length}`,
     );
 
-    return Promise.resolve({ r1: adjustedR1, n1 });
+    return Promise.resolve();
   };
 
   /**

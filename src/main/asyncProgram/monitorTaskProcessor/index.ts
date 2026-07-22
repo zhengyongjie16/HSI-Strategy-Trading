@@ -75,7 +75,6 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     getCanProcessTask,
     getCanTradeNow,
     onFatalError,
-    onProcessed,
   } = deps;
   const monitorSymbol = monitorContext.config.monitorSymbol;
 
@@ -227,7 +226,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     }
   }
 
-  /** 循环消费监控任务队列直至为空；生命周期门禁关闭时跳过，处理结果按实际 status 通知 owner 与 onProcessed。 */
+  /** 循环消费监控任务队列直至为空；生命周期门禁关闭时跳过，处理结果按实际 status 通知 owner。 */
   async function processQueue(): Promise<void> {
     const helpers = createRefreshHelpers({ trader, lastState, quoteSubscriptionRuntime });
     while (!monitorTaskQueue.isEmpty()) {
@@ -241,7 +240,6 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
           `[MonitorTaskProcessor] 任务跳过：生命周期门禁关闭 type=${task.type} monitor=${monitorSymbol} dedupe=${task.dedupeKey}`,
         );
         handoffPeriodicTaskOutcome(task, 'skipped');
-        onProcessed?.(task, 'skipped');
         continue;
       }
 
@@ -271,7 +269,6 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       }
 
       handoffPeriodicTaskOutcome(task, status);
-      onProcessed?.(task, status);
     }
   }
   const queueRunner = createQueueRunner({

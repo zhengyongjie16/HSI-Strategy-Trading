@@ -1,6 +1,6 @@
 import type { PeriodicSwitchWakeupRuntime } from '../../periodicSwitchWakeupRuntime/types.js';
 import type { SwitchWakeupRuntime } from '../../monitorQuoteEventRuntime/types.js';
-import type { MonitorTaskQueue, MonitorTask } from '../monitorTaskQueue/types.js';
+import type { MonitorTaskQueue } from '../monitorTaskQueue/types.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
 import type { RawOrderFromAPI, Trader, MarketDataClient } from '../../../types/services.js';
 import type { QuoteSubscriptionRuntime } from '../../quoteSubscriptionRuntime/types.js';
@@ -73,9 +73,9 @@ export type MonitorTaskDataMap = Readonly<{
 
 /**
  * 监控任务处理状态（任务处理结果）。
- * 类型用途：任务处理完成后的结果状态，供 onProcessed 回调使用。
+ * 类型用途：任务处理完成后的结果状态。
  * 数据来源：由 MonitorTaskProcessor 在处理单任务后根据执行结果设置。
- * 使用范围：仅 monitorTaskProcessor 及注册 onProcessed 的调用方使用，内部使用。
+ * 使用范围：仅 monitorTaskProcessor 内部使用。
  * 语义说明：blocked 表示任务本身仍有效，但被当前门禁阻断，后续 owner 仍需继续推进。
  */
 export type MonitorTaskStatus = 'processed' | 'skipped' | 'failed' | 'blocked';
@@ -121,8 +121,6 @@ export type MonitorTaskProcessorDeps = Readonly<{
 
   /** 非 API 程序错误进入 fatal 通道 */
   onFatalError?: (error: unknown) => void;
-
-  onProcessed?: (task: MonitorTask<MonitorTaskDataMap>, status: MonitorTaskStatus) => void;
 }>;
 
 /**

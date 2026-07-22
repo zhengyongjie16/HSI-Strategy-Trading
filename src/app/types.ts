@@ -11,7 +11,6 @@ import type { Quote } from '../types/quote.js';
 import type {
   MarketDataClient,
   OrderRecorder,
-  PostTradeConsistencyFreshReachedEvent,
   PostTradeConsistencyRefreshNeed,
   RawOrderFromAPI,
   RiskChecker,
@@ -131,7 +130,7 @@ export type RunAppDeps = Readonly<{
       quotesMap: ReadonlyMap<string, Quote | null>;
     }>,
   ) => RuntimeSymbolValidationResult;
-  applyStartupSnapshotFailureState: (lastState: LastState, now: Date) => void;
+  applyStartupSnapshotFailureState: (lastState: LastState) => void;
 }>;
 
 /**
@@ -375,7 +374,7 @@ export type LoadStartupSnapshotParams = Readonly<{
   loadTradingDayRuntimeSnapshot: (
     params: LoadTradingDayRuntimeSnapshotParams,
   ) => Promise<LoadTradingDayRuntimeSnapshotResult>;
-  applyStartupSnapshotFailureState: (lastState: LastState, now: Date) => void;
+  applyStartupSnapshotFailureState: (lastState: LastState) => void;
   logger: Pick<Logger, 'error'>;
   formatError: (error: unknown) => string;
 }>;
@@ -570,9 +569,7 @@ export interface PostTradeConsistencyRuntime {
   readonly recordSettlementRefreshNeed: (need: PostTradeConsistencyRefreshNeed) => void;
   readonly getStatus: () => PostTradeConsistencyRuntimeStatus;
   readonly waitForFresh: () => Promise<void>;
-  readonly onFreshReached: (
-    listener: (event: PostTradeConsistencyFreshReachedEvent) => void,
-  ) => Unsubscribe;
+  readonly onFreshReached: (listener: () => void) => Unsubscribe;
   readonly drainFatalError: () => Promise<never>;
   readonly abortWaiting: () => void;
   readonly resetAbort: () => void;

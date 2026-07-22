@@ -222,7 +222,6 @@ export const performVerification = (
   return {
     passed,
     reason: detailParts.join(' | '),
-    failedIndicators: [...allFailedIndicators],
   };
 };
 

@@ -13,12 +13,7 @@ import {
 } from '../../../utils/apiFailure/index.js';
 import type { OrderStateCheckResult } from '../../../types/trader.js';
 import type { OrderStatusQuery, OrderStatusQueryDeps } from './types.js';
-import {
-  extractErrorCode,
-  extractErrorMessage,
-  isRetryableOrderApiError,
-  resolveUpdatedAtMs,
-} from './utils.js';
+import { extractErrorCode, isRetryableOrderApiError, resolveUpdatedAtMs } from './utils.js';
 
 const OPEN_API_ORDER_STATUS_FILLED = 5;
 const OPEN_API_ORDER_STATUS_REJECTED = 14;
@@ -106,9 +101,7 @@ export function createOrderStatusQuery(deps: OrderStatusQueryDeps): OrderStatusQ
 
       return {
         kind: 'QUERY_FAILED',
-        reason: 'NOT_FOUND',
         errorCode,
-        message: extractErrorMessage(error),
       };
     }
   }

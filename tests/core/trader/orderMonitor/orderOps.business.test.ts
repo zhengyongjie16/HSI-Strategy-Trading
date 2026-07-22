@@ -121,9 +121,7 @@ function createReplaceTempBlockedHarness(): {
         stateCheckCalls += 1;
         return {
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'state-check is only valid after four complete backoffs',
         };
       },
     },
@@ -199,9 +197,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -244,6 +240,67 @@ describe('orderMonitor orderOps', () => {
     expect(events).toEqual(['permit', 'invoke', 'permit', 'invoke']);
   });
 
+  it('rechecks signal authorization after the first replace mutation permit is acquired', async () => {
+    const runtime = createRuntimeStore();
+    const tradeContext = createTradeContextMock();
+    let authorized = true;
+    let permitAcquisitionCount = 0;
+    const rateLimiter = {
+      throttle: async (): Promise<void> => {
+        throw new Error('mutation must not use read throttle');
+      },
+      withTradeMutation: async <T>(
+        callback: (permit: MutationPermitDouble) => Promise<T>,
+      ): Promise<T> => {
+        permitAcquisitionCount += 1;
+        authorized = false;
+        return callback({
+          invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> =>
+            operation(),
+        });
+      },
+    };
+    const orderOps = createOrderOps({
+      runtime,
+      monitorConfig: TEST_MONITOR_CONFIG,
+      ctx: createTradeContextDouble(tradeContext),
+      rateLimiter,
+      cacheManager: createCacheManager(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      recordCumulativeExecution: () => {},
+      orderStatusQuery: {
+        checkOrderState: async () => ({
+          kind: 'QUERY_FAILED' as const,
+          errorCode: '603001',
+        }),
+      },
+      triggerRoute: () => {},
+    });
+    orderOps.trackOrder({
+      orderId: 'ORDER-REPLACE-AUTH-REVOKED-AFTER-PERMIT',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 1,
+      initialSubmittedPrice: 1,
+      quantity: 100,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    const outcome = await orderOps.replaceOrderPrice(
+      'ORDER-REPLACE-AUTH-REVOKED-AFTER-PERMIT',
+      1.1,
+      { kind: 'SIGNAL_AUTHORIZED', authorize: () => authorized },
+    );
+
+    expect(permitAcquisitionCount).toBe(1);
+    expect(outcome).toEqual({ kind: 'NOT_EXECUTED' });
+    expect(tradeContext.getCalls('replaceOrder')).toHaveLength(0);
+  });
+
   it('rechecks doomsday cancellation authorization after the queued mutation permit becomes available', async () => {
     const runtime = createRuntimeStore();
     const tradeContext = createTradeContextMock();
@@ -270,9 +327,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -313,9 +368,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: (symbol: string, kind: string) => {
@@ -366,9 +419,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: (symbol: string, kind: string) => {
@@ -411,9 +462,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -455,9 +504,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -495,9 +542,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -537,9 +582,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -612,9 +655,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -663,9 +704,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -718,9 +757,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -773,9 +810,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -827,9 +862,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED' as const,
-          reason: 'NOT_FOUND' as const,
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},
@@ -906,9 +939,7 @@ describe('orderMonitor orderOps', () => {
       orderStatusQuery: {
         checkOrderState: async () => ({
           kind: 'QUERY_FAILED',
-          reason: 'NOT_FOUND',
           errorCode: '603001',
-          message: 'not used in this test',
         }),
       },
       triggerRoute: () => {},

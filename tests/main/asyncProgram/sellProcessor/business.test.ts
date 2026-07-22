@@ -236,8 +236,6 @@ describe('sellProcessor business flow', () => {
     const queue = createSellTaskQueue();
     const processedSignalUpdates = {
       quantity: 300,
-      price: 1.23,
-      lotSize: 100,
       relatedBuyOrderIds: ['buy-order-1'],
       reason: '智能平仓卖出',
     };
@@ -300,8 +298,6 @@ describe('sellProcessor business flow', () => {
 
     const submittedSignal = requireSignal(executedSignal);
     expect(submittedSignal.quantity).toBe(processedSignalUpdates.quantity);
-    expect(submittedSignal.price).toBe(processedSignalUpdates.price);
-    expect(submittedSignal.lotSize).toBe(processedSignalUpdates.lotSize);
     expect(submittedSignal.relatedBuyOrderIds).toEqual(processedSignalUpdates.relatedBuyOrderIds);
     expect(submittedSignal.reason).toBe(processedSignalUpdates.reason);
     expect(signal.quantity).toBeUndefined();
@@ -328,7 +324,7 @@ describe('sellProcessor business flow', () => {
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext: createMonitorContext({
         riskChecker: createRiskCheckerDouble({
-          refreshUnrealizedLossData: async () => ({ r1: 0, n1: 0 }),
+          refreshUnrealizedLossData: async () => {},
         }),
       }),
       dailyLossTracker: {
@@ -345,7 +341,7 @@ describe('sellProcessor business flow', () => {
         restoreProtectionBoundary: () => {},
       },
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -362,7 +358,7 @@ describe('sellProcessor business flow', () => {
         resetAll: () => {},
       },
       mixedTradeLogRepository: {
-        appendCompletionIdempotent: () => 'APPENDED',
+        appendCompletionIdempotent: () => {},
       },
     });
 

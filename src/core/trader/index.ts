@@ -204,10 +204,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
         return orderExecutor.canTradeNow(signalAction);
       },
 
-      fetchAllOrdersFromAPI(
-        forceRefresh: boolean = false,
-      ): Promise<ReadonlyArray<RawOrderFromAPI>> {
-        return orderRecorder.fetchAllOrdersFromAPI(forceRefresh);
+      fetchAllOrdersFromAPI(): Promise<ReadonlyArray<RawOrderFromAPI>> {
+        return orderRecorder.fetchAllOrdersFromAPI();
       },
 
       resetRuntimeState(): void {

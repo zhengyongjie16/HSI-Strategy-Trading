@@ -47,14 +47,12 @@ export type SignalWithCategory = {
 
 /**
  * 信号配置评估结果。
- * 类型用途：描述单次 evaluateSignalConfig 的触发状态、命中条件组索引、命中数量与原因文案。
+ * 类型用途：描述单次 evaluateSignalConfig 的触发状态与原因文案。
  * 使用范围：仅 strategy 模块内部与调用方诊断日志使用。
  * 数据来源：由当前模块的入参、返回值或运行时派生数据提供（如适用）。
  */
 export type EvaluationResult = {
   readonly triggered: boolean;
-  readonly satisfiedGroupIndex: number;
-  readonly satisfiedCount: number;
   readonly reason: string;
 };
 

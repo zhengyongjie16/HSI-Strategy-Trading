@@ -69,11 +69,12 @@ function createOrderMonitorDouble(trackOrder: (params: TrackOrderParams) => void
     trackOrder,
     cancelOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
-      closedReason: 'CANCELED',
-      source: 'API',
       relatedBuyOrderIds: null,
     }),
-    replaceOrderPrice: async () => ({ kind: 'BROKER_CONFIRMED' }),
+    cancelDoomsdayOrder: async () => ({
+      kind: 'CANCEL_CONFIRMED',
+      relatedBuyOrderIds: null,
+    }),
     replaceOrderPriceWithPermit: async () => ({ kind: 'BROKER_CONFIRMED' }),
     startRuntime: () => {},
     stopRuntimeAndDrain: async () => {},
@@ -81,7 +82,7 @@ function createOrderMonitorDouble(trackOrder: (params: TrackOrderParams) => void
     getPendingSellOrders: () => [],
     hasPendingProtectiveLiquidationOrders: () => false,
     clearTrackedOrders: () => {},
-  } as unknown as OrderMonitor;
+  };
 }
 
 function createSubmitFlowFixture(params: SubmitFlowFixtureParams = {}) {
@@ -155,8 +156,6 @@ function createBuySignal() {
   return createSignal({
     symbol: 'BULL.HK',
     action: 'BUYCALL',
-    price: 5,
-    lotSize: 100,
     triggerTimeMs: Date.now(),
     reason: 'submit-flow-error-classification',
   });
@@ -167,8 +166,6 @@ function createSellSignal() {
     ...createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      price: 5,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'submit-flow-local-order-record-failure',
     }),

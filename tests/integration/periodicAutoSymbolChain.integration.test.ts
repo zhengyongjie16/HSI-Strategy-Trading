@@ -14,10 +14,7 @@ import { createTradingGateEventRuntime } from '../../src/main/tradingGateEventRu
 import { initMonitorState } from '../../src/utils/helpers/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
-import type {
-  MonitorTaskDataMap,
-  MonitorTaskStatus,
-} from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/types.js';
 import type { SwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/types.js';
 
@@ -45,7 +42,6 @@ function createLastState(): LastState {
     currentDayKey: '2026-02-16',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
@@ -183,8 +179,6 @@ describe('periodic auto-symbol full chain integration', () => {
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
     });
@@ -234,7 +228,6 @@ describe('periodic auto-symbol full chain integration', () => {
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
-    const statuses: MonitorTaskStatus[] = [];
     const lastState = createLastState();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
@@ -252,9 +245,6 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onProcessed: (_task, status) => {
-        statuses.push(status);
-      },
     });
 
     processor.start();
@@ -273,8 +263,8 @@ describe('periodic auto-symbol full chain integration', () => {
         currentTimeMs: currentNowMs,
       });
 
-      await waitUntil(() => statuses.length > 0);
-      expect(statuses).toEqual(['processed']);
+      await waitUntil(() => monitorTaskQueue.isEmpty());
+      await processor.stopAndDrain();
 
       const seatAfterPeriodicMiss = symbolRegistry.getSeatState('LONG');
       expect(seatAfterPeriodicMiss.status).toBe('EMPTY');
@@ -283,7 +273,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
 
-      statuses.length = 0;
+      processor.restart();
       currentNowMs += 600_000;
 
       schedulePeriodicTick({
@@ -300,7 +290,8 @@ describe('periodic auto-symbol full chain integration', () => {
         currentTimeMs: currentNowMs,
       });
 
-      expect(statuses).toEqual([]);
+      await waitUntil(() => monitorTaskQueue.isEmpty());
+      await processor.stopAndDrain();
 
       const seatAfterAutoSearch = symbolRegistry.getSeatState('LONG');
       expect(seatAfterAutoSearch.status).toBe('EMPTY');
@@ -366,8 +357,6 @@ describe('periodic auto-symbol full chain integration', () => {
       getOrderHoldSymbols: () => new Set(['OLD_BULL.HK']),
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
     });
@@ -418,7 +407,6 @@ describe('periodic auto-symbol full chain integration', () => {
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
-    const statuses: MonitorTaskStatus[] = [];
     const lastState = createLastState();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
@@ -436,9 +424,6 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onProcessed: (_task, status) => {
-        statuses.push(status);
-      },
     });
 
     processor.start();
@@ -457,8 +442,8 @@ describe('periodic auto-symbol full chain integration', () => {
         currentTimeMs: currentNowMs,
       });
 
-      await waitUntil(() => statuses.length > 0);
-      expect(statuses).toEqual(['processed']);
+      await waitUntil(() => monitorTaskQueue.isEmpty());
+      await processor.stopAndDrain();
       const seat = symbolRegistry.getSeatState('LONG');
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
@@ -522,8 +507,6 @@ describe('periodic auto-symbol full chain integration', () => {
       getOrderHoldSymbols: () => new Set(['OLD_BULL.HK']),
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
     });
@@ -574,7 +557,6 @@ describe('periodic auto-symbol full chain integration', () => {
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
-    const statuses: MonitorTaskStatus[] = [];
     const lastState = createLastState();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
@@ -592,9 +574,6 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onProcessed: (_task, status) => {
-        statuses.push(status);
-      },
     });
 
     processor.start();
@@ -613,8 +592,8 @@ describe('periodic auto-symbol full chain integration', () => {
         currentTimeMs: currentNowMs,
       });
 
-      await waitUntil(() => statuses.length > 0);
-      expect(statuses).toEqual(['processed']);
+      await waitUntil(() => monitorTaskQueue.isEmpty());
+      await processor.stopAndDrain();
       const seat = symbolRegistry.getSeatState('LONG');
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
@@ -678,8 +657,6 @@ describe('periodic auto-symbol full chain integration', () => {
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
     });
@@ -730,7 +707,6 @@ describe('periodic auto-symbol full chain integration', () => {
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
     } as unknown as MonitorContext;
-    const statuses: MonitorTaskStatus[] = [];
     const lastState = createLastState();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
@@ -748,9 +724,6 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onProcessed: (_task, status) => {
-        statuses.push(status);
-      },
     });
 
     processor.start();
@@ -769,12 +742,12 @@ describe('periodic auto-symbol full chain integration', () => {
         currentTimeMs: currentNowMs,
       });
 
-      await waitUntil(() => statuses.length > 0);
-      expect(statuses).toEqual(['processed']);
+      await waitUntil(() => monitorTaskQueue.isEmpty());
+      await processor.stopAndDrain();
       expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
       expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
 
-      statuses.length = 0;
+      processor.restart();
       currentNowMs += 60_000; // Day2 09:31 HK
 
       schedulePeriodicTick({
@@ -791,9 +764,9 @@ describe('periodic auto-symbol full chain integration', () => {
         currentTimeMs: currentNowMs,
       });
 
-      await waitUntil(() => statuses.length > 0);
-      expect(statuses).toEqual(['processed']);
+      await waitUntil(() => monitorTaskQueue.isEmpty());
       await waitUntil(() => symbolRegistry.getSeatState('LONG').status === 'ACTIVATING');
+      await processor.stopAndDrain();
 
       const switchingSeat = symbolRegistry.getSeatState('LONG');
       expect(switchingSeat.status).toBe('ACTIVATING');

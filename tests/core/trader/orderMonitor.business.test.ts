@@ -551,45 +551,34 @@ function extractReplaceOrderPrices(
 }
 
 describe('orderMonitor business flow', () => {
-  for (const mutation of ['cancel', 'replace'] as const) {
-    it(`rechecks signal authorization after mutation permit acquisition before ${mutation} API`, async () => {
-      let authorized = true;
-      const { deps, tradeCtx } = createDeps({
-        onMutationPermitAcquired: () => {
-          authorized = false;
-        },
-      });
-      const monitor = createOrderMonitor(deps);
-      monitor.trackOrder({
-        orderId: `SIGNAL-${mutation.toUpperCase()}`,
-        symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        price: 1,
-        initialSubmittedPrice: 1,
-        quantity: 100,
-        isLongSymbol: true,
-        monitorSymbol: 'HSI.HK',
-        isProtectiveLiquidation: false,
-        orderType: OrderType.ELO,
-      });
-
-      await (mutation === 'cancel'
-        ? monitor.cancelOrder('SIGNAL-CANCEL', {
-            kind: 'SIGNAL_AUTHORIZED',
-            authorize: () => authorized,
-          })
-        : monitor.replaceOrderPrice(
-            'SIGNAL-REPLACE',
-            1.01,
-            { kind: 'SIGNAL_AUTHORIZED', authorize: () => authorized },
-            null,
-          ));
-
-      expect(
-        tradeCtx.getCalls(mutation === 'cancel' ? 'cancelOrder' : 'replaceOrder'),
-      ).toHaveLength(0);
+  it('rechecks signal authorization after mutation permit acquisition before cancel API', async () => {
+    let authorized = true;
+    const { deps, tradeCtx } = createDeps({
+      onMutationPermitAcquired: () => {
+        authorized = false;
+      },
     });
-  }
+    const monitor = createOrderMonitor(deps);
+    monitor.trackOrder({
+      orderId: 'SIGNAL-CANCEL',
+      symbol: 'BULL.HK',
+      side: OrderSide.Sell,
+      price: 1,
+      initialSubmittedPrice: 1,
+      quantity: 100,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: OrderType.ELO,
+    });
+
+    await monitor.cancelOrder('SIGNAL-CANCEL', {
+      kind: 'SIGNAL_AUTHORIZED',
+      authorize: () => authorized,
+    });
+
+    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(0);
+  });
 
   it('keeps order-fact public cancel independent from signal authorization', async () => {
     const { deps, tradeCtx } = createDeps();
@@ -4622,7 +4611,7 @@ describe('orderMonitor business flow', () => {
     expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(0);
   });
 
-  it('public replaceOrderPrice 确认保护性 SELL terminal 时立即经终态网关提交 progress 并结算', async () => {
+  it('replaceOrderPriceWithPermit 确认保护性 SELL terminal 时立即经终态网关提交 progress 并结算', async () => {
     const localSellCalls: Array<
       Readonly<{ executedPrice: number; executedQuantity: number; executedTimeMs: number }>
     > = [];
@@ -4696,9 +4685,12 @@ describe('orderMonitor business flow', () => {
       orderType: OrderType.ELO,
     });
 
-    await monitor.replaceOrderPrice('SELL-PUBLIC-REPLACE-TERMINAL-GATEWAY', 1.03, {
-      kind: 'ORDER_FACT',
-    });
+    await monitor.replaceOrderPriceWithPermit(
+      'SELL-PUBLIC-REPLACE-TERMINAL-GATEWAY',
+      1.03,
+      { kind: 'ORDER_FACT' },
+      { invoke: (operation) => operation() },
+    );
 
     expect(persistedOrderIds).toEqual(['SELL-PUBLIC-REPLACE-TERMINAL-GATEWAY']);
     expect(dailyLossCalls).toMatchObject([

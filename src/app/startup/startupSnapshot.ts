@@ -33,7 +33,6 @@ export async function loadStartupSnapshot(
       requireTradingDay: false,
       resetRuntimeSubscriptions: false,
       hydrateCooldownFromTradeLog: true,
-      forceOrderRefresh: false,
     });
 
     return {
@@ -47,7 +46,7 @@ export async function loadStartupSnapshot(
       throw err;
     }
 
-    applyStartupSnapshotFailureState(lastState, now);
+    applyStartupSnapshotFailureState(lastState);
     logger.error('启动快照 API 请求失败：已阻断交易并切换为开盘重建重试模式', formatError(err));
     return {
       kind: 'API_RETRY_PENDING',

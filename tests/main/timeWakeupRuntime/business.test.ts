@@ -45,13 +45,12 @@ type ControlledEvaluationHarness = Readonly<{
 
 function createPlan(nextWakeupAtMs: number | null): TimeWakeupPlan {
   if (nextWakeupAtMs === null) {
-    return { hasWork: false, nextWakeupAtMs: null, candidates: [] };
+    return { hasWork: false, nextWakeupAtMs: null };
   }
 
   return {
     hasWork: true,
     nextWakeupAtMs,
-    candidates: [{ source: 'TRADING_GATE_EDGE', atMs: nextWakeupAtMs }],
   };
 }
 

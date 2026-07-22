@@ -73,8 +73,6 @@ export type SignalFactoryParams = {
   readonly action: SignalType;
   readonly seatVersion?: number;
   readonly triggerTimeMs?: number;
-  readonly price?: number;
-  readonly lotSize?: number;
   readonly reason?: string;
   readonly indicators1?: Readonly<Record<string, number>>;
 };

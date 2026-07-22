@@ -140,7 +140,7 @@ describe('monitorTaskQueue business behavior', () => {
     expect(calls).toBe(2);
   });
 
-  it('removeTasks and clearAll return removed count and call onRemove', () => {
+  it('removeTasks and clearAll return removed count', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
 
     queue.scheduleLatest(
@@ -159,24 +159,12 @@ describe('monitorTaskQueue business behavior', () => {
       }),
     );
 
-    const removedKeys: string[] = [];
-    const removed = queue.removeTasks(
-      (task) => task.data.direction === 'LONG',
-      (task) => {
-        removedKeys.push(task.dedupeKey);
-      },
-    );
+    const removed = queue.removeTasks((task) => task.data.direction === 'LONG');
 
     expect(removed).toBe(1);
-    expect(removedKeys).toEqual(['AUTO_SYMBOL_TICK:LONG:1']);
-
-    const clearedKeys: string[] = [];
-    const cleared = queue.clearAll((task) => {
-      clearedKeys.push(task.dedupeKey);
-    });
+    const cleared = queue.clearAll();
 
     expect(cleared).toBe(1);
-    expect(clearedKeys).toEqual(['AUTO_SYMBOL_TICK:SHORT:2']);
     expect(queue.isEmpty()).toBeTrue();
   });
 
@@ -228,13 +216,9 @@ describe('monitorTaskQueue business behavior', () => {
 
     expect(queue.pop()?.dedupeKey).toBe('AUTO_SYMBOL_TICK:LONG:1');
 
-    const clearedKeys: string[] = [];
-    const cleared = queue.clearAll((task) => {
-      clearedKeys.push(task.dedupeKey);
-    });
+    const cleared = queue.clearAll();
 
     expect(cleared).toBe(1);
-    expect(clearedKeys).toEqual(['AUTO_SYMBOL_TICK:SHORT:2']);
     expect(queue.isEmpty()).toBeTrue();
   });
 });

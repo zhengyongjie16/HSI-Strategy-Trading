@@ -8,7 +8,7 @@
  *
  * 卖出委托价规则（业务约束）：
  * - 限价/增强限价卖单的委托价必须以「执行时行情」为准，不能使用信号生成时的快照价。
- * - 本模块在决定卖出时使用当前 quote，并写回 signal.price，确保 orderExecutor 提交时用的是执行时价格。
+ * - 本模块只计算卖出数量；orderExecutor 在提交前重新获取执行时行情。
  */
 import { logger } from '../../utils/logger/index.js';
 import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/index.js';
@@ -183,8 +183,6 @@ export const processSellSignals = (
         return {
           ...sig,
           quantity,
-          ...(quote?.price !== undefined && { price: quote.price }),
-          ...(quote?.lotSize !== undefined && { lotSize: quote.lotSize }),
         };
       } else {
         logger.warn(`[卖出信号处理] ${signalName}(末日保护): 持仓对象无效，无法清仓`);
@@ -231,8 +229,6 @@ export const processSellSignals = (
       reason: result.reason,
       relatedBuyOrderIds: result.relatedBuyOrderIds,
       quantity: result.quantity,
-      ...(quote?.price !== undefined && { price: quote.price }),
-      ...(quote?.lotSize !== undefined && { lotSize: quote.lotSize }),
     };
   });
 };

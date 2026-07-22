@@ -24,21 +24,15 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
     return mixedTradeLogRepository.loadCompletionRecords(tradingDayKey);
   }
 
-  function hydrate(): ReadonlyMap<'LONG' | 'SHORT', number> {
+  function hydrate(): void {
     const currentTimeMs = nowMs();
     const records = loadCompletionRecords();
-    const latestBoundaryByDirection = new Map<'LONG' | 'SHORT', number>();
     const grouped = new Map<'LONG' | 'SHORT', ProtectiveLiquidationCompletionRecordV1[]>();
     for (const record of records) {
       if (record.monitorSymbol !== monitorConfig.monitorSymbol) {
         throw new Error(
           `[清仓冷却] completion monitorSymbol mismatch: ${record.monitorSymbol} !== ${monitorConfig.monitorSymbol}`,
         );
-      }
-
-      const previousBoundary = latestBoundaryByDirection.get(record.direction);
-      if (previousBoundary === undefined || record.boundaryExecutedTimeMs > previousBoundary) {
-        latestBoundaryByDirection.set(record.direction, record.boundaryExecutedTimeMs);
       }
 
       const group = grouped.get(record.direction);
@@ -91,7 +85,6 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
     }
 
     logger.info(`[清仓冷却] 启动恢复完成，恢复冷却条数=${restoredCooldownCount}`);
-    return latestBoundaryByDirection;
   }
 
   return {

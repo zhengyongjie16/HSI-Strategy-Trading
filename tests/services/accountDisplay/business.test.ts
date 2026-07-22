@@ -29,7 +29,6 @@ const lastState = {
   currentDayKey: null,
   lifecycleState: 'ACTIVE',
   pendingOpenRebuild: false,
-  targetTradingDayKey: null,
   isTradingEnabled: true,
   cachedAccount: {
     currency: 'HKD',

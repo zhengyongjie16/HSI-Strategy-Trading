@@ -75,7 +75,6 @@ function createLastState(): LastState {
     currentDayKey: '2026-04-04',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
@@ -129,7 +128,7 @@ function bindMinimalBusinessDeps(
     liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
     protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
     mixedTradeLogRepository: {
-      appendCompletionIdempotent: () => 'APPENDED',
+      appendCompletionIdempotent: () => {},
     },
   });
 }
@@ -139,11 +138,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const lastState = createLastState();
     let accountRefreshCalls = 0;
     let positionRefreshCalls = 0;
-    const freshEvents: Array<{
-      readonly currentVersion: number;
-      readonly staleVersion: number;
-      readonly trigger: 'REFRESH' | 'REBUILD_BASELINE';
-    }> = [];
+    let freshEventCount = 0;
 
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () =>
@@ -167,8 +162,8 @@ describe('createPostTradeConsistencyRuntime', () => {
       onPositionsCommitted: async () => {},
     });
 
-    runtime.onFreshReached((event) => {
-      freshEvents.push(event);
+    runtime.onFreshReached(() => {
+      freshEventCount += 1;
     });
 
     bindMinimalBusinessDeps(runtime);
@@ -195,13 +190,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     expect(positionRefreshCalls).toBe(1);
     expect(lastState.cachedPositions).toHaveLength(1);
     expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(300);
-    expect(freshEvents).toEqual([
-      {
-        currentVersion: 1,
-        staleVersion: 1,
-        trigger: 'REFRESH',
-      },
-    ]);
+    expect(freshEventCount).toBe(1);
 
     expect(runtime.getStatus()).toEqual({
       started: false,
@@ -387,7 +376,6 @@ describe('createPostTradeConsistencyRuntime', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async (_orderRecorder, symbol) => {
           refreshedSymbols.push(symbol);
-          return { r1: 100, n1: 100 };
         },
       }),
     });
@@ -424,7 +412,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       mixedTradeLogRepository: {
-        appendCompletionIdempotent: () => 'APPENDED',
+        appendCompletionIdempotent: () => {},
       },
     });
 
@@ -500,8 +488,6 @@ describe('createPostTradeConsistencyRuntime', () => {
               frozenTradingDayKey: null,
             });
           }
-
-          return { r1: 100, n1: 100 };
         },
       }),
     });
@@ -520,7 +506,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       mixedTradeLogRepository: {
-        appendCompletionIdempotent: () => 'APPENDED',
+        appendCompletionIdempotent: () => {},
       },
     });
 
@@ -660,88 +646,6 @@ describe('createPostTradeConsistencyRuntime', () => {
     });
   });
 
-  it('fails fast when unrealized loss refresh returns null', async () => {
-    const lastState = createLastState();
-    let riskRefreshCallCount = 0;
-    const monitorContext = createMonitorContextDouble({
-      config: createMonitorConfigDouble({
-        monitorSymbol: 'HSI.HK',
-      }),
-      symbolRegistry: createSymbolRegistryDouble({
-        longSeat: {
-          symbol: 'BULL.HK',
-          status: 'ACTIVE',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-        shortSeat: {
-          symbol: null,
-          status: 'EMPTY',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-      }),
-      riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
-          riskRefreshCallCount += 1;
-          return null;
-        },
-      }),
-    });
-    const runtime = createPostTradeConsistencyRuntime({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(100),
-          getStockPositions: async () => [
-            createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 1,
-              availableQuantity: 1,
-            }),
-          ],
-        }),
-      lastState,
-      onPositionsCommitted: async () => {},
-    });
-
-    runtime.bindBusinessDeps({
-      monitorContext,
-      dailyLossTracker: createDailyLossTrackerDouble(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      mixedTradeLogRepository: {
-        appendCompletionIdempotent: () => 'APPENDED',
-      },
-    });
-
-    runtime.recordSettlementRefreshNeed({
-      refreshAccount: true,
-      refreshPositions: true,
-    });
-
-    runtime.start();
-    let caught: unknown = null;
-    try {
-      await runtime.drainFatalError();
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(TypeError);
-    expect(riskRefreshCallCount).toBe(1);
-    expect(runtime.getStatus()).toEqual({
-      started: false,
-      currentVersion: 0,
-      staleVersion: 1,
-    });
-  });
-
   it('fails fast when unrealized loss refresh hits TypeError and does not schedule retry', async () => {
     const lastState = createLastState();
     let accountCallCount = 0;
@@ -804,7 +708,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       mixedTradeLogRepository: {
-        appendCompletionIdempotent: () => 'APPENDED',
+        appendCompletionIdempotent: () => {},
       },
     });
 
@@ -900,7 +804,6 @@ describe('createPostTradeConsistencyRuntime', () => {
           dailyLossOffset,
         ) => {
           riskRefreshCalls.push({ symbol, isLongSymbol, dailyLossOffset });
-          return { r1: 1, n1: 2 };
         },
       }),
     });
@@ -936,16 +839,11 @@ describe('createPostTradeConsistencyRuntime', () => {
             executedTimeMs: params.executedTimeMs,
             triggerLimit: params.triggerLimit,
           });
-          return {
-            currentCount: 2,
-            cooldownActivated: true,
-          };
         },
       }),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
         getInProgressEpisodes: () => [
           {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             symbol: 'BULL.HK',
             latestExecutedTimeMs: protectiveBoundaryMs,
@@ -953,13 +851,12 @@ describe('createPostTradeConsistencyRuntime', () => {
         ],
         prepareCompletion: () => ({
           direction: 'LONG',
-          symbol: 'BULL.HK',
           boundaryExecutedTimeMs: protectiveBoundaryMs,
         }),
         commitCompletion: () => {},
       }),
       mixedTradeLogRepository: {
-        appendCompletionIdempotent: () => 'APPENDED',
+        appendCompletionIdempotent: () => {},
       },
     });
 
@@ -1022,7 +919,6 @@ describe('createPostTradeConsistencyRuntime', () => {
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
         recordLiquidationTrigger: () => {
           commits.push('cooldown');
-          return { currentCount: 1, cooldownActivated: false };
         },
       }),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
@@ -1031,7 +927,6 @@ describe('createPostTradeConsistencyRuntime', () => {
         ],
         prepareCompletion: () => ({
           direction: 'LONG',
-          symbol: 'BULL.HK',
           boundaryExecutedTimeMs,
         }),
         commitCompletion: () => {
@@ -1123,26 +1018,22 @@ describe('createPostTradeConsistencyRuntime', () => {
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
         protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
         mixedTradeLogRepository: {
-          appendCompletionIdempotent: () => 'APPENDED',
+          appendCompletionIdempotent: () => {},
         },
       });
     }).toThrow('重复归属');
   });
 
   it('completeRebuildBaseline advances freshness only after pending work is cleared and emits rebuild baseline event', () => {
-    const freshEvents: Array<{
-      readonly currentVersion: number;
-      readonly staleVersion: number;
-      readonly trigger: 'REFRESH' | 'REBUILD_BASELINE';
-    }> = [];
+    let freshEventCount = 0;
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () => createTraderDouble(),
       lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
 
-    runtime.onFreshReached((event) => {
-      freshEvents.push(event);
+    runtime.onFreshReached(() => {
+      freshEventCount += 1;
     });
 
     runtime.recordSettlementRefreshNeed({
@@ -1156,18 +1047,12 @@ describe('createPostTradeConsistencyRuntime', () => {
       currentVersion: 0,
       staleVersion: 1,
     });
-    expect(freshEvents).toEqual([]);
+    expect(freshEventCount).toBe(0);
 
     runtime.midnightClear();
     runtime.completeRebuildBaseline();
 
-    expect(freshEvents).toEqual([
-      {
-        currentVersion: 1,
-        staleVersion: 1,
-        trigger: 'REBUILD_BASELINE',
-      },
-    ]);
+    expect(freshEventCount).toBe(1);
 
     expect(runtime.getStatus()).toEqual({
       started: false,
@@ -1207,11 +1092,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const lastState = createLastState();
     const accountRefresh = createDeferred<ReturnType<typeof createAccountSnapshotDouble>>();
     let accountRefreshCalls = 0;
-    const freshEvents: Array<{
-      readonly currentVersion: number;
-      readonly staleVersion: number;
-      readonly trigger: 'REFRESH' | 'REBUILD_BASELINE';
-    }> = [];
+    let freshEventCount = 0;
 
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () =>
@@ -1226,8 +1107,8 @@ describe('createPostTradeConsistencyRuntime', () => {
       onPositionsCommitted: async () => {},
     });
 
-    runtime.onFreshReached((event) => {
-      freshEvents.push(event);
+    runtime.onFreshReached(() => {
+      freshEventCount += 1;
     });
 
     bindMinimalBusinessDeps(runtime);
@@ -1243,7 +1124,7 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     await runtime.stopAndDrain();
 
-    expect(freshEvents).toEqual([]);
+    expect(freshEventCount).toBe(0);
     expect(runtime.getStatus()).toEqual({
       started: false,
       currentVersion: 0,
@@ -1255,11 +1136,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const lastState = createLastState();
     const accountRefresh = createDeferred<ReturnType<typeof createAccountSnapshotDouble>>();
     let accountRefreshCalls = 0;
-    const freshEvents: Array<{
-      readonly currentVersion: number;
-      readonly staleVersion: number;
-      readonly trigger: 'REFRESH' | 'REBUILD_BASELINE';
-    }> = [];
+    let freshEventCount = 0;
 
     const runtime = createPostTradeConsistencyRuntime({
       getTrader: () =>
@@ -1274,8 +1151,8 @@ describe('createPostTradeConsistencyRuntime', () => {
       onPositionsCommitted: async () => {},
     });
 
-    runtime.onFreshReached((event) => {
-      freshEvents.push(event);
+    runtime.onFreshReached(() => {
+      freshEventCount += 1;
     });
 
     bindMinimalBusinessDeps(runtime);
@@ -1294,7 +1171,7 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     await runtime.stopAndDrain();
 
-    expect(freshEvents).toEqual([]);
+    expect(freshEventCount).toBe(0);
     expect(runtime.getStatus()).toEqual({
       started: false,
       currentVersion: 0,
@@ -1344,7 +1221,7 @@ describe('createPostTradeConsistencyRuntime', () => {
         getLossOffset: () => 0,
       }),
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => ({ r1: 1, n1: 2 }),
+        refreshUnrealizedLossData: async () => {},
       }),
     });
 
@@ -1377,16 +1254,11 @@ describe('createPostTradeConsistencyRuntime', () => {
             direction: params.direction,
             executedTimeMs: params.executedTimeMs,
           });
-          return {
-            currentCount: 1,
-            cooldownActivated: false,
-          };
         },
       }),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
         getInProgressEpisodes: () => [
           {
-            monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             symbol: 'BULL.OLD.HK',
             latestExecutedTimeMs: protectiveBoundaryMs,
@@ -1396,13 +1268,12 @@ describe('createPostTradeConsistencyRuntime', () => {
           isDirectionFlat
             ? {
                 direction: 'LONG',
-                symbol: 'BULL.OLD.HK',
                 boundaryExecutedTimeMs: protectiveBoundaryMs,
               }
             : null,
       }),
       mixedTradeLogRepository: {
-        appendCompletionIdempotent: () => 'APPENDED',
+        appendCompletionIdempotent: () => {},
       },
     });
 

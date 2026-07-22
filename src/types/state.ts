@@ -70,9 +70,6 @@ export type LastState = {
   /** 是否待开盘重建 */
   pendingOpenRebuild: boolean;
 
-  /** 目标交易日键（待重建） */
-  targetTradingDayKey: string | null;
-
   /** 生命周期交易门禁（仅 ACTIVE 为 true） */
   isTradingEnabled: boolean;
 

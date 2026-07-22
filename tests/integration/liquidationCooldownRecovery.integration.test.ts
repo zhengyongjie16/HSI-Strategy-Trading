@@ -131,8 +131,14 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     liquidationCooldownTracker: tracker,
   });
 
-  const boundaries = hydrator.hydrate();
-  expect(boundaries.get(params.expectedBoundaryKey)).toBe(executedAtMs);
+  hydrator.hydrate();
+  expect(
+    tracker.getRemainingMs({
+      direction: params.expectedBoundaryKey,
+      cooldownConfig: { mode: 'minutes', minutes: 5 },
+      currentTimeMs: params.nowMs,
+    }),
+  ).toBeGreaterThan(0);
 
   const trader = createTraderDouble({
     getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
@@ -153,16 +159,12 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     symbol: 'BULL.HK',
     action: 'BUYCALL',
     triggerTimeMs: params.nowMs,
-    price: 5,
-    lotSize: 100,
     reason: 'recovery-cooldown-buycall',
   });
   const buyPutSignal = createSignal({
     symbol: 'BEAR.HK',
     action: 'BUYPUT',
     triggerTimeMs: params.nowMs,
-    price: 5,
-    lotSize: 100,
     reason: 'recovery-cooldown-buyput',
   });
 
@@ -221,7 +223,9 @@ describe('liquidation-cooldown-recovery integration', () => {
       liquidationCooldownTracker: tracker,
     });
 
-    expect(() => hydrator.hydrate()).toThrow('monitorSymbol mismatch');
+    expect(() => {
+      hydrator.hydrate();
+    }).toThrow('monitorSymbol mismatch');
   });
 
   it('blocks BUYCALL and BUYPUT after hydrating only LONG cooldown records', async () => {
@@ -298,16 +302,12 @@ describe('liquidation-cooldown-recovery integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
       reason: 'recovery-expired-buycall',
     });
     const buyPutSignal = createSignal({
       symbol: 'BEAR.HK',
       action: 'BUYPUT',
       triggerTimeMs: nowMs,
-      price: 5,
-      lotSize: 100,
       reason: 'recovery-expired-buyput',
     });
 

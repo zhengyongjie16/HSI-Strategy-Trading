@@ -534,9 +534,7 @@ export function createMixedTradeLogRepository(
     return records;
   }
 
-  function appendCompletionIdempotent(
-    input: ProtectiveLiquidationCompletionInput,
-  ): 'APPENDED' | 'UNCHANGED' {
+  function appendCompletionIdempotent(input: ProtectiveLiquidationCompletionInput): void {
     const normalizedRecord = buildCompletionRecord(input);
     const logFile = resolveLogFile(deps.resolveLogRootDir(), normalizedRecord.tradingDayKey);
     const mixedRecords = readMixedRecords(logFile);
@@ -550,12 +548,11 @@ export function createMixedTradeLogRepository(
         );
       }
 
-      return 'UNCHANGED';
+      return;
     }
 
     retainTradeLogs(logFile);
     writeAtomic(logFile, [...mixedRecords, normalizedRecord]);
-    return 'APPENDED';
   }
 
   function loadExecutionProgressRecords(
@@ -577,7 +574,7 @@ export function createMixedTradeLogRepository(
 
   function appendExecutionProgressIdempotent(
     input: ProtectiveLiquidationExecutionProgressInput,
-  ): 'APPENDED' | 'UNCHANGED' {
+  ): void {
     const normalizedRecord = buildExecutionProgressRecord(input);
     const logFile = resolveLogFile(deps.resolveLogRootDir(), normalizedRecord.tradingDayKey);
     const mixedRecords = readMixedRecords(logFile);
@@ -591,12 +588,11 @@ export function createMixedTradeLogRepository(
         );
       }
 
-      return 'UNCHANGED';
+      return;
     }
 
     retainTradeLogs(logFile);
     writeAtomic(logFile, [...mixedRecords, normalizedRecord]);
-    return 'APPENDED';
   }
 
   function appendTradeRecord(record: PersistableTradeRecord): void {

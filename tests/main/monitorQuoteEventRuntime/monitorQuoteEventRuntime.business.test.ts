@@ -195,7 +195,6 @@ function createDefaultStaticLiquidationHarness(): RuntimeHarness &
       }),
       refreshUnrealizedLossData: async () => {
         refreshUnrealizedCalls += 1;
-        return { r1: 100, n1: 100 };
       },
     }),
   });

@@ -1146,7 +1146,7 @@ describe('unrealizedLossMonitor directional execution', () => {
         reason: 'test-liquidation',
         quantity: 1,
       }),
-      refreshUnrealizedLossData: async () => ({ r1: 0, n1: 0 }),
+      refreshUnrealizedLossData: async () => {},
     });
     const monitor = createUnrealizedLossMonitor({
       maxUnrealizedLossPerSymbol: 1,

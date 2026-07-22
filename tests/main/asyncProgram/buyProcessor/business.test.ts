@@ -26,9 +26,8 @@ import {
 } from '../../../helpers/testDoubles.js';
 import { createMonitorContext, runProcessorFlow } from '../utils.js';
 
-async function runBuyPriceLimitScenario(finalQuotePrice: number): Promise<{
+async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
   readonly executeCalls: number;
-  readonly submittedPrices: ReadonlyArray<number | null | undefined>;
   readonly quoteRequests: ReadonlyArray<ReadonlyArray<string>>;
 }> {
   const queue = createBuyTaskQueue();
@@ -46,11 +45,9 @@ async function runBuyPriceLimitScenario(finalQuotePrice: number): Promise<{
     liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
   });
   let executeCalls = 0;
-  const submittedPrices: Array<number | null | undefined> = [];
   const trader = createTraderDouble({
-    executeSignals: async (signals) => {
+    executeSignals: async () => {
       executeCalls += 1;
-      submittedPrices.push(signals[0]?.price);
       return { executedOrderIds: ['EXECUTED-ORDER-1'] };
     },
   });
@@ -63,15 +60,11 @@ async function runBuyPriceLimitScenario(finalQuotePrice: number): Promise<{
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async (symbols) => {
         quoteRequests.push([...symbols]);
-        if (quoteRequests.length === 1) {
-          return new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-            ['BULL.HK', createQuoteDouble('BULL.HK', 0.99, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
-          ]);
-        }
-
-        return new Map([['BULL.HK', createQuoteDouble('BULL.HK', finalQuotePrice, 100)]]);
+        return new Map([
+          ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
+          ['BULL.HK', createQuoteDouble('BULL.HK', riskQuotePrice, 100)],
+          ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+        ]);
       },
     }),
     doomsdayProtection: createDoomsdayProtectionDouble({
@@ -93,28 +86,26 @@ async function runBuyPriceLimitScenario(finalQuotePrice: number): Promise<{
 
   return {
     executeCalls,
-    submittedPrices,
     quoteRequests,
   };
 }
 
 describe('buyProcessor business flow', () => {
-  it('rejects a final buy quote that reaches the latest buy price after risk checks', async () => {
-    const result = await runBuyPriceLimitScenario(1.01);
+  it('rejects a risk-time buy quote that reaches the latest buy price', async () => {
+    const result = await runBuyRiskQuoteScenario(1.01);
 
-    expect(result.quoteRequests).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK'], ['BULL.HK']]);
+    expect(result.quoteRequests).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK']]);
     expect(result.executeCalls).toBe(0);
-    expect(result.submittedPrices).toEqual([]);
   });
 
-  it('submits when both risk-time and final buy quotes remain below the latest buy price', async () => {
-    const result = await runBuyPriceLimitScenario(0.99);
+  it('submits a risk-approved buy signal without a second processor quote read', async () => {
+    const result = await runBuyRiskQuoteScenario(0.99);
 
+    expect(result.quoteRequests).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK']]);
     expect(result.executeCalls).toBe(1);
-    expect(result.submittedPrices).toEqual([0.99]);
   });
 
-  it('runs risk pipeline then executes buy order with execution-time realtime quote price/lotSize', async () => {
+  it('runs the risk pipeline then delegates the buy order after one risk-time quote read', async () => {
     const queue = createBuyTaskQueue();
     const monitorContext = createMonitorContext();
 
@@ -129,19 +120,9 @@ describe('buyProcessor business flow', () => {
     };
 
     let executed = 0;
-    const submittedSnapshotRef: {
-      current: { price: number | null | undefined; lotSize: number | null | undefined } | null;
-    } = {
-      current: null,
-    };
     const trader = createTraderDouble({
-      executeSignals: async (signals: ReadonlyArray<Signal>) => {
+      executeSignals: async (_signals: ReadonlyArray<Signal>) => {
         executed += 1;
-        const first = signals[0];
-        submittedSnapshotRef.current = {
-          price: first?.price,
-          lotSize: first?.lotSize,
-        };
         return { executedOrderIds: ['EXECUTED-ORDER-1'] };
       },
     });
@@ -184,16 +165,11 @@ describe('buyProcessor business flow', () => {
     });
 
     expect(riskCheckCalls).toBe(1);
-    expect(quoteRequests).toHaveLength(2);
+    expect(quoteRequests).toHaveLength(1);
     expect(quoteRequests[0]).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
-    expect(quoteRequests[1]).toEqual(['BULL.HK']);
-    expect(submittedSnapshotRef.current).toEqual({
-      price: 1.1,
-      lotSize: 100,
-    });
   });
 
-  it('drops buy signal when execution-time realtime quote is missing', async () => {
+  it('drops buy signal when the risk-time trade quote is missing', async () => {
     const queue = createBuyTaskQueue();
 
     let riskCalls = 0;
@@ -365,6 +341,12 @@ describe('buyProcessor business flow', () => {
       processSellSignals: () => [],
       applyRiskChecks: async (signals: ReadonlyArray<BuySignal>) => {
         riskCalls += 1;
+        const currentSeat = monitorContext.symbolRegistry.getSeatState('LONG');
+        if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+          throw new Error('expected runtime ACTIVE LONG seat');
+        }
+
+        monitorContext.symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
         return signals;
       },
       resetRiskCheckCooldown: () => {},
@@ -378,30 +360,18 @@ describe('buyProcessor business flow', () => {
       },
     });
 
-    let quoteCalls = 0;
     const processor = createBuyProcessor({
       taskQueue: queue,
       monitorContext,
       signalProcessor: signalProcessor,
       trader,
       marketDataClient: createMarketDataClientDouble({
-        getQuotes: async () => {
-          quoteCalls += 1;
-          if (quoteCalls === 2) {
-            const currentSeat = monitorContext.symbolRegistry.getSeatState('LONG');
-            if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
-              throw new Error('expected runtime ACTIVE LONG seat');
-            }
-
-            monitorContext.symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
-          }
-
-          return new Map([
+        getQuotes: async () =>
+          new Map([
             ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
             ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
             ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
-          ]);
-        },
+          ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
@@ -421,6 +391,7 @@ describe('buyProcessor business flow', () => {
     });
     await Bun.sleep(20);
 
+    expect(riskCalls).toBe(1);
     expect(executeCalls).toBe(0);
   });
 

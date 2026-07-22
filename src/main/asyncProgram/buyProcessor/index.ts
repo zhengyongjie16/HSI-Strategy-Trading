@@ -11,9 +11,9 @@
  *
  * 执行顺序：
  * 1. 从任务队列获取任务
- * 2. 获取监控上下文与执行时 realtime 行情
+ * 2. 获取监控上下文与风险阶段 realtime 行情
  * 3. 执行风险检查（买入信号需要 API 调用）
- * 4. 提交订单执行
+ * 4. 委托 Trader 执行；最终执行行情由 OrderExecutor 在下单边界读取
  */
 import {
   createBaseProcessor,
@@ -42,7 +42,7 @@ import { formatSymbolDisplay } from '../../../utils/display/index.js';
  * 信号处理语义：
  * - 非买入信号（配置或调用错误）仅记录告警并视为已处理，不影响队列
  * - 席位未就绪、席位版本不匹配或席位标的已切换时，仅记录信息日志并安全丢弃信号
- * - 风险检查拦截、行情缺失或 lotSize 无效等场景下，会记录原因并跳过下单，同样视为"正常完成但不下单"，调用方无需重试
+ * - 风险检查拦截或风险阶段行情缺失时，会记录原因并跳过下单，同样视为"正常完成但不下单"，调用方无需重试
  *
  * @param deps 依赖注入（任务队列、唯一 monitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getIsHalfDay、可选 getCanProcessTask）
  * @returns 实现 Processor 接口的买入处理器实例（start/stop/stopAndDrain/restart）
@@ -100,10 +100,10 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         quoteSymbols.push(shortSymbol);
       }
 
-      const executionQuotes = await marketDataClient.getQuotes(quoteSymbols);
-      const longQuote = longSymbol ? (executionQuotes.get(longSymbol) ?? null) : null;
-      const shortQuote = shortSymbol ? (executionQuotes.get(shortSymbol) ?? null) : null;
-      const monitorQuote = executionQuotes.get(monitorSymbol) ?? null;
+      const riskQuotes = await marketDataClient.getQuotes(quoteSymbols);
+      const longQuote = longSymbol ? (riskQuotes.get(longSymbol) ?? null) : null;
+      const shortQuote = shortSymbol ? (riskQuotes.get(shortSymbol) ?? null) : null;
+      const monitorQuote = riskQuotes.get(monitorSymbol) ?? null;
       const requiredTradeQuote = isLongSignal ? longQuote : shortQuote;
       if (!requiredTradeQuote) {
         logger.warn(`[BuyProcessor] 买入标的行情缺失，跳过: ${symbolDisplay}`);

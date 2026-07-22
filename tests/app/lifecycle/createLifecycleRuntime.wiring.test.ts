@@ -162,7 +162,6 @@ function createLastState(): LastState {
     currentDayKey: '2026-03-09',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
@@ -214,10 +213,7 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
     },
     postGateRuntime: {
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({
-          currentCount: 1,
-          cooldownActivated: false,
-        }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,

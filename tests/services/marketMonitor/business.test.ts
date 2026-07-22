@@ -129,9 +129,7 @@ describe('marketMonitor renderer', () => {
         quote: createQuoteDouble('BULL.HK', 1.23),
       },
       tradingSymbol: 'BULL.HK',
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
-      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
       displayInfo: {
         warrantDistanceInfo: createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
@@ -165,9 +163,7 @@ describe('marketMonitor renderer', () => {
         quote: createQuoteDouble('BULL.HK', 1.23),
       },
       tradingSymbol: 'OTHER.HK',
-      monitorSymbol: 'HSI.HK',
       direction: 'LONG',
-      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
       displayInfo: null,
     });
 

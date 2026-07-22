@@ -40,7 +40,7 @@ describe('tradeLogHydrator business flow', () => {
       },
     });
 
-    expect(hydrator.hydrate().get('LONG')).toBe(second);
+    hydrator.hydrate();
     expect(
       tracker.getRemainingMs({
         direction: 'LONG',
@@ -65,6 +65,8 @@ describe('tradeLogHydrator business flow', () => {
       },
     });
 
-    expect(() => hydrator.hydrate()).toThrow(/monitorSymbol mismatch/);
+    expect(() => {
+      hydrator.hydrate();
+    }).toThrow(/monitorSymbol mismatch/);
   });
 });

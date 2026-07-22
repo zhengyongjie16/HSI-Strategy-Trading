@@ -38,7 +38,6 @@ type CompleteIfEligibleParams = Readonly<{
  */
 export type PreparedProtectiveLiquidationCompletion = Readonly<{
   direction: ProtectiveLiquidationDirection;
-  symbol: string;
   boundaryExecutedTimeMs: number;
 }>;
 

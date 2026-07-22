@@ -5,18 +5,13 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { planNextTimeWakeup } from '../../../src/main/timeWakeupPlanner/index.js';
-import type { TimeWakeupCandidate } from '../../../src/main/timeWakeupPlanner/types.js';
 
 describe('TimeWakeupPlanner', () => {
   it('从多个系统级未来候选中选择严格大于 nowMs 的最早时间', () => {
     const nowMs = 1_000;
     const plan = planNextTimeWakeup({
       nowMs,
-      candidates: [
-        { source: 'DOOMSDAY_RETRY', atMs: 3_000 },
-        { source: 'LIFECYCLE_RETRY', atMs: 1_500 },
-        { source: 'TRADING_GATE_EDGE', atMs: 2_000 },
-      ],
+      candidates: [{ atMs: 3_000 }, { atMs: 1_500 }, { atMs: 2_000 }],
     });
 
     expect(plan.hasWork).toBe(true);
@@ -26,17 +21,12 @@ describe('TimeWakeupPlanner', () => {
   it('过滤 atMs 小于或等于 nowMs 的候选', () => {
     const plan = planNextTimeWakeup({
       nowMs: 1_000,
-      candidates: [
-        { source: 'LIFECYCLE_RETRY', atMs: 999 },
-        { source: 'DOOMSDAY_RETRY', atMs: 1_000 },
-        { source: 'OPEN_PROTECTION_EDGE', atMs: 1_001 },
-      ],
+      candidates: [{ atMs: 999 }, { atMs: 1_000 }, { atMs: 1_001 }],
     });
 
     expect(plan).toEqual({
       hasWork: true,
       nextWakeupAtMs: 1_001,
-      candidates: [{ source: 'OPEN_PROTECTION_EDGE', atMs: 1_001 }],
     });
   });
 
@@ -44,58 +34,28 @@ describe('TimeWakeupPlanner', () => {
     const plan = planNextTimeWakeup({
       nowMs: 1_000,
       candidates: [
-        { source: 'LIFECYCLE_RETRY', atMs: Number.NaN },
-        { source: 'DOOMSDAY_RETRY', atMs: Number.POSITIVE_INFINITY },
-        { source: 'TRADING_GATE_EDGE', atMs: Number.NEGATIVE_INFINITY },
-        { source: 'MARKET_CLOSE_EDGE', atMs: 2_000 },
+        { atMs: Number.NaN },
+        { atMs: Number.POSITIVE_INFINITY },
+        { atMs: Number.NEGATIVE_INFINITY },
+        { atMs: 2_000 },
       ],
     });
 
     expect(plan).toEqual({
       hasWork: true,
       nextWakeupAtMs: 2_000,
-      candidates: [{ source: 'MARKET_CLOSE_EDGE', atMs: 2_000 }],
     });
   });
 
   it('无有效未来候选时返回 no-work 结果', () => {
     const plan = planNextTimeWakeup({
       nowMs: 1_000,
-      candidates: [
-        { source: 'LIFECYCLE_RETRY', atMs: 500 },
-        { source: 'DOOMSDAY_RETRY', atMs: Number.NaN },
-      ],
+      candidates: [{ atMs: 500 }, { atMs: Number.NaN }],
     });
 
     expect(plan).toEqual({
       hasWork: false,
       nextWakeupAtMs: null,
-      candidates: [],
-    });
-  });
-
-  it('返回的 candidates 只包含有效未来候选并按 atMs 升序排列', () => {
-    const candidates: ReadonlyArray<TimeWakeupCandidate> = [
-      { source: 'MARKET_CLOSE_EDGE', atMs: 5_000 },
-      { source: 'OPEN_PROTECTION_EDGE', atMs: 2_000 },
-      { source: 'DOOMSDAY_RETRY', atMs: 1_500 },
-      { source: 'TRADING_GATE_EDGE', atMs: 1_000 },
-      { source: 'LIFECYCLE_RETRY', atMs: Number.POSITIVE_INFINITY },
-    ];
-
-    const plan = planNextTimeWakeup({
-      nowMs: 1_000,
-      candidates,
-    });
-
-    expect(plan).toEqual({
-      hasWork: true,
-      nextWakeupAtMs: 1_500,
-      candidates: [
-        { source: 'DOOMSDAY_RETRY', atMs: 1_500 },
-        { source: 'OPEN_PROTECTION_EDGE', atMs: 2_000 },
-        { source: 'MARKET_CLOSE_EDGE', atMs: 5_000 },
-      ],
     });
   });
 });

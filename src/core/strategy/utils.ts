@@ -124,7 +124,7 @@ export function validateIndicatorsForAction(params: {
  *
  * @param state 指标状态（ema、rsi、psy、mfi、kdj 等）
  * @param signalConfig 信号配置（conditionGroups）
- * @returns 评估结果（triggered、satisfiedGroupIndex、satisfiedCount、reason）
+ * @returns 评估结果（triggered、reason）
  */
 export function evaluateSignalConfig(
   state: IndicatorState,
@@ -133,8 +133,6 @@ export function evaluateSignalConfig(
   if (!signalConfig?.conditionGroups) {
     return {
       triggered: false,
-      satisfiedGroupIndex: -1,
-      satisfiedCount: 0,
       reason: '无效的信号配置',
     };
   }
@@ -154,8 +152,6 @@ export function evaluateSignalConfig(
 
       return {
         triggered: true,
-        satisfiedGroupIndex: index,
-        satisfiedCount: result.count,
         reason,
       };
     }
@@ -163,8 +159,6 @@ export function evaluateSignalConfig(
 
   return {
     triggered: false,
-    satisfiedGroupIndex: -1,
-    satisfiedCount: 0,
     reason: '未满足任何条件组',
   };
 }

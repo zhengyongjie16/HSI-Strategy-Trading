@@ -11,11 +11,7 @@ import { API } from '../../constants/index.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { MonitorContext } from '../../types/state.js';
-import type {
-  PostTradeConsistencyFreshReachedEvent,
-  PostTradeConsistencyRefreshNeed,
-  Trader,
-} from '../../types/services.js';
+import type { PostTradeConsistencyRefreshNeed, Trader } from '../../types/services.js';
 import { formatError, toError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { logger } from '../../utils/logger/index.js';
@@ -255,16 +251,13 @@ async function refreshAttributedUnrealizedLossData(
     const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(direction);
 
     try {
-      const refreshResult = await monitorContext.riskChecker.refreshUnrealizedLossData(
+      await monitorContext.riskChecker.refreshUnrealizedLossData(
         monitorContext.orderRecorder,
         symbol,
         isLongSymbol,
         null,
         dailyLossOffset,
       );
-      if (refreshResult === null) {
-        throw new TypeError(`[PostTradeConsistencyRuntime] 浮亏缓存刷新返回 null: ${symbol}`);
-      }
     } catch (error) {
       if (!isExternalApiRequestError(error)) {
         throw error;
@@ -320,7 +313,7 @@ export function createPostTradeConsistencyRuntime(
   let drainResolve: (() => void) | null = null;
   let fatalError: Error | null = null;
   const fatalRejectors = new Set<(error: Error) => void>();
-  const freshReachedListeners = new Set<(event: PostTradeConsistencyFreshReachedEvent) => void>();
+  const freshReachedListeners = new Set<() => void>();
 
   /**
    * 获取已绑定的业务依赖；缺失时立即失败。
@@ -452,7 +445,7 @@ export function createPostTradeConsistencyRuntime(
         const gateStatus = refreshGate.getStatus();
         if (gateStatus.abortReason !== 'STOP_AND_DRAIN') {
           refreshGate.markFresh(targetVersion);
-          emitFreshReached('REFRESH');
+          emitFreshReached();
         }
       } else {
         pendingNeed = mergeRefreshNeed(need, pendingNeed);
@@ -476,19 +469,10 @@ export function createPostTradeConsistencyRuntime(
 
   /**
    * 广播 fresh reached 事件。
-   *
-   * @param trigger 当前 fresh 推进来源
    */
-  function emitFreshReached(trigger: PostTradeConsistencyFreshReachedEvent['trigger']): void {
-    const { currentVersion, staleVersion } = refreshGate.getStatus();
-    const event: PostTradeConsistencyFreshReachedEvent = {
-      currentVersion,
-      staleVersion,
-      trigger,
-    };
-
+  function emitFreshReached(): void {
     for (const listener of freshReachedListeners) {
-      listener(event);
+      listener();
     }
   }
 
@@ -558,9 +542,7 @@ export function createPostTradeConsistencyRuntime(
    * @param listener 监听器
    * @returns 取消订阅函数
    */
-  function onFreshReached(
-    listener: (event: PostTradeConsistencyFreshReachedEvent) => void,
-  ): () => void {
+  function onFreshReached(listener: () => void): () => void {
     freshReachedListeners.add(listener);
     return () => {
       freshReachedListeners.delete(listener);
@@ -672,7 +654,7 @@ export function createPostTradeConsistencyRuntime(
 
     const { staleVersion } = refreshGate.getStatus();
     refreshGate.markFresh(staleVersion);
-    emitFreshReached('REBUILD_BASELINE');
+    emitFreshReached();
   }
 
   return {

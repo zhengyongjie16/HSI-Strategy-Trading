@@ -25,9 +25,9 @@ import {
 import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
 import { ORDER_QUOTE_RETRY, PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import type { PeriodicSwitchPendingState } from '../../../src/types/monitorContextPorts.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type {
+  PeriodicSwitchInternalPendingState,
   SwitchStateMachineDeps,
   SwitchState,
   SwitchSuppression,
@@ -139,8 +139,11 @@ function createSwitchSuppressionsMap(): Map<'LONG' | 'SHORT', SwitchSuppression>
   return new Map<'LONG' | 'SHORT', SwitchSuppression>();
 }
 
-function createPeriodicSwitchPendingMap(): Map<'LONG' | 'SHORT', PeriodicSwitchPendingState> {
-  return new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
+function createPeriodicSwitchPendingMap(): Map<
+  'LONG' | 'SHORT',
+  PeriodicSwitchInternalPendingState
+> {
+  return new Map<'LONG' | 'SHORT', PeriodicSwitchInternalPendingState>();
 }
 
 function createDeferred<T = void>(): {
@@ -532,8 +535,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           cancelCalls += 1;
           return {
             kind: 'CANCEL_CONFIRMED',
-            closedReason: 'CANCELED',
-            source: 'API',
             relatedBuyOrderIds: null,
           };
         },
@@ -1932,7 +1933,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       cancelOrder: async () => ({
         kind: 'UNKNOWN_FAILURE',
         errorCode: null,
-        message: 'simulated cancel failure',
       }),
       executeSignals: async () => {
         executeCalls += 1;
@@ -2046,8 +2046,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
       executeSignals: async () => {
@@ -2194,7 +2192,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'FILLED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2331,7 +2328,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'FILLED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2461,7 +2457,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'FILLED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,

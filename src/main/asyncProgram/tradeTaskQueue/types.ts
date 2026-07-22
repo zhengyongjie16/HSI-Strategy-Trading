@@ -38,27 +38,21 @@ type TaskSignal<TType extends string> = TType extends BuyTaskType
 
 /**
  * 通用任务类型（队列元素）。
- * 类型用途：买卖任务队列中的单项，携带 id、type、data（按任务类型约束的 Signal）、createdAt；泛型 TType 为 BuyTaskType 或 SellTaskType。
- * 数据来源：由调用方通过 TaskQueue.push() 入队（id、createdAt 由队列生成），由处理器 pop() 消费。
+ * 类型用途：买卖任务队列中的单项，携带 type 与按任务类型约束的 Signal。
+ * 数据来源：由调用方通过 TaskQueue.push() 入队，由处理器 pop() 消费。
  * 使用范围：tradeTaskQueue、buyProcessor、sellProcessor、业务 runtime 等，仅内部使用。
  */
 export type Task<TType extends string> = {
-  /** 任务唯一标识（UUID） */
-  readonly id: string;
-
   /** 任务类型 */
   readonly type: TType;
 
   /** 任务数据（信号对象） */
   readonly data: TaskSignal<TType>;
-
-  /** 任务创建时间戳（毫秒） */
-  readonly createdAt: number;
 };
 
 /**
  * 任务入队负载类型。
- * 类型用途：描述调用方传入 TaskQueue.push() 的单 monitor 任务负载，仅包含业务决定的 type 与 data；id、createdAt 由队列内部生成。
+ * 类型用途：描述调用方传入 TaskQueue.push() 的任务负载。
  * 数据来源：由 signal pipeline、延迟验证回调等调用方构造并传入 push()。
  * 使用范围：tradeTaskQueue、buyProcessor、sellProcessor、业务 runtime 等，仅内部使用。
  */
@@ -77,7 +71,7 @@ export type TaskInput<TType extends string> = {
  * 使用范围：业务 runtime、buyProcessor、sellProcessor、signal pipeline、lifecycle 等，仅内部使用。
  */
 export interface TaskQueue<TType extends string> {
-  /** 入队任务（自动生成 id 和 createdAt） */
+  /** 入队任务 */
   push: (task: TaskInput<TType>) => void;
 
   /** 出队任务（返回并移除队首） */
@@ -87,13 +81,10 @@ export interface TaskQueue<TType extends string> {
   isEmpty: () => boolean;
 
   /** 按条件移除任务，返回移除数量 */
-  removeTasks: (
-    predicate: (task: Task<TType>) => boolean,
-    onRemove?: (task: Task<TType>) => void,
-  ) => number;
+  removeTasks: (predicate: (task: Task<TType>) => boolean) => number;
 
   /** 清空全部任务，返回移除数量 */
-  clearAll: (onRemove?: (task: Task<TType>) => void) => number;
+  clearAll: () => number;
 
   /** 注册任务添加回调，返回注销函数 */
   onTaskAdded: (callback: TaskAddedCallback) => () => void;

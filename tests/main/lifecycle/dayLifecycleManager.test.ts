@@ -26,7 +26,6 @@ function createMutableState(overrides?: Partial<LifecycleMutableState>): Lifecyc
     currentDayKey: null,
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     ...overrides,
   };
@@ -111,7 +110,6 @@ describe('createDayLifecycleManager', () => {
       expect(mutableState.lifecycleState).toBe('MIDNIGHT_CLEANED');
       expect(mutableState.pendingOpenRebuild).toBe(true);
       expect(mutableState.currentDayKey).toBe('2025-02-15');
-      expect(mutableState.targetTradingDayKey).toBe('2025-02-15');
       expect(mutableState.isTradingEnabled).toBe(false);
       expect(order).toEqual(['1-2025-02-15', '2-2025-02-15']);
     });
@@ -397,7 +395,6 @@ describe('createDayLifecycleManager', () => {
 
       expect(mutableState.lifecycleState).toBe('ACTIVE');
       expect(mutableState.pendingOpenRebuild).toBe(false);
-      expect(mutableState.targetTradingDayKey).toBe(null);
       expect(mutableState.isTradingEnabled).toBe(true);
       expect(order).toEqual(['C', 'B', 'A']);
     });
@@ -612,7 +609,6 @@ describe('createDayLifecycleManager', () => {
         currentDayKey: '2026-04-29',
         pendingOpenRebuild: true,
         lifecycleState: 'MIDNIGHT_CLEANED',
-        targetTradingDayKey: '2026-04-29',
         isTradingEnabled: false,
       });
       const order: string[] = [];
@@ -709,7 +705,6 @@ describe('createDayLifecycleManager', () => {
         currentDayKey: '2026-04-29',
         lifecycleState: 'MIDNIGHT_CLEANED',
         pendingOpenRebuild: true,
-        targetTradingDayKey: '2026-04-29',
         isTradingEnabled: false,
       });
       const manager = createDayLifecycleManager({
@@ -748,7 +743,6 @@ describe('createDayLifecycleManager', () => {
         currentDayKey: '2026-04-29',
         lifecycleState: 'OPEN_REBUILD_FAILED',
         pendingOpenRebuild: false,
-        targetTradingDayKey: null,
         isTradingEnabled: false,
       });
       const manager = createDayLifecycleManager({

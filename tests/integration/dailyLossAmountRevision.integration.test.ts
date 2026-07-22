@@ -68,7 +68,6 @@ function createLastState(): LastState {
     currentDayKey: '2026-07-11',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
@@ -326,7 +325,7 @@ describe('DailyLoss protective amount revision integration', () => {
       orderRecorder,
       dailyLossTracker,
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => ({ r1: 1, n1: 1 }),
+        refreshUnrealizedLossData: async () => {},
       }),
     });
     postTradeConsistencyRuntime.bindBusinessDeps({
@@ -337,7 +336,6 @@ describe('DailyLoss protective amount revision integration', () => {
       mixedTradeLogRepository: {
         appendCompletionIdempotent: (completion) => {
           completionBoundaryMs.push(completion.boundaryExecutedTimeMs);
-          return 'APPENDED';
         },
       },
     });

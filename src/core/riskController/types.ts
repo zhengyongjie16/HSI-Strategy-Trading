@@ -5,7 +5,6 @@ import type { Quote } from '../../types/quote.js';
 import type {
   MarketDataClient,
   OrderRecorder,
-  OrderRecord,
   RawOrderFromAPI,
   BullBearWarrantType,
   RiskCheckResult,
@@ -28,7 +27,6 @@ export type WarrantInfo =
       readonly isWarrant: true;
       readonly warrantType: BullBearWarrantType;
       readonly callPrice: number | null;
-      readonly category: number | string;
       readonly symbol: string;
     };
 
@@ -103,7 +101,7 @@ export interface UnrealizedLossChecker {
     isLongSymbol: boolean,
     quote?: Quote | null,
     dailyLossOffset?: number,
-  ) => Promise<{ r1: number; n1: number } | null>;
+  ) => Promise<void>;
   check: (symbol: string, currentPrice: number, isLongSymbol: boolean) => UnrealizedLossCheckResult;
 }
 
@@ -150,9 +148,6 @@ export type RiskCheckerDeps = {
  * 使用范围：仅 riskController 模块内部使用。
  */
 export type DailyLossState = {
-  readonly buyOrders: ReadonlyArray<OrderRecord>;
-  readonly sellOrders: ReadonlyArray<OrderRecord>;
-
   /** 当日偏移仅记录亏损，盈利按 0 处理，因此该值始终 <= 0 */
   readonly dailyLossOffset: number;
 };
@@ -242,7 +237,6 @@ export type DailyLossDirectionStates = Readonly<{
  * 使用范围：仅 riskController 模块内部使用（诊断与日志）。
  */
 export type OrderOwnershipDiagnosticSample = {
-  readonly orderId: string;
   readonly symbol: string;
   readonly stockName: string;
 };
@@ -254,8 +248,6 @@ export type OrderOwnershipDiagnosticSample = {
  * 使用范围：仅 riskController 模块内部使用。
  */
 export type OrderOwnershipDiagnostics = {
-  readonly dayKey: string;
-  readonly totalFilled: number;
   readonly inDayFilled: number;
   readonly unmatchedFilled: number;
   readonly unmatchedSamples: ReadonlyArray<OrderOwnershipDiagnosticSample>;

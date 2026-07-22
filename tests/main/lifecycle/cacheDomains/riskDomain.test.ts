@@ -63,7 +63,7 @@ describe('createRiskDomain', () => {
       restoreProtectionBoundary: () => {},
     } as unknown as DailyLossTracker;
     const liquidationCooldownTracker: LiquidationCooldownTracker = {
-      recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+      recordLiquidationTrigger: () => {},
       recordCooldown: () => {},
       restoreTriggerCount: () => {},
       getRemainingMs: () => 0,
@@ -116,7 +116,7 @@ describe('createRiskDomain', () => {
       } as never,
     });
     const liquidationCooldownTracker: LiquidationCooldownTracker = {
-      recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+      recordLiquidationTrigger: () => {},
       recordCooldown: () => {},
       restoreTriggerCount: () => {},
       getRemainingMs: () => 0,
@@ -168,7 +168,7 @@ describe('createRiskDomain', () => {
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       monitorContext: createMonitorContextDouble(),
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,

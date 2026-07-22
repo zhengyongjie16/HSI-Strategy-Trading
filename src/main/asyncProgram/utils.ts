@@ -109,8 +109,7 @@ export function registerTaskAddedCallback(
 export function createBaseProcessor<TType extends string>(
   config: BaseProcessorConfig<TType>,
 ): Processor {
-  const { loggerPrefix, taskQueue, processTask, validateTask, getCanProcessTask, onFatalError } =
-    config;
+  const { loggerPrefix, taskQueue, processTask, getCanProcessTask, onFatalError } = config;
   let running = false;
   let immediateHandle: ReturnType<typeof setImmediate> | null = null;
   let inFlightPromise: Promise<void> | null = null;
@@ -126,7 +125,6 @@ export function createBaseProcessor<TType extends string>(
       const task = taskQueue.pop();
       if (!task) break;
 
-      validateTask?.(task);
       const canProcess = getCanProcessTask ? getCanProcessTask() : true;
       if (!canProcess) {
         continue;

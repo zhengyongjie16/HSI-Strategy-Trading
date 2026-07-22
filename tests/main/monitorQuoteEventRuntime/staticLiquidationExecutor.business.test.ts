@@ -197,7 +197,6 @@ function createExecutorHarness(
       refreshUnrealizedLossData: async (_orderRecorder, symbol) => {
         refreshUnrealizedCalls += 1;
         refreshedSymbols.push(symbol);
-        return { r1: 100, n1: 100 };
       },
     }),
   });

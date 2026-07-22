@@ -28,7 +28,6 @@ describe('createGlobalStateDomain', () => {
       currentDayKey: null,
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
-      targetTradingDayKey: null,
       isTradingEnabled: true,
       cachedAccount: createAccountSnapshotDouble(100000),
       cachedPositions: [
@@ -99,7 +98,6 @@ describe('createGlobalStateDomain', () => {
       currentDayKey: null,
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
-      targetTradingDayKey: null,
       isTradingEnabled: true,
       cachedAccount: createAccountSnapshotDouble(100000),
       cachedPositions: [],
@@ -134,7 +132,6 @@ describe('createGlobalStateDomain', () => {
       currentDayKey: null,
       lifecycleState: 'MIDNIGHT_CLEANED',
       pendingOpenRebuild: true,
-      targetTradingDayKey: null,
       isTradingEnabled: false,
       cachedAccount: null,
       cachedPositions: [],

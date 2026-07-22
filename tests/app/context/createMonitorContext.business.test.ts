@@ -116,7 +116,6 @@ function createRuntime(
       currentDayKey: '2026-03-23',
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
-      targetTradingDayKey: null,
       isTradingEnabled: true,
       cachedAccount: null,
       cachedPositions: [],

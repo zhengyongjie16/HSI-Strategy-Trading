@@ -11,7 +11,6 @@ import type {
   LiquidationCooldownTrackerDeps,
   RecordCooldownParams,
   RecordLiquidationTriggerParams,
-  RecordLiquidationTriggerResult,
   RestoreTriggerCountParams,
 } from './types.js';
 import { resolveCooldownEndMs } from './utils.js';
@@ -57,17 +56,14 @@ export function createLiquidationCooldownTracker(
     executedTimeMs,
     triggerLimit,
     cooldownConfig,
-  }: RecordLiquidationTriggerParams): RecordLiquidationTriggerResult {
+  }: RecordLiquidationTriggerParams): void {
     if (
       !Number.isFinite(executedTimeMs) ||
       executedTimeMs <= 0 ||
       !Number.isInteger(triggerLimit) ||
       triggerLimit <= 0
     ) {
-      return {
-        currentCount: 0,
-        cooldownActivated: false,
-      };
+      return;
     }
 
     const key = buildDirectionCooldownKey(direction);
@@ -87,11 +83,7 @@ export function createLiquidationCooldownTracker(
           Number.isFinite(previousCooldownEndMs) &&
           executedTimeMs < previousCooldownEndMs
         ) {
-          const currentCount = triggerCountMap.get(key) ?? 0;
-          return {
-            currentCount,
-            cooldownActivated: false,
-          };
+          return;
         }
 
         cooldownMap.delete(key);
@@ -105,16 +97,7 @@ export function createLiquidationCooldownTracker(
 
     if (currentCount >= triggerLimit) {
       cooldownMap.set(key, executedTimeMs);
-      return {
-        currentCount,
-        cooldownActivated: true,
-      };
     }
-
-    return {
-      currentCount,
-      cooldownActivated: false,
-    };
   }
 
   /** 恢复触发计数器，用于启动时从成交日志恢复当前周期计数。 */

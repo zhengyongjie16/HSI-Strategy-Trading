@@ -33,7 +33,6 @@ export type LifecycleMutableState = {
   currentDayKey: string | null;
   lifecycleState: LifecycleState;
   pendingOpenRebuild: boolean;
-  targetTradingDayKey: string | null;
   isTradingEnabled: boolean;
 };
 
@@ -136,7 +135,6 @@ export type LoadTradingDayRuntimeSnapshotParams = Readonly<{
   requireTradingDay: boolean;
   resetRuntimeSubscriptions: boolean;
   hydrateCooldownFromTradeLog: boolean;
-  forceOrderRefresh: boolean;
 }>;
 
 /**

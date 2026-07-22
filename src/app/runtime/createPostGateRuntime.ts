@@ -260,7 +260,6 @@ function createPostGateRuntimeFactory(
       currentDayKey: initialDayKey,
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
-      targetTradingDayKey: null,
       isTradingEnabled: true,
       cachedAccount: null,
       cachedPositions: [],
@@ -580,8 +579,9 @@ function createPostGateRuntimeFactory(
           orderRecorder: monitorContext.orderRecorder,
         });
         marketMonitor.renderTradingQuote({
-          ...renderParams,
-          monitorSymbol: monitorContext.config.monitorSymbol,
+          event: renderParams.event,
+          tradingSymbol: renderParams.tradingSymbol,
+          direction: renderParams.direction,
           displayInfo,
         });
       },

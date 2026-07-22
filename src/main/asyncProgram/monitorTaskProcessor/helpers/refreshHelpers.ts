@@ -35,7 +35,7 @@ export function createRefreshHelpers({
    * @returns 当前时点的全量订单列表
    */
   async function ensureAllOrders(): Promise<ReadonlyArray<RawOrderFromAPI>> {
-    return trader.orderRecorder.fetchAllOrdersFromAPI(true);
+    return trader.orderRecorder.fetchAllOrdersFromAPI();
   }
 
   /**

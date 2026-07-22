@@ -23,7 +23,6 @@ function createLastState(): LastState {
     currentDayKey: '2026-04-10',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],

@@ -8,7 +8,6 @@
  * - 按条件移除任务
  * - 任务添加回调（用于触发处理器）
  */
-import { randomUUID } from 'node:crypto';
 import { notifyTaskAddedCallbacks, registerTaskAddedCallback } from '../utils.js';
 import type {
   Task,
@@ -48,10 +47,8 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
   return {
     push(task: TaskInput<TType>): void {
       const fullTask: Task<TType> = {
-        id: randomUUID(),
         type: task.type,
         data: task.data,
-        createdAt: Date.now(),
       };
       items.push(fullTask);
       notifyTaskAddedCallbacks(callbacks);
@@ -74,12 +71,9 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
       return headIndex >= items.length;
     },
 
-    removeTasks(
-      predicate: (task: Task<TType>) => boolean,
-      onRemove?: (task: Task<TType>) => void,
-    ): number {
+    removeTasks(predicate: (task: Task<TType>) => boolean): number {
       const nextItems: Task<TType>[] = [];
-      const removedTasks: Task<TType>[] = [];
+      let removedCount = 0;
 
       for (let index = headIndex; index < items.length; index += 1) {
         const task = items[index];
@@ -88,28 +82,20 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
         }
 
         if (predicate(task)) {
-          removedTasks.push(task);
+          removedCount += 1;
           continue;
         }
 
         nextItems.push(task);
       }
 
-      for (const task of removedTasks) {
-        onRemove?.(task);
-      }
-
       items = nextItems;
       headIndex = 0;
-      return removedTasks.length;
+      return removedCount;
     },
 
-    clearAll(onRemove?: (task: Task<TType>) => void): number {
+    clearAll(): number {
       const activeItems = items.slice(headIndex);
-      for (const task of activeItems) {
-        onRemove?.(task);
-      }
-
       items = [];
       headIndex = 0;
       return activeItems.length;

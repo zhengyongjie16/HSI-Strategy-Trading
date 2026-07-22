@@ -204,8 +204,6 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
     },
     cancelOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
-      closedReason: 'CANCELED',
-      source: 'API',
       relatedBuyOrderIds: null,
     }),
     settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
@@ -220,7 +218,7 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
   let caught: unknown = null;
 
   try {
-    const allOrders = await orderRecorder.fetchAllOrdersFromAPI(true);
+    const allOrders = await orderRecorder.fetchAllOrdersFromAPI();
     await recoveryFlow.recoverOrderTrackingFromSnapshot(allOrders);
   } catch (error) {
     caught = error;
@@ -272,8 +270,6 @@ describe('orderMonitor recoveryFlow', () => {
       },
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
       settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
@@ -336,8 +332,6 @@ describe('orderMonitor recoveryFlow', () => {
       },
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
       settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
@@ -394,8 +388,6 @@ describe('orderMonitor recoveryFlow', () => {
       },
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
       settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
@@ -429,8 +421,6 @@ describe('orderMonitor recoveryFlow', () => {
       },
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
       settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
@@ -471,8 +461,6 @@ describe('orderMonitor recoveryFlow', () => {
       },
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
       settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
@@ -521,7 +509,6 @@ describe('orderMonitor recoveryFlow', () => {
         return {
           kind: 'ALREADY_CLOSED',
           closedReason: 'FILLED',
-          source: 'API_ERROR',
           relatedBuyOrderIds: null,
           terminalExecution: {
             submittedQuantity: 100,
@@ -573,7 +560,6 @@ describe('orderMonitor recoveryFlow', () => {
         return {
           kind: 'ALREADY_CLOSED',
           closedReason: 'CANCELED',
-          source: 'API_ERROR',
           relatedBuyOrderIds: null,
           terminalExecution: {
             submittedQuantity: 100,

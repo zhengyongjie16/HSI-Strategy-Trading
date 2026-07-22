@@ -24,7 +24,6 @@ import type {
   MonitorTaskStatus,
 } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import type { MonitorTask } from '../../../../src/main/asyncProgram/monitorTaskQueue/types.js';
 import type { RawOrderFromAPI } from '../../../../src/types/services.js';
 import {
   createAccountSnapshotDouble,
@@ -40,17 +39,6 @@ import {
 import { createLastState, createMonitorContext, runProcessorFlow, waitUntil } from '../utils.js';
 import type { CreateBusinessProcessorParams } from '../types.js';
 
-function createStatusCollector(
-  statuses: MonitorTaskStatus[],
-): NonNullable<MonitorTaskProcessorDeps['onProcessed']> {
-  return function collectStatus(
-    _task: MonitorTask<MonitorTaskDataMap>,
-    status: MonitorTaskStatus,
-  ): void {
-    statuses.push(status);
-  };
-}
-
 function createBusinessProcessor(
   params: CreateBusinessProcessorParams,
 ): ReturnType<typeof createMonitorTaskProcessor> {
@@ -61,7 +49,6 @@ function createBusinessProcessor(
     trader,
     marketDataClient = createMarketDataClientDouble(),
     quoteSubscriptionRuntime = createQuoteSubscriptionRuntimeDouble(),
-    onProcessed,
     getCanProcessTask,
     getCanTradeNow = () => true,
     periodicSwitchWakeupRuntime = {
@@ -88,7 +75,6 @@ function createBusinessProcessor(
     lastState,
     getCanTradeNow,
     periodicSwitchWakeupRuntime,
-    ...(onProcessed ? { onProcessed } : {}),
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
     ...(onFatalError ? { onFatalError } : {}),
   });
@@ -154,7 +140,6 @@ describe('monitorTaskProcessor business flow', () => {
           return {
             kind: 'WAIT',
             wakeups: [{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }],
-            pendingDirection: params.direction,
           };
         },
         startSwitchOnDistance: async (params) => ({
@@ -175,12 +160,10 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createMonitorTaskProcessor({
       monitorTaskQueue: queue,
@@ -204,7 +187,6 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => true,
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -222,11 +204,10 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['processed']);
     expect(handoffCalls).toEqual([
       {
         direction: 'LONG',
@@ -238,7 +219,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('API 错误标记为普通任务失败且不进入 fatal 通道', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     const context = createMonitorContext({
       autoSymbolManager: {
@@ -268,7 +248,6 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
@@ -292,7 +271,6 @@ describe('monitorTaskProcessor business flow', () => {
       onFatalError: (error) => {
         fatalErrors.push(error);
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -310,17 +288,15 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['failed']);
     expect(fatalErrors).toEqual([]);
   });
 
   it('非 API 程序错误进入 fatal 通道且不标记为普通任务失败', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     const context = createMonitorContext({
       autoSymbolManager: {
@@ -346,7 +322,6 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
@@ -370,7 +345,6 @@ describe('monitorTaskProcessor business flow', () => {
       onFatalError: (error) => {
         fatalErrors.push(error);
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -388,13 +362,12 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+      waitCondition: () => fatalErrors.length === 1,
       timeoutMs: 500,
     });
 
     expect(fatalErrors).toHaveLength(1);
     expect(fatalErrors[0]).toBeInstanceOf(TypeError);
-    expect(statuses).toEqual([]);
   });
 
   it('processes AUTO_SYMBOL_TICK with valid seat snapshot', async () => {
@@ -435,17 +408,14 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createBusinessProcessor({
       queue,
       context,
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -463,7 +433,7 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
@@ -472,7 +442,6 @@ describe('monitorTaskProcessor business flow', () => {
     expect(intervalCallArgs[0]?.direction).toBe('LONG');
     expect(intervalCallArgs[0]?.canContinue()).toBeTrue();
     expect(intervalCallArgs[0]?.currentTime.getTime()).toBeGreaterThan(0);
-    expect(statuses).toEqual(['processed']);
   });
 
   it('blocks AUTO_SYMBOL_TICK switch flow outside ordinary trade gate', async () => {
@@ -510,18 +479,15 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createBusinessProcessor({
       queue,
       context,
       getCanTradeNow: () => false,
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -539,12 +505,11 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
     expect(intervalCallArgs).toHaveLength(0);
-    expect(statuses).toEqual(['blocked']);
   });
 
   it('does not hand off or replan AUTO_SYMBOL_TICK after takeover begins during periodic evaluation', async () => {
@@ -556,7 +521,6 @@ describe('monitorTaskProcessor business flow', () => {
     const handoffCalls: string[] = [];
     const periodicWakeupCalls: string[] = [];
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -580,7 +544,7 @@ describe('monitorTaskProcessor business flow', () => {
           driveResult: { kind: 'NOOP' },
         }),
         hasPendingSwitch: () => true,
-        getPeriodicSwitchPendingState: () => ({ pending: false, pendingSinceMs: null }),
+        getPeriodicSwitchPendingState: () => ({ pending: false }),
         resetAllState: () => {},
       },
     });
@@ -608,7 +572,6 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => currentNowMs < takeoverMs,
-      onProcessed: createStatusCollector(statuses),
     });
 
     processor.start();
@@ -627,10 +590,8 @@ describe('monitorTaskProcessor business flow', () => {
     await periodicEvaluationStarted.promise;
     currentNowMs = takeoverMs;
     releasePeriodicEvaluation.resolve(null);
-    await waitUntil(() => statuses.length === 1, 500);
     await processor.stopAndDrain();
 
-    expect(statuses).toEqual(['blocked']);
     expect(handoffCalls).toEqual([]);
     expect(periodicWakeupCalls).toEqual([]);
   });
@@ -667,13 +628,10 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: true,
-          pendingSinceMs: 50_000,
-          blockedBy: 'ORDER_RECORDER',
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createBusinessProcessor({
       queue,
@@ -685,7 +643,6 @@ describe('monitorTaskProcessor business flow', () => {
         clearWaitingEmpty: () => {},
         replanRouteAfterTask: () => {},
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -703,11 +660,10 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['processed']);
     expect(markCalls).toEqual([
       {
         direction: 'LONG',
@@ -758,12 +714,10 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createBusinessProcessor({
       queue,
@@ -777,7 +731,6 @@ describe('monitorTaskProcessor business flow', () => {
           replanCalls.push(params);
         },
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -795,11 +748,10 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['processed']);
     expect(clearCalls).toEqual([
       {
         direction: 'LONG',
@@ -860,12 +812,10 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createBusinessProcessor({
       queue,
@@ -880,7 +830,6 @@ describe('monitorTaskProcessor business flow', () => {
           replanCalls.push(params);
         },
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -898,11 +847,10 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['blocked']);
     expect(periodicDueCalls).toBe(0);
     expect(clearCalls).toEqual([]);
     expect(replanCalls).toEqual([]);
@@ -938,17 +886,14 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createBusinessProcessor({
       queue,
       context,
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -966,12 +911,11 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
     expect(maybeSearchCalls).toBe(0);
-    expect(statuses).toEqual(['skipped']);
   });
 
   it('skips AUTO_SYMBOL_TICK when seat activation baseline is stale', async () => {
@@ -1005,17 +949,14 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
-    const statuses: MonitorTaskStatus[] = [];
 
     const processor = createBusinessProcessor({
       queue,
       context,
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -1033,17 +974,15 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
     expect(periodicDueCalls).toBe(0);
-    expect(statuses).toEqual(['skipped']);
   });
 
   it('skips stale SEAT_REFRESH when seatVersion no longer matches', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     let getQuotesCalls = 0;
     let clearLongWarrantCalls = 0;
 
@@ -1070,7 +1009,6 @@ describe('monitorTaskProcessor business flow', () => {
           return new Map();
         },
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -1080,11 +1018,10 @@ describe('monitorTaskProcessor business flow', () => {
           seatVersion: 1,
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['skipped']);
     expect(getQuotesCalls).toBe(0);
     expect(clearLongWarrantCalls).toBe(0);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
@@ -1123,24 +1060,15 @@ describe('monitorTaskProcessor business flow', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
     });
 
-    const seen: Array<{
-      task: MonitorTask<MonitorTaskDataMap>;
-      status: MonitorTaskStatus;
-    }> = [];
-
     const processor = createBusinessProcessor({
       queue,
       context,
       getCanProcessTask: () => false,
-      onProcessed: (task, status) => {
-        seen.push({ task, status });
-      },
     });
 
     await runProcessorFlow({
@@ -1158,11 +1086,10 @@ describe('monitorTaskProcessor business flow', () => {
           },
         });
       },
-      waitCondition: () => seen.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(seen[0]?.status).toBe('skipped');
     expect(maybeSearchCalls).toBe(0);
   });
 
@@ -1241,7 +1168,6 @@ describe('monitorTaskProcessor business flow', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
           refreshUnrealizedCalls += 1;
-          return { r1: 100, n1: 100 };
         },
       }),
     });
@@ -1251,7 +1177,6 @@ describe('monitorTaskProcessor business flow', () => {
       status: 'ACTIVATING',
       callPrice: 20_000,
     });
-    const statuses: MonitorTaskStatus[] = [];
     const lastState = createLastState();
 
     const processor = createBusinessProcessor({
@@ -1282,7 +1207,6 @@ describe('monitorTaskProcessor business flow', () => {
           ]);
         },
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -1290,11 +1214,10 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG');
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses[0]).toBe('processed');
     expect(fetchAllOrdersCalls).toBe(1);
     expect(preflightCalls).toBe(expectedRelatedTradingSymbols.length);
     expect(refreshOrdersCalls).toBe(1);
@@ -1329,7 +1252,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('fails SEAT_REFRESH fatally before cache, account, risk, or activation writes when DailyLossTracker rejects updatedAt', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     let refreshOrdersCalls = 0;
     let accountSnapshotCalls = 0;
@@ -1371,7 +1293,6 @@ describe('monitorTaskProcessor business flow', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
           refreshUnrealizedCalls += 1;
-          return null;
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
@@ -1418,7 +1339,6 @@ describe('monitorTaskProcessor business flow', () => {
       onFatalError: (error) => {
         fatalErrors.push(error);
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -1426,7 +1346,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:BAD_UPDATED_AT');
       },
-      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+      waitCondition: () => fatalErrors.length === 1,
       timeoutMs: 500,
     });
 
@@ -1437,7 +1357,6 @@ describe('monitorTaskProcessor business flow', () => {
     }
 
     expect(fatalError.message).toContain('已成交订单缺少有效更新时间');
-    expect(statuses).toEqual([]);
     expect(refreshOrdersCalls).toBe(0);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
@@ -1451,7 +1370,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('preflights SEAT_REFRESH before DailyLoss rejects a relevant unowned execution', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     const now = new Date();
     const knownSideOrder: RawOrderFromAPI = {
@@ -1513,7 +1431,6 @@ describe('monitorTaskProcessor business flow', () => {
       onFatalError: (error) => {
         fatalErrors.push(error);
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -1521,7 +1438,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:UNOWNED_KNOWN_SIDE');
       },
-      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+      waitCondition: () => fatalErrors.length === 1,
       timeoutMs: 500,
     });
 
@@ -1531,7 +1448,6 @@ describe('monitorTaskProcessor business flow', () => {
     }
 
     expect(fatalError.message).toContain('相关成交订单无法归属');
-    expect(statuses).toEqual([]);
     expect(preflightCalls).toBe(3);
     expect(preflightSymbols).toEqual(['BULL.HK', 'OLD_BULL.HK', 'BEAR.HK']);
     expect(refreshOrdersCalls).toBe(0);
@@ -1539,7 +1455,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('fails SEAT_REFRESH fatally before post-refresh writes when a positive execution fact is malformed', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     let refreshOrdersCalls = 0;
     let accountSnapshotCalls = 0;
@@ -1574,7 +1489,6 @@ describe('monitorTaskProcessor business flow', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
           refreshUnrealizedCalls += 1;
-          return null;
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
@@ -1621,7 +1535,6 @@ describe('monitorTaskProcessor business flow', () => {
       onFatalError: (error) => {
         fatalErrors.push(error);
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -1629,7 +1542,7 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:INVALID_EXECUTION');
       },
-      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+      waitCondition: () => fatalErrors.length === 1,
       timeoutMs: 500,
     });
 
@@ -1640,7 +1553,6 @@ describe('monitorTaskProcessor business flow', () => {
     }
 
     expect(fatalError.message).toMatch(/执行事实/);
-    expect(statuses).toEqual([]);
     expect(refreshOrdersCalls).toBe(1);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
@@ -1668,7 +1580,6 @@ describe('monitorTaskProcessor business flow', () => {
   ]) {
     it(`fails SEAT_REFRESH fatally before post-refresh writes for Unknown-side ${unknownSideCase.label}`, async () => {
       const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-      const statuses: MonitorTaskStatus[] = [];
       const fatalErrors: unknown[] = [];
       let preflightCalls = 0;
       let refreshOrdersCalls = 0;
@@ -1721,7 +1632,6 @@ describe('monitorTaskProcessor business flow', () => {
         riskChecker: createRiskCheckerDouble({
           refreshUnrealizedLossData: async () => {
             refreshUnrealizedCalls += 1;
-            return null;
           },
           setWarrantInfoFromCallPrice: () => {
             warrantInfoWrites += 1;
@@ -1798,7 +1708,6 @@ describe('monitorTaskProcessor business flow', () => {
         onFatalError: (error) => {
           fatalErrors.push(error);
         },
-        onProcessed: createStatusCollector(statuses),
       });
 
       await runProcessorFlow({
@@ -1806,7 +1715,7 @@ describe('monitorTaskProcessor business flow', () => {
         pushTask: () => {
           scheduleSeatRefreshTask(queue, `SEAT_REFRESH:LONG:UNKNOWN_SIDE:${unknownSideCase.label}`);
         },
-        waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+        waitCondition: () => fatalErrors.length === 1,
         timeoutMs: 500,
       });
 
@@ -1816,7 +1725,6 @@ describe('monitorTaskProcessor business flow', () => {
 
       expect({
         refreshWasBlocked,
-        statuses,
         preflightCalls,
         refreshOrdersCalls,
         accountSnapshotCalls,
@@ -1830,7 +1738,6 @@ describe('monitorTaskProcessor business flow', () => {
         seatStatus: context.symbolRegistry.getSeatState('LONG').status,
       }).toEqual({
         refreshWasBlocked: true,
-        statuses: [],
         preflightCalls: 1,
         refreshOrdersCalls: 0,
         accountSnapshotCalls: 0,
@@ -1866,7 +1773,6 @@ describe('monitorTaskProcessor business flow', () => {
   ] as const) {
     it(`fails SEAT_REFRESH before DailyLoss writes for non-target related ${relatedOrderCase.label}`, async () => {
       const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-      const statuses: MonitorTaskStatus[] = [];
       const fatalErrors: unknown[] = [];
       const now = new Date();
       const relatedOrder: RawOrderFromAPI = {
@@ -1968,7 +1874,6 @@ describe('monitorTaskProcessor business flow', () => {
         onFatalError: (error) => {
           fatalErrors.push(error);
         },
-        onProcessed: createStatusCollector(statuses),
       });
 
       await runProcessorFlow({
@@ -1976,7 +1881,7 @@ describe('monitorTaskProcessor business flow', () => {
         pushTask: () => {
           scheduleSeatRefreshTask(queue, `SEAT_REFRESH:LONG:RELATED:${relatedOrderCase.label}`);
         },
-        waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+        waitCondition: () => fatalErrors.length === 1,
         timeoutMs: 500,
       });
 
@@ -1987,7 +1892,6 @@ describe('monitorTaskProcessor business flow', () => {
 
       expect({
         preflightBlocked,
-        statuses,
         preflightSymbols,
         refreshOrdersCalls,
         dailyLossOffset: dailyLossTracker.getLossOffset('LONG'),
@@ -1995,7 +1899,6 @@ describe('monitorTaskProcessor business flow', () => {
         seatStatus: context.symbolRegistry.getSeatState('LONG').status,
       }).toEqual({
         preflightBlocked: true,
-        statuses: [],
         preflightSymbols: ['BULL.HK', 'OLD_BULL.HK'],
         refreshOrdersCalls: 0,
         dailyLossOffset: -10,
@@ -2007,7 +1910,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('processes SHORT SEAT_REFRESH and updates short-side symbol name', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     let refreshOrdersCalls = 0;
     const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
@@ -2019,7 +1921,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => ({ r1: 100, n1: 100 }),
+        refreshUnrealizedLossData: async () => {},
       }),
     });
     context.symbolRegistry.updateSeatState('SHORT', {
@@ -2036,7 +1938,6 @@ describe('monitorTaskProcessor business flow', () => {
         getQuotes: async () =>
           new Map([['BEAR.HK', { ...createQuoteDouble('BEAR.HK', 0.9, 100), name: 'BEAR Name' }]]),
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -2050,11 +1951,10 @@ describe('monitorTaskProcessor business flow', () => {
           symbolName: 'BEAR.HK',
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['processed']);
     expect(refreshOrdersCalls).toBe(1);
     expect(context.symbolRegistry.getSeatState('SHORT').status).toBe('ACTIVE');
     expect(context.shortSymbolName).toBe('BEAR Name');
@@ -2062,7 +1962,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('marks SHORT SEAT_REFRESH business failure as EMPTY and clears short-side symbol name', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const context = createMonitorContext({
       shortSymbolName: 'OLD_BEAR',
     });
@@ -2076,7 +1975,6 @@ describe('monitorTaskProcessor business flow', () => {
     const processor = createBusinessProcessor({
       queue,
       context,
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -2091,11 +1989,10 @@ describe('monitorTaskProcessor business flow', () => {
           symbolName: 'BEAR.HK',
         });
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['processed']);
     expect(context.symbolRegistry.getSeatState('SHORT')).toMatchObject({
       symbol: null,
       status: 'EMPTY',
@@ -2107,7 +2004,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('waits for quote admission to resolve before rebuilding SEAT_REFRESH caches', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const admissionDeferred = createDeferred<null>();
     const admissionStartedDeferred = createDeferred<null>();
     let getQuotesCalls = 0;
@@ -2128,7 +2024,6 @@ describe('monitorTaskProcessor business flow', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
           refreshUnrealizedCalls += 1;
-          return { r1: 100, n1: 100 };
         },
       }),
     });
@@ -2154,7 +2049,6 @@ describe('monitorTaskProcessor business flow', () => {
           await admissionDeferred.promise;
         },
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     processor.start();
@@ -2163,7 +2057,6 @@ describe('monitorTaskProcessor business flow', () => {
     await admissionStartedDeferred.promise;
     await Promise.resolve();
 
-    expect(statuses).toEqual([]);
     expect(getQuotesCalls).toBe(0);
     expect(fetchAllOrdersCalls).toBe(0);
     expect(refreshOrdersCalls).toBe(0);
@@ -2171,10 +2064,8 @@ describe('monitorTaskProcessor business flow', () => {
     expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
 
     admissionDeferred.resolve(null);
-    await waitUntil(() => statuses.length === 1, 500);
     await processor.stopAndDrain();
 
-    expect(statuses).toEqual(['processed']);
     expect(getQuotesCalls).toBe(1);
     expect(fetchAllOrdersCalls).toBe(1);
     expect(refreshOrdersCalls).toBe(1);
@@ -2184,7 +2075,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('does not leave stale warrant risk cache after SEAT_REFRESH skips on changed seat', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const baseRiskChecker = createRiskChecker({
       warrantRiskChecker: createWarrantRiskChecker(),
       positionLimitChecker: createPositionLimitChecker({
@@ -2204,7 +2094,7 @@ describe('monitorTaskProcessor business flow', () => {
           quote,
           dailyLossOffset,
         ) => {
-          const result = await baseRiskChecker.refreshUnrealizedLossData(
+          await baseRiskChecker.refreshUnrealizedLossData(
             orderRecorder,
             symbol,
             isLongSymbol,
@@ -2219,7 +2109,6 @@ describe('monitorTaskProcessor business flow', () => {
             lastSwitchAt: Date.now(),
             callPrice: null,
           });
-          return result;
         },
       },
     });
@@ -2240,7 +2129,6 @@ describe('monitorTaskProcessor business flow', () => {
             ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
           ]),
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -2248,18 +2136,16 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:STALE_CACHE_LEAK');
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['skipped']);
     const riskCheckResult = context.riskChecker.checkWarrantRisk('NEXT_BULL.HK', 'BUYCALL', 20_010);
     expect(riskCheckResult.allowed).toBeTrue();
   });
 
   it('does not write shared refresh state when SEAT_REFRESH becomes stale before cache rebuild starts', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     let recalculateCalls = 0;
     let refreshOrdersCalls = 0;
     let refreshUnrealizedCalls = 0;
@@ -2292,7 +2178,6 @@ describe('monitorTaskProcessor business flow', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
           refreshUnrealizedCalls += 1;
-          return { r1: 100, n1: 100 };
         },
       }),
       longSymbolName: 'OLD_BULL',
@@ -2340,7 +2225,6 @@ describe('monitorTaskProcessor business flow', () => {
           ]);
         },
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -2348,11 +2232,10 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:STALE_BEFORE_SHARED_WRITES');
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['skipped']);
     expect(recalculateCalls).toBe(0);
     expect(refreshOrdersCalls).toBe(0);
     expect(accountSnapshotCalls).toBe(0);
@@ -2371,7 +2254,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('marks activating seat EMPTY after SEAT_REFRESH API retry is exhausted', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     let getQuotesCalls = 0;
     const context = createMonitorContext({
@@ -2401,22 +2283,19 @@ describe('monitorTaskProcessor business flow', () => {
       onFatalError: (error) => {
         fatalErrors.push(error);
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     processor.start();
     scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:API_FAIL');
 
-    await waitUntil(() => statuses.length === 1 || fatalErrors.length === 1, 500);
+    await waitUntil(() => getQuotesCalls === 1 || fatalErrors.length === 1, 500);
     await Bun.sleep(Math.max(API.DEFAULT_RETRY_DELAY_MS - 100, 0));
 
-    expect(statuses).toEqual(['failed']);
     expect(getQuotesCalls).toBe(1);
 
-    await waitUntil(() => statuses.length === 2 || fatalErrors.length === 1, 800);
+    await waitUntil(() => getQuotesCalls === 2 || fatalErrors.length === 1, 800);
     await processor.stopAndDrain();
 
-    expect(statuses).toEqual(['failed', 'failed']);
     expect(fatalErrors).toEqual([]);
     expect(getQuotesCalls).toBe(2);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
@@ -2430,7 +2309,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('sends SEAT_REFRESH non API order refresh errors to fatal channel', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const fatalErrors: unknown[] = [];
     let getQuotesCalls = 0;
 
@@ -2462,7 +2340,6 @@ describe('monitorTaskProcessor business flow', () => {
       onFatalError: (error) => {
         fatalErrors.push(error);
       },
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -2470,13 +2347,12 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:FAIL');
       },
-      waitCondition: () => fatalErrors.length === 1 || statuses.length === 1,
+      waitCondition: () => fatalErrors.length === 1,
       timeoutMs: 500,
     });
 
     expect(fatalErrors).toHaveLength(1);
     expect(fatalErrors[0]).toBeInstanceOf(Error);
-    expect(statuses).toEqual([]);
     expect(getQuotesCalls).toBe(1);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'BULL.HK',
@@ -2489,7 +2365,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('skips SEAT_REFRESH seat-owned work when the seat changes while order rebuild is pending', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const rebuildStarted = createDeferred<null>();
     const releaseRebuild = createDeferred<null>();
     let dailyLossRecalculations = 0;
@@ -2522,7 +2397,6 @@ describe('monitorTaskProcessor business flow', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
           refreshUnrealizedCalls += 1;
-          return null;
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
@@ -2562,7 +2436,6 @@ describe('monitorTaskProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]),
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     processor.start();
@@ -2578,10 +2451,8 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: null,
     });
     releaseRebuild.resolve(null);
-    await waitUntil(() => statuses.length === 1, 500);
     await processor.stopAndDrain();
 
-    expect(statuses).toEqual(['skipped']);
     expect(dailyLossRecalculations).toBe(1);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
@@ -2598,7 +2469,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('skips SEAT_REFRESH risk and seat-owned writes when the seat changes during account cache refresh', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const accountRefreshStarted = createDeferred<null>();
     const releaseAccountRefresh = createDeferred<null>();
     let riskRefreshCalls = 0;
@@ -2617,7 +2487,6 @@ describe('monitorTaskProcessor business flow', () => {
       riskChecker: createRiskCheckerDouble({
         refreshUnrealizedLossData: async () => {
           riskRefreshCalls += 1;
-          return null;
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
@@ -2658,7 +2527,6 @@ describe('monitorTaskProcessor business flow', () => {
             ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
           ]),
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     processor.start();
@@ -2674,10 +2542,8 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: null,
     });
     releaseAccountRefresh.resolve(null);
-    await waitUntil(() => statuses.length === 1, 500);
     await processor.stopAndDrain();
 
-    expect(statuses).toEqual(['skipped']);
     expect(riskRefreshCalls).toBe(0);
     expect(clearBuyOrdersCalls).toBe(0);
     expect(warrantInfoWrites).toBe(0);
@@ -2690,7 +2556,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('skips SEAT_REFRESH post-risk writes when the seat changes during risk refresh', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const riskRefreshStarted = createDeferred<null>();
     const releaseRiskRefresh = createDeferred<null>();
     let clearBuyOrdersCalls = 0;
@@ -2709,7 +2574,6 @@ describe('monitorTaskProcessor business flow', () => {
         refreshUnrealizedLossData: async () => {
           riskRefreshStarted.resolve(null);
           await releaseRiskRefresh.promise;
-          return null;
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
@@ -2746,7 +2610,6 @@ describe('monitorTaskProcessor business flow', () => {
             ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
           ]),
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     processor.start();
@@ -2762,10 +2625,8 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: null,
     });
     releaseRiskRefresh.resolve(null);
-    await waitUntil(() => statuses.length === 1, 500);
     await processor.stopAndDrain();
 
-    expect(statuses).toEqual(['skipped']);
     expect(clearBuyOrdersCalls).toBe(0);
     expect(warrantInfoWrites).toBe(0);
     expect(activationWrites).toBe(0);
@@ -2777,7 +2638,6 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('skips SEAT_REFRESH final activation when seat snapshot changes during refresh', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const statuses: MonitorTaskStatus[] = [];
     const context = createMonitorContext();
     context.symbolRegistry.updateSeatState('LONG', {
       ...context.symbolRegistry.getSeatState('LONG'),
@@ -2795,7 +2655,6 @@ describe('monitorTaskProcessor business flow', () => {
         lastSwitchAt: Date.now(),
         callPrice: null,
       });
-      return { r1: 100, n1: 100 };
     };
 
     const processor = createBusinessProcessor({
@@ -2808,7 +2667,6 @@ describe('monitorTaskProcessor business flow', () => {
             ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
           ]),
       }),
-      onProcessed: createStatusCollector(statuses),
     });
 
     await runProcessorFlow({
@@ -2816,11 +2674,10 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:STALE_DURING_REFRESH');
       },
-      waitCondition: () => statuses.length === 1,
+      waitCondition: () => queue.isEmpty(),
       timeoutMs: 500,
     });
 
-    expect(statuses).toEqual(['skipped']);
     expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(3);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'NEXT_BULL.HK',

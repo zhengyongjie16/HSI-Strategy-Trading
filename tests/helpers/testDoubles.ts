@@ -48,7 +48,6 @@ import type {
   RecordCooldownParams,
   ClearMidnightEligibleParams,
   RecordLiquidationTriggerParams,
-  RecordLiquidationTriggerResult,
   RestoreTriggerCountParams,
 } from '../../src/services/liquidationCooldown/types.js';
 import type {
@@ -227,14 +226,10 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
     onOrderHoldSymbolsChanged: () => () => {},
     cancelOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
-      closedReason: 'CANCELED',
-      source: 'API',
       relatedBuyOrderIds: null,
     }),
     cancelDoomsdayOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
-      closedReason: 'CANCELED',
-      source: 'API',
       relatedBuyOrderIds: null,
     }),
     startOrderMonitorRuntime: () => {},
@@ -349,19 +344,12 @@ export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}):
     trackOrder: () => {},
     cancelOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
-      closedReason: 'CANCELED',
-      source: 'API',
       relatedBuyOrderIds: null,
     }),
     cancelDoomsdayOrder: async () => ({
       kind: 'CANCEL_CONFIRMED',
-      closedReason: 'CANCELED',
-      source: 'API',
       relatedBuyOrderIds: null,
     }),
-    replaceOrderPrice: async () => {
-      throw new Error('[test double] 未预期的旧版 REPLACE 调用');
-    },
     replaceOrderPriceWithPermit: async () => {
       throw new Error('[test double] 未预期的 permit REPLACE 调用');
     },
@@ -400,7 +388,7 @@ export function createRiskCheckerDouble(overrides: Partial<RiskChecker> = {}): R
     getWarrantDistanceInfo: (): WarrantDistanceInfo | null => null,
     clearLongWarrantInfo: () => {},
     clearShortWarrantInfo: () => {},
-    refreshUnrealizedLossData: async () => null,
+    refreshUnrealizedLossData: async () => {},
     checkUnrealizedLoss: () => ({ shouldLiquidate: false }),
     getUnrealizedLossMetrics: () => null,
     clearUnrealizedLossData: () => {},
@@ -533,7 +521,6 @@ export function createAutoSymbolManagerDouble(
     hasPendingSwitch: () => false,
     getPeriodicSwitchPendingState: () => ({
       pending: false,
-      pendingSinceMs: null,
     }),
     resetAllState: () => {},
   };
@@ -866,12 +853,7 @@ export function createLiquidationCooldownTrackerDouble(
   overrides: Partial<LiquidationCooldownTracker> = {},
 ): LiquidationCooldownTracker {
   const base: LiquidationCooldownTracker = {
-    recordLiquidationTrigger: (
-      _params: RecordLiquidationTriggerParams,
-    ): RecordLiquidationTriggerResult => ({
-      currentCount: 1,
-      cooldownActivated: true,
-    }),
+    recordLiquidationTrigger: (_params: RecordLiquidationTriggerParams): void => {},
     recordCooldown: (_params: RecordCooldownParams): void => {},
     restoreTriggerCount: (_params: RestoreTriggerCountParams): void => {},
     getRemainingMs: (_params: GetRemainingMsParams): number => 0,

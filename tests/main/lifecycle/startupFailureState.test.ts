@@ -16,7 +16,6 @@ function createMinimalLastState(): LastState {
     currentDayKey: '2026-02-25',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
@@ -38,13 +37,10 @@ function createMinimalLastState(): LastState {
 describe('startupFailureState', () => {
   it('switches to open-rebuild retry state when startup snapshot load fails', () => {
     const lastState = createMinimalLastState();
-    const now = new Date('2026-02-26T10:00:00.000Z');
-
-    applyStartupSnapshotFailureState(lastState, now);
+    applyStartupSnapshotFailureState(lastState);
 
     expect(lastState.pendingOpenRebuild).toBe(true);
     expect(lastState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
     expect(lastState.isTradingEnabled).toBe(false);
-    expect(lastState.targetTradingDayKey).toBe('2026-02-26');
   });
 });

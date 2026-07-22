@@ -176,7 +176,6 @@ function createSimulationLastState(params: {
     currentDayKey: params.currentDayKey,
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: createAccountSnapshotDouble(200_000),
     cachedPositions: params.positions,
@@ -346,7 +345,6 @@ describe('full business simulation integration', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
@@ -367,7 +365,7 @@ describe('full business simulation integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -566,8 +564,6 @@ describe('full business simulation integration', () => {
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
       onOrderStateChanged: orderStateChangedEvents.subscribe,
@@ -652,7 +648,6 @@ describe('full business simulation integration', () => {
       delayedSignalVerifier,
       autoSymbolManager,
     });
-    const processedTaskTypes: string[] = [];
     const postTradeConsistencyRuntime = {
       waitForFresh: async () => {},
       getStatus: () => ({
@@ -734,9 +729,6 @@ describe('full business simulation integration', () => {
       lastState,
       getCanProcessTask: () => true,
       getCanTradeNow: () => lastState.canTrade === true,
-      onProcessed: (task, status) => {
-        processedTaskTypes.push(`${task.type}:${status}`);
-      },
     });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
       marketDataClient: autoSwitchMarketDataClient,
@@ -753,7 +745,7 @@ describe('full business simulation integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -829,7 +821,7 @@ describe('full business simulation integration', () => {
         );
       }).catch((error: unknown) => {
         throw new Error(
-          `initial auto-search timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `initial auto-search timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
@@ -843,7 +835,7 @@ describe('full business simulation integration', () => {
         return seat.status === 'ACTIVE' && seat.symbol === 'OLD_BULL.HK';
       }).catch((error: unknown) => {
         throw new Error(
-          `seat activation timeout after second monitor cycle: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `seat activation timeout after second monitor cycle: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
@@ -871,7 +863,7 @@ describe('full business simulation integration', () => {
 
       await waitUntil(() => executedActions.length > 1).catch((error: unknown) => {
         throw new Error(
-          `rebuy action timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `rebuy action timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
@@ -883,7 +875,7 @@ describe('full business simulation integration', () => {
         );
       }).catch((error: unknown) => {
         throw new Error(
-          `rebuy seat transition timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `rebuy seat transition timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
@@ -896,7 +888,7 @@ describe('full business simulation integration', () => {
         return seat.status === 'ACTIVE' && seat.symbol === 'NEW_BULL.HK';
       }).catch((error: unknown) => {
         throw new Error(
-          `final seat activation timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, tasks=${processedTaskTypes.join(',')}, cause=${error instanceof Error ? error.message : String(error)}`,
+          `final seat activation timeout: seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}, actions=${JSON.stringify(executedActions)}, cause=${error instanceof Error ? error.message : String(error)}`,
         );
       });
 
@@ -1040,7 +1032,6 @@ describe('full business simulation integration', () => {
         hasPendingSwitch: () => false,
         getPeriodicSwitchPendingState: () => ({
           pending: false,
-          pendingSinceMs: null,
         }),
         resetAllState: () => {},
       },
@@ -1060,7 +1051,7 @@ describe('full business simulation integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,

@@ -105,8 +105,6 @@ function resolveTrustedSubmittedAtMs(submittedAt: Date | null | undefined): numb
  */
 function createEmptyState(): DailyLossState {
   return {
-    buyOrders: [],
-    sellOrders: [],
     dailyLossOffset: 0,
   };
 }
@@ -179,7 +177,7 @@ function calculateLossOffsetFromRecords(
  * @param facts 当日当前分段的累计成交事实
  * @param direction 目标方向
  * @param filteringEngine 过滤引擎
- * @returns 含 buyOrders、sellOrders、dailyLossOffset 的状态
+ * @returns 计算后的当日亏损偏移状态
  */
 function buildStateFromFacts(
   facts: ReadonlyMap<string, DailyLossOrderFact>,
@@ -229,8 +227,6 @@ function buildStateFromFacts(
 
   const dailyLossOffset = calculateLossOffsetFromRecords(buyOrders, sellOrders, filteringEngine);
   return {
-    buyOrders,
-    sellOrders,
     dailyLossOffset,
   };
 }

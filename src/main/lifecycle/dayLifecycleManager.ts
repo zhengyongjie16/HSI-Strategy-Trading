@@ -148,7 +148,6 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
         mutableState.currentDayKey = runtime.dayKey ?? mutableState.currentDayKey;
         mutableState.lifecycleState = 'MIDNIGHT_CLEANED';
         mutableState.pendingOpenRebuild = true;
-        mutableState.targetTradingDayKey = runtime.dayKey;
         midnightClearFailureCount = 0;
         nextMidnightRetryAtMs = null;
         invalidateSeatActivationCarryoverOnMidnightClear = false;
@@ -194,7 +193,6 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
     try {
       await runOpenRebuildForDomains(cacheDomains, rebuildContext);
       mutableState.pendingOpenRebuild = false;
-      mutableState.targetTradingDayKey = null;
       mutableState.lifecycleState = 'ACTIVE';
       mutableState.isTradingEnabled = true;
       rebuildFailureCount = 0;

@@ -521,11 +521,11 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
   getSellRecordByOrderId: (orderId: string) => OrderRecord | null;
 
   /** 从 API 获取全量订单 */
-  fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
+  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
 
   /**
    * 预检同一次全量订单快照中指定标的的重建事实。
-   * 不写入 API 缓存或本地订单记录；与实际刷新共享同一筛选和分类口径。
+   * 不写入本地订单记录；与实际刷新共享同一筛选和分类口径。
    */
   validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => void;
 
@@ -556,7 +556,7 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
     submittedAtMs?: number,
   ) => void;
 
-  /** 重置全部订单记录与 API 缓存 */
+  /** 重置全部本地订单记录 */
   resetAll: () => void;
 }
 
@@ -570,18 +570,6 @@ export type PostTradeConsistencyRefreshNeed = {
   readonly refreshAccount: boolean;
   readonly refreshPositions: boolean;
 };
-
-/**
- * 成交后一致性 fresh 事件。
- * 类型用途：表达 freshness 追平后的统一通知载荷，供事件驱动运行时与测试消费。
- * 数据来源：由 PostTradeConsistencyRuntime 在 refresh 成功或重建 baseline 完成时发出。
- * 使用范围：app runtime、事件运行时与相关测试使用。
- */
-export type PostTradeConsistencyFreshReachedEvent = Readonly<{
-  currentVersion: number;
-  staleVersion: number;
-  trigger: 'REFRESH' | 'REBUILD_BASELINE';
-}>;
 
 /**
  * 取消订阅函数。
@@ -647,7 +635,7 @@ export interface PostTradeConsistencyFreshnessPort {
   waitForFresh: () => Promise<void>;
 
   /** 订阅 freshness 追平事件 */
-  onFreshReached: (listener: (event: PostTradeConsistencyFreshReachedEvent) => void) => Unsubscribe;
+  onFreshReached: (listener: () => void) => Unsubscribe;
 }
 
 /**
@@ -724,7 +712,7 @@ export interface Trader {
   canTradeNow: (signalAction: SignalType) => TradeCheckResult;
 
   /** 从 API 获取全量订单 */
-  fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
+  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
 
   /** 生命周期午夜清理：重置订单运行态缓存 */
   resetRuntimeState: () => void;
@@ -1015,7 +1003,7 @@ export interface RiskChecker {
     isLongSymbol: boolean,
     quote?: Quote | null,
     dailyLossOffset?: number,
-  ) => Promise<{ r1: number; n1: number } | null>;
+  ) => Promise<void>;
 
   /** 浮亏检查（是否触发强平） */
   checkUnrealizedLoss: (

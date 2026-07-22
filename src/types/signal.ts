@@ -37,7 +37,7 @@ export type OrderTypeConfig = 'LO' | 'ELO' | 'MO';
 
 /**
  * 交易信号共享字段。
- * 类型用途：承载所有交易候选共同的标的、原因、行情和席位信息；动作与保护性语义由下方可判别联合定义。
+ * 类型用途：承载所有交易候选共同的标的、原因和席位信息；动作与保护性语义由下方可判别联合定义。
  * 数据来源：策略、延迟验证、风险与清仓链路。
  * 使用范围：Signal 及其买卖子类型的内部基础。
  */
@@ -53,12 +53,6 @@ type SignalFields = {
 
   /** 订单类型覆盖（优先级高于全局配置） */
   readonly orderTypeOverride?: OrderTypeConfig | null;
-
-  /** 交易价格 */
-  readonly price?: number | null;
-
-  /** 每手股数 */
-  readonly lotSize?: number | null;
 
   /** 交易数量 */
   readonly quantity?: number | null;

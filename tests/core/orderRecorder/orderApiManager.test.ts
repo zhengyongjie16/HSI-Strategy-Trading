@@ -3,6 +3,7 @@
  *
  * 功能：
  * - 验证 history/today 去重时的快照优先级（today 优先、同源按 updatedAt 更晚优先）
+ * - 验证每次获取都会重新拉取 history/today，不复用旧快照
  */
 import { describe, expect, it } from 'bun:test';
 import {
@@ -92,7 +93,7 @@ async function assertSdkOrderSnapshotFails(
 ): Promise<void> {
   let caught: unknown = null;
   try {
-    await apiManager.fetchAllOrdersFromAPI(true);
+    await apiManager.fetchAllOrdersFromAPI();
   } catch (error) {
     caught = error;
   }
@@ -106,6 +107,42 @@ async function assertSdkOrderSnapshotFails(
 }
 
 describe('createOrderAPIManager', () => {
+  it('fetches fresh history and today snapshots on every call', async () => {
+    const tradeCtx = createTradeContextMock();
+    tradeCtx.seedHistoryOrders([]);
+    tradeCtx.seedTodayOrders([
+      createSdkOrder({
+        orderId: 'ORDER-FRESH-SNAPSHOT',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.New,
+        updatedAt: new Date('2026-02-25T03:01:00.000Z'),
+      }),
+    ]);
+    const apiManager = createOrderAPIManager({
+      ctx: createTradeContextDouble(tradeCtx),
+      rateLimiter: createRateLimiterDouble(),
+    });
+
+    const firstSnapshot = await apiManager.fetchAllOrdersFromAPI();
+
+    tradeCtx.seedTodayOrders([
+      createSdkOrder({
+        orderId: 'ORDER-FRESH-SNAPSHOT',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.Filled,
+        updatedAt: new Date('2026-02-25T03:05:00.000Z'),
+      }),
+    ]);
+    const secondSnapshot = await apiManager.fetchAllOrdersFromAPI();
+
+    expect(firstSnapshot[0]?.status).toBe(OrderStatus.New);
+    expect(secondSnapshot[0]?.status).toBe(OrderStatus.Filled);
+    expect(tradeCtx.getCalls('historyOrders')).toHaveLength(2);
+    expect(tradeCtx.getCalls('todayOrders')).toHaveLength(2);
+  });
+
   it('prefers today snapshot when history and today share the same orderId', async () => {
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedHistoryOrders([
@@ -133,7 +170,7 @@ describe('createOrderAPIManager', () => {
       rateLimiter: createRateLimiterDouble(),
     });
 
-    const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
+    const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders).toHaveLength(1);
     expect(allOrders[0]?.status).toBe(OrderStatus.New);
     expect(allOrders[0]?.updatedAt?.toISOString()).toBe('2026-02-25T03:01:00.000Z');
@@ -164,7 +201,7 @@ describe('createOrderAPIManager', () => {
       rateLimiter: createRateLimiterDouble(),
     });
 
-    const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
+    const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders).toHaveLength(1);
     expect(allOrders[0]?.status).toBe(OrderStatus.PartialFilled);
     expect(allOrders[0]?.updatedAt?.toISOString()).toBe('2026-02-25T03:05:00.000Z');
@@ -190,7 +227,7 @@ describe('createOrderAPIManager', () => {
       rateLimiter: createRateLimiterDouble(),
     });
 
-    const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
+    const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders).toHaveLength(1);
     expect(allOrders[0]?.submittedAt).toEqual(submittedAt);
   });
@@ -213,7 +250,7 @@ describe('createOrderAPIManager', () => {
         rateLimiter: createRateLimiterDouble(),
       });
 
-      const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
+      const allOrders = await apiManager.fetchAllOrdersFromAPI();
       expect(allOrders).toHaveLength(1);
       expect(allOrders[0]?.updatedAt).toBeNull();
     });
@@ -269,7 +306,7 @@ describe('createOrderAPIManager', () => {
 
     let caught: unknown = null;
     try {
-      await apiManager.fetchAllOrdersFromAPI(true);
+      await apiManager.fetchAllOrdersFromAPI();
     } catch (error) {
       caught = error;
     }
@@ -289,7 +326,7 @@ describe('createOrderAPIManager', () => {
 
     let caught: unknown = null;
     try {
-      await apiManager.fetchAllOrdersFromAPI(true);
+      await apiManager.fetchAllOrdersFromAPI();
     } catch (error) {
       caught = error;
     }
@@ -319,7 +356,7 @@ describe('createOrderAPIManager', () => {
 
     let caught: unknown = null;
     try {
-      await apiManager.fetchAllOrdersFromAPI(true);
+      await apiManager.fetchAllOrdersFromAPI();
     } catch (error) {
       caught = error;
     }
@@ -353,7 +390,7 @@ describe('createOrderAPIManager', () => {
 
     let caught: unknown = null;
     try {
-      await apiManager.fetchAllOrdersFromAPI(true);
+      await apiManager.fetchAllOrdersFromAPI();
     } catch (error) {
       caught = error;
     }
@@ -387,7 +424,7 @@ describe('createOrderAPIManager', () => {
 
     let caught: unknown = null;
     try {
-      await apiManager.fetchAllOrdersFromAPI(true);
+      await apiManager.fetchAllOrdersFromAPI();
     } catch (error) {
       caught = error;
     }
@@ -419,7 +456,7 @@ describe('createOrderAPIManager', () => {
 
     let caught: unknown = null;
     try {
-      await apiManager.fetchAllOrdersFromAPI(true);
+      await apiManager.fetchAllOrdersFromAPI();
     } catch (error) {
       caught = error;
     }
@@ -454,7 +491,7 @@ describe('createOrderAPIManager', () => {
 
     let caught: unknown = null;
     try {
-      await apiManager.fetchAllOrdersFromAPI(true);
+      await apiManager.fetchAllOrdersFromAPI();
     } catch (error) {
       caught = error;
     }
@@ -482,7 +519,7 @@ describe('createOrderAPIManager', () => {
       rateLimiter: createRateLimiterDouble(),
     });
 
-    const allOrders = await apiManager.fetchAllOrdersFromAPI(true);
+    const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders[0]?.remark).toBe('QuantDemo|PL');
   });
 });

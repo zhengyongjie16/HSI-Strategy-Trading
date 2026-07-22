@@ -19,11 +19,13 @@ import {
   AUTO_SYMBOL_SEARCH_COOLDOWN_MS,
   PENDING_ORDER_STATUSES,
 } from '../../constants/index.js';
+import type { AutoSymbolManagerPort } from '../../types/monitorContextPorts.js';
 import type {
-  AutoSymbolManagerPort,
-  PeriodicSwitchPendingState,
-} from '../../types/monitorContextPorts.js';
-import type { AutoSymbolManagerDeps, SwitchState, SwitchSuppression } from './types.js';
+  AutoSymbolManagerDeps,
+  PeriodicSwitchInternalPendingState,
+  SwitchState,
+  SwitchSuppression,
+} from './types.js';
 import { createThresholdResolver } from './thresholdResolver.js';
 import {
   calculateBuyQuantityByNotional,
@@ -57,7 +59,7 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
   const autoSearchConfig = monitorConfig.autoSearchConfig;
   const switchStates = new Map<'LONG' | 'SHORT', SwitchState>();
   const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
-  const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
+  const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchInternalPendingState>();
   const thresholdResolver = createThresholdResolver({
     autoSearchConfig,
     monitorSymbol,
@@ -135,11 +137,9 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     startSwitchOnDistance: (params) => switchStateMachine.startSwitchOnDistance(params),
     advancePendingSwitch: (params) => switchStateMachine.advancePendingSwitch(params),
     hasPendingSwitch: (direction) => switchStateMachine.hasPendingSwitch(direction),
-    getPeriodicSwitchPendingState: (direction) =>
-      periodicSwitchPending.get(direction) ?? {
-        pending: false,
-        pendingSinceMs: null,
-      },
+    getPeriodicSwitchPendingState: (direction) => ({
+      pending: periodicSwitchPending.get(direction)?.pending ?? false,
+    }),
     resetAllState,
   };
 }

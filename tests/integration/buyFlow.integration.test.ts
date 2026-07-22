@@ -29,10 +29,7 @@ import type { ExecutableSignal } from '../../src/types/signal.js';
 import type { BuyRiskCheckContext } from '../../src/types/services.js';
 import type { OrderExecutorDeps, OrderMonitor } from '../../src/core/trader/types.js';
 
-type OrderMonitorTestOverrides = Omit<
-  Partial<OrderMonitor>,
-  'replaceOrderPrice' | 'replaceOrderPriceWithPermit'
->;
+type OrderMonitorTestOverrides = Omit<Partial<OrderMonitor>, 'replaceOrderPriceWithPermit'>;
 
 type OrderExecutorTestDeps = Omit<
   OrderExecutorDeps,
@@ -159,8 +156,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -187,8 +182,6 @@ describe('buy-flow integration', () => {
         symbol: 'BULL.HK',
         action: 'BUYCALL',
         triggerTimeMs: currentTime.getTime(),
-        price: 5,
-        lotSize: 100,
         reason: 'cross-doomsday-buy-cutoff-during-throttle',
       }),
     ]);
@@ -237,8 +230,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -265,8 +256,6 @@ describe('buy-flow integration', () => {
         symbol: 'BULL.HK',
         action: 'BUYCALL',
         triggerTimeMs: currentTime.getTime(),
-        price: 5,
-        lotSize: 100,
         reason: 'same-day-after-doomsday-cutoff',
       }),
     ]);
@@ -309,8 +298,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -334,8 +321,6 @@ describe('buy-flow integration', () => {
         symbol: 'BEAR.HK',
         action: 'BUYPUT',
         triggerTimeMs: currentTime.getTime(),
-        price: 5,
-        lotSize: 100,
         reason: 'missing-authoritative-trading-day-info',
       }),
     ]);
@@ -362,8 +347,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -393,8 +376,6 @@ describe('buy-flow integration', () => {
             symbol: 'BULL.HK',
             action: 'BUYCALL',
             triggerTimeMs: Date.now(),
-            price: 5,
-            lotSize: 100,
             reason: 'doomsday-protection-disabled',
           }),
         ]),
@@ -436,8 +417,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -467,8 +446,6 @@ describe('buy-flow integration', () => {
           symbol: 'BULL.HK',
           action: 'BUYCALL',
           triggerTimeMs: Date.now(),
-          price: 5,
-          lotSize: 100,
           reason: 'missing-order-id-should-fail',
         });
 
@@ -509,8 +486,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -540,8 +515,6 @@ describe('buy-flow integration', () => {
           symbol: 'BULL.HK',
           action: 'BUYCALL',
           triggerTimeMs: Date.now(),
-          price: 5,
-          lotSize: 100,
           reason: 'track-order-failure-should-surface',
         });
 
@@ -589,8 +562,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -617,8 +588,6 @@ describe('buy-flow integration', () => {
         symbol: 'BULL.HK',
         action: 'BUYCALL',
         triggerTimeMs: currentTime.getTime(),
-        price: 5,
-        lotSize: 100,
         reason: 'stale-seat-version',
       }),
       seatVersion: 1,
@@ -670,8 +639,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -696,8 +663,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: currentTime.getTime(),
-      price: 5,
-      lotSize: 100,
       reason: 'seat-version-advanced-during-throttle',
     });
 
@@ -733,8 +698,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -759,8 +722,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYPUT',
       triggerTimeMs: currentTime.getTime(),
-      price: 5,
-      lotSize: 100,
       reason: 'mismatched-seat-direction',
     });
 
@@ -805,8 +766,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -831,8 +790,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: currentTime.getTime(),
-      price: 5,
-      lotSize: 100,
       reason: 'missing-seat-version',
     });
     void omittedSeatVersion;
@@ -855,7 +812,7 @@ describe('buy-flow integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -881,8 +838,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -919,8 +874,6 @@ describe('buy-flow integration', () => {
           symbol: 'BULL.HK',
           action: 'BUYCALL',
           triggerTimeMs: Date.now(),
-          price: 5,
-          lotSize: 100,
           reason: 'integration-buy',
         });
 
@@ -979,8 +932,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -1009,8 +960,6 @@ describe('buy-flow integration', () => {
           symbol: 'BULL.HK',
           action: 'BUYCALL',
           triggerTimeMs: Date.now(),
-          price: 1,
-          lotSize: 100,
           reason: 'integration-buy-explicit-quantity',
         });
         signal = { ...signal, quantity: 200 };
@@ -1054,8 +1003,6 @@ describe('buy-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -1081,8 +1028,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: currentTime.getTime(),
-      price: 1,
-      lotSize: 100,
       reason: 'integration-buy-invalid-explicit-quantity',
     });
     signal = { ...signal, quantity: 250 };
@@ -1116,8 +1061,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -1143,8 +1086,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
       reason: 'first-successful-buy',
     });
 
@@ -1167,8 +1108,6 @@ describe('buy-flow integration', () => {
       symbol: 'BEAR.HK',
       action: 'BUYPUT',
       triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
       reason: 'first-successful-put-buy',
     });
 
@@ -1210,8 +1149,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -1237,8 +1174,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
       reason: 'failed-submit-buy',
     });
 
@@ -1272,7 +1207,7 @@ describe('buy-flow integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -1297,8 +1232,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -1332,8 +1265,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
       reason: 'successful-buy-before-next-risk-check',
     });
 
@@ -1355,8 +1286,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: Date.now() + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
-      price: 5,
-      lotSize: 100,
       reason: 'should-be-frequency-blocked',
     });
 
@@ -1397,8 +1326,6 @@ describe('buy-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -1432,8 +1359,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: Date.now(),
-      price: 5,
-      lotSize: 100,
       reason: 'failed-buy-before-next-risk-check',
     });
 
@@ -1467,8 +1392,6 @@ describe('buy-flow integration', () => {
       symbol: 'BULL.HK',
       action: 'BUYCALL',
       triggerTimeMs: Date.now() + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
-      price: 5,
-      lotSize: 100,
       reason: 'should-pass-frequency-check-after-failed-submit',
     });
 

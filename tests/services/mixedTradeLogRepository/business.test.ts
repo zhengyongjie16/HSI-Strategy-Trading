@@ -133,14 +133,12 @@ describe('mixedTradeLogRepository', () => {
     });
     const record = createRecord();
 
-    expect(
-      store.appendCompletionIdempotent({
-        monitorSymbol: record.monitorSymbol,
-        direction: record.direction,
-        boundaryExecutedTimeMs: record.boundaryExecutedTimeMs,
-        orderBaselines: record.orderBaselines,
-      }),
-    ).toBe('APPENDED');
+    store.appendCompletionIdempotent({
+      monitorSymbol: record.monitorSymbol,
+      direction: record.direction,
+      boundaryExecutedTimeMs: record.boundaryExecutedTimeMs,
+      orderBaselines: record.orderBaselines,
+    });
     expect(store.loadCompletionRecords(record.tradingDayKey)).toEqual([record]);
   });
 
@@ -152,19 +150,17 @@ describe('mixedTradeLogRepository', () => {
     });
     const record = createProgressRecord();
 
-    expect(
-      store.appendExecutionProgressIdempotent({
-        monitorSymbol: record.monitorSymbol,
-        direction: record.direction,
-        symbol: record.symbol,
-        orderId: record.orderId,
-        factStage: record.factStage,
-        cumulativeQuantity: record.cumulativeQuantity,
-        cumulativeAmount: record.cumulativeAmount,
-        lastExecutionTimeMs: record.lastExecutionTimeMs,
-        orderRevisionMs: record.orderRevisionMs,
-      }),
-    ).toBe('APPENDED');
+    store.appendExecutionProgressIdempotent({
+      monitorSymbol: record.monitorSymbol,
+      direction: record.direction,
+      symbol: record.symbol,
+      orderId: record.orderId,
+      factStage: record.factStage,
+      cumulativeQuantity: record.cumulativeQuantity,
+      cumulativeAmount: record.cumulativeAmount,
+      lastExecutionTimeMs: record.lastExecutionTimeMs,
+      orderRevisionMs: record.orderRevisionMs,
+    });
     expect(store.loadExecutionProgressRecords(record.tradingDayKey)).toEqual([record]);
   });
 
@@ -176,8 +172,8 @@ describe('mixedTradeLogRepository', () => {
     });
     const record = createRecord();
 
-    expect(store.appendCompletionIdempotent(toCompletionInput(record))).toBe('APPENDED');
-    expect(store.appendCompletionIdempotent(toCompletionInput(record))).toBe('UNCHANGED');
+    store.appendCompletionIdempotent(toCompletionInput(record));
+    store.appendCompletionIdempotent(toCompletionInput(record));
     expect(() => {
       store.appendCompletionIdempotent({
         ...toCompletionInput(record),
@@ -195,13 +191,8 @@ describe('mixedTradeLogRepository', () => {
     });
     const record = createProgressRecord();
 
-    expect(store.appendExecutionProgressIdempotent(toExecutionProgressInput(record))).toBe(
-      'APPENDED',
-    );
-
-    expect(store.appendExecutionProgressIdempotent(toExecutionProgressInput(record))).toBe(
-      'UNCHANGED',
-    );
+    store.appendExecutionProgressIdempotent(toExecutionProgressInput(record));
+    store.appendExecutionProgressIdempotent(toExecutionProgressInput(record));
 
     expect(() => {
       store.appendExecutionProgressIdempotent({
@@ -226,20 +217,15 @@ describe('mixedTradeLogRepository', () => {
       progressId: openRecord.progressId.replace(/:OPEN$/, ':TERMINAL'),
     };
 
-    expect(store.appendExecutionProgressIdempotent(toExecutionProgressInput(openRecord))).toBe(
-      'APPENDED',
-    );
-
-    expect(store.appendExecutionProgressIdempotent(toExecutionProgressInput(terminalRecord))).toBe(
-      'APPENDED',
-    );
+    store.appendExecutionProgressIdempotent(toExecutionProgressInput(openRecord));
+    store.appendExecutionProgressIdempotent(toExecutionProgressInput(terminalRecord));
     expect(store.loadExecutionProgressRecords('2026-07-11')).toEqual([openRecord, terminalRecord]);
-    expect(() =>
+    expect(() => {
       store.appendExecutionProgressIdempotent({
         ...toExecutionProgressInput(terminalRecord),
         cumulativeAmount: '39',
-      }),
-    ).toThrow(/progressId conflict/);
+      });
+    }).toThrow(/progressId conflict/);
   });
 
   it('strictly validates completion domain facts before deriving the protocol envelope', () => {
@@ -250,23 +236,23 @@ describe('mixedTradeLogRepository', () => {
     });
     const record = createRecord();
 
-    expect(() =>
+    expect(() => {
       store.appendCompletionIdempotent({
         ...toCompletionInput(record),
         boundaryExecutedTimeMs: Number.NaN,
-      }),
-    ).toThrow(/trading day cannot be resolved|invalid V1 completion record/);
+      });
+    }).toThrow(/trading day cannot be resolved|invalid V1 completion record/);
 
-    expect(() =>
+    expect(() => {
       store.appendCompletionIdempotent({
         ...toCompletionInput(record),
         monitorSymbol: '',
-      }),
-    ).toThrow(/invalid V1 completion record/);
+      });
+    }).toThrow(/invalid V1 completion record/);
 
-    expect(() =>
-      store.appendCompletionIdempotent({ ...toCompletionInput(record), orderBaselines: [] }),
-    ).toThrow(/invalid V1 completion record/);
+    expect(() => {
+      store.appendCompletionIdempotent({ ...toCompletionInput(record), orderBaselines: [] });
+    }).toThrow(/invalid V1 completion record/);
   });
 
   it('strictly validates execution-progress domain facts before deriving the protocol envelope', () => {
@@ -277,33 +263,33 @@ describe('mixedTradeLogRepository', () => {
     });
     const record = createProgressRecord();
 
-    expect(() =>
+    expect(() => {
       store.appendExecutionProgressIdempotent({
         ...toExecutionProgressInput(record),
         lastExecutionTimeMs: Number.NaN,
-      }),
-    ).toThrow(/trading day cannot be resolved|invalid V1 execution progress record/);
+      });
+    }).toThrow(/trading day cannot be resolved|invalid V1 execution progress record/);
 
-    expect(() =>
+    expect(() => {
       store.appendExecutionProgressIdempotent({
         ...toExecutionProgressInput(record),
         orderRevisionMs: progressExecutionMs - 1,
-      }),
-    ).toThrow(/invalid V1 execution progress record/);
+      });
+    }).toThrow(/invalid V1 execution progress record/);
 
-    expect(() =>
+    expect(() => {
       store.appendExecutionProgressIdempotent({
         ...toExecutionProgressInput(record),
         cumulativeQuantity: '0.0',
-      }),
-    ).toThrow(/invalid V1 execution progress record/);
+      });
+    }).toThrow(/invalid V1 execution progress record/);
 
-    expect(() =>
+    expect(() => {
       store.appendExecutionProgressIdempotent({
         ...toExecutionProgressInput(record),
         cumulativeAmount: '0.00',
-      }),
-    ).toThrow(/invalid V1 execution progress record/);
+      });
+    }).toThrow(/invalid V1 execution progress record/);
   });
 
   it('rejects the legacy completed reason instead of restoring it as a completion fact', () => {
@@ -401,9 +387,9 @@ describe('mixedTradeLogRepository', () => {
     });
 
     try {
-      expect(() => store.appendCompletionIdempotent(toCompletionInput(createRecord()))).toThrow(
-        'write failed',
-      );
+      expect(() => {
+        store.appendCompletionIdempotent(toCompletionInput(createRecord()));
+      }).toThrow('write failed');
       expect(listTempFiles(rootDir)).toEqual([]);
     } finally {
       writeSpy.mockRestore();
@@ -421,9 +407,9 @@ describe('mixedTradeLogRepository', () => {
     });
 
     try {
-      expect(() => store.appendCompletionIdempotent(toCompletionInput(createRecord()))).toThrow(
-        'fsync failed',
-      );
+      expect(() => {
+        store.appendCompletionIdempotent(toCompletionInput(createRecord()));
+      }).toThrow('fsync failed');
       expect(listTempFiles(rootDir)).toEqual([]);
     } finally {
       fsyncSpy.mockRestore();
@@ -437,7 +423,7 @@ describe('mixedTradeLogRepository', () => {
       resolveLogRootDir: () => rootDir,
     });
     const record = createRecord();
-    expect(store.appendCompletionIdempotent(toCompletionInput(record))).toBe('APPENDED');
+    store.appendCompletionIdempotent(toCompletionInput(record));
     const logFile = buildTradeLogPath(rootDir, new Date('2026-07-11T04:00:00.000Z'));
     const original = fs.readFileSync(logFile, 'utf8');
     const renameSpy = spyOn(fs, 'renameSync').mockImplementation(() => {

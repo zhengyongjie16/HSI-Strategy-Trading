@@ -119,14 +119,12 @@ export type PeriodicSeatBlockingReason =
 
 /**
  * 周期换标等待状态。
- * 类型用途：记录周期到期后是否仍在等待空仓以及阻塞来源。
+ * 类型用途：记录周期到期后是否仍在等待空仓。
  * 数据来源：由 autoSymbolManager 周期换标状态机维护。
  * 使用范围：MonitorContext 行为端口、autoSymbolManager 与监控任务处理器。
  */
-export type PeriodicSwitchPendingState = Readonly<{
+type PeriodicSwitchPendingState = Readonly<{
   pending: boolean;
-  pendingSinceMs: number | null;
-  blockedBy?: PeriodicSeatBlockingReason;
 }>;
 
 /**

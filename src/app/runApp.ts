@@ -225,7 +225,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
             throw rebuildError;
           }
 
-          applyStartupSnapshotFailure(postGateRuntime.lastState, startupSnapshot.now);
+          applyStartupSnapshotFailure(postGateRuntime.lastState);
           appLogger.error(
             '启动初始重建 API 请求失败：已阻断交易并切换为开盘重建重试模式',
             formatAppError(err),

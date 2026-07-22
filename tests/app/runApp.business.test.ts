@@ -121,8 +121,8 @@ const runAppDepsProxy: RunAppDeps = {
   formatError: (error) => requireActiveRunAppDeps().formatError(error),
   validateRuntimeSymbolsFromQuotesMap: (params) =>
     requireActiveRunAppDeps().validateRuntimeSymbolsFromQuotesMap(params),
-  applyStartupSnapshotFailureState: (lastState, now) => {
-    requireActiveRunAppDeps().applyStartupSnapshotFailureState(lastState, now);
+  applyStartupSnapshotFailureState: (lastState) => {
+    requireActiveRunAppDeps().applyStartupSnapshotFailureState(lastState);
   },
 };
 
@@ -134,7 +134,6 @@ function createMinimalLastState(): LastState {
     currentDayKey: '2026-04-29',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],

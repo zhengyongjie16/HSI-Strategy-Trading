@@ -17,10 +17,9 @@
  * - 智能平仓开启：三阶段卖出（整体盈利全卖；未盈利先卖盈利订单；可选卖出超时订单）
  * - 智能平仓关闭：直接清空所有持仓
  *
- * 缓存机制：
- * - 订单数据缓存到显式清空/刷新为止
- * - 首次调用时从 API 获取并缓存，之后使用缓存
- * - 避免频繁调用 historyOrders API
+ * API 快照机制：
+ * - 每次获取全量订单时分别拉取 historyOrders 与 todayOrders
+ * - 两份快照按 orderId 合并去重后返回，不在本模块缓存 API 结果
  */
 import { logger } from '../../utils/logger/index.js';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
@@ -121,7 +120,7 @@ function formatOrderStatsLine(stats: OrderStatistics): string {
 
 /**
  * 按标的筛选同一份订单快照，并使用重建分类器校验其订单事实。
- * 此函数不写入缓存或本地存储，供席位刷新预检与实际刷新共用，确保二者的过滤、生命周期和方向边界完全一致。
+ * 此函数不写入本地订单记录，供席位刷新预检与实际刷新共用，确保二者的过滤、生命周期和方向边界完全一致。
  * @param symbol 待重建的交易标的
  * @param allOrders 同一次 API 获取的完整订单快照
  * @returns 该标的的原始订单及其统一分类结果
@@ -138,7 +137,7 @@ function classifyRebuildSnapshotForSymbol(
 
 /**
  * 预检指定标的的已获取订单快照。
- * 只执行与实际刷新相同的筛选和分类，不写入 API 缓存或本地订单记录。
+ * 只执行与实际刷新相同的筛选和分类，不写入本地订单记录。
  * @param symbol 待重建的交易标的
  * @param allOrders 同一次 API 获取的完整订单快照
  */
@@ -360,11 +359,9 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
   // 公有方法 - 订单获取和刷新
   // ============================================
 
-  /** 从 API 获取全量订单数据（启动时调用一次） */
-  async function fetchAllOrdersFromAPI(
-    forceRefresh = false,
-  ): Promise<ReadonlyArray<RawOrderFromAPI>> {
-    return apiManager.fetchAllOrdersFromAPI(forceRefresh);
+  /** 每次从 API 拉取 historyOrders 与 todayOrders，并返回合并去重后的全量订单快照 */
+  async function fetchAllOrdersFromAPI(): Promise<ReadonlyArray<RawOrderFromAPI>> {
+    return apiManager.fetchAllOrdersFromAPI();
   }
 
   /**
@@ -404,7 +401,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
   }
 
   // ============================================
-  // 公有方法 - 缓存管理
+  // 公有方法 - 本地订单记录查询
   // ============================================
 
   /** 获取指定标的的买入订单列表 */
@@ -497,10 +494,9 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     return storage.selectSellableOrders(params);
   }
 
-  /** 重置所有订单记录（storage.clearAll + apiManager.clearCache） */
+  /** 重置所有订单记录 */
   function resetAll(): void {
     storage.clearAll();
-    apiManager.clearCache();
   }
 
   return {

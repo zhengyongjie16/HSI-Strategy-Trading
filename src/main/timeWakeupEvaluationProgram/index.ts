@@ -23,7 +23,6 @@ import {
 } from '../../utils/time/index.js';
 import { ordinarySignalGuard } from '../ordinarySignalGuard/index.js';
 import { planNextTimeWakeup } from '../timeWakeupPlanner/index.js';
-import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 import type { TimeWakeupCandidate } from '../timeWakeupPlanner/types.js';
 import type { TimeWakeupEvaluationContext, TimeWakeupEvaluationResult } from './types.js';
 
@@ -98,7 +97,6 @@ function createEvaluationResult(
 
 function pushFutureCandidate(
   candidates: TimeWakeupCandidate[],
-  source: TimeWakeupCandidate['source'],
   atMs: number | null,
   nowMs: number,
 ): void {
@@ -106,7 +104,7 @@ function pushFutureCandidate(
     return;
   }
 
-  candidates.push({ source, atMs });
+  candidates.push({ atMs });
 }
 
 /**
@@ -117,19 +115,16 @@ function pushFutureCandidate(
  * @returns 无返回值；副作用是追加 API_RETRY 候选
  */
 function pushApiRetryCandidate(candidates: TimeWakeupCandidate[], currentMs: number): void {
-  pushFutureCandidate(candidates, 'API_RETRY', currentMs + TRADING.INTERVAL_MS, currentMs);
+  pushFutureCandidate(candidates, currentMs + TRADING.INTERVAL_MS, currentMs);
 }
 
-async function refreshDoomsdayApiFailureFacts(params: {
+async function refreshDoomsdayPositionFacts(params: {
   readonly trader: TimeWakeupEvaluationContext['trader'];
   readonly lastState: TimeWakeupEvaluationContext['lastState'];
-  readonly quoteSubscriptionRuntime: TimeWakeupEvaluationContext['quoteSubscriptionRuntime'];
 }): Promise<void> {
-  await params.trader.fetchAllOrdersFromAPI(true);
   const positions = await params.trader.getStockPositions();
   params.lastState.cachedPositions = positions;
   params.lastState.positionCache.update(positions);
-  await params.quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth();
 }
 
 function resolveDayBoundaryMs(date: Date, minuteOfDay: number): number | null {
@@ -230,33 +225,6 @@ function resolveOpenProtectionEdgeMs(
   return candidates.length === 0 ? null : Math.min(...candidates);
 }
 
-function resolveNextTradingDayOpenMs(
-  fromMs: number,
-  calendarSnapshot: TimeWakeupEvaluationContext['lastState']['tradingCalendarSnapshot'],
-): number | null {
-  const snapshot: TradingCalendarSnapshot = calendarSnapshot;
-  const dayStartMs = resolveHKDayStartUtcMs(getRequiredHKDateKey(new Date(fromMs)));
-  if (dayStartMs === null) {
-    return null;
-  }
-
-  for (let dayOffset = 0; dayOffset <= 7; dayOffset += 1) {
-    const dayMs = dayStartMs + dayOffset * TIME.MILLISECONDS_PER_DAY;
-    const dayKey = getRequiredHKDateKey(new Date(dayMs));
-    const dayInfo = snapshot.get(dayKey);
-    if (dayInfo === undefined) {
-      return null;
-    }
-
-    const openMs = dayMs + (9 * 60 + 30) * TIME.MILLISECONDS_PER_MINUTE;
-    if (dayInfo.isTradingDay && openMs > fromMs) {
-      return openMs;
-    }
-  }
-
-  return null;
-}
-
 /**
  * 执行单次权威时间唤醒评估。
  *
@@ -280,12 +248,7 @@ export async function timeWakeupEvaluationProgram({
   const previousCanTrade = lastState.canTrade;
   const previousTakeoverActive = takeoverStateByLastState.get(lastState) ?? false;
   const candidates: TimeWakeupCandidate[] = [];
-  pushFutureCandidate(
-    candidates,
-    'HK_DAY_BOUNDARY',
-    resolveNextHKDayBoundaryMs(currentTime),
-    currentMs,
-  );
+  pushFutureCandidate(candidates, resolveNextHKDayBoundaryMs(currentTime), currentMs);
 
   const currentDayKey = getHKDateKey(currentTime) ?? '';
   const cachedTradingDayInfo =
@@ -330,28 +293,21 @@ export async function timeWakeupEvaluationProgram({
   if (isTradingDayToday) {
     pushFutureCandidate(
       candidates,
-      'TRADING_GATE_EDGE',
       resolveTradingGateEdgeMs(currentTime, isHalfDayToday),
       currentMs,
     );
 
-    pushFutureCandidate(
-      candidates,
-      'MARKET_CLOSE_EDGE',
-      resolveMarketCloseMs(currentTime, isHalfDayToday),
-      currentMs,
-    );
+    pushFutureCandidate(candidates, resolveMarketCloseMs(currentTime, isHalfDayToday), currentMs);
 
     pushFutureCandidate(
       candidates,
-      'OPEN_PROTECTION_EDGE',
       resolveOpenProtectionEdgeMs(currentTime, isHalfDayToday, tradingConfig.global.openProtection),
       currentMs,
     );
 
     if (tradingConfig.global.doomsdayProtection) {
       for (const windowEntryMs of resolveDoomsdayWindowEntryMs(currentTime, isHalfDayToday)) {
-        pushFutureCandidate(candidates, 'DOOMSDAY_WINDOW_ENTRY', windowEntryMs, currentMs);
+        pushFutureCandidate(candidates, windowEntryMs, currentMs);
       }
     }
   }
@@ -379,15 +335,7 @@ export async function timeWakeupEvaluationProgram({
     return createEvaluationResult(currentTime, candidates);
   }
 
-  pushFutureCandidate(candidates, 'LIFECYCLE_RETRY', lifecycleResult.nextRetryAtMs, currentMs);
-  if (lifecycleResult.pendingOpenRebuild) {
-    pushFutureCandidate(
-      candidates,
-      'LIFECYCLE_RETRY',
-      resolveNextTradingDayOpenMs(currentMs, lastState.tradingCalendarSnapshot),
-      currentMs,
-    );
-  }
+  pushFutureCandidate(candidates, lifecycleResult.nextRetryAtMs, currentMs);
 
   if (lastState.canTrade !== false && !isTradingDayToday) {
     logger.info('今天不是交易日，暂停实时监控。');
@@ -496,7 +444,7 @@ export async function timeWakeupEvaluationProgram({
         monitorContext,
         trader,
       });
-      pushFutureCandidate(candidates, 'DOOMSDAY_RETRY', cancelResult.nextRetryAtMs, currentMs);
+      pushFutureCandidate(candidates, cancelResult.nextRetryAtMs, currentMs);
       if (cancelResult.executed && cancelResult.cancelRequestAcceptedCount > 0) {
         logger.info(
           `[末日保护程序] 买入截止窗口已提交撤单请求，共 ${cancelResult.cancelRequestAcceptedCount} 个买入订单，终态以后续 WS 为准`,
@@ -515,7 +463,7 @@ export async function timeWakeupEvaluationProgram({
         onPositionsCommitted: () =>
           quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth(),
       });
-      pushFutureCandidate(candidates, 'DOOMSDAY_RETRY', clearanceResult.nextRetryAtMs, currentMs);
+      pushFutureCandidate(candidates, clearanceResult.nextRetryAtMs, currentMs);
       if (
         cancelResult.nextRetryAtMs !== null ||
         clearanceResult.executed ||
@@ -529,27 +477,42 @@ export async function timeWakeupEvaluationProgram({
       }
 
       if (isUnconfirmedOrderSubmissionError(error)) {
+        let positionFactsRefreshed = false;
+        let positionSubscriptionReconciled = false;
         try {
-          await refreshDoomsdayApiFailureFacts({
+          await refreshDoomsdayPositionFacts({
             trader,
             lastState,
-            quoteSubscriptionRuntime,
           });
+          positionFactsRefreshed = true;
+          await quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth();
+          positionSubscriptionReconciled = true;
         } catch (refreshError) {
           if (!isExternalApiRequestError(refreshError)) {
             throw refreshError;
           }
 
           logger.warn(
-            '[TimeWakeupEvaluation] 末日清仓提交结果未知后的事实刷新失败，等待系统级重评估',
+            positionFactsRefreshed
+              ? '[TimeWakeupEvaluation] 末日清仓提交结果未知后的持仓事实已刷新，但持仓订阅协调失败，等待系统级重评估'
+              : '[TimeWakeupEvaluation] 末日清仓提交结果未知后的持仓事实刷新失败，等待系统级重评估',
             refreshError.message,
           );
         }
 
-        logger.warn(
-          '[TimeWakeupEvaluation] 末日清仓下单结果未知，已刷新事实，等待系统级重评估',
-          error.message,
-        );
+        let outcomeMessage: string;
+        if (positionFactsRefreshed && positionSubscriptionReconciled) {
+          outcomeMessage =
+            '[TimeWakeupEvaluation] 末日清仓下单结果未知，已刷新持仓事实，等待系统级重评估';
+        } else if (positionFactsRefreshed) {
+          outcomeMessage =
+            '[TimeWakeupEvaluation] 末日清仓下单结果未知，已刷新持仓事实，但持仓订阅协调尚未完成，等待系统级重评估';
+        } else {
+          outcomeMessage =
+            '[TimeWakeupEvaluation] 末日清仓下单结果未知，持仓事实尚未刷新，等待系统级重评估';
+        }
+
+        logger.warn(outcomeMessage, error.message);
         pushApiRetryCandidate(candidates, currentMs);
         return createEvaluationResult(currentTime, candidates);
       }

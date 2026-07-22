@@ -226,14 +226,6 @@ export interface OrderMonitor {
     request: DoomsdayCancelOrderRequest,
   ) => Promise<DoomsdayCancelOrderOutcome>;
 
-  /** 修改订单价格 */
-  replaceOrderPrice: (
-    orderId: string,
-    newPrice: number,
-    request: OrderMutationRequest,
-    quantity?: number | null,
-  ) => Promise<ReplaceOrderPriceOutcome>;
-
   /**
    * 在调用方已取得的 mutation permit 内执行一次信号驱动的改单。
    * permit 为必填，禁止在该路径降级为重新排队或使用旧价格调用。
@@ -642,7 +634,7 @@ export type CancelOrderMutationRequest = OrderMutationRequest | DoomsdayCancelOr
 /**
  * 改单执行结果。
  * 类型用途：明确区分 broker 已确认改单与未执行，防止未执行时更新本地 pending fact。
- * 数据来源：OrderMonitor.replaceOrderPrice 返回。
+ * 数据来源：订单监控内部改单与 permit 改单入口返回。
  * 使用范围：OrderExecutor 卖单合并链路。
  */
 export type ReplaceOrderPriceOutcome =

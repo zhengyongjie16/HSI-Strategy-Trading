@@ -65,16 +65,14 @@ export type RenderMonitorIndicatorsParams = Readonly<{
 
 /**
  * trading quote 渲染参数。
- * 类型用途：封装纯渲染交易标的行情所需的 quote 事件、route 信息、monitor quote 与附加展示信息。
+ * 类型用途：封装纯渲染交易标的行情所需的 quote 事件、route 信息与附加展示信息。
  * 数据来源：由 tradingQuoteDisplayRuntime 在 route 校验与补齐 monitor quote 后组装。
  * 使用范围：仅 marketMonitor.renderTradingQuote 使用。
  */
 export type RenderTradingQuoteParams = Readonly<{
   readonly event: QuoteUpdatedEvent;
   readonly tradingSymbol: string;
-  readonly monitorSymbol: string;
   readonly direction: 'LONG' | 'SHORT';
-  readonly monitorQuote: Quote | null;
   readonly displayInfo: PriceDisplayInfo | null;
 }>;
 

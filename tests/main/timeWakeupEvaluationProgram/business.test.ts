@@ -3,7 +3,7 @@
  *
  * 覆盖单次时间唤醒评估的门禁状态、生命周期顺序与系统级唤醒候选输出。
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { TRADING } from '../../../src/constants/index.js';
 import { timeWakeupEvaluationProgram } from '../../../src/main/timeWakeupEvaluationProgram/index.js';
 import type { AutoSearchAuthorizationChangedEvent } from '../../../src/main/tradingGateEventRuntime/types.js';
@@ -21,6 +21,7 @@ import type {
 } from '../../../src/core/doomsdayProtection/types.js';
 import type { DelayedSignalVerifierPort } from '../../../src/types/monitorContextPorts.js';
 import type { TradingDayInfo } from '../../../src/types/services.js';
+import { logger } from '../../../src/utils/logger/index.js';
 import {
   createAccountSnapshotDouble,
   createDelayedSignalVerifierDouble,
@@ -49,6 +50,7 @@ type TimeWakeupEvaluationHarnessOptions = Readonly<{
   onCancelPendingBuyOrders?: () => void;
   onExecuteClearance?: () => void;
   onPositionsCommitted?: () => void;
+  reconcilePositionHoldError?: Error;
   executeClearanceError?: Error;
   traderOverrides?: Parameters<typeof createTraderDouble>[0];
   cachedTradingDayInfo?: LastState['cachedTradingDayInfo'];
@@ -85,7 +87,6 @@ function createLastState(
     currentDayKey: '2026-04-29',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: createAccountSnapshotDouble(100_000),
     cachedPositions: [],
@@ -186,6 +187,9 @@ function createTimeWakeupEvaluationHarness(
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble({
       reconcilePositionHoldFromCurrentTruth: async () => {
         options.onPositionsCommitted?.();
+        if (options.reconcilePositionHoldError !== undefined) {
+          throw options.reconcilePositionHoldError;
+        }
       },
     }),
     dayLifecycleManager: {
@@ -228,7 +232,9 @@ describe('timeWakeupEvaluationProgram', () => {
     const result = await timeWakeupEvaluationProgram(context);
 
     expect(result.plan.hasWork).toBe(true);
-    expect(result.plan.candidates.some((candidate) => candidate.source === 'API_RETRY')).toBe(true);
+    expect(result.plan.nextWakeupAtMs).toBe(
+      new Date('2026-04-29T09:30:00.000+08:00').getTime() + TRADING.INTERVAL_MS,
+    );
     expect(context.lastState.cachedTradingDayInfo).toBeNull();
     expect(context.lastState.canTrade).toBe(false);
     expect(gateEmitted).toBe(false);
@@ -271,7 +277,9 @@ describe('timeWakeupEvaluationProgram', () => {
     const result = await timeWakeupEvaluationProgram(context);
 
     expect(result.plan.hasWork).toBe(true);
-    expect(result.plan.candidates.some((candidate) => candidate.source === 'API_RETRY')).toBe(true);
+    expect(result.plan.nextWakeupAtMs).toBe(
+      new Date('2026-04-29T09:30:00.000+08:00').getTime() + TRADING.INTERVAL_MS,
+    );
     expect(context.lastState.canTrade).toBe(false);
     expect(gateEmitted).toBe(false);
   });
@@ -440,7 +448,7 @@ describe('timeWakeupEvaluationProgram', () => {
     ]);
   });
 
-  it('返回包含 lifecycle 与 doomsday retry 候选的 planner 输出', async () => {
+  it('多个 retry 中选择最早的 lifecycle retry', async () => {
     const now = new Date('2026-04-29T15:56:00.000+08:00');
     const context = createTimeWakeupEvaluationHarness({
       now,
@@ -456,15 +464,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'LIFECYCLE_RETRY',
-      atMs: now.getTime() + 30_000,
-    });
-
-    expect(result.plan.candidates).toContainEqual({
-      source: 'DOOMSDAY_RETRY',
-      atMs: now.getTime() + 45_000,
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(now.getTime() + 30_000);
   });
 
   it('不复用非当前 HK 日期的交易日缓存', async () => {
@@ -534,8 +534,7 @@ describe('timeWakeupEvaluationProgram', () => {
       },
     });
 
-    const result = await timeWakeupEvaluationProgram(context);
-    const candidateSources = result.plan.candidates.map((candidate) => candidate.source);
+    await timeWakeupEvaluationProgram(context);
 
     expect(context.lastState.canTrade).toBe(false);
     expect(lifecycleRuntimeFlags).toEqual([
@@ -545,10 +544,6 @@ describe('timeWakeupEvaluationProgram', () => {
         isTradingDay: false,
       },
     ]);
-    expect(candidateSources).not.toContain('TRADING_GATE_EDGE');
-    expect(candidateSources).not.toContain('OPEN_PROTECTION_EDGE');
-    expect(candidateSources).not.toContain('MARKET_CLOSE_EDGE');
-    expect(candidateSources).not.toContain('DOOMSDAY_WINDOW_ENTRY');
   });
 
   it('在开盘前返回交易门禁边界候选', async () => {
@@ -558,10 +553,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'TRADING_GATE_EDGE',
-      atMs: new Date('2026-04-29T09:30:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T09:30:00.000+08:00').getTime());
   });
 
   it('正常日上午返回 12:00 午休交易门禁边界候选', async () => {
@@ -571,10 +563,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'TRADING_GATE_EDGE',
-      atMs: new Date('2026-04-29T12:00:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T12:00:00.000+08:00').getTime());
   });
 
   it('正常日午休返回 13:00 午后交易门禁边界候选', async () => {
@@ -584,10 +573,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'TRADING_GATE_EDGE',
-      atMs: new Date('2026-04-29T13:00:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T13:00:00.000+08:00').getTime());
   });
 
   it('半日市上午返回 12:00 收盘交易门禁边界候选且无 13:00 候选', async () => {
@@ -601,15 +587,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'TRADING_GATE_EDGE',
-      atMs: new Date('2026-04-29T12:00:00.000+08:00').getTime(),
-    });
-
-    expect(result.plan.candidates).not.toContainEqual({
-      source: 'TRADING_GATE_EDGE',
-      atMs: new Date('2026-04-29T13:00:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T12:00:00.000+08:00').getTime());
   });
 
   it('在开盘保护窗口内返回保护结束候选', async () => {
@@ -620,10 +598,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'OPEN_PROTECTION_EDGE',
-      atMs: new Date('2026-04-29T09:35:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T09:35:00.000+08:00').getTime());
   });
 
   it('正常日午盘开盘保护只标记保护状态并返回保护结束候选', async () => {
@@ -636,10 +611,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     expect(context.lastState.canTrade).toBe(true);
     expect(context.lastState.openProtectionActive).toBe(true);
-    expect(result.plan.candidates).toContainEqual({
-      source: 'OPEN_PROTECTION_EDGE',
-      atMs: new Date('2026-04-29T13:05:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T13:05:00.000+08:00').getTime());
   });
 
   it('半日市不生成午盘开盘保护候选', async () => {
@@ -655,10 +627,9 @@ describe('timeWakeupEvaluationProgram', () => {
     const result = await timeWakeupEvaluationProgram(context);
 
     expect(context.lastState.openProtectionActive).toBe(false);
-    expect(result.plan.candidates).not.toContainEqual({
-      source: 'OPEN_PROTECTION_EDGE',
-      atMs: new Date('2026-04-29T13:05:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).not.toBe(
+      new Date('2026-04-29T13:05:00.000+08:00').getTime(),
+    );
   });
 
   it('在收盘前返回市场收盘边界候选', async () => {
@@ -668,10 +639,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'MARKET_CLOSE_EDGE',
-      atMs: new Date('2026-04-29T16:00:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T16:00:00.000+08:00').getTime());
   });
 
   it('正常日下午 13:05 返回末日保护买入截止入口候选', async () => {
@@ -681,10 +649,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'DOOMSDAY_WINDOW_ENTRY',
-      atMs: new Date('2026-04-29T15:45:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T15:45:00.000+08:00').getTime());
   });
 
   it('末日买入截止窗口内调用买单撤单 action', async () => {
@@ -713,10 +678,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'DOOMSDAY_WINDOW_ENTRY',
-      atMs: new Date('2026-04-29T15:55:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T15:55:00.000+08:00').getTime());
   });
 
   it('末日清仓接管窗口内执行清仓 action 并按返回值规划 retry', async () => {
@@ -739,13 +701,10 @@ describe('timeWakeupEvaluationProgram', () => {
     const result = await timeWakeupEvaluationProgram(context);
 
     expect(calls).toEqual(['executeClearance', 'reconcilePositionHold']);
-    expect(result.plan.candidates).toContainEqual({
-      source: 'DOOMSDAY_RETRY',
-      atMs: retryAtMs,
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(retryAtMs);
   });
 
-  it('末日清仓 submitOrder 结果未知后刷新事实并拒绝系统级重复提交', async () => {
+  it('末日清仓 submitOrder 结果未知后刷新持仓事实并拒绝系统级重复提交', async () => {
     const currentTime = new Date('2026-04-29T15:56:00.000+08:00');
     const refreshedPositions = [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 0, availableQuantity: 0 }),
@@ -759,10 +718,6 @@ describe('timeWakeupEvaluationProgram', () => {
         cause: new Error('submit outcome unknown'),
       }),
       traderOverrides: {
-        fetchAllOrdersFromAPI: async (forceRefresh) => {
-          calls.push(`fetchAllOrders:${String(forceRefresh)}`);
-          return [];
-        },
         getStockPositions: async () => {
           calls.push('getStockPositions');
           return refreshedPositions;
@@ -779,16 +734,165 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'API_RETRY',
-      atMs: currentTime.getTime() + TRADING.INTERVAL_MS,
-    });
-    expect(calls).toEqual(['fetchAllOrders:true', 'getStockPositions', 'reconcilePositionHold']);
+    expect(result.plan.nextWakeupAtMs).toBe(currentTime.getTime() + TRADING.INTERVAL_MS);
+    expect(calls).toEqual(['getStockPositions', 'reconcilePositionHold']);
     expect(context.lastState.cachedPositions).toEqual(refreshedPositions);
     expect(context.lastState.positionCache.get('BULL.HK')).toEqual(refreshedPositions[0] ?? null);
   });
 
-  it('半日市返回 11:45 与 11:55 末日保护窗口入口候选', async () => {
+  it('末日清仓结果未知且持仓订阅协调失败时保留已刷新的持仓事实并安排重试', async () => {
+    const currentTime = new Date('2026-04-29T15:56:00.000+08:00');
+    const refreshedPositions = [
+      createPositionDouble({ symbol: 'BULL.HK', quantity: 0, availableQuantity: 0 }),
+    ];
+    const calls: string[] = [];
+    const subscriptionError = await createExternalApiRequestError({
+      operation: 'MarketDataClient.subscribeSymbols',
+      attempts: 1,
+      cause: new Error('subscription unavailable'),
+    });
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      const context = createTimeWakeupEvaluationHarness({
+        now: currentTime,
+        executeClearanceError: await createExternalApiRequestError({
+          operation: 'TradeContext.submitOrder',
+          attempts: 1,
+          cause: new Error('submit outcome unknown'),
+        }),
+        traderOverrides: {
+          getStockPositions: async () => {
+            calls.push('getStockPositions');
+            return refreshedPositions;
+          },
+        },
+        onPositionsCommitted: () => {
+          calls.push('reconcilePositionHold');
+        },
+        reconcilePositionHoldError: subscriptionError,
+      });
+      context.lastState.cachedPositions = [
+        createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
+      ];
+      context.lastState.positionCache.update(context.lastState.cachedPositions);
+
+      const result = await timeWakeupEvaluationProgram(context);
+
+      expect(result.plan.nextWakeupAtMs).toBe(currentTime.getTime() + TRADING.INTERVAL_MS);
+      expect(calls).toEqual(['getStockPositions', 'reconcilePositionHold']);
+      expect(context.lastState.cachedPositions).toEqual(refreshedPositions);
+      expect(context.lastState.positionCache.get('BULL.HK')).toEqual(refreshedPositions[0] ?? null);
+      const timeWakeupWarnings = warnSpy.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.includes('[TimeWakeupEvaluation]'));
+      expect(timeWakeupWarnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('持仓事实已刷新，但持仓订阅协调失败'),
+          expect.stringContaining('已刷新持仓事实，但持仓订阅协调尚未完成'),
+        ]),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('末日清仓结果未知且持仓 API 失败时保留旧缓存并安排重试', async () => {
+    const currentTime = new Date('2026-04-29T15:56:00.000+08:00');
+    const cachedPositions = [
+      createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
+    ];
+    let reconcileCalls = 0;
+    const positionError = await createExternalApiRequestError({
+      operation: 'TradeContext.stockPositions',
+      attempts: 1,
+      cause: new Error('positions unavailable'),
+    });
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      const context = createTimeWakeupEvaluationHarness({
+        now: currentTime,
+        executeClearanceError: await createExternalApiRequestError({
+          operation: 'TradeContext.submitOrder',
+          attempts: 1,
+          cause: new Error('submit outcome unknown'),
+        }),
+        traderOverrides: {
+          getStockPositions: async () => {
+            throw positionError;
+          },
+        },
+        onPositionsCommitted: () => {
+          reconcileCalls += 1;
+        },
+      });
+      context.lastState.cachedPositions = cachedPositions;
+      context.lastState.positionCache.update(cachedPositions);
+
+      const result = await timeWakeupEvaluationProgram(context);
+
+      expect(result.plan.nextWakeupAtMs).toBe(currentTime.getTime() + TRADING.INTERVAL_MS);
+      expect(context.lastState.cachedPositions).toEqual(cachedPositions);
+      expect(context.lastState.positionCache.get('BULL.HK')).toEqual(cachedPositions[0] ?? null);
+      expect(reconcileCalls).toBe(0);
+      const timeWakeupWarnings = warnSpy.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.includes('[TimeWakeupEvaluation]'));
+      expect(timeWakeupWarnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('持仓事实刷新失败'),
+          expect.stringContaining('持仓事实尚未刷新'),
+        ]),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  for (const scenario of [
+    { label: '持仓查询', failureStage: 'POSITION_FACTS', expectedReconcileCalls: 0 },
+    { label: '持仓订阅协调', failureStage: 'POSITION_SUBSCRIPTION', expectedReconcileCalls: 1 },
+  ] as const) {
+    it(`末日清仓结果未知后的${scenario.label}普通错误保持 fail-fast`, async () => {
+      const ordinaryError = new Error(`${scenario.failureStage} contract violated`);
+      const refreshedPositions = [
+        createPositionDouble({ symbol: 'BULL.HK', quantity: 0, availableQuantity: 0 }),
+      ];
+      let reconcileCalls = 0;
+      const context = createTimeWakeupEvaluationHarness({
+        now: new Date('2026-04-29T15:56:00.000+08:00'),
+        executeClearanceError: await createExternalApiRequestError({
+          operation: 'TradeContext.submitOrder',
+          attempts: 1,
+          cause: new Error('submit outcome unknown'),
+        }),
+        traderOverrides: {
+          getStockPositions: async () => {
+            if (scenario.failureStage === 'POSITION_FACTS') {
+              throw ordinaryError;
+            }
+
+            return refreshedPositions;
+          },
+        },
+        onPositionsCommitted: () => {
+          reconcileCalls += 1;
+        },
+        ...(scenario.failureStage === 'POSITION_SUBSCRIPTION'
+          ? { reconcilePositionHoldError: ordinaryError }
+          : {}),
+      });
+
+      await expectPromiseRejectsWithMessage(
+        timeWakeupEvaluationProgram(context),
+        /contract violated/,
+      );
+      expect(reconcileCalls).toBe(scenario.expectedReconcileCalls);
+    });
+  }
+
+  it('半日市 11:40 返回 11:45 买入截止窗口入口', async () => {
     const context = createTimeWakeupEvaluationHarness({
       now: new Date('2026-04-29T11:40:00.000+08:00'),
       cachedTradingDayInfo: {
@@ -799,15 +903,21 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'DOOMSDAY_WINDOW_ENTRY',
-      atMs: new Date('2026-04-29T11:45:00.000+08:00').getTime(),
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T11:45:00.000+08:00').getTime());
+  });
+
+  it('半日市 11:46 返回 11:55 清仓接管窗口入口', async () => {
+    const context = createTimeWakeupEvaluationHarness({
+      now: new Date('2026-04-29T11:46:00.000+08:00'),
+      cachedTradingDayInfo: {
+        dateKey: '2026-04-29',
+        info: { isTradingDay: true, isHalfDay: true },
+      },
     });
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'DOOMSDAY_WINDOW_ENTRY',
-      atMs: new Date('2026-04-29T11:55:00.000+08:00').getTime(),
-    });
+    const result = await timeWakeupEvaluationProgram(context);
+
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T11:55:00.000+08:00').getTime());
   });
 
   it('收盘后仍返回下一 HK day boundary 候选', async () => {
@@ -817,10 +927,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(result.plan.candidates).toContainEqual({
-      source: 'HK_DAY_BOUNDARY',
-      atMs: new Date('2026-04-30T00:00:00.000+08:00').getTime(),
-    });
+    expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-30T00:00:00.000+08:00').getTime());
   });
 
   it('同日交易日缓存命中时不调用 marketDataClient.isTradingDay', async () => {
@@ -840,23 +947,5 @@ describe('timeWakeupEvaluationProgram', () => {
     await timeWakeupEvaluationProgram(context);
 
     expect(queryCount).toBe(0);
-  });
-
-  it('将待开盘重建解析为下一个连续交易开盘候选', async () => {
-    const context = createTimeWakeupEvaluationHarness({
-      now: new Date('2026-04-29T16:01:00.000+08:00'),
-      lifecycleTick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: true }),
-    });
-    context.lastState.tradingCalendarSnapshot = new Map([
-      ['2026-04-29', { isTradingDay: true, isHalfDay: false }],
-      ['2026-04-30', { isTradingDay: true, isHalfDay: false }],
-    ]);
-
-    const result = await timeWakeupEvaluationProgram(context);
-
-    expect(result.plan.candidates).toContainEqual({
-      source: 'LIFECYCLE_RETRY',
-      atMs: new Date('2026-04-30T09:30:00.000+08:00').getTime(),
-    });
   });
 });

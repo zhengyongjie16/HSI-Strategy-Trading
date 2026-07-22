@@ -169,8 +169,6 @@ function createSellExecutionFixture(params: {
       params.cancelOrder ??
       (async () => ({
         kind: 'CANCEL_CONFIRMED' as const,
-        closedReason: 'CANCELED' as const,
-        source: 'API' as const,
         relatedBuyOrderIds: null,
       })),
     getPendingSellOrders: () => params.pendingSellOrders ?? [],
@@ -230,8 +228,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      price: 1,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'P0 must not reach broker payload',
     });
@@ -270,8 +266,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      price: 5,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'the signal snapshot must not bypass the P1 loss gate',
     });
@@ -322,8 +316,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYPUT',
-      price: 1,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'short-direction final loss gate',
     });
@@ -368,8 +360,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      price: 10,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'loss exactly at threshold remains a valid buy',
     });
@@ -396,8 +386,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      price: 1,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'invalid final quote cannot be treated as a loss-gate input',
     });
@@ -429,8 +417,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      price: 0.8,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: `P1 ${scenario.label}`,
     });
@@ -464,8 +450,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      price: 1,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'gate may close while P1 awaits',
     });
@@ -523,8 +507,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      price: 1,
-      lotSize: 100,
       triggerTimeMs: Date.now(),
       reason: 'seat version can change while P1 is pending',
     });
@@ -568,8 +550,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1,
-        lotSize: 100,
         triggerTimeMs: Date.now(),
         reason: 'sell P0 must not reach broker payload',
       }),
@@ -601,8 +581,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1,
-        lotSize: 100,
         triggerTimeMs: Date.now(),
         reason: 'a sell must not consume the buy-only loss gate',
       }),
@@ -631,8 +609,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1,
-        lotSize: 100,
         triggerTimeMs: Date.now(),
         reason: 'protective liquidation must bypass the buy gate',
       }),
@@ -669,7 +645,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
         return {
           kind: 'ALREADY_CLOSED',
           closedReason: 'CANCELED',
-          source: 'API_ERROR',
           relatedBuyOrderIds: null,
           terminalExecution: {
             submittedQuantity: 100,
@@ -682,8 +657,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1,
-        lotSize: 100,
         triggerTimeMs: Date.now(),
         reason: 'cancel then P1',
       }),
@@ -732,8 +705,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1,
-        lotSize: 100,
         triggerTimeMs: Date.now(),
         reason: 'replace must use P1',
       }),
@@ -786,7 +757,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
         return {
           kind: 'ALREADY_CLOSED',
           closedReason: 'CANCELED',
-          source: 'API_ERROR',
           relatedBuyOrderIds: null,
           terminalExecution: {
             submittedQuantity: 100,
@@ -823,8 +793,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       createSignal({
         symbol: 'BULL.HK',
         action: 'BUYCALL',
-        price: 1,
-        lotSize: 100,
         triggerTimeMs: Date.now(),
         reason: 'ordinary final quote missing',
       }),
@@ -842,8 +810,6 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1,
-        lotSize: 100,
         triggerTimeMs: Date.now(),
         reason: 'protective final quote missing',
       }),

@@ -20,18 +20,16 @@ export function planNextTimeWakeup(input: TimeWakeupPlannerInput): TimeWakeupPla
     .filter((candidate) => isFutureCandidate(candidate, input.nowMs))
     .sort((left, right) => left.atMs - right.atMs);
 
-  const [nextCandidate, ...remainingCandidates] = candidates;
+  const [nextCandidate] = candidates;
   if (nextCandidate === undefined) {
     return {
       hasWork: false,
       nextWakeupAtMs: null,
-      candidates: [],
     };
   }
 
   return {
     hasWork: true,
     nextWakeupAtMs: nextCandidate.atMs,
-    candidates: [nextCandidate, ...remainingCandidates],
   };
 }

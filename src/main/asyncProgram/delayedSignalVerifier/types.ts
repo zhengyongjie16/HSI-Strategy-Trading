@@ -37,9 +37,6 @@ export type VerificationResult = {
 
   /** 验证结果原因描述 */
   readonly reason: string;
-
-  /** 未通过验证的指标名称列表 */
-  readonly failedIndicators?: ReadonlyArray<string>;
 };
 
 /**

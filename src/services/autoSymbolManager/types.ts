@@ -19,7 +19,7 @@ import type { Logger } from '../../utils/logger/types.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 import type {
   AdvancePendingSwitchResult,
-  PeriodicSwitchPendingState,
+  PeriodicSeatBlockingReason,
   StartSwitchOnDistanceResult,
   SwitchDriveResult,
 } from '../../types/monitorContextPorts.js';
@@ -259,12 +259,19 @@ type SwitchStateMap = Map<'LONG' | 'SHORT', SwitchState>;
  */
 type SwitchSuppressionMap = Map<'LONG' | 'SHORT', SwitchSuppression>;
 
+/** 周期换标状态机内部等待状态。 */
+export type PeriodicSwitchInternalPendingState = Readonly<{
+  pending: boolean;
+  pendingSinceMs: number | null;
+  blockedBy?: PeriodicSeatBlockingReason;
+}>;
+
 /**
  * 周期换标等待状态 Map（内部类型）。
  * 类型用途：以方向为键存储 pending 状态。
  * 使用范围：仅 autoSymbolManager 模块内部使用。
  */
-type PeriodicSwitchPendingMap = Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>;
+type PeriodicSwitchPendingMap = Map<'LONG' | 'SHORT', PeriodicSwitchInternalPendingState>;
 
 /**
  * 已交易分钟数解析函数（内部类型）。

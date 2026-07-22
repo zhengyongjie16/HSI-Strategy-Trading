@@ -91,7 +91,6 @@ export function collectOrderOwnershipDiagnostics({
 
   const sampleLimit = isValidPositiveNumber(maxSamples) ? Math.floor(maxSamples) : 0;
 
-  let totalFilled = 0;
   let inDayFilled = 0;
   let unmatchedFilled = 0;
   const unmatchedSamples: OrderOwnershipDiagnosticSample[] = [];
@@ -100,8 +99,6 @@ export function collectOrderOwnershipDiagnostics({
     if (order.status !== OrderStatus.Filled) {
       continue;
     }
-
-    totalFilled += 1;
 
     if (!(order.updatedAt instanceof Date)) {
       continue;
@@ -122,7 +119,6 @@ export function collectOrderOwnershipDiagnostics({
     unmatchedFilled += 1;
     if (sampleLimit > 0 && unmatchedSamples.length < sampleLimit) {
       unmatchedSamples.push({
-        orderId: order.orderId,
         symbol: order.symbol,
         stockName: order.stockName,
       });
@@ -130,8 +126,6 @@ export function collectOrderOwnershipDiagnostics({
   }
 
   return {
-    dayKey,
-    totalFilled,
     inDayFilled,
     unmatchedFilled,
     unmatchedSamples,

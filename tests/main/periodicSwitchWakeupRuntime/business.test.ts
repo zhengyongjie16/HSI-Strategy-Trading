@@ -15,11 +15,7 @@ import {
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
 import type { MonitorContext } from '../../../src/types/state.js';
-import type {
-  OrderStateChangedEvent,
-  PostTradeConsistencyFreshReachedEvent,
-  Unsubscribe,
-} from '../../../src/types/services.js';
+import type { OrderStateChangedEvent, Unsubscribe } from '../../../src/types/services.js';
 import type { TradingGateStateChangedEvent } from '../../../src/main/tradingGateEventRuntime/types.js';
 import type {
   PeriodicSwitchRouteBaseline,
@@ -124,7 +120,7 @@ function createTimerHarness(initialNowMs: number) {
 
 function createSubscriptionHarness() {
   const orderListeners = new Set<(event: OrderStateChangedEvent) => void>();
-  const freshListeners = new Set<(event: PostTradeConsistencyFreshReachedEvent) => void>();
+  const freshListeners = new Set<() => void>();
   const gateListeners = new Set<(event: TradingGateStateChangedEvent) => void>();
 
   return {
@@ -137,7 +133,7 @@ function createSubscriptionHarness() {
       },
     }),
     postTradeConsistencyRuntime: {
-      onFreshReached: (listener: (event: PostTradeConsistencyFreshReachedEvent) => void) => {
+      onFreshReached: (listener: () => void) => {
         freshListeners.add(listener);
         return () => {
           freshListeners.delete(listener);
@@ -173,13 +169,8 @@ function createSubscriptionHarness() {
       }
     },
     emitFresh: () => {
-      const event: PostTradeConsistencyFreshReachedEvent = {
-        currentVersion: 2,
-        staleVersion: 2,
-        trigger: 'REFRESH',
-      };
       for (const listener of freshListeners) {
-        listener(event);
+        listener();
       }
     },
     emitGate: (event: TradingGateStateChangedEvent) => {

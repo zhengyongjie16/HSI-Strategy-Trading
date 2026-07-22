@@ -88,17 +88,8 @@ function createTaskQueueDouble<TType extends string>(
     pop: () => null,
     isEmpty: () => signals.length === 0,
     removeTasks: () => 0,
-    clearAll: (onRemove) => {
+    clearAll: () => {
       onClear();
-      for (const signal of signals) {
-        onRemove?.({
-          id: `${signal.symbol}-${signal.action}`,
-          type: 'TEST' as TType,
-          data: signal,
-          createdAt: 0,
-        });
-      }
-
       return signals.length;
     },
     onTaskAdded: () => () => {},

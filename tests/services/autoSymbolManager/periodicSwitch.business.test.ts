@@ -17,8 +17,8 @@ import {
 import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
 import { PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
-import type { PeriodicSwitchPendingState } from '../../../src/types/monitorContextPorts.js';
 import type {
+  PeriodicSwitchInternalPendingState,
   SwitchState,
   SwitchStateMachine,
   SwitchStateMachineDeps,
@@ -120,7 +120,7 @@ function createPeriodicHarness(params: HarnessParams): {
   machine: TestSwitchStateMachine;
   symbolRegistry: ReturnType<typeof createSymbolRegistryDouble>;
   seatStateManager: ReturnType<typeof createSeatStateManager>;
-  periodicSwitchPending: Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>;
+  periodicSwitchPending: Map<'LONG' | 'SHORT', PeriodicSwitchInternalPendingState>;
   setNowMs: (nextNowMs: number) => void;
 } {
   let currentNowMs = params.nowMs;
@@ -145,7 +145,7 @@ function createPeriodicHarness(params: HarnessParams): {
   });
   const switchStates = new Map<'LONG' | 'SHORT', SwitchState>();
   const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
-  const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
+  const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchInternalPendingState>();
   const seatStateManager = createSeatStateManager({
     symbolRegistry,
     switchStates,
@@ -948,7 +948,7 @@ describe('periodic auto-switch regression', () => {
     });
     const switchStates = new Map<'LONG' | 'SHORT', SwitchState>();
     const switchSuppressions = new Map<'LONG' | 'SHORT', SwitchSuppression>();
-    const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchPendingState>();
+    const periodicSwitchPending = new Map<'LONG' | 'SHORT', PeriodicSwitchInternalPendingState>();
     const seatStateManager = createSeatStateManager({
       symbolRegistry,
       switchStates,
@@ -991,8 +991,6 @@ describe('periodic auto-switch regression', () => {
         canceledOrderIds.push(orderId);
         return {
           kind: 'CANCEL_CONFIRMED' as const,
-          closedReason: 'CANCELED' as const,
-          source: 'API' as const,
           relatedBuyOrderIds: null,
         };
       },

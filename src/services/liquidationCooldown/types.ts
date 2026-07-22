@@ -27,20 +27,6 @@ export type RecordLiquidationTriggerParams = {
 };
 
 /**
- * 记录保护性清仓触发的返回结果。
- * 类型用途：告知调用方当前触发是否导致了买入冷却激活。
- * 数据来源：由 recordLiquidationTrigger 返回。
- * 使用范围：仅 liquidationCooldown 模块使用。
- */
-export type RecordLiquidationTriggerResult = {
-  /** 当前累计触发次数（含本次） */
-  readonly currentCount: number;
-
-  /** 本次触发是否导致了买入冷却激活 */
-  readonly cooldownActivated: boolean;
-};
-
-/**
  * 恢复触发计数器的参数。
  * 类型用途：启动恢复时将模拟得到的当前周期计数写入追踪器。
  * 数据来源：外部 monitorSymbol 已在恢复边界校验，内部只按方向恢复。
@@ -97,9 +83,7 @@ export interface LiquidationCooldownTracker {
    * 记录保护性清仓触发事件。
    * 内部累加触发计数器，当计数达到 triggerLimit 时写入冷却记录。
    */
-  recordLiquidationTrigger: (
-    params: RecordLiquidationTriggerParams,
-  ) => RecordLiquidationTriggerResult;
+  recordLiquidationTrigger: (params: RecordLiquidationTriggerParams) => void;
 
   /** 直接写入冷却时间戳（仅供 tradeLogHydrator 启动恢复使用） */
   recordCooldown: (params: RecordCooldownParams) => void;
@@ -139,7 +123,7 @@ export type TradeLogHydratorDeps = {
  * 使用范围：供主程序 startup 消费。
  */
 export interface TradeLogHydrator {
-  hydrate: () => ReadonlyMap<'LONG' | 'SHORT', number>;
+  hydrate: () => void;
 }
 
 /**

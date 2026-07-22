@@ -103,11 +103,7 @@ export interface MixedTradeLogRepository {
   loadExecutionProgressRecords: (
     tradingDayKey: string,
   ) => ReadonlyArray<ProtectiveLiquidationExecutionProgressRecordV1>;
-  appendCompletionIdempotent: (
-    input: ProtectiveLiquidationCompletionInput,
-  ) => 'APPENDED' | 'UNCHANGED';
-  appendExecutionProgressIdempotent: (
-    input: ProtectiveLiquidationExecutionProgressInput,
-  ) => 'APPENDED' | 'UNCHANGED';
+  appendCompletionIdempotent: (input: ProtectiveLiquidationCompletionInput) => void;
+  appendExecutionProgressIdempotent: (input: ProtectiveLiquidationExecutionProgressInput) => void;
   appendTradeRecord: (record: PersistableTradeRecord) => void;
 }

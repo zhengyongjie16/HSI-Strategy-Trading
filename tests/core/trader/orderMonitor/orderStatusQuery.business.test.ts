@@ -285,9 +285,7 @@ describe('orderStatusQuery business flow', () => {
     const result = await orderStatusQuery.checkOrderState('ORDER-NOT-EXIST');
     expect(result).toEqual({
       kind: 'QUERY_FAILED',
-      reason: 'NOT_FOUND',
       errorCode: '603001',
-      message: expect.any(String),
     });
   });
 

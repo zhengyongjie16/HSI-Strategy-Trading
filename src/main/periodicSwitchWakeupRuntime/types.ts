@@ -1,11 +1,7 @@
 import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type {
-  PostTradeConsistencyFreshReachedEvent,
-  Trader,
-  Unsubscribe,
-} from '../../types/services.js';
+import type { Trader, Unsubscribe } from '../../types/services.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
 import type {
   MonitorTaskDataMap,
@@ -96,9 +92,7 @@ export type PeriodicSwitchWakeupRuntimeDeps = Readonly<{
 
   /** 成交后一致性 fresh 事件源 */
   postTradeConsistencyRuntime: Readonly<{
-    onFreshReached: (
-      listener: (event: PostTradeConsistencyFreshReachedEvent) => void,
-    ) => Unsubscribe;
+    onFreshReached: (listener: () => void) => Unsubscribe;
   }>;
 
   /** 交易门禁事件源 */

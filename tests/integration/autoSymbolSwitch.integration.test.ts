@@ -129,8 +129,6 @@ describe('auto-symbol-switch integration', () => {
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       }),
     });
@@ -379,8 +377,6 @@ describe('auto-symbol-switch integration', () => {
         getPendingOrders: async () => [],
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
       });

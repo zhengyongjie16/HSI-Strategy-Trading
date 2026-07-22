@@ -100,7 +100,6 @@ export function createProtectiveLiquidationEpisodeTracker(): ProtectiveLiquidati
 
     return {
       direction,
-      symbol: inProgress.symbol,
       boundaryExecutedTimeMs: inProgress.latestExecutedTimeMs,
     };
   }

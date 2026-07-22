@@ -40,8 +40,6 @@ import type {
 } from '../../src/core/trader/types.js';
 import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
 
-type OrderMonitorTestOverrides = Omit<Partial<OrderMonitor>, 'replaceOrderPrice'>;
-
 type OrderExecutorTestDeps = Omit<
   OrderExecutorDeps,
   | 'isContinuousTradingAllowed'
@@ -50,7 +48,7 @@ type OrderExecutorTestDeps = Omit<
   | 'orderMonitor'
   | 'unrealizedLossBuyGate'
 > & {
-  readonly orderMonitor: OrderMonitorTestOverrides;
+  readonly orderMonitor: Partial<OrderMonitor>;
 } & Partial<
     Pick<
       OrderExecutorDeps,
@@ -184,8 +182,6 @@ describe('sell-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -205,7 +201,6 @@ describe('sell-flow integration', () => {
     let signal = createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      price: 1.01,
       triggerTimeMs: Date.now(),
       reason: 'sell-quantity-stock-positions-no-retry',
     });
@@ -235,7 +230,7 @@ describe('sell-flow integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -314,8 +309,6 @@ describe('sell-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -369,7 +362,7 @@ describe('sell-flow integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -445,8 +438,6 @@ describe('sell-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -493,8 +484,6 @@ describe('sell-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -514,7 +503,6 @@ describe('sell-flow integration', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1.02,
         triggerTimeMs: Date.now(),
         reason: 'unlinked-sell-fresh-available-quantity',
       }),
@@ -539,7 +527,7 @@ describe('sell-flow integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -639,8 +627,6 @@ describe('sell-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -689,7 +675,7 @@ describe('sell-flow integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -771,8 +757,6 @@ describe('sell-flow integration', () => {
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -852,8 +836,6 @@ describe('sell-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         replaceOrderPriceWithPermit: async (orderId, price, _request, permit, quantity) =>
@@ -915,7 +897,6 @@ describe('sell-flow integration', () => {
     let signal = createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      price: 1.02,
       triggerTimeMs: Date.now(),
       reason: 'replace-merge',
     });
@@ -1077,7 +1058,6 @@ describe('sell-flow integration', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1.02,
         triggerTimeMs: Date.now(),
         reason: 'replace-facts-changed-during-rate-limit-wait',
       }),
@@ -1145,8 +1125,6 @@ describe('sell-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         startRuntime: () => {},
@@ -1203,7 +1181,6 @@ describe('sell-flow integration', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1.02,
         triggerTimeMs: Date.now(),
         reason: 'replace-inexact-related-buy-orders',
       }),
@@ -1252,7 +1229,6 @@ describe('sell-flow integration', () => {
           return {
             kind: 'ALREADY_CLOSED',
             closedReason: 'CANCELED',
-            source: 'API_ERROR',
             relatedBuyOrderIds: ['BUY-OLD'],
             terminalExecution: { submittedQuantity: 100, executedQuantity: 0 },
           };
@@ -1294,7 +1270,6 @@ describe('sell-flow integration', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1.02,
         triggerTimeMs: Date.now(),
         reason: 'cancel-and-submit-inexact-related-buy-orders',
       }),
@@ -1339,8 +1314,6 @@ describe('sell-flow integration', () => {
         trackOrder: () => {},
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         }),
         replaceOrderPriceWithPermit: async (_orderId, _price, request, permit) => {
@@ -1404,7 +1377,6 @@ describe('sell-flow integration', () => {
     let signal = createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      price: 1.02,
       triggerTimeMs: Date.now(),
       reason: 'replace-auth-revoked-inside-throttle',
     });
@@ -1444,8 +1416,6 @@ describe('sell-flow integration', () => {
           cancelCalls.push(orderId);
           return {
             kind: 'CANCEL_CONFIRMED',
-            closedReason: 'CANCELED',
-            source: 'API',
             relatedBuyOrderIds: ['BUY-OLD'],
           };
         },
@@ -1478,7 +1448,6 @@ describe('sell-flow integration', () => {
     let signal = createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      price: 1.03,
       triggerTimeMs: Date.now(),
       reason: 'cancel-and-submit-wait-terminal',
     });
@@ -1531,7 +1500,6 @@ describe('sell-flow integration', () => {
           return {
             kind: 'ALREADY_CLOSED',
             closedReason: 'CANCELED',
-            source: 'API_ERROR',
             relatedBuyOrderIds: ['BUY-OLD'],
             terminalExecution: {
               submittedQuantity: 100,
@@ -1580,7 +1548,6 @@ describe('sell-flow integration', () => {
     let signal = createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      price: 1.03,
       triggerTimeMs: Date.now(),
       reason: 'cancel-and-submit-merge',
     });
@@ -1723,7 +1690,6 @@ describe('sell-flow integration', () => {
     let signal = createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      price: 1.03,
       triggerTimeMs: Date.now(),
       reason: 'cancel-and-submit-terminal-partial-fill-replan',
     });
@@ -1861,7 +1827,6 @@ describe('sell-flow integration', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        price: 1.03,
         triggerTimeMs: Date.now(),
         reason: 'cancel-and-submit-missing-terminal-execution-must-fail-closed',
       }),

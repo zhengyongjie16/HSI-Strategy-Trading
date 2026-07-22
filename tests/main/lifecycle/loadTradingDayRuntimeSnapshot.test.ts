@@ -64,7 +64,6 @@ function createMinimalLastState(): LastState {
     currentDayKey: null,
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
@@ -113,7 +112,7 @@ function createBaseDeps(
       overrides.protectiveLiquidationEpisodeTracker ??
       createProtectiveLiquidationEpisodeTrackerDouble(),
     tradeLogHydrator: overrides.tradeLogHydrator ?? {
-      hydrate: () => new Map<'LONG' | 'SHORT', number>(),
+      hydrate: () => {},
     },
     mixedTradeLogRepository:
       overrides.mixedTradeLogRepository ?? createMixedTradeLogRepositoryDouble(),
@@ -129,8 +128,8 @@ function createMixedTradeLogRepositoryDouble(
   return {
     loadCompletionRecords: () => [],
     loadExecutionProgressRecords: () => [],
-    appendCompletionIdempotent: () => 'APPENDED',
-    appendExecutionProgressIdempotent: () => 'APPENDED',
+    appendCompletionIdempotent: () => {},
+    appendExecutionProgressIdempotent: () => {},
     appendTradeRecord: () => {},
     ...overrides,
   };
@@ -154,7 +153,6 @@ function createLoadParams(
     requireTradingDay: false,
     resetRuntimeSubscriptions: false,
     hydrateCooldownFromTradeLog: false,
-    forceOrderRefresh: false,
     ...overrides,
     now: overrides.now ?? new Date(),
   };
@@ -775,7 +773,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradeLogHydrator: {
         hydrate: () => {
           callOrder.push('hydrate');
-          return new Map();
         },
       },
     });
@@ -894,7 +891,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradeLogHydrator: {
         hydrate: () => {
           laterEffects.hydrate += 1;
-          return new Map();
         },
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
@@ -916,7 +912,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         ],
         appendCompletionIdempotent: () => {
           laterEffects.appendCompletion += 1;
-          return 'APPENDED';
         },
       }),
     });
@@ -982,7 +977,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map(),
+        hydrate: () => {},
       },
     });
 
@@ -1024,7 +1019,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map(),
+        hydrate: () => {},
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
         loadExecutionProgressRecords: () => [
@@ -1099,7 +1094,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', completedBoundaryMs]]),
+        hydrate: () => {},
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
         loadCompletionRecords: () => [
@@ -1303,7 +1298,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       trader: createReadyTrader(),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', completedBoundaryMs]]),
+        hydrate: () => {},
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
         loadCompletionRecords: () => [
@@ -1360,7 +1355,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradeLogHydrator: {
         hydrate: () => {
           effects.hydrate += 1;
-          return new Map();
         },
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
@@ -1394,7 +1388,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         ],
         appendCompletionIdempotent: (record) => {
           appendedRecords.push(record);
-          return 'APPENDED';
         },
       }),
     });
@@ -1450,7 +1443,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradeLogHydrator: {
         hydrate: () => {
           effects.hydrate += 1;
-          return new Map();
         },
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
@@ -1466,7 +1458,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         ],
         appendCompletionIdempotent: (record) => {
           appendedRecords.push(record);
-          return 'APPENDED';
         },
       }),
     });
@@ -1513,7 +1504,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         fetchAllOrdersFromAPI: async () => [unmatchedProtectiveOrder],
       }),
       tradeLogHydrator: {
-        hydrate: () => new Map(),
+        hydrate: () => {},
       },
     });
 
@@ -1544,7 +1535,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         fetchAllOrdersFromAPI: async () => [protectiveOrder],
       }),
       tradeLogHydrator: {
-        hydrate: () => new Map(),
+        hydrate: () => {},
       },
     });
 
@@ -1589,7 +1580,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map<'LONG' | 'SHORT', number>([['LONG', hydratedBoundaryMs]]),
+        hydrate: () => {},
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
         loadCompletionRecords: () => [
@@ -1597,7 +1588,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         ],
         appendCompletionIdempotent: (record) => {
           appendedBoundaryMs.push(record.boundaryExecutedTimeMs);
-          return 'APPENDED';
         },
       }),
     });
@@ -1654,7 +1644,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
       protectiveLiquidationEpisodeTracker: tracker,
       tradeLogHydrator: {
-        hydrate: () => new Map(),
+        hydrate: () => {},
       },
       mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
         loadExecutionProgressRecords: () => [
@@ -1694,7 +1684,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
     ).toEqual({
       direction: 'LONG',
-      symbol: 'BULL.HK',
       boundaryExecutedTimeMs: oldPartialUpdatedAtMs - 10_000,
     });
   });
@@ -1745,7 +1734,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         ],
         appendCompletionIdempotent: (record) => {
           appendedRecords.push(record);
-          return 'APPENDED';
         },
       }),
     });
@@ -1824,7 +1812,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         ],
         appendCompletionIdempotent: (record) => {
           appendedRecords.push(record);
-          return 'APPENDED';
         },
       }),
     });
@@ -1895,7 +1882,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         ],
         appendCompletionIdempotent: (record) => {
           secondRestartAppends.push(record);
-          return 'APPENDED';
         },
       }),
     });

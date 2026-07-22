@@ -305,7 +305,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       return {
         kind: 'UNKNOWN_FAILURE',
         errorCode: null,
-        message: `missing raw terminal snapshot for settled cancel order ${orderId}`,
       };
     }
 
@@ -317,7 +316,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       return {
         kind: 'UNKNOWN_FAILURE',
         errorCode: null,
-        message: `terminal settlement failed for cancel order ${orderId}`,
       };
     }
 
@@ -365,39 +363,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     request: DoomsdayCancelOrderRequest,
   ): Promise<DoomsdayCancelOrderOutcome> {
     return cancelAndSettle(orderId, request);
-  }
-
-  /**
-   * 公开改单入口也必须同步消费已确认终态。
-   *
-   * 不能把已确认终态留给未来未必发生的 route wakeup；否则保护性成交
-   * 的 durable progress 与本地结算会脱离同一 raw broker observation。
-   */
-  async function replaceOrderPrice(
-    orderId: string,
-    newPrice: number,
-    request: OrderMutationRequest,
-    quantity?: number | null,
-  ) {
-    const result = await orderOps.replaceOrderPrice(orderId, newPrice, request, quantity);
-    const replaceTerminal = peekLatestReplaceTerminal(runtime, orderId);
-    if (replaceTerminal === null) {
-      return result;
-    }
-
-    const trackedOrder = runtime.trackedOrders.get(orderId);
-    if (trackedOrder === undefined) {
-      return result;
-    }
-
-    const terminalSettlement = settleActiveTerminalFromRaw(orderId, trackedOrder, replaceTerminal);
-    if (!terminalSettlement.settlementResult.handled && !terminalSettlement.alreadySettled) {
-      throw new Error(`[订单监控] 订单 ${orderId} 改单终态已确认但本地结算失败`);
-    }
-
-    acknowledgeLatestReplaceTerminal(runtime, orderId, replaceTerminal);
-    acknowledgeQueriedTerminalState(runtime, orderId, replaceTerminal);
-    return result;
   }
 
   /**
@@ -577,7 +542,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     trackOrder: orderOps.trackOrder,
     cancelOrder,
     cancelDoomsdayOrder,
-    replaceOrderPrice,
     replaceOrderPriceWithPermit,
     startRuntime: routeRuntime.start,
     stopRuntimeAndDrain,

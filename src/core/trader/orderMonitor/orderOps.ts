@@ -131,7 +131,6 @@ function mapStateCheckResultToCancelOutcome(
     return {
       kind: 'ALREADY_CLOSED',
       closedReason: queryResult.closedReason,
-      source: 'API_ERROR',
       relatedBuyOrderIds: null,
       terminalExecution: {
         submittedQuantity: queryResult.submittedQuantity,
@@ -144,14 +143,12 @@ function mapStateCheckResultToCancelOutcome(
     return {
       kind: 'UNKNOWN_FAILURE',
       errorCode: null,
-      message: `order still open after business failure: status=${queryResult.status}`,
     };
   }
 
   return {
     kind: 'UNKNOWN_FAILURE',
     errorCode: queryResult.errorCode,
-    message: queryResult.message,
   };
 }
 
@@ -449,7 +446,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       return {
         kind: 'ALREADY_CLOSED',
         closedReason: pendingTerminalState.closedReason,
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: pendingTerminalState.submittedQuantity,
@@ -487,7 +483,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         return {
           kind: 'UNKNOWN_FAILURE',
           errorCode: null,
-          message: `signal authorization revoked before cancel order ${orderId}`,
         };
       }
 
@@ -499,8 +494,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       logger.debug(`[订单撤销成功] 订单ID=${orderId}，等待 WS 终态确认`);
       return {
         kind: 'CANCEL_CONFIRMED',
-        closedReason: 'CANCELED',
-        source: 'API',
         relatedBuyOrderIds: null,
       };
     } catch (error) {
@@ -509,12 +502,10 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       }
 
       const errorCode = extractErrorCode(error);
-      const message = extractErrorMessage(error);
       if (isRetryableOrderMutationError(error)) {
         return {
           kind: 'RETRYABLE_FAILURE',
           errorCode,
-          message,
         };
       }
 
@@ -522,7 +513,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         return {
           kind: 'UNKNOWN_FAILURE',
           errorCode,
-          message,
         };
       }
 

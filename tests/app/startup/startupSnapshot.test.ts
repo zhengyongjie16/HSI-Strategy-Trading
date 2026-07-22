@@ -22,7 +22,6 @@ function createMinimalLastState(): LastState {
     currentDayKey: '2026-03-09',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
@@ -114,7 +113,6 @@ describe('app startup snapshot branch', () => {
     expect(lastState.pendingOpenRebuild).toBe(true);
     expect(lastState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
     expect(lastState.isTradingEnabled).toBe(false);
-    expect(lastState.targetTradingDayKey).toBe('2026-03-09');
     expect(errorMessages).toEqual(['启动快照 API 请求失败：已阻断交易并切换为开盘重建重试模式']);
   });
 

@@ -126,7 +126,6 @@ export function createMonitorTaskQueue<
       type: task.type,
       dedupeKey: task.dedupeKey,
       data: task.data,
-      createdAt: Date.now(),
     } as MonitorTask<TDataMap, TType>;
 
     taskByDedupeKey.set(task.dedupeKey, fullTask);
@@ -162,10 +161,7 @@ export function createMonitorTaskQueue<
     return taskByDedupeKey.size === 0;
   }
 
-  function removeTasks(
-    predicate: (task: MonitorTask<TDataMap>) => boolean,
-    onRemove?: (task: MonitorTask<TDataMap>) => void,
-  ): number {
+  function removeTasks(predicate: (task: MonitorTask<TDataMap>) => boolean): number {
     const removedTasks: Array<MonitorTask<TDataMap>> = [];
 
     for (let index = headIndex; index < items.length; index += 1) {
@@ -179,13 +175,6 @@ export function createMonitorTaskQueue<
       taskByDedupeKey.delete(task.dedupeKey);
     }
 
-    for (let index = removedTasks.length - 1; index >= 0; index -= 1) {
-      const task = removedTasks[index];
-      if (task !== undefined) {
-        onRemove?.(task);
-      }
-    }
-
     if (removedTasks.length > 0) {
       rebuildEffectiveQueue();
     } else {
@@ -195,17 +184,13 @@ export function createMonitorTaskQueue<
     return removedTasks.length;
   }
 
-  function clearAll(onRemove?: (task: MonitorTask<TDataMap>) => void): number {
+  function clearAll(): number {
     const activeTasks: Array<MonitorTask<TDataMap>> = [];
     for (let index = headIndex; index < items.length; index += 1) {
       const task = items[index];
       if (task !== undefined && isEffectiveTask(task)) {
         activeTasks.push(task);
       }
-    }
-
-    for (const task of activeTasks) {
-      onRemove?.(task);
     }
 
     items = [];

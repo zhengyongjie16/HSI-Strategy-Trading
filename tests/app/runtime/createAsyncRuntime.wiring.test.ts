@@ -77,7 +77,7 @@ function createDeps(
     },
     postGateRuntime: {
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => ({ currentCount: 0, cooldownActivated: false }),
+        recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
         restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
@@ -229,7 +229,6 @@ describe('app createAsyncRuntime wiring', () => {
           hasPendingSwitch: () => false,
           getPeriodicSwitchPendingState: () => ({
             pending: false,
-            pendingSinceMs: null,
           }),
           resetAllState: () => {},
         },
@@ -302,7 +301,6 @@ describe('app createAsyncRuntime wiring', () => {
           hasPendingSwitch: () => false,
           getPeriodicSwitchPendingState: () => ({
             pending: false,
-            pendingSinceMs: null,
           }),
           resetAllState: () => {},
         },
@@ -379,7 +377,6 @@ describe('app createAsyncRuntime wiring', () => {
           hasPendingSwitch: () => false,
           getPeriodicSwitchPendingState: () => ({
             pending: false,
-            pendingSinceMs: null,
           }),
           resetAllState: () => {},
         },

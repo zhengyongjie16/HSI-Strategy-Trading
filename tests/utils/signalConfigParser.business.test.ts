@@ -27,8 +27,6 @@ describe('signalConfigParser business flow', () => {
     };
     const group1Result = evaluateSignalConfig(stateForGroup1, parsed);
     expect(group1Result.triggered).toBeTrue();
-    expect(group1Result.satisfiedGroupIndex).toBe(0);
-    expect(group1Result.satisfiedCount).toBe(3);
 
     const stateForGroup2: IndicatorState = {
       rsi: { 6: 80 },
@@ -37,7 +35,6 @@ describe('signalConfigParser business flow', () => {
     };
     const group2Result = evaluateSignalConfig(stateForGroup2, parsed);
     expect(group2Result.triggered).toBeTrue();
-    expect(group2Result.satisfiedGroupIndex).toBe(1);
     expect(group2Result.reason).toContain('满足条件2');
   });
 
@@ -120,6 +117,5 @@ describe('signalConfigParser business flow', () => {
       parsed,
     );
     expect(evaluated.triggered).toBeTrue();
-    expect(evaluated.satisfiedCount).toBe(2);
   });
 });

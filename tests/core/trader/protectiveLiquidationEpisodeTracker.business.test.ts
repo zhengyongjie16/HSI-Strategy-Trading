@@ -31,7 +31,6 @@ describe('protectiveLiquidationEpisodeTracker business flow', () => {
 
     expect(prepared).toEqual({
       direction: 'LONG',
-      symbol: 'BULL.HK',
       boundaryExecutedTimeMs: 2_000,
     });
     expect(tracker.getInProgressEpisodes()).toHaveLength(1);

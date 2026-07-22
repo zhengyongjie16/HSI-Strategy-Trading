@@ -90,9 +90,7 @@ export const createUnrealizedLossMonitor = (
       reason: lossCheck.reason ?? '',
       isProtectiveLiquidation: true,
       quantity: lossCheck.quantity ?? null,
-      price: currentPrice,
       seatVersion,
-      lotSize: quote.lotSize ?? null,
     };
 
     let executedOrderCount: number;

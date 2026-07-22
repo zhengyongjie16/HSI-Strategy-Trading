@@ -61,8 +61,6 @@ const buildOrderSignal: OrderSignalBuilder = (params: BuildOrderSignalParams): O
     action,
     reason,
     orderTypeOverride: orderTypeOverride ?? null,
-    price: quote?.price ?? null,
-    lotSize: quote?.lotSize ?? null,
     quantity: quantity ?? null,
     triggerTime: new Date(),
     seatVersion,

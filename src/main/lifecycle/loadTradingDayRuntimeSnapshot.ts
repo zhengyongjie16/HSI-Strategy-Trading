@@ -195,13 +195,8 @@ export function createLoadTradingDayRuntimeSnapshot(
   return async function loadTradingDayRuntimeSnapshot(
     params: LoadTradingDayRuntimeSnapshotParams,
   ): Promise<LoadTradingDayRuntimeSnapshotResult> {
-    const {
-      now,
-      requireTradingDay,
-      resetRuntimeSubscriptions,
-      hydrateCooldownFromTradeLog,
-      forceOrderRefresh,
-    } = params;
+    const { now, requireTradingDay, resetRuntimeSubscriptions, hydrateCooldownFromTradeLog } =
+      params;
     const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
     if (requireTradingDay) {
       const tradingDayInfo = await marketDataClient.isTradingDay(now);
@@ -227,7 +222,7 @@ export function createLoadTradingDayRuntimeSnapshot(
     }
 
     logger.debug('账户和持仓信息获取成功，开始解析席位');
-    const allOrders = await trader.fetchAllOrdersFromAPI(forceOrderRefresh);
+    const allOrders = await trader.fetchAllOrdersFromAPI();
 
     trader.seedOrderHoldSymbols(allOrders);
     await prepareSeatsForRuntime({

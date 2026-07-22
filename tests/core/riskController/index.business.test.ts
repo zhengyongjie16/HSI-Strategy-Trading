@@ -48,7 +48,7 @@ function createUnrealizedLossCheckerStub(
   const base: UnrealizedLossChecker = {
     getUnrealizedLossData: getMissingUnrealizedLossData,
     clearUnrealizedLossData: () => {},
-    refresh: async () => null,
+    refresh: async () => {},
     check: () => ({ shouldLiquidate: false }),
   };
   return { ...base, ...overrides };
@@ -158,10 +158,9 @@ describe('riskController(index) business flow', () => {
       ],
     } as unknown as OrderRecorder;
 
-    const refreshed = await checker.refresh(orderRecorder, 'BULL.HK', true, null, -200);
+    await checker.refresh(orderRecorder, 'BULL.HK', true, null, -200);
     const result = checker.check('BULL.HK', 7, true);
 
-    expect(refreshed).toEqual({ r1: 1200, n1: 90 });
     expect(checker.getUnrealizedLossData('BULL.HK')).toMatchObject({
       r1: 1200,
       n1: 90,
@@ -309,7 +308,6 @@ describe('riskController(index) business flow', () => {
         }),
         refreshUnrealizedLossData: async () => {
           refreshedUnrealizedLoss = true;
-          return null;
         },
       }),
       trader: createTraderDouble({

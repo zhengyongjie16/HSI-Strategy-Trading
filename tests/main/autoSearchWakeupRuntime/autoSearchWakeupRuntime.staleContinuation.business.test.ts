@@ -283,7 +283,6 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       currentDayKey: '2026-04-10',
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
-      targetTradingDayKey: null,
       isTradingEnabled: true,
       cachedAccount: createAccountSnapshotDouble(100_000),
       cachedPositions: [],

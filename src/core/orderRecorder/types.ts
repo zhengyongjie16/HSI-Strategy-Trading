@@ -169,15 +169,12 @@ export interface OrderStorage {
 
 /**
  * 订单 API 管理器接口。
- * 类型用途：依赖注入，负责从 Longbridge API 获取订单并管理缓存。
+ * 类型用途：依赖注入，负责从 Longbridge API 获取订单。
  * 数据来源：如适用。
  * 使用范围：由 OrderRecorder 依赖注入；仅 orderRecorder 模块实现与使用。
  */
 export interface OrderAPIManager {
-  fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
-
-  /** 清空全量订单缓存 */
-  clearCache: () => void;
+  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
 }
 
 // ==================== 依赖类型定义 ====================

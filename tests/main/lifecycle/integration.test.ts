@@ -18,7 +18,6 @@ function createMutableState(overrides?: Partial<LifecycleMutableState>): Lifecyc
     currentDayKey: null,
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     ...overrides,
   };

@@ -67,9 +67,7 @@ export type OrderStateCheckResult =
     }
   | {
       readonly kind: 'QUERY_FAILED';
-      readonly reason: 'NOT_FOUND';
       readonly errorCode: string | null;
-      readonly message: string;
     };
 
 /**
@@ -96,26 +94,21 @@ type TerminalOrderExecutionFact = {
 export type CancelOrderOutcome =
   | {
       readonly kind: 'CANCEL_CONFIRMED';
-      readonly closedReason: 'CANCELED' | 'REJECTED';
-      readonly source: 'API' | 'WS';
       readonly relatedBuyOrderIds: ReadonlyArray<string> | null;
     }
   | {
       readonly kind: 'ALREADY_CLOSED';
       readonly closedReason: OrderClosedReason;
-      readonly source: 'API_ERROR';
       readonly relatedBuyOrderIds: ReadonlyArray<string> | null;
       readonly terminalExecution: TerminalOrderExecutionFact;
     }
   | {
       readonly kind: 'RETRYABLE_FAILURE';
       readonly errorCode: string | null;
-      readonly message: string;
     }
   | {
       readonly kind: 'UNKNOWN_FAILURE';
       readonly errorCode: string | null;
-      readonly message: string;
     };
 
 /**

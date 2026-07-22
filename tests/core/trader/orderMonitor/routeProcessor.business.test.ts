@@ -368,7 +368,6 @@ function createDeps(params?: {
       (async (_orderId: string) => ({
         kind: 'UNKNOWN_FAILURE',
         errorCode: null,
-        message: 'cancelOrder was not stubbed',
       })),
     replaceOrderPrice:
       params?.replaceOrderPrice ??
@@ -555,8 +554,6 @@ describe('orderMonitor routeProcessor', () => {
         cancelOrderIds.push(orderId);
         return {
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         };
       },
@@ -593,8 +590,6 @@ describe('orderMonitor routeProcessor', () => {
         cancelOrderIds.push(orderId);
         return {
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         };
       },
@@ -677,8 +672,6 @@ describe('orderMonitor routeProcessor', () => {
         expect(beforeBrokerCancel()).toBe(true);
         return {
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         };
       },
@@ -888,7 +881,6 @@ describe('orderMonitor routeProcessor', () => {
         return {
           kind: 'RETRYABLE_FAILURE',
           errorCode: 'NETWORK',
-          message: 'retry later',
         };
       },
     });
@@ -925,7 +917,6 @@ describe('orderMonitor routeProcessor', () => {
         return {
           kind: 'RETRYABLE_FAILURE',
           errorCode: 'NETWORK',
-          message: 'retry later',
         };
       },
       replaceOrderPrice: async (orderId) => {
@@ -1021,8 +1012,6 @@ describe('orderMonitor routeProcessor', () => {
         cancelOrderIds.push(orderId);
         return {
           kind: 'CANCEL_CONFIRMED',
-          closedReason: 'CANCELED',
-          source: 'API',
           relatedBuyOrderIds: null,
         };
       },
@@ -2265,7 +2254,6 @@ describe('orderMonitor routeProcessor', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'CANCELED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2338,7 +2326,6 @@ describe('orderMonitor routeProcessor', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'CANCELED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2400,7 +2387,6 @@ describe('orderMonitor routeProcessor', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'CANCELED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2473,7 +2459,6 @@ describe('orderMonitor routeProcessor', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'CANCELED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 40,
@@ -2539,7 +2524,6 @@ describe('orderMonitor routeProcessor', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'CANCELED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2681,7 +2665,6 @@ describe('orderMonitor routeProcessor', () => {
           return {
             kind: 'ALREADY_CLOSED',
             closedReason,
-            source: 'API_ERROR',
             relatedBuyOrderIds: null,
             terminalExecution: {
               submittedQuantity: 100,
@@ -2748,7 +2731,6 @@ describe('orderMonitor routeProcessor', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'FILLED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2813,7 +2795,6 @@ describe('orderMonitor routeProcessor', () => {
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
         closedReason: 'FILLED',
-        source: 'API_ERROR',
         relatedBuyOrderIds: null,
         terminalExecution: {
           submittedQuantity: 100,
@@ -2968,7 +2949,6 @@ describe('orderMonitor routeProcessor', () => {
         return {
           kind: 'ALREADY_CLOSED' as const,
           closedReason: 'FILLED' as const,
-          source: 'API_ERROR' as const,
           relatedBuyOrderIds: null,
           terminalExecution: {
             submittedQuantity: 100,

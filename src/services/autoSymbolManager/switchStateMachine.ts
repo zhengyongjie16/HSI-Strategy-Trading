@@ -30,6 +30,7 @@ import type {
   StartSwitchOnDistanceParams,
   SwitchProcessParams,
   PeriodicSwitchDueParams,
+  PeriodicSwitchInternalPendingState,
   SwitchState,
   SwitchStateMachine,
   SwitchStateMachineDeps,
@@ -37,7 +38,6 @@ import type {
 import type {
   AdvancePendingSwitchResult,
   PeriodicSeatBlockingReason,
-  PeriodicSwitchPendingState,
   StartSwitchOnDistanceResult,
   SwitchDriveResult,
   SwitchWakeupRequirement,
@@ -327,7 +327,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   }
 
   /** 读取某方向的周期换标 pending 状态。 */
-  function resolvePeriodicPending(direction: 'LONG' | 'SHORT'): PeriodicSwitchPendingState {
+  function resolvePeriodicPending(direction: 'LONG' | 'SHORT'): PeriodicSwitchInternalPendingState {
     const state = periodicSwitchPending.get(direction);
     if (!state) {
       return {

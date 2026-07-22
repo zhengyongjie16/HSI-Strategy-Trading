@@ -51,41 +51,56 @@ describe('rateLimiter business behavior', () => {
   });
 
   it('serializes concurrent calls and enforces minimum API interval', async () => {
-    const limiter = createRateLimiter({
-      config: {
-        maxCalls: 30,
-        windowMs: 30_000,
-      },
+    const originalNow = performance.now;
+    const originalSetTimeout = globalThis.setTimeout;
+    const initialTimeMs = 1_000;
+    let currentTimeMs = initialTimeMs;
+    const delays: number[] = [];
+    const completions: number[] = [];
+
+    Object.defineProperty(performance, 'now', {
+      configurable: true,
+      value: () => currentTimeMs,
     });
 
-    const checkpoints: number[] = [];
-    const startedAt = performance.now();
-    const schedulerToleranceMs = 2;
+    globalThis.setTimeout = ((callback: () => void, delayMs: number = 0) => {
+      delays.push(delayMs);
+      currentTimeMs += delayMs;
+      const handle = originalSetTimeout(() => {}, 0);
+      callback();
+      return handle;
+    }) as typeof setTimeout;
 
-    await Promise.all([
-      limiter.throttle().then(() => {
-        checkpoints.push(performance.now());
-      }),
-      limiter.throttle().then(() => {
-        checkpoints.push(performance.now());
-      }),
-      limiter.throttle().then(() => {
-        checkpoints.push(performance.now());
-      }),
-    ]);
+    try {
+      const limiter = createRateLimiter({
+        config: {
+          maxCalls: 30,
+          windowMs: 30_000,
+        },
+      });
 
-    const elapsed = performance.now() - startedAt;
-    checkpoints.sort((a, b) => a - b);
+      await Promise.all([
+        limiter.throttle().then(() => {
+          completions.push(1);
+        }),
+        limiter.throttle().then(() => {
+          completions.push(2);
+        }),
+        limiter.throttle().then(() => {
+          completions.push(3);
+        }),
+      ]);
 
-    expect(checkpoints).toHaveLength(3);
-    expect(
-      checkpoints[1]! - checkpoints[0]! + schedulerToleranceMs >= API.MIN_CALL_INTERVAL_MS,
-    ).toBe(true);
-
-    expect(
-      checkpoints[2]! - checkpoints[1]! + schedulerToleranceMs >= API.MIN_CALL_INTERVAL_MS,
-    ).toBe(true);
-    expect(elapsed + schedulerToleranceMs >= API.MIN_CALL_INTERVAL_MS * 2).toBe(true);
+      expect(completions).toEqual([1, 2, 3]);
+      expect(delays).toEqual([API.MIN_CALL_INTERVAL_MS, API.MIN_CALL_INTERVAL_MS]);
+      expect(currentTimeMs).toBe(initialTimeMs + API.MIN_CALL_INTERVAL_MS * 2);
+    } finally {
+      Object.defineProperty(performance, 'now', {
+        configurable: true,
+        value: originalNow,
+      });
+      globalThis.setTimeout = originalSetTimeout;
+    }
   });
 
   it('serializes concurrent cancel submit and replace mutations through one callback permit', async () => {

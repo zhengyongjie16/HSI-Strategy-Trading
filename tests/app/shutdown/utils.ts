@@ -41,7 +41,6 @@ export function createLastState(monitorState: MonitorState): LastState {
     currentDayKey: '2026-02-16',
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
-    targetTradingDayKey: null,
     isTradingEnabled: true,
     cachedAccount: null,
     cachedPositions: [],
