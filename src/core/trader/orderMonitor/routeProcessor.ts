@@ -38,10 +38,9 @@ import type {
   TimeoutMarketConversionTerminalState,
 } from './types.js';
 import {
-  acknowledgeLatestReplaceOutcome,
+  acknowledgeLatestReplaceTerminal,
   acknowledgeQueriedTerminalState,
-  clearOrderReplaceTransientRuntimeState,
-  peekLatestReplaceOutcome,
+  peekLatestReplaceTerminal,
   peekQueriedTerminalState,
 } from './orderOps.js';
 import {
@@ -347,20 +346,20 @@ function isTrackedOrderStillAttachedToRoute(
 /**
  * 消费已缓存的改单终态。
  *
- * 已确认的 terminal outcome 必须优先于后续 timeout 或 replace mutation；只有结算成功后
- * 才能同时 ack outcome 与 raw terminal snapshot。
+ * 已确认的改单终态必须优先于后续 timeout 或 replace mutation；只有结算成功后
+ * 才能同时 ack 终态与 raw terminal snapshot。
  */
 function settlePendingReplaceTerminal(
   deps: RouteProcessorDeps,
   order: OrderMonitorTrackedOrder,
 ): boolean {
-  const replaceOutcome = peekLatestReplaceOutcome(deps.runtime, order.orderId);
-  if (replaceOutcome?.kind !== 'TERMINAL_CONFIRMED') {
+  const replaceTerminal = peekLatestReplaceTerminal(deps.runtime, order.orderId);
+  if (replaceTerminal === null) {
     return false;
   }
 
   const rawTerminalState = peekQueriedTerminalState(deps.runtime, order.orderId);
-  if (rawTerminalState !== replaceOutcome.terminalState) {
+  if (rawTerminalState !== replaceTerminal) {
     throw new Error(
       `[订单监控] 订单 ${order.orderId} 改单终态缺少同一 raw terminal snapshot，阻断后续 mutation`,
     );
@@ -383,9 +382,8 @@ function settlePendingReplaceTerminal(
     return true;
   }
 
-  acknowledgeLatestReplaceOutcome(deps.runtime, order.orderId, replaceOutcome);
+  acknowledgeLatestReplaceTerminal(deps.runtime, order.orderId, replaceTerminal);
   acknowledgeQueriedTerminalState(deps.runtime, order.orderId, rawTerminalState);
-  clearOrderReplaceTransientRuntimeState(deps.runtime, order.orderId);
   return true;
 }
 
@@ -410,7 +408,6 @@ function settleBuyOrderTimeoutTerminal(
   }
 
   acknowledgeQueriedTerminalState(deps.runtime, orderId, resolvedTerminal.rawTerminalState);
-  clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
   logger.info(
     `[订单监控] 买入订单 ${orderId} 已确认终态=${resolvedTerminal.settlementInput.params.closedReason}`,
   );
@@ -434,12 +431,10 @@ async function handleBuyOrderTimeout(
 
   const outcome = await deps.cancelOrder(orderId);
   if (!isRouteGenerationCurrent(deps.runtime, params)) {
-    clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
     return true;
   }
 
   if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
-    clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
     return false;
   }
 
@@ -645,12 +640,10 @@ async function handleSellOrderTimeout(
         prepareTimeoutMarketConversionCancel(params, deps, order),
       );
       if (!isRouteGenerationCurrent(deps.runtime, params)) {
-        clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
         return true;
       }
 
       if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
-        clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
         return false;
       }
 
@@ -720,8 +713,6 @@ async function handleSellOrderTimeout(
   if (rawTerminalStateToAcknowledge !== null) {
     acknowledgeQueriedTerminalState(deps.runtime, orderId, rawTerminalStateToAcknowledge);
   }
-
-  clearOrderReplaceTransientRuntimeState(deps.runtime, orderId);
 
   clearTimeoutMarketConversionState(order);
   resetCancelRetry(order);
@@ -1010,48 +1001,16 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
         continue;
       }
 
-      const outcomeBeforeReplace = peekLatestReplaceOutcome(deps.runtime, order.orderId);
       await deps.replaceOrderPrice(order.orderId, latestQuote.price);
-      const outcomeAfterReplace = peekLatestReplaceOutcome(deps.runtime, order.orderId);
-      const replacedOutcomeFromCurrentAttempt =
-        outcomeAfterReplace?.kind === 'REPLACED' && outcomeAfterReplace !== outcomeBeforeReplace
-          ? outcomeAfterReplace
-          : null;
       if (!isRouteGenerationCurrent(deps.runtime, params)) {
-        if (replacedOutcomeFromCurrentAttempt !== null) {
-          acknowledgeLatestReplaceOutcome(
-            deps.runtime,
-            order.orderId,
-            replacedOutcomeFromCurrentAttempt,
-          );
-        }
-
         return;
       }
 
       if (!isTrackedOrderStillAttachedToRoute(deps.runtime, params.symbol, order)) {
-        if (replacedOutcomeFromCurrentAttempt !== null) {
-          acknowledgeLatestReplaceOutcome(
-            deps.runtime,
-            order.orderId,
-            replacedOutcomeFromCurrentAttempt,
-          );
-        }
-
         continue;
       }
 
       settlePendingReplaceTerminal(deps, order);
-
-      // 只有 await 区间写入的新 REPLACED 属于本次 route，可按身份确认消费。
-      if (replacedOutcomeFromCurrentAttempt !== null) {
-        acknowledgeLatestReplaceOutcome(
-          deps.runtime,
-          order.orderId,
-          replacedOutcomeFromCurrentAttempt,
-        );
-      }
-
       return;
     }
   }

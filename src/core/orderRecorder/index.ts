@@ -376,11 +376,9 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     quote?: Quote | null,
   ): Promise<ReadonlyArray<OrderRecord>> {
-    const { filteredOrders, classified } = classifyRebuildSnapshotForSymbol(symbol, allOrders);
+    const { classified } = classifyRebuildSnapshotForSymbol(symbol, allOrders);
     const allBuyOrders = classified.executedBuyOrders;
     const executedSellOrders = classified.executedSellOrders;
-
-    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, executedSellOrders, filteredOrders);
 
     return Promise.resolve(
       applyOrdersRefreshForLong(symbol, allBuyOrders, executedSellOrders, classified, quote),
@@ -396,11 +394,9 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     quote?: Quote | null,
   ): Promise<ReadonlyArray<OrderRecord>> {
-    const { filteredOrders, classified } = classifyRebuildSnapshotForSymbol(symbol, allOrders);
+    const { classified } = classifyRebuildSnapshotForSymbol(symbol, allOrders);
     const allBuyOrders = classified.executedBuyOrders;
     const executedSellOrders = classified.executedSellOrders;
-
-    apiManager.cacheOrdersForSymbol(symbol, allBuyOrders, executedSellOrders, filteredOrders);
 
     return Promise.resolve(
       applyOrdersRefreshForShort(symbol, allBuyOrders, executedSellOrders, classified, quote),
@@ -410,11 +406,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
   // ============================================
   // 公有方法 - 缓存管理
   // ============================================
-
-  /** 清理指定标的的订单缓存 */
-  function clearOrdersCacheForSymbol(symbol: string): void {
-    apiManager.clearCacheForSymbol(symbol);
-  }
 
   /** 获取指定标的的买入订单列表 */
   function getBuyOrdersForSymbol(
@@ -523,7 +514,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     validateRebuildSnapshot,
     refreshOrdersFromAllOrdersForLong,
     refreshOrdersFromAllOrdersForShort,
-    clearOrdersCacheForSymbol,
     getBuyOrdersForSymbol,
 
     // 待成交卖出订单追踪

@@ -12,10 +12,9 @@ import { decimalToNumber } from '../../../utils/helpers/index.js';
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
 import type { EventFlow, EventFlowDeps, OrderCumulativeExecutionParams } from './types.js';
 import {
-  acknowledgeLatestReplaceOutcome,
+  acknowledgeLatestReplaceTerminal,
   acknowledgeQueriedTerminalState,
-  clearOrderReplaceTransientRuntimeState,
-  peekLatestReplaceOutcome,
+  peekLatestReplaceTerminal,
   peekQueriedTerminalState,
   resumeOrderReplaceFromWsProgress,
 } from './orderOps.js';
@@ -43,14 +42,14 @@ function acknowledgeTerminalEvidenceAfterWsSettlement(
   status: OrderStatus,
   orderUpdatedAtMs: number | null,
 ): void {
-  const replaceOutcome = peekLatestReplaceOutcome(runtime, orderId);
+  const replaceTerminal = peekLatestReplaceTerminal(runtime, orderId);
   if (
-    replaceOutcome?.kind === 'TERMINAL_CONFIRMED' &&
-    replaceOutcome.terminalState.status === status &&
-    replaceOutcome.terminalState.orderUpdatedAtMs === orderUpdatedAtMs
+    replaceTerminal !== null &&
+    replaceTerminal.status === status &&
+    replaceTerminal.orderUpdatedAtMs === orderUpdatedAtMs
   ) {
-    acknowledgeLatestReplaceOutcome(runtime, orderId, replaceOutcome);
-    acknowledgeQueriedTerminalState(runtime, orderId, replaceOutcome.terminalState);
+    acknowledgeLatestReplaceTerminal(runtime, orderId, replaceTerminal);
+    acknowledgeQueriedTerminalState(runtime, orderId, replaceTerminal);
   }
 
   const rawTerminalState = peekQueriedTerminalState(runtime, orderId);
@@ -61,8 +60,6 @@ function acknowledgeTerminalEvidenceAfterWsSettlement(
   ) {
     acknowledgeQueriedTerminalState(runtime, orderId, rawTerminalState);
   }
-
-  clearOrderReplaceTransientRuntimeState(runtime, orderId);
 }
 
 /** 将 SDK Decimal/unknown 价格数量统一收敛为 number | null。 */
@@ -214,7 +211,6 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     trackedOrder.lastExecutedTimeMs = mergedFact.executedTimeMs;
 
     if (previousStatus !== mergedFact.status) {
-      clearOrderReplaceTransientRuntimeState(runtime, orderId);
       if (
         trackedOrder.nextCancelAttemptAt === ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS &&
         shouldResumeCancelRetryFromWsStatus(mergedFact.status)
@@ -223,7 +219,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         trackedOrder.nextCancelAttemptAt = Date.now();
       }
 
-      resumeOrderReplaceFromWsProgress(runtime, orderId, trackedOrder);
+      resumeOrderReplaceFromWsProgress(trackedOrder);
     }
 
     if (openCumulativeExecutionParams !== null && !isProtectiveSell) {

@@ -74,7 +74,6 @@ export function createTradingConfig(overrides: Partial<TradingConfig> = {}): Tra
     monitor: createMonitorConfig(),
     global: {
       doomsdayProtection: true,
-      debug: false,
       openProtection: {
         morning: {
           enabled: false,

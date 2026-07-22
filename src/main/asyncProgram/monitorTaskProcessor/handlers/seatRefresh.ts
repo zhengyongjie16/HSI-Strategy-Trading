@@ -305,7 +305,6 @@ export function createSeatRefreshHandler({
         const existingSeat = context.symbolRegistry.resolveSeatBySymbol(data.previousSymbol);
         if (!existingSeat) {
           context.orderRecorder.clearBuyOrders(data.previousSymbol, isLong, previousExecutionQuote);
-          context.orderRecorder.clearOrdersCacheForSymbol(data.previousSymbol);
         }
       }
 

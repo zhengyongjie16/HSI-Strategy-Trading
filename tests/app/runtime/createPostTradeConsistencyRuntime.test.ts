@@ -193,7 +193,6 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     expect(accountRefreshCalls).toBe(1);
     expect(positionRefreshCalls).toBe(1);
-    expect(lastState.cachedAccount?.buyPower).toBe(88_000);
     expect(lastState.cachedPositions).toHaveLength(1);
     expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(300);
     expect(freshEvents).toEqual([
@@ -339,7 +338,6 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     expect(accountRefreshCalls).toBe(2);
     expect(positionRefreshCalls).toBe(2);
-    expect(lastState.cachedAccount?.buyPower).toBe(99_000);
     expect(lastState.cachedPositions).toHaveLength(1);
     expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(500);
     expect(runtime.getStatus()).toEqual({
@@ -440,7 +438,6 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     expect(accountCallCount).toBeGreaterThanOrEqual(2);
     expect(new Set(refreshedSymbols)).toEqual(new Set(['BULL.HK', 'BEAR.HK']));
-    expect(lastState.cachedAccount?.buyPower).toBe(66_000);
     expect(runtime.getStatus()).toEqual({
       started: false,
       currentVersion: 1,
@@ -973,8 +970,6 @@ describe('createPostTradeConsistencyRuntime', () => {
     runtime.start();
     await runtime.waitForFresh();
     await runtime.stopAndDrain();
-
-    expect(lastState.cachedAccount?.buyPower).toBe(77_000);
     expect(lastState.cachedPositions).toEqual([]);
     expect(pendingProtectiveDirections).toEqual(['LONG']);
     expect(committedProtectionBoundaryCalls).toEqual([
@@ -1249,7 +1244,6 @@ describe('createPostTradeConsistencyRuntime', () => {
     await runtime.stopAndDrain();
 
     expect(freshEvents).toEqual([]);
-    expect(lastState.cachedAccount?.buyPower).toBe(66_000);
     expect(runtime.getStatus()).toEqual({
       started: false,
       currentVersion: 0,
@@ -1301,7 +1295,6 @@ describe('createPostTradeConsistencyRuntime', () => {
     await runtime.stopAndDrain();
 
     expect(freshEvents).toEqual([]);
-    expect(lastState.cachedAccount?.buyPower).toBe(55_000);
     expect(runtime.getStatus()).toEqual({
       started: false,
       currentVersion: 0,

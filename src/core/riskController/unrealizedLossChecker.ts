@@ -129,9 +129,6 @@ export const createUnrealizedLossChecker = (
     unrealizedLossData.set(symbol, {
       r1: adjustedR1,
       n1,
-      baseR1,
-      dailyLossOffset: normalizedOffset,
-      lastUpdateTime: Date.now(),
     });
 
     const positionType = isLongSymbol ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;

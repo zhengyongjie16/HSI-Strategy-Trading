@@ -17,7 +17,7 @@ import type {
   FinalizeOrderSettlementParams,
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
-  ReplaceOrderOutcome,
+  TerminalStateSnapshot,
   RouteProcessorDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderMonitorConfig, TrackOrderParams } from '../../../../src/core/trader/types.js';
@@ -42,7 +42,7 @@ function createRuntimeStore(): OrderMonitorRuntimeStore {
     bootstrappingOrderEvents: new Map(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
-    latestReplaceOutcomeByOrderId: new Map(),
+    latestReplaceTerminalByOrderId: new Map(),
     orderStateChangedListeners: new Set(),
     trackedOrderIdsBySymbol: new Map(),
     routeStatesBySymbol: new Map(),
@@ -125,12 +125,12 @@ function createTrackedOrder(
   };
 }
 
-function setLatestReplaceOutcome(
+function setLatestReplaceTerminal(
   runtime: OrderMonitorRuntimeStore,
   orderId: string,
-  outcome: ReplaceOrderOutcome,
+  outcome: TerminalStateSnapshot,
 ): void {
-  runtime.latestReplaceOutcomeByOrderId.set(orderId, outcome);
+  runtime.latestReplaceTerminalByOrderId.set(orderId, outcome);
 }
 
 function attachTrackedOrders(
@@ -1855,265 +1855,6 @@ describe('orderMonitor routeProcessor', () => {
     }
   });
 
-  it('普通 replace 成功后消费 REPLACED 临时 outcome', async () => {
-    const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
-      orderId: 'SELL-REPLACE-SUCCESS-TRANSIENT',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
-      lastPriceUpdateAt: 0,
-    });
-    attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-    const replacedOutcome: ReplaceOrderOutcome = { kind: 'REPLACED' };
-    const { deps } = createDeps({
-      runtime,
-      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
-      replaceOrderPrice: async (orderId) => {
-        setLatestReplaceOutcome(runtime, orderId, replacedOutcome);
-      },
-    });
-    const routeProcessor = createRouteProcessor(deps);
-
-    await routeProcessor.processRoute({
-      symbol: 'BULL.HK',
-      generation: 1,
-      wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
-    });
-
-    expect(runtime.latestReplaceOutcomeByOrderId.has(trackedOrder.orderId)).toBe(false);
-  });
-
-  it('replace await 未覆写旧 REPLACED 且 runtime stop 时保留旧 outcome', async () => {
-    const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
-      orderId: 'SELL-REPLACE-OLD-REPLACED-STOPPED',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
-      lastPriceUpdateAt: 0,
-    });
-    attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-    const oldReplacedOutcome: ReplaceOrderOutcome = { kind: 'REPLACED' };
-    setLatestReplaceOutcome(runtime, trackedOrder.orderId, oldReplacedOutcome);
-    let replaceCalls = 0;
-    const { deps } = createDeps({
-      runtime,
-      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
-      replaceOrderPrice: async () => {
-        replaceCalls += 1;
-        runtime.running = false;
-      },
-    });
-
-    await createRouteProcessor(deps).processRoute({
-      symbol: 'BULL.HK',
-      generation: 1,
-      wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
-    });
-
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(
-      oldReplacedOutcome,
-    );
-    expect(replaceCalls).toBe(1);
-  });
-
-  it('replace await 未覆写旧 REPLACED 且订单脱离 route 时保留旧 outcome', async () => {
-    const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
-      orderId: 'SELL-REPLACE-OLD-REPLACED-DETACHED',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
-      lastPriceUpdateAt: 0,
-    });
-    attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-    const oldReplacedOutcome: ReplaceOrderOutcome = { kind: 'REPLACED' };
-    setLatestReplaceOutcome(runtime, trackedOrder.orderId, oldReplacedOutcome);
-    let replaceCalls = 0;
-    const { deps } = createDeps({
-      runtime,
-      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
-      replaceOrderPrice: async () => {
-        replaceCalls += 1;
-        runtime.closedOrderIds.add(trackedOrder.orderId);
-      },
-    });
-
-    await createRouteProcessor(deps).processRoute({
-      symbol: 'BULL.HK',
-      generation: 1,
-      wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
-    });
-
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(
-      oldReplacedOutcome,
-    );
-    expect(replaceCalls).toBe(1);
-  });
-
-  it('replace TEMP_BLOCKED 时保留 retry outcome 与 tracked retry state', async () => {
-    const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
-      orderId: 'SELL-REPLACE-TEMP-BLOCKED-RETRY',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
-      lastPriceUpdateAt: 0,
-    });
-    attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-    const nextRetryAtMs = Date.now() + 1_000;
-    const tempBlockedOutcome: ReplaceOrderOutcome = {
-      kind: 'TEMP_BLOCKED',
-      retryCount: 1,
-      nextRetryAtMs,
-      resumeMode: 'TIME_BACKOFF',
-    };
-    const { deps } = createDeps({
-      runtime,
-      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
-      replaceOrderPrice: async (orderId) => {
-        trackedOrder.replaceCapability = 'TEMP_BLOCKED_BY_STATUS';
-        trackedOrder.replaceBlockedUntilAt = nextRetryAtMs;
-        trackedOrder.replaceTempBlockedCount = 1;
-        setLatestReplaceOutcome(runtime, orderId, tempBlockedOutcome);
-      },
-    });
-    const routeProcessor = createRouteProcessor(deps);
-
-    await routeProcessor.processRoute({
-      symbol: 'BULL.HK',
-      generation: 1,
-      wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
-    });
-
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(
-      tempBlockedOutcome,
-    );
-    expect(trackedOrder.replaceCapability).toBe('TEMP_BLOCKED_BY_STATUS');
-    expect(trackedOrder.replaceBlockedUntilAt).toBe(nextRetryAtMs);
-    expect(trackedOrder.replaceTempBlockedCount).toBe(1);
-  });
-
-  it('replace await 内进入 TEMP_BLOCKED 后 runtime stop 仍保留 retry evidence', async () => {
-    const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
-      orderId: 'SELL-REPLACE-TEMP-BLOCKED-STOPPED',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
-      lastPriceUpdateAt: 0,
-    });
-    attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-    const nextRetryAtMs = Date.now() + 1_000;
-    const tempBlockedOutcome: ReplaceOrderOutcome = {
-      kind: 'TEMP_BLOCKED',
-      retryCount: 1,
-      nextRetryAtMs,
-      resumeMode: 'TIME_BACKOFF',
-    };
-    const replaceStateWritten = createDeferredValue<null>();
-    const allowReplaceToFinish = createDeferredValue<null>();
-    const { deps } = createDeps({
-      runtime,
-      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
-      replaceOrderPrice: async (orderId) => {
-        trackedOrder.replaceCapability = 'TEMP_BLOCKED_BY_STATUS';
-        trackedOrder.replaceBlockedUntilAt = nextRetryAtMs;
-        trackedOrder.replaceTempBlockedCount = 1;
-        setLatestReplaceOutcome(runtime, orderId, tempBlockedOutcome);
-        replaceStateWritten.resolve(null);
-        await allowReplaceToFinish.promise;
-      },
-    });
-
-    const processPromise = createRouteProcessor(deps).processRoute({
-      symbol: 'BULL.HK',
-      generation: 1,
-      wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
-    });
-    await replaceStateWritten.promise;
-    runtime.running = false;
-    runtime.runtimeState = 'STOPPED';
-    allowReplaceToFinish.resolve(null);
-    await processPromise;
-
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(
-      tempBlockedOutcome,
-    );
-    expect(trackedOrder.replaceCapability).toBe('TEMP_BLOCKED_BY_STATUS');
-    expect(trackedOrder.replaceBlockedUntilAt).toBe(nextRetryAtMs);
-    expect(trackedOrder.replaceTempBlockedCount).toBe(1);
-  });
-
-  it('replace await 内进入 TEMP_BLOCKED 后订单脱离 route 仍保留 retry evidence', async () => {
-    const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
-      orderId: 'SELL-REPLACE-TEMP-BLOCKED-DETACHED',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
-      lastPriceUpdateAt: 0,
-    });
-    attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-    const nextRetryAtMs = Date.now() + 1_000;
-    const tempBlockedOutcome: ReplaceOrderOutcome = {
-      kind: 'TEMP_BLOCKED',
-      retryCount: 1,
-      nextRetryAtMs,
-      resumeMode: 'TIME_BACKOFF',
-    };
-    const replaceStateWritten = createDeferredValue<null>();
-    const allowReplaceToFinish = createDeferredValue<null>();
-    const { deps } = createDeps({
-      runtime,
-      config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
-      replaceOrderPrice: async (orderId) => {
-        trackedOrder.replaceCapability = 'TEMP_BLOCKED_BY_STATUS';
-        trackedOrder.replaceBlockedUntilAt = nextRetryAtMs;
-        trackedOrder.replaceTempBlockedCount = 1;
-        setLatestReplaceOutcome(runtime, orderId, tempBlockedOutcome);
-        replaceStateWritten.resolve(null);
-        await allowReplaceToFinish.promise;
-      },
-    });
-
-    const processPromise = createRouteProcessor(deps).processRoute({
-      symbol: 'BULL.HK',
-      generation: 1,
-      wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
-    });
-    await replaceStateWritten.promise;
-    runtime.closedOrderIds.add(trackedOrder.orderId);
-    allowReplaceToFinish.resolve(null);
-    await processPromise;
-
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(
-      tempBlockedOutcome,
-    );
-    expect(trackedOrder.replaceCapability).toBe('TEMP_BLOCKED_BY_STATUS');
-    expect(trackedOrder.replaceBlockedUntilAt).toBe(nextRetryAtMs);
-    expect(trackedOrder.replaceTempBlockedCount).toBe(1);
-  });
-
   it('replace await 内确认 terminal 后订单脱离 route 时保留 evidence，重建后只结算一次', async () => {
     const runtime = createRuntimeStore();
     const trackedOrder = createTrackedOrder({
@@ -2135,10 +1876,7 @@ describe('orderMonitor routeProcessor', () => {
       orderUpdatedAtMs: Date.now(),
       status: OrderStatus.Canceled,
     };
-    const terminalOutcome: ReplaceOrderOutcome = {
-      kind: 'TERMINAL_CONFIRMED',
-      terminalState: rawTerminal,
-    };
+    const terminalOutcome: TerminalStateSnapshot = rawTerminal;
     const replaceStateWritten = createDeferredValue<null>();
     const allowReplaceToFinish = createDeferredValue<null>();
     const settlementOrderIds: string[] = [];
@@ -2153,7 +1891,7 @@ describe('orderMonitor routeProcessor', () => {
         }
 
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
-        setLatestReplaceOutcome(runtime, orderId, terminalOutcome);
+        setLatestReplaceTerminal(runtime, orderId, terminalOutcome);
         replaceStateWritten.resolve(null);
         await allowReplaceToFinish.promise;
       },
@@ -2176,7 +1914,7 @@ describe('orderMonitor routeProcessor', () => {
     await processPromise;
 
     expect(settlementOrderIds).toEqual([]);
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
+    expect(runtime.latestReplaceTerminalByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
     expect(runtime.queriedTerminalStateByOrderId.get(trackedOrder.orderId)).toBe(rawTerminal);
 
     runtime.closedOrderIds.delete(trackedOrder.orderId);
@@ -2188,7 +1926,7 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(settlementOrderIds).toEqual([trackedOrder.orderId]);
-    expect(runtime.latestReplaceOutcomeByOrderId.has(trackedOrder.orderId)).toBe(false);
+    expect(runtime.latestReplaceTerminalByOrderId.has(trackedOrder.orderId)).toBe(false);
     expect(runtime.queriedTerminalStateByOrderId.has(trackedOrder.orderId)).toBe(false);
 
     await routeProcessor.processRoute({
@@ -2222,16 +1960,13 @@ describe('orderMonitor routeProcessor', () => {
       orderUpdatedAtMs: Date.now(),
       status: OrderStatus.Canceled,
     };
-    const terminalOutcome: ReplaceOrderOutcome = {
-      kind: 'TERMINAL_CONFIRMED',
-      terminalState: rawTerminal,
-    };
+    const terminalOutcome: TerminalStateSnapshot = rawTerminal;
     const { deps } = createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async (orderId) => {
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
-        setLatestReplaceOutcome(runtime, orderId, terminalOutcome);
+        setLatestReplaceTerminal(runtime, orderId, terminalOutcome);
       },
       settleOrder: () => ({ handled: false, relatedBuyOrderIds: null }),
     });
@@ -2244,7 +1979,7 @@ describe('orderMonitor routeProcessor', () => {
       latestQuote: createQuoteDouble('BULL.HK', 1.02),
     });
 
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
+    expect(runtime.latestReplaceTerminalByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
     expect(runtime.queriedTerminalStateByOrderId.get(trackedOrder.orderId)).toBe(rawTerminal);
   });
 
@@ -2279,10 +2014,7 @@ describe('orderMonitor routeProcessor', () => {
           status: OrderStatus.Canceled,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
-        setLatestReplaceOutcome(runtime, orderId, {
-          kind: 'TERMINAL_CONFIRMED',
-          terminalState: rawTerminal,
-        });
+        setLatestReplaceTerminal(runtime, orderId, rawTerminal);
       },
       settleOrder: (params) => {
         settlementCalls.push({
@@ -2310,7 +2042,7 @@ describe('orderMonitor routeProcessor', () => {
         closedReason: 'CANCELED',
       },
     ]);
-    expect(runtime.latestReplaceOutcomeByOrderId.has('SELL-REPLACE-TERMINAL')).toBe(false);
+    expect(runtime.latestReplaceTerminalByOrderId.has('SELL-REPLACE-TERMINAL')).toBe(false);
   });
 
   it('replace 终态查询陈旧时使用 tracked 已知的更强成交事实结算', async () => {
@@ -2352,10 +2084,7 @@ describe('orderMonitor routeProcessor', () => {
           status: OrderStatus.Canceled,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
-        setLatestReplaceOutcome(runtime, orderId, {
-          kind: 'TERMINAL_CONFIRMED',
-          terminalState: rawTerminal,
-        });
+        setLatestReplaceTerminal(runtime, orderId, rawTerminal);
       },
       settleOrder: (params) => {
         settlementCalls.push(params);
@@ -2413,10 +2142,7 @@ describe('orderMonitor routeProcessor', () => {
           status: OrderStatus.Canceled,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
-        setLatestReplaceOutcome(runtime, orderId, {
-          kind: 'TERMINAL_CONFIRMED',
-          terminalState: rawTerminal,
-        });
+        setLatestReplaceTerminal(runtime, orderId, rawTerminal);
       },
       settleOrder: (params) => {
         settlementCalls.push(params);
@@ -2480,10 +2206,7 @@ describe('orderMonitor routeProcessor', () => {
           status: OrderStatus.Canceled,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
-        setLatestReplaceOutcome(runtime, orderId, {
-          kind: 'TERMINAL_CONFIRMED',
-          terminalState: rawTerminal,
-        });
+        setLatestReplaceTerminal(runtime, orderId, rawTerminal);
       },
       settleOrder: (params) => {
         settlementCalls.push(params);
@@ -2743,10 +2466,7 @@ describe('orderMonitor routeProcessor', () => {
       status: OrderStatus.Canceled,
     };
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
-    setLatestReplaceOutcome(runtime, trackedOrder.orderId, {
-      kind: 'TERMINAL_CONFIRMED',
-      terminalState: rawTerminal,
-    });
+    setLatestReplaceTerminal(runtime, trackedOrder.orderId, rawTerminal);
     const settlementCalls: FinalizeOrderSettlementParams[] = [];
     const { deps } = createDeps({
       runtime,
@@ -3165,10 +2885,7 @@ describe('orderMonitor routeProcessor', () => {
       executedPrice: 1.01,
       orderUpdatedAtMs: 300,
     };
-    const terminalOutcome: ReplaceOrderOutcome = {
-      kind: 'TERMINAL_CONFIRMED',
-      terminalState: rawTerminal,
-    };
+    const terminalOutcome: TerminalStateSnapshot = rawTerminal;
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
     const settlementError = new Error('replace local settlement failed');
     let settlementAttempts = 0;
@@ -3176,7 +2893,7 @@ describe('orderMonitor routeProcessor', () => {
       runtime,
       config: createConfig({ sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async () => {
-        runtime.latestReplaceOutcomeByOrderId.set(trackedOrder.orderId, terminalOutcome);
+        runtime.latestReplaceTerminalByOrderId.set(trackedOrder.orderId, terminalOutcome);
       },
       settleOrder: () => {
         settlementAttempts += 1;
@@ -3203,13 +2920,13 @@ describe('orderMonitor routeProcessor', () => {
     }
 
     expect(caughtError).toBe(settlementError);
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
+    expect(runtime.latestReplaceTerminalByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
     expect(runtime.queriedTerminalStateByOrderId.get(trackedOrder.orderId)).toBe(rawTerminal);
 
     await routeProcessor.processRoute(routeParams);
 
     expect(settlementAttempts).toBe(2);
-    expect(runtime.latestReplaceOutcomeByOrderId.has(trackedOrder.orderId)).toBe(false);
+    expect(runtime.latestReplaceTerminalByOrderId.has(trackedOrder.orderId)).toBe(false);
     expect(runtime.queriedTerminalStateByOrderId.has(trackedOrder.orderId)).toBe(false);
   });
 
@@ -3318,10 +3035,7 @@ describe('orderMonitor routeProcessor', () => {
       executedPrice: 1.01,
       orderUpdatedAtMs: Date.parse('2026-07-13T05:11:00.000Z'),
     };
-    const terminalOutcome: ReplaceOrderOutcome = {
-      kind: 'TERMINAL_CONFIRMED',
-      terminalState: rawTerminal,
-    };
+    const terminalOutcome: TerminalStateSnapshot = rawTerminal;
     let replaceCalls = 0;
     let settlementCalls = 0;
     const marketOrderTracks: TrackOrderParams[] = [];
@@ -3338,7 +3052,7 @@ describe('orderMonitor routeProcessor', () => {
       replaceOrderPrice: async () => {
         replaceCalls += 1;
         runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
-        setLatestReplaceOutcome(runtime, trackedOrder.orderId, terminalOutcome);
+        setLatestReplaceTerminal(runtime, trackedOrder.orderId, terminalOutcome);
         runtime.running = false;
       },
       settleOrder: () => {
@@ -3359,7 +3073,7 @@ describe('orderMonitor routeProcessor', () => {
 
     await routeProcessor.processRoute(routeParams);
 
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
+    expect(runtime.latestReplaceTerminalByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
     expect(runtime.queriedTerminalStateByOrderId.get(trackedOrder.orderId)).toBe(rawTerminal);
     expect(settlementCalls).toBe(0);
     expect(pendingSellReleaseOrderIds).toEqual([]);
@@ -3372,7 +3086,7 @@ describe('orderMonitor routeProcessor', () => {
 
     expect(replaceCalls).toBe(1);
     expect(settlementCalls).toBe(1);
-    expect(runtime.latestReplaceOutcomeByOrderId.has(trackedOrder.orderId)).toBe(false);
+    expect(runtime.latestReplaceTerminalByOrderId.has(trackedOrder.orderId)).toBe(false);
     expect(runtime.queriedTerminalStateByOrderId.has(trackedOrder.orderId)).toBe(false);
     expect(pendingSellReleaseOrderIds).toEqual([]);
     expect(marketOrderTracks).toEqual([]);

@@ -91,7 +91,6 @@ export interface ProtectiveLiquidationEpisodeTracker {
   commitCompletion: (prepared: PreparedProtectiveLiquidationCompletion) => void;
   restoreCompletedBoundary: (params: RestoreCompletedBoundaryParams) => void;
   restoreInProgressEpisode: (params: RestoreInProgressEpisodeParams) => void;
-  getLatestProtectionBoundaryByDirection: () => ReadonlyMap<ProtectiveLiquidationDirection, number>;
   getInProgressEpisodes: () => ReadonlyArray<InProgressProtectiveEpisode>;
   resetAll: () => void;
 }

@@ -17,6 +17,7 @@ import {
  * @returns 单 monitor 交易配置
  */
 export function createTradingConfig({ env }: { env: NodeJS.ProcessEnv }): TradingConfig {
+  getBooleanConfig(env, 'DEBUG', false);
   const monitor = parseMonitorConfig(env);
   if (monitor === null) {
     throw createConfigValidationError('[配置错误] MONITOR_SYMBOL 未配置');
@@ -81,7 +82,6 @@ export function createTradingConfig({ env }: { env: NodeJS.ProcessEnv }): Tradin
     monitor,
     global: {
       doomsdayProtection: getBooleanConfig(env, 'DOOMSDAY_PROTECTION', true),
-      debug: getBooleanConfig(env, 'DEBUG', false),
       openProtection: {
         morning: {
           enabled: morningOpenProtectionEnabled,

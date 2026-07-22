@@ -38,11 +38,10 @@ import { createEventFlow } from './eventFlow.js';
 import { createSettlementFlow } from './settlementFlow.js';
 import { createOrderStatusQuery } from './orderStatusQuery.js';
 import {
-  acknowledgeLatestReplaceOutcome,
+  acknowledgeLatestReplaceTerminal,
   acknowledgeQueriedTerminalState,
-  clearOrderReplaceTransientRuntimeState,
   createOrderOps,
-  peekLatestReplaceOutcome,
+  peekLatestReplaceTerminal,
   peekQueriedTerminalState,
 } from './orderOps.js';
 import { createRouteRuntime } from './routeRuntime.js';
@@ -96,7 +95,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     bootstrappingOrderEvents: new Map<string, PushOrderChanged>(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
-    latestReplaceOutcomeByOrderId: new Map(),
+    latestReplaceTerminalByOrderId: new Map(),
     orderStateChangedListeners: new Set(),
     trackedOrderIdsBySymbol: new Map(),
     routeStatesBySymbol: new Map(),
@@ -295,7 +294,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         acknowledgeQueriedTerminalState(runtime, orderId, terminalState);
       }
 
-      clearOrderReplaceTransientRuntimeState(runtime, orderId);
       return outcome;
     }
 
@@ -324,7 +322,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     }
 
     acknowledgeQueriedTerminalState(runtime, orderId, terminalState);
-    clearOrderReplaceTransientRuntimeState(runtime, orderId);
 
     const terminalExecution = {
       submittedQuantity: terminalState.submittedQuantity,
@@ -373,7 +370,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   /**
    * 公开改单入口也必须同步消费已确认终态。
    *
-   * 不能把 `TERMINAL_CONFIRMED` 留给未来未必发生的 route wakeup；否则保护性成交
+   * 不能把已确认终态留给未来未必发生的 route wakeup；否则保护性成交
    * 的 durable progress 与本地结算会脱离同一 raw broker observation。
    */
   async function replaceOrderPrice(
@@ -383,8 +380,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     quantity?: number | null,
   ) {
     const result = await orderOps.replaceOrderPrice(orderId, newPrice, request, quantity);
-    const replaceOutcome = peekLatestReplaceOutcome(runtime, orderId);
-    if (replaceOutcome?.kind !== 'TERMINAL_CONFIRMED') {
+    const replaceTerminal = peekLatestReplaceTerminal(runtime, orderId);
+    if (replaceTerminal === null) {
       return result;
     }
 
@@ -393,18 +390,13 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       return result;
     }
 
-    const terminalSettlement = settleActiveTerminalFromRaw(
-      orderId,
-      trackedOrder,
-      replaceOutcome.terminalState,
-    );
+    const terminalSettlement = settleActiveTerminalFromRaw(orderId, trackedOrder, replaceTerminal);
     if (!terminalSettlement.settlementResult.handled && !terminalSettlement.alreadySettled) {
       throw new Error(`[订单监控] 订单 ${orderId} 改单终态已确认但本地结算失败`);
     }
 
-    acknowledgeLatestReplaceOutcome(runtime, orderId, replaceOutcome);
-    acknowledgeQueriedTerminalState(runtime, orderId, replaceOutcome.terminalState);
-    clearOrderReplaceTransientRuntimeState(runtime, orderId);
+    acknowledgeLatestReplaceTerminal(runtime, orderId, replaceTerminal);
+    acknowledgeQueriedTerminalState(runtime, orderId, replaceTerminal);
     return result;
   }
 
@@ -426,8 +418,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       permit,
       quantity,
     );
-    const replaceOutcome = peekLatestReplaceOutcome(runtime, orderId);
-    if (replaceOutcome?.kind !== 'TERMINAL_CONFIRMED') {
+    const replaceTerminal = peekLatestReplaceTerminal(runtime, orderId);
+    if (replaceTerminal === null) {
       return result;
     }
 
@@ -436,18 +428,13 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       return result;
     }
 
-    const terminalSettlement = settleActiveTerminalFromRaw(
-      orderId,
-      trackedOrder,
-      replaceOutcome.terminalState,
-    );
+    const terminalSettlement = settleActiveTerminalFromRaw(orderId, trackedOrder, replaceTerminal);
     if (!terminalSettlement.settlementResult.handled && !terminalSettlement.alreadySettled) {
       throw new Error(`[订单监控] 订单 ${orderId} 改单终态已确认但本地结算失败`);
     }
 
-    acknowledgeLatestReplaceOutcome(runtime, orderId, replaceOutcome);
-    acknowledgeQueriedTerminalState(runtime, orderId, replaceOutcome.terminalState);
-    clearOrderReplaceTransientRuntimeState(runtime, orderId);
+    acknowledgeLatestReplaceTerminal(runtime, orderId, replaceTerminal);
+    acknowledgeQueriedTerminalState(runtime, orderId, replaceTerminal);
     return result;
   }
 

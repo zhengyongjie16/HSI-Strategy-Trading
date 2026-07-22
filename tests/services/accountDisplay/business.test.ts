@@ -37,7 +37,6 @@ const lastState = {
     netAssets: 2344.5,
     positionValue: 1111.1,
     cashInfos: [],
-    buyPower: 9999,
   },
   cachedPositions: [
     {
@@ -48,7 +47,6 @@ const lastState = {
       availableQuantity: 80,
       currency: 'HKD',
       costPrice: 12.34,
-      market: 'HK',
     },
   ],
   positionCache: {

@@ -91,7 +91,6 @@ describe('refreshHelpers business flow', () => {
     expect(accountCalls).toBe(2);
     expect(positionCalls).toBe(2);
     expect(reconcileCalls).toBe(2);
-    expect(lastState.cachedAccount?.buyPower).toBe(20_000);
     expect(lastState.cachedPositions[0]?.quantity).toBe(200);
     expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(200);
   });

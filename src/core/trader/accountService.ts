@@ -2,7 +2,7 @@
  * 账户服务模块
  *
  * 职责：
- * - 查询账户余额、净资产、购买力等财务信息
+ * - 查询账户余额、净资产与持仓市值等财务信息
  * - 查询股票持仓（支持按标的过滤）
  *
  * 依赖：ctx（Trade API 上下文）、rateLimiter（频率限制）
@@ -22,7 +22,7 @@ export const createAccountService = (deps: AccountServiceDeps): AccountService =
   const { ctx, rateLimiter } = deps;
 
   /**
-   * 获取账户快照（余额、净资产、购买力、现金详情等）。
+   * 获取账户快照（余额、净资产、持仓市值与现金详情）。
    * 供下单前风控与资金校验使用；若返回结果不含主账户则按内部契约错误 fail-fast。
    *
    * @returns 账户快照
@@ -49,9 +49,6 @@ export const createAccountService = (deps: AccountServiceDeps): AccountService =
     const cashInfos: CashInfo[] = primary.cashInfos.map((info) => ({
       currency: info.currency,
       availableCash: decimalToNumber(info.availableCash),
-      withdrawCash: decimalToNumber(info.withdrawCash),
-      frozenCash: decimalToNumber(info.frozenCash),
-      settlingCash: decimalToNumber(info.settlingCash),
     }));
 
     return {
@@ -60,7 +57,6 @@ export const createAccountService = (deps: AccountServiceDeps): AccountService =
       netAssets,
       positionValue,
       cashInfos,
-      buyPower: decimalToNumber(primary.buyPower),
     };
   };
 
@@ -97,7 +93,6 @@ export const createAccountService = (deps: AccountServiceDeps): AccountService =
         availableQuantity: decimalToNumber(pos.availableQuantity),
         currency: pos.currency,
         costPrice: decimalToNumber(pos.costPrice),
-        market: pos.market,
       })),
     );
   };

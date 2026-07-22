@@ -515,7 +515,6 @@ describe('account service contract boundary', () => {
       totalCash: 100000,
       netAssets: 100000,
       positionValue: 0,
-      buyPower: 100000,
     });
   });
 });

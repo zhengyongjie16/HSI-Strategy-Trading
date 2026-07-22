@@ -245,7 +245,6 @@ function createMockPreGateRuntime(): PreGateRuntime {
     tradingConfig: createTradingConfig({
       global: {
         doomsdayProtection: true,
-        debug: false,
         openProtection: {
           morning: { enabled: false, minutes: null },
           afternoon: { enabled: false, minutes: null },

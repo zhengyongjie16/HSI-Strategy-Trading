@@ -2603,7 +2603,6 @@ describe('monitorTaskProcessor business flow', () => {
     const releaseAccountRefresh = createDeferred<null>();
     let riskRefreshCalls = 0;
     let clearBuyOrdersCalls = 0;
-    let clearOrdersCacheCalls = 0;
     let warrantInfoWrites = 0;
     let activationWrites = 0;
     const orderRecorder = createOrderRecorderDouble({
@@ -2611,9 +2610,6 @@ describe('monitorTaskProcessor business flow', () => {
       refreshOrdersFromAllOrdersForLong: async () => [],
       clearBuyOrders: () => {
         clearBuyOrdersCalls += 1;
-      },
-      clearOrdersCacheForSymbol: () => {
-        clearOrdersCacheCalls += 1;
       },
     });
     const context = createMonitorContext({
@@ -2684,7 +2680,6 @@ describe('monitorTaskProcessor business flow', () => {
     expect(statuses).toEqual(['skipped']);
     expect(riskRefreshCalls).toBe(0);
     expect(clearBuyOrdersCalls).toBe(0);
-    expect(clearOrdersCacheCalls).toBe(0);
     expect(warrantInfoWrites).toBe(0);
     expect(activationWrites).toBe(0);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
@@ -2699,7 +2694,6 @@ describe('monitorTaskProcessor business flow', () => {
     const riskRefreshStarted = createDeferred<null>();
     const releaseRiskRefresh = createDeferred<null>();
     let clearBuyOrdersCalls = 0;
-    let clearOrdersCacheCalls = 0;
     let warrantInfoWrites = 0;
     let activationWrites = 0;
     const orderRecorder = createOrderRecorderDouble({
@@ -2707,9 +2701,6 @@ describe('monitorTaskProcessor business flow', () => {
       refreshOrdersFromAllOrdersForLong: async () => [],
       clearBuyOrders: () => {
         clearBuyOrdersCalls += 1;
-      },
-      clearOrdersCacheForSymbol: () => {
-        clearOrdersCacheCalls += 1;
       },
     });
     const context = createMonitorContext({
@@ -2776,7 +2767,6 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(statuses).toEqual(['skipped']);
     expect(clearBuyOrdersCalls).toBe(0);
-    expect(clearOrdersCacheCalls).toBe(0);
     expect(warrantInfoWrites).toBe(0);
     expect(activationWrites).toBe(0);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({

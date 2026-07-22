@@ -1527,7 +1527,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -1553,7 +1552,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -1729,7 +1727,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -1865,7 +1862,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -2554,7 +2550,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -2679,7 +2674,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -2696,7 +2690,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -2819,7 +2812,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -2966,7 +2958,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -3098,7 +3089,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -3114,7 +3104,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -3261,7 +3250,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -3399,7 +3387,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -3515,7 +3502,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });

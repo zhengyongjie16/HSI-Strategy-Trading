@@ -358,7 +358,6 @@ describe('sellProcessor business flow', () => {
         commitCompletion: () => {},
         restoreCompletedBoundary: () => {},
         restoreInProgressEpisode: () => {},
-        getLatestProtectionBoundaryByDirection: () => new Map(),
         getInProgressEpisodes: () => [],
         resetAll: () => {},
       },

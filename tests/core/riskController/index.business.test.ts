@@ -164,8 +164,6 @@ describe('riskController(index) business flow', () => {
     expect(refreshed).toEqual({ r1: 1200, n1: 90 });
     expect(checker.getUnrealizedLossData('BULL.HK')).toMatchObject({
       r1: 1200,
-      baseR1: 1000,
-      dailyLossOffset: -200,
       n1: 90,
     });
 
@@ -423,7 +421,6 @@ describe('riskController(index) business flow', () => {
         getUnrealizedLossData: () => ({
           r1: 1_000,
           n1: 100,
-          lastUpdateTime: Date.now(),
         }),
       }),
       positionLimitChecker: createPositionLimitCheckerStub(),

@@ -180,6 +180,8 @@ const invalidMonitorBooleanEnvCases = [{ envKey: 'AUTO_SEARCH_ENABLED', value: '
 
 const invalidGlobalBooleanEnvCases = [{ envKey: 'DOOMSDAY_PROTECTION', value: 'yes' }] as const;
 
+const invalidParserOnlyBooleanEnvCases = [{ envKey: 'DEBUG', value: 'yes' }] as const;
+
 function createAutoSearchEnabledTradingConfig() {
   return createTradingConfig({
     monitor: createMonitorConfigDouble({
@@ -365,7 +367,11 @@ describe('trading config fail-fast parsing', () => {
   });
 
   it('fails fast when monitor or global boolean keys are explicitly invalid', () => {
-    for (const testCase of [...invalidMonitorBooleanEnvCases, ...invalidGlobalBooleanEnvCases]) {
+    for (const testCase of [
+      ...invalidMonitorBooleanEnvCases,
+      ...invalidGlobalBooleanEnvCases,
+      ...invalidParserOnlyBooleanEnvCases,
+    ]) {
       expect(() =>
         parseTradingConfig({
           env: createBaseEnv({

@@ -543,9 +543,6 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
     quote?: Quote | null,
   ) => Promise<ReadonlyArray<OrderRecord>>;
 
-  /** 清理指定标的的 API 订单缓存（不影响本地订单记录） */
-  clearOrdersCacheForSymbol: (symbol: string) => void;
-
   /** 获取指定标的的买入订单 */
   getBuyOrdersForSymbol: (symbol: string, isLongSymbol: boolean) => ReadonlyArray<OrderRecord>;
 
@@ -836,15 +833,6 @@ export type UnrealizedLossData = {
 
   /** n1: 累计买入数量 */
   readonly n1: number;
-
-  /** baseR1: 未调整的开仓成本 */
-  readonly baseR1?: number;
-
-  /** dailyLossOffset: 当日亏损偏移（仅记录亏损，<=0） */
-  readonly dailyLossOffset?: number;
-
-  /** 最后更新时间戳 */
-  readonly lastUpdateTime: number;
 };
 
 /**

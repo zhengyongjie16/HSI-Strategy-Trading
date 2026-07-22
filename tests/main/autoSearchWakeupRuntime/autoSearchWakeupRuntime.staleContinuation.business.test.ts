@@ -313,7 +313,6 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       monitor: monitorConfig,
       global: {
         doomsdayProtection: true,
-        debug: false,
         openProtection: {
           morning: { enabled: false, minutes: null },
           afternoon: { enabled: false, minutes: null },

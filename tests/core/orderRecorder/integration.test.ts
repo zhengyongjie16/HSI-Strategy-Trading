@@ -45,7 +45,6 @@ function wrapStorageAsRecorder(storage: OrderStorage): OrderRecorder {
     validateRebuildSnapshot: () => {},
     refreshOrdersFromAllOrdersForLong: async () => [],
     refreshOrdersFromAllOrdersForShort: async () => [],
-    clearOrdersCacheForSymbol: () => {},
     getBuyOrdersForSymbol: () => [],
     submitSellOrder: () => {},
     updatePendingSell: () => null,

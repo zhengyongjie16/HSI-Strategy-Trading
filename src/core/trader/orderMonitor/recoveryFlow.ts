@@ -19,11 +19,7 @@ import type {
   TrackOrderParams,
 } from '../types.js';
 import type { RecoveryFlow, RecoveryFlowDeps } from './types.js';
-import {
-  acknowledgeQueriedTerminalState,
-  clearOrderReplaceTransientRuntimeState,
-  peekQueriedTerminalState,
-} from './orderOps.js';
+import { acknowledgeQueriedTerminalState, peekQueriedTerminalState } from './orderOps.js';
 import { resolveSubmittedAtMs, resolveUpdatedAtMs } from './utils.js';
 import { hasProtectiveLiquidationRemark } from '../utils.js';
 import { resetRoutingIndex } from './routingIndex.js';
@@ -107,13 +103,12 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
   function resetRecoveryTrackingState(): void {
     for (const trackedOrder of runtime.trackedOrders.values()) {
       orderHoldRegistry.markOrderClosed(trackedOrder.orderId);
-      clearOrderReplaceTransientRuntimeState(runtime, trackedOrder.orderId);
     }
 
     runtime.trackedOrders.clear();
     runtime.trackedOrderLifecycles.clear();
     runtime.closedOrderIds.clear();
-    runtime.latestReplaceOutcomeByOrderId.clear();
+    runtime.latestReplaceTerminalByOrderId.clear();
     runtime.queriedTerminalStateByOrderId.clear();
     resetRoutingIndex(runtime);
     clearAllPendingSellTracking();

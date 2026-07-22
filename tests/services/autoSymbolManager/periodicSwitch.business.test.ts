@@ -666,7 +666,6 @@ describe('periodic auto-switch regression', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });

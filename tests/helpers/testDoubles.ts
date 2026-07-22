@@ -187,7 +187,6 @@ export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}
     validateRebuildSnapshot: () => {},
     refreshOrdersFromAllOrdersForLong: async () => [],
     refreshOrdersFromAllOrdersForShort: async () => [],
-    clearOrdersCacheForSymbol: () => {},
     getBuyOrdersForSymbol: () => [],
     submitSellOrder: () => {},
     updatePendingSell: () => null,
@@ -900,7 +899,6 @@ export function createProtectiveLiquidationEpisodeTrackerDouble(
     commitCompletion: () => {},
     restoreCompletedBoundary: () => {},
     restoreInProgressEpisode: () => {},
-    getLatestProtectionBoundaryByDirection: () => new Map<'LONG' | 'SHORT', number>(),
     getInProgressEpisodes: () => [],
     resetAll: () => {},
   };
@@ -1210,12 +1208,8 @@ export function createAccountSnapshotDouble(availableCash: number): AccountSnaps
       {
         currency: 'HKD',
         availableCash,
-        withdrawCash: availableCash,
-        frozenCash: 0,
-        settlingCash: 0,
       },
     ],
-    buyPower: availableCash,
   };
 }
 
@@ -1237,7 +1231,6 @@ export function createPositionDouble(params: {
     availableQuantity: params.availableQuantity,
     currency: 'HKD',
     costPrice: 1,
-    market: 'HK',
   };
 }
 

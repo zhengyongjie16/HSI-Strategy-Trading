@@ -35,7 +35,7 @@ function createRuntimeStore(): OrderMonitorRuntimeStore {
     bootstrappingOrderEvents: new Map(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
-    latestReplaceOutcomeByOrderId: new Map(),
+    latestReplaceTerminalByOrderId: new Map(),
     orderStateChangedListeners: new Set(),
     trackedOrderIdsBySymbol: new Map(),
     routeStatesBySymbol: new Map(),
@@ -638,10 +638,9 @@ describe('orderMonitor orderOps', () => {
     });
 
     expect(replaceCallCount).toBe(1);
-    expect(runtime.latestReplaceOutcomeByOrderId.get('ORDER-REPLACE-BUSINESS-NO-RETRY')).toEqual({
-      kind: 'SKIPPED',
-      reason: 'UNSUPPORTED_BY_TYPE',
-    });
+    expect(runtime.latestReplaceTerminalByOrderId.has('ORDER-REPLACE-BUSINESS-NO-RETRY')).toBe(
+      false,
+    );
   });
 
   it('replaceOrderPrice retries coded transient service errors', async () => {
@@ -868,7 +867,7 @@ describe('orderMonitor orderOps', () => {
 
     expect(replaceCallCount).toBe(1);
     expect(replaceOutcome).toEqual({ kind: 'BROKER_CONFIRMED' });
-    expect(runtime.latestReplaceOutcomeByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
+    expect(runtime.latestReplaceTerminalByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
     expect(runtime.queriedTerminalStateByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
     expect(trackedOrder.submittedPrice).toBe(1.01);
     expect(trackedOrder.submittedQuantity).toBe(100);
@@ -1584,12 +1583,7 @@ describe('orderMonitor orderOps', () => {
 
       expect(nextRetryAtMs).toBe(trackedOrder.lastPriceUpdateAt + expectedBackoffMs);
 
-      expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toEqual({
-        kind: 'TEMP_BLOCKED',
-        retryCount,
-        nextRetryAtMs,
-        resumeMode: 'TIME_BACKOFF',
-      });
+      expect(runtime.latestReplaceTerminalByOrderId.has(trackedOrder.orderId)).toBe(false);
       expect(getStateCheckCalls()).toBe(0);
     },
   );
@@ -1610,10 +1604,7 @@ describe('orderMonitor orderOps', () => {
       replaceResumeMode: 'WAIT_WS_ONLY',
     });
 
-    expect(runtime.latestReplaceOutcomeByOrderId.get(trackedOrder.orderId)).toEqual({
-      kind: 'WAIT_WS_ONLY',
-      reason: 'QUERY_FAILED',
-    });
+    expect(runtime.latestReplaceTerminalByOrderId.has(trackedOrder.orderId)).toBe(false);
     expect(getStateCheckCalls()).toBe(1);
   });
 
@@ -1642,7 +1633,7 @@ describe('orderMonitor orderOps', () => {
 
       expect(getReplaceOrderCalls()).toBe(1);
       expect(getStateCheckCalls()).toBe(0);
-      expect(runtime.latestReplaceOutcomeByOrderId.size).toBe(0);
+      expect(runtime.latestReplaceTerminalByOrderId.size).toBe(0);
       expect(runtime.queriedTerminalStateByOrderId.size).toBe(0);
       expect(trackedOrder).toEqual(trackedOrderBefore);
     } finally {
@@ -1672,7 +1663,7 @@ describe('orderMonitor orderOps', () => {
       );
 
       expect(trackedOrder).toEqual(trackedOrderBefore);
-      expect(runtime.latestReplaceOutcomeByOrderId.size).toBe(0);
+      expect(runtime.latestReplaceTerminalByOrderId.size).toBe(0);
       expect(runtime.queriedTerminalStateByOrderId.size).toBe(0);
       expect(getStateCheckCalls()).toBe(0);
     },
@@ -1826,7 +1817,7 @@ describe('orderMonitor orderOps', () => {
       expect(caughtError).toBeInstanceOf(Error);
       expect(caughtError).toHaveProperty('message', expect.stringMatching(/revision/));
       expect(runtime.queriedTerminalStateByOrderId.has(orderId)).toBe(false);
-      expect(runtime.latestReplaceOutcomeByOrderId.has(orderId)).toBe(false);
+      expect(runtime.latestReplaceTerminalByOrderId.has(orderId)).toBe(false);
       expect(trackedOrder).toMatchObject({
         status: OrderStatus.PartialFilled,
         executedQuantity: 40,
@@ -1950,7 +1941,7 @@ function expectNoStateCheckRawFactSideEffects(
   trackedOrderBefore: OrderMonitorTrackedOrder,
 ): void {
   expect(harness.runtime.queriedTerminalStateByOrderId.size).toBe(0);
-  expect(harness.runtime.latestReplaceOutcomeByOrderId.size).toBe(0);
+  expect(harness.runtime.latestReplaceTerminalByOrderId.size).toBe(0);
   expect(harness.trackedOrder).toEqual(trackedOrderBefore);
   expect(harness.cacheClearCalls).toEqual([]);
   expect(harness.pendingSellProgress).toEqual([]);
@@ -2073,12 +2064,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
       harness.trackedOrder.replaceBlockedUntilAt = null;
       harness.trackedOrder.lastPriceUpdateAt = 1;
       const trackedOrderBefore = { ...harness.trackedOrder };
-      const replaceOutcomeBefore = harness.runtime.latestReplaceOutcomeByOrderId.get(
-        harness.orderId,
-      );
-      if (replaceOutcomeBefore === undefined) {
-        throw new Error('[测试] 第 4 次 602013 后应已有临时阻塞 outcome');
-      }
+      expect(harness.runtime.latestReplaceTerminalByOrderId.size).toBe(0);
 
       await expectStateCheckRawFactFailure(
         () => runStateCheckOperation('replace', harness),
@@ -2087,9 +2073,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
       expect(harness.trackedOrder).toEqual(trackedOrderBefore);
       expect(harness.runtime.queriedTerminalStateByOrderId.size).toBe(0);
-      expect(harness.runtime.latestReplaceOutcomeByOrderId.get(harness.orderId)).toBe(
-        replaceOutcomeBefore,
-      );
+      expect(harness.runtime.latestReplaceTerminalByOrderId.size).toBe(0);
       expect(harness.cacheClearCalls).toEqual([]);
       expect(harness.pendingSellProgress).toEqual([]);
       expect(harness.cumulativeExecutionQuantities).toEqual([]);

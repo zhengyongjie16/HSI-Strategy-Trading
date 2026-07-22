@@ -19,7 +19,6 @@ function createTradingConfig(monitor: TradingConfig['monitor']): TradingConfig {
     monitor,
     global: {
       doomsdayProtection: true,
-      debug: false,
       openProtection: {
         morning: {
           enabled: true,

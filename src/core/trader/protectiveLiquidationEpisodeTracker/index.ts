@@ -161,10 +161,6 @@ export function createProtectiveLiquidationEpisodeTracker(): ProtectiveLiquidati
     });
   }
 
-  function getLatestProtectionBoundaryByDirection(): ReadonlyMap<'LONG' | 'SHORT', number> {
-    return new Map(latestProtectionBoundaryByDirection);
-  }
-
   function getInProgressEpisodes(): ReadonlyArray<InProgressProtectiveEpisode> {
     return [...inProgressByDirection.values()];
   }
@@ -180,7 +176,6 @@ export function createProtectiveLiquidationEpisodeTracker(): ProtectiveLiquidati
     commitCompletion,
     restoreCompletedBoundary,
     restoreInProgressEpisode,
-    getLatestProtectionBoundaryByDirection,
     getInProgressEpisodes,
     resetAll,
   };

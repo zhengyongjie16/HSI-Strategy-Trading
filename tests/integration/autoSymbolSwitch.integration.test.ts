@@ -211,7 +211,6 @@ describe('auto-symbol-switch integration', () => {
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
           costPrice: 1,
-          market: 'HK',
         },
       ],
     });
@@ -430,7 +429,6 @@ describe('auto-symbol-switch integration', () => {
             accountChannel: 'lb_papertrading',
             currency: 'HKD',
             costPrice: 1,
-            market: 'HK',
           },
         ],
       });

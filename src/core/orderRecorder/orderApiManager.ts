@@ -9,10 +9,9 @@
 import { OrderSide, type OrderStatus, OrderType, type Order } from 'longbridge';
 import { decimalToNumber, isRecord } from '../../utils/helpers/index.js';
 import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
-import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
+import type { RawOrderFromAPI } from '../../types/services.js';
 import type {
   MergedOrderEntry,
-  OrderCache,
   OrderAPIManager,
   OrderAPIManagerDeps,
   OrderSnapshotSource,
@@ -282,52 +281,17 @@ function mergeAndDeduplicateOrders(
 
 /**
  * 创建订单 API 管理器
- * 管理全量订单缓存（history + today 合并去重），提供按标的缓存读写和强制刷新能力；信任边界内将 SDK Order 转为 RawOrderFromAPI。
+ * 管理全量订单缓存（history + today 合并去重）和强制刷新；信任边界内将 SDK Order 转为 RawOrderFromAPI。
  * @param deps 依赖注入（ctx、rateLimiter）
- * @returns OrderAPIManager 接口实例（fetchAllOrdersFromAPI、cacheOrdersForSymbol、clearCacheForSymbol、clearCache）
+ * @returns OrderAPIManager 接口实例（fetchAllOrdersFromAPI、clearCache）
  */
 export function createOrderAPIManager(deps: OrderAPIManagerDeps): OrderAPIManager {
   const { ctx, rateLimiter } = deps;
 
-  // 闭包捕获的私有状态
-  const ordersCache = new Map<string, OrderCache>();
   let allOrdersCache: RawOrderFromAPI[] | null = null;
 
-  /** 更新指定标的的订单缓存 */
-  function updateCache(
-    symbol: string,
-    buyOrders: OrderRecord[],
-    sellOrders: OrderRecord[],
-    allOrders: RawOrderFromAPI[] | null = null,
-  ): void {
-    ordersCache.set(symbol, {
-      buyOrders,
-      sellOrders,
-      allOrders,
-      fetchTime: Date.now(),
-    });
-  }
-
-  /** 使用外部订单列表刷新指定标的缓存 */
-  function cacheOrdersForSymbol(
-    symbol: string,
-    buyOrders: ReadonlyArray<OrderRecord>,
-    sellOrders: ReadonlyArray<OrderRecord>,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-  ): void {
-    updateCache(symbol, [...buyOrders], [...sellOrders], [...allOrders]);
-  }
-
-  /** 清理指定标的的订单缓存 */
-  function clearCacheForSymbol(symbol: string): void {
-    if (ordersCache.has(symbol)) {
-      ordersCache.delete(symbol);
-    }
-  }
-
-  /** 清空 symbol cache 与 allOrdersCache */
+  /** 清空全量订单缓存 */
   function clearCache(): void {
-    ordersCache.clear();
     allOrdersCache = null;
   }
 
@@ -368,8 +332,6 @@ export function createOrderAPIManager(deps: OrderAPIManagerDeps): OrderAPIManage
 
   return {
     fetchAllOrdersFromAPI,
-    cacheOrdersForSymbol,
-    clearCacheForSymbol,
     clearCache,
   };
 }

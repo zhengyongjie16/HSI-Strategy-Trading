@@ -38,7 +38,7 @@ function createRuntime(): OrderMonitorRuntimeStore {
     bootstrappingOrderEvents: new Map(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
-    latestReplaceOutcomeByOrderId: new Map(),
+    latestReplaceTerminalByOrderId: new Map(),
     orderStateChangedListeners: new Set(),
     trackedOrderIdsBySymbol: new Map(),
     routeStatesBySymbol: new Map(),
@@ -400,9 +400,6 @@ describe('DailyLoss protective amount revision integration', () => {
     ]);
     expect(completionBoundaryMs).toEqual([firstRevisionMs]);
     expect(protectiveLiquidationEpisodeTracker.getInProgressEpisodes()).toEqual([]);
-    expect([
-      ...protectiveLiquidationEpisodeTracker.getLatestProtectionBoundaryByDirection().entries(),
-    ]).toEqual([['LONG', firstRevisionMs]]);
     expect(postTradeConsistencyRuntime.getStatus()).toEqual(statusAfterCompletion);
   });
 });

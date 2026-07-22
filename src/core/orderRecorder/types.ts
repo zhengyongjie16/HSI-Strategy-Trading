@@ -12,19 +12,6 @@ import type {
 } from '../../types/services.js';
 
 /**
- * 订单缓存类型。
- * 类型用途：OrderAPIManager 内部缓存结构，按标的存储买卖单与原始 API 订单。
- * 数据来源：由 OrderAPIManager 从 API 拉取并分类后填充。
- * 使用范围：仅 orderRecorder 模块内部使用。
- */
-export type OrderCache = {
-  readonly buyOrders: ReadonlyArray<OrderRecord>;
-  readonly sellOrders: ReadonlyArray<OrderRecord>;
-  readonly allOrders: ReadonlyArray<RawOrderFromAPI> | null;
-  readonly fetchTime: number;
-};
-
-/**
  * 订单统计信息类型。
  * 类型用途：用于调试输出或内部汇总（数量、均价）。
  * 数据来源：如适用（由模块内部根据订单列表计算）。
@@ -188,15 +175,8 @@ export interface OrderStorage {
  */
 export interface OrderAPIManager {
   fetchAllOrdersFromAPI: (forceRefresh?: boolean) => Promise<ReadonlyArray<RawOrderFromAPI>>;
-  cacheOrdersForSymbol: (
-    symbol: string,
-    buyOrders: ReadonlyArray<OrderRecord>,
-    sellOrders: ReadonlyArray<OrderRecord>,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-  ) => void;
-  clearCacheForSymbol: (symbol: string) => void;
 
-  /** 清空 symbol cache 与 allOrdersCache */
+  /** 清空全量订单缓存 */
   clearCache: () => void;
 }
 

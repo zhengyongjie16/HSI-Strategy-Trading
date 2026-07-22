@@ -179,9 +179,6 @@ export type GlobalConfig = {
   /** 末日保护开关（买入截止 + 清仓接管） */
   readonly doomsdayProtection: boolean;
 
-  /** 调试模式 */
-  readonly debug: boolean;
-
   /** 开盘保护配置（早盘 + 午盘） */
   readonly openProtection: {
     /** 早盘开盘保护 */

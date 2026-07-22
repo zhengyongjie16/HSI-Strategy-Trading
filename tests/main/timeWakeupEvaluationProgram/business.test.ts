@@ -115,7 +115,6 @@ function createTradingConfig(
     monitor: createMonitorConfigDouble({ monitorSymbol: '700.HK' }),
     global: {
       doomsdayProtection: true,
-      debug: false,
       openProtection: {
         morning: { enabled: morningProtectionMinutes !== null, minutes: morningProtectionMinutes },
         afternoon: {

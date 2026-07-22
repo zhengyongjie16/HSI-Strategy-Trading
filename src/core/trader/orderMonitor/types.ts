@@ -137,46 +137,6 @@ export type NormalizedTerminalStateSnapshot = TerminalStateSnapshot &
   }>;
 
 /**
- * 改单结果语义。
- * 类型用途：描述改单执行后的标准化结果，供 routeProcessor 等 owner 消费。
- * 数据来源：orderOps.replaceOrderPrice 写入运行态后由 route owner 消费。
- * 使用范围：orderMonitor 目录内部。
- */
-export type ReplaceOrderOutcome =
-  | {
-      readonly kind: 'SKIPPED';
-      readonly reason:
-        | 'ORDER_NOT_TRACKED'
-        | 'UNSUPPORTED_BY_TYPE'
-        | 'WAIT_WS_ONLY'
-        | 'BACKOFF_IN_PROGRESS'
-        | 'INVALID_REMAINING_QUANTITY';
-    }
-  | {
-      readonly kind: 'REPLACED';
-    }
-  | {
-      readonly kind: 'TEMP_BLOCKED';
-      readonly retryCount: number;
-      readonly nextRetryAtMs: number;
-      readonly resumeMode: ReplaceResumeMode;
-    }
-  | {
-      readonly kind: 'WAIT_WS_ONLY';
-      readonly reason: 'OPEN' | 'QUERY_FAILED';
-    }
-  | {
-      readonly kind: 'TERMINAL_CONFIRMED';
-      readonly terminalState: TerminalStateSnapshot;
-    }
-  | {
-      readonly kind: 'FAILED';
-      readonly reason: 'RETRYABLE' | 'QUERY_OPEN' | 'QUERY_FAILED' | 'UNKNOWN';
-      readonly errorCode: string | null;
-      readonly message: string;
-    };
-
-/**
  * 改单 broker mutation 的 permit 内执行结果。
  * 类型用途：区分 broker 已确认、订单成交事实已变化与授权失效，防止未执行的改动被误写为成功。
  * 数据来源：orderOps.replaceOrderPriceWithRunner 的 permit 内复核。
@@ -444,7 +404,9 @@ export type OrderMonitorRuntimeStore = {
   readonly bootstrappingOrderEvents: Map<string, PushOrderChanged>;
   readonly closedOrderIds: Set<string>;
   readonly queriedTerminalStateByOrderId: Map<string, TerminalStateSnapshot>;
-  readonly latestReplaceOutcomeByOrderId: Map<string, ReplaceOrderOutcome>;
+
+  /** 改单失败后确认的终态；必须与 queriedTerminalStateByOrderId 指向同一快照。 */
+  readonly latestReplaceTerminalByOrderId: Map<string, TerminalStateSnapshot>;
   readonly orderStateChangedListeners: Set<(event: OrderStateChangedEvent) => void>;
   readonly trackedOrderIdsBySymbol: Map<string, Set<string>>;
   readonly routeStatesBySymbol: Map<string, OrderMonitorSymbolRouteState>;

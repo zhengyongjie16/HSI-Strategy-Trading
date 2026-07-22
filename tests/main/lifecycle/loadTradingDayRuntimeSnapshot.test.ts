@@ -343,7 +343,6 @@ function createProtectiveTrackerRecorder(): {
     Parameters<ProtectiveLiquidationEpisodeTracker['restoreInProgressEpisode']>[0]
   >;
 } {
-  const boundaryByDirection = new Map<'LONG' | 'SHORT', number>();
   const restoreCompletedCalls: Array<
     Parameters<ProtectiveLiquidationEpisodeTracker['restoreCompletedBoundary']>[0]
   > = [];
@@ -355,16 +354,11 @@ function createProtectiveTrackerRecorder(): {
     tracker: createProtectiveLiquidationEpisodeTrackerDouble({
       restoreCompletedBoundary: (params) => {
         restoreCompletedCalls.push(params);
-        boundaryByDirection.set(params.direction, params.boundaryExecutedTimeMs);
       },
       restoreInProgressEpisode: (params) => {
         restoreInProgressCalls.push(params);
       },
-      getLatestProtectionBoundaryByDirection: () =>
-        new Map<'LONG' | 'SHORT', number>(boundaryByDirection),
-      resetAll: () => {
-        boundaryByDirection.clear();
-      },
+      resetAll: () => {},
     }),
     restoreCompletedCalls,
     restoreInProgressCalls,
@@ -949,7 +943,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       getQuotes: 0,
     });
     expect(resetAllCalls).toBe(0);
-    expect(tracker.getLatestProtectionBoundaryByDirection().get('LONG')).toBe(existingBoundaryMs);
     expect(tracker.getInProgressEpisodes()).toEqual([]);
     expect(() =>
       actualDailyLossTracker.prepareProtectionBoundary({
@@ -1775,7 +1768,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       },
     ]);
     expect(tracker.getInProgressEpisodes()).toEqual([]);
-    expect(tracker.getLatestProtectionBoundaryByDirection().get('LONG')).toBe(lastExecutionTimeMs);
   });
 
   it('restores same-revision OPEN then TERMINAL amount correction and freezes the final authoritative amount', async () => {
@@ -1913,8 +1905,5 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     );
 
     expect(secondRestartAppends).toEqual([]);
-    expect(restartedEpisodeTracker.getLatestProtectionBoundaryByDirection().get('LONG')).toBe(
-      revisionMs,
-    );
   });
 });

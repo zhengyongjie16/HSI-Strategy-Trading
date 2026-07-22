@@ -50,7 +50,7 @@ function createRuntime(): OrderMonitorRuntimeStore {
     bootstrappingOrderEvents: new Map(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
-    latestReplaceOutcomeByOrderId: new Map(),
+    latestReplaceTerminalByOrderId: new Map(),
     orderStateChangedListeners: new Set(),
     trackedOrderIdsBySymbol: new Map(),
     routeStatesBySymbol: new Map(),
