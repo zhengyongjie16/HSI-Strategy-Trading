@@ -59,17 +59,11 @@ export async function prewarmTradingCalendarSnapshotForRebuild(
   const nextSnapshot = new Map<string, TradingDayInfo>(lastState.tradingCalendarSnapshot);
   const missingDateKeys = demandDateKeys.filter((dateKey) => !nextSnapshot.has(dateKey));
   if (missingDateKeys.length > 0) {
-    await (marketDataClient.getTradingDays
-      ? hydrateSnapshotByMonthlyTradingDays({
-          marketDataClient,
-          dateKeys: missingDateKeys,
-          nextSnapshot,
-        })
-      : hydrateSnapshotByDailyTradingDay({
-          marketDataClient,
-          dateKeys: missingDateKeys,
-          nextSnapshot,
-        }));
+    await hydrateSnapshotByMonthlyTradingDays({
+      marketDataClient,
+      dateKeys: missingDateKeys,
+      nextSnapshot,
+    });
   }
 
   const nowDateKey = getHKDateKey(now);
@@ -162,8 +156,7 @@ async function hydrateSnapshotByMonthlyTradingDays({
   dateKeys: ReadonlyArray<string>;
   nextSnapshot: Map<string, TradingDayInfo>;
 }): Promise<void> {
-  const getTradingDays = marketDataClient.getTradingDays;
-  if (!getTradingDays || dateKeys.length === 0) {
+  if (dateKeys.length === 0) {
     return;
   }
 
@@ -171,7 +164,7 @@ async function hydrateSnapshotByMonthlyTradingDays({
   for (const chunk of chunks) {
     const startDate = resolveDateFromHKDateKey(chunk.startKey);
     const endDate = resolveDateFromHKDateKey(chunk.endKey);
-    const result = await getTradingDays(startDate, endDate);
+    const result = await marketDataClient.getTradingDays(startDate, endDate);
     const tradingSet = new Set(result.tradingDays);
     const halfDaySet = new Set(result.halfTradingDays);
     for (const dateKey of chunk.dateKeys) {
@@ -179,25 +172,6 @@ async function hydrateSnapshotByMonthlyTradingDays({
       const isTradingDay = isHalfDay || tradingSet.has(dateKey);
       nextSnapshot.set(dateKey, { isTradingDay, isHalfDay });
     }
-  }
-}
-
-/**
- * 批量接口不可用时逐日查询，仍保持按缺失日期补齐语义。
- */
-async function hydrateSnapshotByDailyTradingDay({
-  marketDataClient,
-  dateKeys,
-  nextSnapshot,
-}: {
-  marketDataClient: MarketDataClient;
-  dateKeys: ReadonlyArray<string>;
-  nextSnapshot: Map<string, TradingDayInfo>;
-}): Promise<void> {
-  for (const dateKey of dateKeys) {
-    const date = resolveDateFromHKDateKey(dateKey);
-    const dayInfo = await marketDataClient.isTradingDay(date);
-    nextSnapshot.set(dateKey, dayInfo);
   }
 }
 

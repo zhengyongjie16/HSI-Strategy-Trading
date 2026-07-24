@@ -951,6 +951,32 @@ describe('quoteClient business flow', () => {
     expect(quoteMock.getCalls('tradingDays')).toHaveLength(1);
   });
 
+  it('rejects malformed trading-day responses without caching otherwise valid entries', async () => {
+    const date = new Date('2026-02-16T01:00:00.000Z');
+    const naive = new TestNaiveDate(2026, 2, 16);
+    const key = `${String(RealMarket.HK)}:${naive.toString()}:${naive.toString()}`;
+    quoteMock.seedTradingDays(key, {
+      tradingDays: [naive, {}],
+      halfTradingDays: [],
+    });
+
+    const client = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: async () => quoteMock,
+    });
+
+    expect(client.getTradingDays(date, date, RealMarket.HK)).rejects.toThrow('[交易日历接口响应]');
+
+    quoteMock.seedTradingDays(key, {
+      tradingDays: [naive],
+      halfTradingDays: [],
+    });
+    const dayInfo = await client.isTradingDay(date, RealMarket.HK);
+
+    expect(dayInfo.isTradingDay).toBeTrue();
+    expect(quoteMock.getCalls('tradingDays')).toHaveLength(2);
+  });
+
   it('resetRuntimeSubscriptionsAndCaches clears runtime caches and quote subscriptions', async () => {
     quoteMock.seedStaticInfo([
       {

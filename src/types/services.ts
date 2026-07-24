@@ -250,8 +250,8 @@ export interface MarketDataClient {
   /** 判断指定日期是否为交易日 */
   isTradingDay: (date: Date, market?: Market) => Promise<TradingDayInfo>;
 
-  /** 批量获取交易日历区间（可选实现） */
-  getTradingDays?: (startDate: Date, endDate: Date, market?: Market) => Promise<TradingDaysResult>;
+  /** 批量获取交易日历区间 */
+  getTradingDays: (startDate: Date, endDate: Date, market?: Market) => Promise<TradingDaysResult>;
 
   /** 重置运行期订阅与缓存（跨日午夜清理） */
   resetRuntimeSubscriptionsAndCaches: () => Promise<void>;

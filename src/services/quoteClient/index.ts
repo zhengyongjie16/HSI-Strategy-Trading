@@ -56,7 +56,7 @@ import type {
   PushQuoteEventLike,
 } from './types.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
-import { getRequiredHKDateKey } from '../../utils/time/index.js';
+import { getRequiredHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
 import { extractLotSize, extractName, formatPeriodForLog, resolveHKNaiveDate } from './utils.js';
 import {
   applyCandlestickPush,
@@ -117,6 +117,86 @@ function normalizeDecimalLikeInput(
   return undefined;
 }
 
+/**
+ * 校验交易日接口数组中的日期键均为请求区间内的有效香港自然日。
+ *
+ * @param values 外部接口返回的日期键数组
+ * @param fieldName 响应字段名，用于失败定位
+ * @param startDateKey 请求起始香港日期键
+ * @param endDateKey 请求结束香港日期键
+ * @returns 已验证的日期键数组
+ * @throws 响应字段不是数组、日期键无效或超出请求区间时抛出 TypeError
+ */
+function validateTradingDayDateKeys({
+  values,
+  fieldName,
+  startDateKey,
+  endDateKey,
+}: {
+  readonly values: unknown;
+  readonly fieldName: string;
+  readonly startDateKey: string;
+  readonly endDateKey: string;
+}): string[] {
+  if (!Array.isArray(values)) {
+    throw new TypeError(`[交易日历接口响应] ${fieldName} 必须是数组`);
+  }
+
+  return values.map((value) => {
+    const dateKey = String(value);
+    const dayStartUtcMs = resolveHKDayStartUtcMs(dateKey);
+    if (
+      dayStartUtcMs === null ||
+      getRequiredHKDateKey(new Date(dayStartUtcMs)) !== dateKey ||
+      dateKey < startDateKey ||
+      dateKey > endDateKey
+    ) {
+      throw new TypeError(`[交易日历接口响应] ${fieldName} 包含无效或越界日期键: ${dateKey}`);
+    }
+
+    return dateKey;
+  });
+}
+
+/**
+ * 在写入交易日缓存前校验外部响应，确保无畸形或越界日期键进入内部状态。
+ *
+ * @param response 交易日接口原始响应
+ * @param startDate 请求起始日期
+ * @param endDate 请求结束日期
+ * @returns 已验证的内部交易日响应
+ */
+function validateTradingDaysResponse({
+  response,
+  startDate,
+  endDate,
+}: {
+  readonly response: unknown;
+  readonly startDate: Date;
+  readonly endDate: Date;
+}): TradingDaysResult {
+  if (!isRecord(response)) {
+    throw new TypeError('[交易日历接口响应] 必须是对象');
+  }
+
+  const startDateKey = getRequiredHKDateKey(startDate);
+  const endDateKey = getRequiredHKDateKey(endDate);
+  return {
+    tradingDays: validateTradingDayDateKeys({
+      values: response['tradingDays'],
+      fieldName: 'tradingDays',
+      startDateKey,
+      endDateKey,
+    }),
+    halfTradingDays: validateTradingDayDateKeys({
+      values: response['halfTradingDays'],
+      fieldName: 'halfTradingDays',
+      startDateKey,
+      endDateKey,
+    }),
+  };
+}
+
 function isCandlestickLike(value: unknown): value is Candlestick {
   return isRecord(value) && 'close' in value && 'timestamp' in value;
 }
@@ -129,7 +209,7 @@ function isCandlestickLike(value: unknown): value is Candlestick {
 function createTradingDayCache(): {
   get: (dateStr: string) => TradingDayInfo | null;
   set: (dateStr: string, isTradingDay: boolean, isHalfDay?: boolean) => void;
-  setBatch: (tradingDays: string[], halfTradingDays?: string[]) => void;
+  setBatch: (tradingDays: ReadonlyArray<string>, halfTradingDays?: ReadonlyArray<string>) => void;
   clear: () => void;
 } {
   const cache = new Map<string, { isTradingDay: boolean; isHalfDay: boolean; timestamp: number }>();
@@ -176,7 +256,10 @@ function createTradingDayCache(): {
    * @param halfTradingDays 半日交易日日期键数组，默认空数组
    * @returns void
    */
-  function setBatch(tradingDays: string[], halfTradingDays: string[] = []): void {
+  function setBatch(
+    tradingDays: ReadonlyArray<string>,
+    halfTradingDays: ReadonlyArray<string> = [],
+  ): void {
     const halfDaySet = new Set(halfTradingDays);
     const allTradingDays = new Set([...tradingDays, ...halfTradingDays]);
     for (const dateStr of allTradingDays) {
@@ -722,9 +805,11 @@ export async function createMarketDataClient(
       ctx.tradingDays(market, startNaive, endNaive),
     );
 
-    // 将 NaiveDate 数组转换为字符串数组
-    const tradingDays = resp.tradingDays.map(String);
-    const halfTradingDays = resp.halfTradingDays.map(String);
+    const { tradingDays, halfTradingDays } = validateTradingDaysResponse({
+      response: resp,
+      startDate,
+      endDate,
+    });
 
     // 批量缓存交易日信息
     tradingDayCache.setBatch(tradingDays, halfTradingDays);

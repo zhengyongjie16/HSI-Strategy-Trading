@@ -65,6 +65,8 @@ import type { SeatRuntimeCleanupDispatcher } from '../../src/main/seatRuntimeCle
 import { toMockDecimal } from '../../mock/longbridge/decimal.js';
 import { createQuoteContextMock } from '../../mock/longbridge/quoteContextMock.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
+import { TIME } from '../../src/constants/index.js';
+import { getHKDateKey, resolveHKDayStartUtcMs } from '../../src/utils/time/index.js';
 
 type TestSeatTruthChangedEvent = Parameters<Parameters<SymbolRegistry['onSeatTruthChanged']>[0]>[0];
 
@@ -105,6 +107,41 @@ function createCandlestickCacheSnapshot(
     lastBarConfirmed: false,
     initialized: true,
   };
+}
+
+/**
+ * 枚举闭区间内的港股日期键，供行情客户端默认交易日批量响应使用。
+ *
+ * @param startDate 区间起始时间
+ * @param endDate 区间结束时间
+ * @returns 升序港股日期键数组；无效区间返回空数组
+ */
+function listHKDateKeysInRange(startDate: Date, endDate: Date): ReadonlyArray<string> {
+  const startDateKey = getHKDateKey(startDate);
+  const endDateKey = getHKDateKey(endDate);
+  if (!startDateKey || !endDateKey) {
+    return [];
+  }
+
+  const startDayStartMs = resolveHKDayStartUtcMs(startDateKey);
+  const endDayStartMs = resolveHKDayStartUtcMs(endDateKey);
+  if (startDayStartMs === null || endDayStartMs === null || endDayStartMs < startDayStartMs) {
+    return [];
+  }
+
+  const dateKeys: string[] = [];
+  for (
+    let dayStartMs = startDayStartMs;
+    dayStartMs <= endDayStartMs;
+    dayStartMs += TIME.MILLISECONDS_PER_DAY
+  ) {
+    const dateKey = getHKDateKey(new Date(dayStartMs));
+    if (dateKey) {
+      dateKeys.push(dateKey);
+    }
+  }
+
+  return dateKeys;
 }
 
 /**
@@ -763,6 +800,10 @@ export function createMarketDataClientDouble(
       seedCandlestickCacheFromOverride(symbol, period, tradeSessions),
     getCandlestickSnapshot: (symbol, period) => getCandlestickCacheSnapshot(symbol, period),
     isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
+    getTradingDays: async (startDate, endDate) => ({
+      tradingDays: listHKDateKeysInRange(startDate, endDate),
+      halfTradingDays: [],
+    }),
     resetRuntimeSubscriptionsAndCaches: async () => {},
   };
 
@@ -777,11 +818,7 @@ export function createMarketDataClientDouble(
       seedCandlestickCacheFromOverride(symbol, period, tradeSessions),
     getCandlestickSnapshot: overrides.getCandlestickSnapshot ?? base.getCandlestickSnapshot,
     isTradingDay: overrides.isTradingDay ?? base.isTradingDay,
-    ...((overrides.getTradingDays ?? base.getTradingDays) === undefined
-      ? {}
-      : {
-          getTradingDays: overrides.getTradingDays ?? base.getTradingDays,
-        }),
+    getTradingDays: overrides.getTradingDays ?? base.getTradingDays,
     resetRuntimeSubscriptionsAndCaches: async () => {
       candlestickCache.clear();
       candlestickVersions.clear();
