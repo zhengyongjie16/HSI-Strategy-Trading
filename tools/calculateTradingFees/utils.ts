@@ -12,10 +12,22 @@ const TRADE_STRING_FIELDS = [
 
 const TRADE_OPTIONAL_STRING_OR_NULL_FIELDS = ['orderType'] as const;
 
+/**
+ * 判断未知值是否为可读取字段的非空对象。
+ *
+ * @param value 待判断的未知值
+ * @returns 值为非空对象时返回 true
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/**
+ * 检查外部交易记录的必填字符串字段与可选字符串字段。
+ *
+ * @param value 待检查的未知交易记录
+ * @returns 无效字段名列表；根值不是对象时返回 record
+ */
 function findInvalidTradeFields(value: unknown): ReadonlyArray<string> {
   if (!isRecord(value)) {
     return ['record'];
@@ -36,6 +48,15 @@ function findInvalidTradeFields(value: unknown): ReadonlyArray<string> {
   return [...invalidRequiredFields, ...invalidOptionalFields];
 }
 
+/**
+ * 将交易记录中的数字文本解析为正有限数。
+ *
+ * @param value 待解析的数字文本
+ * @param fieldName 数字所属的交易字段
+ * @param orderId 用于错误定位的订单标识
+ * @returns 解析后的正有限数
+ * @throws 当文本不能解析为正有限数时抛出错误
+ */
 function parsePositiveFiniteNumber(
   value: string,
   fieldName: 'quantity' | 'price',

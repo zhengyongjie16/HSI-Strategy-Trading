@@ -6,14 +6,19 @@
 import { describe, expect, it } from 'bun:test';
 import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../../src/constants/index.js';
 import { createAutoSearchWakeupRuntime } from '../../../src/main/autoSearchWakeupRuntime/index.js';
-import { createTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import type { SearchOnEventParams } from '../../../src/services/autoSymbolManager/types.js';
 import {
   createAutoSymbolManagerDouble,
+  createLoggerDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
 } from '../../helpers/testDoubles.js';
+
+function createTradingGateEventRuntime() {
+  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+}
 
 function createAutoSearchEnabledMonitorConfig(
   params: { readonly autoSearchOpenDelayMinutes?: number } = {},

@@ -28,6 +28,11 @@ function createDeps(params?: {
 } {
   const tradeCtx = createTradeContextMock();
   const deps: OrderMonitorDeps = {
+    now: () => new Date(),
+    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (handle) => {
+      clearTimeout(handle);
+    },
     ctx: tradeCtx as unknown as TradeContext,
     rateLimiter: createRateLimiterDouble(),
     cacheManager: {

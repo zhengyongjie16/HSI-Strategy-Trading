@@ -20,6 +20,7 @@ import type {
   RiskChecker,
   TradeCheckResult,
 } from '../../../types/services.js';
+import type { RuntimeClock } from '../../../types/runtime.js';
 
 /**
  * 提交目标订单函数签名。
@@ -216,6 +217,17 @@ export interface BuyThrottle {
   resetBuyThrottle: () => void;
   recordBuyAttempt: (signalAction: SignalType) => void;
 }
+
+/**
+ * 买入节流器依赖。
+ * 类型用途：绑定单 monitor 的买入间隔与订单执行器共享的运行时时钟。
+ * 数据来源：由 OrderExecutor 在创建阶段注入。
+ * 使用范围：仅 orderExecutor/buyThrottle.ts 使用。
+ */
+export type BuyThrottleDeps = Readonly<{
+  readonly buyIntervalSeconds: number;
+  readonly clock: RuntimeClock;
+}>;
 
 /**
  * 卖出数量新鲜度解析结果。

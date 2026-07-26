@@ -7,6 +7,7 @@ import type {
 import type { ExecutableSellSignal } from '../../../types/signal.js';
 import type { TaskQueue, SellTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
+import type { RuntimeClock, RuntimeScheduler } from '../../../types/runtime.js';
 
 /**
  * 卖出 quote retry 状态。
@@ -27,6 +28,9 @@ export type SellRetryState = {
  * 使用范围：仅 sellProcessor 及启动流程使用，内部使用。
  */
 export type SellProcessorDeps = {
+  readonly clock: RuntimeClock;
+  readonly scheduler: RuntimeScheduler;
+
   /** 卖出任务队列 */
   readonly taskQueue: TaskQueue<SellTaskType>;
 
@@ -48,15 +52,9 @@ export type SellProcessorDeps = {
   /** 成交后一致性 freshness 等待端口（等待缓存刷新） */
   readonly postTradeConsistencyRuntime: PostTradeConsistencyFreshnessPort;
 
-  /** 一次性路径 quote retry 调度器 */
-  readonly scheduleRetry?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
-
-  /** 一次性路径 quote retry 清理器 */
-  readonly clearRetry?: (handle: ReturnType<typeof setTimeout>) => void;
-
   /** 生命周期门禁：false 时跳过任务执行 */
   readonly getCanProcessTask?: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
-  readonly onFatalError?: (error: unknown) => void;
+  readonly onFatalError: (error: unknown) => void;
 };

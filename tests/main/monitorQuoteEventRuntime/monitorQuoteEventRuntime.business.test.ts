@@ -18,7 +18,7 @@ import {
 } from '../../helpers/testDoubles.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { ORDER_QUOTE_RETRY, TRADING } from '../../../src/constants/index.js';
-import { createDefaultMonitorQuoteEventRuntime } from '../../../src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
+import { createDefaultMonitorQuoteEventRuntime as createDefaultMonitorQuoteEventRuntimeImpl } from '../../../src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type {
   CreateDefaultMonitorQuoteEventRuntimeDeps,
@@ -30,6 +30,34 @@ import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 
 type MonitorQuoteFreshnessDeps =
   CreateDefaultMonitorQuoteEventRuntimeDeps['postTradeConsistencyRuntime'];
+
+type TestMonitorQuoteRuntimeDeps = Omit<
+  CreateDefaultMonitorQuoteEventRuntimeDeps,
+  'logger' | 'scheduleTimer' | 'clearTimer' | 'onFatalError'
+> &
+  Partial<
+    Pick<CreateDefaultMonitorQuoteEventRuntimeDeps, 'scheduleTimer' | 'clearTimer' | 'onFatalError'>
+  >;
+
+function createDefaultMonitorQuoteEventRuntime(
+  deps: TestMonitorQuoteRuntimeDeps,
+): MonitorQuoteEventRuntime {
+  const {
+    scheduleTimer = (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer = (handle) => {
+      clearTimeout(handle);
+    },
+    onFatalError = () => {},
+    ...requiredDeps
+  } = deps;
+  return createDefaultMonitorQuoteEventRuntimeImpl({
+    logger: { error: () => {} },
+    ...requiredDeps,
+    scheduleTimer,
+    clearTimer,
+    onFatalError,
+  });
+}
 
 type RuntimeHarness = Readonly<{
   runtime: MonitorQuoteEventRuntime;
@@ -476,6 +504,8 @@ function createDefaultStaticWaitHarness(
     readonly shortQuoteAvailable?: boolean;
     readonly failShortSubmissionOnce?: boolean;
     readonly deferQuoteResponse?: boolean;
+    readonly retainError?: Error;
+    readonly releaseError?: Error;
   } = {},
 ): RuntimeHarness &
   Readonly<{
@@ -484,6 +514,7 @@ function createDefaultStaticWaitHarness(
     getReleaseCalls: () => ReadonlyArray<RetainReleaseCall>;
     getSubmittedActions: () => ReadonlyArray<string>;
     getFatalErrorCount: () => number;
+    getFatalErrors: () => ReadonlyArray<unknown>;
     resolveQuoteResponse: () => void;
     setLongQuoteAvailable: (available: boolean) => void;
     switchLongSeatToNextSymbol: () => void;
@@ -496,7 +527,7 @@ function createDefaultStaticWaitHarness(
   const submittedActions: string[] = [];
   let remainingRetainFailures = params.retainFailureCount ?? 0;
   let remainingShortSubmissionFailures = params.failShortSubmissionOnce ? 1 : 0;
-  let fatalErrorCount = 0;
+  const fatalErrors: unknown[] = [];
   let longQuoteAvailable = params.longQuoteAvailable ?? false;
   const shortQuoteAvailable = params.shortQuoteAvailable ?? false;
   const quoteResponseGate = params.deferQuoteResponse ? createDeferred<true>() : null;
@@ -650,21 +681,24 @@ function createDefaultStaticWaitHarness(
     postTradeConsistencyRuntime: createFreshnessRuntimeDouble(),
     doomsdayProtectionEnabled: false,
     now: () => new Date('2026-04-08T10:00:00+08:00'),
-    onFatalError: () => {
-      fatalErrorCount += 1;
+    onFatalError: (error) => {
+      fatalErrors.push(error);
     },
     quoteSubscriptionRuntime: {
       retainSymbols: async ({ symbols }) => {
         retainCalls.push([...symbols]);
         if (remainingRetainFailures > 0) {
           remainingRetainFailures -= 1;
-          throw new Error('retain failed');
+          throw params.retainError ?? new Error('retain failed');
         }
 
         return () => {};
       },
       releaseRetain: async ({ ownerKey, reason }) => {
         releaseCalls.push({ ownerKey, reason });
+        if (params.releaseError !== undefined) {
+          throw params.releaseError;
+        }
       },
     },
   });
@@ -678,7 +712,8 @@ function createDefaultStaticWaitHarness(
     getRetainCalls: () => retainCalls.map((symbols) => [...symbols]),
     getReleaseCalls: () => releaseCalls.map((call) => ({ ...call })),
     getSubmittedActions: () => [...submittedActions],
-    getFatalErrorCount: () => fatalErrorCount,
+    getFatalErrorCount: () => fatalErrors.length,
+    getFatalErrors: () => [...fatalErrors],
     resolveQuoteResponse(): void {
       quoteResponseGate?.resolve(true);
     },
@@ -857,13 +892,18 @@ describe('monitorQuoteEventRuntime contract', () => {
   });
 
   it('retries unchanged static liquidation retain after previous retain failure', async () => {
-    const harness = createDefaultStaticWaitHarness({ retainFailureCount: 1 });
+    const retainError = new Error('retain failed');
+    const harness = createDefaultStaticWaitHarness({
+      retainFailureCount: 1,
+      retainError,
+    });
 
     harness.runtime.start();
     harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
 
     await waitTick();
     expect(harness.getRetainCalls()).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK']]);
+    expect(harness.getFatalErrors()).toEqual([retainError]);
 
     harness.emitQuoteUpdated(createQuoteUpdatedEvent('BULL.HK', 1));
 
@@ -874,6 +914,23 @@ describe('monitorQuoteEventRuntime contract', () => {
     ]);
 
     await harness.runtime.stopAndDrain();
+  });
+
+  it('forwards static liquidation retain release failures to fatal handler', async () => {
+    const releaseError = new Error('release failed');
+    const harness = createDefaultStaticWaitHarness({ releaseError });
+
+    harness.runtime.start();
+    harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
+
+    await waitTick();
+    await harness.runtime.stopAndDrain();
+    await waitTick();
+
+    expect(harness.getReleaseCalls()).toEqual([
+      { ownerKey: 'HSI.HK', reason: 'STATIC_LIQUIDATION_WAIT' },
+    ]);
+    expect(harness.getFatalErrors()).toEqual([releaseError]);
   });
 
   it('releases static liquidation retain owner after failed retain when runtime stops', async () => {

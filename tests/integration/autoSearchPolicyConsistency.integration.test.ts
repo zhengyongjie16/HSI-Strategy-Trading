@@ -280,7 +280,7 @@ describe('auto search policy consistency integration', () => {
       logger: switchLogger.logger,
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => currentTime });
     const switchStateMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: monitorConfig.monitorSymbol,
@@ -523,7 +523,7 @@ describe('auto search policy consistency integration', () => {
       logger: switchLogger.logger,
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => currentTime });
     const switchStateMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: monitorConfig.monitorSymbol,
@@ -713,7 +713,7 @@ describe('auto search policy consistency integration', () => {
       logger: safeLogger.logger,
       getHKDateKey,
     });
-    const safeSignalBuilder = createSignalBuilder();
+    const safeSignalBuilder = createSignalBuilder({ now: () => currentTime });
     const safeSwitchMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: monitorConfig.monitorSymbol,
@@ -798,7 +798,7 @@ describe('auto search policy consistency integration', () => {
       logger: dangerLogger.logger,
       getHKDateKey,
     });
-    const dangerSignalBuilder = createSignalBuilder();
+    const dangerSignalBuilder = createSignalBuilder({ now: () => currentTime });
     const dangerSwitchMachine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: monitorConfig.monitorSymbol,

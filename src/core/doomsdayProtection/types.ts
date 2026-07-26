@@ -1,4 +1,5 @@
 import type { Position } from '../../types/account.js';
+import type { Quote } from '../../types/quote.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { SellSignalAction } from '../../types/signal.js';
 import type { Trader, MarketDataClient } from '../../types/services.js';
@@ -13,7 +14,25 @@ export type ClearanceSignalParams = {
   readonly symbol: string;
   readonly symbolName: string | null;
   readonly action: SellSignalAction;
+  readonly triggerTime: Date;
   readonly seatVersion: number;
+};
+
+/**
+ * 单个持仓的末日清仓信号解析参数。
+ * 类型用途：集中传递当前持仓、两侧席位事实、已验证行情与统一触发时间。
+ * 数据来源：executeClearance 在完成席位归属与行情读取后组装。
+ * 使用范围：仅 doomsdayProtection 模块内部使用。
+ */
+export type PositionClearanceParams = {
+  readonly position: Position;
+  readonly longSymbol: string | null;
+  readonly shortSymbol: string | null;
+  readonly longSeatVersion: number | null;
+  readonly shortSeatVersion: number | null;
+  readonly longQuote: Quote | null;
+  readonly shortQuote: Quote | null;
+  readonly triggerTime: Date;
 };
 
 /**

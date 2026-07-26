@@ -103,7 +103,7 @@ export function registerTaskAddedCallback(
  * 封装 processQueue、scheduleNextProcess、start、stop、stopAndDrain、restart 的公共逻辑，
  * 供买入处理器和卖出处理器复用；先校验任务内部不变量，门禁关闭时仅跳过后续业务逻辑。
  *
- * @param config 处理器配置（loggerPrefix、taskQueue、processTask、可选 getCanProcessTask）
+ * @param config 处理器配置（队列、任务处理函数、生命周期门禁与 fatal 上报入口）
  * @returns 实现 Processor 接口的处理器实例（start、stop、stopAndDrain、restart）
  */
 export function createBaseProcessor<TType extends string>(
@@ -114,6 +114,21 @@ export function createBaseProcessor<TType extends string>(
   let immediateHandle: ReturnType<typeof setImmediate> | null = null;
   let inFlightPromise: Promise<void> | null = null;
   let taskAddedUnregister: (() => void) | null = null;
+
+  /**
+   * 立即停止后续队列调度并注销入队监听。
+   * fatal 错误上报前先关闭 owner，避免全局清理尚未开始时继续消费剩余任务。
+   * @returns 无返回值
+   */
+  function stopScheduling(): void {
+    running = false;
+    taskAddedUnregister?.();
+    taskAddedUnregister = null;
+    if (immediateHandle !== null) {
+      clearImmediate(immediateHandle);
+      immediateHandle = null;
+    }
+  }
 
   /**
    * 循环消费队列中的任务，直到队列为空或处理器停止。
@@ -155,8 +170,9 @@ export function createBaseProcessor<TType extends string>(
       } else {
         inFlightPromise = processQueue()
           .catch((err: unknown) => {
+            stopScheduling();
             logger.error(`[${loggerPrefix}] 处理队列时发生错误`, formatError(err));
-            onFatalError?.(err);
+            onFatalError(err);
           })
           .finally(() => {
             inFlightPromise = null;
@@ -194,13 +210,7 @@ export function createBaseProcessor<TType extends string>(
       return;
     }
 
-    running = false;
-    taskAddedUnregister?.();
-    taskAddedUnregister = null;
-    if (immediateHandle !== null) {
-      clearImmediate(immediateHandle);
-      immediateHandle = null;
-    }
+    stopScheduling();
   }
 
   /**
@@ -208,13 +218,7 @@ export function createBaseProcessor<TType extends string>(
    * @returns 无返回值
    */
   async function stopAndDrain(): Promise<void> {
-    running = false;
-    taskAddedUnregister?.();
-    taskAddedUnregister = null;
-    if (immediateHandle !== null) {
-      clearImmediate(immediateHandle);
-      immediateHandle = null;
-    }
+    stopScheduling();
 
     if (inFlightPromise !== null) {
       await inFlightPromise;

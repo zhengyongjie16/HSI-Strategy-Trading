@@ -377,7 +377,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       );
     }
 
-    const now = Date.now();
+    const now = deps.now().getTime();
     const submittedAt =
       typeof submittedAtMs === 'number' && isValidPositiveNumber(submittedAtMs)
         ? submittedAtMs
@@ -637,7 +637,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       return { kind: 'NOT_EXECUTED' };
     }
 
-    const now = Date.now();
+    const now = deps.now().getTime();
     if (trackedOrder.replaceCapability === 'UNSUPPORTED_BY_TYPE') {
       logger.debug(`[订单修改] 订单 ${orderId} 已标记为类型不支持改单，跳过`);
       return { kind: 'NOT_EXECUTED' };

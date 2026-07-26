@@ -32,6 +32,7 @@ import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
 
 const emptyQuotesMap = new Map<string, Quote | null>();
 const emptyOrders: ReadonlyArray<RawOrderFromAPI> = [];
+const REBUILD_TEST_NOW = new Date('2026-03-13T02:00:00.000Z');
 const emptySeatState: SeatState = {
   symbol: null,
   status: 'EMPTY',
@@ -187,7 +188,7 @@ describe('createRebuildTradingDayState', () => {
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
-    await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap });
+    await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW });
     expect(recoverCalled).toBe(true);
     expect(displayCalled).toBe(true);
   });
@@ -332,9 +333,9 @@ describe('createRebuildTradingDayState', () => {
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
-    expect(rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap })).rejects.toThrow(
-      /\[Lifecycle\] 重建交易日状态失败/,
-    );
+    expect(
+      rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW }),
+    ).rejects.toThrow(/\[Lifecycle\] 重建交易日状态失败/);
   });
 
   it('正成交事实无效时在席位激活、恢复追踪和展示前阻断 open rebuild', async () => {
@@ -386,7 +387,11 @@ describe('createRebuildTradingDayState', () => {
 
     let caughtError: unknown = null;
     try {
-      await rebuild({ allOrders: [malformedPositiveExecution], quotesMap: emptyQuotesMap });
+      await rebuild({
+        allOrders: [malformedPositiveExecution],
+        quotesMap: emptyQuotesMap,
+        now: REBUILD_TEST_NOW,
+      });
     } catch (error) {
       caughtError = error;
     }
@@ -464,7 +469,11 @@ describe('createRebuildTradingDayState', () => {
 
       let caughtError: unknown = null;
       try {
-        await rebuild({ allOrders: [unknownSideOrder], quotesMap: emptyQuotesMap });
+        await rebuild({
+          allOrders: [unknownSideOrder],
+          quotesMap: emptyQuotesMap,
+          now: REBUILD_TEST_NOW,
+        });
       } catch (error) {
         caughtError = error;
       }
@@ -491,7 +500,9 @@ describe('createRebuildTradingDayState', () => {
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
-      buyOrders: [createBuyOrder(Date.now() - 2 * TIME.MILLISECONDS_PER_DAY, 'BULL.HK')],
+      buyOrders: [
+        createBuyOrder(REBUILD_TEST_NOW.getTime() - 2 * TIME.MILLISECONDS_PER_DAY, 'BULL.HK'),
+      ],
     });
     const deps = createRebuildDeps({
       marketDataClient: {
@@ -503,9 +514,9 @@ describe('createRebuildTradingDayState', () => {
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
-    expect(rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap })).rejects.toThrow(
-      /\[Lifecycle\] 重建交易日状态失败/,
-    );
+    expect(
+      rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW }),
+    ).rejects.toThrow(/\[Lifecycle\] 重建交易日状态失败/);
   });
 
   it('displayAccountAndPositions 抛错时同样抛出带前缀的错误', async () => {
@@ -515,9 +526,9 @@ describe('createRebuildTradingDayState', () => {
       },
     });
     const rebuild = createRebuildTradingDayState(deps);
-    expect(rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap })).rejects.toThrow(
-      /\[Lifecycle\] 重建交易日状态失败/,
-    );
+    expect(
+      rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW }),
+    ).rejects.toThrow(/\[Lifecycle\] 重建交易日状态失败/);
   });
 
   it('open rebuild 恢复出同一 symbol 时保留前一交易日的 lastSeatActivatedAt', async () => {

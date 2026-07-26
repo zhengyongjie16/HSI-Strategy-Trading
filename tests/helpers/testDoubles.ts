@@ -58,6 +58,7 @@ import type { ProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/
 import type { OrderMonitor } from '../../src/core/trader/types.js';
 import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
 import type { TradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/types.js';
+import type { Logger } from '../../src/utils/logger/types.js';
 import type { AutoSearchWakeupRuntime } from '../../src/main/autoSearchWakeupRuntime/types.js';
 import type { PeriodicSwitchWakeupRuntime } from '../../src/main/periodicSwitchWakeupRuntime/types.js';
 import type { SeatActivationDispatcher } from '../../src/main/seatActivationDispatcher/types.js';
@@ -171,6 +172,20 @@ function normalizeCandlestickData(
 
     return normalized;
   });
+}
+
+/**
+ * 创建无输出 logger 测试替身。
+ *
+ * @returns 具备完整日志能力且不产生外部副作用的 Logger
+ */
+export function createLoggerDouble(): Logger {
+  return {
+    debug: () => {},
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+  };
 }
 
 /**

@@ -25,6 +25,7 @@ function createSdkOrder(params: {
   readonly remark?: string;
   readonly side: OrderSide;
   readonly status: OrderStatus;
+  readonly orderType?: OrderType;
   readonly submittedAt?: Date;
   readonly updatedAt?: Date | null;
 }): Order {
@@ -34,7 +35,7 @@ function createSdkOrder(params: {
     stockName: params.stockName ?? 'HSI RC SAMPLE',
     side: params.side,
     status: params.status,
-    orderType: OrderType.ELO,
+    orderType: params.orderType ?? OrderType.ELO,
     remark: params.remark ?? '',
     price: new Decimal('1'),
     quantity: new Decimal('100'),
@@ -293,6 +294,23 @@ describe('createOrderAPIManager', () => {
         await assertSdkOrderSnapshotFails(apiManager, source);
       });
     }
+  }
+
+  for (const source of ['history', 'today'] as const) {
+    it(`fails fast when ${source} orderType is Unknown`, async () => {
+      const apiManager = createApiManagerWithSdkOrder(
+        source,
+        createSdkOrder({
+          orderId: `ORDER-UNKNOWN-TYPE-${source}`,
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          status: OrderStatus.New,
+          orderType: OrderType.Unknown,
+        }),
+      );
+
+      await assertSdkOrderSnapshotFails(apiManager, source);
+    });
   }
 
   it('fails fast when historyOrders returns non-array value', async () => {

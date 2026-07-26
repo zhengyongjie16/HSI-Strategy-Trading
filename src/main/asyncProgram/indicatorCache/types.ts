@@ -53,7 +53,7 @@ export type _SampleQueue = {
  * 使用范围：仅 indicatorCache 模块内部使用。
  */
 export type IndicatorCacheOptions = {
-  /** 样本保留时间窗口（毫秒），默认 100000 */
+  /** 样本保留时间窗口（毫秒），未提供时使用系统默认保留窗口 */
   readonly retentionWindowMs?: number;
 };
 

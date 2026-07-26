@@ -195,7 +195,7 @@ function createLongSwitchAdmissionHarness(params: {
     logger: createLoggerStub(),
     getHKDateKey,
   });
-  const signalBuilder = createSignalBuilder();
+  const signalBuilder = createSignalBuilder({ now });
   const trader = createTraderDouble(params.traderOverrides);
   const machine = createSwitchStateMachine({
     autoSearchConfig: monitorConfig.autoSearchConfig,
@@ -300,7 +300,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker,
       findBestWarrant: async () => createWarrantCandidate('NEW_BULL.HK'),
       getTradingCalendarSnapshot: () => createTradingCalendarSnapshot(),
-      now: () => new Date(nowMs),
+      clock: { now: () => new Date(nowMs) },
     });
     const dispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
@@ -911,7 +911,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       pendingSinceMs: nowMs - 5_000,
       blockedBy: 'ORDER_RECORDER',
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
@@ -997,7 +997,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
@@ -1082,7 +1082,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
@@ -1167,7 +1167,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     seatStateManager.markSuppression('LONG', 'OLD_BULL.HK', 'PERIODIC');
 
     let findBestCalls = 0;
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
@@ -1253,7 +1253,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let resolveCandidate!: (value: ReturnType<typeof createWarrantCandidate> | null) => void;
     const pendingCandidate = new Promise<ReturnType<typeof createWarrantCandidate> | null>(
       (resolve) => {
@@ -1352,7 +1352,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let executeCalls = 0;
     const trader = createTraderDouble({
       executeSignals: async () => {
@@ -1441,7 +1441,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: Array<{
       action: string | null;
       symbol: string | null;
@@ -1634,7 +1634,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: string[] = [];
     const quoteRequests: string[][] = [];
     const trader = createTraderDouble({
@@ -1764,7 +1764,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const quoteRequests: string[][] = [];
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
@@ -1910,7 +1910,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const pendingStatus = [...PENDING_ORDER_STATUSES][0];
     if (!pendingStatus) {
       throw new Error('PENDING_ORDER_STATUSES must contain at least one status');
@@ -2016,7 +2016,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const pendingStatus = [...PENDING_ORDER_STATUSES][0];
     if (!pendingStatus) {
       throw new Error('PENDING_ORDER_STATUSES must contain at least one status');
@@ -2162,7 +2162,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const pendingStatus = [...PENDING_ORDER_STATUSES][0];
     if (!pendingStatus) {
       throw new Error('PENDING_ORDER_STATUSES must contain at least one status');
@@ -2297,7 +2297,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const pendingStatus = [...PENDING_ORDER_STATUSES][0];
     if (!pendingStatus) {
       throw new Error('PENDING_ORDER_STATUSES must contain at least one status');
@@ -2426,7 +2426,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const pendingStatus = [...PENDING_ORDER_STATUSES][0];
     if (!pendingStatus) {
       throw new Error('PENDING_ORDER_STATUSES must contain at least one status');
@@ -2595,7 +2595,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let executeCalls = 0;
     const trader = createTraderDouble({
       getPendingOrders: async () => [],
@@ -2727,7 +2727,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let pendingOrderFetchCount = 0;
     let executeCalls = 0;
     const trader = createTraderDouble({
@@ -2867,7 +2867,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
         const action = signals[0]?.action ?? null;
@@ -3005,7 +3005,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: string[] = [];
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
@@ -3167,7 +3167,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: Array<string | null> = [];
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
@@ -3302,7 +3302,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: Array<string | null> = [];
 
     const trader = createTraderDouble({
@@ -3435,7 +3435,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: string[] = [];
     const trader = createTraderDouble({
       executeSignals: async (signals) => {
@@ -3547,7 +3547,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let findCalls = 0;
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
@@ -3629,7 +3629,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let executeCalls = 0;
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
@@ -3722,7 +3722,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
@@ -3807,7 +3807,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',

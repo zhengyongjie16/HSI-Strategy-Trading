@@ -81,8 +81,8 @@ export type TrackOrderParams = {
   readonly orderId: string;
   readonly symbol: string;
   readonly side: OrderSide;
-  readonly price: number;
-  readonly initialSubmittedPrice: number;
+  readonly price: number | null;
+  readonly initialSubmittedPrice: number | null;
   readonly quantity: number;
 
   /** 可选：恢复阶段使用原始下单时间（毫秒），用于保持超时策略语义一致 */
@@ -179,13 +179,23 @@ export interface AccountService {
 export type TodayOrderForPendingCache = Readonly<{
   orderId: string;
   symbol: string;
-  side: OrderSide;
+  side: PendingOrder['side'];
   price: unknown;
   quantity: unknown;
   executedQuantity: unknown;
-  status: OrderStatus;
+  status: PendingOrder['status'];
   orderType: PendingOrder['orderType'];
 }>;
+
+/**
+ * 今日订单查询端口。
+ * 类型用途：仅暴露 orderCacheManager 所需的 todayOrders 行为，返回值在模块信任边界内校验。
+ * 数据来源：生产环境由 Longbridge TradeContext 提供；测试可直接提供最小 double。
+ * 使用范围：仅 OrderCacheManagerDeps。
+ */
+export interface TodayOrdersReader {
+  todayOrders: () => Promise<unknown>;
+}
 
 /**
  * 订单缓存管理器接口。
@@ -316,8 +326,11 @@ export type AccountServiceDeps = {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type OrderCacheManagerDeps = {
-  readonly ctx: TradeContext;
+  readonly ctx: TodayOrdersReader;
   readonly rateLimiter: RateLimiter;
+
+  /** 未成交订单缓存 TTL 使用的统一运行时时钟。 */
+  readonly now: () => Date;
 };
 
 /**
@@ -343,11 +356,11 @@ export type TrackedOrder = {
   /** 订单类型（用于合并和改单判断） */
   readonly orderType: OrderType;
 
-  /** 当前委托价（会随市价更新） */
-  submittedPrice: number;
+  /** 当前委托价；市价单为 null，非市价单会随改单更新。 */
+  submittedPrice: number | null;
 
-  /** 跟踪开始时的初始委托价（用于买单跟价上限判断，不会被改单覆盖） */
-  readonly initialSubmittedPrice: number;
+  /** 跟踪开始时的初始委托价；市价单为 null，用于非市价买单跟价上限判断。 */
+  readonly initialSubmittedPrice: number | null;
 
   /** 委托数量（含部分成交后的剩余总量） */
   submittedQuantity: number;
@@ -401,7 +414,7 @@ export type PendingSellOrderSnapshot = {
   readonly side: OrderSide;
   readonly status: OrderStatus;
   readonly orderType: OrderType;
-  readonly submittedPrice: number;
+  readonly submittedPrice: number | null;
   readonly submittedQuantity: number;
   readonly executedQuantity: number;
   readonly submittedAt: number;
@@ -547,6 +560,13 @@ export type OrderMonitorDeps = {
   /** 连续交易授权（仅用于订单监控派生的新订单与自动改单） */
   readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
 
+  /** 订单 timeout/retry route 使用的统一运行时时钟。 */
+  readonly now: () => Date;
+
+  /** 订单 timeout/retry route 使用的统一 timer scheduler。 */
+  readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
+
   /** 运行期订单监控失败的统一 fatal 通道。 */
   readonly onFatalError: (error: unknown) => void;
 };
@@ -674,7 +694,7 @@ export type OrderExecutorDeps = {
   /** 连续交易授权；最终 SDK mutation 前必须再次读取。 */
   readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
 
-  /** 最终订单授权使用的实时钟。 */
+  /** 最终订单授权与买入节流共用的实时钟。 */
   readonly now: () => Date;
 
   /** 最终订单授权使用的权威当日交易日事实读取器。 */
@@ -713,8 +733,12 @@ export type TraderDeps = {
   /** 连续交易授权（仅由 OrderMonitor 派生新订单与自动改单使用） */
   readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
 
-  /** 最终订单授权使用的实时钟。 */
+  /** 最终订单授权、买入节流与订单 route 共用的实时钟。 */
   readonly now: () => Date;
+
+  /** 订单 route 共用的 timer scheduler。 */
+  readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
 
   /** 最终订单授权使用的权威当日交易日事实读取器。 */
   readonly readCurrentTradingDayInfo: CurrentTradingDayInfoReader;

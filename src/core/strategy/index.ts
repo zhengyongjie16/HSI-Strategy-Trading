@@ -24,7 +24,7 @@ import { getIndicatorValue } from '../../utils/indicatorHelpers/index.js';
 import { TIME } from '../../constants/index.js';
 import type { Signal } from '../../types/signal.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
-import type { VerificationConfig, SignalConfigSet } from '../../types/config.js';
+import type { SignalConfigSet } from '../../types/config.js';
 import type { SignalConfig } from '../../types/signalConfig.js';
 import type { OrderRecorder } from '../../types/services.js';
 import type { IndicatorUsageProfile, StrategyAction } from '../../types/indicatorProfile.js';
@@ -33,7 +33,7 @@ import type {
   SignalWithCategory,
   TradingSignalGenerationResult,
   TradingSignalStrategy,
-  TradingSignalStrategyConfig,
+  TradingSignalStrategyDeps,
 } from './types.js';
 import { isSellAction } from '../../utils/display/index.js';
 import {
@@ -41,31 +41,25 @@ import {
   evaluateSignalConfig,
   validateIndicatorsForAction,
   buildIndicatorDisplayString,
-  pushSignalToCorrectArray,
+  groupSignalsByCategory,
 } from './utils.js';
-
-const DEFAULT_VERIFICATION_CONFIG: VerificationConfig = {
-  buy: { delaySeconds: 60, indicators: ['K', 'MACD'] },
-  sell: { delaySeconds: 60, indicators: ['K', 'MACD'] },
-};
 
 /**
  * 创建多指标交易策略。
  *
- * @param strategyConfig 包含 signalConfig 和 verificationConfig 的策略配置对象
+ * @param deps 信号配置、验证配置与统一运行时时钟
  * @returns TradingSignalStrategy 实例
  */
 export function createMultiIndicatorTradingStrategy(
-  strategyConfig: Partial<TradingSignalStrategyConfig> = {},
+  deps: TradingSignalStrategyDeps,
 ): TradingSignalStrategy {
-  const finalSignalConfig: SignalConfigSet = strategyConfig.signalConfig ?? {
+  const { clock, verificationConfig: finalVerificationConfig } = deps;
+  const finalSignalConfig: SignalConfigSet = deps.signalConfig ?? {
     buycall: null,
     sellcall: null,
     buyput: null,
     sellput: null,
   };
-  const finalVerificationConfig: VerificationConfig =
-    strategyConfig.verificationConfig ?? DEFAULT_VERIFICATION_CONFIG;
   const signalTypeMap: Record<StrategyAction, SignalTypeCategory> = {
     BUYCALL: needsDelayedVerification(finalVerificationConfig.buy) ? 'delayed' : 'immediate',
     SELLCALL: needsDelayedVerification(finalVerificationConfig.sell) ? 'delayed' : 'immediate',
@@ -86,8 +80,7 @@ export function createMultiIndicatorTradingStrategy(
       return null;
     }
 
-    // 使用 Date.now() 获取时间戳，只创建一个 Date 对象（triggerTime）
-    const nowTimestamp = Date.now();
+    const nowTimestamp = clock.now().getTime();
     const triggerTimestamp = nowTimestamp + config.delaySeconds * TIME.MILLISECONDS_PER_SECOND;
 
     // 防御性检查：如果目标时间已经过去（配置错误或负数延迟），返回null
@@ -196,7 +189,7 @@ export function createMultiIndicatorTradingStrategy(
         symbol,
         symbolName: null,
         action,
-        triggerTime: new Date(),
+        triggerTime: clock.now(),
         indicators1: null,
         reason: `${reasonPrefix}（立即执行）：${evalResult.reason}，${indicatorDisplayStr}`,
       };
@@ -275,72 +268,60 @@ export function createMultiIndicatorTradingStrategy(
       orderRecorder: OrderRecorder,
       indicatorProfile: IndicatorUsageProfile,
     ): TradingSignalGenerationResult => {
-      const immediateSignals: Signal[] = [];
-      const delayedSignals: Signal[] = [];
       if (!state) {
         logger.debug('[策略] 无指标快照，不生成任何信号');
-        return { immediateSignals, delayedSignals };
+        return { immediateSignals: [], delayedSignals: [] };
       }
 
-      // 1. 买入做多标的
-      if (longSymbol) {
-        const buyLongResult = generateSignal(
-          state,
-          longSymbol,
-          'BUYCALL',
-          '买入做多信号',
-          orderRecorder,
-          true,
-          indicatorProfile,
-        );
-        pushSignalToCorrectArray(buyLongResult, immediateSignals, delayedSignals);
-      }
+      const categorizedSignals: ReadonlyArray<SignalWithCategory | null> = [
+        longSymbol
+          ? generateSignal(
+              state,
+              longSymbol,
+              'BUYCALL',
+              '买入做多信号',
+              orderRecorder,
+              true,
+              indicatorProfile,
+            )
+          : null,
+        // 生成阶段以订单记录确认存在可评估买单；执行阶段仍会按最新订单记录计算卖量与占用。
+        longSymbol
+          ? generateSignal(
+              state,
+              longSymbol,
+              'SELLCALL',
+              '卖出做多信号',
+              orderRecorder,
+              true,
+              indicatorProfile,
+            )
+          : null,
+        shortSymbol
+          ? generateSignal(
+              state,
+              shortSymbol,
+              'BUYPUT',
+              '买入做空信号',
+              orderRecorder,
+              false,
+              indicatorProfile,
+            )
+          : null,
+        shortSymbol
+          ? generateSignal(
+              state,
+              shortSymbol,
+              'SELLPUT',
+              '卖出做空信号',
+              orderRecorder,
+              false,
+              indicatorProfile,
+            )
+          : null,
+      ];
 
-      // 2. 卖出做多标的
-      // 注意：卖出信号生成时不做智能平仓判断，卖出数量由 signalProcessor 统一计算
-      // 注意：检查订单记录以确定是否有持仓（在 generateSignal 中检查）
-      if (longSymbol) {
-        const sellLongResult = generateSignal(
-          state,
-          longSymbol,
-          'SELLCALL',
-          '卖出做多信号',
-          orderRecorder,
-          true,
-          indicatorProfile,
-        );
-        pushSignalToCorrectArray(sellLongResult, immediateSignals, delayedSignals);
-      }
-
-      // 3. 买入做空标的
-      if (shortSymbol) {
-        const buyShortResult = generateSignal(
-          state,
-          shortSymbol,
-          'BUYPUT',
-          '买入做空信号',
-          orderRecorder,
-          false,
-          indicatorProfile,
-        );
-        pushSignalToCorrectArray(buyShortResult, immediateSignals, delayedSignals);
-      }
-
-      // 4. 卖出做空标的
-      if (shortSymbol) {
-        const sellShortResult = generateSignal(
-          state,
-          shortSymbol,
-          'SELLPUT',
-          '卖出做空信号',
-          orderRecorder,
-          false,
-          indicatorProfile,
-        );
-        pushSignalToCorrectArray(sellShortResult, immediateSignals, delayedSignals);
-      }
-
-      return { immediateSignals, delayedSignals };
+      return groupSignalsByCategory(categorizedSignals);
     },
   };
 }

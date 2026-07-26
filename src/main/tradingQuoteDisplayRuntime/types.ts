@@ -2,6 +2,7 @@ import type { QuoteUpdatedEvent, MarketDataClient } from '../../types/services.j
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { TradingRiskRoute } from '../tradingRiskEventRuntime/types.js';
+import type { Logger } from '../../utils/logger/types.js';
 
 /**
  * trading quote 显示 route 状态。
@@ -34,6 +35,7 @@ export interface TradingQuoteDisplayRuntime {
  * 使用范围：仅 tradingQuoteDisplayRuntime 模块使用。
  */
 export type TradingQuoteDisplayRuntimeDeps = Readonly<{
+  logger: Pick<Logger, 'warn' | 'error'>;
   marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
   symbolRegistry: SymbolRegistry;
   monitorContext: MonitorContext;

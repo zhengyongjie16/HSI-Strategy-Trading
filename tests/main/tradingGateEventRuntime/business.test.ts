@@ -5,10 +5,11 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
+import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 describe('tradingGateEventRuntime', () => {
   it('单个 listener 抛错时仍继续通知后续 listener', () => {
-    const runtime = createTradingGateEventRuntime();
+    const runtime = createTradingGateEventRuntime({ logger: createLoggerDouble() });
     const calls: string[] = [];
 
     runtime.onGateStateChanged(() => {
@@ -30,7 +31,7 @@ describe('tradingGateEventRuntime', () => {
   });
 
   it('自动寻标授权 listener 的内部错误必须向时间控制平面 fail-fast', () => {
-    const runtime = createTradingGateEventRuntime();
+    const runtime = createTradingGateEventRuntime({ logger: createLoggerDouble() });
     runtime.onAutoSearchAuthorizationChanged(() => {
       throw new Error('auto-search authorization invariant broken');
     });

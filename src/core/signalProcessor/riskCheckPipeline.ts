@@ -124,7 +124,7 @@ export const createRiskCheckPipeline = ({
     } = context;
 
     // 在本次调用入口固定当前毫秒时间，供冷却过滤/冷却写入/清仓冷却查询复用
-    const currentTimeMs = Date.now();
+    const currentTimeMs = currentTime.getTime();
 
     // 先过滤风险检查冷却期信号
     // 这样可以避免冷却期内信号进入后续检查与实时数据拉取

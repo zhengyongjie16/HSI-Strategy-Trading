@@ -500,6 +500,7 @@ describe('createDayLifecycleManager', () => {
                 ['HSI.HK', createQuoteDouble('HSI.HK', 20000)],
                 ['BULL.HK', createQuoteDouble('BULL.HK', 1)],
               ]),
+              now: new Date('2026-02-16T01:31:00.000Z'),
             });
           },
         },

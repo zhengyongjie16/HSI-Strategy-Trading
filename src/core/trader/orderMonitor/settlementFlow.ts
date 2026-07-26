@@ -515,6 +515,18 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     return recordCumulativeExecutionFact(executionParams);
   }
 
+  /**
+   * 以权威终态结算一次订单生命周期，并以 closedOrderIds 保证同一订单只结算一次。
+   *
+   * 成交事实必须先具备唯一 monitor/direction 归因和单调 revision；保护性卖单还会先把
+   * cumulative fact 与 durable progress 提交给日内损益 owner，再更新本地买卖记录、
+   * 待成交占用和刷新门禁。全部结算完成后才关闭 runtime tracking 并发布
+   * OrderStateChanged，避免下游观察到未完成的终态。
+   *
+   * @param params 权威终态、成交事实及待成交卖单处置方式
+   * @returns 是否完成本次结算，以及仍需延续的关联买单标识
+   * @throws 成交归因、revision 或保护性清仓持久化前置条件不完整时抛出
+   */
   function settleOrder(params: FinalizeOrderSettlementParams): FinalizeOrderSettlementResult {
     const { orderId, closedReason } = params;
     if (runtime.closedOrderIds.has(orderId)) {

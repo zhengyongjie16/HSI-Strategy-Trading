@@ -15,7 +15,6 @@
  * - 再启动普通 K 线业务 owner、交易标的风险 runtime、monitor quote runtime 与 switch wakeup runtime
  * - 再重启买入、卖出、监控任务处理器
  */
-import { logger } from '../../../utils/logger/index.js';
 import type { MonitorContext } from '../../../types/state.js';
 import type { CacheDomain } from '../types.js';
 import type { SignalRuntimeDomainDeps } from './types.js';
@@ -63,6 +62,7 @@ function cancelAllDelayedSignals(monitorContext: MonitorContext): number {
  */
 export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheDomain {
   const {
+    logger,
     monitorContext,
     buyProcessor,
     sellProcessor,

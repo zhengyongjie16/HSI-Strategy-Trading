@@ -8,6 +8,7 @@ import type { SymbolRegistry } from '../types/seat.js';
 import type { LastState, MonitorContext, MonitorState } from '../types/state.js';
 import type { MonitorConfig, TradingConfig } from '../types/config.js';
 import type { Quote } from '../types/quote.js';
+import type { RuntimeClock, RuntimeScheduler } from '../types/runtime.js';
 import type {
   MarketDataClient,
   OrderRecorder,
@@ -392,7 +393,7 @@ export type RegisterDelayedSignalHandlersParams = Readonly<{
   sellTaskQueue: TaskQueue<SellTaskType>;
   logger: Pick<Logger, 'debug' | 'warn'>;
   doomsdayProtectionEnabled: boolean;
-  now?: () => Date;
+  now: () => Date;
 }>;
 
 /**
@@ -405,6 +406,8 @@ export type CreateMonitorContextParams = Readonly<{
   preGateRuntime: PreGateRuntime;
   postGateRuntime: MonitorContextBootstrapRuntime;
   quotesMap: ReadonlyMap<string, Quote | null> | null;
+  clock: RuntimeClock;
+  scheduler: RuntimeScheduler;
   strategyFactory?: TradingSignalStrategyFactory;
 }>;
 
@@ -434,7 +437,10 @@ export type CreatePostGateRuntimeParams = Readonly<{
   env: NodeJS.ProcessEnv;
   preGateRuntime: PreGateRuntime;
   now: Date;
+  clock: RuntimeClock;
+  scheduler: RuntimeScheduler;
   cleanup: CleanupController;
+  logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;
 }>;
 
 /**
@@ -517,6 +523,8 @@ export type AsyncRuntime = Readonly<{
 export type AsyncRuntimeFactoryDeps = Readonly<{
   preGateRuntime: PreGateRuntime;
   postGateRuntime: PostGateRuntime;
+  clock: RuntimeClock;
+  scheduler: RuntimeScheduler;
 }>;
 
 /**
@@ -541,6 +549,7 @@ export type PostTradeConsistencyRuntimeDeps = Readonly<{
   getTrader: () => Trader;
   lastState: LastState;
   onPositionsCommitted: () => Promise<void>;
+  scheduler: RuntimeScheduler;
 }>;
 
 /**
@@ -586,6 +595,7 @@ export interface PostTradeConsistencyRuntime {
  * 使用范围：仅 lifecycle 运行时创建链路使用。
  */
 export type LifecycleRuntimeFactoryDeps = Readonly<{
+  logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;
   preGateRuntime: PreGateRuntime;
   postGateRuntime: PostGateRuntime;
   asyncRuntime: AsyncRuntime;

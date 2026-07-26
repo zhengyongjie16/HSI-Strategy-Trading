@@ -14,6 +14,7 @@ import type { TradingDayInfo } from '../../../src/types/services.js';
 import {
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
+  createLoggerDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createQuoteSubscriptionRuntimeDouble,
@@ -69,6 +70,7 @@ function createGateIntegrationContext(
   const monitorContext = createMonitorContextDouble({ config: monitorConfig });
 
   return {
+    logger: createLoggerDouble(),
     marketDataClient: createMarketDataClientDouble({
       isTradingDay: params.isTradingDay ?? (async () => ({ isTradingDay: true, isHalfDay: false })),
     }),

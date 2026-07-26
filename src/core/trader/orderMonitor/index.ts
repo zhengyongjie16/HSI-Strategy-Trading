@@ -86,6 +86,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     tradingConfig,
     symbolRegistry,
     isContinuousTradingAllowed,
+    now,
+    scheduleTimer,
+    clearTimer,
   } = deps;
   const config = buildOrderMonitorConfig(tradingConfig.global);
   const thresholdDecimal = toDecimal(config.priceDiffThreshold);
@@ -136,6 +139,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   const orderOps = createOrderOps({
+    now,
     runtime,
     monitorConfig: tradingConfig.monitor,
     ctx,
@@ -171,6 +175,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   const eventFlow = createEventFlow({
+    now,
     runtime,
     orderRecorder,
     recordCumulativeExecution: (params) => {
@@ -191,6 +196,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   }
 
   const routeProcessor = createRouteProcessor({
+    now,
     runtime,
     config,
     thresholdDecimal,
@@ -214,6 +220,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     config,
     marketDataClient,
     processRoute: routeProcessor.processRoute,
+    now,
+    scheduleTimer,
+    clearTimer,
     onFatalError: deps.onFatalError,
   });
 
@@ -452,6 +461,15 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     runtime.runtimeState = 'STOPPED';
   }
 
+  /**
+   * 先关闭订单监控入口并丢弃 BOOTSTRAPPING 缓冲事件，再排空所有 symbol route。
+   *
+   * 先切换为 STOPPED 可阻止停止期间的晚到 WS 事件继续推进；route 排空完成前不清除
+   * tracked truth，供已在途的订单动作安全收口。
+   *
+   * @returns 所有在途 route 完成后的 Promise
+   * @throws route runtime 尚未初始化，或在途 route 以错误结束时抛出
+   */
   async function stopRuntimeAndDrain(): Promise<void> {
     runtime.runtimeState = 'STOPPED';
     recoveryFlow.clearBootstrappingEventBuffer();

@@ -44,6 +44,12 @@ import { createLastState, waitUntil } from '../asyncProgram/utils.js';
 import { createMonitorTaskProcessor } from '../../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createSeatActivationDispatcher } from '../../../src/main/seatActivationDispatcher/index.js';
 
+function createTestClock(nowMs = Date.parse('2026-02-16T01:31:00.000Z')) {
+  return {
+    now: () => new Date(nowMs),
+  };
+}
+
 function createCandles(length: number, start: number, step: number): ReadonlyArray<CandleData> {
   const candles: CandleData[] = [];
   const baseTimestamp = 1_708_000_000_000;
@@ -154,6 +160,7 @@ describe('businessEventProgram business flow', () => {
     const { indicatorCache, pushes } = createIndicatorCacheRecorder();
     const renderRequests: Array<{ readonly monitorSnapshot: IndicatorSnapshot }> = [];
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
@@ -243,6 +250,7 @@ describe('businessEventProgram business flow', () => {
       data: createSignalDouble('BUYCALL', 'OLD_BULL.HK'),
     });
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
@@ -309,6 +317,7 @@ describe('businessEventProgram business flow', () => {
     const renderRequests: Array<{ readonly monitorSnapshot: IndicatorSnapshot }> = [];
 
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
@@ -387,10 +396,9 @@ describe('businessEventProgram business flow', () => {
     });
     const buyTaskQueue = createBuyTaskQueue();
     const { indicatorCache, pushes } = createIndicatorCacheRecorder();
-    const originalDateNow = Date.now;
-    Date.now = () => 1_710_000_000_123;
 
     const program = createBusinessEventProgram({
+      clock: createTestClock(1_710_000_000_123),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
@@ -430,7 +438,6 @@ describe('businessEventProgram business flow', () => {
         },
       ]);
     } finally {
-      Date.now = originalDateNow;
       await program.stopAndDrain();
     }
   });
@@ -465,16 +472,18 @@ describe('businessEventProgram business flow', () => {
     );
     const monitorContext = createMonitorContext();
     const { indicatorCache, pushes } = createIndicatorCacheRecorder();
-    const originalDateNow = Date.now;
     const observedTimes = [1_710_000_000_100, 1_710_000_000_200];
-    let dateNowCallIndex = 0;
-    Date.now = () => {
-      const next = observedTimes[Math.min(dateNowCallIndex, observedTimes.length - 1)];
-      dateNowCallIndex += 1;
-      return next ?? observedTimes.at(-1) ?? 0;
+    let clockCallIndex = 0;
+    const clock = {
+      now: () => {
+        const next = observedTimes[Math.min(clockCallIndex, observedTimes.length - 1)];
+        clockCallIndex += 1;
+        return new Date(next ?? observedTimes.at(-1) ?? 0);
+      },
     };
 
     const program = createBusinessEventProgram({
+      clock,
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
@@ -509,7 +518,6 @@ describe('businessEventProgram business flow', () => {
       await waitUntil(() => pushes.length === 1);
       expect(pushes[0]?.observedAtMs).toBe(observedTimes[1]);
     } finally {
-      Date.now = originalDateNow;
       await program.stopAndDrain();
     }
   });
@@ -538,6 +546,7 @@ describe('businessEventProgram business flow', () => {
     const { indicatorCache, pushes } = createIndicatorCacheRecorder();
 
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
@@ -608,6 +617,7 @@ describe('businessEventProgram business flow', () => {
     const { indicatorCache } = createIndicatorCacheRecorder();
 
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
@@ -630,7 +640,7 @@ describe('businessEventProgram business flow', () => {
     await program.stopAndDrain();
   });
 
-  it('advances latest snapshot and enqueues signals only after a new candlestick event', async () => {
+  it('uses the injected event clock when system time is inside the doomsday window', async () => {
     let listener: (event: CandlestickUpdatedEvent) => void = (_event: CandlestickUpdatedEvent) => {
       throw new Error('expected candlestick listener');
     };
@@ -660,13 +670,23 @@ describe('businessEventProgram business flow', () => {
     );
     const monitorContext = createMonitorContext();
     const buyTaskQueue = createBuyTaskQueue();
-    const { indicatorCache } = createIndicatorCacheRecorder();
+    const { indicatorCache, pushes } = createIndicatorCacheRecorder();
+    const tradingConfig = createOrdinarySignalTradingConfig();
+    const originalDateNow = Date.now;
+    Date.now = () => Date.parse('2026-02-16T07:56:00.000Z');
 
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),
-      tradingConfig: createOrdinarySignalTradingConfig(),
+      tradingConfig: {
+        ...tradingConfig,
+        global: {
+          ...tradingConfig.global,
+          doomsdayProtection: true,
+        },
+      },
       buyTaskQueue,
       sellTaskQueue: createSellTaskQueue(),
       indicatorCache,
@@ -675,26 +695,30 @@ describe('businessEventProgram business flow', () => {
       },
     });
 
-    program.start();
-    const snapshot = marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
-    if (snapshot === null) {
-      throw new Error('expected candlestick snapshot');
+    try {
+      program.start();
+      const snapshot = marketDataClient.getCandlestickSnapshot('HSI.HK', Period.Min_1);
+      if (snapshot === null) {
+        throw new Error('expected candlestick snapshot');
+      }
+
+      listener({
+        symbol: 'HSI.HK',
+        period: Period.Min_1,
+        snapshot,
+      });
+
+      await waitUntil(() => monitorContext.state.lastMonitorSnapshot !== null);
+      expect(monitorContext.state.lastMonitorSnapshot).not.toBeNull();
+      expect(pushes[0]?.observedAtMs).toBe(Date.parse('2026-02-16T01:31:00.000Z'));
+      expect(buyTaskQueue.isEmpty()).toBeFalse();
+
+      const queuedTask = buyTaskQueue.pop();
+      expect(queuedTask?.type).toBe('IMMEDIATE_BUY');
+    } finally {
+      Date.now = originalDateNow;
+      await program.stopAndDrain();
     }
-
-    listener({
-      symbol: 'HSI.HK',
-      period: Period.Min_1,
-      snapshot,
-    });
-
-    await waitUntil(() => monitorContext.state.lastMonitorSnapshot !== null);
-    expect(monitorContext.state.lastMonitorSnapshot).not.toBeNull();
-    expect(buyTaskQueue.isEmpty()).toBeFalse();
-
-    const queuedTask = buyTaskQueue.pop();
-    expect(queuedTask?.type).toBe('IMMEDIATE_BUY');
-
-    await program.stopAndDrain();
   });
 
   it('adds delayed signal again after SEAT_REFRESH restores LONG seat to ACTIVE', async () => {
@@ -760,6 +784,13 @@ describe('businessEventProgram business flow', () => {
       monitorTaskQueue,
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
+      clock: createTestClock(),
+      scheduler: {
+        scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimer: (handle) => {
+          clearTimeout(handle);
+        },
+      },
       monitorTaskQueue,
       monitorContext,
       trader: createTraderDouble(),
@@ -773,10 +804,14 @@ describe('businessEventProgram business flow', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
+      onFatalError: (error) => {
+        throw error;
+      },
     });
 
     const { indicatorCache } = createIndicatorCacheRecorder();
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState,
@@ -870,6 +905,7 @@ describe('businessEventProgram business flow', () => {
     });
     const renderRequests: IndicatorSnapshot[] = [];
     const program = createBusinessEventProgram({
+      clock: createTestClock(),
       marketDataClient,
       monitorContext,
       lastState: createLastState(),

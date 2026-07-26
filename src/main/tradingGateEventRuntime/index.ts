@@ -6,10 +6,10 @@
  * - 发布自动寻标的完整授权变化，避免消费方重复判断 lifecycle 与末日接管
  */
 import { formatError } from '../../utils/error/index.js';
-import { logger } from '../../utils/logger/index.js';
 import type {
   AutoSearchAuthorizationChangedEvent,
   TradingGateEventRuntime,
+  TradingGateEventRuntimeDeps,
   TradingGateStateChangedEvent,
 } from './types.js';
 
@@ -18,7 +18,10 @@ import type {
  *
  * @returns 可发布与订阅连续交易门禁和自动寻标授权变化的事件端口
  */
-export function createTradingGateEventRuntime(): TradingGateEventRuntime {
+export function createTradingGateEventRuntime(
+  deps: TradingGateEventRuntimeDeps,
+): TradingGateEventRuntime {
+  const { logger } = deps;
   const gateListeners = new Set<(event: TradingGateStateChangedEvent) => void>();
   const autoSearchAuthorizationListeners = new Set<
     (event: AutoSearchAuthorizationChangedEvent) => void

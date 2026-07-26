@@ -174,6 +174,7 @@ describe('registerDelayedSignalHandlers business flow', () => {
         warn: () => {},
       },
       doomsdayProtectionEnabled: false,
+      now: () => new Date('2031-01-02T03:04:05.000Z'),
     });
 
     harness.callbackRef.current(createSignalDouble('HOLD', 'BULL.HK'));
@@ -185,9 +186,16 @@ describe('registerDelayedSignalHandlers business flow', () => {
   it('enqueues previously pending verified buy signal during afternoon opening protection', () => {
     const triggerTimeMs = new Date('2026-03-09T12:59:50+08:00').getTime();
     const timerHarness = createTimerHarness(triggerTimeMs);
-    const indicatorCache = createIndicatorCache({});
+    const indicatorCache = createIndicatorCache();
     const delayedSignalVerifier = createDelayedSignalVerifier({
       indicatorCache,
+      clock: { now: () => new Date(Date.now()) },
+      scheduler: {
+        scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimer: (handle) => {
+          clearTimeout(handle);
+        },
+      },
       onFatalError: (error) => {
         throw error;
       },

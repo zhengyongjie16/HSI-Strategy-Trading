@@ -28,7 +28,7 @@ import { formatSymbolDisplay } from '../../../utils/display/index.js';
 export function createDelayedSignalVerifier(
   deps: DelayedSignalVerifierDeps,
 ): DelayedSignalVerifierPort {
-  const { indicatorCache, onFatalError } = deps;
+  const { indicatorCache, clock, scheduler, onFatalError } = deps;
 
   // 待验证信号 Map（signalId -> entry）
   const pendingSignals = new Map<string, PendingSignalEntry>();
@@ -136,10 +136,10 @@ export function createDelayedSignalVerifier(
       const triggerTime = signal.triggerTime.getTime();
       const readyAtMs =
         triggerTime + VERIFICATION.READY_DELAY_SECONDS * TIME.MILLISECONDS_PER_SECOND;
-      const delayMs = Math.max(0, readyAtMs - Date.now());
+      const delayMs = Math.max(0, readyAtMs - clock.now().getTime());
 
       // 创建定时器
-      const timerId = setTimeout(() => {
+      const timerId = scheduler.scheduleTimer(() => {
         executeVerification(signalId);
       }, delayMs);
 
@@ -168,7 +168,7 @@ export function createDelayedSignalVerifier(
           continue;
         }
 
-        clearTimeout(entry.timerId);
+        scheduler.clearTimer(entry.timerId);
         entriesToRemove.push(signalId);
       }
 
@@ -189,7 +189,7 @@ export function createDelayedSignalVerifier(
     cancelAll(): number {
       const count = pendingSignals.size;
       for (const entry of pendingSignals.values()) {
-        clearTimeout(entry.timerId);
+        scheduler.clearTimer(entry.timerId);
       }
 
       pendingSignals.clear();
@@ -215,7 +215,7 @@ export function createDelayedSignalVerifier(
      */
     destroy(): void {
       for (const entry of pendingSignals.values()) {
-        clearTimeout(entry.timerId);
+        scheduler.clearTimer(entry.timerId);
       }
 
       pendingSignals.clear();

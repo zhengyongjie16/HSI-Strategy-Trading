@@ -28,6 +28,7 @@ import type {
  */
 export function createBusinessEventProgram(deps: BusinessEventProgramDeps): BusinessEventProgram {
   const {
+    clock,
     marketDataClient,
     monitorContext,
     lastState,
@@ -150,7 +151,7 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
           monitorContext,
           mainContext: pipelineContext,
           runtimeFlags: {
-            currentTime: new Date(),
+            currentTime: clock.now(),
             openProtectionActive: lastState.openProtectionActive === true,
           },
           monitorSnapshot,
@@ -218,7 +219,7 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
         return;
       }
 
-      triggerMonitorRoute(Date.now());
+      triggerMonitorRoute(clock.now().getTime());
     });
   }
 

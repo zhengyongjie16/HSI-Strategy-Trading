@@ -32,6 +32,7 @@ import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
 import type { DailyLossTracker } from '../../../types/risk.js';
 import type { LiquidationCooldownTracker } from '../../../services/liquidationCooldown/types.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
+import type { Logger } from '../../../utils/logger/types.js';
 
 /**
  * lifecycle 持有的成交后一致性 runtime 最小契约。
@@ -55,6 +56,7 @@ interface SignalRuntimePostTradeConsistencyRuntime {
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type SignalRuntimeDomainDeps = Readonly<{
+  logger: Pick<Logger, 'debug'>;
   monitorContext: MonitorContext;
   buyProcessor: Processor;
   sellProcessor: Processor;
@@ -88,6 +90,7 @@ export type SignalRuntimeDomainDeps = Readonly<{
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type SeatDomainDeps = Readonly<{
+  logger: Pick<Logger, 'debug'>;
   symbolRegistry: SymbolRegistry;
   autoSymbolManager: Pick<AutoSymbolManagerPort, 'resetAllState'>;
   warrantListCache: Pick<WarrantListCache, 'clear'>;
@@ -100,6 +103,7 @@ export type SeatDomainDeps = Readonly<{
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type OrderDomainDeps = Readonly<{
+  logger: Pick<Logger, 'debug'>;
   trader: Pick<Trader, 'resetRuntimeState'>;
 }>;
 
@@ -110,6 +114,7 @@ export type OrderDomainDeps = Readonly<{
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type RiskDomainDeps = Readonly<{
+  logger: Pick<Logger, 'debug'>;
   signalProcessor: SignalProcessor;
   dailyLossTracker: DailyLossTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
@@ -124,6 +129,7 @@ export type RiskDomainDeps = Readonly<{
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type MarketDataDomainDeps = Readonly<{
+  logger: Pick<Logger, 'debug'>;
   marketDataClient: MarketDataClient;
 }>;
 
@@ -134,6 +140,7 @@ export type MarketDataDomainDeps = Readonly<{
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type GlobalStateDomainDeps = Readonly<{
+  logger: Pick<Logger, 'debug'>;
   lastState: LastState;
   runTradingDayOpenRebuild: (now: Date) => Promise<void>;
 }>;

@@ -49,7 +49,6 @@ import {
   getRequiredHKDateKey,
   toHongKongTimeIso,
 } from '../../utils/time/index.js';
-import { logger } from '../../utils/logger/index.js';
 import { toError } from '../../utils/error/index.js';
 import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
 import type { LastState } from '../../types/state.js';
@@ -219,7 +218,7 @@ function createPostGateRuntimeFactory(
   return async function createPostGateRuntime(
     params: CreatePostGateRuntimeParams,
   ): Promise<PostGateRuntime> {
-    const { env, preGateRuntime, now, cleanup } = params;
+    const { env, preGateRuntime, now, clock, scheduler, cleanup, logger } = params;
     const {
       config,
       tradingConfig,
@@ -238,7 +237,7 @@ function createPostGateRuntimeFactory(
       }),
     });
     const liquidationCooldownTracker = createLiquidationCooldownTracker({
-      nowMs: () => Date.now(),
+      nowMs: () => clock.now().getTime(),
     });
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
@@ -307,6 +306,7 @@ function createPostGateRuntimeFactory(
       onPositionsCommitted: async () => {
         await quoteSubscriptionRuntimeBinding.get().reconcilePositionHoldFromCurrentTruth();
       },
+      scheduler,
     });
     cleanup.register({
       phase: 'ABORT_FRESHNESS_WAITING',
@@ -364,7 +364,9 @@ function createPostGateRuntimeFactory(
       postTradeConsistencyRuntime,
       isExecutionAllowed: () => lastState.isTradingEnabled,
       isContinuousTradingAllowed: () => lastState.isTradingEnabled && lastState.canTrade === true,
-      now: () => new Date(Date.now()),
+      now: clock.now,
+      scheduleTimer: scheduler.scheduleTimer,
+      clearTimer: scheduler.clearTimer,
       readCurrentTradingDayInfo: () => lastState.cachedTradingDayInfo,
       onFatalError: handleFatalError,
     });
@@ -375,7 +377,7 @@ function createPostGateRuntimeFactory(
       handler: () => trader.stopOrderMonitorRuntimeAndDrain(),
     });
     const tradeLogHydrator = createTradeLogHydrator({
-      nowMs: () => Date.now(),
+      nowMs: () => clock.now().getTime(),
       logger,
       tradingConfig,
       liquidationCooldownTracker,
@@ -410,11 +412,12 @@ function createPostGateRuntimeFactory(
       seatActivationDispatcher,
     });
     const marketMonitor = createMarketMonitor();
-    const doomsdayProtection = createDoomsdayProtection();
+    const doomsdayProtection = createDoomsdayProtection({ now: clock.now });
     const doomsdayProtectionEnabled = tradingConfig.global.doomsdayProtection;
-    const tradingGateEventRuntime = createTradingGateEventRuntime();
+    const tradingGateEventRuntime = createTradingGateEventRuntime({ logger });
 
     const quoteSubscriptionRuntime = createQuoteSubscriptionRuntime({
+      logger,
       tradingConfig,
       symbolRegistry,
       marketDataClient,
@@ -478,6 +481,8 @@ function createPostGateRuntimeFactory(
         onFatalError: handleFatalError,
       },
       quotesMap: null,
+      clock,
+      scheduler,
     });
     cleanup.register({
       phase: 'DESTROY_DELAYED_SIGNAL_VERIFIER',
@@ -496,6 +501,7 @@ function createPostGateRuntimeFactory(
     });
 
     const tradingRiskEventRuntime = createTradingRiskEventRuntime({
+      logger,
       marketDataClient,
       trader,
       symbolRegistry,
@@ -503,7 +509,7 @@ function createPostGateRuntimeFactory(
       lastState,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
-      now: () => new Date(),
+      now: clock.now,
       onFatalError: handleFatalError,
     });
     cleanup.register({
@@ -512,6 +518,7 @@ function createPostGateRuntimeFactory(
       handler: () => tradingRiskEventRuntime.stopAndDrain(),
     });
     const switchWakeupRuntime = createSwitchWakeupRuntime({
+      logger,
       marketDataClient,
       trader,
       symbolRegistry,
@@ -521,13 +528,9 @@ function createPostGateRuntimeFactory(
       tradingGateEventRuntime,
       doomsdayProtectionEnabled,
       quoteSubscriptionRuntime,
-      now: () => new Date(),
-      scheduleTimer: (callback, delayMs) => {
-        return setTimeout(callback, delayMs);
-      },
-      clearTimer: (handle) => {
-        clearTimeout(handle);
-      },
+      now: clock.now,
+      scheduleTimer: scheduler.scheduleTimer,
+      clearTimer: scheduler.clearTimer,
       onFatalError: handleFatalError,
     });
     cleanup.register({
@@ -536,6 +539,7 @@ function createPostGateRuntimeFactory(
       handler: () => switchWakeupRuntime.stopAndDrain(),
     });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
+      logger,
       marketDataClient,
       monitorContext,
       trader,
@@ -543,7 +547,9 @@ function createPostGateRuntimeFactory(
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
       quoteSubscriptionRuntime,
-      now: () => new Date(),
+      now: clock.now,
+      scheduleTimer: scheduler.scheduleTimer,
+      clearTimer: scheduler.clearTimer,
       handoffPendingSwitch: switchWakeupRuntime.handoffPendingSwitch,
       onFatalError: handleFatalError,
     });
@@ -564,6 +570,7 @@ function createPostGateRuntimeFactory(
       handler: () => monitorDisplayRuntime.stopAndDrain(),
     });
     const tradingQuoteDisplayRuntime = createTradingQuoteDisplayRuntime({
+      logger,
       marketDataClient,
       symbolRegistry,
       monitorContext,
@@ -617,13 +624,9 @@ function createPostGateRuntimeFactory(
       lastState,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled,
-      now: () => new Date(),
-      scheduleTimer: (callback, delayMs) => {
-        return setTimeout(callback, delayMs);
-      },
-      clearTimer: (handle) => {
-        clearTimeout(handle);
-      },
+      now: clock.now,
+      scheduleTimer: scheduler.scheduleTimer,
+      clearTimer: scheduler.clearTimer,
     });
     cleanup.register({
       phase: 'STOP_AUTO_SEARCH_WAKEUP_RUNTIME',
@@ -643,13 +646,9 @@ function createPostGateRuntimeFactory(
           targetDurationMs: switchIntervalMinutes * TIME.MILLISECONDS_PER_MINUTE,
           calendarSnapshot: lastState.tradingCalendarSnapshot,
         }),
-      now: () => new Date(),
-      scheduleTimer: (callback, delayMs) => {
-        return setTimeout(callback, delayMs);
-      },
-      clearTimer: (handle) => {
-        clearTimeout(handle);
-      },
+      now: clock.now,
+      scheduleTimer: scheduler.scheduleTimer,
+      clearTimer: scheduler.clearTimer,
     });
     cleanup.register({
       phase: 'STOP_PERIODIC_SWITCH_WAKEUP_RUNTIME',

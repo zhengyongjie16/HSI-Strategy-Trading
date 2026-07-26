@@ -49,6 +49,16 @@ function resolveClosedReasonFromStatus(
 export function createOrderStatusQuery(deps: OrderStatusQueryDeps): OrderStatusQuery {
   const { ctx, rateLimiter } = deps;
 
+  /**
+   * 在撤单或改单业务失败后限流查询单订单权威状态，供调用方决定结算、继续等待或恢复跟踪。
+   *
+   * 将已成交、已撤销、已拒绝等终态归一为 TERMINAL，其余状态归一为 OPEN；
+   * broker 明确返回 603001 时返回 QUERY_FAILED，避免把“订单不存在”误判为终态。
+   *
+   * @param orderId 待确认的 broker 订单标识
+   * @returns 归一化后的权威订单状态
+   * @throws 外部请求失败或非 603001 的未知 SDK 错误时原样抛出
+   */
   async function checkOrderState(orderId: string): Promise<OrderStateCheckResult> {
     try {
       await rateLimiter.throttle();

@@ -9,7 +9,6 @@
  * 开盘重建：
  * - 席位在统一开盘重建流水线（loadTradingDayRuntimeSnapshot）中重建，此处为空操作
  */
-import { logger } from '../../../utils/logger/index.js';
 import type { RuntimeWritableSeatState, SeatState, SymbolRegistry } from '../../../types/seat.js';
 import type { CacheDomain, LifecycleContext } from '../types.js';
 import {
@@ -53,7 +52,7 @@ function clearAllSeatBindings(symbolRegistry: SymbolRegistry): number {
  * @returns 实现 CacheDomain 的席位域实例
  */
 export function createSeatDomain(deps: SeatDomainDeps): CacheDomain {
-  const { symbolRegistry, autoSymbolManager, warrantListCache } = deps;
+  const { logger, symbolRegistry, autoSymbolManager, warrantListCache } = deps;
   return {
     midnightClear(ctx: LifecycleContext): void {
       if (ctx.invalidateSeatActivationCarryover === true) {

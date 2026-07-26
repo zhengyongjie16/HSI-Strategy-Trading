@@ -3,6 +3,7 @@ import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { TaskQueue, BuyTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
 import type { DoomsdayProtection } from '../../../core/doomsdayProtection/types.js';
+import type { RuntimeClock } from '../../../types/runtime.js';
 
 /**
  * 买入处理器依赖类型（创建 BuyProcessor 时的参数）。
@@ -32,9 +33,12 @@ export type BuyProcessorDeps = {
   /** 获取是否半日市的函数 */
   readonly getIsHalfDay: () => boolean;
 
+  /** 风控上下文与顶层运行时共用的时间源 */
+  readonly now: RuntimeClock['now'];
+
   /** 生命周期门禁：false 时跳过任务执行 */
   readonly getCanProcessTask?: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
-  readonly onFatalError?: (error: unknown) => void;
+  readonly onFatalError: (error: unknown) => void;
 };

@@ -23,6 +23,8 @@ import {
 } from '../../helpers/testDoubles.js';
 import type { RateLimiter, RiskChecker } from '../../../src/types/services.js';
 
+const EXECUTION_NOW_MS = Date.parse('2026-07-10T02:00:00.000Z');
+
 function createMutationRateLimiter(events: string[]): RateLimiter {
   return createRateLimiterDouble({
     onThrottle: () => {
@@ -89,7 +91,7 @@ function createBuyExecutionFixture(params: {
   readonly symbolRegistry?: ReturnType<typeof createSymbolRegistryDouble>;
   readonly unrealizedLossBuyGate?: Pick<RiskChecker, 'checkUnrealizedLoss'>;
 }) {
-  const currentTime = new Date('2026-07-10T02:00:00.000Z');
+  const currentTime = new Date(EXECUTION_NOW_MS);
   const tradeContext = createTradeContextMock();
   const events: string[] = [];
   const trackedOrders: TrackOrderParams[] = [];
@@ -149,7 +151,7 @@ function createSellExecutionFixture(params: {
   readonly replaceOrderPriceWithPermit?: OrderMonitor['replaceOrderPriceWithPermit'];
   readonly unrealizedLossBuyGate?: Pick<RiskChecker, 'checkUnrealizedLoss'>;
 }) {
-  const currentTime = params.currentTime ?? new Date('2026-07-10T02:00:00.000Z');
+  const currentTime = params.currentTime ?? new Date(EXECUTION_NOW_MS);
   const tradeContext = createTradeContextMock();
   tradeContext.seedStockPositions(
     createStockPositionsResponse({
@@ -228,7 +230,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'P0 must not reach broker payload',
     });
 
@@ -266,7 +268,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'the signal snapshot must not bypass the P1 loss gate',
     });
 
@@ -316,7 +318,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYPUT',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'short-direction final loss gate',
     });
 
@@ -360,7 +362,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'loss exactly at threshold remains a valid buy',
     });
 
@@ -386,7 +388,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'invalid final quote cannot be treated as a loss-gate input',
     });
 
@@ -417,7 +419,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: `P1 ${scenario.label}`,
     });
 
@@ -450,7 +452,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'gate may close while P1 awaits',
     });
 
@@ -507,7 +509,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     const signal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'seat version can change while P1 is pending',
     });
 
@@ -550,7 +552,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        triggerTimeMs: Date.now(),
+        triggerTimeMs: EXECUTION_NOW_MS,
         reason: 'sell P0 must not reach broker payload',
       }),
       quantity: 200,
@@ -581,7 +583,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        triggerTimeMs: Date.now(),
+        triggerTimeMs: EXECUTION_NOW_MS,
         reason: 'a sell must not consume the buy-only loss gate',
       }),
       quantity: 200,
@@ -609,7 +611,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        triggerTimeMs: Date.now(),
+        triggerTimeMs: EXECUTION_NOW_MS,
         reason: 'protective liquidation must bypass the buy gate',
       }),
       quantity: 200,
@@ -634,7 +636,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
           side: OrderSide.Sell,
           status: OrderStatus.New,
           orderType: OrderType.MO,
-          submittedPrice: 0,
+          submittedPrice: null,
           submittedQuantity: 100,
           executedQuantity: 0,
           submittedAt: Date.now(),
@@ -657,7 +659,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        triggerTimeMs: Date.now(),
+        triggerTimeMs: EXECUTION_NOW_MS,
         reason: 'cancel then P1',
       }),
       quantity: 50,
@@ -705,7 +707,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        triggerTimeMs: Date.now(),
+        triggerTimeMs: EXECUTION_NOW_MS,
         reason: 'replace must use P1',
       }),
       quantity: 50,
@@ -793,7 +795,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       createSignal({
         symbol: 'BULL.HK',
         action: 'BUYCALL',
-        triggerTimeMs: Date.now(),
+        triggerTimeMs: EXECUTION_NOW_MS,
         reason: 'ordinary final quote missing',
       }),
     ]);
@@ -810,7 +812,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       ...createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
-        triggerTimeMs: Date.now(),
+        triggerTimeMs: EXECUTION_NOW_MS,
         reason: 'protective final quote missing',
       }),
       quantity: 200,

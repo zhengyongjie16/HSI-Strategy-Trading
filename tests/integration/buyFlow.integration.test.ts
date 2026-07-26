@@ -89,6 +89,7 @@ function createRiskContext(params: {
   readonly trader: ReturnType<typeof createTraderDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
+  readonly currentTime: Date;
 }): BuyRiskCheckContext {
   const monitorConfig = createTradingConfig().monitor;
 
@@ -114,7 +115,7 @@ function createRiskContext(params: {
     shortSymbol: 'BEAR.HK',
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
-    currentTime: new Date(),
+    currentTime: params.currentTime,
     isHalfDay: false,
     doomsdayProtection: createDoomsdayProtectionDouble(),
     config: monitorConfig,
@@ -142,7 +143,7 @@ describe('buy-flow integration', () => {
     const orderExecutor = createOrderExecutor({
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiterDouble({
-        onThrottle: async () => {
+        onMutationPermitAcquired: async () => {
           currentTime = new Date(scenario.afterCutoff);
         },
       }),
@@ -219,7 +220,7 @@ describe('buy-flow integration', () => {
     const orderExecutor = createOrderExecutor({
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter: createRateLimiterDouble({
-        onThrottle: async () => {
+        onMutationPermitAcquired: async () => {
           currentTime = new Date(scenario.finalTime);
         },
       }),
@@ -330,7 +331,7 @@ describe('buy-flow integration', () => {
     expect(orderExecutor.canTradeNow('BUYPUT')).toEqual({ canTrade: true });
   });
 
-  it('末日保护关闭时普通买入仍在有效连续交易时段提交', async () => {
+  it('普通买入的跨日门禁以注入时钟为准而非全局时间', async () => {
     const baseConfig = createTradingConfig();
     const tradingConfig = createTradingConfig({
       global: { ...baseConfig.global, doomsdayProtection: false },
@@ -369,13 +370,13 @@ describe('buy-flow integration', () => {
     });
 
     const result = await withMockedNow(
-      currentTimeMs,
+      currentTimeMs - 86_400_000,
       async () =>
         orderExecutor.executeSignals([
           createSignal({
             symbol: 'BULL.HK',
             action: 'BUYCALL',
-            triggerTimeMs: Date.now(),
+            triggerTimeMs: currentTimeMs,
             reason: 'doomsday-protection-disabled',
           }),
         ]),
@@ -879,7 +880,7 @@ describe('buy-flow integration', () => {
 
         const checkedSignals = await signalProcessor.applyRiskChecks(
           [signal],
-          createRiskContext({ trader, riskChecker, orderRecorder }),
+          createRiskContext({ trader, riskChecker, orderRecorder, currentTime }),
         );
         const result = await orderExecutor.executeSignals(checkedSignals);
 
@@ -1085,7 +1086,7 @@ describe('buy-flow integration', () => {
     const firstSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: authorizationTime.getTime(),
       reason: 'first-successful-buy',
     });
 
@@ -1107,7 +1108,7 @@ describe('buy-flow integration', () => {
     const firstPutSignal = createSignal({
       symbol: 'BEAR.HK',
       action: 'BUYPUT',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: authorizationTime.getTime(),
       reason: 'first-successful-put-buy',
     });
 
@@ -1173,7 +1174,7 @@ describe('buy-flow integration', () => {
     const failedSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: authorizationTime.getTime(),
       reason: 'failed-submit-buy',
     });
 
@@ -1217,7 +1218,8 @@ describe('buy-flow integration', () => {
     });
 
     const successNow = 3_000_000;
-    const successAuthorizationTime = new Date('1970-01-01T02:00:00.000Z');
+    const successAuthorizationMs = Date.parse('1970-01-01T02:00:00.000Z');
+    let successClockMs = successAuthorizationMs;
     const successTradeCtx = createTradeContextMock({ now: () => successNow });
     const successOrderExecutor = createOrderExecutor({
       ctx: createTradeContextDouble(successTradeCtx),
@@ -1246,7 +1248,7 @@ describe('buy-flow integration', () => {
       tradingConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
-      now: () => successAuthorizationTime,
+      now: () => new Date(successClockMs),
       readCurrentTradingDayInfo: () => ({
         dateKey: '1970-01-01',
         info: { isTradingDay: true, isHalfDay: false },
@@ -1264,7 +1266,7 @@ describe('buy-flow integration', () => {
     const successfulSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: successClockMs,
       reason: 'successful-buy-before-next-risk-check',
     });
 
@@ -1275,6 +1277,7 @@ describe('buy-flow integration', () => {
           trader: successTrader,
           riskChecker: successRiskChecker,
           orderRecorder: successOrderRecorder,
+          currentTime: new Date(successClockMs),
         }),
       );
       expect(checkedSignals).toHaveLength(1);
@@ -1285,19 +1288,23 @@ describe('buy-flow integration', () => {
     const blockedSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now() + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
+      triggerTimeMs:
+        successAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
       reason: 'should-be-frequency-blocked',
     });
 
     await withMockedNow(
       successNow + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
       async () => {
+        successClockMs =
+          successAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1;
         const blockedResult = await signalProcessor.applyRiskChecks(
           [blockedSignal],
           createRiskContext({
             trader: successTrader,
             riskChecker: successRiskChecker,
             orderRecorder: successOrderRecorder,
+            currentTime: new Date(successClockMs),
           }),
         );
         expect(blockedResult).toHaveLength(0);
@@ -1306,7 +1313,8 @@ describe('buy-flow integration', () => {
     );
 
     const failedNow = 4_000_000;
-    const failedAuthorizationTime = new Date('1970-01-01T02:00:00.000Z');
+    const failedAuthorizationMs = Date.parse('1970-01-01T03:00:00.000Z');
+    let failedClockMs = failedAuthorizationMs;
     const failedTradeCtx = createTradeContextMock({ now: () => failedNow });
     failedTradeCtx.setFailureRule('submitOrder', {
       failAtCalls: [1],
@@ -1340,7 +1348,7 @@ describe('buy-flow integration', () => {
       tradingConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       isExecutionAllowed: () => true,
-      now: () => failedAuthorizationTime,
+      now: () => new Date(failedClockMs),
       readCurrentTradingDayInfo: () => ({
         dateKey: '1970-01-01',
         info: { isTradingDay: true, isHalfDay: false },
@@ -1358,7 +1366,7 @@ describe('buy-flow integration', () => {
     const firstFailedSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: failedClockMs,
       reason: 'failed-buy-before-next-risk-check',
     });
 
@@ -1369,6 +1377,7 @@ describe('buy-flow integration', () => {
           trader: failedTrader,
           riskChecker: failedRiskChecker,
           orderRecorder: failedOrderRecorder,
+          currentTime: new Date(failedClockMs),
         }),
       );
       expect(checkedSignals).toHaveLength(1);
@@ -1391,19 +1400,23 @@ describe('buy-flow integration', () => {
     const secondAllowedSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs: Date.now() + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
+      triggerTimeMs:
+        failedAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
       reason: 'should-pass-frequency-check-after-failed-submit',
     });
 
     await withMockedNow(
       failedNow + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
       async () => {
+        failedClockMs =
+          failedAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1;
         const allowedResult = await signalProcessor.applyRiskChecks(
           [secondAllowedSignal],
           createRiskContext({
             trader: failedTrader,
             riskChecker: failedRiskChecker,
             orderRecorder: failedOrderRecorder,
+            currentTime: new Date(failedClockMs),
           }),
         );
         expect(allowedResult).toHaveLength(0);

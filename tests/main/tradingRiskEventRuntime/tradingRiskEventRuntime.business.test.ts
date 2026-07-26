@@ -15,17 +15,16 @@ import {
   createUnrealizedLossMonitorDouble,
   createQuoteDouble,
   createDailyLossTrackerDouble,
+  createLoggerDouble,
 } from '../../helpers/testDoubles.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createTradingRiskEventRuntime } from '../../../src/main/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
 import { buildTradingRiskRoutingIndex } from '../../../src/main/tradingRiskEventRuntime/routingIndex.js';
-import { logger } from '../../../src/utils/logger/index.js';
 import { resolveTradingRiskRoute } from '../../../src/main/tradingRiskEventRuntime/routeValidation.js';
 import { createUnrealizedLossMonitor } from '../../../src/core/riskController/unrealizedLossMonitor.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { TradingRiskEventRuntimeDeps } from '../../../src/main/tradingRiskEventRuntime/types.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
-import type { Logger } from '../../../src/utils/logger/types.js';
 import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
 
 type TestTradingRiskConsistencyStatus = ReturnType<
@@ -163,6 +162,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       readonly trader?: ReturnType<typeof createTraderDouble>;
       readonly unrealizedLossMonitor?: ReturnType<typeof createUnrealizedLossMonitorDouble>;
       readonly riskChecker?: ReturnType<typeof createRiskCheckerDouble>;
+      readonly logger?: TradingRiskEventRuntimeDeps['logger'];
     } = {},
   ) {
     const symbolRegistry =
@@ -213,6 +213,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
 
     return {
       deps: {
+        logger: params.logger ?? createLoggerDouble(),
         marketDataClient: {
           onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
             quoteUpdatedListeners.add(listener);
@@ -232,6 +233,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         postTradeConsistencyRuntime: consistencyPort.port,
         doomsdayProtectionEnabled: params.doomsdayProtectionEnabled ?? false,
         now: params.now ?? (() => new Date('2026-04-06T01:30:00.000Z')),
+        onFatalError: () => {},
       },
       consistencyPort,
       trader,
@@ -782,11 +784,12 @@ describe('tradingRiskEventRuntime runtime flow', () => {
   });
 
   it('stops an in-flight route on routing fatal without ordinary processing failure logs', async () => {
-    const originalErrorLogger = logger.error;
     const errorLogs: string[] = [];
-    logger.error = ((message: string) => {
-      errorLogs.push(message);
-    }) satisfies Logger['error'];
+    const testLogger = {
+      error: (message: string) => {
+        errorLogs.push(message);
+      },
+    };
 
     const hsiLong: SeatState = {
       symbol: 'BULL.HK',
@@ -832,30 +835,27 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       consistencyPort,
       symbolRegistry,
       monitorContext,
+      logger: testLogger,
     });
     const runtime = createTradingRiskEventRuntime(deps);
 
-    try {
-      runtime.start();
-      emitQuoteUpdated('BULL.HK', 1.23);
-      await waitTick();
+    runtime.start();
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await waitTick();
 
-      expect(() => {
-        symbolRegistry.updateSeatState('SHORT', {
-          ...hsiShort,
-          symbol: 'BULL.HK',
-          lastSeatActivatedAt: 1,
-        });
-      }).not.toThrow();
-      consistencyPort.resolveFresh();
-      await waitTick();
+    expect(() => {
+      symbolRegistry.updateSeatState('SHORT', {
+        ...hsiShort,
+        symbol: 'BULL.HK',
+        lastSeatActivatedAt: 1,
+      });
+    }).not.toThrow();
+    consistencyPort.resolveFresh();
+    await waitTick();
 
-      expect(executedSymbols).toEqual([]);
-      expect(errorLogs).not.toContain('[TradingRiskEventRuntime] 风险事件处理失败');
-      await runtime.stopAndDrain();
-    } finally {
-      logger.error = originalErrorLogger;
-    }
+    expect(executedSymbols).toEqual([]);
+    expect(errorLogs).not.toContain('[TradingRiskEventRuntime] 风险事件处理失败');
+    await runtime.stopAndDrain();
   });
 
   it('fails fast on start when duplicate trading-symbol ownership already exists', async () => {

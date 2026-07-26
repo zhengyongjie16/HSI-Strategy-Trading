@@ -17,14 +17,23 @@ const K_VERIFICATION_INDICATORS: ReadonlyArray<VerificationIndicator> = ['K'];
 const ADX_VERIFICATION_INDICATORS: ReadonlyArray<VerificationIndicator> = ['ADX'];
 
 function createIndicatorCache(): IndicatorCache {
-  return createIndicatorCacheImpl({});
+  return createIndicatorCacheImpl();
 }
 
 function createDelayedSignalVerifier(params: {
   readonly indicatorCache: IndicatorCache;
   readonly onFatalError: (error: unknown) => void;
 }) {
-  return createDelayedSignalVerifierImpl(params);
+  return createDelayedSignalVerifierImpl({
+    ...params,
+    clock: { now: () => new Date(Date.now()) },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
 }
 
 function rethrowFatalError(error: unknown): never {

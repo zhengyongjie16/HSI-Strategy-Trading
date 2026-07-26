@@ -28,6 +28,8 @@ import {
 type TestTraderDeps = Omit<
   TraderDeps,
   | 'now'
+  | 'scheduleTimer'
+  | 'clearTimer'
   | 'readCurrentTradingDayInfo'
   | 'isContinuousTradingAllowed'
   | 'onFatalError'
@@ -61,6 +63,10 @@ async function loadCreateTraderWithStubbedTradeContext(
     const defaultNow = (): Date => new Date(Date.now());
     return traderModule.createTrader({
       now: defaultNow,
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
       readCurrentTradingDayInfo: () => ({
         dateKey: getRequiredHKDateKey(defaultNow()),
         info: { isTradingDay: true, isHalfDay: false },

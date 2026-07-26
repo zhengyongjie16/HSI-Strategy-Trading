@@ -11,10 +11,20 @@
  */
 import { logger } from '../../utils/logger/index.js';
 import { decimalToNumber, isRecord } from '../../utils/helpers/index.js';
-import { API } from '../../constants/index.js';
+import {
+  API,
+  VALID_ORDER_SIDE_VALUES,
+  VALID_ORDER_STATUS_VALUES,
+  VALID_ORDER_TYPE_VALUES,
+} from '../../constants/index.js';
 import { isOpenOrderStatus } from '../orderStatusLifecycle/utils.js';
 import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
-import type { PendingOrder } from '../../types/services.js';
+import type {
+  PendingOrder,
+  ValidatedOrderSide,
+  ValidatedOrderStatus,
+  ValidatedOrderType,
+} from '../../types/services.js';
 import type {
   OrderCacheManager,
   OrderCacheManagerDeps,
@@ -51,6 +61,26 @@ function canConvertToFiniteOrderNumber(value: unknown): boolean {
   return Number.isFinite(toOrderNumber(value));
 }
 
+function numericSetHas(set: ReadonlySet<number>, value: number): boolean {
+  return set.has(value);
+}
+
+function isValidOrderSide(value: unknown): value is ValidatedOrderSide {
+  return typeof value === 'number' && numericSetHas(VALID_ORDER_SIDE_VALUES, value);
+}
+
+function isValidOrderStatus(value: unknown): value is ValidatedOrderStatus {
+  return typeof value === 'number' && numericSetHas(VALID_ORDER_STATUS_VALUES, value);
+}
+
+function isValidOrderType(value: unknown): value is ValidatedOrderType {
+  return typeof value === 'number' && numericSetHas(VALID_ORDER_TYPE_VALUES, value);
+}
+
+function isValidNullableOrderPrice(value: unknown): boolean {
+  return value === null || canConvertToFiniteOrderNumber(value);
+}
+
 function isValidTodayOrder(order: unknown): order is TodayOrderForPendingCache {
   if (!isRecord(order)) {
     return false;
@@ -59,10 +89,10 @@ function isValidTodayOrder(order: unknown): order is TodayOrderForPendingCache {
   return (
     typeof order['orderId'] === 'string' &&
     typeof order['symbol'] === 'string' &&
-    typeof order['side'] === 'number' &&
-    typeof order['status'] === 'number' &&
-    typeof order['orderType'] === 'number' &&
-    canConvertToFiniteOrderNumber(order['price']) &&
+    isValidOrderSide(order['side']) &&
+    isValidOrderStatus(order['status']) &&
+    isValidOrderType(order['orderType']) &&
+    isValidNullableOrderPrice(order['price']) &&
     canConvertToFiniteOrderNumber(order['quantity']) &&
     canConvertToFiniteOrderNumber(order['executedQuantity'])
   );
@@ -77,7 +107,7 @@ function isValidTodayOrder(order: unknown): order is TodayOrderForPendingCache {
  * @returns OrderCacheManager 接口实例
  */
 export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCacheManager => {
-  const { ctx, rateLimiter } = deps;
+  const { ctx, rateLimiter, now } = deps;
 
   // 闭包捕获的私有状态
   let pendingOrdersCache: PendingOrder[] | null = null;
@@ -102,18 +132,18 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
       symbols && symbols.length > 0
         ? [...symbols].sort((a, b) => a.localeCompare(b)).join(',')
         : 'ALL'; // null 或空数组统一标记为 "ALL"
-    const now = Date.now();
+    const currentTimeMs = now().getTime();
     const isCacheValid =
       pendingOrdersCache !== null &&
       pendingOrdersCacheSymbols === symbolsKey &&
-      now - pendingOrdersCacheTime < API.PENDING_ORDERS_CACHE_TTL_MS;
+      currentTimeMs - pendingOrdersCacheTime < API.PENDING_ORDERS_CACHE_TTL_MS;
 
     // 如果缓存有效且不强制刷新，直接返回缓存
     // 注意：虽然 isCacheValid 已经检查了 pendingOrdersCache !== null，
     // 但 TypeScript 无法推断变量中的条件关系，需要显式检查来缩窄类型
     if (isCacheValid && !forceRefresh && pendingOrdersCache !== null) {
       logger.debug(
-        `[订单缓存] 使用缓存的未成交订单数据 (symbols=${symbolsKey}, 缓存时间: ${now - pendingOrdersCacheTime}ms)`,
+        `[订单缓存] 使用缓存的未成交订单数据 (symbols=${symbolsKey}, 缓存时间: ${currentTimeMs - pendingOrdersCacheTime}ms)`,
       );
       return [...pendingOrdersCache];
     }
@@ -156,7 +186,7 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
         orderId: order.orderId,
         symbol: order.symbol,
         side: order.side,
-        submittedPrice: toOrderNumber(order.price),
+        submittedPrice: order.price === null ? null : toOrderNumber(order.price),
         quantity: toOrderNumber(order.quantity),
         executedQuantity: toOrderNumber(order.executedQuantity),
         status: order.status,
@@ -166,7 +196,7 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
 
     pendingOrdersCache = result;
     pendingOrdersCacheSymbols = symbolsKey;
-    pendingOrdersCacheTime = Date.now();
+    pendingOrdersCacheTime = now().getTime();
     logger.debug(
       `[订单缓存] 已刷新未成交订单缓存 (symbols=${symbolsKey})，共 ${result.length} 个订单`,
     );

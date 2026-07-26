@@ -4,6 +4,7 @@ import type { MonitorContext, LastState } from '../../types/state.js';
 import type { MarketDataClient } from '../../types/services.js';
 import type { IndicatorCache } from '../asyncProgram/indicatorCache/types.js';
 import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/tradeTaskQueue/types.js';
+import type { RuntimeClock } from '../../types/runtime.js';
 
 /**
  * K 线业务程序行为契约。
@@ -56,6 +57,7 @@ type BusinessEventMonitorDisplayRuntime = Readonly<{
  * 使用范围：仅 businessEventProgram 模块使用。
  */
 export type BusinessEventProgramDeps = Readonly<{
+  clock: RuntimeClock;
   marketDataClient: Pick<MarketDataClient, 'getCandlestickSnapshot' | 'onCandlestickUpdated'>;
   monitorContext: MonitorContext;
   lastState: LastState;

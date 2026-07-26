@@ -15,11 +15,12 @@ import {
 import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
 import { createOrderHoldRegistry as createRealOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
 import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
-import { createEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
+import { createEventFlow as createProductionEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
 import { createSettlementFlow } from '../../src/core/trader/orderMonitor/settlementFlow.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
+  EventFlowDeps,
 } from '../../src/core/trader/orderMonitor/types.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import type { OrderHoldRegistry } from '../../src/core/trader/types.js';
@@ -31,6 +32,15 @@ import {
   createSymbolRegistryDouble,
   createTradeContextDouble,
 } from '../helpers/testDoubles.js';
+
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
+
+function createEventFlow(deps: TestEventFlowDeps) {
+  return createProductionEventFlow({
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
+    ...deps,
+  });
+}
 
 async function emitOrderChanged(
   tradeCtx: ReturnType<typeof createTradeContextMock>,
@@ -134,6 +144,11 @@ describe('order monitor cumulative execution integration', () => {
     const orderHoldRegistry = createRealOrderHoldRegistry();
     const stateChanges: string[] = [];
     const monitor = createOrderMonitor({
+      now: () => new Date(),
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter,
       cacheManager: {

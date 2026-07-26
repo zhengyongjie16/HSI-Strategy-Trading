@@ -2,6 +2,7 @@ import type { TradingConfig } from '../../types/config.js';
 import type { LastState } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, Trader, Unsubscribe } from '../../types/services.js';
+import type { Logger } from '../../utils/logger/types.js';
 
 /**
  * Quote 订阅保留原因。
@@ -56,6 +57,7 @@ export type MutableQuoteSubscriptionRetainStore = Map<string, Set<string>>;
  * 使用范围：QuoteSubscriptionRuntime 工厂。
  */
 export type QuoteSubscriptionRuntimeDeps = Readonly<{
+  logger: Pick<Logger, 'error'>;
   tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   marketDataClient: Pick<MarketDataClient, 'subscribeSymbols' | 'unsubscribeSymbols'>;
@@ -63,7 +65,7 @@ export type QuoteSubscriptionRuntimeDeps = Readonly<{
   lastState: LastState;
 
   /** 运行期订阅 mutation 失败的 fatal 通道。 */
-  onFatalError?: (error: unknown) => void;
+  onFatalError: (error: unknown) => void;
 }>;
 
 /**

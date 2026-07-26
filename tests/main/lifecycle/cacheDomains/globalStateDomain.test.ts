@@ -7,7 +7,11 @@
 import { describe, it, expect } from 'bun:test';
 import { createGlobalStateDomain } from '../../../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
 import type { LastState, MonitorState } from '../../../../src/types/state.js';
-import { createAccountSnapshotDouble, createPositionDouble } from '../../../helpers/testDoubles.js';
+import {
+  createAccountSnapshotDouble,
+  createLoggerDouble,
+  createPositionDouble,
+} from '../../../helpers/testDoubles.js';
 
 function createMockMonitorState(monitorSymbol: string): MonitorState {
   return {
@@ -51,6 +55,7 @@ describe('createGlobalStateDomain', () => {
 
     let runOpenRebuildCalled = false;
     const domain = createGlobalStateDomain({
+      logger: createLoggerDouble(),
       lastState,
       runTradingDayOpenRebuild: async () => {
         runOpenRebuildCalled = true;
@@ -108,6 +113,7 @@ describe('createGlobalStateDomain', () => {
       allTradingSymbols: new Set(),
     };
     const domain = createGlobalStateDomain({
+      logger: createLoggerDouble(),
       lastState,
       runTradingDayOpenRebuild: async () => {},
     });
@@ -143,6 +149,7 @@ describe('createGlobalStateDomain', () => {
     };
     let capturedNow: Date | null = null as Date | null;
     const domain = createGlobalStateDomain({
+      logger: createLoggerDouble(),
       lastState,
       runTradingDayOpenRebuild: async (now: Date) => {
         capturedNow = now;

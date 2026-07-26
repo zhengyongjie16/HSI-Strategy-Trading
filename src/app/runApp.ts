@@ -12,6 +12,18 @@ import { isExternalApiRequestError } from '../utils/apiFailure/index.js';
 import { syncMonitorContextSymbolNames } from './context/createMonitorContext.js';
 import { DEFAULT_RUN_APP_DEPS } from './runAppDeps.js';
 import type { AppEnvironmentParams, RunAppDeps } from './types.js';
+import type { RuntimeClock, RuntimeScheduler } from '../types/runtime.js';
+
+const SYSTEM_RUNTIME_CLOCK: RuntimeClock = {
+  now: () => new Date(),
+};
+
+const SYSTEM_RUNTIME_SCHEDULER: RuntimeScheduler = {
+  scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimer: (handle) => {
+    clearTimeout(handle);
+  },
+};
 
 /**
  * 构造 app 运行期统一环境快照。
@@ -62,12 +74,15 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
 
     try {
       const preGateRuntime = await buildPreGateRuntime({ env: runtimeEnv, cleanup });
-      const startupNow = new Date();
+      const startupNow = SYSTEM_RUNTIME_CLOCK.now();
       const postGateRuntime = await buildPostGateRuntime({
         env: runtimeEnv,
         preGateRuntime,
         now: startupNow,
+        clock: SYSTEM_RUNTIME_CLOCK,
+        scheduler: SYSTEM_RUNTIME_SCHEDULER,
         cleanup,
+        logger: appLogger,
       });
       const startupSnapshot = await loadStartupRuntimeSnapshot({
         now: startupNow,
@@ -132,6 +147,8 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
       const asyncRuntime = buildAsyncRuntime({
         preGateRuntime,
         postGateRuntime,
+        clock: SYSTEM_RUNTIME_CLOCK,
+        scheduler: SYSTEM_RUNTIME_SCHEDULER,
       });
       cleanup.register({
         phase: 'STOP_MONITOR_TASK_PROCESSOR',
@@ -151,6 +168,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         handler: () => asyncRuntime.sellProcessor.stopAndDrain(),
       });
       const businessEventProgram = buildBusinessEventProgram({
+        clock: SYSTEM_RUNTIME_CLOCK,
         marketDataClient: preGateRuntime.marketDataClient,
         monitorContext,
         lastState: postGateRuntime.lastState,
@@ -166,6 +184,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         handler: () => businessEventProgram.stopAndDrain(),
       });
       const dayLifecycleManager = buildLifecycleRuntime({
+        logger: appLogger,
         preGateRuntime,
         postGateRuntime,
         asyncRuntime,
@@ -180,11 +199,13 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         sellTaskQueue: postGateRuntime.sellTaskQueue,
         logger: appLogger,
         doomsdayProtectionEnabled: preGateRuntime.tradingConfig.global.doomsdayProtection,
+        now: SYSTEM_RUNTIME_CLOCK.now,
       });
 
       const timeWakeupRuntime = buildTimeWakeupRuntime({
         evaluate: () =>
           timeWakeupEvaluationProgram({
+            logger: appLogger,
             marketDataClient: preGateRuntime.marketDataClient,
             trader: postGateRuntime.trader,
             lastState: postGateRuntime.lastState,
@@ -194,12 +215,11 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
             tradingGateEventRuntime: postGateRuntime.tradingGateEventRuntime,
             quoteSubscriptionRuntime: postGateRuntime.quoteSubscriptionRuntime,
             dayLifecycleManager,
+            now: SYSTEM_RUNTIME_CLOCK.now,
           }),
-        now: () => new Date(Date.now()),
-        scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-        clearTimer: (handle) => {
-          clearTimeout(handle);
-        },
+        now: SYSTEM_RUNTIME_CLOCK.now,
+        scheduleTimer: SYSTEM_RUNTIME_SCHEDULER.scheduleTimer,
+        clearTimer: SYSTEM_RUNTIME_SCHEDULER.clearTimer,
         logger: appLogger,
       });
       cleanup.register({

@@ -9,7 +9,7 @@
 import { TIME } from '../../../constants/index.js';
 import { isBuyAction } from '../../../utils/helpers/index.js';
 import type { BuySignalAction, SignalType } from '../../../types/signal.js';
-import type { BuyThrottle } from './types.js';
+import type { BuyThrottle, BuyThrottleDeps } from './types.js';
 
 function resolveBuyDirection(signalAction: BuySignalAction): 'LONG' | 'SHORT' {
   return signalAction === 'BUYCALL' ? 'LONG' : 'SHORT';
@@ -18,10 +18,11 @@ function resolveBuyDirection(signalAction: BuySignalAction): 'LONG' | 'SHORT' {
 /**
  * 创建买入节流器。
  *
- * @param buyIntervalSeconds 已绑定唯一 monitor 的买入间隔秒数
+ * @param deps 已绑定唯一 monitor 的买入间隔与运行时时钟
  * @returns 买入节流器实例
  */
-export function createBuyThrottle(buyIntervalSeconds: number): BuyThrottle {
+export function createBuyThrottle(deps: BuyThrottleDeps): BuyThrottle {
+  const { buyIntervalSeconds, clock } = deps;
   const lastBuyTime = new Map<'LONG' | 'SHORT', number>();
 
   /**
@@ -41,7 +42,7 @@ export function createBuyThrottle(buyIntervalSeconds: number): BuyThrottle {
       return { canTrade: true };
     }
 
-    const now = Date.now();
+    const now = clock.now().getTime();
     const timeDiff = now - lastTime;
     const intervalMs = buyIntervalSeconds * TIME.MILLISECONDS_PER_SECOND;
     if (timeDiff >= intervalMs) {
@@ -63,7 +64,7 @@ export function createBuyThrottle(buyIntervalSeconds: number): BuyThrottle {
    */
   function recordBuyAttempt(signalAction: SignalType): void {
     if (isBuyAction(signalAction)) {
-      lastBuyTime.set(resolveBuyDirection(signalAction), Date.now());
+      lastBuyTime.set(resolveBuyDirection(signalAction), clock.now().getTime());
     }
   }
 

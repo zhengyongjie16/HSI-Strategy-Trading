@@ -141,6 +141,7 @@ async function emitOrderChanged(
 }
 
 type RuntimeTimerHarness = {
+  readonly now: () => Date;
   readonly advanceBy: (delayMs: number) => Promise<void>;
   readonly restore: () => void;
 };
@@ -191,6 +192,7 @@ function createRuntimeTimerHarness(initialNowMs: number): RuntimeTimerHarness {
   globalThis.clearTimeout = fakeClearTimeout;
 
   return {
+    now: () => new Date(nowMs),
     advanceBy: async (delayMs: number) => {
       nowMs += delayMs;
       const dueTimers = [...timers.entries()].filter(([, timer]) => timer.atMs <= nowMs);
@@ -211,6 +213,7 @@ function createRuntimeTimerHarness(initialNowMs: number): RuntimeTimerHarness {
 }
 
 function createDeps(params?: {
+  readonly now?: OrderMonitorDeps['now'];
   readonly sellTimeoutSeconds?: number;
   readonly buyTimeoutSeconds?: number;
   readonly orderMonitorPriceUpdateIntervalSeconds?: number;
@@ -380,6 +383,11 @@ function createDeps(params?: {
   });
 
   const deps: OrderMonitorDeps = {
+    now: params?.now ?? (() => new Date()),
+    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (handle) => {
+      clearTimeout(handle);
+    },
     ctx: tradeCtx as unknown as TradeContext,
     rateLimiter: params?.rateLimiter ?? createRateLimiterDouble(params?.onMutationPermitAcquired),
     cacheManager: {
@@ -2173,6 +2181,7 @@ describe('orderMonitor business flow', () => {
     let replaceAttemptCount = 0;
     try {
       const { deps, tradeCtx, setQuotes, emitQuoteUpdated } = createDeps({
+        now: runtimeTimers.now,
         sellTimeoutSeconds: 999,
         buyTimeoutSeconds: 999,
         continuousTradingOpen: () => continuousTradingOpen,
@@ -2636,6 +2645,7 @@ describe('orderMonitor business flow', () => {
     const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T03:00:00.000Z'));
     try {
       const { deps, tradeCtx } = createDeps({
+        now: runtimeTimers.now,
         buyTimeoutSeconds: 0.02,
         sellTimeoutSeconds: 999,
       });
@@ -3364,6 +3374,7 @@ describe('orderMonitor business flow', () => {
     const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T03:00:00.000Z'));
     try {
       const { deps, tradeCtx } = createDeps({
+        now: runtimeTimers.now,
         buyTimeoutSeconds: 0,
         sellTimeoutSeconds: 999,
       });
@@ -3570,6 +3581,7 @@ describe('orderMonitor business flow', () => {
 
     try {
       const { deps, tradeCtx } = createDeps({
+        now: runtimeTimers.now,
         sellTimeoutSeconds: 999,
         buyTimeoutSeconds: 1,
       });
@@ -3671,6 +3683,7 @@ describe('orderMonitor business flow', () => {
     const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T03:00:00.000Z'));
 
     const { deps, tradeCtx, emitQuoteUpdated } = createDeps({
+      now: runtimeTimers.now,
       sellTimeoutSeconds: 999,
       buyTimeoutSeconds: 999,
     });
@@ -3764,6 +3777,7 @@ describe('orderMonitor business flow', () => {
     const initialNowMs = Date.parse('2026-02-25T05:00:00.000Z');
     const runtimeTimers = createRuntimeTimerHarness(initialNowMs);
     const { deps, tradeCtx, emitQuoteUpdated } = createDeps({
+      now: runtimeTimers.now,
       sellTimeoutSeconds: 999,
       buyTimeoutSeconds: 999,
       orderMonitorPriceUpdateIntervalSeconds: 1,
@@ -3915,6 +3929,7 @@ describe('orderMonitor business flow', () => {
     const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T04:00:00.000Z'));
 
     const { deps, tradeCtx, emitQuoteUpdated } = createDeps({
+      now: runtimeTimers.now,
       sellTimeoutSeconds: 999,
       buyTimeoutSeconds: 999,
     });
@@ -4365,7 +4380,9 @@ describe('orderMonitor business flow', () => {
 
   it('keeps close sink in state-check path from refreshing all orders on 603001 and does not submit market sell', async () => {
     let fetchAllOrdersCalls = 0;
+    const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T05:00:00.000Z'));
     const { deps, tradeCtx } = createDeps({
+      now: runtimeTimers.now,
       sellTimeoutSeconds: 0,
       buyTimeoutSeconds: 999,
       orderRecorderOverride: createOrderRecorderDouble({
@@ -4380,7 +4397,6 @@ describe('orderMonitor business flow', () => {
       maxFailures: 1,
       errorMessage: 'openapi error: code=603001: Order not found',
     });
-    const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T05:00:00.000Z'));
     const monitor = createOrderMonitor(deps);
     try {
       await monitor.initialize();

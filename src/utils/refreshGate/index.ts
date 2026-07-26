@@ -59,6 +59,12 @@ export function createRefreshGate(): RefreshGate {
     }
   }
 
+  /**
+   * 以同一原因拒绝并移除所有 freshness 等待者。
+   *
+   * @param reason 传递给每个等待 Promise 的拒绝原因
+   * @returns 无返回值
+   */
   function rejectWaiters(reason: unknown): void {
     if (waiters.length === 0) {
       return;
@@ -123,11 +129,22 @@ export function createRefreshGate(): RefreshGate {
     });
   }
 
+  /**
+   * 将门禁置为指定中断状态，并拒绝当前全部 freshness 等待者。
+   *
+   * @param reason freshness 等待被中断的生命周期原因
+   * @returns 无返回值
+   */
   function abortWaiting(reason: RefreshGateAbortReason): void {
     abortReason = reason;
     rejectWaiters(createAbortError(reason));
   }
 
+  /**
+   * 清除门禁中断状态，使后续 freshness 标记与等待恢复正常。
+   *
+   * @returns 无返回值
+   */
   function resetAbort(): void {
     abortReason = null;
   }

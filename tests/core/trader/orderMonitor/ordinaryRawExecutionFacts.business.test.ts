@@ -8,11 +8,13 @@ import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
+import { createEventFlow as createProductionEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
 import { mergeMonotonicOrderFact } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
-import { createOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
+import { createOrderOps as createProductionOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
 import type {
   FinalizeOrderSettlementParams,
+  EventFlowDeps,
+  OrderOpsDeps,
   OrderCumulativeExecutionParams,
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
@@ -24,6 +26,23 @@ import {
   createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
+
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
+type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now'> & Partial<Pick<OrderOpsDeps, 'now'>>;
+
+function createEventFlow(deps: TestEventFlowDeps) {
+  return createProductionEventFlow({
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
+    ...deps,
+  });
+}
+
+function createOrderOps(deps: TestOrderOpsDeps) {
+  return createProductionOrderOps({
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
+    ...deps,
+  });
+}
 
 const KNOWN_FACT_TIME_MS = 200;
 

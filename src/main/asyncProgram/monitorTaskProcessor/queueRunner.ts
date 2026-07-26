@@ -42,10 +42,25 @@ export function createQueueRunner({
   let taskAddedUnregister: (() => void) | null = null;
 
   /**
+   * 立即停止后续调度并注销任务入队监听。
+   * @returns 无返回值
+   */
+  function stopScheduling(): void {
+    running = false;
+    taskAddedUnregister?.();
+    taskAddedUnregister = null;
+    if (immediateHandle !== null) {
+      clearImmediate(immediateHandle);
+      immediateHandle = null;
+    }
+  }
+
+  /**
    * 处理队列错误，将错误转发给外部错误回调。
-   * 队列内部消费抛错时统一交给 onQueueError，由调用方决定重试或降级，避免吞错。
+   * 队列内部消费抛错时先停止 owner，再统一交给 fatal 错误通道，禁止继续调度剩余任务。
    */
   function handleProcessError(err: unknown): void {
+    stopScheduling();
     onQueueError(err);
   }
 
@@ -119,26 +134,14 @@ export function createQueueRunner({
    * 停止调度器，取消注册监听并清除待执行的 setImmediate
    */
   function stop(): void {
-    running = false;
-    taskAddedUnregister?.();
-    taskAddedUnregister = null;
-    if (immediateHandle) {
-      clearImmediate(immediateHandle);
-      immediateHandle = null;
-    }
+    stopScheduling();
   }
 
   /**
    * 停止调度器并等待当前在途任务完成，确保停止后无残留执行
    */
   async function stopAndDrain(): Promise<void> {
-    running = false;
-    taskAddedUnregister?.();
-    taskAddedUnregister = null;
-    if (immediateHandle) {
-      clearImmediate(immediateHandle);
-      immediateHandle = null;
-    }
+    stopScheduling();
 
     if (inFlightPromise !== null) {
       await inFlightPromise;

@@ -15,7 +15,8 @@ import type { OrderStatusLifecycle } from './types.js';
  * @returns OPEN 或 TERMINAL
  */
 export function classifyOrderStatusLifecycle(status: OrderStatus): OrderStatusLifecycle {
-  const lifecycle = ORDER_STATUS_LIFECYCLE_MAP.get(status);
+  const lifecycleMap: ReadonlyMap<number, OrderStatusLifecycle> = ORDER_STATUS_LIFECYCLE_MAP;
+  const lifecycle = lifecycleMap.get(status);
   if (lifecycle === undefined) {
     throw new Error(`[订单生命周期] 未知订单状态: ${String(status)}`);
   }

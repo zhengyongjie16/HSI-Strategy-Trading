@@ -17,7 +17,7 @@ import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/c
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 
 import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { Signal } from '../../../../src/types/signal.js';
+import type { ExecutableSellSignal, Signal } from '../../../../src/types/signal.js';
 
 import {
   createDelayedSignalVerifierDouble,
@@ -32,6 +32,7 @@ import {
   createLastState,
   createLastStateWithPositions,
   createMonitorContext,
+  rethrowFatalError,
   runProcessorFlow,
   waitUntil,
 } from '../utils.js';
@@ -43,6 +44,19 @@ function requireSignal(signal: Signal | null): Signal {
 
   return signal;
 }
+
+const SELL_PROCESSOR_NOW_MS = Date.parse('2026-02-16T01:31:00.000Z');
+const SELL_PROCESSOR_RUNTIME = {
+  clock: {
+    now: () => new Date(SELL_PROCESSOR_NOW_MS),
+  },
+  scheduler: {
+    scheduleTimer: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimer: (handle: ReturnType<typeof setTimeout>) => {
+      clearTimeout(handle);
+    },
+  },
+};
 
 describe('sellProcessor business flow', () => {
   it('queueCleanup 在 trade task 不携带 monitorSymbol 时仍按 direction 清理 buy/sell task', () => {
@@ -134,7 +148,7 @@ describe('sellProcessor business flow', () => {
     lastState.tradingCalendarSnapshot = tradingCalendarSnapshot;
 
     let capturedInput: {
-      readonly signals: Signal[];
+      readonly signals: ReadonlyArray<ExecutableSellSignal>;
       readonly smartCloseTimeoutMinutes: number | null;
       readonly isHalfDay: boolean;
       readonly tradingCalendarSnapshot: ReadonlyMap<
@@ -147,7 +161,7 @@ describe('sellProcessor business flow', () => {
       applyRiskChecks: async () => [],
       processSellSignals: (input: unknown) => {
         const typedInput = input as {
-          readonly signals: Signal[];
+          readonly signals: ReadonlyArray<ExecutableSellSignal>;
           readonly smartCloseTimeoutMinutes: number | null;
           readonly isHalfDay: boolean;
           readonly tradingCalendarSnapshot: ReadonlyMap<
@@ -184,6 +198,7 @@ describe('sellProcessor business flow', () => {
     });
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext,
       signalProcessor: signalProcessor,
@@ -195,6 +210,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -209,7 +225,7 @@ describe('sellProcessor business flow', () => {
     });
 
     const captured = capturedInput as {
-      readonly signals: Signal[];
+      readonly signals: ReadonlyArray<ExecutableSellSignal>;
       readonly smartCloseTimeoutMinutes: number | null;
       readonly isHalfDay: boolean;
       readonly tradingCalendarSnapshot: ReadonlyMap<
@@ -225,7 +241,7 @@ describe('sellProcessor business flow', () => {
     expect(captured.smartCloseTimeoutMinutes).toBe(45);
     expect(captured.isHalfDay).toBe(true);
     expect(captured.tradingCalendarSnapshot).toBe(tradingCalendarSnapshot);
-    expect(Number.isFinite(captured.nowMs)).toBe(true);
+    expect(captured.nowMs).toBe(SELL_PROCESSOR_NOW_MS);
     const requestedSymbols = [...quoteRequest!] as string[];
     expect(requestedSymbols.length).toBe(2);
     expect(requestedSymbols[0]).toBe('BULL.HK');
@@ -241,7 +257,7 @@ describe('sellProcessor business flow', () => {
     };
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         const firstSignal = signals[0];
         if (!firstSignal) {
           throw new Error('sell signal should exist');
@@ -266,6 +282,7 @@ describe('sellProcessor business flow', () => {
     });
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -283,6 +300,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -320,6 +338,7 @@ describe('sellProcessor business flow', () => {
       getTrader: () => trader,
       lastState,
       onPositionsCommitted: async () => {},
+      scheduler: SELL_PROCESSOR_RUNTIME.scheduler,
     });
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext: createMonitorContext({
@@ -370,7 +389,7 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
         return signals;
       },
@@ -378,6 +397,7 @@ describe('sellProcessor business flow', () => {
     };
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -392,6 +412,7 @@ describe('sellProcessor business flow', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -418,11 +439,12 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     let executeCalls = 0;
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: {
         applyRiskChecks: async () => [],
-        processSellSignals: ({ signals }: { signals: Signal[] }) => {
+        processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
           processSellCalls += 1;
           return signals;
         },
@@ -491,6 +513,7 @@ describe('sellProcessor business flow', () => {
     });
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -508,6 +531,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let staleSignal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -530,7 +554,7 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
         const currentSeat = monitorContext.symbolRegistry.getSeatState('LONG');
         if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
@@ -552,6 +576,7 @@ describe('sellProcessor business flow', () => {
     });
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext,
       signalProcessor: signalProcessor,
@@ -569,6 +594,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -593,7 +619,7 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
         return signals;
       },
@@ -611,6 +637,7 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     let clearedRetryHandles = 0;
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -628,12 +655,15 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      scheduleRetry: (callback) => {
-        scheduledRetries.push(callback);
-        return setTimeout(() => {}, 0);
-      },
-      clearRetry: () => {
-        clearedRetryHandles += 1;
+      onFatalError: rethrowFatalError,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          scheduledRetries.push(callback);
+          return setTimeout(() => {}, 0);
+        },
+        clearTimer: () => {
+          clearedRetryHandles += 1;
+        },
       },
     });
 
@@ -664,7 +694,7 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
         return signals;
       },
@@ -674,6 +704,7 @@ describe('sellProcessor business flow', () => {
     let executeCalls = 0;
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor,
@@ -696,11 +727,14 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      scheduleRetry: (callback) => {
-        scheduledRetries.push(callback);
-        return setTimeout(() => {}, 0);
+      onFatalError: rethrowFatalError,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          scheduledRetries.push(callback);
+          return setTimeout(() => {}, 0);
+        },
+        clearTimer: () => {},
       },
-      clearRetry: () => {},
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -723,7 +757,7 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
         return signals;
       },
@@ -741,6 +775,7 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     let clearedRetryHandles = 0;
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -758,12 +793,15 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      scheduleRetry: (callback) => {
-        scheduledRetries.push(callback);
-        return setTimeout(() => {}, 0);
-      },
-      clearRetry: () => {
-        clearedRetryHandles += 1;
+      onFatalError: rethrowFatalError,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          scheduledRetries.push(callback);
+          return setTimeout(() => {}, 0);
+        },
+        clearTimer: () => {
+          clearedRetryHandles += 1;
+        },
       },
     });
 
@@ -797,7 +835,7 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
         return signals;
       },
@@ -808,6 +846,7 @@ describe('sellProcessor business flow', () => {
     let clearedRetryHandles = 0;
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -830,12 +869,15 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      scheduleRetry: (callback) => {
-        scheduledRetries.push(callback);
-        return setTimeout(() => {}, 0);
-      },
-      clearRetry: () => {
-        clearedRetryHandles += 1;
+      onFatalError: rethrowFatalError,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          scheduledRetries.push(callback);
+          return setTimeout(() => {}, 0);
+        },
+        clearTimer: () => {
+          clearedRetryHandles += 1;
+        },
       },
     });
 
@@ -876,7 +918,8 @@ describe('sellProcessor business flow', () => {
     const scheduledRetries: Array<() => void> = [];
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => signals,
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) =>
+        signals,
       resetRiskCheckCooldown: () => {},
     };
     const trader = createTraderDouble({
@@ -886,6 +929,7 @@ describe('sellProcessor business flow', () => {
       },
     });
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -903,11 +947,14 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      scheduleRetry: (callback) => {
-        scheduledRetries.push(callback);
-        return setTimeout(() => {}, 0);
+      onFatalError: rethrowFatalError,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          scheduledRetries.push(callback);
+          return setTimeout(() => {}, 0);
+        },
+        clearTimer: () => {},
       },
-      clearRetry: () => {},
     });
 
     const indicators1 = { K: 80 };
@@ -942,12 +989,14 @@ describe('sellProcessor business flow', () => {
       | null = null;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => signals,
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) =>
+        signals,
       resetRiskCheckCooldown: () => {},
     };
 
     const scheduledRetries: Array<() => void> = [];
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -964,11 +1013,14 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      scheduleRetry: (callback) => {
-        scheduledRetries.push(callback);
-        return setTimeout(() => {}, 0);
+      onFatalError: rethrowFatalError,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          scheduledRetries.push(callback);
+          return setTimeout(() => {}, 0);
+        },
+        clearTimer: () => {},
       },
-      clearRetry: () => {},
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -999,17 +1051,13 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
-        if (signals[0]) {
-          signals[0] = {
-            ...signals[0],
-            action: 'HOLD' as const,
-            isProtectiveLiquidation: false,
-          };
-        }
-
-        return signals;
+        return signals.map((signal) => ({
+          ...signal,
+          action: 'HOLD' as const,
+          isProtectiveLiquidation: false as const,
+        }));
       },
       resetRiskCheckCooldown: () => {},
     };
@@ -1023,6 +1071,7 @@ describe('sellProcessor business flow', () => {
     });
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -1040,6 +1089,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -1068,11 +1118,13 @@ describe('sellProcessor business flow', () => {
     const fatalErrors: unknown[] = [];
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => signals,
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) =>
+        signals,
       resetRiskCheckCooldown: () => {},
     };
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor,
@@ -1124,11 +1176,13 @@ describe('sellProcessor business flow', () => {
     let executeCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => signals,
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) =>
+        signals,
       resetRiskCheckCooldown: () => {},
     };
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor,
@@ -1177,11 +1231,12 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     let executeCalls = 0;
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: {
         applyRiskChecks: async () => [],
-        processSellSignals: ({ signals }: { signals: Signal[] }) => {
+        processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
           processSellCalls += 1;
           return signals;
         },
@@ -1208,6 +1263,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => false,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
@@ -1230,7 +1286,7 @@ describe('sellProcessor business flow', () => {
     let processSellCalls = 0;
     const signalProcessor = {
       applyRiskChecks: async () => [],
-      processSellSignals: ({ signals }: { signals: Signal[] }) => {
+      processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
         return signals;
       },
@@ -1252,6 +1308,7 @@ describe('sellProcessor business flow', () => {
     };
 
     const processor = createSellProcessor({
+      ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -1269,6 +1326,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: dynamicGate,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');

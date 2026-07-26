@@ -9,12 +9,13 @@ import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderStatus, OrderType, type OrderDetail } from 'longbridge';
 import { ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS } from '../../../../src/constants/index.js';
 import { createRateLimiter as createTraderRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
-import { createOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
+import { createOrderOps as createProductionOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
 import { createOrderStatusQuery } from '../../../../src/core/trader/orderMonitor/orderStatusQuery.js';
 import { normalizeTerminalStateSnapshot } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
+  OrderOpsDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderStateCheckResult } from '../../../../src/types/trader.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
@@ -27,6 +28,15 @@ import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/ser
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 
 const TEST_MONITOR_CONFIG = createTradingConfig().monitor;
+
+type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now'> & Partial<Pick<OrderOpsDeps, 'now'>>;
+
+function createOrderOps(deps: TestOrderOpsDeps) {
+  return createProductionOrderOps({
+    now: () => new Date(Date.now()),
+    ...deps,
+  });
+}
 
 function createRuntimeStore(): OrderMonitorRuntimeStore {
   return {
@@ -355,8 +365,10 @@ describe('orderMonitor orderOps', () => {
 
   it('trackOrder 会建立 symbol bucket、route state，并在 ACTIVE 运行态触发 TRACKED wakeup', () => {
     const runtime = createRuntimeStore();
+    const injectedNowMs = Date.parse('2031-01-02T03:04:05.000Z');
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const deps = {
+      now: () => new Date(injectedNowMs),
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(),
@@ -395,6 +407,8 @@ describe('orderMonitor orderOps', () => {
       'ORDER-TRACK-1',
     ]);
     expect(runtime.routeStatesBySymbol.get('BULL.HK')).not.toBeUndefined();
+    expect(runtime.trackedOrders.get('ORDER-TRACK-1')?.submittedAt).toBe(injectedNowMs);
+    expect(injectedNowMs).not.toBe(Date.now());
     expect(routeWakeups).toEqual([
       {
         symbol: 'BULL.HK',

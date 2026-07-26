@@ -33,6 +33,7 @@ import {
   createDelayedSignalVerifierDouble,
   createIndicatorUsageProfileDouble,
   createMarketDataClientDouble,
+  createLoggerDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createOrderMonitorDouble,
@@ -56,6 +57,8 @@ type TraderModuleShape = Readonly<{
 }>;
 
 const alwaysLive = (): boolean => true;
+const BUY_CUTOFF_TEST_NOW = new Date('2026-02-16T07:50:00.000Z');
+const CLEARANCE_TEST_NOW = new Date('2026-02-16T07:56:00.000Z');
 
 type OrderExecutorTestDeps = Omit<
   Parameters<typeof createOrderExecutorCore>[0],
@@ -118,6 +121,10 @@ async function createRealDoomsdayTrader(params: {
   });
 
   return createTrader({
+    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (handle) => {
+      clearTimeout(handle);
+    },
     config: { refreshAccessToken: () => Promise.resolve('') },
     tradingConfig: params.tradingConfig,
     marketDataClient: params.marketDataClient,
@@ -591,6 +598,7 @@ describe('doomsday integration', () => {
     ];
     lastState.positionCache.update(lastState.cachedPositions);
     const context: TimeWakeupEvaluationContext = {
+      logger: createLoggerDouble(),
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]),
       }),
@@ -811,6 +819,83 @@ describe('doomsday integration', () => {
     expect(beforeCloseResult.nextRetryAtMs).toBeNull();
     expect(afterCloseResult.executed).toBeFalse();
     expect(executionCalls).toBe(1);
+  });
+
+  it('uses the injected clock for close-15 retry and close-5 signal time when system time differs', async () => {
+    const systemTime = new Date('2035-01-02T02:00:00.000Z');
+    const buyCutoffTime = new Date('2026-02-16T07:50:00.000Z');
+    const clearanceTime = new Date('2026-02-16T07:56:00.000Z');
+    setSystemTime(systemTime);
+
+    try {
+      const cancelResult = await createDoomsdayProtection({
+        now: () => buyCutoffTime,
+        quoteRetryIntervalMs: 2_000,
+      }).cancelPendingBuyOrders({
+        currentTime: buyCutoffTime,
+        isHalfDay: false,
+        isLive: alwaysLive,
+        monitorContext: createMonitorContext(),
+        trader: createTraderDouble({
+          getPendingOrders: async () => [
+            {
+              orderId: 'BUY-INJECTED-CLOCK',
+              symbol: 'BULL.HK',
+              side: OrderSide.Buy,
+              submittedPrice: 1,
+              quantity: 100,
+              executedQuantity: 0,
+              status: OrderStatus.New,
+              orderType: OrderType.ELO,
+            },
+          ],
+          cancelDoomsdayOrder: async () => ({
+            kind: 'UNKNOWN_FAILURE',
+            errorCode: null,
+          }),
+        }),
+      });
+
+      const submittedSignalTimes: Date[] = [];
+      const lastState = createLastState();
+      lastState.cachedPositions = [
+        createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
+      ];
+      lastState.positionCache.update(lastState.cachedPositions);
+      await createDoomsdayProtection({
+        now: () => clearanceTime,
+      }).executeClearance({
+        currentTime: clearanceTime,
+        isHalfDay: false,
+        isLive: alwaysLive,
+        positions: lastState.cachedPositions,
+        monitorContext: createMonitorContext(),
+        trader: createTraderDouble({
+          executeDoomsdayClearanceSignals: async (signals) => {
+            const signalTime = signals[0]?.triggerTime;
+            if (signalTime) {
+              submittedSignalTimes.push(signalTime);
+            }
+
+            return {
+              executedOrderIds: ['SELL-INJECTED-CLOCK'],
+              awaitingAuthoritativeTerminalSymbols: [],
+              unresolvedQuoteSymbols: [],
+            };
+          },
+        }),
+        marketDataClient: createMarketDataClientDouble({
+          getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]),
+        }),
+        lastState,
+      });
+
+      expect(new Date()).toEqual(systemTime);
+      expect(cancelResult.nextRetryAtMs).toBe(buyCutoffTime.getTime() + 2_000);
+      expect(submittedSignalTimes).toEqual([clearanceTime]);
+    } finally {
+      setSystemTime();
+    }
   });
 
   it('keeps every doomsday retry strictly before normal and half-day close', async () => {
@@ -1121,7 +1206,7 @@ describe('doomsday integration', () => {
   });
 
   it('cancels pending buy orders once per trading day within close-15 window', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => BUY_CUTOFF_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
 
     const trader = createTraderDouble({
@@ -1176,8 +1261,46 @@ describe('doomsday integration', () => {
     expect(trader.getPendingOrders).toBeDefined();
   });
 
+  it('cancels a pending market buy with nullable submitted price', async () => {
+    const doomsday = createDoomsdayProtection({ now: () => BUY_CUTOFF_TEST_NOW });
+    const monitorConfig = createMonitorConfigDouble();
+    let cancelCalls = 0;
+    const trader = createTraderDouble({
+      getPendingOrders: async () => [
+        {
+          orderId: 'B-MARKET',
+          symbol: 'BULL.HK',
+          side: OrderSide.Buy,
+          submittedPrice: null,
+          quantity: 100,
+          executedQuantity: 0,
+          status: OrderStatus.New,
+          orderType: OrderType.MO,
+        },
+      ],
+      cancelDoomsdayOrder: async () => {
+        cancelCalls += 1;
+        return {
+          kind: 'CANCEL_CONFIRMED',
+          relatedBuyOrderIds: null,
+        };
+      },
+    });
+
+    const result = await doomsday.cancelPendingBuyOrders({
+      currentTime: BUY_CUTOFF_TEST_NOW,
+      isHalfDay: false,
+      isLive: alwaysLive,
+      monitorContext: createMonitorContext(monitorConfig),
+      trader,
+    });
+
+    expect(result.cancelRequestAcceptedCount).toBe(1);
+    expect(cancelCalls).toBe(1);
+  });
+
   it('throws non API cancel errors without marking close-15 check completed', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => BUY_CUTOFF_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
     let cancelCalls = 0;
     const trader = createTraderDouble({
@@ -1227,7 +1350,7 @@ describe('doomsday integration', () => {
   });
 
   it('does not count already-filled buy orders as cancelled in close-15 window', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => BUY_CUTOFF_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
 
     const trader = createTraderDouble({
@@ -1267,7 +1390,7 @@ describe('doomsday integration', () => {
   });
 
   it('rethrows pending-order API failures without marking close-15 check completed', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => BUY_CUTOFF_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
     let getPendingOrdersCalls = 0;
     const trader = createTraderDouble({
@@ -1308,7 +1431,7 @@ describe('doomsday integration', () => {
   });
 
   it('executes close-5 liquidation, clears caches and order records for both sides', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => CLEARANCE_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
 
     let executedSignals = 0;
@@ -1364,7 +1487,7 @@ describe('doomsday integration', () => {
   });
 
   it('fails fast when close-5 window sees positive positions outside current seat symbols', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => CLEARANCE_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
     const lastState = createLastState();
     lastState.cachedPositions = [
@@ -1438,7 +1561,7 @@ describe('doomsday integration', () => {
   });
 
   it('keeps caches and order records when close-5 liquidation signals are not actually submitted', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => CLEARANCE_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
 
     const trader = createTraderDouble({
@@ -1909,7 +2032,7 @@ describe('doomsday integration', () => {
   });
 
   it('rethrows clearance quote API failures without mutating cached facts', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => CLEARANCE_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
     const lastState = createLastState();
     let clearCalls = 0;
@@ -1956,7 +2079,7 @@ describe('doomsday integration', () => {
   });
 
   it('rethrows clearance execution API failures without clearing caches or order records', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => CLEARANCE_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble();
     const lastState = createLastState();
     let clearCalls = 0;
@@ -2009,7 +2132,7 @@ describe('doomsday integration', () => {
   });
 
   it('propagates clearance execution error when duplicate signals are deduplicated', async () => {
-    const doomsday = createDoomsdayProtection();
+    const doomsday = createDoomsdayProtection({ now: () => CLEARANCE_TEST_NOW });
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const lastState = createLastState();
 

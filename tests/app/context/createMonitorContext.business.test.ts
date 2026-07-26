@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type { CreateMonitorContextParams, PreGateRuntime } from '../../../src/app/types.js';
-import { createMonitorContext } from '../../../src/app/context/createMonitorContext.js';
+import { createMonitorContext as createMonitorContextImpl } from '../../../src/app/context/createMonitorContext.js';
 import { parseSignalConfig } from '../../../src/config/utils.js';
 import type { TradingSignalStrategyFactory } from '../../../src/core/strategy/types.js';
 import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
@@ -25,6 +25,19 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
+
+function createMonitorContext(params: Omit<CreateMonitorContextParams, 'clock' | 'scheduler'>) {
+  return createMonitorContextImpl({
+    ...params,
+    clock: { now: () => new Date() },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
+}
 
 function createMonitorState(monitorSymbol: string): MonitorState {
   return {

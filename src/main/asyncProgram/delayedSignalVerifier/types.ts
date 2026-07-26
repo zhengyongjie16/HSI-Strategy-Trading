@@ -1,6 +1,7 @@
 import type { Signal } from '../../../types/signal.js';
 import type { VerificationIndicator } from '../../../types/indicatorProfile.js';
 import type { IndicatorCache } from '../indicatorCache/types.js';
+import type { RuntimeClock, RuntimeScheduler } from '../../../types/runtime.js';
 
 /**
  * 待验证信号条目（内部队列元素）。
@@ -55,6 +56,8 @@ export type VerifiedCallback = (signal: Signal) => void;
  */
 export type DelayedSignalVerifierDeps = {
   readonly indicatorCache: IndicatorCache;
+  readonly clock: RuntimeClock;
+  readonly scheduler: RuntimeScheduler;
 
   /** 内部不变量或下游回调异常的统一 fatal 上报入口，由运行时装配提供。 */
   readonly onFatalError: (error: unknown) => void;

@@ -14,7 +14,6 @@ import { createRiskDomain } from '../../main/lifecycle/cacheDomains/riskDomain.j
 import { createSeatDomain } from '../../main/lifecycle/cacheDomains/seatDomain.js';
 import { createSignalRuntimeDomain } from '../../main/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { executeTradingDayOpenRebuild } from './rebuild.js';
-import { logger } from '../../utils/logger/index.js';
 import type { CacheDomain, DayLifecycleManager } from '../../main/lifecycle/types.js';
 import type { LifecycleRuntimeFactories, LifecycleRuntimeFactoryDeps } from '../types.js';
 
@@ -40,6 +39,7 @@ function createLifecycleCacheDomains(
   factories: LifecycleRuntimeFactories = DEFAULT_LIFECYCLE_RUNTIME_FACTORIES,
 ): ReadonlyArray<CacheDomain> {
   const {
+    logger,
     preGateRuntime,
     postGateRuntime,
     asyncRuntime,
@@ -85,6 +85,7 @@ function createLifecycleCacheDomains(
 
   return [
     buildSignalRuntimeDomain({
+      logger,
       monitorContext,
       buyProcessor,
       sellProcessor,
@@ -108,17 +109,21 @@ function createLifecycleCacheDomains(
       monitorTaskQueue,
     }),
     buildMarketDataDomain({
+      logger,
       marketDataClient,
     }),
     buildSeatDomain({
+      logger,
       symbolRegistry,
       autoSymbolManager: monitorContext.autoSymbolManager,
       warrantListCache,
     }),
     buildOrderDomain({
+      logger,
       trader,
     }),
     buildRiskDomain({
+      logger,
       signalProcessor,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
@@ -126,6 +131,7 @@ function createLifecycleCacheDomains(
       liquidationCooldownTracker,
     }),
     buildGlobalStateDomain({
+      logger,
       lastState,
       runTradingDayOpenRebuild: async (now) => {
         await runTradingDayOpenRebuild({
@@ -149,7 +155,7 @@ export function createLifecycleRuntime(
   params: LifecycleRuntimeFactoryDeps,
   factories: LifecycleRuntimeFactories = DEFAULT_LIFECYCLE_RUNTIME_FACTORIES,
 ): DayLifecycleManager {
-  const { postGateRuntime } = params;
+  const { logger, postGateRuntime } = params;
   const cacheDomains = createLifecycleCacheDomains(params, factories);
 
   return factories.createDayLifecycleManager({

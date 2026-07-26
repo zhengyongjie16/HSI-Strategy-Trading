@@ -3,7 +3,7 @@
  *
  * 覆盖单次时间唤醒评估的门禁状态、生命周期顺序与系统级唤醒候选输出。
  */
-import { describe, expect, it, spyOn } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { TRADING } from '../../../src/constants/index.js';
 import { timeWakeupEvaluationProgram } from '../../../src/main/timeWakeupEvaluationProgram/index.js';
 import type { AutoSearchAuthorizationChangedEvent } from '../../../src/main/tradingGateEventRuntime/types.js';
@@ -16,17 +16,18 @@ import type {
   LifecycleRuntimeFlags,
 } from '../../../src/main/lifecycle/types.js';
 import type {
+  CancelPendingBuyOrdersContext,
   CancelPendingBuyOrdersResult,
   DoomsdayClearanceResult,
 } from '../../../src/core/doomsdayProtection/types.js';
 import type { DelayedSignalVerifierPort } from '../../../src/types/monitorContextPorts.js';
 import type { TradingDayInfo } from '../../../src/types/services.js';
-import { logger } from '../../../src/utils/logger/index.js';
 import {
   createAccountSnapshotDouble,
   createDelayedSignalVerifierDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
+  createLoggerDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createPositionCacheDouble,
@@ -47,7 +48,7 @@ type TimeWakeupEvaluationHarnessOptions = Readonly<{
   emitAutoSearchAuthorizationChanged?: (event: AutoSearchAuthorizationChangedEvent) => void;
   doomsdayClearanceResult?: DoomsdayClearanceResult;
   cancelPendingBuyOrdersResult?: CancelPendingBuyOrdersResult;
-  onCancelPendingBuyOrders?: () => void;
+  onCancelPendingBuyOrders?: (context: CancelPendingBuyOrdersContext) => void | Promise<void>;
   onExecuteClearance?: () => void;
   onPositionsCommitted?: () => void;
   reconcilePositionHoldError?: Error;
@@ -55,6 +56,7 @@ type TimeWakeupEvaluationHarnessOptions = Readonly<{
   traderOverrides?: Parameters<typeof createTraderDouble>[0];
   cachedTradingDayInfo?: LastState['cachedTradingDayInfo'];
   isTradingDay?: (date: Date) => Promise<TradingDayInfo>;
+  logger?: TimeWakeupEvaluationContext['logger'];
 }>;
 
 async function expectPromiseRejectsWithMessage(
@@ -143,6 +145,7 @@ function createTimeWakeupEvaluationHarness(
     ...(options.verifier ? { delayedSignalVerifier: options.verifier } : {}),
   });
   return {
+    logger: options.logger ?? createLoggerDouble(),
     marketDataClient: createMarketDataClientDouble({
       isTradingDay:
         options.isTradingDay ?? (async () => ({ isTradingDay: true, isHalfDay: false })),
@@ -150,8 +153,8 @@ function createTimeWakeupEvaluationHarness(
     trader: createTraderDouble(options.traderOverrides),
     lastState,
     doomsdayProtection: createDoomsdayProtectionDouble({
-      cancelPendingBuyOrders: async () => {
-        options.onCancelPendingBuyOrders?.();
+      cancelPendingBuyOrders: async (context) => {
+        await options.onCancelPendingBuyOrders?.(context);
         return (
           options.cancelPendingBuyOrdersResult ?? {
             executed: false,
@@ -205,6 +208,61 @@ function createTimeWakeupEvaluationHarness(
 }
 
 describe('timeWakeupEvaluationProgram', () => {
+  it('初始评估使用注入时间而不读取不同的系统时间', async () => {
+    const injectedNow = new Date('2026-04-29T09:30:00.000+08:00');
+    const originalNow = Date.now;
+    Date.now = () => new Date('2035-01-02T02:00:00.000Z').getTime();
+    const observedTradingDayTimes: number[] = [];
+
+    try {
+      const context = createTimeWakeupEvaluationHarness({
+        now: injectedNow,
+        initialCanTrade: false,
+        cachedTradingDayInfo: null,
+        isTradingDay: async (date) => {
+          observedTradingDayTimes.push(date.getTime());
+          return { isTradingDay: true, isHalfDay: false };
+        },
+      });
+      context.lastState.cachedTradingDayInfo = null;
+
+      await timeWakeupEvaluationProgram(context);
+
+      expect(observedTradingDayTimes).toEqual([injectedNow.getTime()]);
+      expect(context.lastState.canTrade).toBe(true);
+      expect(injectedNow.getTime()).not.toBe(Date.now());
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it('异步末日动作的 isLive 重新读取注入时间而不读取系统时间', async () => {
+    let injectedNow = new Date('2026-04-29T15:50:00.000+08:00');
+    const originalNow = Date.now;
+    Date.now = () => new Date('2026-04-29T15:50:00.000+08:00').getTime();
+    const observedIsLiveValues: boolean[] = [];
+
+    try {
+      const context = createTimeWakeupEvaluationHarness({
+        now: injectedNow,
+        getNow: () => injectedNow,
+        initialCanTrade: true,
+        onCancelPendingBuyOrders: async ({ isLive }) => {
+          await Promise.resolve();
+          injectedNow = new Date('2026-04-29T16:01:00.000+08:00');
+          observedIsLiveValues.push(isLive());
+        },
+      });
+
+      await timeWakeupEvaluationProgram(context);
+
+      expect(observedIsLiveValues).toEqual([false]);
+      expect(Date.now()).toBe(new Date('2026-04-29T15:50:00.000+08:00').getTime());
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
   it('交易日 API 失败时只安排 API_RETRY 且不更新交易门禁事实', async () => {
     let gateEmitted = false;
     let lifecycleCalled = false;
@@ -751,50 +809,50 @@ describe('timeWakeupEvaluationProgram', () => {
       attempts: 1,
       cause: new Error('subscription unavailable'),
     });
-    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
-
-    try {
-      const context = createTimeWakeupEvaluationHarness({
-        now: currentTime,
-        executeClearanceError: await createExternalApiRequestError({
-          operation: 'TradeContext.submitOrder',
-          attempts: 1,
-          cause: new Error('submit outcome unknown'),
-        }),
-        traderOverrides: {
-          getStockPositions: async () => {
-            calls.push('getStockPositions');
-            return refreshedPositions;
-          },
+    const timeWakeupWarnings: string[] = [];
+    const context = createTimeWakeupEvaluationHarness({
+      logger: {
+        info: () => {},
+        warn: (message) => {
+          if (message.includes('[TimeWakeupEvaluation]')) {
+            timeWakeupWarnings.push(message);
+          }
         },
-        onPositionsCommitted: () => {
-          calls.push('reconcilePositionHold');
+      },
+      now: currentTime,
+      executeClearanceError: await createExternalApiRequestError({
+        operation: 'TradeContext.submitOrder',
+        attempts: 1,
+        cause: new Error('submit outcome unknown'),
+      }),
+      traderOverrides: {
+        getStockPositions: async () => {
+          calls.push('getStockPositions');
+          return refreshedPositions;
         },
-        reconcilePositionHoldError: subscriptionError,
-      });
-      context.lastState.cachedPositions = [
-        createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
-      ];
-      context.lastState.positionCache.update(context.lastState.cachedPositions);
+      },
+      onPositionsCommitted: () => {
+        calls.push('reconcilePositionHold');
+      },
+      reconcilePositionHoldError: subscriptionError,
+    });
+    context.lastState.cachedPositions = [
+      createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
+    ];
+    context.lastState.positionCache.update(context.lastState.cachedPositions);
 
-      const result = await timeWakeupEvaluationProgram(context);
+    const result = await timeWakeupEvaluationProgram(context);
 
-      expect(result.plan.nextWakeupAtMs).toBe(currentTime.getTime() + TRADING.INTERVAL_MS);
-      expect(calls).toEqual(['getStockPositions', 'reconcilePositionHold']);
-      expect(context.lastState.cachedPositions).toEqual(refreshedPositions);
-      expect(context.lastState.positionCache.get('BULL.HK')).toEqual(refreshedPositions[0] ?? null);
-      const timeWakeupWarnings = warnSpy.mock.calls
-        .map(([message]) => message)
-        .filter((message) => message.includes('[TimeWakeupEvaluation]'));
-      expect(timeWakeupWarnings).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining('持仓事实已刷新，但持仓订阅协调失败'),
-          expect.stringContaining('已刷新持仓事实，但持仓订阅协调尚未完成'),
-        ]),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
+    expect(result.plan.nextWakeupAtMs).toBe(currentTime.getTime() + TRADING.INTERVAL_MS);
+    expect(calls).toEqual(['getStockPositions', 'reconcilePositionHold']);
+    expect(context.lastState.cachedPositions).toEqual(refreshedPositions);
+    expect(context.lastState.positionCache.get('BULL.HK')).toEqual(refreshedPositions[0] ?? null);
+    expect(timeWakeupWarnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('持仓事实已刷新，但持仓订阅协调失败'),
+        expect.stringContaining('已刷新持仓事实，但持仓订阅协调尚未完成'),
+      ]),
+    );
   });
 
   it('末日清仓结果未知且持仓 API 失败时保留旧缓存并安排重试', async () => {
@@ -808,46 +866,46 @@ describe('timeWakeupEvaluationProgram', () => {
       attempts: 1,
       cause: new Error('positions unavailable'),
     });
-    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
-
-    try {
-      const context = createTimeWakeupEvaluationHarness({
-        now: currentTime,
-        executeClearanceError: await createExternalApiRequestError({
-          operation: 'TradeContext.submitOrder',
-          attempts: 1,
-          cause: new Error('submit outcome unknown'),
-        }),
-        traderOverrides: {
-          getStockPositions: async () => {
-            throw positionError;
-          },
+    const timeWakeupWarnings: string[] = [];
+    const context = createTimeWakeupEvaluationHarness({
+      logger: {
+        info: () => {},
+        warn: (message) => {
+          if (message.includes('[TimeWakeupEvaluation]')) {
+            timeWakeupWarnings.push(message);
+          }
         },
-        onPositionsCommitted: () => {
-          reconcileCalls += 1;
+      },
+      now: currentTime,
+      executeClearanceError: await createExternalApiRequestError({
+        operation: 'TradeContext.submitOrder',
+        attempts: 1,
+        cause: new Error('submit outcome unknown'),
+      }),
+      traderOverrides: {
+        getStockPositions: async () => {
+          throw positionError;
         },
-      });
-      context.lastState.cachedPositions = cachedPositions;
-      context.lastState.positionCache.update(cachedPositions);
+      },
+      onPositionsCommitted: () => {
+        reconcileCalls += 1;
+      },
+    });
+    context.lastState.cachedPositions = cachedPositions;
+    context.lastState.positionCache.update(cachedPositions);
 
-      const result = await timeWakeupEvaluationProgram(context);
+    const result = await timeWakeupEvaluationProgram(context);
 
-      expect(result.plan.nextWakeupAtMs).toBe(currentTime.getTime() + TRADING.INTERVAL_MS);
-      expect(context.lastState.cachedPositions).toEqual(cachedPositions);
-      expect(context.lastState.positionCache.get('BULL.HK')).toEqual(cachedPositions[0] ?? null);
-      expect(reconcileCalls).toBe(0);
-      const timeWakeupWarnings = warnSpy.mock.calls
-        .map(([message]) => message)
-        .filter((message) => message.includes('[TimeWakeupEvaluation]'));
-      expect(timeWakeupWarnings).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining('持仓事实刷新失败'),
-          expect.stringContaining('持仓事实尚未刷新'),
-        ]),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
+    expect(result.plan.nextWakeupAtMs).toBe(currentTime.getTime() + TRADING.INTERVAL_MS);
+    expect(context.lastState.cachedPositions).toEqual(cachedPositions);
+    expect(context.lastState.positionCache.get('BULL.HK')).toEqual(cachedPositions[0] ?? null);
+    expect(reconcileCalls).toBe(0);
+    expect(timeWakeupWarnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('持仓事实刷新失败'),
+        expect.stringContaining('持仓事实尚未刷新'),
+      ]),
+    );
   });
 
   for (const scenario of [

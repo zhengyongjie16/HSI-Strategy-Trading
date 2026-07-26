@@ -6,7 +6,7 @@
  * - 执行快照恢复、席位一致性校验与失败回滚
  * - 消费权威终态快照并保持 trackedOrders 与 pendingSell 一致
  */
-import { OrderSide, type PushOrderChanged } from 'longbridge';
+import { OrderSide, OrderType, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { isOpenOrderStatus } from '../../orderStatusLifecycle/utils.js';
@@ -299,8 +299,16 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       throw new Error(`[订单监控] 订单 ${order.orderId} 委托数量无效，无法恢复追踪`);
     }
 
-    const trackedPriceRaw = decimalToNumber(order.price);
-    const trackedPrice = isValidPositiveNumber(trackedPriceRaw) ? trackedPriceRaw : 0;
+    const trackedPrice = order.price === null ? null : decimalToNumber(order.price);
+    if (trackedPrice !== null && !isValidPositiveNumber(trackedPrice)) {
+      throw new Error(`[订单监控] 订单 ${order.orderId} 委托价格无效，无法恢复追踪`);
+    }
+
+    const orderType = order.orderType;
+    if (orderType !== OrderType.MO && trackedPrice === null) {
+      throw new Error(`[订单监控] 非市价订单 ${order.orderId} 缺少委托价格，无法恢复追踪`);
+    }
+
     const submittedAtMs = resolveSubmittedAtMs(order.submittedAt);
     const executedQuantity = decimalToNumber(order.executedQuantity);
     assertExecutionQuantityWithinSubmittedQuantity(
@@ -321,7 +329,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       isLongSymbol: ownership.isLongSymbol,
       monitorSymbol: ownership.monitorSymbol,
       isProtectiveLiquidation,
-      orderType: order.orderType,
+      orderType,
     };
     trackOrder(trackOrderParams);
     const trackedOrder = runtime.trackedOrders.get(order.orderId);

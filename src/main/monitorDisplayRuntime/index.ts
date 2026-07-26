@@ -20,6 +20,16 @@ function isGateOpen(lastState: MonitorDisplayRuntimeDeps['lastState']): boolean 
   return lastState.isTradingEnabled && lastState.canTrade === true;
 }
 
+/**
+ * 创建唯一监控标的的异步显示 runtime。
+ *
+ * runtime 只在交易门禁开启时补取当前行情，并用 single-flight + latest-only 合并积压请求，
+ * 避免旧指标快照在异步行情返回后覆盖新输出。单次读取或渲染失败仅记录告警；停止时先关闭
+ * 新请求入口，等待全部在途渲染收口，再清除待显示快照。
+ *
+ * @param deps 行情读取、监控上下文、交易门禁与纯渲染端口
+ * @returns 可启动、提交渲染请求并停止排空的显示 runtime
+ */
 export function createMonitorDisplayRuntime(
   deps: MonitorDisplayRuntimeDeps,
 ): MonitorDisplayRuntime {

@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'bun:test';
 import { createMarketDataDomain } from '../../../../src/main/lifecycle/cacheDomains/marketDataDomain.js';
 import type { MarketDataClient } from '../../../../src/types/services.js';
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 
 describe('createMarketDataDomain', () => {
   it('midnightClear 调用 marketDataClient.resetRuntimeSubscriptionsAndCaches', async () => {
@@ -16,7 +17,7 @@ describe('createMarketDataDomain', () => {
       },
     } as unknown as MarketDataClient;
 
-    const domain = createMarketDataDomain({ marketDataClient });
+    const domain = createMarketDataDomain({ logger: createLoggerDouble(), marketDataClient });
     await domain.midnightClear({
       now: new Date(),
       runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
@@ -29,7 +30,7 @@ describe('createMarketDataDomain', () => {
     const marketDataClient = {
       resetRuntimeSubscriptionsAndCaches: async () => {},
     } as unknown as MarketDataClient;
-    const domain = createMarketDataDomain({ marketDataClient });
+    const domain = createMarketDataDomain({ logger: createLoggerDouble(), marketDataClient });
     await domain.openRebuild({
       now: new Date(),
       runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },

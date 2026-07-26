@@ -55,13 +55,22 @@ function createDeps(
     monitorTaskQueue: ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>;
     periodicSwitchWakeupRuntime: PeriodicSwitchWakeupRuntime;
     monitorContext?: MonitorContext;
+    clockNow?: () => Date;
   }>,
 ): AsyncRuntimeFactoryDeps {
-  const { lastState, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContext } = options;
+  const { lastState, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContext, clockNow } =
+    options;
   const warrantListCache = createWarrantListCache();
   const runtimeMonitorContext = monitorContext ?? createMonitorContext();
 
   return {
+    clock: { now: clockNow ?? (() => new Date(Date.now())) },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
     preGateRuntime: {
       config: { refreshAccessToken: () => Promise.resolve('') },
       tradingConfig: createTradingConfig(),
@@ -199,7 +208,8 @@ describe('app createAsyncRuntime wiring', () => {
 
   it('does not replan periodic route when doomsday gate blocks AUTO_SYMBOL_TICK', async () => {
     const originalNow = Date.now;
-    Date.now = () => Date.UTC(2026, 1, 16, 7, 56);
+    const injectedNow = new Date(Date.UTC(2026, 1, 16, 7, 56));
+    Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
     try {
       const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
       const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
@@ -239,6 +249,7 @@ describe('app createAsyncRuntime wiring', () => {
           monitorContext: context,
           monitorTaskQueue,
           periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
+          clockNow: () => injectedNow,
         }),
       );
 

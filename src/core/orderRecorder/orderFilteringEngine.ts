@@ -69,12 +69,12 @@ function initializeFilteringState(
  * 4. 合并时间间隔内的订单作为下一轮输入
  */
 function applySingleSellOrderFilter(
-  currentBuyOrders: OrderRecord[],
+  currentBuyOrders: ReadonlyArray<OrderRecord>,
   candidateOrders: ReadonlyArray<OrderRecord>,
   sellOrder: OrderRecord,
   nextSellOrder: OrderRecord | null,
   latestSellTime: number,
-): OrderRecord[] {
+): ReadonlyArray<OrderRecord> {
   const sellTime = sellOrder.executedTime;
   const sellQuantity = sellOrder.executedQuantity;
 
@@ -106,11 +106,11 @@ function applySingleSellOrderFilter(
 function applySequentialFiltering(
   state: FilteringState,
   sortedSellOrders: ReadonlyArray<OrderRecord>,
-): OrderRecord[] {
+): ReadonlyArray<OrderRecord> {
   const firstSellTime = sortedSellOrders[0]?.executedTime ?? 0;
   const latestSellTime = sortedSellOrders.at(-1)?.executedTime ?? 0;
 
-  let currentBuyOrders = state.candidateOrders.filter(
+  let currentBuyOrders: ReadonlyArray<OrderRecord> = state.candidateOrders.filter(
     (buyOrder) => buyOrder.executedTime < firstSellTime,
   );
 

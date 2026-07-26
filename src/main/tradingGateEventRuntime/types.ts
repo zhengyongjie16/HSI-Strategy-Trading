@@ -1,4 +1,15 @@
 import type { Unsubscribe } from '../../types/services.js';
+import type { Logger } from '../../utils/logger/types.js';
+
+/**
+ * 交易门禁事件端口依赖。
+ * 类型用途：为事件 listener 的同步异常提供统一日志归属。
+ * 数据来源：由 app 顶层装配注入日志能力。
+ * 使用范围：仅 createTradingGateEventRuntime 与相关测试使用。
+ */
+export type TradingGateEventRuntimeDeps = Readonly<{
+  logger: Pick<Logger, 'error'>;
+}>;
 
 /**
  * 连续交易门禁变化事件。

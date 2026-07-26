@@ -4,6 +4,7 @@ import type { MonitorTaskQueue } from '../monitorTaskQueue/types.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
 import type { RawOrderFromAPI, Trader, MarketDataClient } from '../../../types/services.js';
 import type { QuoteSubscriptionRuntime } from '../../quoteSubscriptionRuntime/types.js';
+import type { RuntimeClock, RuntimeScheduler } from '../../../types/runtime.js';
 
 /**
  * 席位快照（任务创建时点的席位状态）。
@@ -98,6 +99,8 @@ export type RefreshHelpers = Readonly<{
  * 使用范围：仅 monitorTaskProcessor 及启动流程使用，内部使用。
  */
 export type MonitorTaskProcessorDeps = Readonly<{
+  clock: RuntimeClock;
+  scheduler: RuntimeScheduler;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
   monitorContext: MonitorContext;
   trader: Trader;
@@ -120,7 +123,7 @@ export type MonitorTaskProcessorDeps = Readonly<{
   getCanTradeNow: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
-  onFatalError?: (error: unknown) => void;
+  onFatalError: (error: unknown) => void;
 }>;
 
 /**

@@ -11,7 +11,7 @@ import {
   resolveSeatActivationCarryover,
 } from '../../../../src/main/lifecycle/seatActivationCarryover.js';
 import type { SeatState, SymbolRegistry } from '../../../../src/types/seat.js';
-import { createSymbolRegistryDouble } from '../../../helpers/testDoubles.js';
+import { createLoggerDouble, createSymbolRegistryDouble } from '../../../helpers/testDoubles.js';
 
 const emptySeatState = {
   symbol: null,
@@ -86,6 +86,7 @@ describe('createSeatDomain', () => {
     };
 
     const domain = createSeatDomain({
+      logger: createLoggerDouble(),
       symbolRegistry,
       autoSymbolManager,
       warrantListCache,
@@ -181,6 +182,7 @@ describe('createSeatDomain', () => {
     };
     const warrantListCache = { clear: () => {} };
     const domain = createSeatDomain({
+      logger: createLoggerDouble(),
       symbolRegistry,
       autoSymbolManager,
       warrantListCache,
@@ -247,6 +249,7 @@ describe('createSeatDomain', () => {
     };
     const warrantListCache = { clear: () => {} };
     const domain = createSeatDomain({
+      logger: createLoggerDouble(),
       symbolRegistry,
       autoSymbolManager,
       warrantListCache,
@@ -287,6 +290,7 @@ describe('createSeatDomain', () => {
     const warrantListCache = { clear: () => {} };
 
     const domain = createSeatDomain({
+      logger: createLoggerDouble(),
       symbolRegistry,
       autoSymbolManager,
       warrantListCache,

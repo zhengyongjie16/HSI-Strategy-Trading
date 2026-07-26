@@ -11,7 +11,7 @@ import {
   TIME,
 } from '../../../../src/constants/index.js';
 import { createMarketDataClientDouble, createQuoteDouble } from '../../../helpers/testDoubles.js';
-import { createRouteRuntime } from '../../../../src/core/trader/orderMonitor/routeRuntime.js';
+import { createRouteRuntime as createRouteRuntimeImpl } from '../../../../src/core/trader/orderMonitor/routeRuntime.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorSymbolRouteState,
@@ -19,6 +19,21 @@ import type {
   RouteRuntimeDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { QuoteUpdatedEvent } from '../../../../src/types/services.js';
+
+function createRouteRuntime(
+  deps: Omit<RouteRuntimeDeps, 'now' | 'scheduleTimer' | 'clearTimer' | 'onFatalError'> &
+    Partial<Pick<RouteRuntimeDeps, 'onFatalError'>>,
+) {
+  return createRouteRuntimeImpl({
+    ...deps,
+    now: () => new Date(Date.now()),
+    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (handle) => {
+      clearTimeout(handle);
+    },
+    onFatalError: deps.onFatalError ?? (() => {}),
+  });
+}
 
 const routeConfig: RouteRuntimeDeps['config'] = {
   buyTimeout: { enabled: true, timeoutMs: 0 },
@@ -837,7 +852,8 @@ describe('orderMonitor route runtime', () => {
     routeRuntime.triggerRoute('BULL.HK', 'ORDER_EVENT');
     await flushMicrotasks();
 
-    expect(fatalErrors).toEqual([routeError]);
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]).toBe(routeError);
   });
 
   it('stopAndDrain 不会重复暴露同一条 route 失败', async () => {

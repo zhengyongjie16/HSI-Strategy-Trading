@@ -11,7 +11,6 @@
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
-import { logger } from '../../utils/logger/index.js';
 import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
   AdvancePendingSwitchResult,
@@ -280,6 +279,7 @@ function removeRouteKeyFromSymbolIndex(
  * @returns runtime 实例
  */
 export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): SwitchWakeupRuntime {
+  const { logger, onFatalError } = deps;
   let running = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeOrderStateChanged: (() => void) | null = null;
@@ -332,7 +332,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       })
       .catch((error: unknown) => {
         logger.error('[SwitchWakeupRuntime] 释放 quote retain 失败', formatError(error));
-        deps.onFatalError?.(error);
+        onFatalError(error);
       });
   }
 
@@ -396,7 +396,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         }
 
         logger.error('[SwitchWakeupRuntime] 注册 quote retain 失败', formatError(error));
-        deps.onFatalError?.(error);
+        onFatalError(error);
       });
   }
 
@@ -616,7 +616,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         formatError(error),
       );
 
-      deps.onFatalError?.(error);
+      onFatalError(error);
     });
     activeRoutePromises.add(processingPromise);
     void processingPromise.finally(() => {
@@ -742,7 +742,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           nextState.inFlight = true;
           const processingPromise = processRouteQueue(routeKey).catch((error: unknown) => {
             logger.error('[SwitchWakeupRuntime] pending switch 重入推进失败', formatError(error));
-            deps.onFatalError?.(error);
+            onFatalError(error);
           });
           activeRoutePromises.add(processingPromise);
           void processingPromise.finally(() => {

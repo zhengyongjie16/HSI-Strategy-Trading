@@ -9,7 +9,6 @@
  * - 订单数据在统一 rebuildTradingDayState 中从 API 重新加载和重建
  * - 本域不再直接持有订单监控 runtime owner
  */
-import { logger } from '../../../utils/logger/index.js';
 import type { CacheDomain } from '../types.js';
 import type { OrderDomainDeps } from './types.js';
 
@@ -21,7 +20,7 @@ import type { OrderDomainDeps } from './types.js';
  * @returns 实现 CacheDomain 的订单域实例
  */
 export function createOrderDomain(deps: OrderDomainDeps): CacheDomain {
-  const { trader } = deps;
+  const { logger, trader } = deps;
   return {
     /**
      * 午夜清理：订单监控 runtime 已由 signalRuntimeDomain 先行停止，本域仅重置 trader 运行态，

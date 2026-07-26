@@ -47,6 +47,17 @@ function dispatchCurrentActivatingSeat(params: {
   });
 }
 
+/**
+ * 为进入 ACTIVATING 的席位提交 latest-only 刷新任务。
+ *
+ * 按方向复用固定 dedupe key，使较新的 seatVersion 替换尚未消费的旧刷新；任务保留旧标的，
+ * 供激活屏障完成订阅、订单归属和风险缓存切换。ACTIVATING 缺少标的是内部状态错误，
+ * 必须在入队前立即暴露。
+ *
+ * @param params 当前方向的席位版本、切换前后标的及任务队列依赖
+ * @returns 无返回值
+ * @throws nextState 不是带有效标的的 ACTIVATING 状态时抛出
+ */
 function scheduleSeatRefresh(params: {
   readonly deps: SeatActivationDispatcherDeps;
   readonly direction: 'LONG' | 'SHORT';

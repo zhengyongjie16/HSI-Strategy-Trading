@@ -10,7 +10,7 @@ import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/in
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
-import { createTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
 import { initMonitorState } from '../../src/utils/helpers/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
@@ -20,6 +20,7 @@ import type { SwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntim
 
 import {
   createMarketDataClientDouble,
+  createLoggerDouble,
   createMonitorConfigDouble,
   createOrderRecorderDouble,
   createPositionCacheDouble,
@@ -32,7 +33,25 @@ import {
 } from '../helpers/testDoubles.js';
 import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
 
+function createTradingGateEventRuntime() {
+  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+}
+
 let candidateQueue: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
+
+function rethrowFatalError(error: unknown): never {
+  throw error;
+}
+
+const MONITOR_TASK_RUNTIME = {
+  clock: { now: () => new Date('2026-02-16T01:31:00.000Z') },
+  scheduler: {
+    scheduleTimer: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimer: (handle: ReturnType<typeof setTimeout>) => {
+      clearTimeout(handle);
+    },
+  },
+};
 
 function createLastState(): LastState {
   return {
@@ -100,6 +119,7 @@ function createStartedSwitchWakeupRuntime(
   }>,
 ): SwitchWakeupRuntime {
   const runtime = createSwitchWakeupRuntime({
+    logger: { error: () => {} },
     marketDataClient: createMarketDataClientDouble(),
     trader: params.trader,
     symbolRegistry: params.monitorContext.symbolRegistry,
@@ -117,6 +137,9 @@ function createStartedSwitchWakeupRuntime(
     scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (handle) => {
       clearTimeout(handle);
+    },
+    onFatalError: (error) => {
+      throw error;
     },
   });
   runtime.start();
@@ -201,7 +224,7 @@ describe('periodic auto-symbol full chain integration', () => {
       orderRecorder,
       riskChecker,
       findBestWarrant: async () => candidateQueue.shift() ?? null,
-      now: () => new Date(currentNowMs),
+      clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
@@ -236,6 +259,7 @@ describe('periodic auto-symbol full chain integration', () => {
       now: () => new Date(currentNowMs),
     });
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue,
       monitorContext,
       trader,
@@ -245,6 +269,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     processor.start();
@@ -380,7 +405,7 @@ describe('periodic auto-symbol full chain integration', () => {
       orderRecorder,
       riskChecker,
       findBestWarrant: async () => candidateQueue.shift() ?? null,
-      now: () => new Date(currentNowMs),
+      clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
@@ -415,6 +440,7 @@ describe('periodic auto-symbol full chain integration', () => {
       now: () => new Date(currentNowMs),
     });
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue,
       monitorContext,
       trader,
@@ -424,6 +450,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     processor.start();
@@ -530,7 +557,7 @@ describe('periodic auto-symbol full chain integration', () => {
       orderRecorder,
       riskChecker,
       findBestWarrant: async () => candidateQueue.shift() ?? null,
-      now: () => new Date(currentNowMs),
+      clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
@@ -565,6 +592,7 @@ describe('periodic auto-symbol full chain integration', () => {
       now: () => new Date(currentNowMs),
     });
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue,
       monitorContext,
       trader,
@@ -574,6 +602,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     processor.start();
@@ -680,7 +709,7 @@ describe('periodic auto-symbol full chain integration', () => {
       orderRecorder,
       riskChecker,
       findBestWarrant: async () => candidateQueue.shift() ?? null,
-      now: () => new Date(currentNowMs),
+      clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
@@ -715,6 +744,7 @@ describe('periodic auto-symbol full chain integration', () => {
       now: () => new Date(currentNowMs),
     });
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue,
       monitorContext,
       trader,
@@ -724,6 +754,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     processor.start();

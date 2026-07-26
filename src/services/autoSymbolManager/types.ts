@@ -1,3 +1,4 @@
+import type { OrderStatus } from 'longbridge';
 import type { AutoSearchConfig, MonitorConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
@@ -17,6 +18,7 @@ import type {
 } from '../../types/services.js';
 import type { Logger } from '../../utils/logger/types.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
+import type { RuntimeClock } from '../../types/runtime.js';
 import type {
   AdvancePendingSwitchResult,
   PeriodicSeatBlockingReason,
@@ -94,7 +96,7 @@ export type AutoSymbolManagerDeps = {
   readonly warrantListCacheConfig?: WarrantListCacheConfig;
   readonly findBestWarrant?: FindBestWarrant;
   readonly getTradingCalendarSnapshot: () => TradingCalendarSnapshot;
-  readonly now?: () => Date;
+  readonly clock: RuntimeClock;
 };
 
 /**
@@ -603,7 +605,7 @@ export type SwitchStateMachineDeps = {
     lotSize: number,
   ) => number | null;
   readonly buildOrderSignal: OrderSignalBuilder;
-  readonly pendingOrderStatuses: ReadonlySet<PendingOrder['status']>;
+  readonly pendingOrderStatuses: ReadonlySet<OrderStatus>;
   readonly buySide: PendingOrder['side'];
   readonly logger: Logger;
   readonly maxSearchFailuresPerDay: number;

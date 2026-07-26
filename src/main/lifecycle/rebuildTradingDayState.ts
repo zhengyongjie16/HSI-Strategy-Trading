@@ -244,7 +244,7 @@ export function createRebuildTradingDayState(
   return async function rebuildTradingDayState(
     params: RebuildTradingDayStateParams,
   ): Promise<void> {
-    const { allOrders, quotesMap, now = new Date() } = params;
+    const { allOrders, quotesMap, now } = params;
     syncMonitorContextSymbolNames(monitorContext, quotesMap);
     try {
       await rebuildOrderRecords(monitorContext, allOrders, quotesMap);

@@ -64,7 +64,7 @@ export function registerDelayedSignalHandlers(params: RegisterDelayedSignalHandl
     sellTaskQueue,
     logger,
     doomsdayProtectionEnabled,
-    now = () => new Date(),
+    now,
   } = params;
   const monitorSymbol = monitorContext.config.monitorSymbol;
 

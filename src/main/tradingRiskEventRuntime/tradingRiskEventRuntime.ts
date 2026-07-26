@@ -15,7 +15,6 @@ import {
 } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
-import { logger } from '../../utils/logger/index.js';
 import { isTradingRiskRouteCurrent, resolveTradingRiskRoute } from './routeValidation.js';
 import { buildTradingRiskRoutingIndex } from './routingIndex.js';
 import { executeDirectionalUnrealizedLoss } from './unrealizedLossExecutor.js';
@@ -54,6 +53,7 @@ function shouldExposeRouteProcessingError(error: unknown): boolean {
 export function createTradingRiskEventRuntime(
   deps: TradingRiskEventRuntimeDeps,
 ): TradingRiskEventRuntime {
+  const { logger } = deps;
   let running = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
@@ -118,7 +118,7 @@ export function createTradingRiskEventRuntime(
     unsubscribeSeatTruthChanged = null;
     routeStates.clear();
     logger.error('[TradingRiskEventRuntime] 路由索引进入 fatal 状态', formatError(fatalError));
-    deps.onFatalError?.(fatalError);
+    deps.onFatalError(fatalError);
   }
 
   /**
@@ -191,7 +191,7 @@ export function createTradingRiskEventRuntime(
     const processingPromise = processRouteQueue(direction).catch((error: unknown) => {
       logger.error('[TradingRiskEventRuntime] 风险事件处理失败', formatError(error));
       if (shouldExposeRouteProcessingError(error)) {
-        deps.onFatalError?.(error);
+        deps.onFatalError(error);
       }
     });
 

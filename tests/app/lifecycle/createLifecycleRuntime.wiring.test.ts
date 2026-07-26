@@ -23,6 +23,7 @@ import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/u
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
   createDailyLossTrackerDouble,
+  createLoggerDouble,
   createAutoSearchWakeupRuntimeDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
   createMarketDataClientDouble,
@@ -187,6 +188,7 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
   const monitorContext = createMonitorContextDouble();
 
   return {
+    logger: createLoggerDouble(),
     preGateRuntime: {
       config: createSdkConfigDouble(),
       tradingConfig,

@@ -24,7 +24,7 @@ import { createSampleQueue, pushToQueue, findClosestEntry } from './utils.js';
  * @param options 可选配置，retentionWindowMs 为单标的样本保留时间窗口
  * @returns 延迟验证样本缓存实例（push、getClosest、clearAll）
  */
-export const createIndicatorCache = (options: IndicatorCacheOptions): IndicatorCache => {
+export const createIndicatorCache = (options: IndicatorCacheOptions = {}): IndicatorCache => {
   const retentionWindowMs =
     options.retentionWindowMs ?? INDICATOR_CACHE.DEFAULT_RETENTION_WINDOW_MS;
   const queue = createSampleQueue();

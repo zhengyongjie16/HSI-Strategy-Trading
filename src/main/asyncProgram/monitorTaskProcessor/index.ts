@@ -64,6 +64,8 @@ function buildPeriodicBaseline(
  */
 export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): MonitorTaskProcessor {
   const {
+    clock,
+    scheduler,
     monitorTaskQueue,
     monitorContext,
     trader,
@@ -85,6 +87,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     getCanTradeNow,
   });
   const handleSeatRefresh = createSeatRefreshHandler({
+    clock,
     monitorContext,
     marketDataClient,
     quoteSubscriptionRuntime,
@@ -135,11 +138,11 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     }
 
     if (pendingTimer !== undefined) {
-      clearTimeout(pendingTimer.handle);
+      scheduler.clearTimer(pendingTimer.handle);
       seatRefreshRetryTimers.delete(task.dedupeKey);
     }
 
-    const retryTimer = setTimeout(() => {
+    const retryTimer = scheduler.scheduleTimer(() => {
       seatRefreshRetryTimers.delete(task.dedupeKey);
       const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
       const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(task.data.direction);
@@ -185,7 +188,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return;
     }
 
-    const nowMs = Date.now();
+    const nowMs = clock.now().getTime();
     monitorContext.symbolRegistry.updateSeatStateWithVersionBump(task.data.direction, {
       symbol: null,
       status: 'EMPTY',
@@ -201,12 +204,22 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   /** 清理尚未触发的 SEAT_REFRESH 延迟重试，保证 stop/restart 后没有隐藏 timer。 */
   function clearSeatRefreshRetryTimers(): void {
     for (const retryTimer of seatRefreshRetryTimers.values()) {
-      clearTimeout(retryTimer.handle);
+      scheduler.clearTimer(retryTimer.handle);
     }
 
     seatRefreshRetryTimers.clear();
   }
 
+  /**
+   * 将监控队列任务分派给唯一业务 handler，并返回 owner 可消费的处理状态。
+   *
+   * AUTO_SYMBOL_TICK 推进自动寻标，SEAT_REFRESH 推进席位激活屏障；异常不在此吞掉，
+   * 由外层队列区分可有限重试的外部请求失败与必须进入 fatal 通道的内部错误。
+   *
+   * @param task 当前出队的监控任务
+   * @param helpers 账户、持仓与风险缓存刷新助手
+   * @returns 任务实际处理状态
+   */
   async function processTask(
     task: MonitorTask<MonitorTaskDataMap>,
     helpers: RefreshHelpers,
@@ -263,7 +276,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       if (status === 'processed' || status === 'skipped') {
         const retryTimer = seatRefreshRetryTimers.get(task.dedupeKey);
         if (retryTimer !== undefined) {
-          clearTimeout(retryTimer.handle);
+          scheduler.clearTimer(retryTimer.handle);
           seatRefreshRetryTimers.delete(task.dedupeKey);
         }
       }
@@ -276,7 +289,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     processQueue,
     onQueueError: (err) => {
       logger.error('[MonitorTaskProcessor] 处理队列时发生错误', formatError(err));
-      onFatalError?.(err);
+      onFatalError(err);
     },
     onAlreadyRunning: () => {
       logger.warn('[MonitorTaskProcessor] 处理器已在运行中');

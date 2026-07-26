@@ -6,6 +6,7 @@ import type { DayLifecycleManager } from '../lifecycle/types.js';
 import type { QuoteSubscriptionRuntime } from '../quoteSubscriptionRuntime/types.js';
 import type { TimeWakeupPlan } from '../timeWakeupPlanner/types.js';
 import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.js';
+import type { Logger } from '../../utils/logger/types.js';
 
 /**
  * 单次时间唤醒评估结果。
@@ -24,6 +25,7 @@ export type TimeWakeupEvaluationResult = Readonly<{
  * 使用范围：仅 timeWakeupEvaluationProgram 及 TimeWakeupRuntime 调用链内部使用。
  */
 export type TimeWakeupEvaluationContext = Readonly<{
+  logger: Pick<Logger, 'info' | 'warn'>;
   marketDataClient: MarketDataClient;
   trader: Trader;
   lastState: LastState;
@@ -36,5 +38,5 @@ export type TimeWakeupEvaluationContext = Readonly<{
   >;
   quoteSubscriptionRuntime: Pick<QuoteSubscriptionRuntime, 'reconcilePositionHoldFromCurrentTruth'>;
   dayLifecycleManager: DayLifecycleManager;
-  now?: () => Date;
+  now: () => Date;
 }>;

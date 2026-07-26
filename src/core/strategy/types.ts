@@ -3,16 +3,18 @@ import type { Signal } from '../../types/signal.js';
 import type { IndicatorUsageProfile } from '../../types/indicatorProfile.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
 import type { OrderRecorder } from '../../types/services.js';
+import type { RuntimeClock } from '../../types/runtime.js';
 
 /**
- * 交易信号策略配置。
- * 类型用途：表达 app 装配层传给策略工厂的最小配置子集。
- * 数据来源：来自 monitorConfig.signalConfig 与 monitorConfig.verificationConfig。
+ * 交易信号策略依赖。
+ * 类型用途：表达 app 装配层传给策略工厂的配置与统一处理时钟。
+ * 数据来源：配置来自 monitorConfig，clock 由 composition root 注入。
  * 使用范围：策略工厂、app 装配层与相关测试使用。
  */
-export type TradingSignalStrategyConfig = Readonly<{
+export type TradingSignalStrategyDeps = Readonly<{
   signalConfig: SignalConfigSet | null;
   verificationConfig: VerificationConfig;
+  clock: RuntimeClock;
 }>;
 
 /**
@@ -90,5 +92,5 @@ export interface TradingSignalStrategy {
  * 使用范围：createMonitorContext 及相关测试使用。
  */
 export type TradingSignalStrategyFactory = (
-  strategyConfig: TradingSignalStrategyConfig,
+  deps: TradingSignalStrategyDeps,
 ) => TradingSignalStrategy;

@@ -12,7 +12,6 @@ import { TRADING } from '../../constants/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
-import { logger } from '../../utils/logger/index.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { StartSwitchOnDistanceResult } from '../../types/monitorContextPorts.js';
 import { areStringSetsEqual } from './setUtils.js';
@@ -73,10 +72,7 @@ function isExecutionGateOpen(deps: CreateMonitorQuoteEventRuntimeDeps): boolean 
     return true;
   }
 
-  return !isWithinDoomsdayClearanceTakeoverWindow(
-    deps.now?.() ?? new Date(),
-    deps.lastState.isHalfDay ?? false,
-  );
+  return !isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false);
 }
 
 /**
@@ -214,6 +210,7 @@ export function createDefaultMonitorQuoteEventRuntime(
   deps: CreateDefaultMonitorQuoteEventRuntimeDeps,
 ): MonitorQuoteEventRuntime {
   const runtimeDeps: CreateMonitorQuoteEventRuntimeDeps = {
+    logger: deps.logger,
     marketDataClient: deps.marketDataClient,
     monitorContext: deps.monitorContext,
     executeStaticLiquidation: createDefaultStaticLiquidationExecutor(deps),
@@ -221,16 +218,16 @@ export function createDefaultMonitorQuoteEventRuntime(
       lastState: deps.lastState,
     }),
     ...(deps.handoffPendingSwitch ? { handoffPendingSwitch: deps.handoffPendingSwitch } : {}),
-    ...(deps.scheduleTimer ? { scheduleTimer: deps.scheduleTimer } : {}),
-    ...(deps.clearTimer ? { clearTimer: deps.clearTimer } : {}),
+    now: deps.now,
+    scheduleTimer: deps.scheduleTimer,
+    clearTimer: deps.clearTimer,
     ...(deps.quoteSubscriptionRuntime
       ? { quoteSubscriptionRuntime: deps.quoteSubscriptionRuntime }
       : {}),
     lastState: deps.lastState,
     postTradeConsistencyRuntime: deps.postTradeConsistencyRuntime,
     doomsdayProtectionEnabled: deps.doomsdayProtectionEnabled,
-    now: deps.now,
-    ...(deps.onFatalError ? { onFatalError: deps.onFatalError } : {}),
+    onFatalError: deps.onFatalError,
   };
 
   return createMonitorQuoteEventRuntime(runtimeDeps);
@@ -246,14 +243,14 @@ function createMonitorQuoteEventRuntime(
   deps: CreateMonitorQuoteEventRuntimeDeps,
 ): MonitorQuoteEventRuntime {
   const {
+    logger,
     marketDataClient,
     monitorContext,
     executeStaticLiquidation,
     startDistanceSwitch,
     handoffPendingSwitch,
   } = deps;
-  const scheduleTimer = deps.scheduleTimer ?? setTimeout;
-  const clearTimer = deps.clearTimer ?? clearTimeout;
+  const { now, scheduleTimer, clearTimer } = deps;
   const runtimeMonitorSymbol = monitorContext.config.monitorSymbol;
 
   let running = false;
@@ -371,7 +368,7 @@ function createMonitorQuoteEventRuntime(
         formatError(error),
       );
 
-      deps.onFatalError?.(error);
+      deps.onFatalError(error);
     });
     registerInFlight(processingPromise);
   }
@@ -401,7 +398,7 @@ function createMonitorQuoteEventRuntime(
           '[MonitorQuoteEventRuntime] 释放静态清仓 quote retain 失败',
           formatError(error),
         );
-        deps.onFatalError?.(error);
+        deps.onFatalError(error);
       });
   }
 
@@ -454,7 +451,7 @@ function createMonitorQuoteEventRuntime(
           '[MonitorQuoteEventRuntime] 注册静态清仓 quote retain 失败',
           formatError(error),
         );
-        deps.onFatalError?.(error);
+        deps.onFatalError(error);
       });
   }
 
@@ -536,7 +533,6 @@ function createMonitorQuoteEventRuntime(
     const targetRouteState = params.routeState;
     clearDistanceSwitchPrecheckRetryTimer(targetRouteState);
 
-    const now = deps.now ?? (() => new Date());
     const retryAtMs = now().getTime() + TRADING.INTERVAL_MS;
     const timerHandle = scheduleBoundedOneShotAt({
       atMs: retryAtMs,
@@ -604,7 +600,7 @@ function createMonitorQuoteEventRuntime(
       return;
     }
 
-    const delayMs = Math.max(0, executionResult.retryAtMs - (deps.now?.() ?? new Date()).getTime());
+    const delayMs = Math.max(0, executionResult.retryAtMs - now().getTime());
     activeRouteState.retryTimerHandle = scheduleTimer(() => {
       if (routeState === activeRouteState) {
         activeRouteState.retryTimerHandle = null;

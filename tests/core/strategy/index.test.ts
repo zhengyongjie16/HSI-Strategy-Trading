@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { parseSignalConfig } from '../../../src/config/utils.js';
 import { createMultiIndicatorTradingStrategy } from '../../../src/core/strategy/index.js';
-import type { TradingSignalStrategyConfig } from '../../../src/core/strategy/types.js';
+import type { TradingSignalStrategyDeps } from '../../../src/core/strategy/types.js';
 import type { IndicatorSnapshot } from '../../../src/types/quote.js';
 import {
   createIndicatorUsageProfileDouble,
@@ -43,8 +43,15 @@ function createSnapshot(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSn
   };
 }
 
-function createStrategy(strategyConfig: TradingSignalStrategyConfig) {
-  return createMultiIndicatorTradingStrategy(strategyConfig);
+const STRATEGY_NOW_MS = Date.parse('2026-02-16T02:00:00.000Z');
+
+function createStrategy(strategyConfig: Omit<TradingSignalStrategyDeps, 'clock'>) {
+  return createMultiIndicatorTradingStrategy({
+    ...strategyConfig,
+    clock: {
+      now: () => new Date(STRATEGY_NOW_MS),
+    },
+  });
 }
 
 describe('createMultiIndicatorTradingStrategy', () => {

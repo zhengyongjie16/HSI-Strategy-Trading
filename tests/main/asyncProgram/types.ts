@@ -12,6 +12,8 @@ import type { createTraderDouble } from '../../helpers/testDoubles.js';
 export type CreateBusinessProcessorParams = Readonly<{
   readonly queue: MonitorTaskProcessorDeps['monitorTaskQueue'];
   readonly context: ReturnType<typeof createMonitorContext>;
+  readonly clock?: MonitorTaskProcessorDeps['clock'];
+  readonly scheduler?: MonitorTaskProcessorDeps['scheduler'];
   readonly lastState?: ReturnType<typeof createLastState>;
   readonly trader?: ReturnType<typeof createTraderDouble>;
   readonly marketDataClient?: MonitorTaskProcessorDeps['marketDataClient'];

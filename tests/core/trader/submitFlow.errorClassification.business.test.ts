@@ -28,6 +28,8 @@ import {
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 
+const EXECUTION_NOW_MS = Date.parse('2026-07-10T02:00:00.000Z');
+
 type SubmitOrderImplementation = (options: SubmitOrderOptions) => Promise<SubmitOrderResponse>;
 
 type SubmitFlowFixtureParams = {
@@ -138,7 +140,7 @@ function createSubmitFlowFixture(params: SubmitFlowFixtureParams = {}) {
     symbolRegistry: createSymbolRegistryDouble(),
     isExecutionAllowed: () => true,
     isContinuousTradingAllowed: () => true,
-    now: () => new Date('2026-07-10T02:00:00.000Z'),
+    now: () => new Date(EXECUTION_NOW_MS),
     readCurrentTradingDayInfo: () => ({
       dateKey: '2026-07-10',
       info: { isTradingDay: true, isHalfDay: false },
@@ -156,7 +158,7 @@ function createBuySignal() {
   return createSignal({
     symbol: 'BULL.HK',
     action: 'BUYCALL',
-    triggerTimeMs: Date.now(),
+    triggerTimeMs: EXECUTION_NOW_MS,
     reason: 'submit-flow-error-classification',
   });
 }
@@ -166,7 +168,7 @@ function createSellSignal() {
     ...createSignal({
       symbol: 'BULL.HK',
       action: 'SELLCALL',
-      triggerTimeMs: Date.now(),
+      triggerTimeMs: EXECUTION_NOW_MS,
       reason: 'submit-flow-local-order-record-failure',
     }),
     quantity: 100,

@@ -121,7 +121,7 @@ export type RebuildTradingDayStateDeps = Readonly<{
 export type RebuildTradingDayStateParams = Readonly<{
   allOrders: ReadonlyArray<RawOrderFromAPI>;
   quotesMap: ReadonlyMap<string, Quote | null>;
-  now?: Date;
+  now: Date;
 }>;
 
 /**

@@ -12,7 +12,6 @@
  * - 整笔语义,不拆分订单
  * - 价格解耦,卖出成交价不参与判定
  */
-import { logger } from '../../utils/logger/index.js';
 import type { OrderRecord } from '../../types/services.js';
 
 /**
@@ -43,31 +42,20 @@ export function compareBuyOrdersBySellPriority(left: OrderRecord, right: OrderRe
  * 3. 返回剩余订单列表
  *
  * @param candidateBuyOrders 候选买入订单列表
- * @param sellQuantity 卖出数量
+ * @param sellQuantity 有限且严格大于零的卖出数量
  * @returns 扣减后剩余的买入订单列表
+ * @throws 卖出数量非有限数或小于等于零时抛出内部契约错误
  */
 export function deductSellQuantityFromBuyOrders(
   candidateBuyOrders: ReadonlyArray<OrderRecord>,
   sellQuantity: number,
-): OrderRecord[] {
-  // 边界情况1: 空列表直接返回空数组
+): ReadonlyArray<OrderRecord> {
+  if (!Number.isFinite(sellQuantity) || sellQuantity <= 0) {
+    throw new Error(`[卖出扣减策略] 卖出数量必须为有限正数: ${sellQuantity}`);
+  }
+
   if (candidateBuyOrders.length === 0) {
     return [];
-  }
-
-  // 边界情况2: 卖出数量 <= 0,返回原列表副本
-  if (sellQuantity <= 0) {
-    if (sellQuantity < 0) {
-      logger.warn(`[卖出扣减策略] 卖出数量为负数: ${sellQuantity},返回原列表`);
-    }
-
-    return [...candidateBuyOrders];
-  }
-
-  // 边界情况3: 卖出数量非有限数,返回原列表副本
-  if (!Number.isFinite(sellQuantity)) {
-    logger.warn(`[卖出扣减策略] 卖出数量非有限数: ${sellQuantity},返回原列表`);
-    return [...candidateBuyOrders];
   }
 
   // 稳定排序: executedPrice asc → executedTime asc → orderId asc

@@ -27,11 +27,12 @@ import type { LastState } from '../../../src/types/state.js';
 import type { TradingConfig } from '../../../src/types/config.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
-import { createTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
 import type { DayLifecycleTickResult } from '../../../src/main/lifecycle/types.js';
 import type { AutoSearchAuthorizationChangedEvent } from '../../../src/main/tradingGateEventRuntime/types.js';
 import {
   createAccountSnapshotDouble,
+  createLoggerDouble,
   createAutoSymbolManagerDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
@@ -48,6 +49,10 @@ import {
   createWarrantCandidate,
   getDefaultAutoSearchConfig,
 } from '../../services/autoSymbolManager/utils.js';
+
+function createTradingGateEventRuntime() {
+  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+}
 
 type Deferred<T> = Readonly<{
   promise: Promise<T>;
@@ -325,6 +330,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       },
     };
     const timeWakeupContext: TimeWakeupEvaluationContext = {
+      logger: createLoggerDouble(),
       marketDataClient: createMarketDataClientDouble(),
       trader: createTraderDouble(),
       lastState,

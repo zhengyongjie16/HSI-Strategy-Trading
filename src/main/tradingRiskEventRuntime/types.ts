@@ -1,6 +1,7 @@
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { MarketDataClient, QuoteUpdatedEvent, Trader } from '../../types/services.js';
 import type { SymbolRegistry } from '../../types/seat.js';
+import type { Logger } from '../../utils/logger/types.js';
 
 /**
  * 风险路由条目。
@@ -71,6 +72,7 @@ interface TradingRiskConsistencyPort {
  * 使用范围：仅 tradingRiskEventRuntime 模块内部使用。
  */
 export type TradingRiskEventRuntimeDeps = Readonly<{
+  readonly logger: Pick<Logger, 'error'>;
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
   readonly trader: Trader;
   readonly symbolRegistry: SymbolRegistry;
@@ -79,7 +81,7 @@ export type TradingRiskEventRuntimeDeps = Readonly<{
   readonly postTradeConsistencyRuntime: TradingRiskConsistencyPort;
   readonly doomsdayProtectionEnabled: boolean;
   readonly now: () => Date;
-  readonly onFatalError?: (error: unknown) => void;
+  readonly onFatalError: (error: unknown) => void;
 }>;
 
 /**

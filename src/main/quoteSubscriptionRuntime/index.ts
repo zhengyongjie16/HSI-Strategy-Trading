@@ -10,7 +10,6 @@ import type { Position } from '../../types/account.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
 import type { Unsubscribe } from '../../types/services.js';
 import { formatError } from '../../utils/error/index.js';
-import { logger } from '../../utils/logger/index.js';
 import type {
   MutableQuoteSubscriptionRetainStore,
   QuoteSubscriptionRetainParams,
@@ -58,6 +57,7 @@ function hasRetainForSymbol(
 export function createQuoteSubscriptionRuntime(
   deps: QuoteSubscriptionRuntimeDeps,
 ): QuoteSubscriptionRuntime {
+  const { logger } = deps;
   let running = false;
   let mutationChain: Promise<void> = Promise.resolve();
   let unsubscribeSeatStateChanged: Unsubscribe | null = null;
@@ -163,7 +163,7 @@ export function createQuoteSubscriptionRuntime(
         `[QuoteSubscriptionRuntime] 处理席位订阅变化失败 symbols=${symbols.join(',')}`,
         formatError(error),
       );
-      deps.onFatalError?.(error);
+      deps.onFatalError(error);
     });
   }
 
@@ -171,7 +171,7 @@ export function createQuoteSubscriptionRuntime(
     projectOrderHold();
     void enqueueMutation().catch((error: unknown) => {
       logger.error('[QuoteSubscriptionRuntime] 处理订单保留订阅变化失败', formatError(error));
-      deps.onFatalError?.(error);
+      deps.onFatalError(error);
     });
   }
 
@@ -219,7 +219,7 @@ export function createQuoteSubscriptionRuntime(
     return () => {
       void releaseRetain(owner).catch((error: unknown) => {
         logger.error('[QuoteSubscriptionRuntime] 释放 retain 失败', formatError(error));
-        deps.onFatalError?.(error);
+        deps.onFatalError(error);
       });
     };
   }

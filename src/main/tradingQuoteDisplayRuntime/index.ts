@@ -12,7 +12,6 @@ import {
   isTradingRiskRouteCurrent,
   resolveTradingRiskRoute,
 } from '../tradingRiskEventRuntime/routeValidation.js';
-import { logger } from '../../utils/logger/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type { TradingRiskRoutingIndex } from '../tradingRiskEventRuntime/types.js';
@@ -26,9 +25,20 @@ function isGateOpen(lastState: TradingQuoteDisplayRuntimeDeps['lastState']): boo
   return lastState.isTradingEnabled && lastState.canTrade === true;
 }
 
+/**
+ * 创建交易标的 quote 的事件驱动显示 runtime。
+ *
+ * start 后监听 quote 与席位事实，按方向执行 single-flight + latest-only 路由；补取监控行情后
+ * 再校验交易门禁、方向和 seatVersion，避免切席期间输出过期标的。外部行情失败仅跳过本次显示，
+ * 内部 routing/render 错误进入 fatal 状态；stopAndDrain 先退订事件源，再等待所有在途显示收口。
+ *
+ * @param deps 行情事件、席位事实、交易门禁、logger、渲染端口与 fatal 通道
+ * @returns 可启动并按停止顺序排空的交易 quote 显示 runtime
+ */
 export function createTradingQuoteDisplayRuntime(
   deps: TradingQuoteDisplayRuntimeDeps,
 ): TradingQuoteDisplayRuntime {
+  const { logger } = deps;
   const activePromises = new Set<Promise<void>>();
   const routeStates = new Map<'LONG' | 'SHORT', TradingQuoteDisplayRouteState>();
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;

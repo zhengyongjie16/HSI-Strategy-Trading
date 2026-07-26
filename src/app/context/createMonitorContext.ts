@@ -124,6 +124,8 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     preGateRuntime,
     postGateRuntime,
     quotesMap,
+    clock,
+    scheduler,
     strategyFactory = DEFAULT_STRATEGY_FACTORY,
   } = params;
 
@@ -147,10 +149,12 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     riskChecker,
     warrantListCacheConfig: preGateRuntime.warrantListCacheConfig,
     getTradingCalendarSnapshot: () => postGateRuntime.lastState.tradingCalendarSnapshot,
+    clock,
   });
   const strategy = strategyFactory({
     signalConfig: monitorConfig.signalConfig,
     verificationConfig: monitorConfig.verificationConfig,
+    clock,
   });
   return buildMonitorContext({
     config: monitorConfig,
@@ -166,6 +170,8 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     }),
     delayedSignalVerifier: createDelayedSignalVerifier({
       indicatorCache: postGateRuntime.indicatorCache,
+      clock,
+      scheduler,
       onFatalError: postGateRuntime.onFatalError,
     }),
     autoSymbolManager,

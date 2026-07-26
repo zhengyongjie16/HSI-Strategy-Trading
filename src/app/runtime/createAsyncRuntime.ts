@@ -20,7 +20,7 @@ import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
  */
 
 export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntime {
-  const { preGateRuntime, postGateRuntime } = params;
+  const { preGateRuntime, postGateRuntime, clock, scheduler } = params;
   const { tradingConfig, marketDataClient } = preGateRuntime;
   const {
     monitorContext,
@@ -63,11 +63,13 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   const canProcessOrdinaryTradeTask = (): boolean =>
     ordinarySignalGuard({
       lastState,
-      now: new Date(Date.now()),
+      now: clock.now(),
       doomsdayProtectionEnabled: tradingConfig.global.doomsdayProtection,
     });
 
   const monitorTaskProcessor = createMonitorTaskProcessor({
+    clock,
+    scheduler,
     monitorTaskQueue,
     monitorContext,
     trader,
@@ -88,10 +90,13 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     marketDataClient,
     doomsdayProtection,
     getIsHalfDay: () => lastState.isHalfDay ?? false,
+    now: clock.now,
     getCanProcessTask: canProcessOrdinaryTradeTask,
     onFatalError: handleFatalError,
   });
   const sellProcessor = createSellProcessor({
+    clock,
+    scheduler,
     taskQueue: sellTaskQueue,
     monitorContext,
     signalProcessor,

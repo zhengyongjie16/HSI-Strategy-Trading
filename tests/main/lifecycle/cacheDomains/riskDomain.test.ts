@@ -10,6 +10,7 @@ import type { DailyLossTracker } from '../../../../src/types/risk.js';
 import type { SignalProcessor } from '../../../../src/core/signalProcessor/types.js';
 import type { LiquidationCooldownTracker } from '../../../../src/services/liquidationCooldown/types.js';
 import {
+  createLoggerDouble,
   createMonitorContextDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
 } from '../../../helpers/testDoubles.js';
@@ -76,6 +77,7 @@ describe('createRiskDomain', () => {
     };
 
     const domain = createRiskDomain({
+      logger: createLoggerDouble(),
       signalProcessor,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
@@ -127,6 +129,7 @@ describe('createRiskDomain', () => {
     };
 
     const domain = createRiskDomain({
+      logger: createLoggerDouble(),
       signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
       dailyLossTracker: {
         resetAll: () => {},
@@ -154,6 +157,7 @@ describe('createRiskDomain', () => {
 
   it('openRebuild 为空操作，不抛错', async () => {
     const domain = createRiskDomain({
+      logger: createLoggerDouble(),
       signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
       dailyLossTracker: {
         resetAll: () => {},

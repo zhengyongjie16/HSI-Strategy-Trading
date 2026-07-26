@@ -10,14 +10,24 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType, type PushOrderChanged } from 'longbridge';
 import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
-import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
+import { createEventFlow as createProductionEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../../src/constants/index.js';
 import type {
   FinalizeOrderSettlementParams,
+  EventFlowDeps,
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import { createOrderRecorderDouble } from '../../../helpers/testDoubles.js';
+
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
+
+function createEventFlow(deps: TestEventFlowDeps) {
+  return createProductionEventFlow({
+    now: () => new Date(Date.now()),
+    ...deps,
+  });
+}
 
 mock.module('../../../../src/utils/logger/index.js', () => ({
   logger: {
@@ -800,6 +810,7 @@ describe('orderMonitor eventFlow', () => {
 
   it('权威较新 New 会让 PendingCancel 离开撤单暂态并恢复 retry owner', () => {
     const runtime = createRuntimeStore();
+    const injectedNowMs = Date.parse('2031-01-02T03:04:05.000Z');
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDER-CANCEL-REOPEN-NEW',
       symbol: 'BULL.HK',
@@ -811,6 +822,7 @@ describe('orderMonitor eventFlow', () => {
     trackedOrder.cancelRetryCount = 4;
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const eventFlow = createEventFlow({
+      now: () => new Date(injectedNowMs),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -832,7 +844,8 @@ describe('orderMonitor eventFlow', () => {
 
     expect(trackedOrder.status).toBe(OrderStatus.New);
     expect(trackedOrder.cancelRetryCount).toBe(0);
-    expect(trackedOrder.nextCancelAttemptAt).not.toBe(ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS);
+    expect(trackedOrder.nextCancelAttemptAt).toBe(injectedNowMs);
+    expect(injectedNowMs).not.toBe(Date.now());
   });
 
   it.each([

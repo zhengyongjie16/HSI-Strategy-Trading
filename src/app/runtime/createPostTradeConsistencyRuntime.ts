@@ -300,7 +300,7 @@ async function runPostRefreshBusinessFlow(
 export function createPostTradeConsistencyRuntime(
   deps: PostTradeConsistencyRuntimeDeps,
 ): PostTradeConsistencyRuntime {
-  const { getTrader, lastState } = deps;
+  const { getTrader, lastState, scheduler } = deps;
   const refreshGate = createRefreshGate();
 
   let businessDeps: PostTradeConsistencyRuntimeBusinessDeps | null = null;
@@ -308,8 +308,8 @@ export function createPostTradeConsistencyRuntime(
   let inFlight = false;
   let pendingNeed = createEmptyRefreshNeed();
   let pendingVersion: number | null = null;
-  let immediateHandle: ReturnType<typeof setImmediate> | null = null;
-  let retryHandle: ReturnType<typeof setTimeout> | null = null;
+  let runTimerHandle: ReturnType<typeof setTimeout> | null = null;
+  let retryTimerHandle: ReturnType<typeof setTimeout> | null = null;
   let drainResolve: (() => void) | null = null;
   let fatalError: Error | null = null;
   const fatalRejectors = new Set<(error: Error) => void>();
@@ -343,41 +343,41 @@ export function createPostTradeConsistencyRuntime(
   }
 
   /**
-   * 通过 setImmediate 调度下一次刷新。
+   * 通过统一 scheduler 的 0ms timer 调度下一次刷新。
    *
    * 只要进入立即执行通道，就取消失败重试定时器，优先处理最新积压。
    */
   function scheduleRun(): void {
-    if (!started || inFlight || immediateHandle !== null || !hasRefreshNeed(pendingNeed)) {
+    if (!started || inFlight || runTimerHandle !== null || !hasRefreshNeed(pendingNeed)) {
       return;
     }
 
-    if (retryHandle !== null) {
-      clearTimeout(retryHandle);
-      retryHandle = null;
+    if (retryTimerHandle !== null) {
+      scheduler.clearTimer(retryTimerHandle);
+      retryTimerHandle = null;
     }
 
-    immediateHandle = setImmediate(() => {
-      immediateHandle = null;
+    runTimerHandle = scheduler.scheduleTimer(() => {
+      runTimerHandle = null;
       void runRefresh().catch((error: unknown) => {
         const fatal = recordFatalError(error);
         logger.error('[PostTradeConsistencyRuntime] 刷新调度发生未处理错误', {
           error: formatError(fatal),
         });
       });
-    });
+    }, 0);
   }
 
   /**
    * 在刷新失败后按固定退避时间重试。
    */
   function scheduleRetry(): void {
-    if (!started || inFlight || retryHandle !== null || !hasRefreshNeed(pendingNeed)) {
+    if (!started || inFlight || retryTimerHandle !== null || !hasRefreshNeed(pendingNeed)) {
       return;
     }
 
-    retryHandle = setTimeout(() => {
-      retryHandle = null;
+    retryTimerHandle = scheduler.scheduleTimer(() => {
+      retryTimerHandle = null;
       scheduleRun();
     }, API.DEFAULT_RETRY_DELAY_MS);
   }
@@ -600,14 +600,14 @@ export function createPostTradeConsistencyRuntime(
    */
   async function stopAndDrain(): Promise<void> {
     started = false;
-    if (immediateHandle !== null) {
-      clearImmediate(immediateHandle);
-      immediateHandle = null;
+    if (runTimerHandle !== null) {
+      scheduler.clearTimer(runTimerHandle);
+      runTimerHandle = null;
     }
 
-    if (retryHandle !== null) {
-      clearTimeout(retryHandle);
-      retryHandle = null;
+    if (retryTimerHandle !== null) {
+      scheduler.clearTimer(retryTimerHandle);
+      retryTimerHandle = null;
     }
 
     if (inFlight) {
@@ -628,14 +628,14 @@ export function createPostTradeConsistencyRuntime(
    */
   function midnightClear(): void {
     started = false;
-    if (immediateHandle !== null) {
-      clearImmediate(immediateHandle);
-      immediateHandle = null;
+    if (runTimerHandle !== null) {
+      scheduler.clearTimer(runTimerHandle);
+      runTimerHandle = null;
     }
 
-    if (retryHandle !== null) {
-      clearTimeout(retryHandle);
-      retryHandle = null;
+    if (retryTimerHandle !== null) {
+      scheduler.clearTimer(retryTimerHandle);
+      retryTimerHandle = null;
     }
 
     pendingNeed = createEmptyRefreshNeed();

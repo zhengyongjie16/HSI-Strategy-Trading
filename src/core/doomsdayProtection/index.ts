@@ -14,7 +14,7 @@
  * 控制开关：
  * - DOOMSDAY_PROTECTION 环境变量（默认 true）
  */
-import { OrderSide } from 'longbridge';
+import { OrderSide, OrderType } from 'longbridge';
 import { logger } from '../../utils/logger/index.js';
 import { ORDER_QUOTE_RETRY, TIME } from '../../constants/index.js';
 import {
@@ -23,8 +23,8 @@ import {
 } from '../../utils/quoteRetry/index.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { Position } from '../../types/account.js';
-import type { Quote } from '../../types/quote.js';
 import type { DoomsdayClearanceCommand, SellSignalAction } from '../../types/signal.js';
+import type { PendingOrder } from '../../types/services.js';
 import type {
   DoomsdayProtection,
   DoomsdayClearanceContext,
@@ -32,6 +32,7 @@ import type {
   CancelPendingBuyOrdersContext,
   CancelPendingBuyOrdersResult,
   ClearanceSignalParams,
+  PositionClearanceParams,
 } from './types.js';
 import {
   batchGetQuotes,
@@ -44,6 +45,14 @@ import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { getHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
 import { isCancelAcceptedOrTerminalNonFilledClose } from '../../utils/trading/orderStatus.js';
 
+function formatPendingOrderPrice(order: PendingOrder): string {
+  if (order.submittedPrice !== null) {
+    return order.submittedPrice.toFixed(3);
+  }
+
+  return order.orderType === OrderType.MO ? '无委托价（市价单）' : '无委托价';
+}
+
 /**
  * 创建单个清仓信号（清仓接管窗口使用）。
  * 直接构造清仓信号对象，避免跨链路共享可变池化对象。
@@ -52,13 +61,13 @@ import { isCancelAcceptedOrTerminalNonFilledClose } from '../../utils/trading/or
  * @returns 填充后的卖出信号
  */
 function createClearanceSignal(params: ClearanceSignalParams): DoomsdayClearanceCommand {
-  const { symbol, symbolName, action, seatVersion } = params;
+  const { symbol, symbolName, action, triggerTime, seatVersion } = params;
 
   return {
     symbol,
     symbolName,
     action,
-    triggerTime: new Date(),
+    triggerTime,
     seatVersion,
   };
 }
@@ -174,48 +183,49 @@ function resolveDoomsdayRetryAtMs(
  * 处理单个持仓，生成一条清仓信号。
  * 仅当持仓属于当前监控配置（longSymbol/shortSymbol）且数量有效时生成信号；直接构造清仓信号。
  *
- * @param pos 持仓信息（标的、可用数量、名称等）
- * @param longSymbol 当前监控下的做多交易标的，null 表示无
- * @param shortSymbol 当前监控下的做空交易标的，null 表示无
- * @param longQuote 做多标的最新行情（用于已验证的可执行性与名称）
- * @param shortQuote 做空标的最新行情（用于已验证的可执行性与名称）
+ * @param params 当前持仓、两侧席位事实、已验证行情与统一触发时间
  * @returns 一条清仓卖出信号（SELLCALL/SELLPUT），或不属于本监控/无效持仓时 null
  */
 function processPositionForClearance(
-  pos: Position,
-  longSymbol: string | null,
-  shortSymbol: string | null,
-  longSeatVersion: number | null,
-  shortSeatVersion: number | null,
-  longQuote: Quote | null,
-  shortQuote: Quote | null,
+  params: PositionClearanceParams,
 ): DoomsdayClearanceCommand | null {
+  const {
+    position,
+    longSymbol,
+    shortSymbol,
+    longSeatVersion,
+    shortSeatVersion,
+    longQuote,
+    shortQuote,
+    triggerTime,
+  } = params;
+
   // 验证持仓对象有效性
-  if (pos.symbol.length === 0) {
+  if (position.symbol.length === 0) {
     return null;
   }
 
-  const availableQty = pos.availableQuantity || 0;
+  const availableQty = position.availableQuantity || 0;
   if (!Number.isFinite(availableQty) || availableQty <= 0) {
     return null;
   }
 
   // 只处理属于当前监控配置的持仓
-  if (pos.symbol !== longSymbol && pos.symbol !== shortSymbol) {
+  if (position.symbol !== longSymbol && position.symbol !== shortSymbol) {
     return null;
   }
 
-  const isShortPos = pos.symbol === shortSymbol;
+  const isShortPos = position.symbol === shortSymbol;
   const seatVersion = isShortPos ? shortSeatVersion : longSeatVersion;
   if (seatVersion === null) {
     return null;
   }
 
   // 行情在调用方已按 PRICE 口径校验；命令只保留身份，不能携带可能过期的执行价格或手数。
-  let symbolName: string | null = pos.symbolName || null;
-  if (pos.symbol === longSymbol && longQuote) {
+  let symbolName: string | null = position.symbolName || null;
+  if (position.symbol === longSymbol && longQuote) {
     symbolName = symbolName ?? longQuote.name ?? null;
-  } else if (pos.symbol === shortSymbol && shortQuote) {
+  } else if (position.symbol === shortSymbol && shortQuote) {
     symbolName = symbolName ?? shortQuote.name ?? null;
   } else {
     return null;
@@ -224,14 +234,15 @@ function processPositionForClearance(
   // 清仓接管窗口清仓
   const action: SellSignalAction = isShortPos ? 'SELLPUT' : 'SELLCALL';
   const signal = createClearanceSignal({
-    symbol: pos.symbol,
+    symbol: position.symbol,
     symbolName,
     action,
+    triggerTime,
     seatVersion,
   });
   const positionLabel = isShortPos ? '做空标的' : '做多标的';
   logger.debug(
-    `[末日保护程序] 生成清仓信号：${positionLabel} ${pos.symbol} 数量=${availableQty} 操作=${action}`,
+    `[末日保护程序] 生成清仓信号：${positionLabel} ${position.symbol} 数量=${availableQty} 操作=${action}`,
   );
 
   return signal;
@@ -243,8 +254,8 @@ function processPositionForClearance(
  * 若存在无法归属到当前席位的正持仓，则直接抛错而不是按正常“无信号”跳过。
  * @returns DoomsdayProtection 接口实例（isBuyCutoffWindowActive、executeClearance、cancelPendingBuyOrders）
  */
-export function createDoomsdayProtection(deps?: {
-  readonly now?: () => Date;
+export function createDoomsdayProtection(deps: {
+  readonly now: () => Date;
   readonly quoteRetryIntervalMs?: number;
   readonly quoteRetryMaxAttempts?: number;
 }): DoomsdayProtection {
@@ -252,9 +263,9 @@ export function createDoomsdayProtection(deps?: {
   // 格式为日期字符串（YYYY-MM-DD），用于跨天自动重置
   let cancelCheckExecutedDate: string | null = null;
   let lastClearanceNoticeKey: string | null = null;
-  const now = deps?.now ?? (() => new Date());
-  const quoteRetryIntervalMs = deps?.quoteRetryIntervalMs ?? ORDER_QUOTE_RETRY.INTERVAL_MS;
-  const quoteRetryMaxAttempts = deps?.quoteRetryMaxAttempts ?? ORDER_QUOTE_RETRY.MAX_ATTEMPTS;
+  const { now } = deps;
+  const quoteRetryIntervalMs = deps.quoteRetryIntervalMs ?? ORDER_QUOTE_RETRY.INTERVAL_MS;
+  const quoteRetryMaxAttempts = deps.quoteRetryMaxAttempts ?? ORDER_QUOTE_RETRY.MAX_ATTEMPTS;
   let clearanceRetryAttempts = 0;
   let clearanceRetrySymbols: ReadonlySet<string> | null = null;
   let clearanceRetryDueAtMs: number | null = null;
@@ -387,6 +398,7 @@ export function createDoomsdayProtection(deps?: {
 
     const longQuote = longSymbol ? (quoteMap.get(longSymbol) ?? null) : null;
     const shortQuote = shortSymbol ? (quoteMap.get(shortSymbol) ?? null) : null;
+    const clearanceSignalTime = now();
 
     for (const pos of processingPositions) {
       if (pos.symbol === longSymbol) {
@@ -425,15 +437,16 @@ export function createDoomsdayProtection(deps?: {
         }
       }
 
-      const signal = processPositionForClearance(
-        pos,
+      const signal = processPositionForClearance({
+        position: pos,
         longSymbol,
         shortSymbol,
         longSeatVersion,
         shortSeatVersion,
         longQuote,
         shortQuote,
-      );
+        triggerTime: clearanceSignalTime,
+      });
       if (signal) {
         allClearanceSignals.push(signal);
       }
@@ -725,7 +738,7 @@ export function createDoomsdayProtection(deps?: {
             }
 
             logger.debug(
-              `[末日保护程序] 买入订单撤单请求已接受：${order.symbol} 订单ID=${order.orderId} 数量=${order.quantity} 价格=${order.submittedPrice.toFixed(3)}，终态以后续 WS 为准`,
+              `[末日保护程序] 买入订单撤单请求已接受：${order.symbol} 订单ID=${order.orderId} 数量=${order.quantity} 价格=${formatPendingOrderPrice(order)}，终态以后续 WS 为准`,
             );
             continue;
           }

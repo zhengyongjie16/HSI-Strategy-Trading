@@ -21,9 +21,8 @@ import {
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { OrderRecorder } from '../../types/services.js';
-import type { ProcessSellSignalsParams } from './types.js';
+import type { ProcessedSellSignal, ProcessSellSignalsParams } from './types.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
-import { isSellAction } from '../../utils/display/index.js';
 
 /**
  * 计算卖出信号的数量和原因
@@ -120,7 +119,7 @@ function calculateSellQuantity(params: {
  */
 export const processSellSignals = (
   params: ProcessSellSignalsParams,
-): ProcessSellSignalsParams['signals'] => {
+): ReadonlyArray<ProcessedSellSignal> => {
   const {
     signals,
     longPosition,
@@ -135,11 +134,6 @@ export const processSellSignals = (
     tradingCalendarSnapshot,
   } = params;
   return signals.map((sig) => {
-    // 只处理卖出信号（SELLCALL 和 SELLPUT），跳过买入信号
-    if (!isSellAction(sig.action)) {
-      return sig;
-    }
-
     // 根据信号类型确定对应的持仓和行情
     const isLongSignal = sig.action === 'SELLCALL';
     const position = isLongSignal ? longPosition : shortPosition;

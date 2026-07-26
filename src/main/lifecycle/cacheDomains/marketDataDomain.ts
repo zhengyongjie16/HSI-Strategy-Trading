@@ -9,7 +9,6 @@
  * 开盘重建：
  * - 行情订阅在统一开盘重建流水线（loadTradingDayRuntimeSnapshot）中重建，此处为空操作
  */
-import { logger } from '../../../utils/logger/index.js';
 import type { CacheDomain } from '../types.js';
 import type { MarketDataDomainDeps } from './types.js';
 
@@ -21,7 +20,7 @@ import type { MarketDataDomainDeps } from './types.js';
  * @returns 实现 CacheDomain 的行情域实例
  */
 export function createMarketDataDomain(deps: MarketDataDomainDeps): CacheDomain {
-  const { marketDataClient } = deps;
+  const { logger, marketDataClient } = deps;
   return {
     async midnightClear(): Promise<void> {
       await marketDataClient.resetRuntimeSubscriptionsAndCaches();

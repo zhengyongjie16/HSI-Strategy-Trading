@@ -16,6 +16,7 @@ import {
 } from '../../../src/services/autoSymbolManager/signalBuilder.js';
 import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
 import { PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
+import type { PendingOrder } from '../../../src/types/services.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
 import type {
   PeriodicSwitchInternalPendingState,
@@ -154,7 +155,7 @@ function createPeriodicHarness(params: HarnessParams): {
     logger: testLogger,
     getHKDateKey,
   });
-  const signalBuilder = createSignalBuilder();
+  const signalBuilder = createSignalBuilder({ now: () => new Date(currentNowMs) });
   const trader = createTraderDouble({
     executeSignals: async () => {
       params.executeSignalsHook?.();
@@ -957,13 +958,13 @@ describe('periodic auto-switch regression', () => {
       logger: createLoggerStub(),
       getHKDateKey,
     });
-    const signalBuilder = createSignalBuilder();
+    const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const pendingStatus = [...PENDING_ORDER_STATUSES][0];
     if (!pendingStatus) {
       throw new Error('PENDING_ORDER_STATUSES must contain at least one status');
     }
 
-    let brokerPendingOrders = [
+    let brokerPendingOrders: PendingOrder[] = [
       {
         orderId: 'BUY-1',
         symbol: 'OLD_BULL.HK',

@@ -20,6 +20,7 @@ import type {
   RunAppDeps,
 } from '../../src/app/types.js';
 import type {
+  ProcessedSellSignal,
   ProcessSellSignalsParams,
   SignalProcessor,
 } from '../../src/core/signalProcessor/types.js';
@@ -29,7 +30,7 @@ import type {
   WarrantListCacheEntry,
   WarrantListItem,
 } from '../../src/services/autoSymbolFinder/types.js';
-import type { BuySignal, Signal } from '../../src/types/signal.js';
+import type { BuySignal } from '../../src/types/signal.js';
 import type { LastState } from '../../src/types/state.js';
 import type { BuyRiskCheckContext } from '../../src/types/services.js';
 import {
@@ -276,7 +277,9 @@ function createMockPostGateRuntime(
   postGateFatalPromise: Promise<never> = new Promise<never>(() => {}),
 ): PostGateRuntime {
   const signalProcessor: SignalProcessor = {
-    processSellSignals: ({ signals }: ProcessSellSignalsParams): Signal[] => signals,
+    processSellSignals: ({
+      signals,
+    }: ProcessSellSignalsParams): ReadonlyArray<ProcessedSellSignal> => signals,
     applyRiskChecks: async (
       signals: ReadonlyArray<BuySignal>,
       _context: BuyRiskCheckContext,

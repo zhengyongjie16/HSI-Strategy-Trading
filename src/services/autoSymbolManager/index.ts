@@ -52,8 +52,9 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     orderRecorder,
     warrantListCacheConfig,
     getTradingCalendarSnapshot,
+    clock,
   } = deps;
-  const now = deps.now ?? (() => new Date());
+  const { now } = clock;
   const injectedFindBestWarrant = deps.findBestWarrant ?? findBestWarrant;
   const monitorSymbol = monitorConfig.monitorSymbol;
   const autoSearchConfig = monitorConfig.autoSearchConfig;
@@ -69,7 +70,7 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     expiryMinMonths: autoSearchConfig.autoSearchExpiryMinMonths,
     ...(warrantListCacheConfig ? { warrantListCacheConfig } : {}),
   });
-  const signalBuilder = createSignalBuilder();
+  const signalBuilder = createSignalBuilder(clock);
   const seatStateManager = createSeatStateManager({
     symbolRegistry,
     switchStates,

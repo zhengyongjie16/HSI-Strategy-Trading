@@ -1,10 +1,14 @@
 import { isValidNumber, parseIndicatorPeriod } from '../../utils/indicatorHelpers/index.js';
 import { decimalGt, decimalLt } from '../../utils/numeric/index.js';
 import type { IndicatorSnapshot } from '../../types/quote.js';
-import type { Signal } from '../../types/signal.js';
 import type { SingleVerificationConfig } from '../../types/config.js';
 import type { Condition, ConditionGroup, SignalConfig } from '../../types/signalConfig.js';
-import type { ConditionGroupResult, EvaluationResult, SignalWithCategory } from './types.js';
+import type {
+  ConditionGroupResult,
+  EvaluationResult,
+  SignalWithCategory,
+  TradingSignalGenerationResult,
+} from './types.js';
 import type { IndicatorState } from '../../utils/indicatorHelpers/types.js';
 
 /**
@@ -243,26 +247,25 @@ export function buildIndicatorDisplayString(state: IndicatorSnapshot): string {
 }
 
 /**
- * 将信号按类型分流到对应数组：isImmediate 为 true 时推入立即数组，否则推入延迟数组。
- * result 为 null 时不修改任何数组。
+ * 将分类信号分组为立即执行与延迟验证信号列表。
  *
- * @param result 带分类标记的信号，为 null 时不做任何操作
- * @param immediateSignals 立即执行信号数组（会被原地修改）
- * @param delayedSignals 延迟验证信号数组（会被原地修改）
- * @returns 无返回值
+ * @param results 待分组的分类信号；null 表示对应动作未生成信号
+ * @returns 新建的立即执行与延迟验证信号列表
  */
-export function pushSignalToCorrectArray(
-  result: SignalWithCategory | null,
-  immediateSignals: Signal[],
-  delayedSignals: Signal[],
-): void {
-  if (result === null) return;
-
-  if (result.isImmediate) {
-    immediateSignals.push(result.signal);
-  } else {
-    delayedSignals.push(result.signal);
-  }
+export function groupSignalsByCategory(
+  results: ReadonlyArray<SignalWithCategory | null>,
+): TradingSignalGenerationResult {
+  const categorizedSignals = results.filter(
+    (result): result is SignalWithCategory => result !== null,
+  );
+  return {
+    immediateSignals: categorizedSignals
+      .filter((result) => result.isImmediate)
+      .map((result) => result.signal),
+    delayedSignals: categorizedSignals
+      .filter((result) => !result.isImmediate)
+      .map((result) => result.signal),
+  };
 }
 
 /**

@@ -23,16 +23,6 @@ import type {
   RouteRuntimeDeps,
 } from './types.js';
 
-const NATIVE_TIMER_NOW = (): Date => new Date(Date.now());
-
-function scheduleNativeTimer(callback: () => void, delayMs: number): ReturnType<typeof setTimeout> {
-  return setTimeout(callback, delayMs);
-}
-
-function clearNativeTimer(handle: ReturnType<typeof setTimeout>): void {
-  clearTimeout(handle);
-}
-
 function resolveTimeoutTimerKind(side: TrackedOrder['side']): OrderMonitorTimerKind {
   if (side === OrderSide.Buy) {
     return 'BUY_TIMEOUT';
@@ -132,7 +122,16 @@ function resolveRouteTimerSchedules(
  * @returns route runtime 实例
  */
 export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
-  const { runtime, config, marketDataClient, processRoute } = deps;
+  const {
+    runtime,
+    config,
+    marketDataClient,
+    processRoute,
+    now,
+    scheduleTimer,
+    clearTimer,
+    onFatalError,
+  } = deps;
   const activeRoutePromises = new Set<Promise<void>>();
   let firstRouteProcessingError: Error | null = null;
 
@@ -161,7 +160,7 @@ export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
           firstRouteProcessingError = error;
         }
 
-        deps.onFatalError?.(error);
+        onFatalError(error);
       });
   }
 
@@ -211,9 +210,9 @@ export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
 
       const timerHandle = scheduleBoundedOneShotAt({
         atMs,
-        now: NATIVE_TIMER_NOW,
-        scheduleTimer: scheduleNativeTimer,
-        clearTimer: clearNativeTimer,
+        now,
+        scheduleTimer,
+        clearTimer,
         onDue: () => {
           const latestRouteState = getRouteState(symbol);
           if (latestRouteState?.generation !== generation) {

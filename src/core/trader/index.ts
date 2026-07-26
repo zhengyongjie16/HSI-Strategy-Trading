@@ -63,6 +63,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       isExecutionAllowed,
       isContinuousTradingAllowed,
       now,
+      scheduleTimer,
+      clearTimer,
       readCurrentTradingDayInfo,
       onFatalError,
     } = deps;
@@ -74,7 +76,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
     const rateLimiterConfig = deps.rateLimiterConfig ?? { maxCalls: 30, windowMs: 30000 };
     const rateLimiter = createRateLimiter({ config: rateLimiterConfig });
 
-    const cacheManager = createOrderCacheManager({ ctx, rateLimiter });
+    const cacheManager = createOrderCacheManager({ ctx, rateLimiter, now });
 
     const accountService = createAccountService({ ctx, rateLimiter });
 
@@ -102,6 +104,9 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       tradingConfig,
       symbolRegistry,
       isContinuousTradingAllowed,
+      now,
+      scheduleTimer,
+      clearTimer,
       onFatalError,
     });
 

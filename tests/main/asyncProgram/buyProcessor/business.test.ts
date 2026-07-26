@@ -7,12 +7,13 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createBuyTaskQueue } from '../../../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createBuyProcessor } from '../../../../src/main/asyncProgram/buyProcessor/index.js';
+import { createBuyProcessor as createProductionBuyProcessor } from '../../../../src/main/asyncProgram/buyProcessor/index.js';
 import { createSignalProcessor } from '../../../../src/core/signalProcessor/index.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 
 import type { BuySignal, Signal } from '../../../../src/types/signal.js';
+import type { BuyProcessorDeps } from '../../../../src/main/asyncProgram/buyProcessor/types.js';
 
 import {
   createDoomsdayProtectionDouble,
@@ -24,7 +25,16 @@ import {
   createSignalDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
-import { createMonitorContext, runProcessorFlow } from '../utils.js';
+import { createMonitorContext, rethrowFatalError, runProcessorFlow } from '../utils.js';
+
+type TestBuyProcessorDeps = Omit<BuyProcessorDeps, 'now'> & Partial<Pick<BuyProcessorDeps, 'now'>>;
+
+function createBuyProcessor(deps: TestBuyProcessorDeps) {
+  return createProductionBuyProcessor({
+    now: () => new Date(Date.now()),
+    ...deps,
+  });
+}
 
 async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
   readonly executeCalls: number;
@@ -72,6 +82,7 @@ async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
     }),
     getIsHalfDay: () => false,
     getCanProcessTask: () => true,
+    onFatalError: rethrowFatalError,
   });
   let signal = createSignalDouble('BUYCALL', 'BULL.HK');
   signal = { ...signal, seatVersion: 2 };
@@ -110,10 +121,15 @@ describe('buyProcessor business flow', () => {
     const monitorContext = createMonitorContext();
 
     let riskCheckCalls = 0;
+    const riskCheckTimes: number[] = [];
     const signalProcessor = {
       processSellSignals: () => [],
-      applyRiskChecks: async (signals: ReadonlyArray<BuySignal>) => {
+      applyRiskChecks: async (
+        signals: ReadonlyArray<BuySignal>,
+        context: { readonly currentTime: Date },
+      ) => {
         riskCheckCalls += 1;
+        riskCheckTimes.push(context.currentTime.getTime());
         return signals;
       },
       resetRiskCheckCooldown: () => {},
@@ -139,6 +155,7 @@ describe('buyProcessor business flow', () => {
       },
     });
 
+    const injectedNow = new Date('2031-01-02T03:04:05.000Z');
     const processor = createBuyProcessor({
       taskQueue: queue,
       monitorContext,
@@ -147,7 +164,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient,
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
+      now: () => injectedNow,
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -166,6 +185,8 @@ describe('buyProcessor business flow', () => {
 
     expect(riskCheckCalls).toBe(1);
     expect(quoteRequests).toHaveLength(1);
+    expect(riskCheckTimes).toEqual([injectedNow.getTime()]);
+    expect(riskCheckTimes[0]).not.toBe(Date.now());
     expect(quoteRequests[0]).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
   });
 
@@ -206,6 +227,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -262,6 +284,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -317,6 +340,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let staleSignal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -376,6 +400,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -395,7 +420,7 @@ describe('buyProcessor business flow', () => {
     expect(executeCalls).toBe(0);
   });
 
-  it('sends submitOrder API failure to fatal channel', async () => {
+  it('sends submitOrder API failure to fatal channel and stops remaining queue work', async () => {
     const queue = createBuyTaskQueue();
     const submitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
@@ -403,6 +428,7 @@ describe('buyProcessor business flow', () => {
       cause: new Error('submit timeout'),
     });
     const fatalErrors: unknown[] = [];
+    let executeCalls = 0;
     const signalProcessor = {
       processSellSignals: () => [],
       applyRiskChecks: async (signals: ReadonlyArray<BuySignal>) => signals,
@@ -415,6 +441,7 @@ describe('buyProcessor business flow', () => {
       signalProcessor,
       trader: createTraderDouble({
         executeSignals: async () => {
+          executeCalls += 1;
           throw submitError;
         },
       }),
@@ -439,13 +466,19 @@ describe('buyProcessor business flow', () => {
       pushTask: () => {
         let signal = createSignalDouble('BUYCALL', 'BULL.HK');
         signal = { ...signal, seatVersion: 2 };
-        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+        for (const task of [
+          { type: 'IMMEDIATE_BUY' as const, data: signal },
+          { type: 'IMMEDIATE_BUY' as const, data: signal },
+        ]) {
+          queue.push(task);
+        }
       },
       waitCondition: () => fatalErrors.length === 1,
     });
 
     expect(fatalErrors).toEqual([submitError]);
-    expect(queue.isEmpty()).toBeTrue();
+    expect(executeCalls).toBe(1);
+    expect(queue.isEmpty()).toBeFalse();
   });
 
   it('consumes non-submit external API failures without fatal channel escalation', async () => {
@@ -532,6 +565,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => false,
+      onFatalError: rethrowFatalError,
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');

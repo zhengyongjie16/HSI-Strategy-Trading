@@ -172,7 +172,7 @@ describe('auto-symbol-switch integration', () => {
       orderRecorder,
       riskChecker,
       findBestWarrant: async () => candidateQueue.shift() ?? null,
-      now: () => new Date('2026-02-16T01:00:00.000Z'),
+      clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
@@ -245,9 +245,10 @@ describe('auto-symbol-switch integration', () => {
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
   });
 
-  it('uses real orderExecutor chain and submits rebuy quantity by sell-notional', async () => {
+  it('keeps switch signals on the injected trading day through the real orderExecutor chain', async () => {
     const fixedNowMs = Date.parse('2026-02-16T02:00:00.000Z');
-    setSystemTime(fixedNowMs);
+    const hostNowMs = Date.parse('2031-09-20T02:00:00.000Z');
+    setSystemTime(hostNowMs);
     try {
       candidateQueue = [
         createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
@@ -372,8 +373,19 @@ describe('auto-symbol-switch integration', () => {
         }),
       });
 
+      const generatedTriggerTimes: number[] = [];
       const trader = createTraderDouble({
-        executeSignals: async (signals) => orderExecutor.executeSignals(signals),
+        executeSignals: async (signals) => {
+          for (const signal of signals) {
+            if (!signal.triggerTime) {
+              throw new Error('自动换标信号必须包含 triggerTime');
+            }
+
+            generatedTriggerTimes.push(signal.triggerTime.getTime());
+          }
+
+          return orderExecutor.executeSignals(signals);
+        },
         getPendingOrders: async () => [],
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
@@ -389,7 +401,7 @@ describe('auto-symbol-switch integration', () => {
         orderRecorder,
         riskChecker,
         findBestWarrant: async () => candidateQueue.shift() ?? null,
-        now: () => new Date(fixedNowMs),
+        clock: { now: () => new Date(fixedNowMs) },
         getTradingCalendarSnapshot: () =>
           new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
       });
@@ -449,6 +461,7 @@ describe('auto-symbol-switch integration', () => {
       expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
       expect(trackedOrders[1]?.side).toBe(OrderSide.Buy);
       expect(rebuyLossGateCalls).toBe(1);
+      expect(generatedTriggerTimes).toEqual([fixedNowMs, fixedNowMs]);
 
       const sellPayload = submitCalls[0]?.args[0] as {
         readonly submittedQuantity: { readonly toString: () => string };
@@ -534,7 +547,7 @@ describe('auto-symbol-switch integration', () => {
         findBestCalls += 1;
         return candidateQueue.shift() ?? null;
       },
-      now: () => new Date('2026-02-16T01:00:00.000Z'),
+      clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
@@ -633,7 +646,7 @@ describe('auto-symbol-switch integration', () => {
         findBestCalls += 1;
         return candidateQueue.shift() ?? null;
       },
-      now: () => new Date('2026-02-16T01:00:00.000Z'),
+      clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
@@ -724,7 +737,7 @@ describe('auto-symbol-switch integration', () => {
           }),
       }),
       findBestWarrant: async () => candidateQueue.shift() ?? null,
-      now: () => new Date('2026-02-16T01:00:00.000Z'),
+      clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });

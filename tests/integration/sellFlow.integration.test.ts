@@ -20,6 +20,7 @@ import {
 } from '../../mock/factories/tradeFactory.js';
 import {
   createDailyLossTrackerDouble,
+  createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
   createOrderMonitorDouble,
   createOrderRecorderDouble,
@@ -31,7 +32,11 @@ import {
   createSymbolRegistryDouble,
   createTradeContextDouble,
 } from '../helpers/testDoubles.js';
-import type { ExecutableSellSignal, Signal } from '../../src/types/signal.js';
+import type { HeldSellSignal, ProcessedSellSignal } from '../../src/core/signalProcessor/types.js';
+import type {
+  ExecutableSellSignal,
+  ProtectiveLiquidationSellSignal,
+} from '../../src/types/signal.js';
 import type { OrderRecord } from '../../src/types/services.js';
 import type {
   OrderExecutorDeps,
@@ -107,31 +112,15 @@ async function withMockedNow<T>(nowMs: number, operation: () => Promise<T>): Pro
   }
 }
 
-function requireExecutableSellSignals(signals: ReadonlyArray<Signal>): ExecutableSellSignal[] {
+function requireExecutableSellSignals(
+  signals: ReadonlyArray<ProcessedSellSignal>,
+): ExecutableSellSignal[] {
   return signals.map((signal) => {
-    if (signal.action !== 'SELLCALL' && signal.action !== 'SELLPUT') {
+    if (signal.action === 'HOLD') {
       throw new Error(`Expected executable sell signal, got ${signal.action}`);
     }
 
-    const seatVersion = signal.seatVersion;
-    if (typeof seatVersion !== 'number' || !Number.isFinite(seatVersion)) {
-      throw new TypeError('Expected executable sell signal with finite seatVersion');
-    }
-
-    if (signal.isProtectiveLiquidation === true) {
-      return {
-        ...signal,
-        action: signal.action,
-        seatVersion,
-        isProtectiveLiquidation: true,
-      };
-    }
-
-    return {
-      ...signal,
-      action: signal.action,
-      seatVersion,
-    };
+    return signal;
   });
 }
 
@@ -152,6 +141,61 @@ function createRecordedBuyOrder(
 }
 
 describe('sell-flow integration', () => {
+  it('preserves protective semantics on success and clears them when quantity processing returns HOLD', () => {
+    const signalProcessor = createSignalProcessor({
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    });
+    const protectiveSignal: ProtectiveLiquidationSellSignal = {
+      symbol: 'BULL.HK',
+      symbolName: 'BULL.HK',
+      action: 'SELLCALL',
+      reason: 'protective-type-boundary',
+      seatVersion: 7,
+      triggerTime: new Date('2026-07-12T07:45:01.000Z'),
+      isProtectiveLiquidation: true,
+    };
+    const process = (longPosition: ReturnType<typeof createPositionDouble> | null) =>
+      signalProcessor.processSellSignals({
+        signals: [protectiveSignal],
+        longPosition,
+        shortPosition: null,
+        longQuote: createQuoteDouble('BULL.HK', 1.05),
+        shortQuote: null,
+        orderRecorder: createOrderRecorderDouble(),
+        smartCloseEnabled: false,
+        smartCloseTimeoutMinutes: null,
+        nowMs: Date.parse('2026-07-12T07:45:01.000Z'),
+        isHalfDay: false,
+        tradingCalendarSnapshot: new Map(),
+      });
+
+    const successfulSignal = process(
+      createPositionDouble({
+        symbol: 'BULL.HK',
+        quantity: 100,
+        availableQuantity: 100,
+      }),
+    )[0];
+    if (successfulSignal?.action !== 'SELLCALL') {
+      throw new Error('expected executable protective sell signal');
+    }
+
+    const executableSignal: ExecutableSellSignal = successfulSignal;
+    expect(executableSignal.isProtectiveLiquidation).toBeTrue();
+    expect(executableSignal.seatVersion).toBe(7);
+    expect(executableSignal.quantity).toBe(100);
+
+    const heldResult = process(null)[0];
+    if (heldResult?.action !== 'HOLD') {
+      throw new Error('expected held sell signal');
+    }
+
+    const heldSignal: HeldSellSignal = heldResult;
+    expect(heldSignal.isProtectiveLiquidation).toBeFalse();
+    expect(heldSignal.seatVersion).toBe(7);
+  });
+
   it('throws ExternalApiRequestError without retry when sell quantity resolution reads stock positions', async () => {
     const tradingConfig = createTradingConfig();
     const tradeCtx = createTradeContextMock();
@@ -992,6 +1036,11 @@ describe('sell-flow integration', () => {
       },
     });
     const orderMonitor = createOrderMonitor({
+      now: () => new Date(),
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter,
       cacheManager: {
@@ -1243,7 +1292,7 @@ describe('sell-flow integration', () => {
             side: OrderSide.Sell,
             status: OrderStatus.New,
             orderType: OrderType.MO,
-            submittedPrice: 0,
+            submittedPrice: null,
             submittedQuantity: 100,
             executedQuantity: 0,
             submittedAt,
@@ -1628,6 +1677,11 @@ describe('sell-flow integration', () => {
       },
     });
     const orderMonitorDeps: OrderMonitorDeps = {
+      now: () => new Date(),
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter,
       cacheManager: {
@@ -1766,6 +1820,11 @@ describe('sell-flow integration', () => {
       },
     });
     const orderMonitor = createOrderMonitor({
+      now: () => new Date(),
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
       ctx: createTradeContextDouble(tradeCtx),
       rateLimiter,
       cacheManager: {

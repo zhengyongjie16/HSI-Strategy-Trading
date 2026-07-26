@@ -53,4 +53,39 @@ describe('sellDeductionPolicy', () => {
 
     expect(remaining.map((order) => order.orderId)).toEqual(['BUY-LATER']);
   });
+
+  it('按低价优先整笔扣减且不拆分无法完全覆盖的订单', () => {
+    const low = createOrder({
+      orderId: 'BUY-LOW',
+      executedPrice: 0.8,
+      executedTime: 300,
+      executedQuantity: 60,
+    });
+    const middle = createOrder({
+      orderId: 'BUY-MIDDLE',
+      executedPrice: 0.9,
+      executedTime: 100,
+      executedQuantity: 100,
+    });
+    const high = createOrder({
+      orderId: 'BUY-HIGH',
+      executedPrice: 1,
+      executedTime: 200,
+      executedQuantity: 40,
+    });
+
+    const remaining = deductSellQuantityFromBuyOrders([high, middle, low], 110);
+
+    expect(remaining.map((order) => order.orderId)).toEqual(['BUY-MIDDLE']);
+    expect(remaining[0]?.executedQuantity).toBe(100);
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    '卖出数量非法时 fail-fast: %p',
+    (sellQuantity) => {
+      expect(() => deductSellQuantityFromBuyOrders([], sellQuantity)).toThrow(
+        '[卖出扣减策略] 卖出数量必须为有限正数',
+      );
+    },
+  );
 });

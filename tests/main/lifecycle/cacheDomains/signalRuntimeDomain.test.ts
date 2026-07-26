@@ -24,6 +24,7 @@ import type { Signal } from '../../../../src/types/signal.js';
 import type { OrderedMethod } from '../types.js';
 import {
   createDelayedSignalVerifierDouble,
+  createLoggerDouble,
   createMonitorContextDouble,
 } from '../../../helpers/testDoubles.js';
 
@@ -182,6 +183,7 @@ describe('createSignalRuntimeDomain', () => {
       },
     };
     const deps: SignalRuntimeDomainDeps = {
+      logger: createLoggerDouble(),
       monitorContext,
       buyProcessor,
       sellProcessor,
@@ -352,6 +354,7 @@ describe('createSignalRuntimeDomain', () => {
     };
 
     const deps: SignalRuntimeDomainDeps = {
+      logger: createLoggerDouble(),
       monitorContext: createMonitorContextDouble(),
       buyProcessor,
       sellProcessor,

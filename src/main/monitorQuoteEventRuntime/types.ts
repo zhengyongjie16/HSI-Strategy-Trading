@@ -14,6 +14,7 @@ import type { SeatStatus, SymbolRegistry } from '../../types/seat.js';
 import type { QuoteSubscriptionRuntime } from '../quoteSubscriptionRuntime/types.js';
 import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.js';
 import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
+import type { Logger } from '../../utils/logger/types.js';
 
 /**
  * Monitor quote freshness 状态快照。
@@ -80,6 +81,7 @@ export type StartDistanceSwitchExecutor = (params: {
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
 export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
+  readonly logger: Pick<Logger, 'error'>;
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
   readonly monitorContext: MonitorContext;
   readonly executeStaticLiquidation?: MonitorQuoteEventExecutor;
@@ -91,16 +93,16 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly lastState?: Pick<LastState, 'isTradingEnabled' | 'canTrade' | 'isHalfDay'>;
   readonly postTradeConsistencyRuntime?: MonitorQuoteFreshnessDeps;
   readonly doomsdayProtectionEnabled?: boolean;
-  readonly now?: () => Date;
-  readonly scheduleTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
-  readonly clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
+  readonly now: () => Date;
+  readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
   readonly quoteSubscriptionRuntime?: Pick<
     QuoteSubscriptionRuntime,
     'retainSymbols' | 'releaseRetain'
   >;
 
   /** route 内部错误可观测通道 */
-  readonly onFatalError?: (error: unknown) => void;
+  readonly onFatalError: (error: unknown) => void;
 }>;
 
 /**
@@ -110,6 +112,7 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
  * 使用范围：createDefaultMonitorQuoteEventRuntime 使用。
  */
 export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
+  readonly logger: Pick<Logger, 'error'>;
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
   readonly monitorContext: MonitorContext;
   readonly trader: Pick<Trader, 'executeSignals'>;
@@ -120,8 +123,8 @@ export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly postTradeConsistencyRuntime: MonitorQuoteFreshnessDeps;
   readonly doomsdayProtectionEnabled: boolean;
   readonly now: () => Date;
-  readonly scheduleTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
-  readonly clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
+  readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
   readonly quoteSubscriptionRuntime?: Pick<
     QuoteSubscriptionRuntime,
     'retainSymbols' | 'releaseRetain'
@@ -132,7 +135,7 @@ export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   >['handoffPendingSwitch'];
 
   /** route 内部错误可观测通道 */
-  readonly onFatalError?: (error: unknown) => void;
+  readonly onFatalError: (error: unknown) => void;
 }>;
 
 /**
@@ -287,6 +290,9 @@ export type SwitchWakeupHandoffParams = Readonly<{
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
 export type SwitchWakeupRuntimeDeps = Readonly<{
+  /** runtime 错误日志端口 */
+  logger: Pick<Logger, 'error'>;
+
   /** 行情事件源 */
   marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
 
@@ -324,7 +330,7 @@ export type SwitchWakeupRuntimeDeps = Readonly<{
   clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
 
   /** route 内部错误可观测通道 */
-  onFatalError?: (error: unknown) => void;
+  onFatalError: (error: unknown) => void;
 }>;
 
 /**

@@ -216,7 +216,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         shouldResumeCancelRetryFromWsStatus(mergedFact.status)
       ) {
         trackedOrder.cancelRetryCount = 0;
-        trackedOrder.nextCancelAttemptAt = Date.now();
+        trackedOrder.nextCancelAttemptAt = deps.now().getTime();
       }
 
       resumeOrderReplaceFromWsProgress(trackedOrder);

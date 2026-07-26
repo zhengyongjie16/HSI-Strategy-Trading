@@ -10,6 +10,7 @@ import type { LastState } from '../../../src/types/state.js';
 import type { OrderHoldSymbolsChangedEvent } from '../../../src/types/services.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
+  createLoggerDouble,
   createMonitorConfigDouble,
   createPositionCacheDouble,
   createPositionDouble,
@@ -83,6 +84,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -95,6 +97,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
+      onFatalError: () => {},
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -116,6 +119,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -128,6 +132,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
+      onFatalError: () => {},
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -157,6 +162,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -167,6 +173,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
+      onFatalError: () => {},
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -197,6 +204,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -209,6 +217,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
+      onFatalError: () => {},
     });
 
     const release = await runtime.retainSymbols({
@@ -232,6 +241,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const releaseError = new Error('unsubscribe failed');
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -269,6 +279,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -279,6 +290,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
+      onFatalError: () => {},
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -306,6 +318,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -318,6 +331,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
+      onFatalError: () => {},
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -341,6 +355,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -353,6 +368,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
+      onFatalError: () => {},
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -374,6 +390,7 @@ describe('QuoteSubscriptionRuntime', () => {
     const subscriptionError = new Error('subscribe failed');
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
       marketDataClient: {
@@ -404,6 +421,41 @@ describe('QuoteSubscriptionRuntime', () => {
       frozenTradingDayKey: null,
     });
     await runtime.waitForAdmission(['NEXT_BULL.HK']).catch(() => {});
+
+    expect(fatalErrors).toEqual([subscriptionError]);
+    await runtime.stopAndDrain().catch(() => {});
+  });
+
+  it('order hold 事件订阅 mutation 失败会进入 fatal drain', async () => {
+    const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    const lastState = createLastState();
+    const orderHoldEventSource = createOrderHoldEventSource([]);
+    const subscriptionError = new Error('order hold subscribe failed');
+    const fatalErrors: unknown[] = [];
+    const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
+      tradingConfig: createTradingConfig({ monitor: monitorConfig }),
+      symbolRegistry,
+      marketDataClient: {
+        subscribeSymbols: async (symbols) => {
+          if (symbols.includes('ORDER.HK')) {
+            throw subscriptionError;
+          }
+        },
+        unsubscribeSymbols: async () => {},
+      },
+      trader: orderHoldEventSource.trader,
+      lastState,
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    await runtime.reconcileFromCurrentTruth();
+    runtime.start();
+    orderHoldEventSource.add('ORDER.HK');
+    await runtime.waitForAdmission(['ORDER.HK']).catch(() => {});
 
     expect(fatalErrors).toEqual([subscriptionError]);
     await runtime.stopAndDrain().catch(() => {});

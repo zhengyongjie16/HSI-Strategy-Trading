@@ -1,6 +1,6 @@
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
-import type { BuySignal, Signal } from '../../types/signal.js';
+import type { BuySignal, ExecutableSellSignal } from '../../types/signal.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { BuyRiskCheckContext, OrderRecorder } from '../../types/services.js';
 import type { LiquidationCooldownTracker } from '../../services/liquidationCooldown/types.js';
@@ -26,13 +26,32 @@ export type SellContextValidationResult =
     };
 
 /**
+ * 卖量计算后被拒绝执行的卖出信号。
+ * 类型用途：保留原可执行卖出信号的路由身份和业务上下文，同时将动作明确转为 HOLD。
+ * 数据来源：processSellSignals 在持仓、行情或可卖数量不满足执行条件时构造。
+ * 使用范围：signalProcessor 输出与 sellProcessor HOLD guard 之间。
+ */
+export type HeldSellSignal = Omit<ExecutableSellSignal, 'action' | 'isProtectiveLiquidation'> & {
+  readonly action: 'HOLD';
+  readonly isProtectiveLiquidation: false;
+};
+
+/**
+ * 卖量计算结果信号。
+ * 类型用途：区分仍可执行的卖出信号与已明确转为 HOLD 的非保护性信号。
+ * 数据来源：processSellSignals 对 ExecutableSellSignal 逐项计算后返回。
+ * 使用范围：signalProcessor 与 sellProcessor 的返回值契约。
+ */
+export type ProcessedSellSignal = ExecutableSellSignal | HeldSellSignal;
+
+/**
  * 卖出信号处理入参。
  * 类型用途：统一承载 processSellSignals 卖出数量计算所需的行情、持仓、订单记录与时间上下文。
  * 数据来源：由卖出处理链路在调用前组装。
  * 使用范围：signalProcessor 模块与调用方之间的参数契约。
  */
 export type ProcessSellSignalsParams = {
-  readonly signals: Signal[];
+  readonly signals: ReadonlyArray<ExecutableSellSignal>;
   readonly longPosition: Position | null;
   readonly shortPosition: Position | null;
   readonly longQuote: Quote | null;
@@ -58,7 +77,7 @@ export interface SignalProcessor {
    * 处理卖出信号，计算实际卖出数量
    * 根据智能平仓配置决定是全仓卖出还是按三阶段智能平仓卖出
    */
-  processSellSignals: (params: ProcessSellSignalsParams) => Signal[];
+  processSellSignals: (params: ProcessSellSignalsParams) => ReadonlyArray<ProcessedSellSignal>;
 
   /**
    * 对买入信号列表应用风险检查。

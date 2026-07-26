@@ -45,6 +45,57 @@ import type { DecimalLike } from '../utils/helpers/types.js';
 type DecimalLikeValue = string | number | null;
 
 /**
+ * 已通过 todayOrders 信任边界校验的订单方向。
+ * 数据来源：Longbridge SDK OrderSide 中明确可处理的业务成员。
+ * 使用范围：PendingOrder 与订单缓存边界；RawOrderFromAPI 仍保留 SDK 原始枚举语义。
+ */
+export type ValidatedOrderSide = OrderSide.Buy | OrderSide.Sell;
+
+/**
+ * 已通过 todayOrders 信任边界校验的订单状态。
+ * 数据来源：订单生命周期真值表中的全部明确成员，不包含 Unknown。
+ * 使用范围：PendingOrder 与订单缓存边界；RawOrderFromAPI 仍保留 SDK 原始枚举语义。
+ */
+export type ValidatedOrderStatus =
+  | OrderStatus.NotReported
+  | OrderStatus.ReplacedNotReported
+  | OrderStatus.ProtectedNotReported
+  | OrderStatus.VarietiesNotReported
+  | OrderStatus.WaitToNew
+  | OrderStatus.New
+  | OrderStatus.WaitToReplace
+  | OrderStatus.PendingReplace
+  | OrderStatus.Replaced
+  | OrderStatus.PartialFilled
+  | OrderStatus.WaitToCancel
+  | OrderStatus.PendingCancel
+  | OrderStatus.Filled
+  | OrderStatus.Rejected
+  | OrderStatus.Canceled
+  | OrderStatus.Expired
+  | OrderStatus.PartialWithdrawal;
+
+/**
+ * 已通过 todayOrders 信任边界校验的订单类型。
+ * 数据来源：Longbridge SDK OrderType 中明确支持查询与撤单识别的成员，不包含 Unknown。
+ * 使用范围：PendingOrder 与订单缓存边界；RawOrderFromAPI 仍保留 SDK 原始枚举语义。
+ */
+export type ValidatedOrderType =
+  | OrderType.LO
+  | OrderType.ELO
+  | OrderType.MO
+  | OrderType.AO
+  | OrderType.ALO
+  | OrderType.ODD
+  | OrderType.LIT
+  | OrderType.MIT
+  | OrderType.TSLPAMT
+  | OrderType.TSLPPCT
+  | OrderType.TSMAMT
+  | OrderType.TSMPCT
+  | OrderType.SLO;
+
+/**
  * 交易日查询结果。
  * 类型用途：封装交易日 API 的返回结构，作为 isTradingDay / 交易日查询的返回值或中间数据。
  * 数据来源：Longbridge 交易日 API（如 trading_days）。
@@ -266,12 +317,14 @@ export interface MarketDataClient {
 export type PendingOrder = {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: OrderSide;
-  readonly submittedPrice: number;
+  readonly side: ValidatedOrderSide;
+
+  /** SDK 对市价单等合法订单可返回 null；不得伪造为零价格。 */
+  readonly submittedPrice: number | null;
   readonly quantity: number;
   readonly executedQuantity: number;
-  readonly status: OrderStatus;
-  readonly orderType: RawOrderFromAPI['orderType'];
+  readonly status: ValidatedOrderStatus;
+  readonly orderType: ValidatedOrderType;
 };
 
 /**

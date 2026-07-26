@@ -4,11 +4,16 @@
  * 覆盖最小成交后一致性运行时切片：启动前积压 stale、启动后消费刷新、
  * 以及 completeRebuildBaseline 的最小 freshness 推进行为。
  */
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 
-import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createPostTradeConsistencyRuntime as buildPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
+import type {
+  PostTradeConsistencyRuntimeDeps,
+  PostTradeConsistencyRuntime,
+} from '../../../src/app/types.js';
 import type { LastState } from '../../../src/types/state.js';
+import type { RuntimeScheduler } from '../../../src/types/runtime.js';
 
 import {
   createAccountSnapshotDouble,
@@ -49,22 +54,75 @@ function createDeferred<T>(): {
   };
 }
 
-/**
- * 轮询等待条件成立。
- *
- * @param predicate 需要等待变为 true 的条件
- * @param timeoutMs 超时时间，默认 1000ms
- * @returns 条件成立时 resolve；超时则抛错
- */
-async function waitForCondition(predicate: () => boolean, timeoutMs: number = 1000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error('Timed out waiting for condition.');
-    }
+type ManualScheduler = Readonly<{
+  runtime: RuntimeScheduler;
+  runNext: (expectedDelayMs: number) => Promise<void>;
+  pendingDelays: () => ReadonlyArray<number>;
+}>;
 
-    await Bun.sleep(1);
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve();
   }
+}
+
+/**
+ * 创建完全由测试推进的 scheduler，避免成交后一致性测试依赖墙钟。
+ *
+ * @returns scheduler 契约与按期望延迟推进下一个 timer 的测试端口
+ */
+function createManualScheduler(): ManualScheduler {
+  const timers = new Map<
+    ReturnType<typeof setTimeout>,
+    Readonly<{ callback: () => void; delayMs: number }>
+  >();
+
+  return {
+    runtime: {
+      scheduleTimer: (callback, delayMs) => {
+        const handle = setTimeout(() => {}, 2_147_483_647);
+        clearTimeout(handle);
+        timers.set(handle, { callback, delayMs });
+        return handle;
+      },
+      clearTimer: (handle) => {
+        timers.delete(handle);
+      },
+    },
+    runNext: async (expectedDelayMs) => {
+      const next = timers.entries().next().value;
+      if (next === undefined) {
+        throw new Error(`没有可推进的 ${String(expectedDelayMs)}ms timer`);
+      }
+
+      const [handle, timer] = next;
+      if (timer.delayMs !== expectedDelayMs) {
+        throw new Error(
+          `期望推进 ${String(expectedDelayMs)}ms timer，实际为 ${String(timer.delayMs)}ms`,
+        );
+      }
+
+      timers.delete(handle);
+      timer.callback();
+      await flushMicrotasks();
+    },
+    pendingDelays: () => Array.from(timers.values(), ({ delayMs }) => delayMs),
+  };
+}
+
+let manualScheduler: ManualScheduler;
+
+beforeEach(() => {
+  manualScheduler = createManualScheduler();
+});
+
+function createPostTradeConsistencyRuntime(
+  deps: Omit<PostTradeConsistencyRuntimeDeps, 'scheduler'>,
+): PostTradeConsistencyRuntime {
+  return buildPostTradeConsistencyRuntime({
+    ...deps,
+    scheduler: manualScheduler.runtime,
+  });
 }
 
 function createLastState(): LastState {
@@ -172,18 +230,20 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshPositions: true,
     });
 
-    await Bun.sleep(30);
-
     expect(accountRefreshCalls).toBe(0);
     expect(positionRefreshCalls).toBe(0);
+    expect(manualScheduler.pendingDelays()).toEqual([]);
     expect(runtime.getStatus()).toEqual({
       started: false,
       currentVersion: 0,
       staleVersion: 1,
     });
 
+    const fresh = runtime.waitForFresh();
     runtime.start();
-    await runtime.waitForFresh();
+    expect(manualScheduler.pendingDelays()).toEqual([0]);
+    await manualScheduler.runNext(0);
+    await fresh;
     await runtime.stopAndDrain();
 
     expect(accountRefreshCalls).toBe(1);
@@ -219,7 +279,7 @@ describe('createPostTradeConsistencyRuntime', () => {
         }),
       lastState,
       onPositionsCommitted: async () => {
-        await Bun.sleep(1);
+        await Promise.resolve();
         committedSnapshots.push({
           cachedPositionCount: lastState.cachedPositions.length,
           cacheQuantity: lastState.positionCache.get('BULL.HK')?.quantity ?? null,
@@ -233,8 +293,10 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshPositions: true,
     });
 
+    const fresh = runtime.waitForFresh();
     runtime.start();
-    await runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    await fresh;
     await runtime.stopAndDrain();
 
     expect(committedSnapshots).toEqual([
@@ -295,8 +357,8 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshPositions: true,
     });
     runtime.start();
-
-    await waitForCondition(() => accountRefreshCalls === 1);
+    await manualScheduler.runNext(0);
+    expect(accountRefreshCalls).toBe(1);
 
     runtime.recordSettlementRefreshNeed({
       refreshAccount: true,
@@ -322,8 +384,14 @@ describe('createPostTradeConsistencyRuntime', () => {
         availableQuantity: 300,
       }),
     ]);
+    await flushMicrotasks();
 
-    await runtime.waitForFresh();
+    expect(manualScheduler.pendingDelays()).toEqual([300]);
+    await manualScheduler.runNext(300);
+    expect(manualScheduler.pendingDelays()).toEqual([0]);
+    const fresh = runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    await fresh;
 
     expect(accountRefreshCalls).toBe(2);
     expect(positionRefreshCalls).toBe(2);
@@ -335,7 +403,6 @@ describe('createPostTradeConsistencyRuntime', () => {
       staleVersion: 2,
     });
 
-    await runtime.waitForFresh();
     await runtime.stopAndDrain();
   });
 
@@ -420,8 +487,13 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshAccount: true,
       refreshPositions: true,
     });
+    const fresh = runtime.waitForFresh();
     runtime.start();
-    await runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    expect(manualScheduler.pendingDelays()).toEqual([300]);
+    await manualScheduler.runNext(300);
+    await manualScheduler.runNext(0);
+    await fresh;
     await runtime.stopAndDrain();
 
     expect(accountCallCount).toBeGreaterThanOrEqual(2);
@@ -431,6 +503,115 @@ describe('createPostTradeConsistencyRuntime', () => {
       currentVersion: 1,
       staleVersion: 1,
     });
+  });
+
+  it('lets a new settlement need preempt the 300ms retry and clears the superseded timer', async () => {
+    const lastState = createLastState();
+    let accountRefreshCalls = 0;
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => {
+            accountRefreshCalls += 1;
+            if (accountRefreshCalls === 1) {
+              throw await createExternalApiRequestError({
+                operation: 'TradeContext.accountBalance',
+                attempts: 1,
+                cause: new Error('temporary failure'),
+              });
+            }
+
+            return createAccountSnapshotDouble(88_000);
+          },
+        }),
+      lastState,
+      onPositionsCommitted: async () => {},
+    });
+
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: false });
+    runtime.start();
+    await manualScheduler.runNext(0);
+    expect(manualScheduler.pendingDelays()).toEqual([300]);
+
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: false });
+    expect(manualScheduler.pendingDelays()).toEqual([0]);
+
+    const fresh = runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    await fresh;
+
+    expect(accountRefreshCalls).toBe(2);
+    expect(runtime.getStatus()).toEqual({
+      started: true,
+      currentVersion: 2,
+      staleVersion: 2,
+    });
+    await runtime.stopAndDrain();
+  });
+
+  it('clears a queued 0ms run on stop but preserves its need for the next start', async () => {
+    let accountRefreshCalls = 0;
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => {
+            accountRefreshCalls += 1;
+            return createAccountSnapshotDouble(88_000);
+          },
+        }),
+      lastState: createLastState(),
+      onPositionsCommitted: async () => {},
+    });
+
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: false });
+    runtime.start();
+    expect(manualScheduler.pendingDelays()).toEqual([0]);
+
+    await runtime.stopAndDrain();
+    expect(manualScheduler.pendingDelays()).toEqual([]);
+    expect(accountRefreshCalls).toBe(0);
+
+    const fresh = runtime.waitForFresh();
+    runtime.start();
+    expect(manualScheduler.pendingDelays()).toEqual([0]);
+    await manualScheduler.runNext(0);
+    await fresh;
+    expect(accountRefreshCalls).toBe(1);
+    await runtime.stopAndDrain();
+  });
+
+  it('clears a queued 300ms retry and discards its need during midnight cleanup', async () => {
+    let accountRefreshCalls = 0;
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => {
+            accountRefreshCalls += 1;
+            throw await createExternalApiRequestError({
+              operation: 'TradeContext.accountBalance',
+              attempts: 1,
+              cause: new Error('temporary failure'),
+            });
+          },
+        }),
+      lastState: createLastState(),
+      onPositionsCommitted: async () => {},
+    });
+
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: false });
+    runtime.start();
+    await manualScheduler.runNext(0);
+    expect(manualScheduler.pendingDelays()).toEqual([300]);
+
+    runtime.midnightClear();
+    expect(manualScheduler.pendingDelays()).toEqual([]);
+    runtime.start();
+    expect(manualScheduler.pendingDelays()).toEqual([]);
+    expect(accountRefreshCalls).toBe(1);
+    await runtime.stopAndDrain();
   });
 
   it('keeps the attributed direction snapshot stable while refreshing seat symbols', async () => {
@@ -514,8 +695,10 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshAccount: true,
       refreshPositions: true,
     });
+    const fresh = runtime.waitForFresh();
     runtime.start();
-    await runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    await fresh;
     await runtime.stopAndDrain();
 
     expect(riskRefreshCalls).toEqual([
@@ -564,6 +747,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     );
 
     runtime.start();
+    await manualScheduler.runNext(0);
 
     const waitError = await waiterResult;
     const fatalError = await fatalResult;
@@ -621,14 +805,13 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshPositions: true,
     });
 
+    const fatalPromise = runtime.drainFatalError().then(
+      () => null,
+      (error: unknown) => error,
+    );
     runtime.start();
-    const fatalResult = await Promise.race([
-      runtime.drainFatalError().then(
-        () => null,
-        (error: unknown) => error,
-      ),
-      Bun.sleep(80).then(() => null),
-    ]);
+    await manualScheduler.runNext(0);
+    const fatalResult = await fatalPromise;
 
     let drainError: unknown = null;
     try {
@@ -723,6 +906,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     );
 
     runtime.start();
+    await manualScheduler.runNext(0);
 
     const waitError = await waiterResult;
     let drainError: unknown = null;
@@ -864,8 +1048,10 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshAccount: true,
       refreshPositions: true,
     });
+    const fresh = runtime.waitForFresh();
     runtime.start();
-    await runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    await fresh;
     await runtime.stopAndDrain();
     expect(lastState.cachedPositions).toEqual([]);
     expect(pendingProtectiveDirections).toEqual(['LONG']);
@@ -943,6 +1129,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
     const waitResult = runtime.waitForFresh().catch((error: unknown) => error);
     runtime.start();
+    await manualScheduler.runNext(0);
 
     const waitError = await waitResult;
     expect(runtime.stopAndDrain()).rejects.toThrow('persist failed');
@@ -1117,8 +1304,8 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshPositions: false,
     });
     runtime.start();
-
-    await waitForCondition(() => accountRefreshCalls === 1);
+    await manualScheduler.runNext(0);
+    expect(accountRefreshCalls).toBe(1);
     runtime.abortWaiting();
     accountRefresh.resolve(createAccountSnapshotDouble(66_000));
 
@@ -1166,7 +1353,8 @@ describe('createPostTradeConsistencyRuntime', () => {
       });
     }).not.toThrow();
 
-    await waitForCondition(() => accountRefreshCalls === 1);
+    await manualScheduler.runNext(0);
+    expect(accountRefreshCalls).toBe(1);
     accountRefresh.resolve(createAccountSnapshotDouble(55_000));
 
     await runtime.stopAndDrain();
@@ -1281,8 +1469,10 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshAccount: true,
       refreshPositions: true,
     });
+    const fresh = runtime.waitForFresh();
     runtime.start();
-    await runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    await fresh;
     await runtime.stopAndDrain();
 
     expect(committedProtectionBoundaryCalls).toEqual([]);

@@ -48,7 +48,7 @@ import type { Processor } from '../types.js';
 import type { SellProcessorDeps, SellRetryState } from './types.js';
 import type { Task, SellTaskType } from '../tradeTaskQueue/types.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
-import type { ExecutableSellSignal, Signal } from '../../../types/signal.js';
+import type { ExecutableSellSignal } from '../../../types/signal.js';
 
 /**
  * 复制卖出信号，用于 quote retry 的 delayed re-enqueue。
@@ -62,32 +62,6 @@ function cloneSellSignal(signal: ExecutableSellSignal): ExecutableSellSignal {
     triggerTime: signal.triggerTime ? new Date(signal.triggerTime) : null,
     indicators1: signal.indicators1 ? { ...signal.indicators1 } : null,
     relatedBuyOrderIds: signal.relatedBuyOrderIds ? [...signal.relatedBuyOrderIds] : null,
-  };
-}
-
-function toExecutableSellSignal(signal: Signal): ExecutableSellSignal | null {
-  if (signal.action !== 'SELLCALL' && signal.action !== 'SELLPUT') {
-    return null;
-  }
-
-  const seatVersion = signal.seatVersion;
-  if (typeof seatVersion !== 'number' || !Number.isFinite(seatVersion)) {
-    return null;
-  }
-
-  if (signal.isProtectiveLiquidation === true) {
-    return {
-      ...signal,
-      action: signal.action,
-      seatVersion,
-      isProtectiveLiquidation: true,
-    };
-  }
-
-  return {
-    ...signal,
-    action: signal.action,
-    seatVersion,
   };
 }
 
@@ -123,6 +97,8 @@ function buildSellRetryKey(params: { readonly signal: ExecutableSellSignal }): s
  */
 export function createSellProcessor(deps: SellProcessorDeps): Processor {
   const {
+    clock,
+    scheduler,
     taskQueue,
     monitorContext,
     signalProcessor,
@@ -130,23 +106,11 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     marketDataClient,
     getLastState,
     postTradeConsistencyRuntime,
-    scheduleRetry,
-    clearRetry,
     getCanProcessTask,
     onFatalError,
   } = deps;
   const retryStates = new Map<string, SellRetryState>();
   let lifecycleActive = true;
-  const schedule =
-    scheduleRetry ??
-    ((callback: () => void, delayMs: number) => {
-      return setTimeout(callback, delayMs);
-    });
-  const clear =
-    clearRetry ??
-    ((handle: ReturnType<typeof setTimeout>) => {
-      clearTimeout(handle);
-    });
 
   function clearRetryState(retryKey: string): void {
     const retryState = retryStates.get(retryKey);
@@ -155,7 +119,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     }
 
     if (retryState.handle) {
-      clear(retryState.handle);
+      scheduler.clearTimer(retryState.handle);
     }
 
     retryStates.delete(retryKey);
@@ -246,7 +210,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         if (retryState?.retrySignal === null || !retryState) {
           const nextRetry = resolveNextQuoteRetry({
             attempts: retryState?.attempts ?? 0,
-            nowMs: Date.now(),
+            nowMs: clock.now().getTime(),
             intervalMs: ORDER_QUOTE_RETRY.INTERVAL_MS,
             maxAttempts: ORDER_QUOTE_RETRY.MAX_ATTEMPTS,
           });
@@ -262,7 +226,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
               retrySignal,
               attempts: nextRetry.nextAttempts,
             };
-            const retryHandle = schedule(() => {
+            const retryHandle = scheduler.scheduleTimer(() => {
               const pendingRetryState = retryStates.get(retryKey);
               if (!pendingRetryState?.retrySignal || !lifecycleActive) {
                 return;
@@ -295,7 +259,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         orderRecorder,
         smartCloseEnabled: config.smartCloseEnabled,
         smartCloseTimeoutMinutes: config.smartCloseTimeoutMinutes,
-        nowMs: Date.now(),
+        nowMs: clock.now().getTime(),
         isHalfDay: lastState.isHalfDay ?? false,
         tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
       });
@@ -307,16 +271,8 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         return; // 处理成功（虽然跳过了）
       }
 
-      const executionSignal = toExecutableSellSignal(firstSignal);
-      if (executionSignal === null) {
-        logger.debug(
-          `[SellProcessor] 卖出信号缺少可执行动作或席位版本，跳过信号: ${symbolDisplay} ${firstSignal.action}`,
-        );
-        return;
-      }
-
       const executionSeatValidation = validateSignalSeat({
-        signal: executionSignal,
+        signal: firstSignal,
         symbolRegistry,
       });
       if (!executionSeatValidation.valid) {
@@ -329,7 +285,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       await executeSignalsWithLifecycleGate({
         getCanProcessTask,
         trader,
-        signal: executionSignal,
+        signal: firstSignal,
         symbolDisplay,
         loggerPrefix: 'SellProcessor',
         successMessage: '卖出订单执行完成',
@@ -353,7 +309,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     taskQueue,
     processTask,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
-    ...(onFatalError ? { onFatalError } : {}),
+    onFatalError,
   });
 
   return {

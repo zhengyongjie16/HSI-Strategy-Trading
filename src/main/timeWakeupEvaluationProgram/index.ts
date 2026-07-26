@@ -12,7 +12,6 @@ import {
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
 } from '../../utils/apiFailure/index.js';
-import { logger } from '../../utils/logger/index.js';
 import {
   getHKDateKey,
   getRequiredHKDateKey,
@@ -95,8 +94,8 @@ function createEvaluationResult(
   };
 }
 
-function pushFutureCandidate(
-  candidates: TimeWakeupCandidate[],
+function appendFutureCandidate(
+  candidates: Array<TimeWakeupCandidate>,
   atMs: number | null,
   nowMs: number,
 ): void {
@@ -112,10 +111,10 @@ function pushFutureCandidate(
  *
  * @param candidates 候选集合
  * @param currentMs 当前时间戳
- * @returns 无返回值；副作用是追加 API_RETRY 候选
+ * @returns 无返回值；候选仅在当前评估函数的局部 builder 中追加
  */
-function pushApiRetryCandidate(candidates: TimeWakeupCandidate[], currentMs: number): void {
-  pushFutureCandidate(candidates, currentMs + TRADING.INTERVAL_MS, currentMs);
+function appendApiRetryCandidate(candidates: Array<TimeWakeupCandidate>, currentMs: number): void {
+  appendFutureCandidate(candidates, currentMs + TRADING.INTERVAL_MS, currentMs);
 }
 
 async function refreshDoomsdayPositionFacts(params: {
@@ -232,6 +231,7 @@ function resolveOpenProtectionEdgeMs(
  * @returns 下一次系统级时间唤醒计划
  */
 export async function timeWakeupEvaluationProgram({
+  logger,
   marketDataClient,
   trader,
   lastState,
@@ -243,12 +243,12 @@ export async function timeWakeupEvaluationProgram({
   dayLifecycleManager,
   now,
 }: TimeWakeupEvaluationContext): Promise<TimeWakeupEvaluationResult> {
-  const currentTime = now?.() ?? new Date(Date.now());
+  const currentTime = now();
   const currentMs = currentTime.getTime();
   const previousCanTrade = lastState.canTrade;
   const previousTakeoverActive = takeoverStateByLastState.get(lastState) ?? false;
-  const candidates: TimeWakeupCandidate[] = [];
-  pushFutureCandidate(candidates, resolveNextHKDayBoundaryMs(currentTime), currentMs);
+  const candidates: Array<TimeWakeupCandidate> = [];
+  appendFutureCandidate(candidates, resolveNextHKDayBoundaryMs(currentTime), currentMs);
 
   const currentDayKey = getHKDateKey(currentTime) ?? '';
   const cachedTradingDayInfo =
@@ -272,7 +272,7 @@ export async function timeWakeupEvaluationProgram({
         '[TimeWakeupEvaluation] 交易日 API 请求失败，等待下一次系统级重评估',
         error.message,
       );
-      pushApiRetryCandidate(candidates, currentMs);
+      appendApiRetryCandidate(candidates, currentMs);
       return createEvaluationResult(currentTime, candidates);
     }
 
@@ -291,15 +291,15 @@ export async function timeWakeupEvaluationProgram({
   }
 
   if (isTradingDayToday) {
-    pushFutureCandidate(
+    appendFutureCandidate(
       candidates,
       resolveTradingGateEdgeMs(currentTime, isHalfDayToday),
       currentMs,
     );
 
-    pushFutureCandidate(candidates, resolveMarketCloseMs(currentTime, isHalfDayToday), currentMs);
+    appendFutureCandidate(candidates, resolveMarketCloseMs(currentTime, isHalfDayToday), currentMs);
 
-    pushFutureCandidate(
+    appendFutureCandidate(
       candidates,
       resolveOpenProtectionEdgeMs(currentTime, isHalfDayToday, tradingConfig.global.openProtection),
       currentMs,
@@ -307,7 +307,7 @@ export async function timeWakeupEvaluationProgram({
 
     if (tradingConfig.global.doomsdayProtection) {
       for (const windowEntryMs of resolveDoomsdayWindowEntryMs(currentTime, isHalfDayToday)) {
-        pushFutureCandidate(candidates, windowEntryMs, currentMs);
+        appendFutureCandidate(candidates, windowEntryMs, currentMs);
       }
     }
   }
@@ -331,11 +331,11 @@ export async function timeWakeupEvaluationProgram({
       '[TimeWakeupEvaluation] 生命周期 API 请求失败，等待下一次系统级重评估',
       error.message,
     );
-    pushApiRetryCandidate(candidates, currentMs);
+    appendApiRetryCandidate(candidates, currentMs);
     return createEvaluationResult(currentTime, candidates);
   }
 
-  pushFutureCandidate(candidates, lifecycleResult.nextRetryAtMs, currentMs);
+  appendFutureCandidate(candidates, lifecycleResult.nextRetryAtMs, currentMs);
 
   if (lastState.canTrade !== false && !isTradingDayToday) {
     logger.info('今天不是交易日，暂停实时监控。');
@@ -426,7 +426,7 @@ export async function timeWakeupEvaluationProgram({
   const tradeActionEnabled = canTradeNow;
   const positions = lastState.cachedPositions;
   const isDoomsdayActionLive = (): boolean => {
-    const liveTime = now?.() ?? new Date(Date.now());
+    const liveTime = now();
     return (
       lastState.isTradingEnabled &&
       isInContinuousHKSession(liveTime, isHalfDayToday) &&
@@ -444,7 +444,7 @@ export async function timeWakeupEvaluationProgram({
         monitorContext,
         trader,
       });
-      pushFutureCandidate(candidates, cancelResult.nextRetryAtMs, currentMs);
+      appendFutureCandidate(candidates, cancelResult.nextRetryAtMs, currentMs);
       if (cancelResult.executed && cancelResult.cancelRequestAcceptedCount > 0) {
         logger.info(
           `[末日保护程序] 买入截止窗口已提交撤单请求，共 ${cancelResult.cancelRequestAcceptedCount} 个买入订单，终态以后续 WS 为准`,
@@ -463,7 +463,7 @@ export async function timeWakeupEvaluationProgram({
         onPositionsCommitted: () =>
           quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth(),
       });
-      pushFutureCandidate(candidates, clearanceResult.nextRetryAtMs, currentMs);
+      appendFutureCandidate(candidates, clearanceResult.nextRetryAtMs, currentMs);
       if (
         cancelResult.nextRetryAtMs !== null ||
         clearanceResult.executed ||
@@ -513,7 +513,7 @@ export async function timeWakeupEvaluationProgram({
         }
 
         logger.warn(outcomeMessage, error.message);
-        pushApiRetryCandidate(candidates, currentMs);
+        appendApiRetryCandidate(candidates, currentMs);
         return createEvaluationResult(currentTime, candidates);
       }
 
@@ -521,7 +521,7 @@ export async function timeWakeupEvaluationProgram({
         '[TimeWakeupEvaluation] 末日保护 API 请求失败，等待下一次系统级重评估',
         error.message,
       );
-      pushApiRetryCandidate(candidates, currentMs);
+      appendApiRetryCandidate(candidates, currentMs);
       return createEvaluationResult(currentTime, candidates);
     }
   }

@@ -407,7 +407,10 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     };
   }
 
-  const buyThrottle = createBuyThrottle(monitor.buyIntervalSeconds);
+  const buyThrottle = createBuyThrottle({
+    buyIntervalSeconds: monitor.buyIntervalSeconds,
+    clock: { now },
+  });
 
   const submitTargetOrder = createSubmitTargetOrder({
     ctx,
@@ -454,7 +457,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       if (
         command.executionPurpose === 'ORDINARY' &&
         !isLiquidationSignal(signal) &&
-        isStaleCrossDaySignal(signal, new Date())
+        isStaleCrossDaySignal(signal, now())
       ) {
         logger.debug(
           `[执行门禁] 跨日或触发时间无效信号，跳过执行: ${signalSymbolDisplay} ${signal.action}`,

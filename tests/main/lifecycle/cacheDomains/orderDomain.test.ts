@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'bun:test';
 import { createOrderDomain } from '../../../../src/main/lifecycle/cacheDomains/orderDomain.js';
 import type { Trader } from '../../../../src/types/services.js';
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 
 describe('createOrderDomain', () => {
   it('midnightClear 仅重置 trader 运行态', async () => {
@@ -16,7 +17,7 @@ describe('createOrderDomain', () => {
       },
     } as unknown as Trader;
 
-    const domain = createOrderDomain({ trader });
+    const domain = createOrderDomain({ logger: createLoggerDouble(), trader });
     await domain.midnightClear({
       now: new Date(),
       runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
@@ -32,7 +33,7 @@ describe('createOrderDomain', () => {
         calls.push('startOrderMonitorRuntime');
       },
     } as unknown as Trader;
-    const domain = createOrderDomain({ trader });
+    const domain = createOrderDomain({ logger: createLoggerDouble(), trader });
     await domain.openRebuild({
       now: new Date(),
       runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },

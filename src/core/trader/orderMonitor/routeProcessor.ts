@@ -59,14 +59,14 @@ function resolveCancelRetryDelayMs(retryCount: number): number {
   return Math.min(delay, ORDER_MONITOR_CANCEL_RETRY_MAX_DELAY_MS);
 }
 
-function applyCancelRetryBackoff(order: TrackedOrder): void {
+function applyCancelRetryBackoff(order: TrackedOrder, nowMs: number): void {
   order.cancelRetryCount += 1;
-  order.nextCancelAttemptAt = Date.now() + resolveCancelRetryDelayMs(order.cancelRetryCount);
+  order.nextCancelAttemptAt = nowMs + resolveCancelRetryDelayMs(order.cancelRetryCount);
 }
 
-function resetCancelRetry(order: TrackedOrder): void {
+function resetCancelRetry(order: TrackedOrder, nowMs: number): void {
   order.cancelRetryCount = 0;
-  order.nextCancelAttemptAt = Date.now();
+  order.nextCancelAttemptAt = nowMs;
 }
 
 function pauseCancelRetryAndWaitWs(order: TrackedOrder): void {
@@ -403,7 +403,7 @@ function settleBuyOrderTimeoutTerminal(
 
   const settlementResult = deps.settleOrder(resolvedTerminal.settlementInput.params);
   if (!settlementResult.handled) {
-    applyCancelRetryBackoff(order);
+    applyCancelRetryBackoff(order, deps.now().getTime());
     return true;
   }
 
@@ -420,7 +420,7 @@ async function handleBuyOrderTimeout(
   orderId: string,
   order: OrderMonitorTrackedOrder,
 ): Promise<boolean> {
-  const now = Date.now();
+  const now = deps.now().getTime();
   if (!canAttemptTimeoutHandling(order, now)) {
     return false;
   }
@@ -452,7 +452,7 @@ async function handleBuyOrderTimeout(
     return settleBuyOrderTimeoutTerminal(deps, orderId, order);
   }
 
-  applyCancelRetryBackoff(order);
+  applyCancelRetryBackoff(order, deps.now().getTime());
   return true;
 }
 
@@ -567,8 +567,8 @@ async function submitTimeoutMarketOrder(
       orderId: newOrderId,
       symbol: order.symbol,
       side: order.side,
-      price: 0,
-      initialSubmittedPrice: 0,
+      price: null,
+      initialSubmittedPrice: null,
       quantity: marketConversionQuantity,
       isLongSymbol: order.isLongSymbol,
       monitorSymbol,
@@ -615,7 +615,7 @@ async function handleSellOrderTimeout(
   orderId: string,
   order: OrderMonitorTrackedOrder,
 ): Promise<boolean> {
-  const now = Date.now();
+  const now = deps.now().getTime();
   if (!canAttemptTimeoutHandling(order, now)) {
     return false;
   }
@@ -628,7 +628,7 @@ async function handleSellOrderTimeout(
       order.timeoutMarketConversionTerminalState,
     );
     if (resolvedSettlementInput === null) {
-      applyCancelRetryBackoff(order);
+      applyCancelRetryBackoff(order, deps.now().getTime());
       return true;
     }
 
@@ -660,7 +660,7 @@ async function handleSellOrderTimeout(
         outcome.kind !== 'ALREADY_CLOSED' ||
         !isSupportedTerminalCloseReason(outcome.closedReason)
       ) {
-        applyCancelRetryBackoff(order);
+        applyCancelRetryBackoff(order, deps.now().getTime());
         return true;
       }
 
@@ -690,7 +690,7 @@ async function handleSellOrderTimeout(
 
   const timeoutResolution = resolveSellTimeoutResolution(order, settlementInput);
   if (timeoutResolution.kind === 'WAIT_RETRY') {
-    applyCancelRetryBackoff(order);
+    applyCancelRetryBackoff(order, deps.now().getTime());
     return true;
   }
 
@@ -706,7 +706,7 @@ async function handleSellOrderTimeout(
       : timeoutResolution.settlementInput.params;
   const settlementResult = deps.settleOrder(settlementParams);
   if (!settlementResult.handled) {
-    applyCancelRetryBackoff(order);
+    applyCancelRetryBackoff(order, deps.now().getTime());
     return false;
   }
 
@@ -715,7 +715,7 @@ async function handleSellOrderTimeout(
   }
 
   clearTimeoutMarketConversionState(order);
-  resetCancelRetry(order);
+  resetCancelRetry(order, deps.now().getTime());
 
   if (timeoutResolution.kind === 'SETTLE_FILLED') {
     logger.info(`[订单监控] 卖出订单 ${orderId} 已成交，禁止超时转市价`);
@@ -760,7 +760,7 @@ function shouldHandleTimeout(deps: RouteProcessorDeps, order: OrderMonitorTracke
     return false;
   }
 
-  return Date.now() - order.submittedAt >= timeoutConfig.timeoutMs;
+  return deps.now().getTime() - order.submittedAt >= timeoutConfig.timeoutMs;
 }
 
 function canEnterReplaceFlow(deps: RouteProcessorDeps, order: OrderMonitorTrackedOrder): boolean {
@@ -791,7 +791,7 @@ function canEnterReplaceFlow(deps: RouteProcessorDeps, order: OrderMonitorTracke
     return false;
   }
 
-  if (Date.now() - order.lastPriceUpdateAt < deps.config.priceUpdateIntervalMs) {
+  if (deps.now().getTime() - order.lastPriceUpdateAt < deps.config.priceUpdateIntervalMs) {
     return false;
   }
 
@@ -811,12 +811,20 @@ function shouldReplaceFromQuote(
     return false;
   }
 
+  if (order.submittedPrice === null) {
+    throw new Error(`[订单监控] 非市价订单 ${order.orderId} 缺少当前委托价，无法执行改单`);
+  }
+
   const priceDiffDecimal = calculatePriceDiffDecimal(latestQuote.price, order.submittedPrice);
   if (priceDiffDecimal.comparedTo(deps.thresholdDecimal) < 0) {
     return false;
   }
 
   if (order.side === OrderSide.Buy && !deps.config.allowBuyOrderTrackingAboveInitialPrice) {
+    if (order.initialSubmittedPrice === null) {
+      throw new Error(`[订单监控] 非市价买单 ${order.orderId} 缺少初始委托价，无法执行改单`);
+    }
+
     const normalizedCurrentPriceNumber = Number(normalizePriceText(latestQuote.price));
     const normalizedInitialSubmittedPriceNumber = Number(
       normalizePriceText(order.initialSubmittedPrice),
@@ -842,7 +850,7 @@ function shouldRetryReplaceFromTimer(
     return false;
   }
 
-  if (order.replaceBlockedUntilAt === null || order.replaceBlockedUntilAt > Date.now()) {
+  if (order.replaceBlockedUntilAt === null || order.replaceBlockedUntilAt > deps.now().getTime()) {
     return false;
   }
 
@@ -903,13 +911,23 @@ function shouldAdvanceQuoteRetryFromTimer(
     return false;
   }
 
-  if (order.quoteRetryNextAt === null || order.quoteRetryNextAt > Date.now()) {
+  if (order.quoteRetryNextAt === null || order.quoteRetryNextAt > deps.now().getTime()) {
     return false;
   }
 
   return order.quoteRetryAttempts > 0;
 }
 
+/**
+ * 创建单 symbol 订单 route 的动作处理器。
+ *
+ * 每次 route pass 先收敛改单终态与 timeout，再处理行情驱动的改单；同一轮最多提交一个
+ * broker mutation，确保同 symbol 订单动作串行。异步操作错误直接向 route runtime 传播，
+ * 由该 owner 停止并暴露失败。
+ *
+ * @param deps route runtime、订单事实、broker 操作与交易门禁依赖
+ * @returns 提供单次 route 推进能力的处理器
+ */
 export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
   /**
    * 执行一次 symbol route 的动作选择。
@@ -965,7 +983,7 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
         return;
       }
 
-      const now = Date.now();
+      const now = deps.now().getTime();
       for (const order of trackedOrders) {
         if (params.wakeupKind === 'QUOTE') {
           if (!canEnterReplaceFlow(deps, order)) {

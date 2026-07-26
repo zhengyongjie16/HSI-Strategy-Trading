@@ -5,7 +5,7 @@
  * - 验证交易标的 quote 事件按单标的输出
  * - 验证异步补充 monitor quote 后会复核 seatVersion，旧 route 不输出
  */
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import {
   createMonitorConfigDouble,
   createMonitorContextDouble,
@@ -18,16 +18,14 @@ import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 
 const warnLogs: string[] = [];
 
-mock.module('../../../src/utils/logger/index.js', () => ({
-  logger: {
-    debug: () => {},
-    info: () => {},
+function createDisplayLogger() {
+  return {
     warn: (message: string) => {
       warnLogs.push(message);
     },
     error: () => {},
-  },
-}));
+  };
+}
 
 function waitTick(): Promise<void> {
   return new Promise((resolve) => {
@@ -64,6 +62,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     const renders: string[] = [];
     const monitorContext = createMonitorContextDouble({ symbolRegistry });
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -125,6 +124,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -199,6 +199,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       },
     });
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: () => () => {},
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
@@ -234,6 +235,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     const fatalErrors: Error[] = [];
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -291,6 +293,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -331,6 +334,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     const symbolRegistry = createSymbolRegistryDouble();
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: () => () => {},
         getQuotes: async () => new Map(),
@@ -380,6 +384,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -444,6 +449,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     });
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -520,6 +526,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let shouldFail = true;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -597,6 +604,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     const renderError = new TypeError('display invariant broken');
     const fatalErrors: unknown[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;

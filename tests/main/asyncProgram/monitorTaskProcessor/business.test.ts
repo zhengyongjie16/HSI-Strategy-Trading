@@ -9,7 +9,6 @@ import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 
 import { createMonitorTaskProcessor } from '../../../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
-import { API } from '../../../../src/constants/index.js';
 import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
 import { classifyOrdersForRebuild } from '../../../../src/core/orderRecorder/utils.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
@@ -36,8 +35,27 @@ import {
   createRiskCheckerDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
-import { createLastState, createMonitorContext, runProcessorFlow, waitUntil } from '../utils.js';
+import {
+  createLastState,
+  createMonitorContext,
+  rethrowFatalError,
+  runProcessorFlow,
+  waitUntil,
+} from '../utils.js';
 import type { CreateBusinessProcessorParams } from '../types.js';
+
+const MONITOR_TASK_NOW_MS = Date.parse('2026-03-13T02:00:00.000Z');
+const MONITOR_TASK_RUNTIME = {
+  clock: {
+    now: () => new Date(MONITOR_TASK_NOW_MS),
+  },
+  scheduler: {
+    scheduleTimer: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimer: (handle: ReturnType<typeof setTimeout>) => {
+      clearTimeout(handle);
+    },
+  },
+};
 
 function createBusinessProcessor(
   params: CreateBusinessProcessorParams,
@@ -45,6 +63,8 @@ function createBusinessProcessor(
   const {
     queue,
     context,
+    clock = MONITOR_TASK_RUNTIME.clock,
+    scheduler = MONITOR_TASK_RUNTIME.scheduler,
     lastState = createLastState(),
     trader,
     marketDataClient = createMarketDataClientDouble(),
@@ -64,6 +84,8 @@ function createBusinessProcessor(
   };
 
   return createMonitorTaskProcessor({
+    clock,
+    scheduler,
     monitorTaskQueue: queue,
     monitorContext: context,
     trader: resolvedTrader,
@@ -76,7 +98,7 @@ function createBusinessProcessor(
     getCanTradeNow,
     periodicSwitchWakeupRuntime,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
-    ...(onFatalError ? { onFatalError } : {}),
+    onFatalError: onFatalError ?? rethrowFatalError,
   });
 }
 
@@ -166,6 +188,7 @@ describe('monitorTaskProcessor business flow', () => {
     });
 
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
       trader: createTraderDouble(),
@@ -187,6 +210,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => true,
+      onFatalError: rethrowFatalError,
     });
 
     await runProcessorFlow({
@@ -253,6 +277,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
       trader: createTraderDouble(),
@@ -295,13 +320,15 @@ describe('monitorTaskProcessor business flow', () => {
     expect(fatalErrors).toEqual([]);
   });
 
-  it('非 API 程序错误进入 fatal 通道且不标记为普通任务失败', async () => {
+  it('非 API 程序错误进入 fatal 通道后停止调度并保留后续任务', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const fatalErrors: unknown[] = [];
+    let periodicEvaluationCalls = 0;
     const context = createMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
+          periodicEvaluationCalls += 1;
           throw new TypeError('periodic contract broken');
         },
         startSwitchOnDistance: async (params) => ({
@@ -327,6 +354,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
       trader: createTraderDouble(),
@@ -347,27 +375,42 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    await runProcessorFlow({
-      processor,
-      pushTask: () => {
-        queue.scheduleLatest({
-          type: 'AUTO_SYMBOL_TICK',
-          dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FATAL',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
-        });
-      },
-      waitCondition: () => fatalErrors.length === 1,
-      timeoutMs: 500,
-    });
+    processor.start();
+    try {
+      queue.scheduleLatest({
+        type: 'AUTO_SYMBOL_TICK',
+        dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FATAL',
+        data: {
+          direction: 'LONG',
+          seatVersion: 2,
+          symbol: 'BULL.HK',
+          lastSeatActivatedAt: 12_000,
+          currentTimeMs: Date.now(),
+        },
+      });
 
-    expect(fatalErrors).toHaveLength(1);
-    expect(fatalErrors[0]).toBeInstanceOf(TypeError);
+      queue.scheduleLatest({
+        type: 'AUTO_SYMBOL_TICK',
+        dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:AFTER_FATAL',
+        data: {
+          direction: 'SHORT',
+          seatVersion: 3,
+          symbol: 'BEAR.HK',
+          lastSeatActivatedAt: 13_000,
+          currentTimeMs: Date.now(),
+        },
+      });
+
+      await waitUntil(() => fatalErrors.length === 1, 500);
+      await Bun.sleep(20);
+
+      expect(fatalErrors).toHaveLength(1);
+      expect(fatalErrors[0]).toBeInstanceOf(TypeError);
+      expect(periodicEvaluationCalls).toBe(1);
+      expect(queue.pop()?.dedupeKey).toBe('AUTO_SYMBOL_TICK:SHORT:AFTER_FATAL');
+    } finally {
+      await processor.stopAndDrain();
+    }
   });
 
   it('processes AUTO_SYMBOL_TICK with valid seat snapshot', async () => {
@@ -549,6 +592,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
     const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
       trader: createTraderDouble(),
@@ -572,6 +616,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => currentNowMs < takeoverMs,
+      onFatalError: rethrowFatalError,
     });
 
     processor.start();
@@ -2255,6 +2300,7 @@ describe('monitorTaskProcessor business flow', () => {
   it('marks activating seat EMPTY after SEAT_REFRESH API retry is exhausted', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const fatalErrors: unknown[] = [];
+    const retryCallbacks: Array<() => void> = [];
     let getQuotesCalls = 0;
     const context = createMonitorContext({
       longSymbolName: 'OLD_BULL',
@@ -2270,6 +2316,15 @@ describe('monitorTaskProcessor business flow', () => {
     const processor = createBusinessProcessor({
       queue,
       context,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          retryCallbacks.push(callback);
+          const handle = setTimeout(() => {}, 0);
+          clearTimeout(handle);
+          return handle;
+        },
+        clearTimer: () => {},
+      },
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
           getQuotesCalls += 1;
@@ -2289,10 +2344,10 @@ describe('monitorTaskProcessor business flow', () => {
     scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:API_FAIL');
 
     await waitUntil(() => getQuotesCalls === 1 || fatalErrors.length === 1, 500);
-    await Bun.sleep(Math.max(API.DEFAULT_RETRY_DELAY_MS - 100, 0));
-
+    expect(retryCallbacks).toHaveLength(1);
     expect(getQuotesCalls).toBe(1);
 
+    retryCallbacks[0]?.();
     await waitUntil(() => getQuotesCalls === 2 || fatalErrors.length === 1, 800);
     await processor.stopAndDrain();
 
@@ -2301,6 +2356,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: null,
       status: 'EMPTY',
+      lastSwitchAt: MONITOR_TASK_NOW_MS,
       callPrice: null,
     });
     expect(context.longSymbolName).toBe('OLD_BULL');

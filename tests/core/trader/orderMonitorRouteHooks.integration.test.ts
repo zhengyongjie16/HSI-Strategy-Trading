@@ -119,6 +119,11 @@ function createDeps(): {
   const baseMonitor = baseConfig.monitor;
 
   const deps: OrderMonitorDeps = {
+    now: () => new Date(),
+    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (handle) => {
+      clearTimeout(handle);
+    },
     ctx: tradeCtx as unknown as TradeContext,
     rateLimiter: {
       throttle: async () => {},

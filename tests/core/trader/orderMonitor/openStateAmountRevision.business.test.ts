@@ -11,13 +11,15 @@ import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
-import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
-import { createOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
+import { createEventFlow as createProductionEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
+import { createOrderOps as createProductionOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
 import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
+  EventFlowDeps,
+  OrderOpsDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderCacheManager, OrderHoldRegistry } from '../../../../src/core/trader/types.js';
 import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
@@ -26,6 +28,23 @@ import {
   createOrderRecorderDouble,
   createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
+
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
+type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now'> & Partial<Pick<OrderOpsDeps, 'now'>>;
+
+function createEventFlow(deps: TestEventFlowDeps) {
+  return createProductionEventFlow({
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
+    ...deps,
+  });
+}
+
+function createOrderOps(deps: TestOrderOpsDeps) {
+  return createProductionOrderOps({
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
+    ...deps,
+  });
+}
 
 function createRuntime(): OrderMonitorRuntimeStore {
   return {

@@ -29,7 +29,7 @@ import { createPeriodicSwitchWakeupRuntime } from '../../src/main/periodicSwitch
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
 import { createAutoSearchWakeupRuntime } from '../../src/main/autoSearchWakeupRuntime/index.js';
 import { createSeatActivationDispatcher } from '../../src/main/seatActivationDispatcher/index.js';
-import { createTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { Period } from 'longbridge';
@@ -56,12 +56,30 @@ function createDelayedSignalVerifier(params: {
 }) {
   return createDelayedSignalVerifierImpl({
     ...params,
+    clock: { now: () => new Date(Date.now()) },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
   });
 }
 
 function rethrowFatalError(error: unknown): never {
   throw error;
 }
+
+const ASYNC_PROCESSOR_RUNTIME = {
+  clock: { now: () => new Date('2026-02-16T01:31:00.000Z') },
+  scheduler: {
+    scheduleTimer: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimer: (handle: ReturnType<typeof setTimeout>) => {
+      clearTimeout(handle);
+    },
+  },
+};
+
 import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import {
   createAccountSnapshotDouble,
@@ -69,6 +87,7 @@ import {
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createOrderRecorderDouble,
+  createLoggerDouble,
   createPositionCacheDouble,
   createPositionDouble,
   createAutoSearchWakeupRuntimeDouble,
@@ -86,6 +105,10 @@ import {
 } from '../helpers/testDoubles.js';
 import { waitUntil } from '../main/asyncProgram/utils.js';
 import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
+
+function createTradingGateEventRuntime() {
+  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+}
 
 let autoSymbolCandidates: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
 
@@ -379,6 +402,7 @@ describe('full business simulation integration', () => {
       onFreshReached: () => () => {},
     };
     const buyProcessor = createBuyProcessor({
+      now: () => new Date(Date.now()),
       taskQueue: buyTaskQueue,
       monitorContext,
       signalProcessor,
@@ -404,8 +428,10 @@ describe('full business simulation integration', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
+      onFatalError: rethrowFatalError,
     });
     const sellProcessor = createSellProcessor({
+      ...ASYNC_PROCESSOR_RUNTIME,
       taskQueue: sellTaskQueue,
       monitorContext,
       signalProcessor,
@@ -431,6 +457,7 @@ describe('full business simulation integration', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => lastState.isTradingEnabled,
+      onFatalError: rethrowFatalError,
     });
 
     const candles = createCandles(120, 100, 0.2);
@@ -441,6 +468,7 @@ describe('full business simulation integration', () => {
 
     const candlestickUpdatedEvents = createSingleListenerEventSource<CandlestickUpdatedEvent>();
     const businessEventProgram = createBusinessEventProgram({
+      clock: { now: () => new Date('2026-02-16T01:31:00.000Z') },
       marketDataClient: {
         ...createMarketDataClientDouble({
           getQuotes: async () => {
@@ -622,7 +650,7 @@ describe('full business simulation integration', () => {
       orderRecorder,
       riskChecker,
       findBestWarrant: async () => autoSymbolCandidates.shift() ?? null,
-      now: () => new Date('2026-02-16T01:00:00.000Z'),
+      clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () => lastState.tradingCalendarSnapshot,
     });
     const runtimeNow = () => new Date('2026-02-16T01:00:00.000Z');
@@ -659,13 +687,16 @@ describe('full business simulation integration', () => {
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const quoteSubscriptionRuntime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
       tradingConfig,
       symbolRegistry,
       marketDataClient: autoSwitchMarketDataClient,
       trader,
       lastState,
+      onFatalError: rethrowFatalError,
     });
     const switchWakeupRuntime = createSwitchWakeupRuntime({
+      logger: { error: () => {} },
       marketDataClient: autoSwitchMarketDataClient,
       trader,
       symbolRegistry,
@@ -682,6 +713,7 @@ describe('full business simulation integration', () => {
         clearTimeout(handle);
       },
       quoteSubscriptionRuntime,
+      onFatalError: rethrowFatalError,
     });
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
       symbolRegistry,
@@ -719,6 +751,7 @@ describe('full business simulation integration', () => {
       monitorTaskQueue,
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
+      ...ASYNC_PROCESSOR_RUNTIME,
       monitorTaskQueue,
       monitorContext,
       trader,
@@ -729,14 +762,21 @@ describe('full business simulation integration', () => {
       lastState,
       getCanProcessTask: () => true,
       getCanTradeNow: () => lastState.canTrade === true,
+      onFatalError: rethrowFatalError,
     });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
+      logger: { error: () => {} },
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
       marketDataClient: autoSwitchMarketDataClient,
       monitorContext,
       trader,
       lastState,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled: false,
+      onFatalError: rethrowFatalError,
       now: runtimeNow,
       handoffPendingSwitch: switchWakeupRuntime.handoffPendingSwitch,
       quoteSubscriptionRuntime,
@@ -755,6 +795,7 @@ describe('full business simulation integration', () => {
     });
 
     const buyProcessor = createBuyProcessor({
+      now: () => new Date(Date.now()),
       taskQueue: buyTaskQueue,
       monitorContext,
       signalProcessor,
@@ -765,8 +806,10 @@ describe('full business simulation integration', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
+      onFatalError: rethrowFatalError,
     });
     const sellProcessor = createSellProcessor({
+      ...ASYNC_PROCESSOR_RUNTIME,
       taskQueue: sellTaskQueue,
       monitorContext,
       signalProcessor,
@@ -777,6 +820,7 @@ describe('full business simulation integration', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => lastState.isTradingEnabled,
+      onFatalError: rethrowFatalError,
     });
 
     function emitMonitorQuoteUpdated(price: number): void {
@@ -1065,6 +1109,7 @@ describe('full business simulation integration', () => {
       onFreshReached: () => () => {},
     };
     const buyProcessor = createBuyProcessor({
+      now: () => new Date(Date.now()),
       taskQueue: buyTaskQueue,
       monitorContext,
       signalProcessor,
@@ -1090,8 +1135,10 @@ describe('full business simulation integration', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
+      onFatalError: rethrowFatalError,
     });
     const sellProcessor = createSellProcessor({
+      ...ASYNC_PROCESSOR_RUNTIME,
       taskQueue: sellTaskQueue,
       monitorContext,
       signalProcessor,
@@ -1117,8 +1164,10 @@ describe('full business simulation integration', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => lastState.isTradingEnabled,
+      onFatalError: rethrowFatalError,
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
+      ...ASYNC_PROCESSOR_RUNTIME,
       monitorTaskQueue,
       monitorContext,
       trader,
@@ -1131,6 +1180,7 @@ describe('full business simulation integration', () => {
       lastState,
       getCanProcessTask: () => lastState.isTradingEnabled,
       getCanTradeNow: () => lastState.canTrade === true,
+      onFatalError: rethrowFatalError,
     });
 
     let runOpenRebuildCount = 0;
@@ -1138,6 +1188,7 @@ describe('full business simulation integration', () => {
     let postTradeStopCount = 0;
 
     const signalRuntimeDomain = createSignalRuntimeDomain({
+      logger: createLoggerDouble(),
       monitorContext,
       buyProcessor,
       sellProcessor,
@@ -1191,6 +1242,7 @@ describe('full business simulation integration', () => {
     });
 
     const globalStateDomain = createGlobalStateDomain({
+      logger: createLoggerDouble(),
       lastState,
       runTradingDayOpenRebuild: async () => {
         runOpenRebuildCount += 1;
@@ -1264,6 +1316,7 @@ describe('full business simulation integration', () => {
       });
 
       await timeWakeupEvaluationProgram({
+        logger: createLoggerDouble(),
         marketDataClient,
         trader,
         lastState,
@@ -1285,6 +1338,7 @@ describe('full business simulation integration', () => {
       expect(postTradeStopCount).toBe(1);
 
       await timeWakeupEvaluationProgram({
+        logger: createLoggerDouble(),
         marketDataClient,
         trader,
         lastState,

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
 import { createDefaultMonitorQuoteEventRuntime } from '../../src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
 import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
-import { createTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
 
 import type {
   AdvancePendingSwitchResult,
@@ -18,6 +18,7 @@ import type { QuoteUpdatedEvent } from '../../src/types/services.js';
 
 import {
   createMarketDataClientDouble,
+  createLoggerDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createOrderRecorderDouble,
@@ -30,6 +31,10 @@ import {
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
 import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
+
+function createTradingGateEventRuntime() {
+  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+}
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -125,7 +130,7 @@ describe('terminal switch finalization integration', () => {
       riskChecker,
       findBestWarrant: async () =>
         createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
-      now: () => new Date(nowMs),
+      clock: { now: () => new Date(nowMs) },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
@@ -171,6 +176,7 @@ describe('terminal switch finalization integration', () => {
       onFreshReached: () => () => {},
     };
     const switchWakeupRuntime = createSwitchWakeupRuntime({
+      logger: { error: () => {} },
       marketDataClient,
       trader,
       symbolRegistry,
@@ -184,8 +190,16 @@ describe('terminal switch finalization integration', () => {
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
+      onFatalError: (error) => {
+        throw error;
+      },
     });
     const monitorQuoteRuntime = createDefaultMonitorQuoteEventRuntime({
+      logger: { error: () => {} },
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
       marketDataClient,
       monitorContext,
       trader,
@@ -194,6 +208,9 @@ describe('terminal switch finalization integration', () => {
       doomsdayProtectionEnabled: false,
       now: () => new Date(nowMs),
       handoffPendingSwitch: switchWakeupRuntime.handoffPendingSwitch,
+      onFatalError: (error) => {
+        throw error;
+      },
     });
 
     switchWakeupRuntime.start();

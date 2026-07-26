@@ -9,11 +9,12 @@ import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderStatus, OrderType, type Order } from 'longbridge';
 import { createOrderRecorder } from '../../../../src/core/orderRecorder/index.js';
 import { createRecoveryFlow } from '../../../../src/core/trader/orderMonitor/recoveryFlow.js';
-import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
+import { createEventFlow as createProductionEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
 import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
+  EventFlowDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderHoldRegistry, TrackOrderParams } from '../../../../src/core/trader/types.js';
 import type { OrderRecorder, RawOrderFromAPI } from '../../../../src/types/services.js';
@@ -26,6 +27,15 @@ import {
   createSymbolRegistryDouble,
   createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
+
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
+
+function createEventFlow(deps: TestEventFlowDeps) {
+  return createProductionEventFlow({
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
+    ...deps,
+  });
+}
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 
 function createRuntimeStore(): OrderMonitorRuntimeStore {
@@ -111,6 +121,8 @@ function createPendingOrder(params: {
   readonly side: OrderSide;
   readonly stockName?: string;
   readonly status?: OrderStatus;
+  readonly orderType?: OrderType;
+  readonly price?: string | number | null;
   readonly updatedAtMs?: number;
   readonly executedPrice?: number;
   readonly executedQuantity?: number;
@@ -121,9 +133,9 @@ function createPendingOrder(params: {
     stockName: params.stockName ?? 'HSI RC',
     side: params.side,
     status: params.status ?? OrderStatus.New,
-    orderType: OrderType.ELO,
+    orderType: params.orderType ?? OrderType.ELO,
     remark: '',
-    price: '1.01',
+    price: params.price === undefined ? '1.01' : params.price,
     quantity: '100',
     executedPrice: String(params.executedPrice ?? 0),
     executedQuantity: String(params.executedQuantity ?? 0),
@@ -356,6 +368,120 @@ describe('orderMonitor recoveryFlow', () => {
     );
 
     expect(trackCalls.map((call) => call.status)).toEqual([...statuses]);
+  });
+
+  it('恢复市价挂单时保留 nullable 委托价，不伪造零价格', async () => {
+    const runtime = createRuntimeStore();
+    const trackCalls: TrackOrderParams[] = [];
+    const recoveryFlow = createRecoveryFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble(),
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: (params) => {
+        trackCalls.push(params);
+        const trackedOrder = createTrackedOrder(
+          params.orderId,
+          params.symbol,
+          params.initialStatus,
+        );
+        trackedOrder.submittedPrice = params.price;
+        runtime.trackedOrders.set(params.orderId, trackedOrder);
+        attachTrackedOrder(runtime, params.symbol, params.orderId);
+      },
+      cancelOrder: async () => ({
+        kind: 'CANCEL_CONFIRMED',
+        relatedBuyOrderIds: null,
+      }),
+      settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
+      handleOrderChangedWhenActive: () => {},
+    });
+
+    await recoveryFlow.recoverOrderTrackingFromSnapshot([
+      createPendingOrder({
+        orderId: 'ORDER-MARKET',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        orderType: OrderType.MO,
+        price: null,
+      }),
+    ]);
+
+    expect(trackCalls).toHaveLength(1);
+    expect(trackCalls[0]?.price).toBeNull();
+    expect(trackCalls[0]?.initialSubmittedPrice).toBeNull();
+    expect(trackCalls[0]?.orderType).toBe(OrderType.MO);
+  });
+
+  it('恢复非市价空价卖单时在 track、pendingSell 与 route 副作用前 fail-fast', async () => {
+    const runtime = createRuntimeStore();
+    let trackCalls = 0;
+    let pendingSellAllocationCalls = 0;
+    let pendingSellSubmitCalls = 0;
+    let routeCalls = 0;
+    const recoveryFlow = createRecoveryFlow({
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: createOrderRecorderDouble({
+        allocateRelatedBuyOrderIdsForRecovery: () => {
+          pendingSellAllocationCalls += 1;
+          return [];
+        },
+        submitSellOrder: () => {
+          pendingSellSubmitCalls += 1;
+        },
+      }),
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: () => {
+        trackCalls += 1;
+      },
+      cancelOrder: async () => ({
+        kind: 'CANCEL_CONFIRMED',
+        relatedBuyOrderIds: null,
+      }),
+      settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
+      handleOrderChangedWhenActive: () => {
+        routeCalls += 1;
+      },
+    });
+    recoveryFlow.cacheBootstrappingEvent(
+      createPushOrderChanged({
+        orderId: 'ORDER-BUFFERED',
+        symbol: 'BULL.HK',
+        side: OrderSide.Buy,
+        status: OrderStatus.New,
+      }),
+    );
+
+    let caught: unknown = null;
+    try {
+      await recoveryFlow.recoverOrderTrackingFromSnapshot([
+        createPendingOrder({
+          orderId: 'ORDER-NON-MARKET-NULL-PRICE',
+          symbol: 'BULL.HK',
+          side: OrderSide.Sell,
+          orderType: OrderType.ELO,
+          price: null,
+        }),
+      ]);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe(
+      '[订单监控] 非市价订单 ORDER-NON-MARKET-NULL-PRICE 缺少委托价格，无法恢复追踪',
+    );
+    expect(trackCalls).toBe(0);
+    expect(pendingSellAllocationCalls).toBe(0);
+    expect(pendingSellSubmitCalls).toBe(0);
+    expect(routeCalls).toBe(0);
+    expect(runtime.trackedOrders.size).toBe(0);
+    expect(runtime.trackedOrderIdsBySymbol.size).toBe(0);
+    expect(runtime.bootstrappingOrderEvents.size).toBe(0);
+    expect(runtime.runtimeState).toBe('STOPPED');
   });
 
   it('resetRecoveryTrackingState 会清空 symbol 索引与 route states', () => {

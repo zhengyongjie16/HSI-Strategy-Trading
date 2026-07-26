@@ -44,7 +44,7 @@ import { formatSymbolDisplay } from '../../../utils/display/index.js';
  * - 席位未就绪、席位版本不匹配或席位标的已切换时，仅记录信息日志并安全丢弃信号
  * - 风险检查拦截或风险阶段行情缺失时，会记录原因并跳过下单，同样视为"正常完成但不下单"，调用方无需重试
  *
- * @param deps 依赖注入（任务队列、唯一 monitorContext、signalProcessor、trader、marketDataClient、doomsdayProtection、getIsHalfDay、可选 getCanProcessTask）
+ * @param deps 依赖注入（任务队列、业务服务、生命周期门禁与 fatal 上报入口）
  * @returns 实现 Processor 接口的买入处理器实例（start/stop/stopAndDrain/restart）
  */
 export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
@@ -56,6 +56,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     marketDataClient,
     doomsdayProtection,
     getIsHalfDay,
+    now,
     getCanProcessTask,
     onFatalError,
   } = deps;
@@ -129,7 +130,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         shortSymbol,
         longSymbolName: ctx.longSymbolName,
         shortSymbolName: ctx.shortSymbolName,
-        currentTime: new Date(),
+        currentTime: now(),
         isHalfDay,
         doomsdayProtection,
         config,
@@ -184,6 +185,6 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     taskQueue,
     processTask,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
-    ...(onFatalError ? { onFatalError } : {}),
+    onFatalError,
   });
 }

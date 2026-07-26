@@ -23,6 +23,11 @@ export function scheduleBoundedOneShotAt<TTimerHandle>(
   let cancelled = false;
   let currentHandle: TTimerHandle | null = null;
 
+  /**
+   * 取消当前 timer 分段并清空句柄；没有活动分段时不执行操作。
+   *
+   * @returns 无返回值
+   */
   function clearCurrentTimer(): void {
     if (currentHandle === null) {
       return;
@@ -32,6 +37,11 @@ export function scheduleBoundedOneShotAt<TTimerHandle>(
     currentHandle = null;
   }
 
+  /**
+   * 按平台最大 delay 调度下一个分段，到达目标时间后仅触发一次到期回调。
+   *
+   * @returns 无返回值
+   */
   function scheduleNextSegment(): void {
     if (cancelled) {
       return;

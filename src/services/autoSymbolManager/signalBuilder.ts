@@ -7,6 +7,7 @@
  * - 构造订单信号
  */
 import { calculateLotQuantityByNotional, decimalToNumberValue } from '../../utils/numeric/index.js';
+import type { RuntimeClock } from '../../types/runtime.js';
 import type { BuildOrderSignalParams, OrderSignal, OrderSignalBuilder } from './types.js';
 
 /**
@@ -50,30 +51,28 @@ export function calculateBuyQuantityByNotional(
 }
 
 /**
- * 构造订单信号。
- */
-const buildOrderSignal: OrderSignalBuilder = (params: BuildOrderSignalParams): OrderSignal => {
-  const { action, symbol, quote, reason, orderTypeOverride, quantity, seatVersion } = params;
-
-  return {
-    symbol,
-    symbolName: quote?.name ?? symbol,
-    action,
-    reason,
-    orderTypeOverride: orderTypeOverride ?? null,
-    quantity: quantity ?? null,
-    triggerTime: new Date(),
-    seatVersion,
-  };
-};
-
-/**
  * 创建信号构造器，对外暴露 buildOrderSignal 方法。
+ * @param clock - composition root 注入的统一运行时时钟
  * @returns 含 buildOrderSignal 的对象
  */
-export function createSignalBuilder(): {
+export function createSignalBuilder(clock: RuntimeClock): {
   buildOrderSignal: OrderSignalBuilder;
 } {
+  const buildOrderSignal: OrderSignalBuilder = (params: BuildOrderSignalParams): OrderSignal => {
+    const { action, symbol, quote, reason, orderTypeOverride, quantity, seatVersion } = params;
+
+    return {
+      symbol,
+      symbolName: quote?.name ?? symbol,
+      action,
+      reason,
+      orderTypeOverride: orderTypeOverride ?? null,
+      quantity: quantity ?? null,
+      triggerTime: clock.now(),
+      seatVersion,
+    };
+  };
+
   return {
     buildOrderSignal,
   };

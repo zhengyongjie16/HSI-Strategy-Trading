@@ -261,6 +261,7 @@ describe('switchWakeupRuntime', () => {
       onGateStateChanged: () => () => {},
     };
     const runtimeDeps = {
+      logger: { error: () => {} },
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
           quoteUpdatedListener = listener;
@@ -291,7 +292,7 @@ describe('switchWakeupRuntime', () => {
       ...(params.quoteSubscriptionRuntime
         ? { quoteSubscriptionRuntime: params.quoteSubscriptionRuntime }
         : {}),
-      ...(params.onFatalError ? { onFatalError: params.onFatalError } : {}),
+      onFatalError: params.onFatalError ?? (() => {}),
     };
     const runtime = createSwitchWakeupRuntime(runtimeDeps);
 
@@ -384,6 +385,63 @@ describe('switchWakeupRuntime', () => {
       name: 'ExternalApiRequestError',
       operation: 'AutoSymbolManager.advancePendingSwitch',
     });
+  });
+
+  it('forwards a dedicated re-entry route failure to the fatal handler unchanged', async () => {
+    const firstAdvanceStarted = createDeferred();
+    const releaseFirstAdvance = createDeferred();
+    const firstError = new Error('first route failure');
+    const reentryError = new Error('re-entry route failure');
+    const fatalErrors: unknown[] = [];
+    let advanceCalls = 0;
+    const runtimeHarness = createBaseHarness({
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+      autoSymbolManager: {
+        maybeSearchOnEvent: async () => {},
+        evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
+        startSwitchOnDistance: async (params) => ({
+          started: false,
+          direction: params.direction,
+          driveResult: { kind: 'NOOP' },
+        }),
+        advancePendingSwitch: async () => {
+          advanceCalls += 1;
+          if (advanceCalls === 1) {
+            firstAdvanceStarted.resolve();
+            await releaseFirstAdvance.promise;
+            throw firstError;
+          }
+
+          throw reentryError;
+        },
+        hasPendingSwitch: () => true,
+        getPeriodicSwitchPendingState: () => ({
+          pending: false,
+        }),
+        resetAllState: () => {},
+      },
+    });
+
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: runtimeHarness.monitorContext,
+      driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+    });
+
+    emitQuoteUpdated('BULL.HK', 1.23);
+    await firstAdvanceStarted.promise;
+    emitQuoteUpdated('BULL.HK', 1.24);
+    releaseFirstAdvance.resolve();
+    await waitTick();
+    await waitTick();
+
+    expect(advanceCalls).toBe(2);
+    expect(fatalErrors).toContain(firstError);
+    expect(fatalErrors).toContain(reentryError);
+    await runtimeHarness.runtime.stopAndDrain();
   });
 
   it('reports a malformed advance result when the lifecycle gate closes during advance', async () => {
@@ -637,6 +695,7 @@ describe('switchWakeupRuntime', () => {
       },
     });
     const runtime = createSwitchWakeupRuntime({
+      logger: { error: () => {} },
       marketDataClient: {
         onQuoteUpdated: (listener) => {
           quoteUpdatedListener = listener;
@@ -673,6 +732,7 @@ describe('switchWakeupRuntime', () => {
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
+      onFatalError: () => {},
     });
 
     runtime.start();
@@ -1021,6 +1081,8 @@ describe('switchWakeupRuntime', () => {
 
   it('retries unchanged switch quote retain after previous retain failure', async () => {
     const retainCalls: ReadonlyArray<string>[] = [];
+    const retainError = new Error('retain failed');
+    const fatalErrors: unknown[] = [];
     let remainingRetainFailures = 1;
     const runtimeHarness = createBaseHarness({
       quoteSubscriptionRuntime: {
@@ -1028,7 +1090,7 @@ describe('switchWakeupRuntime', () => {
           retainCalls.push([...symbols]);
           if (remainingRetainFailures > 0) {
             remainingRetainFailures -= 1;
-            throw new Error('retain failed');
+            throw retainError;
           }
 
           return () => {};
@@ -1055,6 +1117,9 @@ describe('switchWakeupRuntime', () => {
         }),
         resetAllState: () => {},
       },
+      onFatalError: (error) => {
+        fatalErrors.push(error);
+      },
     });
     const monitorContext = runtimeHarness.monitorContext;
 
@@ -1067,6 +1132,7 @@ describe('switchWakeupRuntime', () => {
 
     await waitTick();
     expect(retainCalls).toEqual([['BULL.HK']]);
+    expect(fatalErrors).toEqual([retainError]);
 
     emitQuoteUpdated('BULL.HK', 1.1);
     await waitTick();
@@ -1077,6 +1143,8 @@ describe('switchWakeupRuntime', () => {
 
   it('releases switch quote retain owner after failed retain when runtime stops', async () => {
     const releaseCalls: Array<{ readonly ownerKey: string; readonly reason: string }> = [];
+    const releaseError = new Error('release failed');
+    const fatalErrors: unknown[] = [];
     const runtimeHarness = createBaseHarness({
       quoteSubscriptionRuntime: {
         retainSymbols: async () => {
@@ -1084,7 +1152,11 @@ describe('switchWakeupRuntime', () => {
         },
         releaseRetain: async ({ ownerKey, reason }) => {
           releaseCalls.push({ ownerKey, reason });
+          throw releaseError;
         },
+      },
+      onFatalError: (error) => {
+        fatalErrors.push(error);
       },
     });
     const monitorContext = runtimeHarness.monitorContext;
@@ -1098,8 +1170,10 @@ describe('switchWakeupRuntime', () => {
 
     await waitTick();
     await runtimeHarness.runtime.stopAndDrain();
+    await waitTick();
 
     expect(releaseCalls).toEqual([{ ownerKey: 'LONG:1', reason: 'SWITCH_WAKEUP' }]);
+    expect(fatalErrors).toEqual([expect.any(Error), releaseError]);
   });
 
   it('switches symbol quote wakeup membership when WAIT wakeups change', async () => {

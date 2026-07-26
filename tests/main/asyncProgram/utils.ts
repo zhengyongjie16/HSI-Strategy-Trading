@@ -13,6 +13,16 @@ import {
 } from '../../helpers/testDoubles.js';
 
 /**
+ * 将异步处理器上报的 fatal 错误重新抛出，使非 fatal 场景测试不会静默吞错。
+ *
+ * @param error fatal 错误
+ * @returns 不返回，始终抛出输入错误
+ */
+export function rethrowFatalError(error: unknown): never {
+  throw error;
+}
+
+/**
  * 轮询直到条件为 true 或超时。默认行为：超时抛错。
  *
  * @param predicate 条件函数

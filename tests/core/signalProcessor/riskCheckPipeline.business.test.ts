@@ -37,6 +37,7 @@ function createContext(params: {
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
   readonly doomsdayProtection?: ReturnType<typeof createDoomsdayProtectionDouble>;
+  readonly currentTimeMs?: number;
 }): BuyRiskCheckContext {
   const monitorConfig = createMonitorConfigDouble();
 
@@ -62,7 +63,10 @@ function createContext(params: {
     shortSymbol: 'BEAR.HK',
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
-    currentTime: new Date('2026-02-16T10:00:00+08:00'),
+    currentTime:
+      params.currentTimeMs === undefined
+        ? new Date('2026-02-16T10:00:00+08:00')
+        : new Date(params.currentTimeMs),
     isHalfDay: false,
     doomsdayProtection: params.doomsdayProtection ?? createDoomsdayProtectionDouble(),
     config: monitorConfig,
@@ -141,6 +145,7 @@ describe('riskCheckPipeline business flow', () => {
               return false;
             },
           }),
+          currentTimeMs: 10_500,
         }),
       ),
     );
@@ -356,7 +361,10 @@ describe('riskCheckPipeline business flow', () => {
 
   it('does not preempt same-direction buy slot in risk check stage', async () => {
     const monitorConfig = createMonitorConfigDouble();
-    const buyThrottle = createBuyThrottle(monitorConfig.buyIntervalSeconds);
+    const buyThrottle = createBuyThrottle({
+      buyIntervalSeconds: monitorConfig.buyIntervalSeconds,
+      clock: { now: () => new Date(Date.now()) },
+    });
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
       getAccountSnapshot: async () => createAccountSnapshotDouble(100000),
@@ -379,6 +387,7 @@ describe('riskCheckPipeline business flow', () => {
           trader,
           riskChecker: createRiskCheckerDouble(),
           orderRecorder: createOrderRecorderDouble(),
+          currentTimeMs: 40_000,
         }),
       ),
     );
@@ -391,6 +400,7 @@ describe('riskCheckPipeline business flow', () => {
           trader,
           riskChecker: createRiskCheckerDouble(),
           orderRecorder: createOrderRecorderDouble(),
+          currentTimeMs: 50_001,
         }),
       ),
     );
@@ -542,7 +552,10 @@ describe('riskCheckPipeline business flow', () => {
 
   it('does not refresh buy throttle when base risk check rejects after realtime fetch', async () => {
     const monitorConfig = createMonitorConfigDouble();
-    const buyThrottle = createBuyThrottle(monitorConfig.buyIntervalSeconds);
+    const buyThrottle = createBuyThrottle({
+      buyIntervalSeconds: monitorConfig.buyIntervalSeconds,
+      clock: { now: () => new Date(Date.now()) },
+    });
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,

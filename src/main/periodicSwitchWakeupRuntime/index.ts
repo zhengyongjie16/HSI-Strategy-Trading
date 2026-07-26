@@ -13,7 +13,6 @@ import type { MonitorTaskInput } from '../asyncProgram/monitorTaskQueue/types.js
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
-  PeriodicSwitchAutoSymbolTickTaskData,
   PeriodicSwitchRouteBaseline,
   PeriodicSwitchRouteState,
   PeriodicSwitchWakeupRuntime,
@@ -127,7 +126,7 @@ export function createPeriodicSwitchWakeupRuntime(
 
   function dispatchAutoSymbolTick(baseline: PeriodicSwitchRouteBaseline): void {
     const currentTimeMs = deps.now().getTime();
-    const data: PeriodicSwitchAutoSymbolTickTaskData = {
+    const data: MonitorTaskDataMap['AUTO_SYMBOL_TICK'] = {
       direction: baseline.direction,
       seatVersion: baseline.seatVersion,
       symbol: baseline.symbol,

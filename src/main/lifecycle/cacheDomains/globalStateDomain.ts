@@ -12,7 +12,6 @@
  * - 调用 runTradingDayOpenRebuild 执行完整的开盘重建流水线
  *   （加载运行时快照 → 重建交易日状态）
  */
-import { logger } from '../../../utils/logger/index.js';
 import type { LastState, MonitorState } from '../../../types/state.js';
 import type { CacheDomain } from '../types.js';
 import type { GlobalStateDomainDeps } from './types.js';
@@ -55,7 +54,7 @@ function runGlobalMidnightClear(lastState: LastState): void {
  * @returns 实现 CacheDomain 的全局状态域实例
  */
 export function createGlobalStateDomain(deps: GlobalStateDomainDeps): CacheDomain {
-  const { lastState, runTradingDayOpenRebuild } = deps;
+  const { logger, lastState, runTradingDayOpenRebuild } = deps;
   return {
     midnightClear(): void {
       runGlobalMidnightClear(lastState);

@@ -243,7 +243,7 @@ export type RouteRuntimeProcessParams = Readonly<{
 
 /**
  * route runtime 依赖。
- * 类型用途：创建 route runtime 所需的最小外部依赖，当前只注入 quote 事件源与 route 处理器。
+ * 类型用途：创建 route runtime 所需的 quote 事件源、时间调度与 route 处理依赖。
  * 数据来源：由 createOrderMonitor 或测试代码装配注入。
  * 使用范围：仅 orderMonitor/routeRuntime.ts 使用。
  */
@@ -252,7 +252,10 @@ export type RouteRuntimeDeps = Readonly<{
   readonly config: OrderMonitorConfig;
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
   readonly processRoute: (params: RouteRuntimeProcessParams) => Promise<void>;
-  readonly onFatalError?: (error: unknown) => void;
+  readonly now: () => Date;
+  readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
+  readonly onFatalError: (error: unknown) => void;
 }>;
 
 /**
@@ -455,6 +458,7 @@ export interface RecoveryFlow {
  * 使用范围：仅 orderMonitor/eventFlow.ts 使用。
  */
 export type EventFlowDeps = {
+  readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderRecorder: OrderRecorder;
   readonly recordCumulativeExecution: (params: OrderCumulativeExecutionParams) => void;
@@ -507,6 +511,7 @@ export interface OrderStatusQuery {
  * 使用范围：仅 orderMonitor/orderOps.ts 使用。
  */
 export type OrderOpsDeps = {
+  readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly monitorConfig: MonitorConfig;
   readonly ctx: TradeContext;
@@ -570,6 +575,7 @@ export interface OrderOps {
  * 使用范围：仅 orderMonitor/routeProcessor.ts 使用。
  */
 export type RouteProcessorDeps = {
+  readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly config: OrderMonitorConfig;
   readonly thresholdDecimal: Decimal;

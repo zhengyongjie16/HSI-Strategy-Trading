@@ -342,6 +342,7 @@ function createDeps(params?: {
   readonly orderRecorder?: RouteProcessorDeps['orderRecorder'];
   readonly ctx?: RouteProcessorDeps['ctx'];
   readonly rateLimiter?: RouteProcessorDeps['rateLimiter'];
+  readonly now?: RouteProcessorDeps['now'];
 }): {
   readonly runtime: OrderMonitorRuntimeStore;
   readonly tradeCtx: ReturnType<typeof createTradeContextMock>;
@@ -351,6 +352,7 @@ function createDeps(params?: {
   const config = params?.config ?? createConfig();
   const tradeCtx = createTradeContextMock();
   const deps: RouteProcessorDeps = {
+    now: params?.now ?? (() => new Date(Date.now())),
     runtime,
     config,
     thresholdDecimal: toDecimal(config.priceDiffThreshold),
@@ -1033,8 +1035,8 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       side: OrderSide.Sell,
       orderType: OrderType.MO,
-      submittedPrice: 0,
-      initialSubmittedPrice: 0,
+      submittedPrice: null,
+      initialSubmittedPrice: null,
       submittedAt: Date.now() - 10_000,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [convertedOrder]);
@@ -1591,7 +1593,7 @@ describe('orderMonitor routeProcessor', () => {
   it('QUOTE 唤醒遇到不可用行情时会推进 quote retry 状态', async () => {
     const originalNow = Date.now;
     const nowMs = Date.parse('2026-04-09T10:00:00.000Z');
-    Date.now = () => nowMs;
+    Date.now = () => nowMs - 86_400_000;
 
     try {
       const runtime = createRuntimeStore();
@@ -1612,6 +1614,7 @@ describe('orderMonitor routeProcessor', () => {
       const replaceOrderIds: string[] = [];
       const { deps } = createDeps({
         runtime,
+        now: () => new Date(nowMs),
         config: createConfig({
           buyTimeoutMs: 60_000,
           sellTimeoutMs: 60_000,

@@ -44,14 +44,6 @@ type PeriodicSwitchDueCalculationParams = Readonly<{
 }>;
 
 /**
- * 周期换标 AUTO_SYMBOL_TICK payload。
- * 类型用途：复用 AUTO_SYMBOL_TICK 的完整 ACTIVE baseline 数据。
- * 数据来源：PeriodicSwitchRouteBaseline。
- * 使用范围：PeriodicSwitchWakeupRuntime 入队任务。
- */
-export type PeriodicSwitchAutoSymbolTickTaskData = MonitorTaskDataMap['AUTO_SYMBOL_TICK'];
-
-/**
  * 周期换标单 route 运行态。
  * 类型用途：记录当前 baseline、one-shot timer、waiting-empty 与外部失败重评估边界。
  * 数据来源：PeriodicSwitchWakeupRuntime 按 route key 维护。

@@ -15,6 +15,7 @@ import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import { createSignal } from '../../../mock/factories/signalFactory.js';
 import {
   createAccountSnapshotDouble,
+  createLoggerDouble,
   createMarketDataClientDouble,
   createPositionDouble,
   createSdkConfigDouble,
@@ -75,8 +76,16 @@ function createRuntimeParams(
   const warrantListCache = createWarrantListCache();
   const monitorConfig = createMonitorConfig({ monitorSymbol: 'HSI.HK' });
   return {
+    logger: createLoggerDouble(),
     env: createTestEnv(),
     now: new Date('2026-03-13T09:30:00+08:00'),
+    clock: { now: () => new Date('2026-03-13T09:30:00+08:00') },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
     cleanup: createCleanup(),
     preGateRuntime: {
       config: createSdkConfigDouble(),

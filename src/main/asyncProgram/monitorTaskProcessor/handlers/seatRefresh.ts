@@ -12,6 +12,7 @@ import { isSeatVersionMatch } from '../../../../utils/seat/guards.js';
 import type { MarketDataClient } from '../../../../types/services.js';
 import type { MonitorContext } from '../../../../types/state.js';
 import type { SeatState } from '../../../../types/seat.js';
+import type { RuntimeClock } from '../../../../types/runtime.js';
 import type { QuoteSubscriptionRuntime } from '../../../quoteSubscriptionRuntime/types.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
 import type {
@@ -101,10 +102,10 @@ function markSeatAsEmpty(
   direction: 'LONG' | 'SHORT',
   reason: string,
   context: MonitorContext,
+  nowMs: number,
 ): void {
   const monitorSymbol = context.config.monitorSymbol;
   const currentSeat = context.symbolRegistry.getSeatState(direction);
-  const nowMs = Date.now();
   const nextState = {
     symbol: null,
     status: 'EMPTY',
@@ -156,10 +157,12 @@ function resolveActivatingSeatSnapshot(
  * @returns 处理 SEAT_REFRESH 任务的异步函数
  */
 export function createSeatRefreshHandler({
+  clock,
   monitorContext,
   marketDataClient,
   quoteSubscriptionRuntime,
 }: {
+  readonly clock: RuntimeClock;
   readonly monitorContext: MonitorContext;
   readonly marketDataClient: MarketDataClient;
   readonly quoteSubscriptionRuntime: Pick<
@@ -197,7 +200,7 @@ export function createSeatRefreshHandler({
 
     if (!callPriceValid) {
       const reason = '未提供有效回收价(callPrice)，无法刷新牛熊证信息';
-      markSeatAsEmpty(data.direction, reason, context);
+      markSeatAsEmpty(data.direction, reason, context, clock.now().getTime());
       logSeatRefreshProcessed({
         data,
         result: 'marked_empty',
@@ -242,7 +245,7 @@ export function createSeatRefreshHandler({
       context.dailyLossTracker.recalculateFromAllOrders(
         allOrders,
         context.config,
-        new Date(),
+        clock.now(),
         undefined,
         relatedTradingSymbols,
       );
@@ -316,7 +319,7 @@ export function createSeatRefreshHandler({
       );
       if (warrantRefreshResult.status === 'error') {
         const reason = `设置牛熊证信息失败：${warrantRefreshResult.reason}`;
-        markSeatAsEmpty(data.direction, reason, context);
+        markSeatAsEmpty(data.direction, reason, context, clock.now().getTime());
         logSeatRefreshProcessed({
           data,
           result: 'marked_empty',
@@ -334,7 +337,7 @@ export function createSeatRefreshHandler({
       context.symbolRegistry.updateSeatState(data.direction, {
         ...latestSeatState,
         status: 'ACTIVE',
-        lastSeatActivatedAt: Date.now(),
+        lastSeatActivatedAt: clock.now().getTime(),
         callPrice: data.callPrice,
       });
 

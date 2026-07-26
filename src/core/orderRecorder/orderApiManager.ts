@@ -6,10 +6,11 @@
  * - 合并两份订单快照并按 orderId 去重
  * - 在信任边界将 SDK Order 转换为 RawOrderFromAPI
  */
-import { OrderSide, type OrderStatus, OrderType, type Order } from 'longbridge';
+import { OrderSide, type OrderStatus, type Order } from 'longbridge';
+import { VALID_ORDER_TYPE_VALUES } from '../../constants/index.js';
 import { decimalToNumber, isRecord } from '../../utils/helpers/index.js';
 import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
-import type { RawOrderFromAPI } from '../../types/services.js';
+import type { RawOrderFromAPI, ValidatedOrderType } from '../../types/services.js';
 import type {
   MergedOrderEntry,
   OrderAPIManager,
@@ -96,29 +97,8 @@ function isValidOrderStatus(value: unknown): value is OrderStatus {
   }
 }
 
-function isValidOrderType(value: unknown): value is OrderType {
-  switch (value) {
-    case OrderType.Unknown:
-    case OrderType.LO:
-    case OrderType.ELO:
-    case OrderType.MO:
-    case OrderType.AO:
-    case OrderType.ALO:
-    case OrderType.ODD:
-    case OrderType.LIT:
-    case OrderType.MIT:
-    case OrderType.TSLPAMT:
-    case OrderType.TSLPPCT:
-    case OrderType.TSMAMT:
-    case OrderType.TSMPCT:
-    case OrderType.SLO: {
-      return true;
-    }
-
-    default: {
-      return false;
-    }
-  }
+function isValidOrderType(value: unknown): value is ValidatedOrderType {
+  return typeof value === 'number' && VALID_ORDER_TYPE_VALUES.has(value);
 }
 
 function assertValidOrder(value: unknown, operation: string): asserts value is Order {
