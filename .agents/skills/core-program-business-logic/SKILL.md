@@ -1,6 +1,6 @@
 ---
 name: core-program-business-logic
-description: 港股自动化交易系统业务逻辑知识库。包含信号生成、买卖策略、订单记录、风险检查、浮亏监控、牛熊证风险、延迟验证等。用于理解交易逻辑、验证代码实现、修改功能、解答业务规则。
+description: Knowledge base for the business logic of Hong Kong stock automated trading systems. It is used for understanding trading logic, verifying code implementation, modifying functionality, and clarifying business rules.
 ---
 
 # Core Program Business Logic
