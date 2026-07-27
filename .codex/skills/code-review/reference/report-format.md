@@ -16,7 +16,6 @@
 ## scope
 
 - target: <file/module/diff/pr>
-- mode: <quick|standard|deep>
 
 ## summary
 
