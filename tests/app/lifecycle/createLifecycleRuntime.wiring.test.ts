@@ -193,7 +193,6 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
       config: createSdkConfigDouble(),
       tradingConfig,
       symbolRegistry: createSymbolRegistryDouble(),
-      warrantListCache,
       warrantListCacheConfig: {
         cache: warrantListCache,
         ttlMs: 60_000,

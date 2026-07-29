@@ -91,7 +91,6 @@ function createRuntimeParams(
       config: createSdkConfigDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry: createSymbolRegistryDouble(),
-      warrantListCache,
       warrantListCacheConfig: {
         cache: warrantListCache,
         ttlMs: 60_000,

@@ -121,13 +121,12 @@ export type MockWarrantListItem = {
 
 /**
  * Mock 调用日志能力契约。
- * 类型用途：规范 getCalls / clearCalls 两个日志接口的签名。
+ * 类型用途：规范 getCalls 日志查询接口的签名。
  * 数据来源：Longbridge mock 上下文公共能力抽象。
  * 使用范围：仅本文件内部组合 Quote/Trade 合同接口。
  */
 interface MockInvocationLog {
   getCalls: (method?: MockMethodName) => ReadonlyArray<MockCallRecord>;
-  clearCalls: () => void;
 }
 
 /**

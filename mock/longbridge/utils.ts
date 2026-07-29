@@ -202,13 +202,3 @@ export function readMockCalls(
 
   return callRecords.filter((record) => record.method === method);
 }
-
-/**
- * 清空调用日志。默认行为：长度置零。
- *
- * @param callRecords 调用日志存储
- * @returns 无返回值
- */
-export function resetMockCallRecords(callRecords: MockCallRecord[]): void {
-  callRecords.length = 0;
-}

@@ -31,7 +31,7 @@ export type SellContextValidationResult =
  * 数据来源：processSellSignals 在持仓、行情或可卖数量不满足执行条件时构造。
  * 使用范围：signalProcessor 输出与 sellProcessor HOLD guard 之间。
  */
-export type HeldSellSignal = Omit<ExecutableSellSignal, 'action' | 'isProtectiveLiquidation'> & {
+type HeldSellSignal = Omit<ExecutableSellSignal, 'action' | 'isProtectiveLiquidation'> & {
   readonly action: 'HOLD';
   readonly isProtectiveLiquidation: false;
 };

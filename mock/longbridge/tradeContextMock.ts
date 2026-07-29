@@ -34,7 +34,6 @@ import {
   applyMockFailureRule,
   createFailureState,
   readMockCalls,
-  resetMockCallRecords,
   resetMockFailureRules,
   withMockCall,
 } from './utils.js';
@@ -529,10 +528,6 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
     return readMockCalls(callRecords, method);
   }
 
-  function clearCalls(): void {
-    resetMockCallRecords(callRecords);
-  }
-
   function seedTodayOrders(orders: ReadonlyArray<Order>): void {
     todayOrdersStore = orders.map((order) => {
       const typed = order as unknown as MinimalOrder;
@@ -594,7 +589,6 @@ export function createTradeContextMock(options: TradeContextMockOptions = {}): T
     setFailureRule,
     clearFailureRules,
     getCalls,
-    clearCalls,
     seedTodayOrders,
     seedHistoryOrders,
     seedTodayExecutions,

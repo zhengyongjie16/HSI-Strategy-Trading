@@ -45,7 +45,7 @@ import {
   isOrderClosedBusinessError,
   isReplaceTempBlockedError,
   isReplaceUnsupportedByTypeError,
-  isRetryableOrderMutationError,
+  isRetryableOrderApiError,
   isWaitWsOnlyReplaceMode,
   normalizePriceText,
   resolveInitialTrackedStatus,
@@ -477,7 +477,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
             await invokeCancelOrderWithPermit(permit, ctx, orderId);
             return { kind: 'BROKER_CONFIRMED' } as const;
           }),
-        shouldRetry: isRetryableOrderMutationError,
+        shouldRetry: isRetryableOrderApiError,
       });
       if (mutationOutcome.kind === 'AUTHORIZATION_REVOKED') {
         return {
@@ -502,7 +502,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       }
 
       const errorCode = extractErrorCode(error);
-      if (isRetryableOrderMutationError(error)) {
+      if (isRetryableOrderApiError(error)) {
         return {
           kind: 'RETRYABLE_FAILURE',
           errorCode,
@@ -749,7 +749,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         return { kind: 'NOT_EXECUTED' };
       }
 
-      if (isRetryableOrderMutationError(error)) {
+      if (isRetryableOrderApiError(error)) {
         attachedTrackedOrder.lastPriceUpdateAt = now;
         logger.warn(
           `[订单修改失败] 订单ID=${orderId} 新价格=${normalizedNewPriceText}: ${message}`,
@@ -810,7 +810,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       wrapExternalApiRequest({
         operation: 'TradeContext.replaceOrder',
         request: () => rateLimiter.withTradeMutation(mutation),
-        shouldRetry: isRetryableOrderMutationError,
+        shouldRetry: isRetryableOrderApiError,
       }),
     );
   }

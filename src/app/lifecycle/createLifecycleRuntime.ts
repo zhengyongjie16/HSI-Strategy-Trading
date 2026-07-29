@@ -46,7 +46,7 @@ function createLifecycleCacheDomains(
     businessEventProgram,
     rebuildTradingDayState,
   } = params;
-  const { symbolRegistry, warrantListCache, marketDataClient } = preGateRuntime;
+  const { symbolRegistry, warrantListCacheConfig, marketDataClient } = preGateRuntime;
   const {
     monitorContext,
     indicatorCache,
@@ -116,7 +116,7 @@ function createLifecycleCacheDomains(
       logger,
       symbolRegistry,
       autoSymbolManager: monitorContext.autoSymbolManager,
-      warrantListCache,
+      warrantListCache: warrantListCacheConfig.cache,
     }),
     buildOrderDomain({
       logger,

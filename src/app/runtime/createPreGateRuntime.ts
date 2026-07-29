@@ -87,7 +87,6 @@ function createPreGateRuntimeFactory(
       config,
       tradingConfig,
       symbolRegistry,
-      warrantListCache,
       warrantListCacheConfig,
       marketDataClient,
       startupTradingDayInfo,

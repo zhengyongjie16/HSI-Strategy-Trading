@@ -407,16 +407,6 @@ export function isRetryableOrderApiError(err: unknown): boolean {
 }
 
 /**
- * 判断是否为可重试订单 mutation 请求失败。
- *
- * @param err 错误对象
- * @returns true 表示可重试
- */
-export function isRetryableOrderMutationError(err: unknown): boolean {
-  return isRetryableOrderApiError(err);
-}
-
-/**
  * 判断是否为"不支持改单（订单类型）"错误。
  *
  * @param err 错误对象

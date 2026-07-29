@@ -79,7 +79,7 @@ function handoffPeriodicWakeup(params: {
  * @param deps 依赖注入，包含唯一 monitorContext、switchWakeupRuntime、getCanTradeNow
  * @returns AUTO_SYMBOL_TICK 处理函数
  */
-export function createAutoSymbolHandlers({
+export function createAutoSymbolTickHandler({
   monitorContext,
   switchWakeupRuntime,
   periodicSwitchWakeupRuntime,
@@ -92,11 +92,7 @@ export function createAutoSymbolHandlers({
     'markWaitingEmpty' | 'clearWaitingEmpty' | 'replanRouteAfterTask'
   >;
   readonly getCanTradeNow: () => boolean;
-}): Readonly<{
-  handleAutoSymbolTick: (
-    task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
-  ) => Promise<MonitorTaskStatus>;
-}> {
+}): (task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>) => Promise<MonitorTaskStatus> {
   function handoffPendingWakeup(params: {
     readonly context: MonitorContext;
     readonly direction: 'LONG' | 'SHORT';
@@ -201,7 +197,5 @@ export function createAutoSymbolHandlers({
     return 'processed';
   }
 
-  return {
-    handleAutoSymbolTick,
-  };
+  return handleAutoSymbolTick;
 }

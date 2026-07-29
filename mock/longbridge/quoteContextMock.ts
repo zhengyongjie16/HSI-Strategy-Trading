@@ -27,7 +27,6 @@ import {
   applyMockFailureRule,
   createFailureState,
   readMockCalls,
-  resetMockCallRecords,
   resetMockFailureRules,
   withMockCall,
 } from './utils.js';
@@ -326,10 +325,6 @@ export function createQuoteContextMock(): QuoteContextMock {
     return readMockCalls(callRecords, method);
   }
 
-  function clearCalls(): void {
-    resetMockCallRecords(callRecords);
-  }
-
   function seedQuotes(
     quotes: ReadonlyArray<{ readonly symbol: string; readonly quote: unknown }>,
   ): void {
@@ -417,7 +412,6 @@ export function createQuoteContextMock(): QuoteContextMock {
     setFailureRule,
     clearFailureRules,
     getCalls,
-    clearCalls,
     seedQuotes,
     seedRealtimeQuotes,
     seedStaticInfo,

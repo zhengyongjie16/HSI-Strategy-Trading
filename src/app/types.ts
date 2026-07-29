@@ -25,10 +25,7 @@ import type {
   TradingSignalStrategyFactory,
 } from '../core/strategy/types.js';
 import type { AutoSymbolManagerPort } from '../types/monitorContextPorts.js';
-import type {
-  WarrantListCache,
-  WarrantListCacheConfig,
-} from '../services/autoSymbolFinder/types.js';
+import type { WarrantListCacheConfig } from '../services/autoSymbolFinder/types.js';
 import type { LiquidationCooldownTracker } from '../services/liquidationCooldown/types.js';
 import type { MixedTradeLogRepository } from '../services/mixedTradeLogRepository/types.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../core/trader/protectiveLiquidationEpisodeTracker/types.js';
@@ -421,7 +418,6 @@ export type PreGateRuntime = Readonly<{
   config: Config;
   tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
-  warrantListCache: WarrantListCache;
   warrantListCacheConfig: WarrantListCacheConfig;
   marketDataClient: MarketDataClient;
   startupTradingDayInfo: StartupTradingDayInfo | null;

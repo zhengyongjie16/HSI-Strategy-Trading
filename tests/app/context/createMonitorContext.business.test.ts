@@ -104,7 +104,6 @@ function createRuntime(
     config: createSdkConfigDouble(),
     tradingConfig: createTradingConfig(monitor),
     symbolRegistry,
-    warrantListCache: createWarrantListCache(),
     warrantListCacheConfig: {
       cache: createWarrantListCache(),
       ttlMs: 60_000,

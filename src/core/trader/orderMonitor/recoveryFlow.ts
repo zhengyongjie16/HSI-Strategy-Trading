@@ -514,7 +514,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     cacheBootstrappingEvent,
     clearBootstrappingEventBuffer,
     resetRecoveryTrackingState,
-    replayBootstrappingEvents,
     recoverOrderTrackingFromSnapshot,
   };
 }

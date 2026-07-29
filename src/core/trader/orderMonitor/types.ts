@@ -176,11 +176,7 @@ export type OrderMonitorWakeupKind = 'QUOTE' | 'ORDER_EVENT' | 'TIMER' | 'TRACKE
  * 使用范围：orderMonitor route runtime 目录内部。
  */
 export type OrderMonitorTimerKind =
-  | 'BUY_TIMEOUT'
-  | 'SELL_TIMEOUT'
-  | 'CANCEL_RETRY'
-  | 'REPLACE_RETRY'
-  | 'QUOTE_RETRY';
+  'BUY_TIMEOUT' | 'SELL_TIMEOUT' | 'CANCEL_RETRY' | 'REPLACE_RETRY' | 'QUOTE_RETRY';
 
 /**
  * 订单监控 timer 键。
@@ -439,7 +435,7 @@ export type RecoveryFlowDeps = {
 
 /**
  * 恢复流程接口。
- * 类型用途：暴露 BOOTSTRAPPING 事件缓存、重置、回放与快照恢复能力。
+ * 类型用途：暴露 BOOTSTRAPPING 事件缓存、重置与快照恢复能力。
  * 数据来源：createRecoveryFlow 工厂返回。
  * 使用范围：orderMonitor/index.ts 调用。
  */
@@ -447,7 +443,6 @@ export interface RecoveryFlow {
   cacheBootstrappingEvent: (event: PushOrderChanged) => void;
   clearBootstrappingEventBuffer: () => void;
   resetRecoveryTrackingState: () => void;
-  replayBootstrappingEvents: () => ReadonlySet<string>;
   recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<RawOrderFromAPI>) => Promise<void>;
 }
 

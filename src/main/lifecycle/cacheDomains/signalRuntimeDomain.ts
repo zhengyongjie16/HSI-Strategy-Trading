@@ -15,7 +15,6 @@
  * - 再启动普通 K 线业务 owner、交易标的风险 runtime、monitor quote runtime 与 switch wakeup runtime
  * - 再重启买入、卖出、监控任务处理器
  */
-import type { MonitorContext } from '../../../types/state.js';
 import type { CacheDomain } from '../types.js';
 import type { SignalRuntimeDomainDeps } from './types.js';
 
@@ -41,16 +40,6 @@ function clearTradeQueues(
     removedSell,
     removedMonitor,
   };
-}
-
-/**
- * 取消唯一监控标的的延迟验证信号。
- *
- * @param monitorContext 监控上下文
- * @returns 取消的信号总数
- */
-function cancelAllDelayedSignals(monitorContext: MonitorContext): number {
-  return monitorContext.delayedSignalVerifier.cancelAll();
 }
 
 /**
@@ -111,7 +100,7 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
         sellTaskQueue,
         monitorTaskQueue,
       });
-      const removedDelayed = cancelAllDelayedSignals(monitorContext);
+      const removedDelayed = monitorContext.delayedSignalVerifier.cancelAll();
 
       postTradeConsistencyRuntime.midnightClear();
       indicatorCache.clearAll();

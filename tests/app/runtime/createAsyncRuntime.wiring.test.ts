@@ -75,7 +75,6 @@ function createDeps(
       config: { refreshAccessToken: () => Promise.resolve('') },
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
-      warrantListCache,
       warrantListCacheConfig: {
         cache: warrantListCache,
         ttlMs: 60_000,

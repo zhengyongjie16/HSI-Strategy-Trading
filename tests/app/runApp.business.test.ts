@@ -25,11 +25,7 @@ import type {
   SignalProcessor,
 } from '../../src/core/signalProcessor/types.js';
 import type { TaskQueue } from '../../src/main/asyncProgram/tradeTaskQueue/types.js';
-import type {
-  WarrantListCache,
-  WarrantListCacheEntry,
-  WarrantListItem,
-} from '../../src/services/autoSymbolFinder/types.js';
+import { createWarrantListCache } from '../../src/services/autoSymbolFinder/utils.js';
 import type { BuySignal } from '../../src/types/signal.js';
 import type { LastState } from '../../src/types/state.js';
 import type { BuyRiskCheckContext } from '../../src/types/services.js';
@@ -220,25 +216,7 @@ function createMonitorTaskQueueDouble(): PostGateRuntime['monitorTaskQueue'] {
 }
 
 function createMockPreGateRuntime(): PreGateRuntime {
-  const warrantListEntries = new Map<string, WarrantListCacheEntry>();
-  const warrantListInFlight = new Map<string, Promise<ReadonlyArray<WarrantListItem>>>();
-  const warrantListCache: WarrantListCache = {
-    getEntry: (key) => warrantListEntries.get(key),
-    setEntry: (key, entry) => {
-      warrantListEntries.set(key, entry);
-    },
-    getInFlight: (key) => warrantListInFlight.get(key),
-    setInFlight: (key, request) => {
-      warrantListInFlight.set(key, request);
-    },
-    deleteInFlight: (key) => {
-      warrantListInFlight.delete(key);
-    },
-    clear: () => {
-      warrantListEntries.clear();
-      warrantListInFlight.clear();
-    },
-  };
+  const warrantListCache = createWarrantListCache();
 
   return {
     config: createSdkConfigDouble(),
@@ -258,7 +236,6 @@ function createMockPreGateRuntime(): PreGateRuntime {
       },
     }),
     symbolRegistry: createSymbolRegistryDouble(),
-    warrantListCache,
     warrantListCacheConfig: {
       cache: warrantListCache,
       ttlMs: 60_000,

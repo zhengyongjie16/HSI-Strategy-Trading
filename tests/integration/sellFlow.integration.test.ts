@@ -32,7 +32,7 @@ import {
   createSymbolRegistryDouble,
   createTradeContextDouble,
 } from '../helpers/testDoubles.js';
-import type { HeldSellSignal, ProcessedSellSignal } from '../../src/core/signalProcessor/types.js';
+import type { ProcessedSellSignal } from '../../src/core/signalProcessor/types.js';
 import type {
   ExecutableSellSignal,
   ProtectiveLiquidationSellSignal,
@@ -191,7 +191,7 @@ describe('sell-flow integration', () => {
       throw new Error('expected held sell signal');
     }
 
-    const heldSignal: HeldSellSignal = heldResult;
+    const heldSignal = heldResult;
     expect(heldSignal.isProtectiveLiquidation).toBeFalse();
     expect(heldSignal.seatVersion).toBe(7);
   });

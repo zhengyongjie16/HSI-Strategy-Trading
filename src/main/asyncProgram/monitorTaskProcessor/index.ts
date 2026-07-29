@@ -19,7 +19,7 @@ import { logger } from '../../../utils/logger/index.js';
 import { API } from '../../../constants/index.js';
 import { createQueueRunner } from './queueRunner.js';
 import { createRefreshHelpers } from './helpers/refreshHelpers.js';
-import { createAutoSymbolHandlers } from './handlers/autoSymbol.js';
+import { createAutoSymbolTickHandler } from './handlers/autoSymbol.js';
 import { createSeatRefreshHandler } from './handlers/seatRefresh.js';
 import type { MonitorTask } from '../monitorTaskQueue/types.js';
 import { formatError } from '../../../utils/error/index.js';
@@ -80,7 +80,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   } = deps;
   const monitorSymbol = monitorContext.config.monitorSymbol;
 
-  const { handleAutoSymbolTick } = createAutoSymbolHandlers({
+  const handleAutoSymbolTick = createAutoSymbolTickHandler({
     monitorContext,
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,

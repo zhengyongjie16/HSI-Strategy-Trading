@@ -193,7 +193,7 @@ export type TodayOrderForPendingCache = Readonly<{
  * 数据来源：生产环境由 Longbridge TradeContext 提供；测试可直接提供最小 double。
  * 使用范围：仅 OrderCacheManagerDeps。
  */
-export interface TodayOrdersReader {
+interface TodayOrdersReader {
   todayOrders: () => Promise<unknown>;
 }
 
@@ -459,10 +459,7 @@ export type SellMergeDecision = {
   readonly pendingOrderIds: ReadonlyArray<string>;
   readonly pendingRemainingQuantity: number;
   readonly reason:
-    | 'no-additional-quantity'
-    | 'no-pending-sell'
-    | 'cancel-and-merge'
-    | 'replace-and-merge';
+    'no-additional-quantity' | 'no-pending-sell' | 'cancel-and-merge' | 'replace-and-merge';
 };
 
 /**
@@ -594,10 +591,7 @@ type ContinuousTradingOrderAuthorization = () => boolean;
  * 使用范围：OrderActionAuthorization 参数。
  */
 export type OrderActionAuthorizationStage =
-  | 'executeSignals'
-  | 'submitOrder.beforeApi'
-  | 'cancelOrder.beforeApi'
-  | 'replaceOrder.beforeApi';
+  'executeSignals' | 'submitOrder.beforeApi' | 'cancelOrder.beforeApi' | 'replaceOrder.beforeApi';
 
 /**
  * 信号派生订单副作用授权器。
@@ -658,8 +652,7 @@ export type CancelOrderMutationRequest = OrderMutationRequest | DoomsdayCancelOr
  * 使用范围：OrderExecutor 卖单合并链路。
  */
 export type ReplaceOrderPriceOutcome =
-  | { readonly kind: 'BROKER_CONFIRMED' }
-  | { readonly kind: 'NOT_EXECUTED' };
+  { readonly kind: 'BROKER_CONFIRMED' } | { readonly kind: 'NOT_EXECUTED' };
 
 /**
  * 订单执行器依赖。
