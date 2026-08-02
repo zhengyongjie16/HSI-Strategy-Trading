@@ -916,7 +916,7 @@ describe('orderMonitor orderOps', () => {
     expect(replaceOutcome).toEqual({ kind: 'BROKER_CONFIRMED' });
     expect(runtime.latestReplaceTerminalByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
     expect(runtime.queriedTerminalStateByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
-    expect(trackedOrder.submittedPrice).toBe(1.01);
+    expect(Object.is(trackedOrder.submittedPrice, 1.01)).toBeTrue();
     expect(trackedOrder.submittedQuantity).toBe(100);
   });
 

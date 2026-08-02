@@ -317,7 +317,7 @@ describe('createRebuildTradingDayState', () => {
 
     expect(caughtError).toBeInstanceOf(Error);
     expect((caughtError as Error).message).toMatch(/\[Lifecycle\] 重建交易日状态失败/);
-    expect(tradingDayCalls.length).toBe(0);
+    expect(tradingDayCalls).toHaveLength(0);
   });
 
   it('rebuildOrderRecords 中抛错时抛出带 [Lifecycle] 重建交易日状态失败 前缀的错误', async () => {

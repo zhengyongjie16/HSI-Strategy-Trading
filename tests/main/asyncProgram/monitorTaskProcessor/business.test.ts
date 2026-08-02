@@ -1170,7 +1170,7 @@ describe('monitorTaskProcessor business flow', () => {
           rebuildSteps.push('refresh');
           rebuildSnapshots.push(snapshot);
           expect(symbol).toBe('BULL.HK');
-          expect(quote?.price).toBe(1.1);
+          expect(Object.is(quote?.price, 1.1)).toBeTrue();
           return [];
         },
       }),
@@ -1961,7 +1961,7 @@ describe('monitorTaskProcessor business flow', () => {
         fetchAllOrdersFromAPI: async () => [],
         refreshOrdersFromAllOrdersForShort: async (_symbol, _allOrders, quote) => {
           refreshOrdersCalls += 1;
-          expect(quote?.price).toBe(0.9);
+          expect(Object.is(quote?.price, 0.9)).toBeTrue();
           return [];
         },
       }),

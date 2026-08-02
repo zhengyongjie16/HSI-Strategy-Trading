@@ -210,9 +210,7 @@ git commit -m "feat: apply daily loss offset to unrealized loss"
 **步骤 1：启动时初始化当日亏损跟踪器**
 
 ```typescript
-const dailyLossTracker = createDailyLossTracker({
-  /* deps */
-});
+const dailyLossTracker = createDailyLossTracker({/* deps */});
 dailyLossTracker.initializeFromOrders(allOrders, tradingConfig.monitors, new Date());
 monitorContext.dailyLossTracker = dailyLossTracker;
 ```

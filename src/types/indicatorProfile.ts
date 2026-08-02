@@ -32,15 +32,7 @@ export type ProfileIndicator =
  * 使用范围：IndicatorUsageProfile.verificationIndicatorsBySide、DelayedSignalVerifier、signalPipeline 等延迟验证链路。
  */
 export type VerificationIndicator =
-  | 'K'
-  | 'D'
-  | 'J'
-  | 'MACD'
-  | 'DIF'
-  | 'DEA'
-  | 'ADX'
-  | `EMA:${number}`
-  | `PSY:${number}`;
+  'K' | 'D' | 'J' | 'MACD' | 'DIF' | 'DEA' | 'ADX' | `EMA:${number}` | `PSY:${number}`;
 
 /**
  * 指标展示项。

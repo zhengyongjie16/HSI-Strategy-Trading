@@ -335,7 +335,6 @@ export default defineConfig(
       '@typescript-eslint/default-param-last': 'error',
       '@typescript-eslint/no-dupe-class-members': 'error',
       '@typescript-eslint/no-invalid-this': 'error',
-      '@typescript-eslint/no-loop-func': 'error',
       '@typescript-eslint/no-redeclare': 'error',
       '@typescript-eslint/no-unnecessary-parameter-property-assignment': 'error',
       '@typescript-eslint/no-unnecessary-qualifier': 'error',
@@ -363,6 +362,7 @@ export default defineConfig(
       // 循环与控制流
       'default-case': 'error',
       'default-case-last': 'error',
+      'no-loop-func': 'error',
       'no-unreachable': 'error',
       'no-unreachable-loop': 'error',
       'max-depth': ['error', { max: 5 }],

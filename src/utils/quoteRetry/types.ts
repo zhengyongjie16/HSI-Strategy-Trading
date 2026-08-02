@@ -15,11 +15,7 @@ type QuoteRetryRequirement = 'PRICE' | 'PRICE_AND_LOT_SIZE';
  * 使用范围：quoteRetry 工具模块及卖出、末日保护、换标、订单监控等调用方。
  */
 export type QuoteReadinessStatus =
-  | 'READY'
-  | 'MISSING'
-  | 'INVALID_PRICE'
-  | 'MISSING_LOT_SIZE'
-  | 'INVALID_LOT_SIZE';
+  'READY' | 'MISSING' | 'INVALID_PRICE' | 'MISSING_LOT_SIZE' | 'INVALID_LOT_SIZE';
 
 /**
  * quote 就绪性判断参数。

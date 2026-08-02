@@ -243,7 +243,7 @@ describe('sellProcessor business flow', () => {
     expect(captured.tradingCalendarSnapshot).toBe(tradingCalendarSnapshot);
     expect(captured.nowMs).toBe(SELL_PROCESSOR_NOW_MS);
     const requestedSymbols = [...quoteRequest!] as string[];
-    expect(requestedSymbols.length).toBe(2);
+    expect(requestedSymbols).toHaveLength(2);
     expect(requestedSymbols[0]).toBe('BULL.HK');
     expect(requestedSymbols[1]).toBe('BEAR.HK');
   });
@@ -985,8 +985,7 @@ describe('sellProcessor business flow', () => {
   it('does not register new sell retry after stopAndDrain begins while task is still in flight', async () => {
     const queue = createSellTaskQueue();
     let releaseQuotes:
-      | ((quotes: Map<string, ReturnType<typeof createQuoteDouble> | null>) => void)
-      | null = null;
+      ((quotes: Map<string, ReturnType<typeof createQuoteDouble> | null>) => void) | null = null;
     const signalProcessor = {
       applyRiskChecks: async () => [],
       processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) =>

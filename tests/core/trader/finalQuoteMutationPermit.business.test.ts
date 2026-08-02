@@ -563,9 +563,11 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     expect(result.executedOrderIds).toHaveLength(1);
     expect(fixture.events.slice(-3)).toEqual(['permit', 'quote', 'invoke']);
     expect(fixture.quoteReadCount()).toBe(1);
-    expect(readSubmittedPrice(fixture.tradeContext.getCalls('submitOrder')[0])).toBe(1.6);
+    expect(
+      Object.is(readSubmittedPrice(fixture.tradeContext.getCalls('submitOrder')[0]), 1.6),
+    ).toBeTrue();
     expect(readSubmittedQuantity(fixture.tradeContext.getCalls('submitOrder')[0])).toBe(200);
-    expect(fixture.trackedOrders[0]?.price).toBe(1.6);
+    expect(Object.is(fixture.trackedOrders[0]?.price, 1.6)).toBeTrue();
   });
 
   it('never invokes the unrealized-loss buy gate for an ordinary sell', async () => {
@@ -670,9 +672,11 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     expect(result.executedOrderIds).toHaveLength(1);
     expect(cancelOrderIds).toEqual(['SELL-OLD-MO']);
     expect(fixture.events.slice(-3)).toEqual(['permit', 'quote', 'invoke']);
-    expect(readSubmittedPrice(fixture.tradeContext.getCalls('submitOrder')[0])).toBe(1.7);
+    expect(
+      Object.is(readSubmittedPrice(fixture.tradeContext.getCalls('submitOrder')[0]), 1.7),
+    ).toBeTrue();
     expect(readSubmittedQuantity(fixture.tradeContext.getCalls('submitOrder')[0])).toBe(150);
-    expect(fixture.trackedOrders[0]?.price).toBe(1.7);
+    expect(Object.is(fixture.trackedOrders[0]?.price, 1.7)).toBeTrue();
     expect(fixture.trackedOrders[0]?.quantity).toBe(150);
   });
 
@@ -780,9 +784,11 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     expect(result.executedOrderIds).toHaveLength(1);
     expect(cancelOrderIds).toEqual(['SELL-OLD-DOOMSDAY']);
     expect(fixture.events.slice(-3)).toEqual(['permit', 'quote', 'invoke']);
-    expect(readSubmittedPrice(fixture.tradeContext.getCalls('submitOrder')[0])).toBe(1.9);
+    expect(
+      Object.is(readSubmittedPrice(fixture.tradeContext.getCalls('submitOrder')[0]), 1.9),
+    ).toBeTrue();
     expect(readSubmittedQuantity(fixture.tradeContext.getCalls('submitOrder')[0])).toBe(300);
-    expect(fixture.trackedOrders[0]?.price).toBe(1.9);
+    expect(Object.is(fixture.trackedOrders[0]?.price, 1.9)).toBeTrue();
     expect(fixture.trackedOrders[0]?.quantity).toBe(300);
     expect(unrealizedLossGateCalls).toBe(0);
   });

@@ -92,9 +92,7 @@ const createOrderService = ({ productRepository, orderRepository, idGenerator }:
     return product !== null && product.stock >= quantity;
   };
 
-  return {
-    /* ... */
-  };
+  return {/* ... */};
 };
 ```
 

@@ -321,7 +321,7 @@ describe('orderStatusQuery business flow', () => {
       await orderStatusQuery.checkOrderState('ORDER-BUSINESS-ERROR');
       expect.unreachable();
     } catch (error) {
-      expect(error instanceof Error).toBe(true);
+      expect(error).toBeInstanceOf(Error);
       if (error instanceof Error) {
         expect(error.name).not.toBe('ExternalApiRequestError');
         expect(error.message).toContain('500001');

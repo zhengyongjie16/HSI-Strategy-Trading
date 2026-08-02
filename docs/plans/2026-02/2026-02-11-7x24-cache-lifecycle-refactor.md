@@ -226,11 +226,7 @@
 
 ```ts
 type LifecycleState =
-  | 'ACTIVE'
-  | 'MIDNIGHT_CLEANING'
-  | 'MIDNIGHT_CLEANED'
-  | 'OPEN_REBUILDING'
-  | 'OPEN_REBUILD_FAILED';
+  'ACTIVE' | 'MIDNIGHT_CLEANING' | 'MIDNIGHT_CLEANED' | 'OPEN_REBUILDING' | 'OPEN_REBUILD_FAILED';
 
 interface CacheDomain {
   name: string;

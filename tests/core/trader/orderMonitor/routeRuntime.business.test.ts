@@ -281,7 +281,9 @@ describe('orderMonitor route runtime', () => {
     await flushMicrotasks();
 
     expect(processedSymbols).toEqual(['BULL.HK']);
-    expect(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price).toBe(1.01);
+    expect(
+      Object.is(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price, 1.01),
+    ).toBeTrue();
     expect(runtime.routeStatesBySymbol.get('BEAR.HK')?.latestQuote).toBeNull();
   });
 
@@ -348,7 +350,9 @@ describe('orderMonitor route runtime', () => {
 
     expect(processCount).toBe(1);
     expect(runtime.routeStatesBySymbol.get('BULL.HK')?.dirty).toBe(true);
-    expect(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price).toBe(1.03);
+    expect(
+      Object.is(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price, 1.03),
+    ).toBeTrue();
 
     releaseFirstPass.resolve();
     await flushMicrotasks();

@@ -203,10 +203,7 @@ export type SwitchState = {
  * 使用范围：仅 autoSymbolManager 模块内部使用。
  */
 export type PeriodicSeatBlockSource =
-  | 'ORDER_RECORDER'
-  | 'LOCAL_PENDING_ORDER'
-  | 'BROKER_PENDING_ORDER'
-  | 'EMPTY';
+  'ORDER_RECORDER' | 'LOCAL_PENDING_ORDER' | 'BROKER_PENDING_ORDER' | 'EMPTY';
 
 /**
  * 换标流程阶段枚举（内部类型）。
@@ -214,13 +211,7 @@ export type PeriodicSeatBlockSource =
  * 使用范围：仅 autoSymbolManager 模块内部使用。
  */
 type SwitchStage =
-  | 'CANCEL_PENDING'
-  | 'SELL_OUT'
-  | 'BIND_NEW'
-  | 'WAIT_QUOTE'
-  | 'REBUY'
-  | 'COMPLETE'
-  | 'FAILED';
+  'CANCEL_PENDING' | 'SELL_OUT' | 'BIND_NEW' | 'WAIT_QUOTE' | 'REBUY' | 'COMPLETE' | 'FAILED';
 
 /**
  * 换标触发类型。
@@ -407,11 +398,7 @@ export type OrderSignalBuilder = (params: BuildOrderSignalParams) => OrderSignal
  * 使用范围：autoSymbolManager 模块及其调用方使用。
  */
 export type SeatUnavailableReason =
-  | 'SEAT_EMPTY'
-  | 'SEAT_FROZEN_TODAY'
-  | 'SEAT_SEARCHING'
-  | 'SEAT_SWITCHING'
-  | 'SEAT_ACTIVATING';
+  'SEAT_EMPTY' | 'SEAT_FROZEN_TODAY' | 'SEAT_SEARCHING' | 'SEAT_SWITCHING' | 'SEAT_ACTIVATING';
 
 /**
  * 信号席位绑定校验失败原因。
@@ -419,10 +406,7 @@ export type SeatUnavailableReason =
  * 使用范围：autoSymbolManager/utils 与相关调用方使用。
  */
 type SignalSeatValidationFailureReason =
-  | 'INVALID_SIGNAL_ACTION'
-  | 'SEAT_UNAVAILABLE'
-  | 'SEAT_VERSION_MISMATCH'
-  | 'SEAT_SYMBOL_MISMATCH';
+  'INVALID_SIGNAL_ACTION' | 'SEAT_UNAVAILABLE' | 'SEAT_VERSION_MISMATCH' | 'SEAT_SYMBOL_MISMATCH';
 
 /**
  * 信号席位绑定校验入参。

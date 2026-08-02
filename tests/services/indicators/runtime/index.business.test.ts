@@ -148,9 +148,9 @@ describe('indicators/runtime business flow', () => {
   });
 
   it('supports number conversion used by runtime helpers', () => {
-    expect(toNumber(1.2)).toBe(1.2);
-    expect(toNumber('2.3')).toBe(2.3);
-    expect(toNumber(toMockDecimal(3.4))).toBe(3.4);
+    expect(Object.is(toNumber(1.2), 1.2)).toBeTrue();
+    expect(Object.is(toNumber('2.3'), 2.3)).toBeTrue();
+    expect(Object.is(toNumber(toMockDecimal(3.4)), 3.4)).toBeTrue();
     expect(toNumber(null)).toBe(0);
   });
 

@@ -40,9 +40,9 @@ describe('indicatorHelpers business semantics', () => {
     expect(getIndicatorValue(state, 'K')).toBe(52);
     expect(getIndicatorValue(state, 'D')).toBe(48);
     expect(getIndicatorValue(state, 'J')).toBe(60);
-    expect(getIndicatorValue(state, 'MACD')).toBe(1.2);
+    expect(Object.is(getIndicatorValue(state, 'MACD'), 1.2)).toBeTrue();
     expect(getIndicatorValue(state, 'DIF')).toBe(0.5);
-    expect(getIndicatorValue(state, 'DEA')).toBe(0.3);
+    expect(Object.is(getIndicatorValue(state, 'DEA'), 0.3)).toBeTrue();
     expect(getIndicatorValue(state, 'ADX')).toBe(28);
     expect(getIndicatorValue(state, 'MFI')).toBeNull();
     expect(getIndicatorValue(state, 'UNKNOWN')).toBeNull();
@@ -51,8 +51,8 @@ describe('indicatorHelpers business semantics', () => {
   it('returns values for supported period indicators and null for invalid or missing periods', () => {
     const state = createIndicatorState();
 
-    expect(getIndicatorValue(state, 'EMA:5')).toBe(101.2);
-    expect(getIndicatorValue(state, 'EMA:10')).toBe(99.8);
+    expect(Object.is(getIndicatorValue(state, 'EMA:5'), 101.2)).toBeTrue();
+    expect(Object.is(getIndicatorValue(state, 'EMA:10'), 99.8)).toBeTrue();
     expect(getIndicatorValue(state, 'PSY:12')).toBe(67.5);
 
     expect(getIndicatorValue(state, 'EMA:0')).toBeNull();

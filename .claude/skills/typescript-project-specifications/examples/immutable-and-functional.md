@@ -60,8 +60,7 @@ type ShoppingCart = {
 
 ```typescript
 export type Result<T, E = Error> =
-  | { readonly success: true; readonly data: T }
-  | { readonly success: false; readonly error: E };
+  { readonly success: true; readonly data: T } | { readonly success: false; readonly error: E };
 ```
 
 ### ❌ 错误：用异常处理预期错误

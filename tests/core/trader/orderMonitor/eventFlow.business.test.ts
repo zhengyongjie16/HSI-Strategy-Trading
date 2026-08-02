@@ -1022,7 +1022,7 @@ describe('orderMonitor eventFlow', () => {
 
     expect(trackedOrder.status).toBe(OrderStatus.PartialFilled);
     expect(trackedOrder.executedQuantity).toBe(50);
-    expect(trackedOrder.executedPrice).toBe(1.01);
+    expect(Object.is(trackedOrder.executedPrice, 1.01)).toBeTrue();
     expect(trackedOrder.lastExecutedTimeMs).toBe(200);
     expect(partialFills).toEqual([50]);
   });

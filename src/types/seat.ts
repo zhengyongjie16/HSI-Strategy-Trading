@@ -220,8 +220,4 @@ export interface SymbolRegistry {
  * 使用范围：运行期状态、LastState、门禁、跨日流程等；全项目可引用。
  */
 export type LifecycleState =
-  | 'ACTIVE'
-  | 'MIDNIGHT_CLEANING'
-  | 'MIDNIGHT_CLEANED'
-  | 'OPEN_REBUILDING'
-  | 'OPEN_REBUILD_FAILED';
+  'ACTIVE' | 'MIDNIGHT_CLEANING' | 'MIDNIGHT_CLEANED' | 'OPEN_REBUILDING' | 'OPEN_REBUILD_FAILED';

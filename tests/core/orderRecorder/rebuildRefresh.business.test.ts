@@ -194,8 +194,8 @@ describe('OrderRecorder rebuild refresh', () => {
     expect(summarizeOrders(shortRebuiltOrders)).toEqual(
       summarizeOrders(onlineSettlementRecorder.getBuyOrdersForSymbol(shortSymbol, false)),
     );
-    expect(rebuiltRecorder.getCostAveragePrice(longSymbol, true)).toBe(1.2);
-    expect(rebuiltRecorder.getCostAveragePrice(shortSymbol, false)).toBe(1.2);
+    expect(Object.is(rebuiltRecorder.getCostAveragePrice(longSymbol, true), 1.2)).toBeTrue();
+    expect(Object.is(rebuiltRecorder.getCostAveragePrice(shortSymbol, false), 1.2)).toBeTrue();
 
     const classifiedOrders = classifyOrdersForRebuild([...longSnapshot, ...shortSnapshot]);
     expect(

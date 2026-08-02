@@ -95,8 +95,14 @@ describe('auto search distance config business flow', () => {
       }),
     });
 
-    expect(config.monitor.autoSearchConfig.autoSearchMinDistancePctBull).toBe(0.35);
-    expect(config.monitor.autoSearchConfig.autoSearchMinDistancePctBear).toBe(-0.35);
+    expect(
+      Object.is(config.monitor.autoSearchConfig.autoSearchMinDistancePctBull, 0.35),
+    ).toBeTrue();
+
+    expect(
+      Object.is(config.monitor.autoSearchConfig.autoSearchMinDistancePctBear, -0.35),
+    ).toBeTrue();
+
     expect(config.monitor.autoSearchConfig.switchDistanceRangeBull).toEqual({
       min: 0.2,
       max: 1.5,

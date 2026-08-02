@@ -113,9 +113,7 @@ export type AdvancePendingSwitchResult =
  * 使用范围：MonitorContext 行为端口、autoSymbolManager 与监控任务处理器。
  */
 export type PeriodicSeatBlockingReason =
-  | 'ORDER_RECORDER'
-  | 'LOCAL_PENDING_ORDER'
-  | 'BROKER_PENDING_ORDER';
+  'ORDER_RECORDER' | 'LOCAL_PENDING_ORDER' | 'BROKER_PENDING_ORDER';
 
 /**
  * 周期换标等待状态。

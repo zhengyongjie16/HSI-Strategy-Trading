@@ -623,7 +623,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(result.submittedPrice).toBe(0.058);
+    expect(Object.is(result.submittedPrice, 0.058)).toBeTrue();
   });
 
   it('replaces order when price diff equals threshold on upward move', async () => {
@@ -633,7 +633,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(result.submittedPrice).toBe(0.059);
+    expect(Object.is(result.submittedPrice, 0.059)).toBeTrue();
   });
 
   it('does not replace order when price diff is lower than threshold', async () => {
@@ -643,7 +643,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(0);
-    expect(result.submittedPrice).toBe(0.059);
+    expect(Object.is(result.submittedPrice, 0.059)).toBeTrue();
   });
 
   it('replaces order when price diff is greater than threshold', async () => {
@@ -653,7 +653,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(result.submittedPrice).toBe(0.057);
+    expect(Object.is(result.submittedPrice, 0.057)).toBeTrue();
   });
 
   it('does not repeatedly replace when quote price does not change', async () => {
@@ -664,7 +664,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(0);
-    expect(result.submittedPrice).toBe(0.058);
+    expect(Object.is(result.submittedPrice, 0.058)).toBeTrue();
   });
 
   it('normalizes tracked submitted price after replace', async () => {
@@ -674,7 +674,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(result.submittedPrice).toBe(0.058);
+    expect(Object.is(result.submittedPrice, 0.058)).toBeTrue();
   });
 
   it('allows buy order tracking above initial price when config is enabled', async () => {

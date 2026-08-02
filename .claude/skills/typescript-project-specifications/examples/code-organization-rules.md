@@ -162,9 +162,7 @@ export type SharedConfig = {
 `src/aaa/types.ts`（公共文件）：
 
 ```typescript
-export type SharedConfig = {
-  /* ... */
-};
+export type SharedConfig = {/* ... */};
 
 // ❌ BbbLocalState 仅被 bbb 使用，不应放在 aaa 的公共 types.ts
 export type BbbLocalState = {

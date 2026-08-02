@@ -274,10 +274,7 @@ Expected: FAIL with module not found
 import type { Quote } from '../../../types/index.js';
 
 export type MonitorTaskType =
-  | 'AUTO_SYMBOL_TICK'
-  | 'LIQUIDATION_DISTANCE_CHECK'
-  | 'SEAT_REFRESH'
-  | 'UNREALIZED_LOSS_CHECK';
+  'AUTO_SYMBOL_TICK' | 'LIQUIDATION_DISTANCE_CHECK' | 'SEAT_REFRESH' | 'UNREALIZED_LOSS_CHECK';
 
 export type AutoSymbolTickData = {
   readonly currentTime: Date;

@@ -326,7 +326,7 @@ describe('buy-flow integration', () => {
       }),
     ]);
 
-    expect(result.executedOrderIds.length).toBe(0);
+    expect(result.executedOrderIds).toHaveLength(0);
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
     expect(orderExecutor.canTradeNow('BUYPUT')).toEqual({ canTrade: true });
   });
@@ -383,7 +383,7 @@ describe('buy-flow integration', () => {
       true,
     );
 
-    expect(result.executedOrderIds.length).toBe(1);
+    expect(result.executedOrderIds).toHaveLength(1);
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
   });
 
@@ -884,7 +884,7 @@ describe('buy-flow integration', () => {
         );
         const result = await orderExecutor.executeSignals(checkedSignals);
 
-        expect(result.executedOrderIds.length).toBe(1);
+        expect(result.executedOrderIds).toHaveLength(1);
         expect(trackedOrders).toHaveLength(1);
         expect(trackedOrders[0]?.side).toBe(OrderSide.Buy);
         expect(trackedOrders[0]?.quantity).toBe(1000);
@@ -967,7 +967,7 @@ describe('buy-flow integration', () => {
 
         const result = await orderExecutor.executeSignals([signal]);
 
-        expect(result.executedOrderIds.length).toBe(1);
+        expect(result.executedOrderIds).toHaveLength(1);
         expect(trackedOrders).toHaveLength(1);
         expect(trackedOrders[0]?.side).toBe(OrderSide.Buy);
         expect(trackedOrders[0]?.quantity).toBe(200);
@@ -1039,7 +1039,7 @@ describe('buy-flow integration', () => {
       true,
     );
 
-    expect(result.executedOrderIds.length).toBe(0);
+    expect(result.executedOrderIds).toHaveLength(0);
     expect(trackedOrders).toHaveLength(0);
     expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
   });
@@ -1092,7 +1092,7 @@ describe('buy-flow integration', () => {
 
     await withMockedNow(fixedNow, async () => {
       const firstResult = await orderExecutor.executeSignals([firstSignal]);
-      expect(firstResult.executedOrderIds.length).toBe(1);
+      expect(firstResult.executedOrderIds).toHaveLength(1);
     });
 
     const { secondCallCheck, firstPutCheck } = await withMockedNow(fixedNow, async () => ({
@@ -1114,7 +1114,7 @@ describe('buy-flow integration', () => {
 
     await withMockedNow(fixedNow, async () => {
       const firstPutResult = await orderExecutor.executeSignals([firstPutSignal]);
-      expect(firstPutResult.executedOrderIds.length).toBe(1);
+      expect(firstPutResult.executedOrderIds).toHaveLength(1);
     });
 
     const { secondPutCheck, nextCallCheck } = await withMockedNow(fixedNow, async () => ({
@@ -1282,7 +1282,7 @@ describe('buy-flow integration', () => {
       );
       expect(checkedSignals).toHaveLength(1);
       const executeResult = await successOrderExecutor.executeSignals(checkedSignals);
-      expect(executeResult.executedOrderIds.length).toBe(1);
+      expect(executeResult.executedOrderIds).toHaveLength(1);
     });
 
     const blockedSignal = createSignal({

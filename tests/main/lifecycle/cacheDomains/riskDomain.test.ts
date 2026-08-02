@@ -94,7 +94,7 @@ describe('createRiskDomain', () => {
     expect(resetAllCalled).toBe(true);
     expect(resetAllNow?.getTime()).toBe(now.getTime());
     expect(resetAllTriggerCountsCalled).toBe(true);
-    expect(clearMidnightEligibleDirections).not.toBe(null);
+    expect(clearMidnightEligibleDirections).not.toBeNull();
     expect(clearMidnightEligibleDirections?.has('LONG')).toBe(true);
     expect(clearMidnightEligibleDirections?.has('SHORT')).toBe(true);
     expect(clearUnrealizedCount).toBe(1);

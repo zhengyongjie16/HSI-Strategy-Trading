@@ -119,8 +119,7 @@ processPayment(orderId, userId, amount);
 
 ```typescript
 type Result<T, E = Error> =
-  | { readonly success: true; readonly data: T }
-  | { readonly success: false; readonly error: E };
+  { readonly success: true; readonly data: T } | { readonly success: false; readonly error: E };
 
 type UserId = string & { readonly brand: unique symbol };
 type OrderId = string & { readonly brand: unique symbol };

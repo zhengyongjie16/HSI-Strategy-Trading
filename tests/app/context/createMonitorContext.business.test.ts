@@ -332,7 +332,7 @@ describe('createMonitorContext strategy factory behavior', () => {
       context.indicatorProfile,
     );
 
-    expect(signals.immediateSignals.length).toBe(0);
+    expect(signals.immediateSignals).toHaveLength(0);
     expect(signals.delayedSignals.length).toBeGreaterThan(0);
   });
 

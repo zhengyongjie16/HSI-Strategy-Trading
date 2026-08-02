@@ -69,13 +69,13 @@ describe('createGlobalStateDomain', () => {
 
     expect(lastState.canTrade).toBe(false);
     expect(lastState.allTradingSymbols.size).toBe(0);
-    expect(lastState.isHalfDay).toBe(null);
-    expect(lastState.openProtectionActive).toBe(null);
-    expect(lastState.cachedAccount).toBe(null);
+    expect(lastState.isHalfDay).toBeNull();
+    expect(lastState.openProtectionActive).toBeNull();
+    expect(lastState.cachedAccount).toBeNull();
     expect(lastState.cachedPositions).toHaveLength(0);
     expect(positionCacheUpdateSizes).toEqual([0]);
-    expect(lastState.cachedTradingDayInfo).toBe(null);
-    expect(monitorState.lastMonitorSnapshot).toBe(null);
+    expect(lastState.cachedTradingDayInfo).toBeNull();
+    expect(monitorState.lastMonitorSnapshot).toBeNull();
 
     expect(runOpenRebuildCalled).toBe(false);
   });
@@ -162,7 +162,7 @@ describe('createGlobalStateDomain', () => {
       runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
-    expect(capturedNow).not.toBe(null);
+    expect(capturedNow).not.toBeNull();
     if (capturedNow !== null) {
       expect(capturedNow.getTime()).toBe(now.getTime());
     }

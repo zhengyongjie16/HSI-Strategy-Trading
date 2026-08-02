@@ -183,7 +183,7 @@ describe('autoSymbolFinder business flow', () => {
     });
 
     expect(result.candidate?.symbol).toBe('C.HK');
-    expect(result.candidate?.distancePct).toBe(0.6);
+    expect(Object.is(result.candidate?.distancePct, 0.6)).toBeTrue();
     expect(result.candidate?.turnoverPerMinute).toBe(26_000);
     expect(result.candidate?.selectionStage).toBe('PRIMARY');
     expect(result.primaryCandidateCount).toBe(3);

@@ -175,8 +175,7 @@ export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
  * 使用范围：仅 lifecycle 模块内部使用。
  */
 type TradingCalendarPrewarmErrorCode =
-  | 'TRADING_CALENDAR_LOOKBACK_EXCEEDED'
-  | 'TRADING_CALENDAR_INVALID_DATE_KEY';
+  'TRADING_CALENDAR_LOOKBACK_EXCEEDED' | 'TRADING_CALENDAR_INVALID_DATE_KEY';
 
 /**
  * 交易日历预热错误上下文（便于日志与告警）。

@@ -378,7 +378,7 @@ describe('sell-flow integration', () => {
       orderExecutor.executeSignals(requireExecutableSellSignals(processed)),
     );
 
-    expect(executeResult.executedOrderIds.length).toBe(1);
+    expect(executeResult.executedOrderIds).toHaveLength(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
     expect(trackedOrders[0]?.quantity).toBe(100);
@@ -581,13 +581,14 @@ describe('sell-flow integration', () => {
     });
 
     const storage = createOrderStorage();
+    const occupiedOrderExecutedTimeMs = Date.parse('2026-02-24T01:32:00.000Z');
     storage.addBuyOrder('BULL.HK', 0.9, 100, true, Date.parse('2026-02-24T01:30:00.000Z'));
     storage.addBuyOrder('BULL.HK', 1.2, 100, true, Date.parse('2026-02-24T01:31:00.000Z'));
-    storage.addBuyOrder('BULL.HK', 1.3, 100, true, Date.parse('2026-02-24T01:32:00.000Z'));
+    storage.addBuyOrder('BULL.HK', 1.3, 100, true, occupiedOrderExecutedTimeMs);
 
     const occupiedOrder = storage
       .getBuyOrdersList('BULL.HK', true)
-      .find((order) => order.executedPrice === 1.3);
+      .find((order) => order.executedTime === occupiedOrderExecutedTimeMs);
     if (!occupiedOrder) {
       throw new Error('missing occupied order');
     }
@@ -691,7 +692,7 @@ describe('sell-flow integration', () => {
       requireExecutableSellSignals(processed),
     );
 
-    expect(executeResult.executedOrderIds.length).toBe(1);
+    expect(executeResult.executedOrderIds).toHaveLength(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
     expect(trackedOrders[0]?.quantity).toBe(200);
@@ -821,7 +822,7 @@ describe('sell-flow integration', () => {
       requireExecutableSellSignals(processed),
     );
 
-    expect(executeResult.executedOrderIds.length).toBe(1);
+    expect(executeResult.executedOrderIds).toHaveLength(1);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
     expect(trackedOrders[0]?.quantity).toBe(200);
@@ -1605,7 +1606,7 @@ describe('sell-flow integration', () => {
 
     const result = await orderExecutor.executeSignals([signal]);
 
-    expect(result.executedOrderIds.length).toBe(1);
+    expect(result.executedOrderIds).toHaveLength(1);
     expect(cancelCalls).toEqual(['SELL-MARKET-EXISTING']);
     expect(trackedOrders).toHaveLength(1);
     expect(trackedOrders[0]?.quantity).toBe(150);
