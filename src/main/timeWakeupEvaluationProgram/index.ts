@@ -40,11 +40,6 @@ const autoSearchAuthorizationByLastState = new WeakMap<
 function cancelAllDelayedSignals(
   monitorContext: TimeWakeupEvaluationContext['monitorContext'],
 ): number {
-  const pendingCount = monitorContext.delayedSignalVerifier.getPendingCount();
-  if (pendingCount <= 0) {
-    return 0;
-  }
-
   return monitorContext.delayedSignalVerifier.cancelAll();
 }
 

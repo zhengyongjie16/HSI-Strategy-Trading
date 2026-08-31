@@ -1,629 +1,812 @@
-# 订单监控 state-check 事故修复：精确实现规格
+# 订单监控 state-check 事故修复：证据门禁与修订实施规格
 
-- **依据**：`docs/issues/2026-08/2026-08-04-order-monitor-state-check-incident-first-principles-analysis.md`（下称“事故分析”）
-- **适用范围**：仅实现事故分析第 4 节三项 P0 的最小修复（4.1 / 4.2 / 4.3）与第 4.4 节要求的定向测试；不触碰事故分析第 5.2 节列出的任何禁止范围
-- **代码快照**：`develop@460feec256143f4aa12916616f5299f995b58fd8`（SDK `longbridge@4.4.3`）
-- **状态**：实现规格（待编码）
+- **复核基线**：`develop@9a381658666264297d77609933b5219f89a16bed`
+- **声明依赖**：`longbridge@4.4.3`
+- **文档状态**：`EVIDENCE_GATED`
+- **当前授权**：只允许补证据、建立 4.4.3 clean baseline 和编写修复前 RED；**当前不得直接修改生产代码**
+- **分包原则**：G1 只阻断 P0-1；P0-3 通过自身门禁后先实施，P0-2 在 P0-3 监督边界就绪后实施
+- **本文作用**：完整替换上一版规格，撤销其中“整体高置信度”“事故证据已核实”“`eventFlow.ts` 零影响”“两处 timer 条件即可消灭自循环”等结论
 
----
-
-## 0. 总览
-
-| P0 | 目标 | 主修改文件 | 消费/受影响文件 |
-| --- | --- | --- | --- |
-| P0-1 | Filled state-check 从 history 提取无歧义当前 Filled 发生时间，作为本地单调账务时间来源 | `orderStatusQuery.ts`、`src/types/trader.ts`、`orderFactMerge.ts` | `orderOps.ts`（仅注释）、`routeProcessor.ts`（仅注释）、`index.ts`（仅注释）、`utils.ts`（新增小助手） |
-| P0-2 | route timer 投影互斥，消灭 0ms 自循环 | `routeRuntime.ts`（`resolveCancelRetrySchedule` / `resolveTimeoutSchedule`） | 无（`routeProcessor.canAttemptTimeoutHandling` 等语义保持不变） |
-| P0-3 | route 失败后不再 dirty rerun、timer 不复活、fatal 只上报一次；4.4 微任务窗口关闭 | `routeRuntime.ts`（`runRoute` 失败路径、`launchRouteProcessing` 注册顺序） | 无 |
-
-**设计总原则（继承事故分析）**：不是放宽 raw-fact gate，而是让 adapter 忠实表达已存在且可验证的 broker 终态事实；让 timer 与 fatal 生命周期不再制造额外业务推进。
+> 本文不是事故证据，也不授权把未证明的 `history.time` 当作 broker revision。每个生产工作包必须先按本文更新为 `READY_TO_IMPLEMENT`，不得把整篇文档一次性照抄实施。
 
 ---
 
-## 1. P0-1：Filled state-check 的 history evidence extraction
+## 0. 分工作包裁决
 
-### 1.1 目标行为
-
-对本次已证实形态（`TERMINAL + Filled`、顶层 `updatedAt` 无效、history 中恰有一条与顶层成交数量/价格精确一致、时间为有效正有限 Date 的 Filled 记录）：
-
-- `OrderStateCheckResult` TERMINAL 分支新增字段承载该发生时间；
-- 下游 `orderFactMerge` 在“累计成交数量推进”时把它解析为原始 revision 时间（与 `orderUpdatedAtMs` 同语义：本地执行账务时间的派生来源，而非交易所逐笔成交时间）；
-- 证据不足（缺失/损坏/冲突/不匹配）时保持 fail-closed：字段为 `null`，下游继续抛出现有异常；
-- 顶层 `updatedAt` 有效时，行为与现状完全一致。
-
-### 1.2 类型变更：新增 `filledHistoryTimeMs: number | null`
-
-在 `src/types/trader.ts` 的 `OrderStateCheckResult` TERMINAL 分支新增：
-
-```ts
-| {
-    readonly kind: 'TERMINAL';
-    readonly closedReason: OrderClosedReason;
-    readonly executedPrice: number | null;
-    readonly executedQuantity: number | null;
-    readonly submittedQuantity: number | null;
-    /** SDK `updatedAt`（Last updated）映射的经纪商观察/revision 时间；……（原注释保留） */
-    readonly orderUpdatedAtMs: number | null;
-    /**
-     * 仅当 closedReason === 'FILLED' 且顶层 updatedAt 无效时，从 history 提取的
-     * “无歧义当前 Filled 发生/排序时间”（毫秒）。它是本地单调事实模型所需的发生/排序时间，
-     * 与 orderUpdatedAtMs 承担同一账务时间用途；绝不得解释为交易所逐笔成交时间，
-     * 也绝不伪造成顶层 updatedAt 的原始值。顶层 updatedAt 有效或证据不满足窄规则时为 null。
-     */
-    readonly filledHistoryTimeMs: number | null;
-    readonly status: OrderStatus;
-  }
-```
-
-**字段名论证**（为何用 `filledHistoryTimeMs` 而非事故分析 3.3 复现输出中的 `historyTimeMs`）：
-
-1. **语义精确性**：本字段只允许承载“Filled history 证据提取出的时间”。`historyTimeMs` 暗示“任意 history 条目的时间”，容易被未来实现误用为 `history.at(-1)?.time` 之类的通配回退（这正是 4.1 明确禁止的）。`filledHistoryTimeMs` 把“仅 Filled、仅无歧义匹配”写进字段名，编译期与代码审查都能防回归。
-2. **命名一致性**：现有 TERMINAL 分支已有 `orderUpdatedAtMs`、OPEN 分支已有 `updatedAtMs`，均以 `Ms` 结尾表示毫秒；`filledHistoryTimeMs` 沿用该惯例。
-3. **文档对齐**：事故分析 3.3 的 `historyTimeMs` 是内存复现输出的临时标签而非已提交 API 名，本规格不承担兼容义务；测试断言以本字段语义（`filledHistoryTimeMs`）为准。
-4. **禁止性自解释**：字段名中的 `filled` 排除了为 Canceled/Rejected/OPEN 提取 history 的扩展空间（5.2 禁止项 2）。
-
-**不变式**：`filledHistoryTimeMs !== null` 蕴含 `closedReason === 'FILLED' && orderUpdatedAtMs === null`（由 1.3 提取规则保证）。因此下游 `??` 解析是安全的。
-
-### 1.3 orderStatusQuery 提取规则（窄规则，严格按事故分析 4.1）
-
-**入口门控**（`checkOrderState` 内，TERMINAL 分支构造处）：
-
-```ts
-const updatedAtMs = resolveUpdatedAtMs(detail.updatedAt);
-const closedReason = resolveClosedReasonFromStatus(status);
-if (closedReason !== null) {
-  return {
-    kind: 'TERMINAL',
-    closedReason,
-    status,
-    executedPrice,
-    executedQuantity,
-    submittedQuantity,
-    orderUpdatedAtMs: updatedAtMs, // 顶层派生值，原样保留
-    filledHistoryTimeMs:
-      closedReason === 'FILLED' && updatedAtMs === null
-        ? resolveFilledHistoryTimeMs(detail) // 仅此路径才读 history
-        : null,
-  };
-}
-```
-
-**提取函数**（`orderStatusQuery.ts` 模块内私有；建议放在 `resolveClosedReasonFromStatus` 之后）：
-
-```ts
-/** 运行时边界防御：SDK 类型是 Decimal，但运行时可能被损坏（测试用 Reflect.set 模拟）。 */
-function isDecimalLike(value: unknown): value is { equals(other: unknown): boolean } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { equals?: unknown }).equals === 'function'
-  );
-}
-
-/**
- * 仅接受无歧义的当前 Filled history 证据，返回其发生时间（毫秒）；否则 null（fail-closed）。
- * 规则（事故分析 4.1）：
- * 1. detail.history 必须是数组（缺失/非数组/空数组 => null）
- * 2. 候选条目必须：status === OrderStatus.Filled；time 是有效正有限 Date；
- *    quantity/price 是 Decimal-like，且分别与 detail.executedQuantity/detail.executedPrice
- *    精确相等（Decimal.equals，不能退化为 number 比较）
- * 3. 多个候选的时间去重后恰好为一个值 => 接受；否则（0 个或时间不同的多个）=> null
- * 4. 不按数组顺序、不取最大时间、不做任何回填推断
- */
-function resolveFilledHistoryTimeMs(detail: OrderDetail): number | null {
-  if (!Array.isArray(detail.history)) {
-    return null;
-  }
-
-  const candidateTimes = new Set<number>();
-  for (const entry of detail.history) {
-    if (entry === null || typeof entry !== 'object') continue;
-    if (entry.status !== OrderStatus.Filled) continue;
-
-    const timeMs = resolveOccurrenceTimeMs(entry.time); // 有效正有限 Date
-    if (timeMs === null) continue;
-
-    if (!isDecimalLike(entry.quantity) || !isDecimalLike(entry.price)) continue;
-    if (!isDecimalLike(detail.executedQuantity)) continue;
-    if (detail.executedPrice === null || !isDecimalLike(detail.executedPrice)) continue;
-    if (!detail.executedQuantity.equals(entry.quantity)) continue;
-    if (!detail.executedPrice.equals(entry.price)) continue;
-
-    candidateTimes.add(timeMs);
-  }
-
-  return candidateTimes.size === 1 ? (candidateTimes.values().next().value ?? null) : null;
-}
-```
-
-**配套小助手**（`orderMonitor/utils.ts` 新增导出，不动 `resolveUpdatedAtMs`/`resolveTimeMs`）：
-
-```ts
-/**
- * 解析 history 条目的发生时间为毫秒时间戳。
- * 与 resolveTimeMs 同规则（Date 实例 + 正有限），但入参放宽为 unknown 以防御 SDK 运行时损坏。
- */
-export function resolveOccurrenceTimeMs(value: unknown): number | null {
-  if (!(value instanceof Date)) return null;
-  const timeMs = value.getTime();
-  return Number.isFinite(timeMs) && timeMs > 0 ? timeMs : null;
-}
-```
-
-**运行时边界处理清单**（现状测试用 `Reflect.set` 模拟损坏字段，新测试沿用）：
-
-| 边界 | 行为 |
-| --- | --- |
-| `detail.history` 缺失（`undefined`）/ `null` / 非数组 / 空数组 | `Array.isArray` 守卫 → `null`（fail-closed） |
-| 条目为 `null` 或非对象 | 跳过该条目（不构成候选，也不构成拒绝） |
-| `entry.time` 非 Date / NaN / 0 / 负值 | 跳过该条目 |
-| `entry.status !== OrderStatus.Filled` | 跳过（Cancelled/Rejected 等不参与） |
-| `entry.quantity/price` 非 Decimal-like（如 number/string） | 跳过（不匹配，fail-closed） |
-| `detail.executedQuantity` 非 Decimal-like 或 `detail.executedPrice === null` | 无候选 → `null` |
-| 数量/价格任一不精确相等（Decimal.equals 为 false） | 跳过 |
-| 多个候选时间不同 | 拒绝 → `null`（fail-closed） |
-| 多个候选时间相同（同事件重复行） | 接受（去重后单一时间） |
-
-> 说明：损坏条目只被“排除在候选之外”；歧义只来自“多个都完全匹配但时间不同”的候选，与事故分析 4.1 第 3 条一致。非 Filled 状态条目即使 time 有效也一律不参与。
-
-### 1.4 orderFactMerge 消费点设计
-
-三处消费点的核心改动：把“本次原始 revision 时间”从 `orderUpdatedAtMs` 解析改为 `orderUpdatedAtMs ?? filledHistoryTimeMs`。由于 `filledHistoryTimeMs` 只在 `Filled + 顶层 updatedAt 无效` 时非 null，`??` 对既有路径是严格幂等扩展。
-
-**(a) `assertStateCheckRawExecutionFactsReady`**（`orderFactMerge.ts`）：
-
-```ts
-const rawUpdatedAtMs =
-  stateCheckResult.kind === 'OPEN'
-    ? stateCheckResult.updatedAtMs
-    : (stateCheckResult.orderUpdatedAtMs ?? stateCheckResult.filledHistoryTimeMs);
-```
-
-- 后续 `!isValidPositiveFactNumber(rawUpdatedAtMs)` 抛错与 `rawUpdatedAtMs < knownUpdatedAtMs` 单调校验保持不变；
-- **history 时间倒退时 fail-closed**：若 `filledHistoryTimeMs < trackedOrder.lastOrderUpdateAtMs`，命中现有“broker revision 倒退”异常，符合事故分析 4.1 第 5 条。
-
-**(b) `assertProtectiveSellRawTerminalStateFactsReady`**（`orderFactMerge.ts`）：
-
-函数顶部解析一次，两处 `assertProtectiveSellRawObservationFactsReady` 调用共用：
-
-```ts
-const resolvedOrderUpdatedAtMs =
-  terminalState.orderUpdatedAtMs ?? terminalState.filledHistoryTimeMs;
-```
-
-（原两处 `executedTimeMs: terminalState.orderUpdatedAtMs, updatedAtMs: terminalState.orderUpdatedAtMs` 均改为 `resolvedOrderUpdatedAtMs`。）
-
-**(c) `normalizeTerminalStateSnapshot`**（`orderFactMerge.ts`）：
-
-```ts
-const resolvedOrderUpdatedAtMs =
-  terminalState.orderUpdatedAtMs ?? terminalState.filledHistoryTimeMs;
-const observedFact = {
-  status: terminalState.status,
-  executedQuantity: terminalState.executedQuantity,
-  executedPrice: terminalState.executedPrice,
-  executedTimeMs: resolvedOrderUpdatedAtMs,
-  updatedAtMs: resolvedOrderUpdatedAtMs,
-};
-```
-
-- `executedTimeMs <= updatedAtMs` 校验在两者相等时自然通过（`mergeMonotonicOrderFact` → `assertRawExecutionAdvanceFactsReady` 中的 `observedFact.executedTimeMs > observedFact.updatedAtMs` 为 false）；
-- 返回值 `orderUpdatedAtMs: mergedFact.updatedAtMs` 已由合并逻辑写入解析值，无需改动；
-- `...terminalState` 展开会把 `filledHistoryTimeMs` 透传到 `NormalizedTerminalStateSnapshot`，无下游消费，无害。
-
-### 1.5 为什么不需要改其他文件（类型扩展自动透传论证）
-
-| 文件/函数 | 现状对 TERMINAL 快照的使用 | 是否需要改 |
+| 工作包 | 当前状态 | 进入生产实现的前置条件 |
 | --- | --- | --- |
-| `orderOps.ts` `mapStateCheckResultToCancelOutcome` / `setReplaceTerminal` | 整个 `queryResult` 存入 `queriedTerminalStateByOrderId` / `latestReplaceTerminalByOrderId`（Map 值类型 `TerminalStateSnapshot`），只读 `submittedQuantity/executedQuantity/closedReason` | 否（类型自动扩展；仅注释） |
-| `orderOps.ts` `cancelOrder` / `handleReplaceTempBlockedByStatus` / `replaceOrderPriceWithRunner` | 先调 `assertStateCheckRawExecutionFactsReady`（已改），再存快照；不直接读 `orderUpdatedAtMs` | 否（仅注释） |
-| `routeProcessor.ts` `resolveTerminalSettlementInput` / `settlePendingReplaceTerminal` | `peek` 快照 → 两个已改函数 → `normalizeTerminalStateSnapshot` 输出 `executedTimeMs/orderUpdatedAtMs` | 否（仅注释） |
-| `routeProcessor.ts` `settleBuyOrderTimeoutTerminal` / `handleSellOrderTimeout` | 消费 `resolveTerminalSettlementInput` 的归一化输出 | 否 |
-| `index.ts` `settleActiveTerminalFromRaw` / `cancelAndSettle` / `replaceOrderPriceWithPermit` | `peek` 快照 → 两个已改函数；只读 `submittedQuantity/executedQuantity` | 否（仅注释） |
-| `eventFlow.ts` | 只消费 WS `PushOrderChanged`，从不接收 `OrderStateCheckResult` | 否（零改动） |
-| `settlementFlow.ts` | 只接收已归一化的 `FinalizeOrderSettlementParams`（number） | 否 |
-| `types.ts` `TerminalStateSnapshot` | `Extract<OrderStateCheckResult, {kind:'TERMINAL'}>`，字段自动透传 | 否（可加一行注释） |
-
-**需要更新注释的位置**（语义说明，无逻辑变化）：
-
-1. `orderStatusQuery.ts`：文件头注释（“只读取 updatedAt”改为“updatedAt 无效时按窄规则消费 Filled history”）；`checkOrderState` JSDoc；新增提取函数注释。
-2. `orderFactMerge.ts`：`assertStateCheckRawExecutionFactsReady`、`assertProtectiveSellRawTerminalStateFactsReady`、`normalizeTerminalStateSnapshot` 三处“SDK 仅提供 updatedAt”的注释改为“SDK 提供 updatedAt；当 Filled 且 updatedAt 无效时可由无歧义 Filled history 发生时间承担同一单调排序用途（`filledHistoryTimeMs`），两者都不得解释为交易所成交时间，也不得由 tracked/时钟补造”。
-3. `orderOps.ts` / `routeProcessor.ts` / `index.ts`：在缓存 `TerminalStateSnapshot` 的注释处补充“快照可能携带 `filledHistoryTimeMs`，消费统一走 orderFactMerge 解析”。
-4. `src/types/trader.ts`：新字段 JSDoc（见 1.2）。
-
-### 1.6 禁止事项确认（事故分析 4.1，逐一排除）
-
-| # | 禁止项 | 本设计的排除方式 |
-| --- | --- | --- |
-| 1 | `Date.now()` 补时间 | 提取只接受 history 中可验证的 Date；无任何时钟来源 |
-| 2 | `submittedAt` 补时间 | 提取完全不接触 `detail.submittedAt` |
-| 3 | 旧 tracked 时间补时间 | 提取/解析不读取 tracked 字段（单调校验只做拒绝不做回填） |
-| 4 | 零值或任意 history 条目补时间 | 只接受“状态 Filled + 时间有效 + 数量/价格与顶层精确一致”的候选；零值 Date 被 `resolveOccurrenceTimeMs` 拒绝 |
-| 5 | `updatedAt ?? history.at(-1)?.time` | 明确不实现；仅在 `updatedAt === null` 且 `closedReason === 'FILLED'` 时才读取 history，且不取末位、不按顺序 |
-| 6 | 按数组顺序/最大时间/不匹配状态推断 | 候选去重按精确时间值；非 Filled 条目一律排除；时间不同的多个候选拒绝 |
-| 7 | 用 history 回填顶层成交价格/数量 | 提取只产出时间；`executedPrice/executedQuantity` 仍只来自顶层 `decimalToNumber`，本改动不触碰 |
-| 8 | 让 OPEN/部分成交/Canceled/Rejected 在缺 revision 时放行 | 门控 `closedReason === 'FILLED'`；其余终态与全部 OPEN 路径行为不变（仍 fail-closed） |
-| 9 | 把 601011 错误文字直接解释为已撤销 | 不在本改动范围；`orderOps` 仍以 601011 触发 `checkOrderState` 权威确认，状态以 status 码为准 |
-
----
-
-## 2. P0-2：route timer 投影互斥
-
-### 2.1 目标行为与 owner 表格（事故分析 4.2）
-
-| tracked 状态 | 唯一允许的 timer owner | 实现 |
-| --- | --- | --- |
-| 尚未到首次 timeout（含新挂单 `cancelRetryCount=0`） | `BUY_TIMEOUT` / `SELL_TIMEOUT` at `submittedAt + timeoutMs` | `resolveTimeoutSchedule`（现有）+ `resolveCancelRetrySchedule` 新增 `cancelRetryCount > 0` 门控 |
-| 已产生 retry backoff（`cancelRetryCount > 0`） | `CANCEL_RETRY` at `nextCancelAttemptAt` | `resolveTimeoutSchedule` 新增拒绝；`resolveCancelRetrySchedule` 现有逻辑（配合新门控） |
-| 已确认 cancel request、等待 WS 终态（`nextCancelAttemptAt === ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS`） | 无（WS 事件驱动） | `resolveTimeoutSchedule` 新增 sentinel 拒绝；`resolveCancelRetrySchedule` 现有 sentinel 拒绝 |
-| 已结算 / 已脱离 tracking | 无 | 不变（无 tracked order 即无投影） |
-
-### 2.2 `resolveCancelRetrySchedule`：新增 `cancelRetryCount > 0` 条件
-
-```ts
-function resolveCancelRetrySchedule(order: OrderMonitorTrackedOrder): RouteTimerSchedule | null {
-  const remainingQuantity = order.submittedQuantity - order.executedQuantity;
-  if (remainingQuantity <= 0) {
-    return null;
-  }
-
-  // 新增：尚未产生 retry backoff 时，撤单动作尚未被发起过（或已被 WS 复位），
-  // CANCEL_RETRY 不得投影；此时唯一合法 owner 是首次 timeout（resolveTimeoutSchedule）。
-  // 这消除了新挂单 nextCancelAttemptAt=now 时反复注册 0ms CANCEL_RETRY 的自循环。
-  if (order.cancelRetryCount <= 0) {
-    return null;
-  }
-
-  if (
-    !Number.isFinite(order.nextCancelAttemptAt) ||
-    order.nextCancelAttemptAt === ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS
-  ) {
-    return null;
-  }
-
-  return {
-    key: `${order.orderId}:CANCEL_RETRY`,
-    atMs: order.nextCancelAttemptAt,
-  };
-}
-```
-
-**论证**：
-
-- `cancelRetryCount` 由 `routeProcessor.applyCancelRetryBackoff` 单调递增（每次撤单 retryable 失败 +1），由 `resetCancelRetry`（结算成功收口）/ `pauseCancelRetryAndWaitWs`（等待 WS）归零。因此 `> 0` 精确表达“已产生 retry backoff”，与事故分析 owner 表格第二行一一对应。
-- 新挂单 `trackOrder` 初始化 `nextCancelAttemptAt = now, cancelRetryCount = 0`：新条件直接拒绝投影 → 不再产生 `TIMER@now` 自循环；首次 timeout owner 仍由 `resolveTimeoutSchedule` 投影。
-- `eventFlow` 在 WS 显示状态离开 `WaitToCancel/PendingCancel` 时执行 `cancelRetryCount = 0; nextCancelAttemptAt = now`：此后 CANCEL_RETRY 不投影，但若 timeout 已过，`resolveTimeoutSchedule` 投影过期 timeout → 一次性 0ms 收敛 → 重新发起撤单。这是“WS 推进后恢复撤单机会”的合法一次性收敛（见 2.4 论证），不是自循环。
-- timeout 配置禁用且 `cancelRetryCount = 0` 时无任何 timer：正确——尚无撤单意图，不该有空转唤醒。
-
-### 2.3 `resolveTimeoutSchedule`：两个新增拒绝条件
-
-```ts
-function resolveTimeoutSchedule(
-  order: OrderMonitorTrackedOrder,
-  config: OrderMonitorConfig,
-): RouteTimerSchedule | null {
-  if (order.convertedToMarket || order.orderType === OrderType.MO) {
-    return null;
-  }
-
-  const timeoutConfig = order.side === OrderSide.Buy ? config.buyTimeout : config.sellTimeout;
-  if (!timeoutConfig.enabled) {
-    return null;
-  }
-
-  // 新增 (a)：撤单请求已确认、正在等待 WS 终态（或已进入 timeout->MO 等待态），
-  // 唯一 owner 是 WS；不得把早已过期的固定 timeout 重新投影为 0ms timer。
-  if (order.nextCancelAttemptAt === ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS) {
-    return null;
-  }
-
-  // 新增 (b)：已产生 retry backoff 时，唯一 owner 是 CANCEL_RETRY（resolveCancelRetrySchedule）；
-  // timeout 不得与它并存，避免过期 timeout 造成 0ms 自循环。
-  if (order.cancelRetryCount > 0) {
-    return null;
-  }
-
-  const atMs = order.submittedAt + timeoutConfig.timeoutMs;
-  if (!Number.isFinite(atMs)) {
-    return null;
-  }
-
-  return {
-    key: `${order.orderId}:${resolveTimeoutTimerKind(order.side)}`,
-    atMs,
-  };
-}
-```
-
-### 2.4 与 `canAttemptTimeoutHandling` 语义兼容性论证（事故分析 4.2 要求）
-
-`routeProcessor.canAttemptTimeoutHandling(order, now)` 现有逻辑：
-
-```ts
-if (isClosedStatus(order.status) && !canHandleClosedTimeoutRoute(order)) return false;
-if (canHandleClosedTimeoutRoute(order)) return true;
-if (order.nextCancelAttemptAt > now) return false;
-const remainingQuantity = order.submittedQuantity - order.executedQuantity;
-return remainingQuantity > 0;
-```
-
-逐一核对新投影下“timeout 已过且可消费”仍可达：
-
-1. **新挂单（count=0、nextCancelAttemptAt=now）**：投影 `BUY_TIMEOUT@submittedAt+timeout`。未到点 → 到时触发 `TIMER` wakeup → `shouldHandleTimeout` 为 true → 消费 timeout（撤单/结算）。到点前无 CANCEL_RETRY 干扰。✅
-2. **timeout 已过但无任何 timer 的场景（count>0 或 sentinel）**：此时 route 仍可由 `RECOVERED`（start bootstrap）、`TRACKED`（新订单）、`ORDER_EVENT`（WS）、`QUOTE`（行情）wakeup 唤醒；`handleBuyOrderTimeout`/`handleSellOrderTimeout` 内部仍按 `canAttemptTimeoutHandling` 推进（`nextCancelAttemptAt <= now` 且剩余量 > 0 时执行撤单）。timer 投影只是“不再为空转注册 0ms”，不改变 wakeup 到达后的消费语义。✅
-3. **一次性 0ms 收敛场景**：WS 复位（count=0、`nextCancelAttemptAt=now`）后 timeout 已过 → `resolveTimeoutSchedule` 投影过期 timeout → `scheduleBoundedOneShotAt` 以 `delayMs=0` 触发一次 `TIMER` → 消费后状态必然变化（backoff → future CANCEL_RETRY；或 sentinel → 无 timer；或终态结算 → 脱离 tracking），因此至多一次 0ms 收敛，不会自循环。✅
-4. **`timeoutMarketConversionPending`**：`markTimeoutMarketConversionPending` 调 `pauseCancelRetryAndWaitWs` 置 sentinel → 新条件 (a) 使其不再投影 timeout；其终态推进由 WS `ORDER_EVENT` 显式唤醒（eventFlow 写入 `timeoutMarketConversionTerminalState` 后 `triggerRoute`），`canHandleClosedTimeoutRoute` 为 true 时 `canAttemptTimeoutHandling` 直接放行。✅
-5. **replace WAIT_WS_ONLY**：`isWaitWsOnlyReplaceMode` 只影响 `replaceBlockedUntilAt`（sentinel），与 `nextCancelAttemptAt` 无关；`canEnterReplaceFlow` 中的 `nextCancelAttemptAt === WAIT_WS_ONLY` 检查与 `resolveReplaceRetrySchedule` 均不受本改动影响。✅
-
-### 2.5 保持现状的投影
-
-- `resolveReplaceRetrySchedule`：不变（`TEMP_BLOCKED_BY_STATUS` + 有限 + 非 sentinel → `REPLACE_RETRY`；WAIT_WS_ONLY 时 sentinel 已拒绝）。
-- `resolveQuoteRetrySchedule`：不变（`quoteRetryNextAt` 有限 → `QUOTE_RETRY`）。
-- 不新增 poller / queue / timer 类型 / retry policy（5.2 禁止项 4）。
-
----
-
-## 3. P0-3：route 失败后不再 dirty rerun
-
-### 3.1 目标行为
-
-- `processRoute` 抛错时：不执行 `reconcileRouteTimers`、不启动 dirty rerun；
-- 清除本 generation 的 timer（`clearRouteTimers`）与 dirty / `pendingWakeupKind`；
-- 错误继续向上传播到 `launchRouteProcessing` 的 catch：`firstRouteProcessingError` 登记 + `onFatalError` 恰好一次；
-- `launchRouteProcessing` 改为“先 catch 登记、后 finally 删除 promise”，关闭 4.4 的 stopAndDrain 微任务窗口。
-
-### 3.2 `runRoute` 失败路径设计
-
-```ts
-async function runRoute(
-  symbol: string,
-  generation: number,
-  wakeupKind: OrderMonitorWakeupKind,
-): Promise<void> {
-  const routeState = getRouteState(symbol);
-  if (routeState === null || !isRouteRuntimeActive() || routeState.generation !== generation) {
-    return;
-  }
-
-  let routeError: unknown = null;
-  try {
-    await processRoute({
-      symbol,
-      generation,
-      wakeupKind,
-      latestQuote: routeState.latestQuote,
-    });
-  } catch (error) {
-    routeError = error;
-  }
-
-  const latestRouteState = getRouteState(symbol);
-  if (latestRouteState === null || latestRouteState.generation !== generation) {
-    // 处理期间 stop/重置（resetRouteStateForStop）或 route state 被销毁：
-    // timer 已被 clearRouteTimers 清理，直接传播错误，不做事后推进。
-    if (routeError !== null) {
-      throw routeError;
-    }
-    return;
-  }
-
-  if (routeError !== null) {
-    // 失败路径：本 generation 立即冻结，不再做任何业务推进。
-    clearRouteTimers(latestRouteState); // 本 generation 的 timer 不再复活
-    latestRouteState.dirty = false; // 丢弃处理期间累积的 wakeup
-    latestRouteState.pendingWakeupKind = null;
-    // inFlight 保持 true：阻止后续 triggerRoute 启动新 pass（详见 3.3）
-    throw routeError; // 传播到 launchRouteProcessing catch
-  }
-
-  // 成功路径：保持原 finally 的全部语义（reconcile + inFlight 复位 + dirty rerun）
-  reconcileRouteTimers(symbol, generation);
-  latestRouteState.inFlight = false;
-  if (isRouteRuntimeActive() && latestRouteState.dirty) {
-    const rerunWakeupKind = latestRouteState.pendingWakeupKind;
-    latestRouteState.dirty = false;
-    latestRouteState.pendingWakeupKind = null;
-    switch (rerunWakeupKind) {
-      case 'QUOTE':
-      case 'ORDER_EVENT':
-      case 'TIMER':
-      case 'TRACKED':
-      case 'RECOVERED': {
-        latestRouteState.inFlight = true;
-        launchRouteProcessing(symbol, rerunWakeupKind);
-        break;
-      }
-      case null:
-      default:
-        break;
-    }
-  } else if (!isRouteRuntimeActive()) {
-    latestRouteState.dirty = false;
-    latestRouteState.pendingWakeupKind = null;
-  }
-}
-```
-
-要点：
-
-- 成功路径逐字保留原 `finally` 语义（注释里说明“成功时才允许 dirty collapse 与 timer 投影”，与事故分析 4.3 最小边界一致）；
-- 失败路径中 `clearRouteTimers(latestRouteState)` 复用的是 `routingIndex.clearRouteTimers`（已导入），对已被 stop 清空的 map 是幂等安全的；
-- 错误不再经过 `finally`，因此 reconcile 与 rerun 都不会在失败后执行。
-
-### 3.3 `inFlight` 在失败后的处理：保持 `true`（冻结）
-
-**论证**：
-
-- 保持 `inFlight = true` 的语义是“fail-fast = 停止新的业务推进”（事故分析 4.3）。失败后至 fatal 上报/应用 cleanup 之间，任何 `triggerRoute`（quote/WS/timer）只会置 dirty 而不会启动新 pass，从而保证 fatal 前不再出现可能含 broker mutation 的第二轮 route。
-- `stopAndDrain` → `resetRouteStateForStop` 会复位 `inFlight = false` 并 `generation += 1`（现状代码，不改），因此重启/停止后 route 可正常恢复；若应用选择不停止（不推荐），该 symbol route 保持冻结，符合 fail-fast 意图。
-- 失败路径在抛错前已清 dirty/pendingWakeupKind；若抛错后（fatal 前）又收到 wakeup，dirty 会被重新置位，但 `inFlight === true` 保证不会执行——这比“清完又脏”更安全。
-
-### 3.4 `launchRouteProcessing` 的 catch/finally 顺序调整（事故分析 4.4）
-
-```ts
-const promise = runRoute(symbol, routeState.generation, wakeupKind);
-activeRoutePromises.add(promise);
-promise
-  .catch((error: unknown) => {
-    if (firstRouteProcessingError === null && error instanceof Error) {
-      firstRouteProcessingError = error;
-    }
-    onFatalError(error);
-  })
-  .finally(() => {
-    activeRoutePromises.delete(promise);
-  });
-```
-
-**不变式（关闭微任务窗口的关键）**：对同一 promise，错误登记（`firstRouteProcessingError` 写入 + `onFatalError` 调用）**先于**从 `activeRoutePromises` 删除。因此：
-
-- 若 `stopAndDrain` 快照时 promise 仍在集合中 → `Promise.allSettled` 等到 rejection → `stopError` 分支 → stop 以错误结束；
-- 若 `stopAndDrain` 快照时 promise 已删除 → 错误必然已登记 → `firstRouteProcessingError` 非 null → stop 以错误结束；
-- 不存在“stop 成功返回但 route 错误尚未上报”的状态，即复现输出 `{stopResult:'fulfilled', fatal:[...]}` 被结构性排除。
-
-**注意**：`onFatalError` 保持同步且不抛错（现有契约）；catch 内不 rethrow，`finally` 链上的 promise 结果不被消费（现状亦如此）。
-
-### 3.5 定向测试（4.4 窗口）
-
-在 `routeRuntime.business.test.ts` 新增：
-
-- **场景 A（在途失败 + 并发 stop）**：`processRoute` await deferred 后抛错；`triggerRoute` → `await firstPassEntered` → 立即调用 `stopAndDrain()`（不 await）→ release deferred → `await stopAndDrain`。断言：`stopAndDrain` **reject**（`/route process failed/`）、`fatalErrors.length === 1`、`runtime.running === false`。（旧代码下该交错可能 fulfill，新代码下必然 reject。）
-- **场景 B（失败已登记后再 stop）**：`processRoute` 直接抛错；`triggerRoute` → `flushMicrotasks`（错误已登记、promise 已删除）→ `await stopAndDrain`。断言：reject（走 `firstRouteProcessingError` 分支），fatal 仍恰好一次。
-- **场景 C（失败后不再产生任何推进）**：`processRoute` 抛错前 `triggerRoute('QUOTE')` 置 dirty；断言失败后 `dirty === false`、`pendingWakeupKind === null`、`timerHandles.size === 0`、`processCount === 1`、`fatalErrors.length === 1`。
-
----
-
-## 4. 测试矩阵（事故分析第 6 节，全部覆盖）
-
-### 4.1 测试文件归属总表
-
-| # | 场景 | 归属测试文件 | 断言要点 |
-| --- | --- | --- | --- |
-| 1 | 真实 Filled 样本：epoch updatedAt + 单一精确匹配 Filled history | `orderStatusQuery.business.test.ts`（提取）；`terminalSnapshotFacts.business.test.ts`（合并准入）；`routeProcessor.business.test.ts`（结算一次 + 全链路副作用） | 见 4.2 |
-| 2 | history 缺失/非数组/无效 Date/状态不匹配/价格数量不匹配/多个冲突候选 → fail-closed | `orderStatusQuery.business.test.ts`（字段为 null）；`orderOps.business.test.ts`（断言抛错且零副作用）；`terminalSnapshotFacts.business.test.ts`（保护性 SELL 抛错） | 见 4.3 |
-| 3 | 有效顶层 updatedAt → 原有路径不变 | `orderStatusQuery.business.test.ts` | `orderUpdatedAtMs` 正常、`filledHistoryTimeMs === null`（即使 history 匹配也跳过） |
-| 4 | 新挂单未超时 `cancelRetryCount=0` → 不注册到期 CANCEL_RETRY，只保留首次 timeout owner | `routeRuntime.business.test.ts` | `timerHandles` 仅含 `BUY_TIMEOUT`/`SELL_TIMEOUT`；推进到 timeout 触发一次 `TIMER` |
-| 5 | 已 retry backoff → 只存在 future CANCEL_RETRY，无过期 timeout 自循环 | `routeRuntime.business.test.ts` | 仅 `CANCEL_RETRY@nextCancelAttemptAt`；`advanceBy(0)` 不产生新 `TIMER` |
-| 6 | `CANCEL_CONFIRMED` + 已超过 timeout → 只等待 WS | `routeRuntime.business.test.ts` | `nextCancelAttemptAt === WAIT_WS_ONLY` 时 `timerHandles.size === 0`；推进时间无 `TIMER` |
-| 7 | route 失败期间收到 dirty wakeup → 不启动第二轮、只上报一次 fatal、不重挂 timer | `routeRuntime.business.test.ts` | `processCount === 1`、`fatalErrors.length === 1`、`timerHandles.size === 0`、`dirty === false` |
-| 8 | 普通 Buy / 普通 Sell / 保护性 Sell 既有结算与持久化顺序不变（回归） | 现有 `routeProcessor.business.test.ts`、`settlementFlow.business.test.ts`、`eventFlow.business.test.ts`、`ordinaryRawExecutionFacts.business.test.ts` 全量保持绿 | `filledHistoryTimeMs === null` 时行为与现状逐字节一致 |
-| 9 | stopAndDrain 微任务窗口定向测试（4.4） | `routeRuntime.business.test.ts` | 见 3.5 |
-
-### 4.2 场景 1：真实 Filled 样本的“只结算一次 + 全链路副作用”验证分层
-
-- **提取层（orderStatusQuery）**：构造 `status=5(Filled), executedQuantity=180000, executedPrice=0.055, updatedAt=Date(0), history=[{status:Filled, quantity:180000, price:0.055, time:Date(1785821355000)}]`（用 `Reflect.set` 注入损坏字段同款手法构造 history）。断言 `TERMINAL` 且 `orderUpdatedAtMs === null`、`filledHistoryTimeMs === 1785821355000`。
-- **合并层（terminalSnapshotFacts）**：已知事实 `executedQuantity=0, lastOrderUpdateAtMs=null` + 上述快照 → `assertStateCheckRawExecutionFactsReady` 不抛；`normalizeTerminalStateSnapshot` 输出 `executedTimeMs === orderUpdatedAtMs === 1785821355000`。
-- **结算一次层（routeProcessor.business.test.ts）**：沿用现有 `createSettlementFlow` + `createOrderStorage` 真实装配（该文件已如此装配），构造买入订单 + `queriedTerminalStateByOrderId` 预置上述快照 → 驱动 `handleBuyOrderTimeout` → 断言：
-  - `settleOrder` 被调用恰好 1 次（用计数 mock 或真实 settlementFlow 的幂等结果）；
-  - ack 后 `queriedTerminalStateByOrderId` 已删除；再次触发同一 pass 不再结算（`peek` 为 null 走撤单路径或直接返回）；
-  - 全链路副作用正确产生：本地买单记录（`orderRecorder` trade log）、累计成交事实（DailyLoss `recordCumulativeExecution`）、成交后刷新需求（`cacheManager.clearCache`/`postTradeConsistencyRuntime`）、订单状态事件（`emitOrderStateChanged`）各恰好一次。
-  - **说明**：routeProcessor 测试层是“只结算一次 + 全链路副作用”的最合适层——它同时具备真实 settlementFlow 与 route 驱动语义；`index.ts` 层（`cancelAndSettle`）的“只结算一次”由 `settleActiveTerminalFromRaw` 的 `alreadySettled` 幂等保护已有测试基础，本次不新增 index 级测试文件（避免扩大测试面），如需可后续补充。
-
-### 4.3 场景 2：fail-closed 零副作用断言清单
-
-对每个失败变体（history 缺失 / 非数组 / 无效 Date / 状态不匹配 / 数量不匹配 / 价格不匹配 / 多个时间冲突候选），在 `orderOps.business.test.ts` 用 `createOrderOps` harness（参考现有 `ordinaryRawExecutionFacts` 的 OPEN null-revision 用例）断言：
-
-- `cancelOrder` 抛 `[订单监控] state-check 累计成交数量推进但缺少有效 broker revision`；
-- `queriedTerminalStateByOrderId` 无该 orderId（terminal cache 未写——断言发生在 `mapStateCheckResultToCancelOutcome` 之前）；
-- tracked order 的 `status/executedQuantity/executedPrice/lastExecutedTimeMs/lastOrderUpdateAtMs` 不变；
-- `pendingSellQuantities === []`、`dailyLossInputs === []`、`settlementInputs === []`、`routeWakeups === []`、`orderRecorder` 无任何写入（trade log 未写）。
-
-### 4.4 测试装配约定（沿用现状模式）
-
-- 损坏字段统一用 `Reflect.set(snapshot, 'history', value)` 注入，不伪造静态类型（与 `overwriteUpdatedAtAtRuntimeBoundary` 同手法）；
-- history 条目构造：`{ status: OrderStatus.Filled, time: new Date(...), quantity: new Decimal(180000), price: new Decimal(0.055) } as unknown as OrderHistoryDetail`；
-- timer 相关测试使用现有 `createRuntimeTimerHarness`（fake setTimeout + 手动 advance），并注意 `finally { harness.restore() }`。
-
----
-
-## 5. 不允许改动的文件/范围清单（事故分析 5.2 的 5 项，逐项确认）
-
-1. **不得重新设计 `OrderStateCheckResult` 全部类型、拆出全局 revision 服务或重写 `settlementFlow`**——本次只在 TERMINAL 分支追加一个可空字段并扩展消费解析，不新增 union 分支、不删字段、不动 `settlementFlow.ts` 逻辑。
-2. **不得为 OPEN、PartialFilled、Canceled、Rejected 做 history 推断**——提取严格门控 `closedReason === 'FILLED'`。
-3. **不得修改 WS reconnect、订阅、启动恢复或交易日重建**——`eventFlow.ts`、`recoveryFlow.ts`、`initialize` 等零改动。
-4. **不得引入全局周期性订单对账、无限/有限补偿重试或“未知即删除”**——不新增 poller/queue/timer 类型/retry policy；`routeRuntime` 只改投影条件与失败分支。
-5. **不得吞掉 cleanup 或把内部状态错误降级为成功退出**——`stopAndDrain` 的错误暴露契约保持；`runRoute` 失败路径仍然 throw，cleanup 仍能捕获并上报。
-
-**明确零改动的文件**：`eventFlow.ts`、`recoveryFlow.ts`、`settlementFlow.ts`、`routingIndex.ts`、`src/utils/timer/index.ts`、`routeProcessor.ts`（仅注释可改）、`orderOps.ts`（仅注释可改）、`index.ts`（仅注释可改）、`src/core/trader/orderMonitor/types.ts`（可加注释，类型经 `Extract` 自动扩展）。
-
----
-
-## 6. 实现顺序与验证命令
-
-1. `src/types/trader.ts` 类型 + `orderMonitor/utils.ts` 新助手；
-2. `orderStatusQuery.ts` 提取；
-3. `orderFactMerge.ts` 三处消费；
-4. `routeRuntime.ts` P0-2 两处投影 + P0-3 失败路径与注册顺序；
-5. 测试（按 4.1 归属）→ 先写反例再实现（事故分析第 6 节建议）；
-6. 全量验证：
+| G0：4.4.3 clean baseline | **BLOCKED** | disposable checkout 中 clean/frozen install；wrapper/native 均为 4.4.3；基线命令 fresh 通过 |
+| G1：事故与厂商语义证据 | **BLOCKED** | 事故分析、wire/getter capture、timeline、hash、不可变厂商契约证据齐全 |
+| G2-P0-3：监督边界 RED | **PENDING，blocked by G0** | 旧实现稳定复现非 Error、双 symbol、scheduler、并发 stop 等失败 |
+| P0-3：runtime 监督 | **PENDING，blocked by G0 + G2-P0-3** | 第 5 节设计再次复核通过 |
+| G2-P0-2：timer RED | **PENDING，blocked by G0** | bounded fake scheduler 在旧实现稳定检出自旋/错误 owner |
+| P0-2：phase timer | **PENDING，blocked by P0-3 + G2-P0-2** | 第 4 节设计再次复核通过；不设“无 P0-3 的中间 GREEN” |
+| P0-1：Filled 缺 revision | **PENDING，blocked by G1** | G1 后二选一：`CLOSED_NO_CHANGE`，或进入 G2-P0-1 + 再次设计复核 |
+
+仅对进入编码的 P0 工作包适用：
 
 ```text
-bun format
-bun lint
-bun type-check
-bun test tests/core/trader/orderMonitor/
+可复现 baseline -> 旧实现稳定 RED -> 最小实现 -> 定向 GREEN -> 集成 GREEN -> 全仓 GREEN
 ```
 
-在没有新的全量命令输出前，不得把定向结果表述为“全仓已验证”（事故分析第 6 节）。
+G0/G1 是证据工作包，不要求“RED -> 实现”。G1 不阻断 P0-3，也不阻断在 P0-3 之后实施 P0-2。
 
 ---
 
-## 7. 风险与边界论证
+## 1. 已核实事实、术语与纠错
 
-### 7.1 P0-1 风险
+### 1.1 上位依据和事故 fixture 缺失
 
-- **Decimal.equals 两侧必须都是 Decimal**：采用 `isDecimalLike` 鸭子类型守卫；若 SDK 未来把 history 字段类型改为 number，equals 守卫会 fail-closed（返回 null），而不是误匹配——这是有意为之的保守方向。
-- **多重 Filled 历史（不同时间）**：Longbridge 正常每订单一条 Filled 历史；若出现多条不同时间 → 拒绝（fail-closed），宁可重试也不猜。
-- **Filled + executedPrice === null 的畸形详情**：无候选 → `filledHistoryTimeMs = null` → 下游沿用现有“缺少有效成交价/缺少有效 broker revision”异常，安全。
-- **与 WS 路径的交互**：`filledHistoryTimeMs` 只出现在 state-check TERMINAL 快照；WS 事实仍走 `resolveUpdatedAtMs`，两者在 `orderFactMerge` 中按同一单调规则合并（`mergeMonotonicOrderFact` 的 revision 倒退校验覆盖 history 时间倒退），不会引入新的竞争面。
-- **事故分析 4.5 的 cancel/WS 竞争窗口**：明确不在本次范围（保留边界），本改动不放大该窗口。
+上一版引用的文件：
 
-### 7.2 P0-2 风险
+```text
+docs/issues/2026-08/2026-08-04-order-monitor-state-check-incident-first-principles-analysis.md
+```
 
-- **WS 复位后的一次性 0ms 收敛**：属于合法收敛而非自循环（见 2.4 论证），但实现后需用测试钉住“至多一次”。
-- **`cancelRetryCount` 与 sentinel 组合不存在**（`pauseCancelRetryAndWaitWs` 同时归零），因此两个新增条件互不遮蔽；若未来代码改变该不变量，两个条件仍各自独立 fail-safe（sentinel 拒绝 + count 拒绝）。
-- **timeout 禁用 + 撤单意图**：timeout 禁用时订单本就不走超时撤单；末日/外部撤单路径不受 timer 投影影响。
+在当前 tree、历史提交和全部可达 Git objects 中均不存在。tracked Git objects 中也没有可审计的事故 wire fixture：上一版使用的订单数量和毫秒时间仅来自该规格；相同价格数字在仓库另有无关文档用途。
 
-### 7.3 P0-3 风险
+本机 ignored SDK 日志存在数值相近的非合格线索，但它来自 history endpoint、没有 order-detail history，且其 `updated_at` 不是事故声称的缺失值；它既未入 Git，也不能替代事故证据。
 
-- **失败后 `inFlight = true` 冻结**：若 `onFatalError` 不触发 cleanup，symbol route 永久冻结——这是 fail-fast 的预期语义，且 `stopAndDrain`/`resetRouteStateForStop` 提供唯一复位路径；已在 3.3 写明。
-- **catch/finally 重排后 `onFatalError` 抛错**：会令 finally 链产生未处理 rejection；维持“onFatalError 不得抛错”的既有契约（现状同样如此），不加 try 包裹以免掩盖错误来源。
-- **`firstRouteProcessingError` 只登记首个 Error**：`instanceof Error` 守卫保持现状；非 Error 拒绝值仍只走 `onFatalError`，stop 时经 `result.reason instanceof Error` 判断——保持现状语义。
+因此撤销：
+
+- “本次已证实形态”；
+- “严格继承事故分析第 4/5/6 节”；
+- “真实 Filled 样本”；
+- “事故分析全文已检查”；
+- “测试矩阵已全部覆盖”。
+
+### 1.2 声明版本与实际加载版本不一致
+
+当前仓库：
+
+- `package.json`：`longbridge = 4.4.3`；
+- `bun.lock`：wrapper 与平台 native packages 锁定 4.4.3；
+- 当前 `node_modules/longbridge`：4.3.3；
+- 当前 `node_modules/longbridge-win32-x64-msvc`：4.3.3。
+
+本轮诊断：
+
+- `bun type-check`：通过；
+- `bun test tests/core/trader/orderMonitor/`：251 pass / 0 fail。
+
+这些结果只描述错误安装版本下的现状，不能作为 4.4.3 验收。
+
+### 1.3 已发布契约不足以证明 fallback
+
+浮动的公共文档当前只说明：
+
+- [`OrderDetail.updatedAt`](https://longbridge.github.io/openapi/nodejs/classes/OrderDetail.html#updatedat)：`Last updated time`；
+- [`OrderDetail.history`](https://longbridge.github.io/openapi/nodejs/classes/OrderDetail.html#history)：`Order history details`；
+- [`OrderHistoryDetail.time`](https://longbridge.github.io/openapi/nodejs/classes/OrderHistoryDetail.html#time)：`Occurrence time`。
+
+这些 latest 链接只用于说明当前文案，**不是 G1 的不可变证据**。公共契约没有保证：
+
+1. history occurrence 就是最终 Filled 状态转换对应的 revision；
+2. occurrence 可无损替代缺失的 API `updatedAt`；
+3. occurrence 与 API/WS `updatedAt` 具有相同单位、精度、相等值和冲突语义；
+4. Filled history 唯一、完整、有序；
+5. history quantity 是单笔量、累计量还是状态快照量；
+6. 该语义对改单、多次成交和不同订单类型都成立。
+
+“同一时钟、可以比较”仍不足以推出“可以替代同一 revision”。
+
+### 1.4 P0-1 的影响面大于上一版声明
+
+- `eventFlow.ts` 会读取 `queriedTerminalStateByOrderId` / `latestReplaceTerminalByOrderId`，并按 `status + orderUpdatedAtMs` 确认 cache；它不是零影响消费者。
+- API terminal 与 WS terminal 可并发。较弱事实先结算可能使较强事实失去结算机会，或留下孤立 evidence。
+- 只虚拟增加一个 required TERMINAL 字段，当前产生 **43 条 TypeScript 诊断，涉及 5 个文件**：
+  - `orderStatusQuery.ts`：1；
+  - `orderOps.business.test.ts`：7；
+  - `recoveryFlow.business.test.ts`：2；
+  - `routeProcessor.business.test.ts`：32；
+  - `terminalSnapshotFacts.business.test.ts`：1。
+- `{ equals() }` 不能证明值是 SDK `Decimal`；原生比较伪对象会抛 N-API 类型恢复错误。
+
+撤销“只影响一个 fixture”“字段自动透传无害”和“`eventFlow.ts` 明确零改动”。
+
+### 1.5 P0-2 是投影与消费不一致
+
+当前 projector 独立投影 timeout、cancel、replace、quote；processor 按 phase/优先级每轮最多执行一个动作。只要 timer 已到而 processor 当前不能消费，成功 pass 后就可能按相同过去时间重挂。
+
+确定性例子：
+
+```text
+602013 第一档 replace backoff = 1s
+生产默认 priceUpdateInterval = 5s
+REPLACE_RETRY 在 1s 到期
+processor 因价格更新间隔未到而 no-op
+projector 重挂相同过去时间 -> setTimeout(0)
+```
+
+WAIT_WS_ONLY、cancel backoff、跨 timeout 的 replace/quote、零/NaN remaining、closed/MO/converted 和多订单竞争都必须进入同一 policy。
+
+### 1.6 P0-3 必须监督整个 order-monitor runtime fatal 域
+
+上一版会：
+
+- 把 `throw null` 当成无错误；
+- 让 string/object/undefined 绕过 Error latch；
+- 遗漏 reconcile、schedule/cancel、timer segment callback 异常；
+- 只冻结失败 symbol；
+- 重复上报 fatal；
+- 并发 stop 重复 reset；
+- STOPPING 期间允许 start；
+- 依赖未被类型保证的“`onFatalError` 不抛错”。
+
+已有“在途普通 Error + stop”测试在旧实现上也通过，不是 RED。
+
+### 1.7 规范术语
+
+- **现场 capture**：真实 4.4.3 wrapper/native 对真实 wire 响应的 getter 输出；静态 JSON 不能重新构造 N-API `OrderDetail`。
+- **boundary replay double**：自动化测试根据 getter fixture 构造的 adapter 边界 double；必须使用真实 4.4.3 `Decimal`/`Date`，但不得称为 native 反序列化。
+- **事故复现**：证明事故输入和旧行为，属于 G1 evidence；不等于修复验收 RED。
+- **回归 RED**：针对拟议修复，在旧实现稳定失败、修复后通过，属于 G2。
+- **owner tuple**：决定 timer 的业务 phase、orderId、kind、due 和必要 version/identity。
+- **已发出 broker mutation**：已经进入 `permit.invoke(() => SDK mutation)`；只在 RateLimiter 队列中不算已发出。
+- **primary error**：本运行代 first-observed 的归一化 Error；reporter 与 drain 必须使用同一对象。
+- **secondary error**：primary 之后发生的 reporter/cleanup/并发错误，只进入结构化诊断，不替换 primary。
 
 ---
 
-## 8. 已检查文件清单与本设计结论摘要
+## 2. 强制门禁
 
-### 8.1 已检查文件（本规格的依据）
+### 2.1 G0：4.4.3 clean baseline
 
-| 类别 | 文件 |
+必须在 disposable checkout/container 中执行；安装前 `node_modules` 必须不存在，且不得使用 link、override 或 `NAPI_RS_NATIVE_LIBRARY_PATH`：
+
+```text
+bun install --frozen-lockfile
+```
+
+顺序固定：
+
+1. 记录 OS、CPU、Bun、commit；
+2. 在无 `node_modules` 的 disposable checkout frozen install；
+3. 实际 import `longbridge`，执行 `Decimal` native smoke；
+4. 记录 wrapper 入口、平台 native package 入口和最终 `.node` 路径；
+5. 断言 wrapper/native 均严格为 4.4.3；
+6. 在**未改实现**的 checkout 执行 baseline；
+7. 证明 source、manifest、lockfile 未被安装/测试修改。
+
+Windows x64 至少记录并断言：
+
+```text
+longbridge@4.4.3
+longbridge-win32-x64-msvc@4.4.3
+require.resolve('longbridge')
+require.resolve('longbridge-win32-x64-msvc')
+new Decimal('1').equals(new Decimal('1')) === true
+```
+
+baseline 至少包含：
+
+```text
+bun type-check
+bun run lint
+bunx prettier --check .
+bun run build
+bun test tests/core/trader/orderMonitor/
+bun test tests/core/trader/orderMonitor.business.test.ts tests/core/trader/orderMonitorRouteHooks.integration.test.ts tests/integration/orderMonitorDailyLossMonotonic.integration.test.ts
+bun test
+```
+
+G0 未通过时停止所有生产实现与“4.4.3 已验证”表述。
+
+### 2.2 G1：事故与厂商语义 evidence
+
+G1 只收证据，不要求回归 RED。必须提交：
+
+1. 缺失的事故分析文件；
+2. 脱敏原始 `/v1/trade/order` wire JSON；
+3. 同一响应经真实 4.4.3 wrapper/native 的现场 getter capture；
+4. 请求、撤单/改单错误、orderDetail、WS、cache、结算的单调时间线；
+5. fixture SHA-256、采集平台、wrapper/native 版本、脱敏规则；
+6. 修复前事故复现及零副作用/错误传播观察；
+7. 每项禁止范围的事故或系统不变量依据；
+8. 不可变的 4.4.3 tag/commit 源码、归档厂商答复或带 hash 的版本化契约。
+
+建议目录：
+
+```text
+tests/fixtures/longbridge/4.4.3/order-detail-filled-missing-updated-at/
+  wire.sanitized.json
+  sdk-getters.sanitized.json
+  timeline.sanitized.json
+  SHA256SUMS
+```
+
+现场 capture 与自动化 replay 必须分开：
+
+- `sdk-getters.sanitized.json` 记录 native getter 事实；
+- 自动化测试用 fixture builder 建 boundary replay double；
+- builder 使用实际 4.4.3 `Decimal` 和 `Date`；
+- 除非另建真实 native HTTP replay harness，不得声称测试 JSON 被 N-API 重新反序列化。
+
+厂商证据必须明确回答：
+
+- 对该 Filled 终态，history time 是否就是最终状态转换 revision，或可无损替代缺失 `updatedAt`；
+- 与 API/WS `updatedAt` 的单位、精度和相等值语义；
+- 秒级时间是否可能让不同 revisions 同值；
+- history quantity 的语义；
+- 改单、多次成交、不同订单类型下的适用范围；
+- 这是服务端契约，而不只是 TypeScript 类型；
+- `orderDetail` 单次请求的硬超时/取消语义；当前 `wrapExternalApiRequest` 只限制重试次数，不能为永不 settle 的 native request 提供上界。
+
+#### G1 分支裁决
+
+- 不能证明**可替代同一 revision**：P0-1 在 Longbridge 4.4.3、当前服务契约和本次修复范围内标记 `CLOSED_NO_CHANGE`，继续 fail-closed；未来新契约必须新开规格复核。
+- 能证明可替代：进入 G2-P0-1、补第 3 节 RED 并再次复核；仍不得立即编码。
+
+### 2.3 G2：回归 RED
+
+G2 只适用于将进入生产实现的 P0：
+
+- P0-3：必须先有非 Error、双 symbol、scheduler、reentrant/concurrent stop 等旧实现稳定 RED；
+- P0-2：必须先有 bounded due-drain 检出的旧实现稳定 RED；实现验收依赖 P0-3；
+- P0-1：仅 G1 进入 fallback 分支时需要成功路径与冲突路径 RED；`CLOSED_NO_CHANGE` 分支豁免实现 RED。
+
+以下不算 RED：
+
+- 旧实现已经通过的普通 Error stop 场景；
+- 直接预置 terminal cache、绕过 adapter/orderOps 的“端到端”测试；
+- fake timer 只执行一次 due 快照；
+- 只检查 runtime `timerHandles` 而不检查 scheduler pending timer。
+
+---
+
+## 3. P0-1：条件化设计
+
+### 3.1 `CLOSED_NO_CHANGE` 分支
+
+若 G1 不能证明 revision 可替代性，保持当前语义：
+
+- `detail.updatedAt` 无有效 raw revision 时，`orderUpdatedAtMs = null`；
+- 累计成交推进且 revision 缺失时继续抛错；
+- 不结算、不写 trade log、不推进 DailyLoss、不清 evidence；
+- 不读取 history 作为 fallback；
+- 不新增 `filledHistoryTimeMs`、`historyTimeMs` 或公共 occurrence helper；
+- 不需要实现本节后续 API/WS 仲裁。
+
+### 3.2 fallback 分支的严格 adapter 规则
+
+只有 G1 明确证明 occurrence 可无损替代最终 Filled revision，才允许在 `orderStatusQuery` adapter 边界产出现有 canonical `orderUpdatedAtMs`。不得把来源字段传播给所有消费者；字段 JSDoc 必须改为“adapter 验证后的 canonical broker revision”，不能谎称总是 raw `updatedAt`。
+
+入口必须是 fixture 证明的**精确 sentinel**。当前预期仅允许：
+
+```text
+detail.updatedAt === null
+```
+
+`undefined`、错误类型、非法 Date、`Date(0)`、负值或 getter 抛错一律 fail-closed，且不得启动 history fallback。
+
+history 规则：
+
+1. `closedReason === 'FILLED'`；
+2. `history` 可完整读取为数组；
+3. 数组中恰好一条 Filled row，且该 row 完全匹配；存在第二条 Filled（即使数量不同）即拒绝；
+4. 任一条目的 status/getter 无法安全读取，整个 fallback 拒绝，不能只跳过疑似冲突 sibling；
+5. Filled row time 是正有限 `Date`；
+6. 顶层 submitted quantity、顶层 cumulative executed quantity、history quantity 均为正值 SDK `Decimal`，三者数值相等；
+7. 顶层 executed price 与 history price 均为正值 SDK `Decimal`，二者数值相等；
+8. 任一 native 调用/比较异常使整个 fallback 返回 null；
+9. helper 保持 `orderStatusQuery.ts` 模块私有。
+
+安全 Decimal 边界示意：
+
+```ts
+function sdkDecimalEquals(left: unknown, right: unknown): boolean {
+  if (!(left instanceof Decimal) || !(right instanceof Decimal)) return false;
+  try {
+    return Decimal.prototype.equals.call(left, right);
+  } catch {
+    return false;
+  }
+}
+```
+
+仍须在 G0 的真实 4.4.3 实例上定稿；`Object.create(Decimal.prototype)` 虽可能通过 `instanceof`，native call 必须被 catch 并判不匹配。
+
+### 3.3 API 查询在途与 WS 的唯一仲裁机制
+
+fallback 分支必须实现 **per-order in-flight arbitration token**；不得用“WS 先结算、晚到 API 再丢 cache”的事后策略：
+
+1. 决定启动 state-check 后、在 throttle/orderDetail 等任何 `await` 之前，同步登记 `{orderId, token, trackedIdentity, generation}`；
+2. token 存在时，WS 以及其他 terminal settlement gateway 都不得做经济结算；WS terminal 保存为该 token 的 pending evidence，其他 gateway 必须 join/交给同一仲裁入口；
+3. orderDetail 成功/失败后，由一个仲裁入口原子读取 API 结果、pending WS、tracked identity 和 generation；
+4. API 查询失败时，释放 token，并把 pending WS 交回正常路径；
+5. API/WS 同时存在时，按 G1 的 canonical revision/precision 规则双向比较，不能按 arrival order；
+6. OPEN/TERMINAL 竞争只允许“revision 不早于 OPEN 的 TERMINAL”胜出；TERMINAL 之后出现同 revision或更新 revision 的 OPEN 是生命周期冲突并 fatal；
+7. 不同 terminal reason（例如 Filled 与 Canceled/Rejected）视为不可证明冲突，必须在任何结算前 fatal；
+8. 同 revision 下累计量不得回退，数量/价格冲突 fatal；
+9. API 弱/WS 强和 API 强/WS 弱使用同一对称规则；
+10. 只结算被选中的同一 evidence，随后按 identity ack 两个 cache/buffer；
+11. stale token、已失效 generation、已替换 tracked identity 或 stop/fatal 后返回的查询不得写 cache；
+12. `finally` 必须释放 token；不得新增 poller；若 G1 不能证明 native request 的硬完成上界或安全取消语义，则 fallback 分支不获批准，不能靠有限 retry 次数假定请求有界；
+13. token 期间再次 state-check 必须 join/拒绝，不能建立两个 owner；
+14. 任何仲裁不变量冲突必须经 P0-3 的统一 `reportFatal` 进入同一 runtime latch，不能只向某个公开调用者抛错后让 runtime 继续。
+
+若该 token 会阻塞当前保护性 durable-first 语义，必须在 RED 中暴露并重新审查；不得静默把 WS 部分事实丢失。
+
+### 3.4 P0-1 fallback 验收（仅条件分支）
+
+必须覆盖：
+
+1. 现场 getter fixture + boundary replay builder，驱动 `orderDetail double -> orderStatusQuery -> orderOps -> settlement`；禁止直接预置 cache；
+2. raw `updatedAt` 正常时完全忽略 history；只有 `null` sentinel 可进入 fallback；
+3. `Date(0)`、非法 Date、错误类型、getter 抛错不得进入 fallback；
+4. history 缺失、空、多条 Filled、有效 Filled + 不匹配 Filled、有效 Filled + 抛错 sibling 全部拒绝；
+5. `Filled 40/100` 拒绝；
+6. number、string、鸭子对象、prototype fake、native 比较抛错全部拒绝；
+7. API 强/WS 弱、WS 强/API 弱、API 查询在途/WS 先到两个排列；
+8. terminal reason、same-revision quantity/price、precision collision 冲突；
+9. 恰好一次结算，且 cache/buffer/tracked lifecycle 无孤儿；
+10. trade log、DailyLoss、refresh、event、cache clear 必须在真正装配这些依赖的集成层可观察；
+11. 所有失败变体零经济副作用、零 evidence 误删。
+
+现有 routeProcessor harness 的 DailyLoss、refresh、event 多为 no-op，且没有 `cacheManager`；不得用它证明全链路。
+
+---
+
+## 4. P0-2：per-order policy + single route timer
+
+> P0-2 的“不收敛即 fatal”依赖 P0-3。可以先写 RED，但生产实现和 GREEN 验收必须在 P0-3 完成后进行。
+
+### 4.1 两级投影算法
+
+第一层纯函数为每笔订单解析 phase，并返回至多一个 candidate。第二层为整个 symbol route 只注册一个 next timer：
+
+1. 若存在 `due <= now` candidates：
+   - timeout/cancel candidates 优先于 replace/quote；
+   - 同类按 processor 的 `submittedAt -> orderId` 顺序；
+2. 若没有已到期 candidate：选择最早 future due；同时间用相同优先级；
+3. timer 回调只触发一次 generic TIMER pass；成功后重新计算下一 owner；
+4. 当前选中 owner 若被并发到达的更高优先级 terminal/timeout owner抢先处理，允许再次成为 next candidate，但必须证明另一 owner 已发生有限进展；
+5. TIMER pass 若没有任何 owner tuple/订单 identity/lifecycle 进展，必须 fatal；
+6. 连续 immediate passes 的上界由本轮实际变化的 owner 数限定，测试以 `maxSteps` 检出自旋。
+
+projector 与 processor 必须复用同一纯 eligibility/priority policy，禁止复制条件。
+
+### 4.2 per-order phase 表
+
+按以下顺序裁决：
+
+| phase | candidate | 规则 |
+| --- | --- | --- |
+| terminal snapshot 已就绪 | 无 mutation timer | 写 snapshot 必须 edge-trigger route；解析、remaining 或 settlement 失败一律 fatal，不再借用 cancel backoff |
+| WAIT_WS_ONLY / cancel 已确认但无 terminal snapshot | 无 | 只等 WS；清 timeout/cancel/replace/quote owner |
+| remaining 非有限或 `<0` | 无 | tracked quantity 已损坏，直接 fatal，不得静默停表 |
+| ordinary closed、MO、converted，或 remaining `===0` | 无 mutation timer | 若仍携带 cancel/replace/quote owner，说明迁移未原子清理，fatal |
+| cancel backoff | `CANCEL_RETRY` | 仅 timeout 启用、timeout 已到且订单可处理时成立；count>0；due=`max(timeoutAt,nextCancelAttemptAt)`；其他组合 fatal |
+| timeout 已到、无 cancel backoff | `BUY_TIMEOUT` / `SELL_TIMEOUT` | due=`max(timeoutAt,nextCancelAttemptAt)`；nextCancel 必须为可解释有限值；禁止 replace/quote |
+| timeout 未到 | 真实可执行且严格早于 timeout 的 replace/quote；否则 timeout | due 与 timeout 相等时 timeout 优先 |
+| timeout 禁用 | 一个真实可执行 replace/quote，或无 | count>0 属不一致并 fatal；禁止凭过去时间制造空 wakeup |
+
+所有 candidate 的 due 必须是正有限值；无效 timeout/retry 时间直接 fatal。WS 将 remaining 推到 0、关闭订单或切换 WAIT_WS 时，必须在同一同步状态提交中清除不再合法的 owner tuple，然后才 edge-trigger projector。
+
+### 4.3 effective due 与 replace handoff
+
+replace due：
+
+```text
+max(replaceBlockedUntilAt, lastPriceUpdateAt + priceUpdateIntervalMs)
+```
+
+只有以下条件都成立才可成为 candidate：
+
+- `replaceCapability === 'TEMP_BLOCKED_BY_STATUS'`；
+- `replaceResumeMode === 'TIME_BACKOFF'`；
+- 尚未进入 cancel/timeout/WAIT_WS；
+- remaining 正有限；
+- cached quote 通过与 processor 相同的 readiness/price-diff guard；
+- timeout 启用时 due 严格早于 timeout。
+
+REPLACE_RETRY due 时：
+
+- quote ready 且仍需改价：尝试 mutation；结果必须清 owner、推进 future owner、WAIT_WS 或 fatal；
+- price diff 已消失：清除 expired replace block，回到 SUPPORTED；
+- quote 缺失：**原子清除 expired replace block并初始化 future QUOTE_RETRY**；不能留下过去 replace owner；
+- quote 无效但非 missing：清 replace owner并等待新 QUOTE/timeout，不做 hidden retry。
+
+### 4.4 quote retry 真值表
+
+`quoteRetryNextAt + quoteRetryAttempts` 是 owner 真值；`quoteRetryExhausted` 成为受校验的派生状态：
+
+| 状态      | 合法组合                                                 |
+| --------- | -------------------------------------------------------- |
+| IDLE      | `attempts=0, nextAt=null, exhausted=false`               |
+| SCHEDULED | `1 <= attempts <= MAX, nextAt=正有限值, exhausted=false` |
+| EXHAUSTED | `attempts > MAX, nextAt=null, exhausted=true`            |
+
+其他组合 fatal。现有“`exhausted=true` 但 `nextAt` 非空仍投影”的测试必须改为不变量失败测试。
+
+quote due 至少为：
+
+```text
+max(quoteRetryNextAt, lastPriceUpdateAt + priceUpdateIntervalMs)
+```
+
+每次 due 后必须按 readiness 明确迁移：MISSING 推进 future nextAt 或进入 EXHAUSTED；READY 被消费并 reset；INVALID 清 scheduled owner、回到 IDLE，只等待新的真实 QUOTE 或 timeout；内部状态不满足真值表时 fatal。EXHAUSTED 无 timer，只等待真实 QUOTE 或 timeout。
+
+### 4.5 terminal settlement 裁决
+
+本工作包选择明确的 fail-fast 方案，不新增 `SETTLEMENT_RETRY` timer：
+
+- snapshot 无法规范化；
+- queried remaining 不明确；
+- `settleOrder(...).handled === false`；
+- closed/no-remaining 但本地生命周期未收口；
+
+以上全部 fatal。当前借用 `applyCancelRetryBackoff` 的 terminal settlement 分支必须删除/改写；现有期待该隐式 retry 的测试必须改成 fatal 断言。未来若要 retry，必须新开规格定义独立 owner、due、上限和幂等，不得借 `CANCEL_RETRY` 名义实现。
+
+### 4.6 owner notification 必须 edge-trigger
+
+只在 owner tuple **实际变化**时通知：
+
+- route pass 内写入：不自行 trigger dirty；由本 pass 成功结束后的 reconcile 消费；
+- route pass 外写入：订单仍 identity-attached、runtime ACTIVE 时，状态完整提交后触发一次 notification request；
+- stale continuation、STOPPED/BOOTSTRAPPING/FAILED/STOPPING 不产生有效 wake；
+- 幂等 reset/重复赋相同值不通知。
+
+必须覆盖的 pass 外迁移：
+
+- track 新订单；
+- 外部 `replaceOrderPriceWithPermit` 写/清 602013 owner；
+- 公共 cancel confirmed 写 WAIT_WS_ONLY；
+- WS 原子清 cancel/replace/quote owner；
+- terminal snapshot 写入。
+
+测试中的“恰好一次”指同一 owner tuple 迁移产生一次 notification request，不排斥并发 WS 等独立合法 wakeup。
+
+### 4.7 P0-2 RED / 验收
+
+fake scheduler 必须提供 `drainDueTimers(maxSteps)`：循环执行全部 `atMs <= now` callback，每次后排空 microtasks；超限报 `timer spin`。同时检查 route handle 与 scheduler pending timer。
+
+至少覆盖：
+
+1. 新单只有 future timeout，无 `CANCEL_RETRY@now`；
+2. cancel backoff 残留 timeout/replace/quote 时只选 `CANCEL_RETRY`；
+3. count>0 但 timeout 未到、禁用、closed/MO/remaining=0 时 fatal；
+4. 1s replace backoff + 5s price interval：1s 不触发，5s 恰好推进；
+5. replace/quote 跨 timeout：timeout 接管；
+6. WAIT_WS_ONLY 四类 timer 全无；
+7. remaining=0、ordinary closed、MO、converted 无 timer且 owner 已原子清理；remaining 为负/NaN 时 fatal；
+8. terminal snapshot + remaining=0 由事件结算一次；失败立即 fatal；
+9. due replace 的 missing/invalid/no-diff 三种最终 owner tuple；
+10. quote truth table 全组合及 exhaustion；
+11. 外部 replace、公共 cancel 的 edge notification；
+12. 两笔以上 overdue 订单按 route priority 逐笔有限收敛；
+13. selected owner 被并发高优先级 terminal 抢占后仍有限收敛；
+14. 无进展 TIMER pass 由 P0-3 fatal，不再重挂；
+15. 连续 drain 后 wakeup/pending timer 稳定。
+
+---
+
+## 5. P0-3：统一 fatal 域、permit preflight 与可重入 drain
+
+### 5.1 生命周期
+
+routeRuntime 私有生命周期：
+
+```text
+STOPPED -> ACTIVE -> STOPPING -> STOPPED       (clean stop)
+                 \-> FAILED -> STOPPING -> TERMINATED  (fatal)
+```
+
+- ACTIVE 时 `start()` 幂等；只有 STOPPED 可开始新运行代；
+- FAILED/STOPPING/TERMINATED 时 start fail-fast；
+- fatal 实例 drain 后为 TERMINATED，**不得原实例 restart**；生产恢复必须由上层重建 order monitor/runtime；
+- 只有 clean stop 后允许 restart；
+- STOPPED 下 stop 是不 reset、不推进 generation 的成功 no-op。
+
+这与上层永久 fatal latch 一致；若未来要复用 fatal 实例，必须把上层 fatal reset/recreate 协议另开规格。
+
+### 5.2 统一 reportFatal 与 first-observed 规则
+
+`RouteRuntime` 增加统一 `reportFatal(cause, stage)`；以下内部 fatal 都走它：
+
+- route process/reconcile/scheduler；
+- timer callback/segment；
+- `orderMonitor/index.ts` WS eventFlow callback 捕获的内部异常；
+- start subscribe/bootstrap 异常；
+- stop/unsubscribe/timer cleanup 异常。
+
+公开 API 调用直接返回给调用者的业务错误不自动属于 runtime fatal；一旦代码把它定义为内部不变量错误，就必须走统一入口。
+
+规则：
+
+1. 任意 cause 立即经 `toError` 归一化；
+2. first-observed Error 成为 primary；
+3. primary 先锁存，再同步 quiesce；
+4. `onFatalError(primary)` 每运行代恰好一次；
+5. reporter/cleanup/后续 route 错误进入 `secondaryErrors`，不替换 primary；
+6. 每个 secondary 通过唯一结构化出口记录：
+
+```text
+logger.error('[订单监控] route runtime secondary failure', {
+  stage,
+  primaryMessage,
+  secondaryMessage
+})
+```
+
+测试 mock 此 logger 并断言 stage/count。不得用 AggregateError 替换 drain/reporter 使用的 primary 对象。
+
+### 5.3 幂等 quiesceRunOnce
+
+ACTIVE->FAILED 和 ACTIVE->STOPPING 共用同一 `quiesceRunOnce` owner：
+
+- `runtime.running=false`；
+- 取消 quote subscription；
+- 每个 route generation 仅失效一次；
+- best-effort 清全部 timer、dirty、pending wakeup；
+- 清理所有 route，即使某个 cancel 抛错也继续；
+- primary 已存在时 cleanup 错误记 secondary；clean stop 中第一个 cleanup 错误成为 primary；
+- FAILED->STOPPING 不重复失效 generation；
+- normal stop/fatal 造成的 stale generation 是 fulfilled cancellation，不是新 fatal。
+
+start 的 subscribe/bootstrap 若抛错：锁存 primary、进入 FAILED、完成 quiesce，并同步抛同一 primary；不能回滚成看似健康的 STOPPED。
+
+### 5.4 supervisor 必须先发布 placeholder，再执行 route body
+
+不得“先调用 `runRoute()`，后 add，再用外层 catch latch”。必须：
+
+1. 创建 deferred supervised task；
+2. **先**把其 promise 加入 `activeRoutePromises` 并注册双分支删除；
+3. 再执行包住 `processRoute + lifecycle/generation 复核 + reconcile` 的 async body；
+4. 同一个 async continuation 的 `catch` 内同步调用 `reportFatal`，然后以 primary reject deferred；不得再隔一个 `.catch()` 微任务；
+5. 成功时 resolve deferred。
+
+这样同步 throw、`onFatalError -> stopAndDrain` 重入和相邻 symbol 微任务都能观察当前 supervised task，且 A 的 failure continuation 在让出控制前已 poison runtime。
+
+route body 结束规则：
+
+- ACTIVE + 同 generation + 全成功：reconcile、复位 inFlight、按 dirty collapse 补跑；
+- stop/fatal 导致 stale：清本 route pending 状态并 fulfilled cancellation；
+- 任一真实异常：不 reconcile、不 rerun，交给同 continuation catch。
+
+### 5.5 scheduler 全覆盖
+
+监督范围包含：
+
+- `processRoute`；
+- 成功路径 reconcile；
+- timer cancel/首次 schedule；
+- 超长 timer 递归 segment；
+- callback 内 `now()`、`scheduleTimer()`、`onDue`。
+
+routeRuntime 必须给 scheduler callback 统一 try/catch wrapper；active promise 外的 timer 异常直接 `reportFatal`。
+
+### 5.6 fatal 后禁止排队 mutation 获得 permit
+
+只允许已经进入 `permit.invoke` 的 broker 请求安全收口。仅在 RateLimiter 队列中、尚未调用 SDK 的动作必须被撤销。
+
+为 route-owned cancel/replace/timeout follow-up submit 引入 execution token，并在**每次 permit 内、`permit.invoke` 之前**复核：
+
+- runtime lifecycle 仍 ACTIVE；
+- `runtime.running`；
+- route generation/token；
+- order 仍 identity-attached；
+- mutation authorization。
+
+buy timeout、sell timeout、route replace、timeout follow-up submit 都必须传该 preflight；不能只在排队前检查。最终复核与 `permit.invoke` 必须位于同一 callback 且中间无 `await`。fatal/stop 后 permit 才释放时返回 `CANCEL_NOT_STARTED`/`NOT_EXECUTED`/`PRECHECK_SKIPPED`，broker 调用数必须为 0。
+
+已经进入 `permit.invoke` 的请求不强制取消；其 promise 继续 drain，并只执行现有“远端事实已发生”所需的安全收口。不得由此启动新的 follow-up mutation。
+
+因此 P0-3 影响面必须包含 `routeProcessor.ts`、`orderOps.ts` 和相关 types。
+
+### 5.7 可重入 single-flight stopAndDrain
+
+不能直接 `drainPromise = drainOnce()` 后才发布 owner，因为 `drainOnce` 会在首个 await 前执行外部 callback。必须先发布 deferred：
+
+```text
+if 已有 drain owner -> 返回其 promise
+if STOPPED -> 返回 clean resolved promise
+创建 deferred
+同步保存 drain owner/deferred promise
+切换 STOPPING
+随后异步执行 quiesce + drain
+```
+
+要求：
+
+- unsubscribe/clearTimer/onFatalError 重入 stop 时看到已发布 owner；
+- 并发 stop 在 routeRuntime 和公开 `OrderMonitor.stopRuntimeAndDrain` 层都返回同一 promise；外层不得用 `async` 再包装，应直接返回 routeRuntime promise；
+- STOPPING 后不新增 supervised task；
+- 等待已发布的全部 supervised promises；
+- 每 route 只 reset 一次；generation invalidation 幂等；
+- 无 primary：进入 STOPPED并成功；
+- 有 primary：进入 TERMINATED，所有并发/后续 stop 返回同一个 rejected drain promise 和同一 Error；
+- clean stop 完成后才清 drain owner，顺序上的第二次 stop为 no-op success。
+
+### 5.8 P0-3 RED / 验收
+
+至少覆盖：
+
+1. `throw null/undefined/string/object/Error`；
+2. catch 同 continuation poison：相邻 symbol continuation 不得在 failure 后启动 mutation；
+3. 两 symbol 同时失败只登记 first-observed primary；
+4. route B 已排队 permit、A fatal、随后释放 permit：B broker 调用为 0；
+5. 已进入 `permit.invoke` 的请求可以完成安全收口，但不启动 follow-up；
+6. schedule/clear/reconcile/segment callback 异常统一 fatal；
+7. process primary 后 cleanup/reporter 异常只进结构化 secondary logger；
+8. clean stop 首个 cleanup 错误成为 primary并继续 drain；
+9. supervisor placeholder 已在 set 时，同步 process throw或 reporter 重入 stop；
+10. promise 在途、fatal 已登记、promise 已删三个 stop 时点结果一致；
+11. 普通并发 stop及 unsubscribe/clearTimer 内重入 stop返回同一 promise；
+12. generation/reset 只执行一次；STOPPED stop不推进；
+13. ACTIVE start幂等，STOPPING/FAILED/TERMINATED start失败；
+14. clean stop后可 restart；fatal drain后必须由上层重建；
+15. start subscribe/bootstrap 抛错进入 FAILED；stop cleanup继续完成；
+16. WS eventFlow 内部异常也只通过同一 fatal latch 上报一次；
+17. fatal/stop 后无 schedule/reconcile/dirty rerun。
+
+---
+
+## 6. 影响面与禁止“零改动”预判
+
+上一版零改动清单作废。当前预期：
+
+| 工作包 | 必须审计的生产文件 |
 | --- | --- |
-| 事故分析 | `docs/issues/2026-08/2026-08-04-order-monitor-state-check-incident-first-principles-analysis.md`（全文） |
-| P0-1 主改 | `src/core/trader/orderMonitor/orderStatusQuery.ts`、`orderFactMerge.ts`、`utils.ts`（`resolveUpdatedAtMs`/`resolveTimeMs`） |
-| 类型 | `src/types/trader.ts`（`OrderStateCheckResult`）、`src/core/trader/orderMonitor/types.ts`（`TerminalStateSnapshot`/`NormalizedTerminalStateSnapshot`/`RouteTimerSchedule`/`OrderMonitorTimerKind` 等） |
-| P0-2/P0-3 主改 | `src/core/trader/orderMonitor/routeRuntime.ts`（`resolveCancelRetrySchedule`/`resolveTimeoutSchedule`/`runRoute`/`launchRouteProcessing`/`stopAndDrain`）、`routingIndex.ts`（`clearRouteTimers`） |
-| 消费入口 | `src/core/trader/orderMonitor/orderOps.ts`（`cancelOrder`/`handleReplaceTempBlockedByStatus`/`replaceOrderPriceWithRunner`）、`routeProcessor.ts`（`resolveTerminalSettlementInput`/`settlePendingReplaceTerminal`/`settleBuyOrderTimeoutTerminal`/`canAttemptTimeoutHandling`/`applyCancelRetryBackoff`/`pauseCancelRetryAndWaitWs`）、`index.ts`（`settleActiveTerminalFromRaw`/`cancelAndSettle`） |
-| WS 对照 | `src/core/trader/orderMonitor/eventFlow.ts`（只读，不改） |
-| 工具 | `src/utils/timer/index.ts`（`scheduleBoundedOneShotAt` 0ms 行为）、`src/constants/index.ts`（`ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS = Number.MAX_SAFE_INTEGER`） |
-| SDK 类型 | `node_modules/longbridge/index.d.ts`：`OrderDetail`（1266 行起，`history: Array<OrderHistoryDetail>`、`updatedAt: Date | null`）、`OrderHistoryDetail`（1354 行起，`price/quantity: Decimal`、`status: OrderStatus`、`time: Date`）、`Decimal.equals/comparedTo`、`OrderStatus.Filled = 5` |
-| 测试 | `orderStatusQuery.business.test.ts`、`routeRuntime.business.test.ts`、`terminalSnapshotFacts.business.test.ts`、`ordinaryRawExecutionFacts.business.test.ts`、`orderOps.business.test.ts`、`routeProcessor.business.test.ts`（装配模式：`Reflect.set` 损坏字段、`createRuntimeTimerHarness`、`createSettlementFlow` 真实装配） |
+| P0-1 fallback（条件分支） | `orderStatusQuery.ts`、`orderFactMerge.ts`、`orderOps.ts`、`eventFlow.ts`、`routeProcessor.ts`、`index.ts`、相关 types/cache/settlement ack |
+| P0-2 | `routeRuntime.ts`、`routeProcessor.ts`、`orderOps.ts`、`eventFlow.ts`、`index.ts`、`routingIndex.ts`、相关 types |
+| P0-3 | `routeRuntime.ts`、`routeProcessor.ts`、`orderOps.ts`、`eventFlow.ts`、`index.ts`、`routingIndex.ts`、timer callback 装配、相关 types |
 
-### 8.2 设计结论摘要
+规则：
 
-1. **P0-1**：`OrderStateCheckResult.TERMINAL` 新增 `filledHistoryTimeMs: number | null`（仅在 Filled + 顶层 updatedAt 无效时由窄规则从 history 提取）；`orderFactMerge` 三处消费点改为 `orderUpdatedAtMs ?? filledHistoryTimeMs`；其余模块经类型透传零逻辑改动（仅注释）；9 项禁止项逐一排除。
-2. **P0-2**：`resolveCancelRetrySchedule` 增加 `cancelRetryCount > 0` 门控；`resolveTimeoutSchedule` 增加 sentinel 与 `cancelRetryCount > 0` 两个拒绝条件；owner 表格与 `canAttemptTimeoutHandling` 推进语义逐条论证兼容。
-3. **P0-3**：`runRoute` 失败路径清 timer/dirty、保持 `inFlight=true` 冻结、throw 传播；`launchRouteProcessing` 改为 catch 先登记、finally 后删除，关闭 4.4 微任务窗口；配套三个定向测试场景。
-4. **测试矩阵**：事故分析第 6 节 9 项全部给出文件归属与断言要点。
+- 可抽取目录私有共享 policy；
+- 不因追求少改文件而跳过真实消费者；
+- 不顺手重写 settlementFlow、WS reconnect、恢复或交易日重建；RED 若证明必须修改，先更新规格；
+- 正常 fixture 不得用 `as unknown` 隐藏 required 字段；只有明确的运行时损坏测试可用 `Reflect.set`。
 
-### 8.3 设计风险提示（实现时需注意）
+---
 
-1. **4.4 窗口的精确复现**：旧代码下该窗口依赖受控微任务交错（事故分析用内存复现），直接写“旧代码会 fulfill”的测试可能难以稳定触发；建议以“不变式测试”为准（stopAndDrain 在失败场景下必须 reject，绝不 fulfill），而非复刻旧缺陷本身。
-2. **`resolveOccurrenceTimeMs` 入参 `unknown`**：`entry.time` 静态类型是 `Date`，直接传 `unknown` 需要一次显式断言/cast，避免 lint 报错；建议实现为 `resolveOccurrenceTimeMs(entry.time as unknown)` 并注释运行时边界。
-3. **P0-2 对现有 routeRuntime 测试的影响**：现有测试 `start 时会为 nextCancelAttemptAt 投影 CANCEL_RETRY timer` 构造了 `cancelRetryCount` 默认 0 的订单——新门控会使该测试失效，**必须**同步把 fixture 改为 `cancelRetryCount: 1`（或按新语义重写为“未产生 backoff 不投影”）。这是本次改动中唯一会破坏既有测试的 fixture 变更点。
-4. **routeProcessor 既有测试中的 `nextCancelAttemptAt` fixture**：多处构造 `nextCancelAttemptAt = now - 1` 且 `cancelRetryCount` 默认 0——在 P0-2 下 timeout timer 仍会投影（count=0），行为不变；但若 fixture 同时置 sentinel，需检查是否依赖旧 timeout 投影（应改为显式断言无 timer）。
+## 7. 实施顺序
 
-### 8.4 置信度
+### A. G0（所有生产包共同前置）
 
-- **P0-1 设计**：高（窄规则与消费点均与事故分析 4.1 逐条对应，类型透传路径已逐一核对）。
-- **P0-2 设计**：高（owner 表格映射直接、既有测试 fixture 影响已识别）。
-- **P0-3 设计**：高（失败路径与注册顺序设计直接对应 4.3/4.4 最小边界；4.4 窗口的机制细节依赖受控复现，实现后需用不变式测试钉住）。
-- **整体**：高。本规格不引入任何超出事故分析第 4/5 节边界的设计。
+1. disposable clean checkout；
+2. frozen install 4.4.3；
+3. wrapper/native/path/Decimal smoke；
+4. 未改实现 baseline；
+5. 保存 fresh 输出和 clean status。
+
+### B. 可并行的证据/RED
+
+- G1：在 G0 环境采集 native getter、补事故分析与不可变厂商证据；
+- G2-P0-3：写监督边界 RED；
+- G2-P0-2：先升级 bounded scheduler，再写 timer RED。
+
+G1 不阻塞 P0-3。P0-2 RED 可先写，但其实现等待 P0-3。
+
+### C. 生产实现
+
+1. 再次复核 P0-3 -> 标记 READY -> 实现并 GREEN；
+2. 再次复核 P0-2 -> 标记 READY -> 实现并 GREEN；
+3. G1 裁决 P0-1：
+   - 无证明：标记 `CLOSED_NO_CHANGE`；
+   - 有证明：写 G2-P0-1、再次复核，再实现。
+
+### D. 集成与全仓验证
+
+各包定向 GREEN 后，执行第 8 节全部验证。任何失败阻断对应包完成。
+
+---
+
+## 8. 验证命令与证据
+
+### 8.1 G0/最终共同命令
+
+```text
+bun type-check
+bun run lint
+bunx prettier --check .
+bun run build
+bun test tests/core/trader/orderMonitor/
+bun test tests/core/trader/orderMonitor.business.test.ts tests/core/trader/orderMonitorRouteHooks.integration.test.ts tests/integration/orderMonitorDailyLossMonotonic.integration.test.ts
+bun test
+git diff --check
+git diff --name-only
+git status --short --untracked-files=all
+```
+
+`bun run format` 会写文件，不是 baseline/最终只读检查。实现过程中可对 allowlist 内文件执行 formatter，最终使用 `prettier --check`。
+
+### 8.2 额外证据命令/检查
+
+Windows x64 的版本/path/smoke 至少执行等价于：
+
+```text
+bun -e "const w=require('./node_modules/longbridge/package.json');const n=require('./node_modules/longbridge-win32-x64-msvc/package.json');const {Decimal}=require('longbridge');const x={wrapper:w.version,native:n.version,wrapperEntry:require.resolve('longbridge'),nativeEntry:require.resolve('longbridge-win32-x64-msvc'),decimalSmoke:new Decimal('1').equals(new Decimal('1'))};console.log(x);if(x.wrapper!=='4.4.3'||x.native!=='4.4.3'||!x.decimalSmoke)process.exit(1)"
+sha256sum -c tests/fixtures/longbridge/4.4.3/order-detail-filled-missing-updated-at/SHA256SUMS
+```
+
+其他平台替换为实际 native package；`nativeEntry` 必须解析到实际加载入口/`.node`，不能只打印 optionalDependencies 声明。没有 `sha256sum` 时使用输出等价且失败码非零的 Bun hash 校验脚本。
+
+报告还必须包含：
+
+- wrapper/native package.json 实际版本；
+- `require.resolve('longbridge')` 与平台 native package；
+- 实际加载 `.node` 路径和 Decimal smoke；
+- `SHA256SUMS` 校验结果；
+- `git diff --name-only` 与工作包 allowlist 对比；
+- `git diff -- package.json bun.lock` 为空（除非依赖修复本身经批准）；
+- 对正式 evidence 目录执行 targeted ignored 检查，例如：
+
+```text
+git status --short --ignored -- docs/issues/2026-08 tests/fixtures/longbridge/4.4.3
+```
+
+- commit SHA、每条命令 exit code、focused/integration/full-repo 测试数。
+
+`git status --short` 默认不显示 ignored，不能单独证明 evidence 已纳入版本控制。focused suite 不能称为“全量验证”。
+
+---
+
+## 9. 明确禁止项
+
+1. 禁止用 `Date.now()`、submitted/tracked 时间、0、进程时间补 broker 事实；
+2. 禁止 `history.at(-1)`、最大时间、数组顺序、任意状态或不匹配 history；
+3. 禁止在未证明“可替代同一 revision”前把 occurrence 写成 revision；
+4. 禁止为 OPEN、PartialFilled、Canceled、Rejected 扩展 history 推断；
+5. 禁止用 history 回填价格或数量；
+6. 禁止 Decimal 鸭子类型和未捕获 native 比较；
+7. 禁止引入来源字段绕过 G1 并扩大消费者面；
+8. 禁止未知即删除 terminal evidence；
+9. 禁止周期轮询、隐藏 retry、无限补偿、静默 rollback；
+10. 禁止借 `CANCEL_RETRY` 隐藏 settlement retry；
+11. 禁止无进展后重挂相同过去 timer；
+12. 禁止以合法 rejection 值作为无错误 sentinel；
+13. fatal 后不得启动新的 order-monitor route-owned broker mutation；已进入 `permit.invoke` 的请求只允许按第 5.6 节安全收口；外部公开 mutation 仍必须服从其上层 fatal/gate 契约；
+14. 禁止只冻结单 symbol 而让新 route 继续；
+15. 禁止 STOPPING 期间 restart 或并发 stop 各自 reset；
+16. 禁止 reporter/cleanup 覆盖 primary；
+17. 禁止原实例从 TERMINATED restart；
+18. 禁止直接预置 cache 的单元测试冒充 adapter 端到端；
+19. 禁止把 boundary replay double 称为 native 反序列化；
+20. 禁止用旧实现已通过的场景冒充 RED；
+21. 禁止依赖仍为 4.3.3 时声称 4.4.3 已验证；
+22. 禁止把 focused 结果表述为全仓通过。
+
+---
+
+## 10. 分包完成定义
+
+### G0 完成
+
+- disposable clean install；
+- wrapper/native/path/smoke 全为 4.4.3；
+- 未改实现 baseline fresh；
+- source/lock/status 可审计。
+
+### P0-3 完成
+
+- G2-P0-3 旧红新绿；
+- 统一 fatal 域、permit preflight、placeholder supervisor、reentrant drain 全部满足；
+- clean stop 可 restart，fatal 实例 TERMINATED；
+- focused/integration/full-repo/type/lint/format-check/build 全绿。
+
+### P0-2 完成
+
+- P0-3 已完成；
+- G2-P0-2 旧红新绿；
+- single route timer 在 bounded drain 中有限收敛，无 starvation；
+- terminal settlement 失败不再隐式 retry；
+- focused/integration/full-repo/type/lint/format-check/build 全绿。
+
+### P0-1 完成
+
+二选一：
+
+- `CLOSED_NO_CHANGE`：G1 不能证明可替代，记录裁决并保持 fail-closed；无需 fallback RED、API/WS token 或生产改动；
+- fallback：G1 证明精确替代语义，G2-P0-1 旧红新绿，in-flight token 双向仲裁无弱事实先结算/孤立 evidence，全部验证全绿。
+
+### 整体事故工作关闭
+
+- G0 完成；
+- P0-3、P0-2 完成；
+- P0-1 已进入上述任一完成分支；
+- 事故分析、capture、timeline、hash 和 fresh 验证报告均已提交；
+- 工作区只包含审核通过的 allowlist 变更。
+
+在相应工作包满足门禁前，正确动作仍是补证据、写稳定 RED 和重新复核，而不是直接放宽 raw-fact gate。

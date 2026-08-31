@@ -3,6 +3,7 @@
  *
  * 指标参数：DIF=EMA12-EMA26，DEA=EMA9(DIF)，MACD柱=2*(DIF-DEA)
  */
+import { cloneEmaState } from './ema.js';
 import { initEmaStreamState, feedEmaStreamState, roundToFixed3 } from './utils.js';
 import type { MACDIndicator } from '../../../types/quote.js';
 import type { MacdStreamState } from './types.js';
@@ -45,27 +46,9 @@ export function cloneMacdState(state: MacdStreamState): MacdStreamState {
     fastPeriod: state.fastPeriod,
     slowPeriod: state.slowPeriod,
     signalPeriod: state.signalPeriod,
-    fastEmaState: {
-      period: state.fastEmaState.period,
-      per: state.fastEmaState.per,
-      seedCount: state.fastEmaState.seedCount,
-      seedSum: state.fastEmaState.seedSum,
-      emaValue: state.fastEmaState.emaValue,
-    },
-    slowEmaState: {
-      period: state.slowEmaState.period,
-      per: state.slowEmaState.per,
-      seedCount: state.slowEmaState.seedCount,
-      seedSum: state.slowEmaState.seedSum,
-      emaValue: state.slowEmaState.emaValue,
-    },
-    signalEmaState: {
-      period: state.signalEmaState.period,
-      per: state.signalEmaState.per,
-      seedCount: state.signalEmaState.seedCount,
-      seedSum: state.signalEmaState.seedSum,
-      emaValue: state.signalEmaState.emaValue,
-    },
+    fastEmaState: cloneEmaState(state.fastEmaState),
+    slowEmaState: cloneEmaState(state.slowEmaState),
+    signalEmaState: cloneEmaState(state.signalEmaState),
     validCloseCount: state.validCloseCount,
     lastDif: state.lastDif,
     lastSignal: state.lastSignal,

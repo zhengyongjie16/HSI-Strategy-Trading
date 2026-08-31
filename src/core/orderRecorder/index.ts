@@ -177,19 +177,23 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     logger.debug(logLines.join('\n'));
   }
 
-  /** 使用已获取的订单列表刷新本地记录（做多标的） */
-  function applyOrdersRefreshForLong(
+  /** 使用已获取的订单列表刷新指定方向的本地记录。 */
+  function applyOrdersRefresh(
     symbol: string,
     allBuyOrders: ReadonlyArray<OrderRecord>,
     executedSellOrders: ReadonlyArray<OrderRecord>,
     pendingClassification: PendingOrderClassificationForRebuild,
+    isLongSymbol: boolean,
     quote?: Quote | null,
   ): OrderRecord[] {
+    const setBuyOrdersList = isLongSymbol
+      ? storage.setBuyOrdersListForLong
+      : storage.setBuyOrdersListForShort;
     if (allBuyOrders.length === 0) {
-      storage.setBuyOrdersListForLong(symbol, []);
+      setBuyOrdersList(symbol, []);
       logRefreshResult({
         symbol,
-        isLongSymbol: true,
+        isLongSymbol,
         originalBuyCount: 0,
         sellCount: 0,
         recordedCount: 0,
@@ -202,10 +206,10 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
 
     if (executedSellOrders.length === 0) {
       const buyOrdersArray = [...allBuyOrders];
-      storage.setBuyOrdersListForLong(symbol, buyOrdersArray);
+      setBuyOrdersList(symbol, buyOrdersArray);
       logRefreshResult({
         symbol,
-        isLongSymbol: true,
+        isLongSymbol,
         originalBuyCount: allBuyOrders.length,
         sellCount: 0,
         recordedCount: allBuyOrders.length,
@@ -219,66 +223,10 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     const finalBuyOrders = [
       ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, executedSellOrders),
     ];
-    storage.setBuyOrdersListForLong(symbol, finalBuyOrders);
+    setBuyOrdersList(symbol, finalBuyOrders);
     logRefreshResult({
       symbol,
-      isLongSymbol: true,
-      originalBuyCount: allBuyOrders.length,
-      sellCount: executedSellOrders.length,
-      recordedCount: finalBuyOrders.length,
-      pendingClassification,
-      quote,
-    });
-
-    return finalBuyOrders;
-  }
-
-  /** 使用已获取的订单列表刷新本地记录（做空标的） */
-  function applyOrdersRefreshForShort(
-    symbol: string,
-    allBuyOrders: ReadonlyArray<OrderRecord>,
-    executedSellOrders: ReadonlyArray<OrderRecord>,
-    pendingClassification: PendingOrderClassificationForRebuild,
-    quote?: Quote | null,
-  ): OrderRecord[] {
-    if (allBuyOrders.length === 0) {
-      storage.setBuyOrdersListForShort(symbol, []);
-      logRefreshResult({
-        symbol,
-        isLongSymbol: false,
-        originalBuyCount: 0,
-        sellCount: 0,
-        recordedCount: 0,
-        pendingClassification,
-        extraInfo: '历史买入0笔, 无需记录',
-        quote,
-      });
-      return [];
-    }
-
-    if (executedSellOrders.length === 0) {
-      const buyOrdersArray = [...allBuyOrders];
-      storage.setBuyOrdersListForShort(symbol, buyOrdersArray);
-      logRefreshResult({
-        symbol,
-        isLongSymbol: false,
-        originalBuyCount: allBuyOrders.length,
-        sellCount: 0,
-        recordedCount: allBuyOrders.length,
-        pendingClassification,
-        extraInfo: '无卖出记录, 记录全部买入订单',
-        quote,
-      });
-      return buyOrdersArray;
-    }
-
-    const finalBuyOrders = [
-      ...filteringEngine.applyFilteringAlgorithm(allBuyOrders, executedSellOrders),
-    ];
-    storage.setBuyOrdersListForShort(symbol, finalBuyOrders);
-    logRefreshResult({
-      symbol,
-      isLongSymbol: false,
+      isLongSymbol,
       originalBuyCount: allBuyOrders.length,
       sellCount: executedSellOrders.length,
       recordedCount: finalBuyOrders.length,
@@ -378,7 +326,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     const executedSellOrders = classified.executedSellOrders;
 
     return Promise.resolve(
-      applyOrdersRefreshForLong(symbol, allBuyOrders, executedSellOrders, classified, quote),
+      applyOrdersRefresh(symbol, allBuyOrders, executedSellOrders, classified, true, quote),
     );
   }
 
@@ -396,7 +344,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     const executedSellOrders = classified.executedSellOrders;
 
     return Promise.resolve(
-      applyOrdersRefreshForShort(symbol, allBuyOrders, executedSellOrders, classified, quote),
+      applyOrdersRefresh(symbol, allBuyOrders, executedSellOrders, classified, false, quote),
     );
   }
 

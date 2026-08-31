@@ -8,13 +8,6 @@
     "lib": ["ES2022"],
     // ===== 严格模式（核心配置）=====
     "strict": true,
-    "strictNullChecks": true,
-    "strictFunctionTypes": true,
-    "strictBindCallApply": true,
-    "strictPropertyInitialization": true,
-    "noImplicitAny": true,
-    "noImplicitThis": true,
-    "alwaysStrict": true,
     // ===== 额外检查 =====
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -27,7 +20,6 @@
     "allowUnusedLabels": false,
     // ===== 模块解析 =====
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     // 注意: 禁用 isolatedModules 因为 longbridge SDK 使用了 const enum
     "isolatedModules": false,

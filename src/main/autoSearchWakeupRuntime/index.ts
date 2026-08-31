@@ -198,6 +198,19 @@ export function createAutoSearchWakeupRuntime(
     registerActivePromise(promise);
   }
 
+  /** 重新评估两个方向的 EMPTY 席位，并为每条尚未持有的 route 启动寻标。 */
+  function triggerEmptySeats(): void {
+    if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
+      return;
+    }
+
+    for (const direction of AUTO_SEARCH_DIRECTIONS) {
+      if (deps.symbolRegistry.getSeatState(direction).status === 'EMPTY') {
+        triggerSeat(direction);
+      }
+    }
+  }
+
   /** 基于一次真实寻标完成后的权威席位事实，交接唯一 cooldown owner。 */
   function handoffAuthoritativeCooldownOwner(direction: 'LONG' | 'SHORT'): void {
     if (
@@ -343,16 +356,7 @@ export function createAutoSearchWakeupRuntime(
       return;
     }
 
-    for (const direction of AUTO_SEARCH_DIRECTIONS) {
-      if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
-        continue;
-      }
-
-      const seatState = deps.symbolRegistry.getSeatState(direction);
-      if (seatState.status === 'EMPTY') {
-        triggerSeat(direction);
-      }
-    }
+    triggerEmptySeats();
   }
 
   function seedEmptySeats(): void {
@@ -360,16 +364,7 @@ export function createAutoSearchWakeupRuntime(
       return;
     }
 
-    for (const direction of AUTO_SEARCH_DIRECTIONS) {
-      if (!deps.monitorContext.config.autoSearchConfig.autoSearchEnabled) {
-        continue;
-      }
-
-      const seatState = deps.symbolRegistry.getSeatState(direction);
-      if (seatState.status === 'EMPTY') {
-        triggerSeat(direction);
-      }
-    }
+    triggerEmptySeats();
   }
 
   function start(): void {
