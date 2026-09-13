@@ -135,7 +135,6 @@ bun start
 | ---------------- | ---------------------------------- |
 | `bun start`      | 启动正式运行                       |
 | `bun dev`        | 开发模式启动（默认仍执行门禁检查） |
-| `bun dev:watch`  | 开发监听                           |
 | `bun build`      | 构建 TypeScript                    |
 | `bun test`       | 运行测试                           |
 | `bun type-check` | 执行类型检查                       |
