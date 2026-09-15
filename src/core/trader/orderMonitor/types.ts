@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../../types/runtime.js';
 import type { Decimal, OrderStatus, PushOrderChanged, TradeContext } from 'longbridge';
 import type { MonitorConfig, TradingConfig } from '../../../types/config.js';
 import type { Quote } from '../../../types/quote.js';
@@ -251,7 +252,7 @@ export type RouteRuntimeDeps = Readonly<{
   readonly now: () => Date;
   readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 }>;
 
 /**
@@ -422,6 +423,7 @@ export type OrderMonitorRuntimeStore = {
  * 使用范围：仅 orderMonitor/recoveryFlow.ts 使用。
  */
 export type RecoveryFlowDeps = {
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderHoldRegistry: OrderHoldRegistry;
   readonly orderRecorder: OrderRecorder;
@@ -506,6 +508,7 @@ export interface OrderStatusQuery {
  * 使用范围：仅 orderMonitor/orderOps.ts 使用。
  */
 export type OrderOpsDeps = {
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly monitorConfig: MonitorConfig;

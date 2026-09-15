@@ -1,4 +1,4 @@
-import type { KDJIndicator } from '../../src/types/quote.js';
+import type { KDJIndicator } from '../../src/core/strategy/intradayRegression/runtime/types.js';
 
 /**
  * 行着色指标键类型：用于定义可参与红绿条件判断的指标字段。

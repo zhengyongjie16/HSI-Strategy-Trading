@@ -1,5 +1,3 @@
-import type { MonitorState } from '../../types/state.js';
-import type { MonitorConfig } from '../../types/config.js';
 import type { BuySignalAction, SignalType } from '../../types/signal.js';
 import type { DecimalLike } from './types.js';
 
@@ -51,18 +49,4 @@ export function isValidPositiveNumber(value: unknown): value is number {
  */
 export function isBuyAction(action: SignalType): action is BuySignalAction {
   return action === 'BUYCALL' || action === 'BUYPUT';
-}
-
-/**
- * 根据监控配置初始化单标的监控状态。
- *
- * @param config 监控配置（monitorSymbol 等）
- * @returns 初始化的 MonitorState
- */
-export function initMonitorState(config: MonitorConfig): MonitorState {
-  return {
-    monitorSymbol: config.monitorSymbol,
-    lastMonitorSnapshot: null,
-    incrementalIndicatorRuntime: null,
-  };
 }

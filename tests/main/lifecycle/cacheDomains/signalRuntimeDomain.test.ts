@@ -2,7 +2,7 @@
  * 信号运行时缓存域单元测试
  *
  * 覆盖：midnightClear 停止并排空处理器、清空队列并释放信号、取消延迟信号、
- * 调用 postTradeConsistencyRuntime.midnightClear、indicatorCache.clearAll；
+ * 调用 postTradeConsistencyRuntime.midnightClear、strategy.resetForTradingDay；
  * openRebuild 按 runtime owner 顺序恢复处理器并完成 rebuild baseline
  */
 import { describe, expect, it } from 'bun:test';
@@ -22,11 +22,7 @@ import type {
 } from '../../../../src/main/asyncProgram/tradeTaskQueue/types.js';
 import type { Signal } from '../../../../src/types/signal.js';
 import type { OrderedMethod } from '../types.js';
-import {
-  createDelayedSignalVerifierDouble,
-  createLoggerDouble,
-  createMonitorContextDouble,
-} from '../../../helpers/testDoubles.js';
+import { createLoggerDouble, createMonitorContextDouble } from '../../../helpers/testDoubles.js';
 
 function createSignalDouble<TAction extends Signal['action']>(
   action: TAction,
@@ -85,7 +81,8 @@ function createTaskQueueDouble<TType extends string>(
   onClear: () => void,
 ): TaskQueue<TType> {
   return {
-    push: () => {},
+    push: () => true,
+    close: () => {},
     pop: () => null,
     isEmpty: () => signals.length === 0,
     removeTasks: () => 0,
@@ -99,7 +96,8 @@ function createTaskQueueDouble<TType extends string>(
 
 function createMonitorTaskQueueDouble(onClear: () => void): MonitorTaskQueue<MonitorTaskDataMap> {
   return {
-    scheduleLatest: () => {},
+    scheduleLatest: () => true,
+    close: () => {},
     pop: () => null,
     isEmpty: () => true,
     removeTasks: () => 0,
@@ -146,13 +144,13 @@ describe('createSignalRuntimeDomain', () => {
       globalCalls.push('monitorTaskQueue.clearAll');
     });
     const monitorContext = createMonitorContextDouble({
-      delayedSignalVerifier: createDelayedSignalVerifierDouble({
-        cancelAll: () => {
+      strategy: {
+        ...createMonitorContextDouble().strategy,
+        resetForTradingDay: () => {
           cancelAllCount += 1;
-          globalCalls.push('delayedSignalVerifier.cancelAll');
-          return 3;
+          globalCalls.push('strategy.resetForTradingDay');
         },
-      }),
+      },
     });
     const postTradeConsistencyRuntime: SignalRuntimeDomainDeps['postTradeConsistencyRuntime'] = {
       abortWaiting: () => {
@@ -183,6 +181,7 @@ describe('createSignalRuntimeDomain', () => {
       },
     };
     const deps: SignalRuntimeDomainDeps = {
+      termination: { isTerminated: () => false },
       logger: createLoggerDouble(),
       monitorContext,
       buyProcessor,
@@ -208,6 +207,7 @@ describe('createSignalRuntimeDomain', () => {
         start: () => {
           monitorQuoteEventRuntime.start();
         },
+        stop: () => {},
         stopAndDrain: async () => {
           await monitorQuoteEventRuntime.stopAndDrain();
         },
@@ -281,13 +281,6 @@ describe('createSignalRuntimeDomain', () => {
       },
       trader,
       postTradeConsistencyRuntime,
-      indicatorCache: {
-        push: () => {},
-        getClosest: () => null,
-        clearAll: () => {
-          globalCalls.push('indicatorCache.clearAll');
-        },
-      },
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -315,14 +308,13 @@ describe('createSignalRuntimeDomain', () => {
       'buyProcessor.stopAndDrain',
       'sellProcessor.stopAndDrain',
       'trader.stopOrderMonitorRuntimeAndDrain',
-      'quoteSubscriptionRuntime.stopAndDrain',
       'postTradeConsistencyRuntime.stopAndDrain',
+      'quoteSubscriptionRuntime.stopAndDrain',
       'buyTaskQueue.clearAll',
       'sellTaskQueue.clearAll',
       'monitorTaskQueue.clearAll',
-      'delayedSignalVerifier.cancelAll',
+      'strategy.resetForTradingDay',
       'postTradeConsistencyRuntime.midnightClear',
-      'indicatorCache.clearAll',
     ]);
     expect(cancelAllCount).toBe(1);
   });
@@ -354,6 +346,7 @@ describe('createSignalRuntimeDomain', () => {
     };
 
     const deps: SignalRuntimeDomainDeps = {
+      termination: { isTerminated: () => false },
       logger: createLoggerDouble(),
       monitorContext: createMonitorContextDouble(),
       buyProcessor,
@@ -379,6 +372,7 @@ describe('createSignalRuntimeDomain', () => {
         start: () => {
           monitorQuoteEventRuntime.start();
         },
+        stop: () => {},
         stopAndDrain: async () => {
           await monitorQuoteEventRuntime.stopAndDrain();
         },
@@ -469,13 +463,6 @@ describe('createSignalRuntimeDomain', () => {
         },
         completeRebuildBaseline: () => {
           globalCalls.push('postTradeConsistencyRuntime.completeRebuildBaseline');
-        },
-      },
-      indicatorCache: {
-        push: () => {},
-        getClosest: () => null,
-        clearAll: () => {
-          globalCalls.push('indicatorCache.clearAll');
         },
       },
       buyTaskQueue: createTaskQueueDouble<BuyTaskType>([], () => {

@@ -1,14 +1,9 @@
 import { logger } from '../../utils/logger/index.js';
 import type { LiquidationCooldownConfig, MonitorConfig, NumberRange } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
-import {
-  getBooleanConfig,
-  getStringConfig,
-  isSymbolWithRegion,
-  parseVerificationIndicators,
-} from '../utils.js';
+import { getBooleanConfig, getStringConfig, isSymbolWithRegion } from '../utils.js';
 import { validateLongbridgeConfig } from '../auth/utils.js';
-import type { SignalConfigKey, SymbolValidationContext, ValidationResult } from './types.js';
+import type { SymbolValidationContext, ValidationResult } from './types.js';
 
 const AUTO_SEARCH_DISTANCE_UNIT_HINT =
   'Longbridge warrantList.toCallPrice 原始值会先从小数比值转换为该百分比值口径。';
@@ -213,26 +208,6 @@ export function validateExplicitBooleanConfig({
 }
 
 /**
- * 校验显式延迟验证指标配置不能包含非法项。
- * @param options 校验参数
- * @returns 缺失或空列表时返回 null；显式配置但非法时返回错误信息
- */
-function validateVerificationIndicatorsConfig({
-  env,
-  envKey,
-}: {
-  readonly env: NodeJS.ProcessEnv;
-  readonly envKey: string;
-}): string | null {
-  try {
-    parseVerificationIndicators(env, envKey);
-    return null;
-  } catch {
-    return `${envKey} 无效（必须为 K/D/J/MACD/DIF/DEA/ADX/EMA:N/PSY:N）`;
-  }
-}
-
-/**
  * 从行情数据验证标的有效性。
  * @param quote 标的行情数据
  * @param symbol 标的代码
@@ -430,36 +405,6 @@ export function validateMonitorConfig(
     errors = [...errors, `${prefix}: LIQUIDATION_TRIGGER_LIMIT 无效（必须为整数，范围 1-10）`];
   }
 
-  const verificationDelayEnvKeys = [
-    'VERIFICATION_DELAY_SECONDS_BUY',
-    'VERIFICATION_DELAY_SECONDS_SELL',
-  ] as const;
-  for (const envKey of verificationDelayEnvKeys) {
-    const verificationDelayValidationError = validateCriticalBoundedNumberConfig({
-      env,
-      envKey,
-      min: 0,
-      max: 120,
-    });
-    if (verificationDelayValidationError !== null) {
-      errors = [...errors, `${prefix}: ${verificationDelayValidationError}`];
-    }
-  }
-
-  const verificationIndicatorEnvKeys = [
-    'VERIFICATION_INDICATORS_BUY',
-    'VERIFICATION_INDICATORS_SELL',
-  ] as const;
-  for (const envKey of verificationIndicatorEnvKeys) {
-    const verificationIndicatorsValidationError = validateVerificationIndicatorsConfig({
-      env,
-      envKey,
-    });
-    if (verificationIndicatorsValidationError !== null) {
-      errors = [...errors, `${prefix}: ${verificationIndicatorsValidationError}`];
-    }
-  }
-
   const smartCloseEnabledValidationError = validateExplicitBooleanConfig({
     env,
     envKey: 'SMART_CLOSE_ENABLED',
@@ -481,27 +426,6 @@ export function validateMonitorConfig(
           `${prefix}: ${smartCloseTimeoutEnvKey} 无效（必须为非负整数或留空/null）`,
         ];
       }
-    }
-  }
-
-  const signalConfigKeys: ReadonlyArray<SignalConfigKey> = [
-    'buycall',
-    'sellcall',
-    'buyput',
-    'sellput',
-  ];
-  const signalConfigEnvNames: Record<SignalConfigKey, string> = {
-    buycall: 'SIGNAL_BUYCALL',
-    sellcall: 'SIGNAL_SELLCALL',
-    buyput: 'SIGNAL_BUYPUT',
-    sellput: 'SIGNAL_SELLPUT',
-  };
-
-  for (const key of signalConfigKeys) {
-    const envName = signalConfigEnvNames[key];
-    const signalConfig = config.signalConfig[key];
-    if (!signalConfig?.conditionGroups || signalConfig.conditionGroups.length === 0) {
-      errors = [...errors, `${prefix}: ${envName} 未配置或解析失败（信号配置为必需项）`];
     }
   }
 

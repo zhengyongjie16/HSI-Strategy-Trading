@@ -59,6 +59,7 @@ export function createMonitorTaskQueue<
 >(): MonitorTaskQueue<TDataMap> {
   let items: Array<MonitorTask<TDataMap>> = [];
   let headIndex = 0;
+  let closed = false;
   const taskByDedupeKey = new Map<string, MonitorTask<TDataMap>>();
   const cancelledTaskIds = new Set<string>();
   const callbacks: TaskAddedCallback[] = [];
@@ -112,7 +113,11 @@ export function createMonitorTaskQueue<
 
   function scheduleLatest<TType extends keyof TDataMap>(
     task: MonitorTaskInput<TDataMap, TType>,
-  ): void {
+  ): boolean {
+    if (closed) {
+      return false;
+    }
+
     const previousTask = taskByDedupeKey.get(task.dedupeKey);
     const removedCount = previousTask === undefined ? 0 : 1;
     if (previousTask !== undefined) {
@@ -131,6 +136,7 @@ export function createMonitorTaskQueue<
     taskByDedupeKey.set(task.dedupeKey, fullTask);
     items.push(fullTask);
     notifyTaskAddedCallbacks(callbacks);
+    return true;
   }
 
   function pop(): MonitorTask<TDataMap> | null {
@@ -201,10 +207,20 @@ export function createMonitorTaskQueue<
   }
 
   function onTaskAdded(callback: TaskAddedCallback): () => void {
+    if (closed) {
+      return () => {
+        // 终态不注册监听，因此注销无需修改队列。
+      };
+    }
+
     return registerTaskAddedCallback(callbacks, callback);
   }
 
   return {
+    close: () => {
+      closed = true;
+      callbacks.length = 0;
+    },
     scheduleLatest,
     pop,
     isEmpty,

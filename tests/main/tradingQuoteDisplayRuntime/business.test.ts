@@ -1,10 +1,3 @@
-/**
- * tradingQuoteDisplayRuntime 业务测试
- *
- * 功能：
- * - 验证交易标的 quote 事件按单标的输出
- * - 验证异步补充 monitor quote 后会复核 seatVersion，旧 route 不输出
- */
 import { describe, expect, it } from 'bun:test';
 import {
   createMonitorConfigDouble,
@@ -15,6 +8,14 @@ import {
 import { createSymbolRegistry as createProductionSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
+
+/**
+ * tradingQuoteDisplayRuntime 业务测试
+ *
+ * 功能：
+ * - 验证交易标的 quote 事件按单标的输出
+ * - 验证异步补充 monitor quote 后会复核 seatVersion，旧 route 不输出
+ */
 
 const warnLogs: string[] = [];
 
@@ -62,6 +63,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     const renders: string[] = [];
     const monitorContext = createMonitorContextDouble({ symbolRegistry });
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -124,6 +126,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -199,6 +202,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       },
     });
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: () => () => {},
@@ -256,8 +260,11 @@ describe('tradingQuoteDisplayRuntime', () => {
       renderTradingQuote: (params: { readonly tradingSymbol: string }) => {
         renders.push(params.tradingSymbol);
       },
-      onFatalError: (error) => {
-        fatalErrors.push(error instanceof Error ? error : new Error(String(error)));
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error instanceof Error ? error : new Error(String(error)));
+        },
       },
     });
 
@@ -293,6 +300,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -334,6 +342,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       await import('../../../src/main/tradingQuoteDisplayRuntime/index.js');
     const symbolRegistry = createSymbolRegistryDouble();
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: () => () => {},
@@ -384,6 +393,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let quoteUpdatedListener: ((event: QuoteUpdatedEvent) => void) | undefined;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -449,6 +459,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     });
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -526,6 +537,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     let shouldFail = true;
     const renders: string[] = [];
     const runtime = createTradingQuoteDisplayRuntime({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => {
@@ -625,8 +637,11 @@ describe('tradingQuoteDisplayRuntime', () => {
       renderTradingQuote: () => {
         throw renderError;
       },
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 

@@ -1,20 +1,11 @@
-/**
- * buyProcessor 业务测试
- *
- * 功能：
- * - 验证买入处理器相关场景意图、边界条件与业务期望。
- */
 import { describe, expect, it } from 'bun:test';
-
 import { createBuyTaskQueue } from '../../../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createBuyProcessor as createProductionBuyProcessor } from '../../../../src/main/asyncProgram/buyProcessor/index.js';
 import { createSignalProcessor } from '../../../../src/core/signalProcessor/index.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-
 import type { BuySignal, Signal } from '../../../../src/types/signal.js';
 import type { BuyProcessorDeps } from '../../../../src/main/asyncProgram/buyProcessor/types.js';
-
 import {
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
@@ -26,6 +17,13 @@ import {
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
 import { createMonitorContext, rethrowFatalError, runProcessorFlow } from '../utils.js';
+
+/**
+ * buyProcessor 业务测试
+ *
+ * 功能：
+ * - 验证买入处理器相关场景意图、边界条件与业务期望。
+ */
 
 type TestBuyProcessorDeps = Omit<BuyProcessorDeps, 'now'> & Partial<Pick<BuyProcessorDeps, 'now'>>;
 
@@ -82,7 +80,7 @@ async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
     }),
     getIsHalfDay: () => false,
     getCanProcessTask: () => true,
-    onFatalError: rethrowFatalError,
+    termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
   });
   let signal = createSignalDouble('BUYCALL', 'BULL.HK');
   signal = { ...signal, seatVersion: 2 };
@@ -90,7 +88,7 @@ async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
   await runProcessorFlow({
     processor,
     pushTask: () => {
-      queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+      queue.push({ type: 'STRATEGY_BUY', data: signal });
     },
     waitCondition: () => queue.isEmpty(),
   });
@@ -166,7 +164,7 @@ describe('buyProcessor business flow', () => {
       getIsHalfDay: () => false,
       now: () => injectedNow,
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -176,7 +174,7 @@ describe('buyProcessor business flow', () => {
       processor,
       pushTask: () => {
         queue.push({
-          type: 'IMMEDIATE_BUY',
+          type: 'STRATEGY_BUY',
           data: signal,
         });
       },
@@ -227,7 +225,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -236,7 +234,7 @@ describe('buyProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+        queue.push({ type: 'STRATEGY_BUY', data: signal });
       },
       waitCondition: () => queue.isEmpty(),
       timeoutMs: 800,
@@ -284,7 +282,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -293,7 +291,7 @@ describe('buyProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+        queue.push({ type: 'STRATEGY_BUY', data: signal });
       },
       waitCondition: () => riskCalls === 1,
       timeoutMs: 800,
@@ -340,14 +338,14 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let staleSignal = createSignalDouble('BUYCALL', 'BULL.HK');
     staleSignal = { ...staleSignal, seatVersion: 1 };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_BUY', data: staleSignal });
+    queue.push({ type: 'STRATEGY_BUY', data: staleSignal });
 
     await Bun.sleep(40);
     await processor.stopAndDrain();
@@ -400,7 +398,7 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -409,7 +407,7 @@ describe('buyProcessor business flow', () => {
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+        queue.push({ type: 'STRATEGY_BUY', data: signal });
       },
       waitCondition: () => riskCalls === 1,
       timeoutMs: 800,
@@ -456,8 +454,11 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -467,8 +468,8 @@ describe('buyProcessor business flow', () => {
         let signal = createSignalDouble('BUYCALL', 'BULL.HK');
         signal = { ...signal, seatVersion: 2 };
         for (const task of [
-          { type: 'IMMEDIATE_BUY' as const, data: signal },
-          { type: 'IMMEDIATE_BUY' as const, data: signal },
+          { type: 'STRATEGY_BUY' as const, data: signal },
+          { type: 'STRATEGY_BUY' as const, data: signal },
         ]) {
           queue.push(task);
         }
@@ -517,8 +518,11 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -527,7 +531,7 @@ describe('buyProcessor business flow', () => {
       pushTask: () => {
         let signal = createSignalDouble('BUYCALL', 'BULL.HK');
         signal = { ...signal, seatVersion: 2 };
-        queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+        queue.push({ type: 'STRATEGY_BUY', data: signal });
       },
       waitCondition: () => executeCalls === 1,
     });
@@ -565,14 +569,14 @@ describe('buyProcessor business flow', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => false,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('BUYCALL', 'BULL.HK');
     signal = { ...signal, seatVersion: 2 };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_BUY', data: signal });
+    queue.push({ type: 'STRATEGY_BUY', data: signal });
 
     await Bun.sleep(40);
     await processor.stopAndDrain();

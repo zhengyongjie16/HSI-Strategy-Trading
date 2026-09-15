@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type {
   Config,
   Decimal,
@@ -220,6 +221,9 @@ export interface OrderCacheManager {
 export interface OrderMonitor {
   /** 初始化 WebSocket 订阅 */
   initialize: () => Promise<void>;
+
+  /** 最终释放 Private 订阅；必须先排空业务，跨日不可调用。 */
+  teardown: () => Promise<void>;
 
   /** 订阅订单终态结算事件 */
   onOrderStateChanged: (listener: (event: OrderStateChangedEvent) => void) => Unsubscribe;
@@ -565,7 +569,7 @@ export type OrderMonitorDeps = {
   readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
 
   /** 运行期订单监控失败的统一 fatal 通道。 */
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 };
 
 /**
@@ -737,5 +741,5 @@ export type TraderDeps = {
   readonly readCurrentTradingDayInfo: CurrentTradingDayInfoReader;
 
   /** 运行期异步错误的统一 fatal 通道。 */
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 };

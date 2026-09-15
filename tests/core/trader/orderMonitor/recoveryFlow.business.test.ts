@@ -1,10 +1,5 @@
-/**
- * orderMonitor/recoveryFlow 业务测试
- *
- * 覆盖：
- * - resetRecoveryTrackingState 会清空 routing index 与 route states
- * - recovery restore 在 BOOTSTRAPPING 期间不触发 TRACKED，恢复成功后仅切换到 ACTIVE，不直接拥有 route bootstrap
- */
+import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderStatus, OrderType, type Order } from 'longbridge';
 import { createOrderRecorder } from '../../../../src/core/orderRecorder/index.js';
@@ -27,6 +22,15 @@ import {
   createSymbolRegistryDouble,
   createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
+import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
+
+/**
+ * orderMonitor/recoveryFlow 业务测试
+ *
+ * 覆盖：
+ * - resetRecoveryTrackingState 会清空 routing index 与 route states
+ * - recovery restore 在 BOOTSTRAPPING 期间不触发 TRACKED，恢复成功后仅切换到 ACTIVE，不直接拥有 route bootstrap
+ */
 
 type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
 
@@ -36,7 +40,6 @@ function createEventFlow(deps: TestEventFlowDeps) {
     ...deps,
   });
 }
-import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 
 function createRuntimeStore(): OrderMonitorRuntimeStore {
   return {
@@ -201,6 +204,7 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
     },
   };
   const recoveryFlow = createRecoveryFlow({
+    termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     orderHoldRegistry: createOrderHoldRegistry(),
     orderRecorder: observedOrderRecorder,
@@ -268,6 +272,7 @@ describe('orderMonitor recoveryFlow', () => {
     const runtime = createRuntimeStore();
     const snapshotUpdatedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
@@ -329,6 +334,7 @@ describe('orderMonitor recoveryFlow', () => {
     const runtime = createRuntimeStore();
     const trackCalls: Array<Readonly<{ orderId: string; status: OrderStatus | undefined }>> = [];
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
@@ -374,6 +380,7 @@ describe('orderMonitor recoveryFlow', () => {
     const runtime = createRuntimeStore();
     const trackCalls: TrackOrderParams[] = [];
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
@@ -421,6 +428,7 @@ describe('orderMonitor recoveryFlow', () => {
     let pendingSellSubmitCalls = 0;
     let routeCalls = 0;
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble({
@@ -498,6 +506,7 @@ describe('orderMonitor recoveryFlow', () => {
       timerHandles: new Map(),
     });
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
@@ -530,6 +539,7 @@ describe('orderMonitor recoveryFlow', () => {
     const runtime = createRuntimeStore();
     const trackCalls: string[] = [];
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
@@ -572,6 +582,7 @@ describe('orderMonitor recoveryFlow', () => {
       },
     });
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: recorder,
@@ -614,6 +625,7 @@ describe('orderMonitor recoveryFlow', () => {
   it('blocks recovery when mismatched pending buy terminal state contains executed quantity', async () => {
     const runtime = createRuntimeStore();
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
@@ -667,6 +679,7 @@ describe('orderMonitor recoveryFlow', () => {
   it('不匹配买单的启动快照已知部分成交时不得被陈旧零成交终态安全收口', async () => {
     const runtime = createRuntimeStore();
     const recoveryFlow = createRecoveryFlow({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: createOrderRecorderDouble(),
@@ -713,4 +726,93 @@ describe('orderMonitor recoveryFlow', () => {
     ).rejects.toThrow(/不匹配但.*存在成交事实/);
     expect(runtime.runtimeState).toBe('STOPPED');
   });
+});
+
+describe('recovery termination and unmatched BUY', () => {
+  it.each(['accepted', 'unknown', 'external', 'safe', 'unhandled', 'shutdown'] as const)(
+    '安全收口分类 %s',
+    async (mode) => {
+      const runtime = createRuntimeStore();
+      const termination = createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      });
+      const gate = Promise.withResolvers<null>();
+      const external = await createExternalApiRequestError({
+        operation: 'TradeContext.cancelOrder',
+        attempts: 1,
+        cause: new Error('network'),
+      });
+      let settlements = 0;
+      const flow = createRecoveryFlow({
+        termination,
+        runtime,
+        orderHoldRegistry: createOrderHoldRegistry(),
+        orderRecorder: createOrderRecorderDouble(),
+        tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+        symbolRegistry: createSymbolRegistryDouble(),
+        trackOrder: () => {},
+        cancelOrder: async () => {
+          if (mode === 'shutdown') await gate.promise;
+
+          if (mode === 'external') throw external;
+
+          if (mode === 'accepted' || mode === 'shutdown')
+            return { kind: 'CANCEL_CONFIRMED', relatedBuyOrderIds: null };
+
+          if (mode !== 'unknown')
+            runtime.queriedTerminalStateByOrderId.set('MISMATCH', {
+              kind: 'TERMINAL',
+              closedReason: 'CANCELED',
+              executedPrice: null,
+              executedQuantity: 0,
+              submittedQuantity: 100,
+              orderUpdatedAtMs: Date.parse('2026-04-08T09:01:00.000Z'),
+              status: OrderStatus.Canceled,
+            });
+
+          return {
+            kind: 'ALREADY_CLOSED',
+            closedReason: 'CANCELED',
+            relatedBuyOrderIds: null,
+            terminalExecution: { submittedQuantity: 100, executedQuantity: 0 },
+          };
+        },
+        settleOrder: () => {
+          settlements += 1;
+          return { handled: mode === 'safe', relatedBuyOrderIds: null };
+        },
+        handleOrderChangedWhenActive: () => {},
+      });
+      const promise = flow.recoverOrderTrackingFromSnapshot([
+        createPendingOrder({ orderId: 'MISMATCH', symbol: 'OLD_BULL.HK', side: OrderSide.Buy }),
+      ]);
+      if (mode === 'shutdown') {
+        termination.requestShutdown();
+        gate.resolve(null);
+      }
+
+      const error = await promise.then(
+        () => null,
+        (rejection: unknown) => rejection,
+      );
+      if (mode === 'safe') {
+        expect(error).toBeNull();
+        expect(runtime.runtimeState).toBe('ACTIVE');
+        expect(settlements).toBe(1);
+      } else if (mode === 'shutdown') {
+        expect(error).toBeNull();
+        expect(runtime.runtimeState).toBe('STOPPED');
+        expect(settlements).toBe(0);
+      } else {
+        expect(error).toBeInstanceOf(Error);
+        expect(runtime.runtimeState).toBe('STOPPED');
+        if (mode === 'external') expect(error).toBe(external);
+
+        expect(runtime.trackedOrders.size).toBe(0);
+      }
+    },
+  );
 });

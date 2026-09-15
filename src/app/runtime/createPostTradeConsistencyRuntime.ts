@@ -9,10 +9,9 @@
  */
 import { API } from '../../constants/index.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
-import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { PostTradeConsistencyRefreshNeed, Trader } from '../../types/services.js';
-import { formatError, toError } from '../../utils/error/index.js';
+import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { logger } from '../../utils/logger/index.js';
 import { createRefreshGate } from '../../utils/refreshGate/index.js';
@@ -300,7 +299,7 @@ async function runPostRefreshBusinessFlow(
 export function createPostTradeConsistencyRuntime(
   deps: PostTradeConsistencyRuntimeDeps,
 ): PostTradeConsistencyRuntime {
-  const { getTrader, lastState, scheduler } = deps;
+  const { getTrader, lastState, scheduler, termination } = deps;
   const refreshGate = createRefreshGate();
 
   let businessDeps: PostTradeConsistencyRuntimeBusinessDeps | null = null;
@@ -310,9 +309,10 @@ export function createPostTradeConsistencyRuntime(
   let pendingVersion: number | null = null;
   let runTimerHandle: ReturnType<typeof setTimeout> | null = null;
   let retryTimerHandle: ReturnType<typeof setTimeout> | null = null;
-  let drainResolve: (() => void) | null = null;
-  let fatalError: Error | null = null;
-  const fatalRejectors = new Set<(error: Error) => void>();
+  let runTimerToken: symbol | null = null;
+  let retryTimerToken: symbol | null = null;
+  let inFlightPromise: Promise<void> | null = null;
+  let drainPromise: Promise<void> | null = null;
   const freshReachedListeners = new Set<() => void>();
 
   /**
@@ -328,41 +328,45 @@ export function createPostTradeConsistencyRuntime(
     return businessDeps;
   }
 
-  function recordFatalError(error: unknown): Error {
-    if (fatalError !== null) {
-      return fatalError;
-    }
-
-    fatalError = toError(error);
-    for (const reject of fatalRejectors) {
-      reject(fatalError);
-    }
-
-    fatalRejectors.clear();
-    return fatalError;
-  }
-
   /**
    * 通过统一 scheduler 的 0ms timer 调度下一次刷新。
    *
    * 只要进入立即执行通道，就取消失败重试定时器，优先处理最新积压。
    */
   function scheduleRun(): void {
-    if (!started || inFlight || runTimerHandle !== null || !hasRefreshNeed(pendingNeed)) {
+    if (
+      termination.isTerminated() ||
+      !started ||
+      inFlight ||
+      runTimerHandle !== null ||
+      !hasRefreshNeed(pendingNeed)
+    ) {
       return;
     }
 
     if (retryTimerHandle !== null) {
+      retryTimerToken = null;
       scheduler.clearTimer(retryTimerHandle);
       retryTimerHandle = null;
     }
 
+    const token = Symbol();
+    runTimerToken = token;
     runTimerHandle = scheduler.scheduleTimer(() => {
+      // 已取消或已消费的回调不能清除新 timer，更不能替换真实在途任务的 Promise。
+      if (runTimerToken !== token) return;
+
+      runTimerToken = null;
       runTimerHandle = null;
-      void runRefresh().catch((error: unknown) => {
-        const fatal = recordFatalError(error);
+      if (termination.isTerminated() || !started || inFlight || !hasRefreshNeed(pendingNeed)) {
+        return;
+      }
+
+      inFlightPromise = runRefresh();
+      void inFlightPromise.catch((error: unknown) => {
+        termination.reportFatalError(error);
         logger.error('[PostTradeConsistencyRuntime] 刷新调度发生未处理错误', {
-          error: formatError(fatal),
+          error: formatError(error),
         });
       });
     }, 0);
@@ -372,14 +376,34 @@ export function createPostTradeConsistencyRuntime(
    * 在刷新失败后按固定退避时间重试。
    */
   function scheduleRetry(): void {
-    if (!started || inFlight || retryTimerHandle !== null || !hasRefreshNeed(pendingNeed)) {
+    if (
+      termination.isTerminated() ||
+      !started ||
+      inFlight ||
+      retryTimerHandle !== null ||
+      !hasRefreshNeed(pendingNeed)
+    ) {
       return;
     }
 
+    const token = Symbol();
+    retryTimerToken = token;
     retryTimerHandle = scheduler.scheduleTimer(() => {
+      if (retryTimerToken !== token) return;
+
+      retryTimerToken = null;
       retryTimerHandle = null;
       scheduleRun();
     }, API.DEFAULT_RETRY_DELAY_MS);
+  }
+
+  /** 请求内部错误立即关闭全局授权，但本批次仍等待其余请求落定。 */
+  function observeRefreshRequest<T>(request: Promise<T>): Promise<T> {
+    return request.catch((error: unknown) => {
+      if (!isExternalApiRequestError(error)) termination.reportFatalError(error);
+
+      throw error;
+    });
   }
 
   /**
@@ -389,7 +413,7 @@ export function createPostTradeConsistencyRuntime(
    * 外部失败保留 pending 版本并进入重试；程序内部契约/不变量错误则立即 fail-fast。
    */
   async function runRefresh(): Promise<void> {
-    if (!started || inFlight || !hasRefreshNeed(pendingNeed)) {
+    if (termination.isTerminated() || !started || inFlight || !hasRefreshNeed(pendingNeed)) {
       return;
     }
 
@@ -404,13 +428,27 @@ export function createPostTradeConsistencyRuntime(
     try {
       const resolvedBusinessDeps = getBusinessDepsOrThrow();
       const trader = getTrader();
-      const [accountSnapshot, positions]: readonly [
-        AccountSnapshot | null,
-        ReadonlyArray<Position> | null,
-      ] = await Promise.all([
-        need.refreshAccount ? trader.getAccountSnapshot() : Promise.resolve(null),
-        need.refreshPositions ? trader.getStockPositions() : Promise.resolve(null),
+      // 任一请求失败仍须等待另一请求结束，不能让 Promise.all 的提前拒绝伪造排空完成。
+      const [accountResult, positionsResult] = await Promise.allSettled([
+        need.refreshAccount
+          ? observeRefreshRequest(trader.getAccountSnapshot())
+          : Promise.resolve(null),
+        need.refreshPositions
+          ? observeRefreshRequest(trader.getStockPositions())
+          : Promise.resolve(null),
       ]);
+      if (
+        positionsResult.status === 'rejected' &&
+        !isExternalApiRequestError(positionsResult.reason)
+      )
+        throw positionsResult.reason;
+
+      if (accountResult.status === 'rejected') throw accountResult.reason;
+
+      if (positionsResult.status === 'rejected') throw positionsResult.reason;
+
+      const accountSnapshot = accountResult.value;
+      const positions = positionsResult.value;
 
       if (accountSnapshot !== null) {
         lastState.cachedAccount = accountSnapshot;
@@ -426,7 +464,7 @@ export function createPostTradeConsistencyRuntime(
     } catch (error) {
       if (!isExternalApiRequestError(error)) {
         fatalInvariantDetected = true;
-        recordFatalError(error);
+        termination.reportFatalError(error);
         started = false;
         pendingNeed = createEmptyRefreshNeed();
         pendingVersion = null;
@@ -443,7 +481,7 @@ export function createPostTradeConsistencyRuntime(
         // fatal invariant 已在 catch 中升级为异常，这里只负责阻止重试与版本回滚。
       } else if (refreshOk) {
         const gateStatus = refreshGate.getStatus();
-        if (gateStatus.abortReason !== 'STOP_AND_DRAIN') {
+        if (!termination.isTerminated() && gateStatus.abortReason !== 'STOP_AND_DRAIN') {
           refreshGate.markFresh(targetVersion);
           emitFreshReached();
         }
@@ -453,9 +491,6 @@ export function createPostTradeConsistencyRuntime(
       }
 
       inFlight = false;
-      const resolveDrain = drainResolve;
-      drainResolve = null;
-      resolveDrain?.();
 
       if (!fatalInvariantDetected && hasRefreshNeed(pendingNeed)) {
         if (refreshOk) {
@@ -501,7 +536,7 @@ export function createPostTradeConsistencyRuntime(
    * @param need 本次成交产生的刷新意图
    */
   function recordSettlementRefreshNeed(need: PostTradeConsistencyRefreshNeed): void {
-    if (!hasRefreshNeed(need)) {
+    if (termination.isTerminated() || !hasRefreshNeed(need)) {
       return;
     }
 
@@ -549,16 +584,6 @@ export function createPostTradeConsistencyRuntime(
     };
   }
 
-  function drainFatalError(): Promise<never> {
-    if (fatalError !== null) {
-      return Promise.reject(fatalError);
-    }
-
-    return new Promise<never>((_, reject) => {
-      fatalRejectors.add(reject);
-    });
-  }
-
   /**
    * 终止当前 freshness 等待轮次。
    *
@@ -574,6 +599,8 @@ export function createPostTradeConsistencyRuntime(
    * 开盘重建会重新建立 freshness 基线，因此必须先恢复可等待状态。
    */
   function resetAbort(): void {
+    if (termination.isTerminated()) return;
+
     refreshGate.resetAbort();
   }
 
@@ -581,44 +608,48 @@ export function createPostTradeConsistencyRuntime(
    * 启动运行时并尝试消费启动前积压的刷新需求。
    */
   function start(): void {
-    if (started) {
+    if (termination.isTerminated() || started) {
       return;
     }
+
+    if (inFlight) {
+      throw new Error('[PostTradeConsistencyRuntime] 排空完成前禁止重新启动');
+    }
+
+    drainPromise = null;
+    inFlightPromise = null;
 
     getBusinessDepsOrThrow();
     started = true;
     scheduleRun();
   }
 
-  /**
-   * 停止运行时并等待当前在途刷新完成。
-   *
-   * 已积压但尚未执行的需求不会被清除，供后续重新 start 时继续消费。
-   * 若最后一次刷新以 fatal 程序错误结束，则在排空时重新抛出该错误。
-   *
-   * @returns 在没有在途刷新后 resolve；fatal 刷新错误会在此处抛出
-   */
-  async function stopAndDrain(): Promise<void> {
+  /** 同步停止后续刷新调度，不抢先启动异步排空。 */
+  function stopScheduling(): void {
     started = false;
-    if (runTimerHandle !== null) {
-      scheduler.clearTimer(runTimerHandle);
-      runTimerHandle = null;
+    const runHandle = runTimerHandle;
+    const retryHandle = retryTimerHandle;
+    runTimerToken = null;
+    retryTimerToken = null;
+    runTimerHandle = null;
+    retryTimerHandle = null;
+    try {
+      if (runHandle !== null) scheduler.clearTimer(runHandle);
+    } finally {
+      if (retryHandle !== null) scheduler.clearTimer(retryHandle);
     }
+  }
 
-    if (retryTimerHandle !== null) {
-      scheduler.clearTimer(retryTimerHandle);
-      retryTimerHandle = null;
-    }
+  /**
+   * 同一停止周期复用同一 Promise，包含账户/持仓请求及订阅提交回调。
+   * stop 期间已开始的事实提交继续收口；Quote 必须等待本排空成功后才能停止。
+   */
+  function stopAndDrain(): Promise<void> {
+    if (drainPromise !== null) return drainPromise;
 
-    if (inFlight) {
-      await new Promise<void>((resolve) => {
-        drainResolve = resolve;
-      });
-    }
-
-    if (fatalError !== null) {
-      throw fatalError;
-    }
+    stopScheduling();
+    drainPromise = inFlightPromise ?? Promise.resolve();
+    return drainPromise;
   }
 
   /**
@@ -627,16 +658,7 @@ export function createPostTradeConsistencyRuntime(
    * 当前日内未消费的刷新需求会被丢弃，freshness 版本推进交由后续 baseline 处理。
    */
   function midnightClear(): void {
-    started = false;
-    if (runTimerHandle !== null) {
-      scheduler.clearTimer(runTimerHandle);
-      runTimerHandle = null;
-    }
-
-    if (retryTimerHandle !== null) {
-      scheduler.clearTimer(retryTimerHandle);
-      retryTimerHandle = null;
-    }
+    stopScheduling();
 
     pendingNeed = createEmptyRefreshNeed();
     pendingVersion = null;
@@ -648,7 +670,7 @@ export function createPostTradeConsistencyRuntime(
    * 若仍存在 pending 或 in-flight，则不得提前推进 fresh，避免向等待方暴露伪 fresh 状态。
    */
   function completeRebuildBaseline(): void {
-    if (inFlight || hasRefreshNeed(pendingNeed)) {
+    if (termination.isTerminated() || inFlight || hasRefreshNeed(pendingNeed)) {
       return;
     }
 
@@ -663,7 +685,7 @@ export function createPostTradeConsistencyRuntime(
     getStatus,
     waitForFresh,
     onFreshReached,
-    drainFatalError,
+    stopScheduling,
     abortWaiting,
     resetAbort,
     start,

@@ -1,3 +1,4 @@
+import type { PreparedStrategySelection } from './startup/types.js';
 import type { Config } from 'longbridge';
 import type {
   RuntimeSymbolValidationInput,
@@ -5,10 +6,10 @@ import type {
 } from '../config/types.js';
 import type { Position } from '../types/account.js';
 import type { SymbolRegistry } from '../types/seat.js';
-import type { LastState, MonitorContext, MonitorState } from '../types/state.js';
+import type { LastState, MonitorContext } from '../types/state.js';
 import type { MonitorConfig, TradingConfig } from '../types/config.js';
 import type { Quote } from '../types/quote.js';
-import type { RuntimeClock, RuntimeScheduler } from '../types/runtime.js';
+import type { RuntimeClock, RuntimeScheduler, RuntimeTermination } from '../types/runtime.js';
 import type {
   MarketDataClient,
   OrderRecorder,
@@ -20,10 +21,7 @@ import type {
   Unsubscribe,
 } from '../types/services.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../types/risk.js';
-import type {
-  TradingSignalStrategy,
-  TradingSignalStrategyFactory,
-} from '../core/strategy/types.js';
+import type { TradingSignalStrategy } from '../core/strategy/types.js';
 import type { AutoSymbolManagerPort } from '../types/monitorContextPorts.js';
 import type { WarrantListCacheConfig } from '../services/autoSymbolFinder/types.js';
 import type { LiquidationCooldownTracker } from '../services/liquidationCooldown/types.js';
@@ -31,7 +29,6 @@ import type { MixedTradeLogRepository } from '../services/mixedTradeLogRepositor
 import type { ProtectiveLiquidationEpisodeTracker } from '../core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { DoomsdayProtection } from '../core/doomsdayProtection/types.js';
 import type { SignalProcessor } from '../core/signalProcessor/types.js';
-import type { IndicatorCache } from '../main/asyncProgram/indicatorCache/types.js';
 import type {
   BuyTaskType,
   SellTaskType,
@@ -98,8 +95,8 @@ export type AppEnvironmentParams = Readonly<{
  * 使用范围：仅 runApp 与其业务测试。
  */
 export type RunAppDeps = Readonly<{
-  createPreGateRuntime: (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime>;
-  createPostGateRuntime: (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime>;
+  createPreGateRuntime: (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime | null>;
+  createPostGateRuntime: (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime | null>;
   loadStartupSnapshot: (params: LoadStartupSnapshotParams) => Promise<StartupSnapshotResult>;
   collectRuntimeValidationSymbols: (
     params: RuntimeValidationCollectionParams,
@@ -108,9 +105,8 @@ export type RunAppDeps = Readonly<{
     deps: RebuildTradingDayStateDeps,
   ) => (params: RebuildTradingDayStateParams) => Promise<void>;
   displayAccountAndPositions: (params: DisplayAccountAndPositionsParams) => void;
-  registerDelayedSignalHandlers: (params: RegisterDelayedSignalHandlersParams) => void;
   createBusinessEventProgram: (deps: BusinessEventProgramDeps) => BusinessEventProgram;
-  createAsyncRuntime: (params: AsyncRuntimeFactoryDeps) => AsyncRuntime;
+  createAsyncRuntime: (params: AsyncRuntimeFactoryDeps) => AsyncRuntime | null;
   createLifecycleRuntime: (
     params: LifecycleRuntimeFactoryDeps,
     factories?: LifecycleRuntimeFactories,
@@ -119,7 +115,8 @@ export type RunAppDeps = Readonly<{
   createTimeWakeupRuntime: <TTimerHandle>(
     deps: TimeWakeupRuntimeDeps<TTimerHandle>,
   ) => TimeWakeupRuntime;
-  waitForShutdownSignal: () => Promise<void>;
+  prepareStrategy: (params: AppEnvironmentParams) => Promise<PreparedStrategySelection>;
+  subscribeShutdownSignal: (onShutdown: () => void) => Unsubscribe;
   logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;
   formatError: (error: unknown) => string;
   validateRuntimeSymbolsFromQuotesMap: (
@@ -140,6 +137,7 @@ export type RunAppDeps = Readonly<{
 export type CreatePreGateRuntimeParams = AppEnvironmentParams &
   Readonly<{
     cleanup: CleanupController;
+    termination: RuntimeTermination;
   }>;
 
 /**
@@ -253,7 +251,6 @@ export type RunTradingDayOpenRebuildParams = Readonly<{
  */
 export type MonitorContextFactoryDeps = Readonly<{
   config: MonitorConfig;
-  state: MonitorState;
   symbolRegistry: SymbolRegistry;
   quotesMap: ReadonlyMap<string, Quote | null> | null;
   strategy: TradingSignalStrategy;
@@ -261,7 +258,6 @@ export type MonitorContextFactoryDeps = Readonly<{
   dailyLossTracker: DailyLossTracker;
   riskChecker: RiskChecker;
   unrealizedLossMonitor: UnrealizedLossMonitor;
-  delayedSignalVerifier: MonitorContext['delayedSignalVerifier'];
   autoSymbolManager: AutoSymbolManagerPort;
 }>;
 
@@ -301,11 +297,11 @@ export type CleanupPhase =
   | 'STOP_SELL_PROCESSOR'
   | 'UNSUBSCRIBE_TRADER_LISTENER'
   | 'STOP_ORDER_MONITOR_RUNTIME'
+  | 'TEARDOWN_TRADER'
   | 'STOP_QUOTE_SUBSCRIPTION_RUNTIME'
   | 'STOP_POST_TRADE_CONSISTENCY_RUNTIME'
-  | 'DESTROY_DELAYED_SIGNAL_VERIFIER'
-  | 'CLEAR_INDICATOR_CACHE'
-  | 'CLEAR_MONITOR_SNAPSHOT'
+  | 'DESTROY_STRATEGY'
+  | 'UNSUBSCRIBE_SHUTDOWN_SIGNAL'
   | 'RESET_MARKET_DATA_RUNTIME';
 
 /**
@@ -378,22 +374,6 @@ export type LoadStartupSnapshotParams = Readonly<{
 }>;
 
 /**
- * 延迟验证通过后的分流注册参数。
- * 类型用途：封装注册 DelayedSignalVerifier 回调所需的共享状态与队列。
- * 数据来源：由 app 顶层装配在唯一 monitorContext 创建完成后传入。
- * 使用范围：仅 app 延迟验证接线使用。
- */
-export type RegisterDelayedSignalHandlersParams = Readonly<{
-  monitorContext: MonitorContext;
-  lastState: LastState;
-  buyTaskQueue: TaskQueue<BuyTaskType>;
-  sellTaskQueue: TaskQueue<SellTaskType>;
-  logger: Pick<Logger, 'debug' | 'warn'>;
-  doomsdayProtectionEnabled: boolean;
-  now: () => Date;
-}>;
-
-/**
  * 唯一监控上下文装配参数。
  * 类型用途：封装 createMonitorContext 所需的 pre/post gate 运行时对象与启动 quotesMap。
  * 数据来源：由 createPostGateRuntime 在 startup snapshot 前以 quotesMap: null 组装传入；READY 后再同步标的名称。
@@ -404,8 +384,7 @@ export type CreateMonitorContextParams = Readonly<{
   postGateRuntime: MonitorContextBootstrapRuntime;
   quotesMap: ReadonlyMap<string, Quote | null> | null;
   clock: RuntimeClock;
-  scheduler: RuntimeScheduler;
-  strategyFactory?: TradingSignalStrategyFactory;
+  strategy: TradingSignalStrategy;
 }>;
 
 /**
@@ -436,6 +415,9 @@ export type CreatePostGateRuntimeParams = Readonly<{
   clock: RuntimeClock;
   scheduler: RuntimeScheduler;
   cleanup: CleanupController;
+  termination: RuntimeTermination;
+  resources: RuntimeAssemblyResources;
+  strategy: TradingSignalStrategy;
   logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;
 }>;
 
@@ -469,13 +451,9 @@ export type PostGateRuntime = Readonly<{
   ) => Promise<LoadTradingDayRuntimeSnapshotResult>;
   doomsdayProtection: DoomsdayProtection;
   signalProcessor: SignalProcessor;
-  indicatorCache: IndicatorCache;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
-
-  /** 等待 post-gate 层 fatal error；与 createAsyncRuntime.drainFatalError 语义一致 */
-  drainFatalError: () => Promise<never>;
 }>;
 
 /**
@@ -490,11 +468,7 @@ type MonitorContextBootstrapRuntime = Readonly<{
 
   /** 与 Trader 共用的唯一风险检查器，统一持有浮亏 R1/N1 与当日亏损偏移缓存。 */
   readonly riskChecker: RiskChecker;
-  readonly indicatorCache: IndicatorCache;
   readonly lastState: LastState;
-
-  /** 延迟验证器内部异常进入 post-gate 统一 drain 的 fatal 上报入口。 */
-  readonly onFatalError: (error: unknown) => void;
 }>;
 
 /**
@@ -507,7 +481,6 @@ export type AsyncRuntime = Readonly<{
   monitorTaskProcessor: MonitorTaskProcessor;
   buyProcessor: Processor;
   sellProcessor: Processor;
-  drainFatalError: () => Promise<never>;
 }>;
 
 /**
@@ -517,6 +490,9 @@ export type AsyncRuntime = Readonly<{
  * 使用范围：仅异步运行时创建链路使用。
  */
 export type AsyncRuntimeFactoryDeps = Readonly<{
+  termination: RuntimeTermination;
+  resources: RuntimeAssemblyResources;
+  cleanup: CleanupController;
   preGateRuntime: PreGateRuntime;
   postGateRuntime: PostGateRuntime;
   clock: RuntimeClock;
@@ -542,6 +518,7 @@ export type PostTradeConsistencyRuntimeStatus = Readonly<{
  * 使用范围：仅 createPostTradeConsistencyRuntime 与相关测试使用。
  */
 export type PostTradeConsistencyRuntimeDeps = Readonly<{
+  termination: RuntimeTermination;
   getTrader: () => Trader;
   lastState: LastState;
   onPositionsCommitted: () => Promise<void>;
@@ -575,10 +552,10 @@ export interface PostTradeConsistencyRuntime {
   readonly getStatus: () => PostTradeConsistencyRuntimeStatus;
   readonly waitForFresh: () => Promise<void>;
   readonly onFreshReached: (listener: () => void) => Unsubscribe;
-  readonly drainFatalError: () => Promise<never>;
   readonly abortWaiting: () => void;
   readonly resetAbort: () => void;
   readonly start: () => void;
+  readonly stopScheduling: () => void;
   readonly stopAndDrain: () => Promise<void>;
   readonly midnightClear: () => void;
   readonly completeRebuildBaseline: () => void;
@@ -591,6 +568,7 @@ export interface PostTradeConsistencyRuntime {
  * 使用范围：仅 lifecycle 运行时创建链路使用。
  */
 export type LifecycleRuntimeFactoryDeps = Readonly<{
+  termination: RuntimeTermination;
   logger: Pick<Logger, 'debug' | 'info' | 'warn' | 'error'>;
   preGateRuntime: PreGateRuntime;
   postGateRuntime: PostGateRuntime;
@@ -615,3 +593,31 @@ export type LifecycleRuntimeFactories = Readonly<{
   executeTradingDayOpenRebuild: (params: RunTradingDayOpenRebuildParams) => Promise<void>;
   createDayLifecycleManager: (deps: DayLifecycleManagerDeps) => DayLifecycleManager;
 }>;
+
+/**
+ * 装配期资源槽，仅由取得资源的工厂写入；终止 owner 的固定闭包读取晚到实例。
+ * 不注册动态停机回调，资源释放仍由唯一 CleanupController 登记和执行。
+ */
+export type RuntimeAssemblyResources = {
+  lastState?: LastState;
+  strategy?: TradingSignalStrategy;
+  trader?: Trader;
+  buyTaskQueue?: TaskQueue<BuyTaskType>;
+  sellTaskQueue?: TaskQueue<SellTaskType>;
+  monitorTaskQueue?: MonitorTaskQueue<MonitorTaskDataMap>;
+  postTradeConsistencyRuntime?: PostTradeConsistencyRuntime;
+  quoteSubscriptionRuntime?: QuoteSubscriptionRuntime;
+  seatActivationDispatcher?: SeatActivationDispatcher;
+  seatRuntimeCleanupDispatcher?: SeatRuntimeCleanupDispatcher;
+  autoSearchWakeupRuntime?: AutoSearchWakeupRuntime;
+  periodicSwitchWakeupRuntime?: PeriodicSwitchWakeupRuntime;
+  tradingRiskEventRuntime?: TradingRiskEventRuntime;
+  monitorQuoteEventRuntime?: MonitorQuoteEventRuntime;
+  tradingQuoteDisplayRuntime?: TradingQuoteDisplayRuntime;
+  switchWakeupRuntime?: SwitchWakeupRuntime;
+  monitorTaskProcessor?: MonitorTaskProcessor;
+  buyProcessor?: Processor;
+  sellProcessor?: Processor;
+  businessEventProgram?: BusinessEventProgram;
+  timeWakeupRuntime?: TimeWakeupRuntime;
+};

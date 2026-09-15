@@ -30,7 +30,8 @@ import {
 } from '../../../helpers/testDoubles.js';
 
 type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
-type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now'> & Partial<Pick<OrderOpsDeps, 'now'>>;
+type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now' | 'termination'> &
+  Partial<Pick<OrderOpsDeps, 'now' | 'termination'>>;
 
 function createEventFlow(deps: TestEventFlowDeps) {
   return createProductionEventFlow({
@@ -41,6 +42,7 @@ function createEventFlow(deps: TestEventFlowDeps) {
 
 function createOrderOps(deps: TestOrderOpsDeps) {
   return createProductionOrderOps({
+    termination: { isTerminated: () => false, reportFatalError: () => {} },
     now: () => new Date('2031-01-02T03:04:05.000Z'),
     ...deps,
   });

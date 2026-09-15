@@ -20,7 +20,9 @@ export function createRefreshHelpers({
   trader,
   lastState,
   quoteSubscriptionRuntime,
+  canContinue,
 }: {
+  readonly canContinue: () => boolean;
   readonly trader: Trader;
   readonly lastState: LastState;
   readonly quoteSubscriptionRuntime?: Pick<
@@ -45,8 +47,14 @@ export function createRefreshHelpers({
    * @returns Promise，无返回值；副作用为更新 lastState.cachedAccount、cachedPositions、positionCache
    */
   async function refreshAccountCaches(): Promise<void> {
+    if (!canContinue()) return;
+
     const accountSnapshot = await trader.getAccountSnapshot();
+    if (!canContinue()) return;
+
     const positionsSnapshot = await trader.getStockPositions();
+    if (!canContinue()) return;
+
     lastState.cachedAccount = accountSnapshot;
     lastState.cachedPositions = [...positionsSnapshot];
     lastState.positionCache.update(positionsSnapshot);

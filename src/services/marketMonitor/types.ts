@@ -1,41 +1,10 @@
-import type { DisplayIndicatorItem, IndicatorUsageProfile } from '../../types/indicatorProfile.js';
-import type { IndicatorSnapshot, Quote } from '../../types/quote.js';
+import type { StrategyDisplayItem } from '../../core/strategy/types.js';
+import type { Quote } from '../../types/quote.js';
 import type {
   QuoteUpdatedEvent,
   UnrealizedLossMetrics,
   WarrantDistanceInfo,
 } from '../../types/services.js';
-
-/**
- * 编译后的单项显示计划。
- * 类型用途：把 displayPlan 中的原始指标项解析为可直接渲染的结构化项。
- * 数据来源：由 createMarketMonitor 基于 indicatorProfile.displayPlan 编译。
- * 使用范围：仅 marketMonitor 模块内部使用。
- */
-export type CompiledDisplayPlanItem =
-  | { readonly item: 'price'; readonly kind: 'price' }
-  | { readonly item: 'changePercent'; readonly kind: 'changePercent' }
-  | { readonly item: 'MFI'; readonly kind: 'mfi' }
-  | { readonly item: 'K'; readonly kind: 'kdj'; readonly field: 'k' }
-  | { readonly item: 'D'; readonly kind: 'kdj'; readonly field: 'd' }
-  | { readonly item: 'J'; readonly kind: 'kdj'; readonly field: 'j' }
-  | { readonly item: 'ADX'; readonly kind: 'adx' }
-  | { readonly item: 'MACD'; readonly kind: 'macd'; readonly field: 'macd' }
-  | { readonly item: 'DIF'; readonly kind: 'macd'; readonly field: 'dif' }
-  | { readonly item: 'DEA'; readonly kind: 'macd'; readonly field: 'dea' }
-  | { readonly item: DisplayIndicatorItem; readonly kind: 'ema'; readonly period: number }
-  | { readonly item: DisplayIndicatorItem; readonly kind: 'rsi'; readonly period: number }
-  | { readonly item: DisplayIndicatorItem; readonly kind: 'psy'; readonly period: number };
-
-/**
- * 编译后的显示计划。
- * 类型用途：缓存 displayPlan 解析结果，避免每次渲染重复解析指标项。
- * 数据来源：由 createMarketMonitor 基于 indicatorProfile.displayPlan 编译。
- * 使用范围：仅 marketMonitor 模块内部使用。
- */
-export type CompiledDisplayPlan = Readonly<{
-  items: ReadonlyArray<CompiledDisplayPlanItem>;
-}>;
 
 /**
  * 交易标的价格显示附加信息。
@@ -51,15 +20,14 @@ export type PriceDisplayInfo = {
 
 /**
  * monitor indicator 渲染参数。
- * 类型用途：封装纯渲染 monitor indicators 所需的 snapshot、quote、显示画像与 K 线时间。
+ * 类型用途：封装纯渲染 monitor indicators 所需的 策略中性显示投影、quote与 K 线时间。
  * 数据来源：由 monitorDisplayRuntime 在补齐 monitor quote 后组装。
  * 使用范围：仅 marketMonitor.renderMonitorIndicators 使用。
  */
 export type RenderMonitorIndicatorsParams = Readonly<{
-  readonly monitorSnapshot: IndicatorSnapshot;
+  readonly items: ReadonlyArray<StrategyDisplayItem>;
   readonly monitorQuote: Quote | null;
   readonly monitorSymbol: string;
-  readonly indicatorProfile: IndicatorUsageProfile;
   readonly klineTimestamp: number | null;
 }>;
 

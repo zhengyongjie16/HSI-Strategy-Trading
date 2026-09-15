@@ -1,3 +1,5 @@
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+
 /**
  * 跨日清理与开盘重建全链路集成测试
  *
@@ -63,6 +65,12 @@ describe('跨日清理与开盘重建全链路', () => {
       },
     ];
     const manager = createDayLifecycleManager({
+      termination: createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      }),
       mutableState,
       cacheDomains: domains,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -106,6 +114,12 @@ describe('跨日清理与开盘重建全链路', () => {
       },
     ];
     const manager = createDayLifecycleManager({
+      termination: createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      }),
       mutableState,
       cacheDomains: domains,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -141,6 +155,12 @@ describe('跨日清理与开盘重建全链路', () => {
       },
     ];
     const manager = createDayLifecycleManager({
+      termination: createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      }),
       mutableState,
       cacheDomains: domains,
       logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -173,6 +193,12 @@ describe('跨日清理与开盘重建全链路', () => {
       },
     ];
     const manager = createDayLifecycleManager({
+      termination: createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      }),
       mutableState,
       cacheDomains: domains,
       logger: { info: () => {}, warn: () => {}, error: () => {} },

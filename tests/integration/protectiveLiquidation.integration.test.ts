@@ -13,6 +13,7 @@ import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
+  createTerminationDouble,
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
@@ -113,9 +114,11 @@ describe('protective-liquidation integration', () => {
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
       isContinuousTradingAllowed: () => true,
-      onFatalError: (error) => {
-        throw error;
-      },
+      termination: createTerminationDouble({
+        reportFatalError: (error) => {
+          throw error;
+        },
+      }),
     };
 
     const monitor = createOrderMonitor(deps);

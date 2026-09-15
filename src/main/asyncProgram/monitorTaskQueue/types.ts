@@ -69,9 +69,14 @@ export type MonitorTaskInput<
  * 使用范围：任务 owner 与 monitorTaskProcessor 等，仅内部使用。
  */
 export interface MonitorTaskQueue<TDataMap extends MonitorTaskDataMapBase> {
+  /** 入队任务；队列已 close 时返回 false 且不产生任何 mutation 或通知。 */
   readonly scheduleLatest: <TType extends keyof TDataMap>(
     task: MonitorTaskInput<TDataMap, TType>,
-  ) => void;
+  ) => boolean;
+
+  /** 关闭 producer admission；关闭后不可重新打开。 */
+  readonly close: () => void;
+
   readonly pop: () => MonitorTask<TDataMap> | null;
   readonly isEmpty: () => boolean;
   readonly removeTasks: (predicate: (task: MonitorTask<TDataMap>) => boolean) => number;

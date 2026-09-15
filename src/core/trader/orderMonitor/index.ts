@@ -85,11 +85,14 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     postTradeConsistencyRuntime,
     tradingConfig,
     symbolRegistry,
-    isContinuousTradingAllowed,
+    isContinuousTradingAllowed: isLifecycleContinuousTradingAllowed,
+    termination,
     now,
     scheduleTimer,
     clearTimer,
   } = deps;
+  const isContinuousTradingAllowed = (): boolean =>
+    !termination.isTerminated() && isLifecycleContinuousTradingAllowed();
   const config = buildOrderMonitorConfig(tradingConfig.global);
   const thresholdDecimal = toDecimal(config.priceDiffThreshold);
   const runtime: OrderMonitorRuntimeStore = {
@@ -108,6 +111,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     unsubscribeQuoteUpdated: null,
   };
   let initialized = false;
+  let initializationPromise: Promise<void> | null = null;
+  let teardownPromise: Promise<void> | null = null;
+  let finalized = false;
   let routeRuntime: RouteRuntime | null = null;
 
   function triggerRoute(symbol: string, wakeupKind: OrderMonitorWakeupKind): void {
@@ -139,6 +145,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   const orderOps = createOrderOps({
+    termination,
     now,
     runtime,
     monitorConfig: tradingConfig.monitor,
@@ -156,6 +163,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   let activeHandler: ((event: PushOrderChanged) => void) | null = null;
   const recoveryFlow = createRecoveryFlow({
+    termination,
     runtime,
     orderHoldRegistry,
     orderRecorder,
@@ -223,13 +231,17 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     now,
     scheduleTimer,
     clearTimer,
-    onFatalError: deps.onFatalError,
+    termination,
   });
 
   async function recoverOrderTrackingFromSnapshot(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
   ): Promise<void> {
+    if (termination.isTerminated()) return;
+
     await recoveryFlow.recoverOrderTrackingFromSnapshot(allOrders);
+    if (termination.isTerminated()) return;
+
     if (routeRuntime === null) {
       throw new Error('[订单监控] route runtime 尚未初始化，禁止恢复后 bootstrap route');
     }
@@ -417,7 +429,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
    *
    * @returns 初始化 Promise
    */
-  async function initialize(): Promise<void> {
+  async function initializeSubscription(): Promise<void> {
+    if (finalized || termination.isTerminated()) return;
+
     if (runtime.runtimeState === 'STOPPED') {
       runtime.runtimeState = 'BOOTSTRAPPING';
       recoveryFlow.clearBootstrappingEventBuffer();
@@ -428,6 +442,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     }
 
     ctx.setOnOrderChanged((err: Error | null, event: PushOrderChanged) => {
+      if (finalized) return;
+
       if (err) {
         logger.error('[订单监控] WebSocket 推送错误:', err.message);
         return;
@@ -436,7 +452,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       try {
         eventFlow.handleOrderChanged(event);
       } catch (error: unknown) {
-        deps.onFatalError(error);
+        termination.reportFatalError(error);
       }
     });
 
@@ -445,7 +461,45 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       request: () => ctx.subscribe([TopicType.Private]),
     });
     initialized = true;
+    if (teardownPromise !== null || termination.isTerminated()) {
+      runtime.runtimeState = 'STOPPED';
+      recoveryFlow.clearBootstrappingEventBuffer();
+      return;
+    }
+
     logger.info('[订单监控] WebSocket 订阅初始化成功');
+  }
+
+  /** 合并并发初始化，失败后允许非终止生命周期重新尝试订阅。 */
+  function initialize(): Promise<void> {
+    if (finalized || termination.isTerminated()) return Promise.resolve();
+
+    initializationPromise ??= initializeSubscription().finally(() => {
+      initializationPromise = null;
+    });
+    return initializationPromise;
+  }
+
+  /**
+   * 仅供最终 cleanup 在业务 route 和订单事实排空后调用，跨日停止不得调用。
+   * 封闭后续初始化授权，等待已开始的订阅落定，再退订真正成功的 Private 订阅。
+   * SDK 未提供取消在途请求或关闭 native context 的合同；挂起请求仍须等待，错误交给 cleanup 汇总。
+   */
+  function teardown(): Promise<void> {
+    if (teardownPromise !== null) return teardownPromise;
+
+    finalized = true;
+    teardownPromise = Promise.resolve().then(async () => {
+      await initializationPromise;
+      if (!initialized) return;
+
+      await wrapExternalApiRequest({
+        operation: 'TradeContext.unsubscribe.private',
+        request: () => ctx.unsubscribe([TopicType.Private]),
+      });
+      initialized = false;
+    });
+    return teardownPromise;
   }
 
   /**
@@ -556,12 +610,15 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   return {
     initialize,
+    teardown,
     onOrderStateChanged,
     trackOrder: orderOps.trackOrder,
     cancelOrder,
     cancelDoomsdayOrder,
     replaceOrderPriceWithPermit,
-    startRuntime: routeRuntime.start,
+    startRuntime: () => {
+      if (!finalized && !termination.isTerminated()) routeRuntime.start();
+    },
     stopRuntimeAndDrain,
     recoverOrderTrackingFromSnapshot,
     getPendingSellOrders,

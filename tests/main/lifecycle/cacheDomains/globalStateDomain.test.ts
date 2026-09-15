@@ -1,29 +1,20 @@
 /**
  * 全局状态缓存域单元测试
  *
- * 覆盖：midnightClear 禁止交易、清空 allTradingSymbols、重置各 monitorState；
+ * 覆盖：midnightClear 禁止交易、清空 allTradingSymbols、清空宿主账户与交易日事实；
  * openRebuild 调用 runTradingDayOpenRebuild(ctx.now)
  */
 import { describe, it, expect } from 'bun:test';
 import { createGlobalStateDomain } from '../../../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
-import type { LastState, MonitorState } from '../../../../src/types/state.js';
+import type { LastState } from '../../../../src/types/state.js';
 import {
   createAccountSnapshotDouble,
   createLoggerDouble,
   createPositionDouble,
 } from '../../../helpers/testDoubles.js';
 
-function createMockMonitorState(monitorSymbol: string): MonitorState {
-  return {
-    monitorSymbol,
-    lastMonitorSnapshot: null,
-    incrementalIndicatorRuntime: null,
-  };
-}
-
 describe('createGlobalStateDomain', () => {
   it('midnightClear 设置 canTrade 为 false 并清空 allTradingSymbols 与缓存字段', async () => {
-    const monitorState = createMockMonitorState('HSI.HK');
     const positionCacheUpdateSizes: number[] = [];
     const lastState: LastState = {
       canTrade: true,
@@ -49,7 +40,6 @@ describe('createGlobalStateDomain', () => {
       },
       cachedTradingDayInfo: null,
       tradingCalendarSnapshot: new Map(),
-      monitorState,
       allTradingSymbols: new Set(['12345.HK']),
     };
 
@@ -75,59 +65,9 @@ describe('createGlobalStateDomain', () => {
     expect(lastState.cachedPositions).toHaveLength(0);
     expect(positionCacheUpdateSizes).toEqual([0]);
     expect(lastState.cachedTradingDayInfo).toBeNull();
-    expect(monitorState.lastMonitorSnapshot).toBeNull();
+    expect('monitorState' in lastState).toBeFalse();
 
     expect(runOpenRebuildCalled).toBe(false);
-  });
-
-  it('midnightClear does not mutate detached snapshot objects after resetting monitor state', async () => {
-    const detachedSnapshot = {
-      price: 20_000,
-      changePercent: 0,
-      ema: { 7: 19_980 },
-      rsi: { 6: 52 },
-      psy: { 13: 58 },
-      mfi: 45,
-      kdj: { k: 51, d: 49, j: 55 },
-      macd: { macd: 10, dif: 3, dea: 2 },
-      adx: null,
-    };
-    const monitorState: MonitorState = {
-      ...createMockMonitorState('HSI.HK'),
-      lastMonitorSnapshot: detachedSnapshot,
-    };
-    const lastState: LastState = {
-      canTrade: true,
-      isHalfDay: false,
-      openProtectionActive: false,
-      currentDayKey: null,
-      lifecycleState: 'ACTIVE',
-      pendingOpenRebuild: false,
-      isTradingEnabled: true,
-      cachedAccount: createAccountSnapshotDouble(100000),
-      cachedPositions: [],
-      positionCache: { update: () => {}, get: () => null },
-      cachedTradingDayInfo: null,
-      tradingCalendarSnapshot: new Map(),
-      monitorState,
-      allTradingSymbols: new Set(),
-    };
-    const domain = createGlobalStateDomain({
-      logger: createLoggerDouble(),
-      lastState,
-      runTradingDayOpenRebuild: async () => {},
-    });
-
-    await domain.midnightClear({
-      now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
-    });
-
-    expect(detachedSnapshot.ema[7]).toBe(19_980);
-    expect(detachedSnapshot.rsi[6]).toBe(52);
-    expect(detachedSnapshot.psy[13]).toBe(58);
-    expect(detachedSnapshot.kdj).toEqual({ k: 51, d: 49, j: 55 });
-    expect(detachedSnapshot.macd).toEqual({ macd: 10, dif: 3, dea: 2 });
   });
 
   it('openRebuild 调用 runTradingDayOpenRebuild(ctx.now)', async () => {
@@ -144,7 +84,6 @@ describe('createGlobalStateDomain', () => {
       positionCache: { update: () => {}, get: () => null },
       cachedTradingDayInfo: null,
       tradingCalendarSnapshot: new Map(),
-      monitorState: createMockMonitorState('HSI.HK'),
       allTradingSymbols: new Set(),
     };
     let capturedNow: Date | null = null as Date | null;

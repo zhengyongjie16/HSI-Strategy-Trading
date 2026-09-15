@@ -10,7 +10,7 @@ type CandleValue = number | string | { toString: () => string } | null | undefin
  * K 线数据。
  * 类型用途：表示单根 K 线的 OHLCV 数据，用于指标计算、策略输入等。
  * 数据来源：Longbridge K 线 API（如 candlesticks、实时 K 线）。
- * 使用范围：indicators、策略、indicatorCache 等；全项目可引用。
+ * 使用范围：共享指标数学模块与策略等；全项目可引用。
  */
 export type CandleData = {
   /** K 线时间戳（毫秒） */

@@ -1,9 +1,5 @@
-/**
- * AutoSearchWakeupRuntime 业务测试
- *
- * 覆盖：runtime start seed 与自动寻标授权恢复事件唤醒 EMPTY seat，不依赖 AUTO_SYMBOL_TICK。
- */
-import { describe, expect, it } from 'bun:test';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../../src/constants/index.js';
 import { createAutoSearchWakeupRuntime } from '../../../src/main/autoSearchWakeupRuntime/index.js';
 import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
@@ -15,6 +11,22 @@ import {
   createMonitorConfigDouble,
   createMonitorContextDouble,
 } from '../../helpers/testDoubles.js';
+
+let termination: ReturnType<typeof createTerminationRuntime>;
+beforeEach(() => {
+  termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+});
+
+/**
+ * AutoSearchWakeupRuntime 业务测试
+ *
+ * 覆盖：runtime start seed 与自动寻标授权恢复事件唤醒 EMPTY seat，不依赖 AUTO_SYMBOL_TICK。
+ */
 
 function createTradingGateEventRuntime() {
   return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
@@ -115,6 +127,7 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -169,6 +182,7 @@ describe('AutoSearchWakeupRuntime', () => {
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState,
@@ -215,6 +229,7 @@ describe('AutoSearchWakeupRuntime', () => {
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState,
@@ -259,6 +274,7 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -275,7 +291,13 @@ describe('AutoSearchWakeupRuntime', () => {
       },
     });
 
-    const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
+    const fatalErrorPromise = termination
+      .waitForTermination()
+      .then(() => {
+        const state = termination.getFatalState();
+        if (state.hasFatalError) throw state.error;
+      })
+      .catch((error: unknown) => error);
     runtime.start();
     const fatalError = await fatalErrorPromise;
     await runtime.stopAndDrain();
@@ -325,6 +347,7 @@ describe('AutoSearchWakeupRuntime', () => {
       }),
     });
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
@@ -335,7 +358,13 @@ describe('AutoSearchWakeupRuntime', () => {
       clearTimer: timers.clearTimer,
     });
 
-    const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
+    const fatalErrorPromise = termination
+      .waitForTermination()
+      .then(() => {
+        const state = termination.getFatalState();
+        if (state.hasFatalError) throw state.error;
+      })
+      .catch((error: unknown) => error);
     runtime.start();
     const fatalError = await fatalErrorPromise;
     await Bun.sleep(0);
@@ -376,6 +405,7 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -454,6 +484,7 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -543,6 +574,7 @@ describe('AutoSearchWakeupRuntime', () => {
       }),
     });
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
@@ -629,6 +661,7 @@ describe('AutoSearchWakeupRuntime', () => {
       }),
     });
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
@@ -675,6 +708,7 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: {
@@ -726,6 +760,7 @@ describe('AutoSearchWakeupRuntime', () => {
     });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState: {

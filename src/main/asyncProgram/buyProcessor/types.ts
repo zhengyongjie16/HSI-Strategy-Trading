@@ -3,7 +3,7 @@ import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { TaskQueue, BuyTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
 import type { DoomsdayProtection } from '../../../core/doomsdayProtection/types.js';
-import type { RuntimeClock } from '../../../types/runtime.js';
+import type { RuntimeClock, RuntimeTermination } from '../../../types/runtime.js';
 
 /**
  * 买入处理器依赖类型（创建 BuyProcessor 时的参数）。
@@ -40,5 +40,5 @@ export type BuyProcessorDeps = {
   readonly getCanProcessTask?: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 };

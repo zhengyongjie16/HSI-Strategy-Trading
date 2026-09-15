@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { QuoteUpdatedEvent, MarketDataClient } from '../../types/services.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
@@ -24,6 +25,7 @@ export type TradingQuoteDisplayRouteState = {
  * 使用范围：app 装配、lifecycle 与 cleanup 使用。
  */
 export interface TradingQuoteDisplayRuntime {
+  readonly stop: () => void;
   readonly start: () => void;
   readonly stopAndDrain: () => Promise<void>;
 }
@@ -51,5 +53,5 @@ export type TradingQuoteDisplayRuntimeDeps = Readonly<{
       ? TValue
       : never;
   }) => void;
-  onFatalError?: (error: unknown) => void;
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 }>;

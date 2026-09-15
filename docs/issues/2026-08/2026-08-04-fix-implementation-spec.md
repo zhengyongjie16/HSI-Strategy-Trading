@@ -186,7 +186,7 @@ bun run lint
 bunx prettier --check .
 bun run build
 bun test tests/core/trader/orderMonitor/
-bun test tests/core/trader/orderMonitor.business.test.ts tests/core/trader/orderMonitorRouteHooks.integration.test.ts tests/integration/orderMonitorDailyLossMonotonic.integration.test.ts
+bun test tests/core/trader/orderMonitor/orderMonitor.business.test.ts tests/core/trader/orderMonitorRouteHooks.integration.test.ts tests/integration/orderMonitorDailyLossMonotonic.integration.test.ts
 bun test
 ```
 
@@ -703,7 +703,7 @@ bun run lint
 bunx prettier --check .
 bun run build
 bun test tests/core/trader/orderMonitor/
-bun test tests/core/trader/orderMonitor.business.test.ts tests/core/trader/orderMonitorRouteHooks.integration.test.ts tests/integration/orderMonitorDailyLossMonotonic.integration.test.ts
+bun test tests/core/trader/orderMonitor/orderMonitor.business.test.ts tests/core/trader/orderMonitorRouteHooks.integration.test.ts tests/integration/orderMonitorDailyLossMonotonic.integration.test.ts
 bun test
 git diff --check
 git diff --name-only

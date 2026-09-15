@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { defineConfig } from 'eslint/config';
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
@@ -45,6 +46,44 @@ const noImportAliasRule = {
             local,
           },
         });
+      },
+    };
+  },
+};
+
+const strategyPrivateBoundaryRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: { privateStrategy: '宿主/公共模块不得导入私有策略，策略之间也不得相互导入。' },
+  },
+  create(context) {
+    const filename = getNormalizedFilename(context);
+    if (!isSrcFile(filename)) return {};
+    const strategyRoot = '/src/core/strategy/';
+    function check(node, source) {
+      if (typeof source?.value !== 'string' || !source.value.startsWith('.')) return;
+      const target = path.posix.normalize(
+        path.posix.join(path.posix.dirname(filename), source.value),
+      );
+      const targetPart = target.split(strategyRoot)[1];
+      if (targetPart === undefined || !targetPart.includes('/')) return;
+      const ownerPart = filename.split(strategyRoot)[1];
+      if (ownerPart?.includes('/') && ownerPart.split('/')[0] === targetPart.split('/')[0]) return;
+      reportNode(context, node, 'privateStrategy');
+    }
+    return {
+      ImportDeclaration(node) {
+        check(node, node.source);
+      },
+      ExportNamedDeclaration(node) {
+        check(node, node.source);
+      },
+      ExportAllDeclaration(node) {
+        check(node, node.source);
+      },
+      ImportExpression(node) {
+        check(node, node.source);
       },
     };
   },
@@ -267,6 +306,7 @@ export default defineConfig(
       local: {
         rules: {
           'no-import-alias': noImportAliasRule,
+          'strategy-private-boundary': strategyPrivateBoundaryRule,
           'no-redundant-type-alias': redundantTypeAliasRule,
           'type-definitions-location': typeDefinitionsLocationRule,
           'types-file-only-types': typesFileOnlyTypesRule,
@@ -403,6 +443,7 @@ export default defineConfig(
       'no-nested-ternary': 'error',
       'prefer-arrow-callback': 'error',
       'local/no-import-alias': 'error',
+      'local/strategy-private-boundary': 'error',
       'local/no-redundant-type-alias': 'error',
       'local/type-definitions-location': 'error',
       'local/types-file-only-types': 'error',

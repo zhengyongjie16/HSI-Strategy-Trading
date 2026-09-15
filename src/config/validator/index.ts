@@ -5,7 +5,7 @@
  * 保持当前错误收集顺序、日志输出语义与运行时标的校验行为不变。
  */
 import { logger } from '../../utils/logger/index.js';
-import { createConfigValidationError, formatSignalConfig } from '../utils.js';
+import { createConfigValidationError } from '../utils.js';
 import { readAuthMode } from '../auth/utils.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
@@ -218,46 +218,6 @@ export async function validateAllConfig({
         : `${monitorConfig.smartCloseTimeoutMinutes} 分钟`
     }`,
   );
-
-  const verificationConfig = monitorConfig.verificationConfig;
-  if (
-    verificationConfig.buy.delaySeconds > 0 &&
-    verificationConfig.buy.indicators &&
-    verificationConfig.buy.indicators.length > 0
-  ) {
-    logger.info(`买入信号延迟验证时间: ${verificationConfig.buy.delaySeconds} 秒`);
-    logger.info(`买入信号延迟验证指标: ${verificationConfig.buy.indicators.join(', ')}`);
-  } else {
-    logger.info('买入信号延迟验证: 已禁用');
-  }
-
-  if (
-    verificationConfig.sell.delaySeconds > 0 &&
-    verificationConfig.sell.indicators &&
-    verificationConfig.sell.indicators.length > 0
-  ) {
-    logger.info(`卖出信号延迟验证时间: ${verificationConfig.sell.delaySeconds} 秒`);
-    logger.info(`卖出信号延迟验证指标: ${verificationConfig.sell.indicators.join(', ')}`);
-  } else {
-    logger.info('卖出信号延迟验证: 已禁用');
-  }
-
-  logger.info('信号配置:');
-  if (monitorConfig.signalConfig.buycall) {
-    logger.info(`BUYCALL: ${formatSignalConfig(monitorConfig.signalConfig.buycall)}`);
-  }
-
-  if (monitorConfig.signalConfig.sellcall) {
-    logger.info(`SELLCALL: ${formatSignalConfig(monitorConfig.signalConfig.sellcall)}`);
-  }
-
-  if (monitorConfig.signalConfig.buyput) {
-    logger.info(`BUYPUT: ${formatSignalConfig(monitorConfig.signalConfig.buyput)}`);
-  }
-
-  if (monitorConfig.signalConfig.sellput) {
-    logger.info(`SELLPUT: ${formatSignalConfig(monitorConfig.signalConfig.sellput)}`);
-  }
 
   logger.info('');
   logger.info(`是否启动末日保护: ${tradingConfig.global.doomsdayProtection ? '是' : '否'}`);

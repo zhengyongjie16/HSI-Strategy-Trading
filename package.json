@@ -5,7 +5,7 @@
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "build": "bun clean && tsc -p tsconfig.build.json",
+    "build": "bun run clean && tsc -p tsconfig.build.json",
     "start": "bun src/index.ts",
     "dev": "cross-env RUN_MODE=dev bun start",
     "type-check": "tsc -p tsconfig.json",

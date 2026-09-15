@@ -1,10 +1,3 @@
-/**
- * orderMonitor/orderOps 业务测试
- *
- * 覆盖：
- * - trackOrder 会把 orderId 挂到 symbol bucket，并在 ACTIVE 运行态触发 TRACKED wakeup
- * - 恢复阶段 trackOrder 只重建 truth，不触发 TRACKED wakeup
- */
 import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderStatus, OrderType, type OrderDetail } from 'longbridge';
 import { ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS } from '../../../../src/constants/index.js';
@@ -27,12 +20,22 @@ import type { OrderHoldRegistry, OrderCacheManager } from '../../../../src/core/
 import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 
+/**
+ * orderMonitor/orderOps 业务测试
+ *
+ * 覆盖：
+ * - trackOrder 会把 orderId 挂到 symbol bucket，并在 ACTIVE 运行态触发 TRACKED wakeup
+ * - 恢复阶段 trackOrder 只重建 truth，不触发 TRACKED wakeup
+ */
+
 const TEST_MONITOR_CONFIG = createTradingConfig().monitor;
 
-type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now'> & Partial<Pick<OrderOpsDeps, 'now'>>;
+type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now' | 'termination'> &
+  Partial<Pick<OrderOpsDeps, 'now' | 'termination'>>;
 
 function createOrderOps(deps: TestOrderOpsDeps) {
   return createProductionOrderOps({
+    termination: { isTerminated: () => false, reportFatalError: () => {} },
     now: () => new Date(Date.now()),
     ...deps,
   });
@@ -118,6 +121,7 @@ function createReplaceTempBlockedHarness(): {
   };
   let stateCheckCalls = 0;
   const orderOps = createOrderOps({
+    termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     monitorConfig: TEST_MONITOR_CONFIG,
     ctx: createTradeContextDouble(tradeCtx),
@@ -196,6 +200,7 @@ describe('orderMonitor orderOps', () => {
       },
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeContext),
@@ -271,6 +276,7 @@ describe('orderMonitor orderOps', () => {
       },
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeContext),
@@ -326,6 +332,7 @@ describe('orderMonitor orderOps', () => {
     await firstMutationEntered.promise;
 
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeContext),
@@ -465,6 +472,7 @@ describe('orderMonitor orderOps', () => {
   it('trackOrder 在 monitorSymbol 不匹配唯一配置时立即失败', () => {
     const runtime = createRuntimeStore();
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(),
@@ -507,6 +515,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('network unavailable');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -545,6 +554,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('openapi error: code=429: rate limit exceeded');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -585,6 +595,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('network unavailable');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -619,6 +630,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('openapi error: code=601011: order already cancelled after network delay');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -658,6 +670,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('openapi error: code=602012: unsupported order type after timeout');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -707,6 +720,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('openapi error: code=503: service unavailable');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -760,6 +774,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('network unavailable');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -813,6 +828,7 @@ describe('orderMonitor orderOps', () => {
       throw new Error('network unavailable');
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -930,6 +946,7 @@ describe('orderMonitor orderOps', () => {
       replaceCallCount += 1;
     };
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -999,6 +1016,7 @@ describe('orderMonitor orderOps', () => {
       }>
     > = [];
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -1088,6 +1106,7 @@ describe('orderMonitor orderOps', () => {
     };
     const rateLimiter = createRateLimiter();
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -1140,6 +1159,7 @@ describe('orderMonitor orderOps', () => {
       };
       let cumulativeExecutionCount = 0;
       const orderOps = createOrderOps({
+        termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
         ctx: createTradeContextDouble(tradeCtx),
@@ -1216,6 +1236,7 @@ describe('orderMonitor orderOps', () => {
     };
     let cumulativeExecutionCount = 0;
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -1304,6 +1325,7 @@ describe('orderMonitor orderOps', () => {
       const partialFills: number[] = [];
       let durableProgressCalls = 0;
       const orderOps = createOrderOps({
+        termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
         ctx: createTradeContextDouble(tradeCtx),
@@ -1381,6 +1403,7 @@ describe('orderMonitor orderOps', () => {
     const persistenceError = new Error('protective OPEN progress persistence failed');
     const partialFills: number[] = [];
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -1454,6 +1477,7 @@ describe('orderMonitor orderOps', () => {
       Readonly<{ orderId: string; executedQuantity: number | null }>
     > = [];
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -1526,6 +1550,7 @@ describe('orderMonitor orderOps', () => {
       Readonly<{ orderId: string; executedQuantity: number | null }>
     > = [];
     const orderOps = createOrderOps({
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       ctx: createTradeContextDouble(tradeCtx),
@@ -1724,6 +1749,7 @@ describe('orderMonitor orderOps', () => {
       };
       let durableProgressCalls = 0;
       const orderOps = createOrderOps({
+        termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
         ctx: createTradeContextDouble(tradeCtx),
@@ -1803,6 +1829,7 @@ describe('orderMonitor orderOps', () => {
       };
 
       const orderOps = createOrderOps({
+        termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
         ctx: createTradeContextDouble(tradeCtx),
@@ -1910,6 +1937,7 @@ function createStateCheckRawFactHarness(params: {
   const cumulativeExecutionQuantities: number[] = [];
   const routeWakeups: Array<Readonly<{ symbol: string; kind: string }>> = [];
   const orderOps = createOrderOps({
+    termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     monitorConfig: TEST_MONITOR_CONFIG,
     ctx: createTradeContextDouble(tradeCtx),

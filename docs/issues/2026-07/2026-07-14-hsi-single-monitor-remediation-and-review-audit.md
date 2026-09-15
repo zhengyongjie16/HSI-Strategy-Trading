@@ -132,7 +132,7 @@ R1 闭环后明确保留的边界包括：真实 Longbridge WS 乱序/重连、�
 
 | 失败域 | 当时的确认结论 | 后续状态 |
 | --- | --- | --- |
-| `tests/chaos/apiFlakyRecovery.test.ts` | 测试把普通 `Error('transient ...')` 当成可重试 SDK 暂态错误，且 fake timer 用固定 microtask 次数猜测 retry timer 已登记。生产分类只接受 network/timeout/明确状态码等事实，不能为绿测扩大分类。 | **已修复并复核**。改为既有 `network timeout` 契约；先观测 retry timer，再推进时间并等候第二次 cancel 与 route timer。生产代码未改。 |
+| `tests/core/trader/orderMonitor/apiFlakyRecovery.test.ts` | 测试把普通 `Error('transient ...')` 当成可重试 SDK 暂态错误，且 fake timer 用固定 microtask 次数猜测 retry timer 已登记。生产分类只接受 network/timeout/明确状态码等事实，不能为绿测扩大分类。 | **已修复并复核**。改为既有 `network timeout` 契约；先观测 retry timer，再推进时间并等候第二次 cancel 与 route timer。生产代码未改。 |
 | `tests/integration/sellFlow.integration.test.ts` | `CANCEL_AND_SUBMIT` 遇到 TERMINAL `executedQuantity=null` 时，正确行为是任何本地结算前 fail-fast；旧测试名称写“fails closed”却期待正常空结果。 | **已修复并复核**。测试现在断言 reject，并保留 `cancelOrder=1`、`orderDetail=1`、`submitOrder=0` 与无 pending-sell 占用副作用；定向运行 1 pass / 0 fail。 |
 | `tests/main/asyncProgram/buyProcessor/business.test.ts` 的 4 项 | 旧测试仍把 BuyProcessor 当成第二次最终报价、最新买价、lotSize、最终 permit/TOCTOU owner；这些职责已迁移到 `OrderExecutor/submitFlow`。 | 在用户收敛命令前复核被中断，故不能把 4 项一律写成生产缺陷或已关闭测试债。 |
 

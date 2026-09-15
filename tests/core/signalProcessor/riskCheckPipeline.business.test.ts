@@ -5,6 +5,7 @@
  * - 验证风险检查管道相关场景意图、边界条件与业务期望。
  */
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { rejects } from 'node:assert/strict';
 import type { BuyRiskCheckContext } from '../../../src/types/services.js';
 import { createRiskCheckPipeline } from '../../../src/core/signalProcessor/riskCheckPipeline.js';
 import {
@@ -48,17 +49,6 @@ function createContext(params: {
     longQuote: createQuoteDouble('BULL.HK', 10),
     shortQuote: createQuoteDouble('BEAR.HK', 10),
     monitorQuote: createQuoteDouble('HSI.HK', 20000),
-    monitorSnapshot: {
-      price: 20000,
-      changePercent: 0,
-      ema: null,
-      rsi: null,
-      psy: null,
-      mfi: null,
-      kdj: { k: 50, d: 50, j: 50 },
-      macd: { macd: 0, dif: 0, dea: 0 },
-      adx: null,
-    },
     longSymbol: 'BULL.HK',
     shortSymbol: 'BEAR.HK',
     longSymbolName: 'BULL.HK',
@@ -79,6 +69,39 @@ describe('riskCheckPipeline business flow', () => {
   beforeEach(() => {
     lastRiskCheckTime = new Map();
   });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'rejects invalid internal monitor price %s before cooldown or risk side effects',
+    async (price) => {
+      let tradeChecks = 0;
+      const trader = createTraderDouble({
+        canTradeNow: () => {
+          tradeChecks += 1;
+          return { canTrade: true };
+        },
+      });
+      const context = createContext({
+        trader,
+        riskChecker: createRiskCheckerDouble(),
+        orderRecorder: createOrderRecorderDouble(),
+      });
+      const pipeline = createRiskCheckPipeline({
+        tradingConfig: createTradingConfig(),
+        liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+        lastRiskCheckTime,
+      });
+
+      await rejects(
+        pipeline([createSignalDouble('BUYCALL', 'BULL.HK')], {
+          ...context,
+          monitorQuote: createQuoteDouble('HSI.HK', price),
+        }),
+        /买入风控内部契约错误/,
+      );
+      expect(lastRiskCheckTime.size).toBe(0);
+      expect(tradeChecks).toBe(0);
+    },
+  );
 
   it('blocks risk-check cooldown before the entire buy light-check chain', async () => {
     let canTradeNowCount = 0;

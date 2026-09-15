@@ -13,7 +13,6 @@
  */
 import { FilterWarrantExpiryDate, OrderSide, OrderStatus, OrderType, Period } from 'longbridge';
 import type { OrderTypeConfig, SignalType } from '../types/signal.js';
-import type { StrategyAction } from '../types/indicatorProfile.js';
 import type {
   ValidatedOrderSide,
   ValidatedOrderStatus,
@@ -113,29 +112,8 @@ export const LIFECYCLE = {
   CALENDAR_API_MAX_LOOKBACK_DAYS: 365,
 } as const;
 
-/**
- * 延迟信号验证相关常量
- * 用于 DelayedSignalVerifier 模块，验证开仓信号的趋势持续性
- */
-export const VERIFICATION = {
-  /** 验证时间点1偏移量（秒），信号触发后首次验证 */
-  TIME_OFFSET_1_SECONDS: 5,
-
-  /** 验证时间点2偏移量（秒），信号触发后二次验证 */
-  TIME_OFFSET_2_SECONDS: 10,
-
-  /** 验证就绪延迟时间（秒），信号注册后等待验证的时间 */
-  READY_DELAY_SECONDS: 10,
-
-  /** 验证通过信号冷却时间（秒），同标的同方向在此时间内只允许一个信号进入风险检查 */
-  VERIFIED_SIGNAL_COOLDOWN_SECONDS: 10,
-} as const;
-
-/** 延迟验证中允许无周期的固定指标集合 */
-export const VERIFICATION_FIXED_INDICATORS = new Set(['K', 'D', 'J', 'MACD', 'DIF', 'DEA', 'ADX']);
-
-/** 信号条件解析中允许无周期的固定指标集合（不含 RSI/PSY，ADX 仅用于延迟验证） */
-export const SIGNAL_CONFIG_SUPPORTED_INDICATORS = ['MFI', 'K', 'D', 'J'] as const;
+/** 买入风险检查入口的同标的共用限流窗口，不属于策略验证政策。 */
+export const BUY_RISK_CHECK_COOLDOWN_MS = 10_000;
 
 /** 日志相关常量，用于 pino 日志系统 */
 export const LOGGING = {
@@ -195,15 +173,6 @@ export const API = {
 
   /** 两次 API 调用最小间隔（毫秒），API 要求 20ms，加 10ms 缓冲 */
   MIN_CALL_INTERVAL_MS: 30,
-} as const;
-
-/** 指标缓存相关常量 */
-export const INDICATOR_CACHE = {
-  /** 指标样本默认保留时间窗口（毫秒） */
-  DEFAULT_RETENTION_WINDOW_MS: 100 * 1000,
-
-  /** 样本保留窗口安全余量（秒） */
-  RETENTION_SAFETY_MARGIN_SECONDS: 15,
 } as const;
 
 /** 订单相关常量 */
@@ -418,26 +387,6 @@ export const ACCOUNT_CHANNEL_MAP: Record<string, string> = {
   realtrading: '实盘交易',
   live: '实盘交易',
   demo: '模拟交易',
-};
-
-/** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
-const STRATEGY_ACTIONS: ReadonlyArray<StrategyAction> = [
-  'BUYCALL',
-  'SELLCALL',
-  'BUYPUT',
-  'SELLPUT',
-] as const;
-
-/** 有效的交易信号集合，不包含 HOLD（仅用于判断是否需要执行交易） */
-export const VALID_SIGNAL_ACTIONS = new Set<SignalType>(STRATEGY_ACTIONS);
-
-/** 信号操作描述映射，用于日志输出 */
-export const ACTION_DESCRIPTIONS: Record<SignalType, string> = {
-  BUYCALL: '买入做多',
-  BUYPUT: '买入做空',
-  SELLCALL: '卖出做多',
-  SELLPUT: '卖出做空',
-  HOLD: '持有',
 };
 
 /** 信号操作详细描述映射，用于执行链路日志 */

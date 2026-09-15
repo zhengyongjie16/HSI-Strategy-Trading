@@ -36,10 +36,10 @@ export function createCleanup(): CleanupController {
   };
 
   /**
-   * 执行清理：先关闭交易门禁并中断 freshness 等待，再停止上游事件 owner、排空提交链路处理器，最后停止订单监控与订阅 owner，随后销毁验证器、清空缓存并重置行情订阅。
+   * 执行清理：先关闭交易门禁并中断 freshness 等待，再停止上游事件 owner、排空提交链路处理器，最后停止订单监控与订阅 owner，随后销毁验证器、清空缓存并重置行情订阅；仅在所有步骤落定后记录完成状态。
    */
   async function executeRegisteredSteps(): Promise<void> {
-    logger.info('Program exiting, cleaning up resources...');
+    logger.debug('Program exiting, cleaning up resources...');
     const failures: CleanupFailure[] = [];
     const orderedSteps = [...registeredSteps].sort((left, right) => {
       const phaseDifference = CLEANUP_PHASE_ORDER[left.phase] - CLEANUP_PHASE_ORDER[right.phase];
@@ -47,12 +47,25 @@ export function createCleanup(): CleanupController {
     });
 
     for (const cleanupStep of orderedSteps) {
+      const marker = `[Cleanup] phase=${CLEANUP_PHASE_ORDER[cleanupStep.phase]} name=${cleanupStep.phase} step=${cleanupStep.step}`;
+      const startedAt = performance.now();
+      logger.debug(`${marker} start`);
       try {
         await cleanupStep.handler();
+        logger.debug(`${marker} done elapsedMs=${Math.round(performance.now() - startedAt)}`);
       } catch (err) {
         failures.push({ step: cleanupStep.step, error: err });
-        logger.error(`[Cleanup] ${cleanupStep.step} 失败: ${formatError(err)}`);
+        logger.error(
+          `${marker} failed elapsedMs=${Math.round(performance.now() - startedAt)}: ${formatError(err)}`,
+        );
       }
+    }
+
+    const completion = `[Cleanup] completion status=${failures.length > 0 ? 'failure' : 'success'} total=${orderedSteps.length} success=${orderedSteps.length - failures.length} failure=${failures.length}`;
+    if (failures.length > 0) {
+      logger.error(completion);
+    } else {
+      logger.debug(completion);
     }
 
     if (failures.length > 0) {

@@ -1,5 +1,3 @@
-import type { MonitorConfig } from '../../types/config.js';
-
 /**
  * 通用配置校验结果。
  * 类型用途：表达累积的配置错误。
@@ -22,11 +20,3 @@ export type SymbolValidationContext = {
   readonly envKey: string;
   readonly errors: ReadonlyArray<string>;
 };
-
-/**
- * 信号配置键名联合类型。
- * 类型用途：表示 MonitorConfig.signalConfig 的固定四个键。
- * 数据来源：派生自 MonitorConfig 的 signalConfig 字段键名。
- * 使用范围：仅 validator 模块内部使用。
- */
-export type SignalConfigKey = keyof MonitorConfig['signalConfig'];

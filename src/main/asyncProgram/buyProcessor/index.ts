@@ -58,7 +58,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     getIsHalfDay,
     now,
     getCanProcessTask,
-    onFatalError,
+    termination,
   } = deps;
 
   /**
@@ -71,7 +71,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
     try {
       const ctx = monitorContext;
-      const { config, state, orderRecorder, riskChecker } = ctx;
+      const { config, orderRecorder, riskChecker } = ctx;
       const isLongSignal = signal.action === 'BUYCALL';
       const seatValidation = validateSignalSeat({
         signal,
@@ -102,6 +102,10 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       }
 
       const riskQuotes = await marketDataClient.getQuotes(quoteSymbols);
+      if (termination.isTerminated() || (getCanProcessTask && !getCanProcessTask())) return;
+
+      if (!validateSignalSeat({ signal, symbolRegistry: ctx.symbolRegistry }).valid) return;
+
       const longQuote = longSymbol ? (riskQuotes.get(longSymbol) ?? null) : null;
       const shortQuote = shortSymbol ? (riskQuotes.get(shortSymbol) ?? null) : null;
       const monitorQuote = riskQuotes.get(monitorSymbol) ?? null;
@@ -125,7 +129,6 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         longQuote,
         shortQuote,
         monitorQuote,
-        monitorSnapshot: state.lastMonitorSnapshot,
         longSymbol,
         shortSymbol,
         longSymbolName: ctx.longSymbolName,
@@ -136,6 +139,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         config,
       };
       const checkedSignals = await signalProcessor.applyRiskChecks([signal], riskCheckContext);
+      if (termination.isTerminated() || (getCanProcessTask && !getCanProcessTask())) return;
 
       // 如果信号被风险检查拦截，跳过执行
       if (checkedSignals.length === 0) {
@@ -185,6 +189,6 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     taskQueue,
     processTask,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
-    onFatalError,
+    termination,
   });
 }

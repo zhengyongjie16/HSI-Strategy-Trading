@@ -18,6 +18,7 @@
  * 错误处理：
  * - 任一步骤失败即整体抛出，由生命周期管理器负责重试
  */
+import type { RuntimeTermination } from '../../types/runtime.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { Quote } from '../../types/quote.js';
@@ -63,6 +64,7 @@ async function rebuildOrderRecords(
   monitorContext: MonitorContext,
   allOrders: ReadonlyArray<RawOrderFromAPI>,
   quotesMap: ReadonlyMap<string, Quote | null>,
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
 ): Promise<void> {
   const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
   const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
@@ -73,6 +75,8 @@ async function rebuildOrderRecords(
       quotesMap.get(longSeatState.symbol) ?? null,
     );
   }
+
+  if (termination.isTerminated()) return;
 
   if (hasSeatSymbol(shortSeatState)) {
     await monitorContext.orderRecorder.refreshOrdersFromAllOrdersForShort(
@@ -133,6 +137,7 @@ async function rebuildWarrantRiskCache(
   marketDataClient: MarketDataClient,
   monitorContext: MonitorContext,
   quotesMap: ReadonlyMap<string, Quote | null>,
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
 ): Promise<void> {
   const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
   const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
@@ -144,6 +149,8 @@ async function rebuildWarrantRiskCache(
     true,
     hasSeatSymbol(longSeatState) ? (longSeatState.callPrice ?? null) : null,
   );
+
+  if (termination.isTerminated()) return;
 
   await refreshSeatWarrantInfo(
     marketDataClient,
@@ -162,6 +169,7 @@ async function rebuildUnrealizedLossCache(
   monitorContext: MonitorContext,
   dailyLossTracker: DailyLossTracker,
   quotesMap: ReadonlyMap<string, Quote | null>,
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
 ): Promise<void> {
   const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
   const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
@@ -175,6 +183,8 @@ async function rebuildUnrealizedLossCache(
       dailyLossOffset,
     );
   }
+
+  if (termination.isTerminated()) return;
 
   if (hasSeatSymbol(shortSeatState)) {
     const dailyLossOffset = dailyLossTracker.getLossOffset('SHORT');
@@ -195,8 +205,11 @@ function activateRebuiltSeats(
   monitorContext: MonitorContext,
   symbolRegistry: SymbolRegistry,
   nowMs: number,
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
 ): void {
   for (const direction of ['LONG', 'SHORT'] as const) {
+    if (termination.isTerminated()) return;
+
     const seatState = monitorContext.symbolRegistry.getSeatState(direction);
     if (!hasSeatSymbol(seatState)) {
       continue;
@@ -227,6 +240,7 @@ export function createRebuildTradingDayState(
 ): (params: RebuildTradingDayStateParams) => Promise<void> {
   const {
     marketDataClient,
+    termination,
     trader,
     lastState,
     symbolRegistry,
@@ -244,21 +258,36 @@ export function createRebuildTradingDayState(
   return async function rebuildTradingDayState(
     params: RebuildTradingDayStateParams,
   ): Promise<void> {
+    if (termination.isTerminated()) return;
+
     const { allOrders, quotesMap, now } = params;
     syncMonitorContextSymbolNames(monitorContext, quotesMap);
     try {
-      await rebuildOrderRecords(monitorContext, allOrders, quotesMap);
+      await rebuildOrderRecords(monitorContext, allOrders, quotesMap, termination);
+      if (termination.isTerminated()) return;
+
       await prewarmTradingCalendarSnapshotForRebuild({
         marketDataClient,
         lastState,
         monitorContext,
         now,
       });
-      await rebuildWarrantRiskCache(marketDataClient, monitorContext, quotesMap);
-      await rebuildUnrealizedLossCache(monitorContext, dailyLossTracker, quotesMap);
-      activateRebuiltSeats(monitorContext, symbolRegistry, now.getTime());
+
+      if (termination.isTerminated()) return;
+
+      await rebuildWarrantRiskCache(marketDataClient, monitorContext, quotesMap, termination);
+      if (termination.isTerminated()) return;
+
+      await rebuildUnrealizedLossCache(monitorContext, dailyLossTracker, quotesMap, termination);
+      if (termination.isTerminated()) return;
+
+      activateRebuiltSeats(monitorContext, symbolRegistry, now.getTime(), termination);
+      if (termination.isTerminated()) return;
+
       syncMonitorContextSymbolNames(monitorContext, quotesMap);
       await trader.recoverOrderTrackingFromSnapshot(allOrders);
+      if (termination.isTerminated()) return;
+
       displayAccountAndPositions({ lastState, quotesMap });
       clearSeatActivationCarryover(symbolRegistry);
     } catch (err) {
@@ -266,6 +295,7 @@ export function createRebuildTradingDayState(
         throw err;
       }
 
+      termination.reportFatalError(err);
       throw new Error(`[Lifecycle] 重建交易日状态失败: ${formatError(err)}`, { cause: err });
     }
   };

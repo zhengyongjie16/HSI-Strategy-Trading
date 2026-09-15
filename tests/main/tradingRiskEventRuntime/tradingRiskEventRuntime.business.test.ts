@@ -1,10 +1,3 @@
-/**
- * TradingRiskEventRuntime 业务测试
- *
- * 功能：
- * - 验证路由索引、门禁、seat 版本校验与 single-flight latest-only 语义
- * - 验证单方向浮亏执行器会把 seatVersion 写入清仓信号
- */
 import { beforeEach, describe, expect, it } from 'bun:test';
 import {
   createMonitorContextDouble,
@@ -26,6 +19,14 @@ import { createExternalApiRequestError } from '../../helpers/createExternalApiRe
 import type { TradingRiskEventRuntimeDeps } from '../../../src/main/tradingRiskEventRuntime/types.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
+
+/**
+ * TradingRiskEventRuntime 业务测试
+ *
+ * 功能：
+ * - 验证路由索引、门禁、seat 版本校验与 single-flight latest-only 语义
+ * - 验证单方向浮亏执行器会把 seatVersion 写入清仓信号
+ */
 
 type TestTradingRiskConsistencyStatus = ReturnType<
   TradingRiskEventRuntimeDeps['postTradeConsistencyRuntime']['getStatus']
@@ -233,7 +234,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         postTradeConsistencyRuntime: consistencyPort.port,
         doomsdayProtectionEnabled: params.doomsdayProtectionEnabled ?? false,
         now: params.now ?? (() => new Date('2026-04-06T01:30:00.000Z')),
-        onFatalError: () => {},
+        termination: { isTerminated: () => false, reportFatalError: () => {} },
       },
       consistencyPort,
       trader,
@@ -272,8 +273,11 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const runtime = createTradingRiskEventRuntime({
       ...deps,
-      onFatalError: (error: unknown) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error: unknown) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -312,8 +316,11 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const runtime = createTradingRiskEventRuntime({
       ...deps,
-      onFatalError: (error: unknown) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error: unknown) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -343,8 +350,11 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const runtime = createTradingRiskEventRuntime({
       ...deps,
-      onFatalError: (error: unknown) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error: unknown) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -380,8 +390,11 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const runtime = createTradingRiskEventRuntime({
       ...deps,
-      onFatalError: (error: unknown) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error: unknown) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -745,8 +758,11 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     });
     const runtime = createTradingRiskEventRuntime({
       ...deps,
-      onFatalError: (error) => {
-        fatalErrors.push(error instanceof Error ? error : new Error(String(error)));
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error instanceof Error ? error : new Error(String(error)));
+        },
       },
     });
 

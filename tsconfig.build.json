@@ -3,12 +3,13 @@
   "compilerOptions": {
     "types": ["node"],
     "noEmit": false,
+    "noEmitOnError": true,
     "outDir": "./dist",
     "rootDir": "./",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
     "removeComments": false
   },
-  "include": ["src/**/*", "tools/**/*"]
+  "include": ["src/**/*"]
 }

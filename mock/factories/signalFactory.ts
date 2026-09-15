@@ -24,6 +24,5 @@ export function createSignal<TAction extends SignalFactoryParams['action']>(
     reason: params.reason ?? 'mock-signal',
     seatVersion: params.seatVersion ?? 1,
     triggerTime: new Date(params.triggerTimeMs ?? Date.now()),
-    ...(params.indicators1 === undefined ? {} : { indicators1: params.indicators1 }),
   };
 }

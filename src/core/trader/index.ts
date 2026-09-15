@@ -60,14 +60,19 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       protectiveLiquidationEpisodeTracker,
       persistProtectiveLiquidationExecutionProgress,
       postTradeConsistencyRuntime,
-      isExecutionAllowed,
-      isContinuousTradingAllowed,
+      isExecutionAllowed: isLifecycleExecutionAllowed,
+      isContinuousTradingAllowed: isLifecycleContinuousTradingAllowed,
       now,
       scheduleTimer,
       clearTimer,
       readCurrentTradingDayInfo,
-      onFatalError,
+      termination,
     } = deps;
+
+    const isExecutionAllowed = (): boolean =>
+      !termination.isTerminated() && isLifecycleExecutionAllowed();
+    const isContinuousTradingAllowed = (): boolean =>
+      !termination.isTerminated() && isLifecycleContinuousTradingAllowed();
 
     // ========== 1. 创建基础依赖 ==========
     const ctx = TradeContext.new(config);
@@ -107,7 +112,7 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       now,
       scheduleTimer,
       clearTimer,
-      onFatalError,
+      termination,
     });
 
     // ========== 6. 创建 orderExecutor ==========
@@ -179,6 +184,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       },
 
       // ==================== 订单监控相关方法 ====================
+
+      teardown: orderMonitor.teardown,
 
       cancelOrder,
       cancelDoomsdayOrder,

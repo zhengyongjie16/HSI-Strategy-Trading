@@ -1,8 +1,6 @@
 import type { OrderType } from 'longbridge';
 import type { MonitorConfig } from '../../types/config.js';
 import type { OrderTypeConfig } from '../../types/signal.js';
-import type { SignalConfig } from '../../types/signalConfig.js';
-import { logger } from '../../utils/logger/index.js';
 import { OPEN_API_ORDER_TYPE_TO_CONFIG } from '../../constants/index.js';
 import {
   createConfigValidationError,
@@ -13,33 +11,9 @@ import {
   parseNumberRangeConfig,
   parseOrderOwnershipMapping,
   parseOrderTypeConfig,
-  parseSignalConfig,
   parseSmartCloseTimeoutMinutesConfig,
-  parseVerificationDelay,
-  parseVerificationIndicators,
 } from '../utils.js';
 import type { BoundedNumberConfig, MinimumNumberConfig } from './types.js';
-
-/**
- * 从环境变量解析信号配置字符串，未配置或解析失败时返回 null。
- * @param env 进程环境变量对象
- * @param envKey 环境变量键名
- * @returns 解析后的信号配置，无效时返回 null
- */
-function parseSignalConfigFromEnv(env: NodeJS.ProcessEnv, envKey: string): SignalConfig | null {
-  const configStr = getStringConfig(env, envKey);
-  if (!configStr) {
-    return null;
-  }
-
-  const config = parseSignalConfig(configStr);
-  if (!config) {
-    logger.error(`[配置错误] ${envKey} 格式无效`);
-    return null;
-  }
-
-  return config;
-}
 
 /**
  * 解析关键数值配置：未配置时使用默认值，显式配置非法或越界时立即失败。
@@ -241,28 +215,11 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
     min: 1,
     max: 10,
   });
-  const verificationConfig = {
-    buy: {
-      delaySeconds: parseVerificationDelay(env, 'VERIFICATION_DELAY_SECONDS_BUY', 60),
-      indicators: parseVerificationIndicators(env, 'VERIFICATION_INDICATORS_BUY'),
-    },
-    sell: {
-      delaySeconds: parseVerificationDelay(env, 'VERIFICATION_DELAY_SECONDS_SELL', 60),
-      indicators: parseVerificationIndicators(env, 'VERIFICATION_INDICATORS_SELL'),
-    },
-  };
   const smartCloseEnabled = getBooleanConfig(env, 'SMART_CLOSE_ENABLED', true);
   const smartCloseTimeoutMinutes = parseSmartCloseTimeoutMinutesConfig(
     env,
     'SMART_CLOSE_TIMEOUT_MINUTES',
   );
-  const signalConfig = {
-    buycall: parseSignalConfigFromEnv(env, 'SIGNAL_BUYCALL'),
-    sellcall: parseSignalConfigFromEnv(env, 'SIGNAL_SELLCALL'),
-    buyput: parseSignalConfigFromEnv(env, 'SIGNAL_BUYPUT'),
-    sellput: parseSignalConfigFromEnv(env, 'SIGNAL_SELLPUT'),
-  };
-
   return {
     monitorSymbol,
     longSymbol,
@@ -286,8 +243,6 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
     buyIntervalSeconds,
     liquidationCooldown,
     liquidationTriggerLimit,
-    verificationConfig,
-    signalConfig,
     smartCloseEnabled,
     smartCloseTimeoutMinutes,
   };

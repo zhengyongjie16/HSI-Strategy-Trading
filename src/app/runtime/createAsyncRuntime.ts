@@ -9,7 +9,6 @@ import { createBuyProcessor } from '../../main/asyncProgram/buyProcessor/index.j
 import { createMonitorTaskProcessor } from '../../main/asyncProgram/monitorTaskProcessor/index.js';
 import { createSellProcessor } from '../../main/asyncProgram/sellProcessor/index.js';
 import { ordinarySignalGuard } from '../../main/ordinarySignalGuard/index.js';
-import { toError } from '../../utils/error/index.js';
 import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
 
 /**
@@ -19,8 +18,9 @@ import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
  * @returns 顶层异步处理器集合
  */
 
-export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntime {
-  const { preGateRuntime, postGateRuntime, clock, scheduler } = params;
+export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntime | null {
+  const { preGateRuntime, postGateRuntime, clock, scheduler, termination, resources, cleanup } =
+    params;
   const { tradingConfig, marketDataClient } = preGateRuntime;
   const {
     monitorContext,
@@ -36,31 +36,8 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     periodicSwitchWakeupRuntime,
     quoteSubscriptionRuntime,
   } = postGateRuntime;
-  let fatalError: Error | null = null;
-  const fatalRejectors = new Set<(error: Error) => void>();
-  const handleFatalError = (error: unknown): void => {
-    if (fatalError !== null) {
-      return;
-    }
-
-    fatalError = toError(error);
-    for (const reject of fatalRejectors) {
-      reject(fatalError);
-    }
-
-    fatalRejectors.clear();
-  };
-
-  const drainFatalError = (): Promise<never> => {
-    if (fatalError !== null) {
-      return Promise.reject(fatalError);
-    }
-
-    return new Promise<never>((_, reject) => {
-      fatalRejectors.add(reject);
-    });
-  };
   const canProcessOrdinaryTradeTask = (): boolean =>
+    !termination.isTerminated() &&
     ordinarySignalGuard({
       lastState,
       now: clock.now(),
@@ -78,10 +55,20 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     periodicSwitchWakeupRuntime,
     quoteSubscriptionRuntime,
     lastState,
-    getCanProcessTask: () => lastState.isTradingEnabled,
+    getCanProcessTask: () => !termination.isTerminated() && lastState.isTradingEnabled,
     getCanTradeNow: canProcessOrdinaryTradeTask,
-    onFatalError: handleFatalError,
+    termination,
   });
+
+  resources.monitorTaskProcessor = monitorTaskProcessor;
+  cleanup.register({
+    phase: 'STOP_MONITOR_TASK_PROCESSOR',
+    step: '停止 monitorTaskProcessor',
+    handler: () => monitorTaskProcessor.stopAndDrain(),
+  });
+
+  if (termination.isTerminated()) return null;
+
   const buyProcessor = createBuyProcessor({
     taskQueue: buyTaskQueue,
     monitorContext,
@@ -92,8 +79,18 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     getIsHalfDay: () => lastState.isHalfDay ?? false,
     now: clock.now,
     getCanProcessTask: canProcessOrdinaryTradeTask,
-    onFatalError: handleFatalError,
+    termination,
   });
+
+  resources.buyProcessor = buyProcessor;
+  cleanup.register({
+    phase: 'STOP_BUY_PROCESSOR',
+    step: '停止 buyProcessor',
+    handler: () => buyProcessor.stopAndDrain(),
+  });
+
+  if (termination.isTerminated()) return null;
+
   const sellProcessor = createSellProcessor({
     clock,
     scheduler,
@@ -105,13 +102,21 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     getLastState: () => lastState,
     postTradeConsistencyRuntime,
     getCanProcessTask: canProcessOrdinaryTradeTask,
-    onFatalError: handleFatalError,
+    termination,
   });
+
+  resources.sellProcessor = sellProcessor;
+  cleanup.register({
+    phase: 'STOP_SELL_PROCESSOR',
+    step: '停止 sellProcessor',
+    handler: () => sellProcessor.stopAndDrain(),
+  });
+
+  if (termination.isTerminated()) return null;
 
   return {
     monitorTaskProcessor,
     buyProcessor,
     sellProcessor,
-    drainFatalError,
   };
 }

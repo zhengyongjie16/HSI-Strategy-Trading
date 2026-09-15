@@ -65,30 +65,54 @@ function scheduleSeatRefresh(params: {
   readonly previousSymbol: string | null;
   readonly nextState: SeatState;
 }): void {
-  const nextSymbol = resolveNextSymbol(params.nextState);
-  if (nextSymbol === null) {
-    throw new Error(
-      `[SeatActivationDispatcher] ACTIVATING 席位缺少标的: direction=${params.direction} seatVersion=${params.seatVersion}`,
+  try {
+    if (params.deps.termination.isTerminated()) return;
+
+    const currentState = params.deps.symbolRegistry.getSeatState(params.direction);
+    if (
+      currentState.status !== 'ACTIVATING' ||
+      currentState.symbol !== params.nextState.symbol ||
+      params.deps.symbolRegistry.getSeatVersion(params.direction) !== params.seatVersion
+    )
+      return;
+
+    const nextSymbol = resolveNextSymbol(params.nextState);
+    if (nextSymbol === null) {
+      throw new Error(
+        `[SeatActivationDispatcher] ACTIVATING 席位缺少标的: direction=${params.direction} seatVersion=${params.seatVersion}`,
+      );
+    }
+
+    const dedupeKey = `SEAT_REFRESH:${params.direction}`;
+    const admitted = params.deps.monitorTaskQueue.scheduleLatest({
+      type: 'SEAT_REFRESH',
+      dedupeKey,
+      data: {
+        direction: params.direction,
+        seatVersion: params.seatVersion,
+        previousSymbol: params.previousSymbol,
+        nextSymbol,
+        callPrice: params.nextState.callPrice ?? null,
+        symbolName: null,
+      },
+    });
+
+    if (!admitted) {
+      if (!params.deps.termination.isTerminated())
+        params.deps.termination.reportFatalError(
+          new Error('[SeatActivationDispatcher] 非终态队列拒绝激活任务'),
+        );
+
+      return;
+    }
+
+    logger.debug(
+      `[SEAT_REFRESH scheduled] direction=${params.direction} seatVersion=${params.seatVersion} previousSymbol=${params.previousSymbol ?? 'null'} nextSymbol=${nextSymbol} dedupeKey=${dedupeKey}`,
     );
+  } catch (error) {
+    params.deps.termination.reportFatalError(error);
+    throw error;
   }
-
-  const dedupeKey = `SEAT_REFRESH:${params.direction}`;
-  params.deps.monitorTaskQueue.scheduleLatest({
-    type: 'SEAT_REFRESH',
-    dedupeKey,
-    data: {
-      direction: params.direction,
-      seatVersion: params.seatVersion,
-      previousSymbol: params.previousSymbol,
-      nextSymbol,
-      callPrice: params.nextState.callPrice ?? null,
-      symbolName: null,
-    },
-  });
-
-  logger.debug(
-    `[SEAT_REFRESH scheduled] direction=${params.direction} seatVersion=${params.seatVersion} previousSymbol=${params.previousSymbol ?? 'null'} nextSymbol=${nextSymbol} dedupeKey=${dedupeKey}`,
-  );
 }
 
 /**
@@ -132,6 +156,8 @@ export function createSeatActivationDispatcher(
   }
 
   function handleSeatStateChanged(event: SeatStateChangedEvent): void {
+    if (!running || deps.termination.isTerminated()) return;
+
     if (event.nextState.status === 'SWITCHING') {
       rememberPendingActivation(event);
       return;
@@ -155,7 +181,7 @@ export function createSeatActivationDispatcher(
   }
 
   function dispatchCurrentActivatingSeats(): void {
-    if (running) {
+    if (running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -171,7 +197,7 @@ export function createSeatActivationDispatcher(
   }
 
   function start(): void {
-    if (running) {
+    if (running || deps.termination.isTerminated()) {
       return;
     }
 

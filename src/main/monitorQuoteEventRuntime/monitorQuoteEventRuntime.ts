@@ -60,6 +60,8 @@ function assertValidStartedSwitchResult(result: unknown): void {
  * @returns 允许执行事件时返回 true
  */
 function isExecutionGateOpen(deps: CreateMonitorQuoteEventRuntimeDeps): boolean {
+  if (deps.termination.isTerminated()) return false;
+
   if (!deps.lastState) {
     return true;
   }
@@ -227,7 +229,7 @@ export function createDefaultMonitorQuoteEventRuntime(
     lastState: deps.lastState,
     postTradeConsistencyRuntime: deps.postTradeConsistencyRuntime,
     doomsdayProtectionEnabled: deps.doomsdayProtectionEnabled,
-    onFatalError: deps.onFatalError,
+    termination: deps.termination,
   };
 
   return createMonitorQuoteEventRuntime(runtimeDeps);
@@ -254,6 +256,10 @@ function createMonitorQuoteEventRuntime(
   const runtimeMonitorSymbol = monitorContext.config.monitorSymbol;
 
   let running = false;
+  let hasDrainFailure = false;
+  let drainFailure: unknown;
+  let drainPromise: Promise<void> | null = null;
+  let draining = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let routeState: MonitorQuoteRouteState | null = null;
   const staticWakeupSymbols = new Set<string>();
@@ -314,9 +320,19 @@ function createMonitorQuoteEventRuntime(
 
   function registerInFlight(promise: Promise<void>): void {
     activePromises.add(promise);
-    void promise.finally(() => {
-      activePromises.delete(promise);
-    });
+    void promise.then(
+      () => {
+        activePromises.delete(promise);
+      },
+      (error: unknown) => {
+        if (!hasDrainFailure) {
+          hasDrainFailure = true;
+          drainFailure = error;
+        }
+
+        activePromises.delete(promise);
+      },
+    );
   }
 
   function isRouteExecutionCurrent(params: {
@@ -368,7 +384,7 @@ function createMonitorQuoteEventRuntime(
         formatError(error),
       );
 
-      deps.onFatalError(error);
+      deps.termination.reportFatalError(error);
     });
     registerInFlight(processingPromise);
   }
@@ -388,7 +404,7 @@ function createMonitorQuoteEventRuntime(
       return;
     }
 
-    void quoteSubscriptionRuntime
+    const quoteMutation = quoteSubscriptionRuntime
       .releaseRetain({
         ownerKey: runtimeMonitorSymbol,
         reason: 'STATIC_LIQUIDATION_WAIT',
@@ -398,8 +414,10 @@ function createMonitorQuoteEventRuntime(
           '[MonitorQuoteEventRuntime] 释放静态清仓 quote retain 失败',
           formatError(error),
         );
-        deps.onFatalError(error);
+        deps.termination.reportFatalError(error);
+        throw error;
       });
+    registerInFlight(quoteMutation);
   }
 
   /**
@@ -433,7 +451,7 @@ function createMonitorQuoteEventRuntime(
       return;
     }
 
-    void quoteSubscriptionRuntime
+    const quoteMutation = quoteSubscriptionRuntime
       .retainSymbols({
         ownerKey: runtimeMonitorSymbol,
         reason: 'STATIC_LIQUIDATION_WAIT',
@@ -451,8 +469,10 @@ function createMonitorQuoteEventRuntime(
           '[MonitorQuoteEventRuntime] 注册静态清仓 quote retain 失败',
           formatError(error),
         );
-        deps.onFatalError(error);
+        deps.termination.reportFatalError(error);
+        throw error;
       });
+    registerInFlight(quoteMutation);
   }
 
   /**
@@ -465,8 +485,9 @@ function createMonitorQuoteEventRuntime(
       return;
     }
 
-    clearTimer(targetRouteState.retryTimerHandle);
+    const handle = targetRouteState.retryTimerHandle;
     targetRouteState.retryTimerHandle = null;
+    clearTimer(handle);
   }
 
   /**
@@ -578,7 +599,7 @@ function createMonitorQuoteEventRuntime(
 
     clearRouteRetryTimer(activeRouteState);
     const nextWakeupSymbols = new Set(executionResult.wakeupSymbols);
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       clearStaticWakeupIndexes();
       activeRouteState.wakeupSymbols = new Set();
       releaseStaticLiquidationRetain();
@@ -601,13 +622,13 @@ function createMonitorQuoteEventRuntime(
     }
 
     const delayMs = Math.max(0, executionResult.retryAtMs - now().getTime());
-    activeRouteState.retryTimerHandle = scheduleTimer(() => {
-      if (routeState === activeRouteState) {
-        activeRouteState.retryTimerHandle = null;
-      }
+    const handle = scheduleTimer(() => {
+      if (routeState !== activeRouteState || activeRouteState.retryTimerHandle !== handle) return;
 
+      activeRouteState.retryTimerHandle = null;
       triggerRoute();
     }, delayMs);
+    activeRouteState.retryTimerHandle = handle;
   }
 
   /**
@@ -616,7 +637,7 @@ function createMonitorQuoteEventRuntime(
    * @returns runtime 仍在运行时返回 true
    */
   function isRuntimeRunning(): boolean {
-    return running;
+    return running && !deps.termination.isTerminated();
   }
 
   /**
@@ -675,7 +696,7 @@ function createMonitorQuoteEventRuntime(
 
     try {
       while (activeRouteState.dirty) {
-        if (!running) {
+        if (!running || deps.termination.isTerminated()) {
           return;
         }
 
@@ -721,6 +742,8 @@ function createMonitorQuoteEventRuntime(
               canContinue: canContinueDistanceExecution,
             });
           } catch (error) {
+            if (!isExternalApiRequestError(error)) throw error;
+
             if (!canContinueDistanceExecution()) {
               continue;
             }
@@ -826,7 +849,7 @@ function createMonitorQuoteEventRuntime(
    * @param event 标准化 quote 事件
    */
   function handleQuoteUpdated(event: QuoteUpdatedEvent): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -861,15 +884,18 @@ function createMonitorQuoteEventRuntime(
   }
 
   function start(): void {
-    if (running) {
+    if (running || draining || deps.termination.isTerminated()) {
       return;
     }
 
+    hasDrainFailure = false;
+    drainFailure = undefined;
+    drainPromise = null;
     running = true;
     unsubscribeQuoteUpdated = marketDataClient.onQuoteUpdated(handleQuoteUpdated);
   }
 
-  async function stopAndDrain(): Promise<void> {
+  function stop(): void {
     running = false;
     unsubscribeQuoteUpdated?.();
     unsubscribeQuoteUpdated = null;
@@ -881,10 +907,25 @@ function createMonitorQuoteEventRuntime(
       releaseStaticLiquidationRetain();
       routeState.wakeupSymbols = new Set();
     }
+  }
 
-    if (activePromises.size > 0) {
-      await Promise.allSettled(activePromises);
+  /** 同周期共享排空结果；关闭入口后，全部在途工作落定才传播原始失败。 */
+  function stopAndDrain(): Promise<void> {
+    if (drainPromise !== null) {
+      return drainPromise;
     }
+
+    draining = true;
+    drainPromise = drain().finally(() => {
+      draining = false;
+    });
+    return drainPromise;
+  }
+
+  /** allSettled 不提前退出，并持续捕获清理过程中新增的 release。 */
+  async function drain(): Promise<void> {
+    stop();
+    while (activePromises.size > 0) await Promise.allSettled(activePromises);
 
     if (routeState !== null) {
       clearRouteRetryTimer(routeState);
@@ -896,10 +937,16 @@ function createMonitorQuoteEventRuntime(
 
     clearStaticWakeupIndexes();
     routeState = null;
+    while (activePromises.size > 0) await Promise.allSettled(activePromises);
+
+    if (hasDrainFailure) {
+      throw drainFailure;
+    }
   }
 
   return {
     start,
+    stop,
     stopAndDrain,
   };
 }

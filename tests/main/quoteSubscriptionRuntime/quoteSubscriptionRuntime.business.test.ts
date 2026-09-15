@@ -1,8 +1,3 @@
-/**
- * QuoteSubscriptionRuntime 业务测试
- *
- * 覆盖：首轮真相投影、seat 事件增量投影、临时 retain 的 admission 与释放。
- */
 import { describe, expect, it } from 'bun:test';
 import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
@@ -15,6 +10,12 @@ import {
   createPositionCacheDouble,
   createPositionDouble,
 } from '../../helpers/testDoubles.js';
+
+/**
+ * QuoteSubscriptionRuntime 业务测试
+ *
+ * 覆盖：首轮真相投影、seat 事件增量投影、临时 retain 的 admission 与释放。
+ */
 
 function createLastState(): LastState {
   return {
@@ -30,11 +31,7 @@ function createLastState(): LastState {
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: {
-      monitorSymbol: 'HSI.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
+
     allTradingSymbols: new Set(),
   };
 }
@@ -97,7 +94,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -132,7 +129,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -173,7 +170,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -217,23 +214,26 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
-    const release = await runtime.retainSymbols({
+    await runtime.retainSymbols({
       ownerKey: 'SEAT_REFRESH_WAIT:LONG:2',
       reason: 'SEAT_REFRESH_WAIT',
       symbols: ['NEXT.HK', 'PREV.HK'],
     });
     await runtime.waitForAdmission(['NEXT.HK', 'PREV.HK']);
-    release();
+    await runtime.releaseRetain({
+      ownerKey: 'SEAT_REFRESH_WAIT:LONG:2',
+      reason: 'SEAT_REFRESH_WAIT',
+    });
     await runtime.waitForAdmission([]);
 
     expect(subscribed).toEqual([['NEXT.HK', 'PREV.HK']]);
     expect(unsubscribed).toEqual([['NEXT.HK', 'PREV.HK']]);
   });
 
-  it('retain release mutation 失败会进入 fatal drain', async () => {
+  it('retain release mutation 失败交调用方且 drain 不假装成功', async () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
@@ -252,20 +252,27 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
-    const release = await runtime.retainSymbols({
+    await runtime.retainSymbols({
       ownerKey: 'SEAT_REFRESH_WAIT:LONG:2',
       reason: 'SEAT_REFRESH_WAIT',
       symbols: ['NEXT.HK'],
     });
-    release();
-    await runtime.waitForAdmission([]).catch(() => {});
 
-    expect(fatalErrors).toEqual([releaseError]);
+    expect(
+      await runtime
+        .releaseRetain({ ownerKey: 'SEAT_REFRESH_WAIT:LONG:2', reason: 'SEAT_REFRESH_WAIT' })
+        .catch((error: unknown) => error),
+    ).toBe(releaseError);
+    expect(await runtime.stopAndDrain().catch((error: unknown) => error)).toBe(releaseError);
+    expect(fatalErrors).toEqual([]);
   });
 
   it('lifecycle 午夜重置后会按 lastState.allTradingSymbols 重新投影 committed truth', async () => {
@@ -290,7 +297,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -331,7 +338,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -368,7 +375,7 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
     await runtime.reconcileFromCurrentTruth();
@@ -403,8 +410,11 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -447,8 +457,11 @@ describe('QuoteSubscriptionRuntime', () => {
       },
       trader: orderHoldEventSource.trader,
       lastState,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -459,5 +472,126 @@ describe('QuoteSubscriptionRuntime', () => {
 
     expect(fatalErrors).toEqual([subscriptionError]);
     await runtime.stopAndDrain().catch(() => {});
+  });
+});
+
+describe('Quote drain 失败轮次隔离', () => {
+  it.each([false, true])(
+    '并发 waiter 保留原错、显式 retry 才重新退订，terminal=%s',
+    async (terminal) => {
+      const monitor = createMonitorConfigDouble();
+      const state = createLastState();
+      state.allTradingSymbols = new Set(['OLD.HK']);
+      const source = createOrderHoldEventSource([]);
+      const failure = new Error('unsubscribe failed');
+      const firstUnsubscribe = Promise.withResolvers<undefined>();
+      const retryUnsubscribe = Promise.withResolvers<undefined>();
+      const entered = Promise.withResolvers<undefined>();
+      let attempts = 0;
+      let subscriptions = 0;
+      let terminated = false;
+      const runtime = createQuoteSubscriptionRuntime({
+        logger: createLoggerDouble(),
+        tradingConfig: createTradingConfig({ monitor }),
+        symbolRegistry: createSymbolRegistry(monitor),
+        lastState: state,
+        trader: source.trader,
+        termination: { isTerminated: () => terminated, reportFatalError: () => {} },
+        marketDataClient: {
+          subscribeSymbols: async () => {
+            subscriptions += 1;
+          },
+          unsubscribeSymbols: async () => {
+            attempts += 1;
+            if (attempts === 1) {
+              entered.resolve();
+              await firstUnsubscribe.promise;
+            } else {
+              await retryUnsubscribe.promise;
+            }
+          },
+        },
+      });
+      runtime.start();
+      const first = runtime.stopAndDrain();
+      const concurrent = runtime.stopAndDrain();
+      expect(concurrent).toBe(first);
+      const observedFirst = first.catch((error: unknown) => error);
+      const observedConcurrent = concurrent.catch((error: unknown) => error);
+      const waitingReconcile = runtime.reconcileFromCurrentTruth().catch((error: unknown) => error);
+      await entered.promise;
+      firstUnsubscribe.reject(failure);
+      expect(await observedFirst).toBe(failure);
+      expect(await observedConcurrent).toBe(failure);
+      expect(await waitingReconcile).toBe(failure);
+      expect(await runtime.reconcileFromCurrentTruth().catch((error: unknown) => error)).toBe(
+        failure,
+      );
+      expect(state.allTradingSymbols).toEqual(new Set(['OLD.HK']));
+      runtime.start();
+      source.add('EVENT.HK');
+      await runtime.retainSymbols({
+        ownerKey: 'late',
+        reason: 'SEAT_REFRESH_WAIT',
+        symbols: ['LATE.HK'],
+      });
+      await runtime.reconcilePositionHoldFromCurrentTruth();
+      expect(attempts).toBe(1);
+      expect(subscriptions).toBe(0);
+
+      terminated = terminal;
+      const retry = runtime.stopAndDrain();
+      expect(retry).not.toBe(first);
+      expect(runtime.stopAndDrain()).toBe(retry);
+      retryUnsubscribe.resolve();
+      await retry;
+      expect(attempts).toBe(2);
+      expect(state.allTradingSymbols).toEqual(new Set());
+      expect(runtime.stopAndDrain()).toBe(retry);
+      expect(await first.catch((error: unknown) => error)).toBe(failure);
+      runtime.start();
+      source.add('AFTER.HK');
+      await runtime.retainSymbols({
+        ownerKey: 'after',
+        reason: 'SEAT_REFRESH_WAIT',
+        symbols: ['AFTER.HK'],
+      });
+      expect(subscriptions).toBe(0);
+      await runtime.reconcileFromCurrentTruth();
+      expect(subscriptions).toBe(terminal ? 0 : 1);
+    },
+  );
+
+  it('进入 stop 前 mutationChain 已拒绝，首轮仍拒绝原错，后续显式 drain 可收口', async () => {
+    const monitor = createMonitorConfigDouble();
+    const state = createLastState();
+    const failure = new Error('release failed');
+    let attempts = 0;
+    const runtime = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
+      tradingConfig: createTradingConfig({ monitor }),
+      symbolRegistry: createSymbolRegistry(monitor),
+      lastState: state,
+      trader: createOrderHoldEventSource([]).trader,
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
+      marketDataClient: {
+        subscribeSymbols: async () => {},
+        unsubscribeSymbols: async () => {
+          attempts += 1;
+          if (attempts === 1) throw failure;
+        },
+      },
+    });
+    const owner = { ownerKey: 'held', reason: 'SEAT_REFRESH_WAIT' as const };
+    await runtime.retainSymbols({ ...owner, symbols: ['HELD.HK'] });
+    expect(await runtime.releaseRetain(owner).catch((error: unknown) => error)).toBe(failure);
+    const first = runtime.stopAndDrain();
+    expect(runtime.stopAndDrain()).toBe(first);
+    expect(await first.catch((error: unknown) => error)).toBe(failure);
+    expect(attempts).toBe(1);
+    expect(state.allTradingSymbols).toEqual(new Set(['HELD.HK']));
+    await runtime.stopAndDrain();
+    expect(attempts).toBe(2);
+    expect(state.allTradingSymbols).toEqual(new Set());
   });
 });

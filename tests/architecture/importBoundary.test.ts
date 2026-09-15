@@ -52,4 +52,63 @@ describe('architecture import boundaries', () => {
 
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(false);
   });
+
+  it.each([
+    ['src/app/runApp.ts', '../core/strategy/intradayRegression/definition.js'],
+    ['src/types/state.ts', '../core/strategy/intradayRegression/types.js'],
+    ['src/utils/numeric/index.ts', '../../core/strategy/intradayRegression/runtime/index.js'],
+    ['src/core/strategy/intradayRegression/index.ts', '../otherStrategy/definition.js'],
+  ])('rejects private strategy import from %s', async (file, source) => {
+    const messages = await lintText(
+      file,
+      'import * as privateStrategy from ' + JSON.stringify(source) + '; void privateStrategy;',
+    );
+    expect(messages.some((message) => message.ruleId === 'local/strategy-private-boundary')).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['tools/dailyIndicatorAnalysis/indicatorCalculators.ts', 'ema', false],
+    ['tools/dailyIndicatorAnalysis/types.ts', 'types', true],
+  ])('allows tools direct private leaf/type imports from %s', async (file, leaf, typeOnly) => {
+    const source = '../../src/core/strategy/intradayRegression/runtime/' + leaf + '.js';
+    const code = typeOnly
+      ? 'import type { KDJIndicator } from "' + source + '"; export type Probe = KDJIndicator;'
+      : 'import { readEmaValue } from "' + source + '"; void readEmaValue;';
+    const messages = await lintText(file, code);
+    expect(messages.filter((message) => message.fatal === true)).toEqual([]);
+    expect(messages.some((message) => message.ruleId === 'local/strategy-private-boundary')).toBe(
+      false,
+    );
+    expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(false);
+  });
+
+  it.each([
+    ['src/app/runApp.ts', '../core/strategy/intradayRegression/runtime/ema.js', false],
+    ['src/app/runApp.ts', '../core/strategy/intradayRegression/runtime/types.js', true],
+    ['src/core/strategy/intradayRegression/index.ts', '../otherStrategy/runtime/ema.js', false],
+    ['src/core/strategy/intradayRegression/index.ts', '../otherStrategy/runtime/types.js', true],
+  ])(
+    'rejects production private leaf/type imports from %s (%s)',
+    async (file, source, typeOnly) => {
+      const code = typeOnly
+        ? 'import type { Probe } from "' + source + '"; export type Result = Probe;'
+        : 'import { probe } from "' + source + '"; void probe;';
+      const messages = await lintText(file, code);
+      expect(messages.some((message) => message.ruleId === 'local/strategy-private-boundary')).toBe(
+        true,
+      );
+    },
+  );
+
+  it('allows private modules within their own strategy directory', async () => {
+    const messages = await lintText(
+      'src/core/strategy/intradayRegression/index.ts',
+      "import { strategyDefinition } from './definition.js'; void strategyDefinition;",
+    );
+    expect(messages.some((message) => message.ruleId === 'local/strategy-private-boundary')).toBe(
+      false,
+    );
+  });
 });

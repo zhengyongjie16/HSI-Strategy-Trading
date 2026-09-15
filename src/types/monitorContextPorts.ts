@@ -6,8 +6,6 @@
  * - 作为 types/app/services/main 之间的单一行为边界来源，避免重复同义接口
  */
 import type { Position } from './account.js';
-import type { VerificationIndicator } from './indicatorProfile.js';
-import type { Signal } from './signal.js';
 
 /**
  * 距离换标等待唤醒描述。
@@ -164,22 +162,4 @@ export interface AutoSymbolManagerPort {
   hasPendingSwitch: (direction: 'LONG' | 'SHORT') => boolean;
   getPeriodicSwitchPendingState: (direction: 'LONG' | 'SHORT') => PeriodicSwitchPendingState;
   resetAllState: () => void;
-}
-
-/**
- * 延迟信号验证器行为契约。
- * 类型用途：约束 MonitorContext.delayedSignalVerifier 的生命周期与队列操作方法。
- * 数据来源：由 delayedSignalVerifier 模块实现并注入。
- * 使用范围：types、app、main 与相关测试使用。
- */
-export interface DelayedSignalVerifierPort {
-  addSignal: (params: {
-    readonly signal: Signal;
-    readonly verificationIndicators: ReadonlyArray<VerificationIndicator>;
-  }) => void;
-  onVerified: (callback: (signal: Signal) => void) => void;
-  cancelAll: () => number;
-  cancelAllForDirection: (direction: 'LONG' | 'SHORT') => number;
-  getPendingCount: () => number;
-  destroy: () => void;
 }

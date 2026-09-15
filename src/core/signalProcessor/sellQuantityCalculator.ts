@@ -4,7 +4,7 @@
  * 功能：
  * - 计算卖出信号数量并生成原因说明
  * - 支持智能平仓与全仓清仓
- * - 处理末日保护无条件清仓
+ * - 普通 reason 仅用于说明，typed 清仓由宿主独立执行入口负责
  *
  * 卖出委托价规则（业务约束）：
  * - 限价/增强限价卖单的委托价必须以「执行时行情」为准，不能使用信号生成时的快照价。
@@ -111,7 +111,7 @@ function calculateSellQuantity(params: {
  * 处理卖出信号，计算实际卖出数量并返回新信号数组
  *
  * 遍历信号列表，对每个卖出信号（SELLCALL/SELLPUT）根据智能平仓配置计算数量。
- * 末日保护信号无条件清仓，不受智能平仓影响。
+ * 不从普通 reason 推导清仓权限；所有输入均执行已选定的数量计算规则。
  * 委托价以执行时行情为准，覆盖信号生成时的快照价，确保提交时价格准确。
  *
  * @param params 卖出信号处理参数（行情、持仓、配置与时间快照）
@@ -142,9 +142,6 @@ export const processSellSignals = (
     const directionName = isLongSignal ? '做多' : '做空';
     const signalName = isLongSignal ? 'SELLCALL' : 'SELLPUT';
 
-    // 检查是否是末日保护程序的清仓信号（无条件清仓，不受智能平仓影响）
-    const isDoomsdaySignal = sig.reason?.includes('末日保护程序');
-
     // 持仓或行情缺失时记录日志
     if (!position) {
       logger.warn(
@@ -167,26 +164,6 @@ export const processSellSignals = (
       logger.debug(
         `[卖出信号处理] ${signalName}: 当前价格=${quote.price.toFixed(3)}, 可用数量=${position.availableQuantity}`,
       );
-    }
-
-    if (isDoomsdaySignal) {
-      // 末日保护程序：无条件清仓，使用全部可用数量
-      if (position && position.availableQuantity > 0) {
-        const quantity = position.availableQuantity;
-        logger.debug(`[卖出信号处理] ${signalName}(末日保护): 无条件清仓，卖出数量=${quantity}`);
-        return {
-          ...sig,
-          quantity,
-        };
-      } else {
-        logger.warn(`[卖出信号处理] ${signalName}(末日保护): 持仓对象无效，无法清仓`);
-        return {
-          ...sig,
-          action: 'HOLD' as const,
-          isProtectiveLiquidation: false,
-          reason: `${sig.reason}，但持仓对象无效`,
-        };
-      }
     }
 
     // 正常卖出信号：根据智能平仓配置进行数量计算。

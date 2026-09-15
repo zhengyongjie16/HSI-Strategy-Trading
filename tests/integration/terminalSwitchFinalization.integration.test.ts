@@ -17,6 +17,7 @@ import type {
 import type { QuoteUpdatedEvent } from '../../src/types/services.js';
 
 import {
+  createTerminationDouble,
   createMarketDataClientDouble,
   createLoggerDouble,
   createMonitorConfigDouble,
@@ -190,9 +191,11 @@ describe('terminal switch finalization integration', () => {
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
-      onFatalError: (error) => {
-        throw error;
-      },
+      termination: createTerminationDouble({
+        reportFatalError: (error) => {
+          throw error;
+        },
+      }),
     });
     const monitorQuoteRuntime = createDefaultMonitorQuoteEventRuntime({
       logger: { error: () => {} },
@@ -208,9 +211,11 @@ describe('terminal switch finalization integration', () => {
       doomsdayProtectionEnabled: false,
       now: () => new Date(nowMs),
       handoffPendingSwitch: switchWakeupRuntime.handoffPendingSwitch,
-      onFatalError: (error) => {
-        throw error;
-      },
+      termination: createTerminationDouble({
+        reportFatalError: (error) => {
+          throw error;
+        },
+      }),
     });
 
     switchWakeupRuntime.start();

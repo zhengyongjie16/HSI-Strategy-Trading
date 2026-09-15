@@ -14,7 +14,7 @@ export type TaskAddedCallback = () => void;
  * 数据来源：由信号流水线/延迟验证回调在入队时指定。
  * 使用范围：tradeTaskQueue、buyProcessor、业务 runtime 等，仅内部使用。
  */
-export type BuyTaskType = 'IMMEDIATE_BUY' | 'VERIFIED_BUY';
+export type BuyTaskType = 'STRATEGY_BUY';
 
 /**
  * 卖出任务类型（任务 type 字段字面量）。
@@ -22,7 +22,7 @@ export type BuyTaskType = 'IMMEDIATE_BUY' | 'VERIFIED_BUY';
  * 数据来源：由信号流水线/延迟验证回调在入队时指定。
  * 使用范围：tradeTaskQueue、sellProcessor、业务 runtime 等，仅内部使用。
  */
-export type SellTaskType = 'IMMEDIATE_SELL' | 'VERIFIED_SELL';
+export type SellTaskType = 'STRATEGY_SELL';
 
 /**
  * 任务信号类型映射。
@@ -71,8 +71,11 @@ export type TaskInput<TType extends string> = {
  * 使用范围：业务 runtime、buyProcessor、sellProcessor、signal pipeline、lifecycle 等，仅内部使用。
  */
 export interface TaskQueue<TType extends string> {
-  /** 入队任务 */
-  push: (task: TaskInput<TType>) => void;
+  /** 入队任务；队列已 close 时返回 false 且不产生任何 mutation 或通知。 */
+  push: (task: TaskInput<TType>) => boolean;
+
+  /** 关闭 producer admission；关闭后不可重新打开。 */
+  close: () => void;
 
   /** 出队任务（返回并移除队首） */
   pop: () => Task<TType> | null;

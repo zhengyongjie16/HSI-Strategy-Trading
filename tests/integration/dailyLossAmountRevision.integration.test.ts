@@ -24,6 +24,7 @@ import type { RawOrderFromAPI } from '../../src/types/services.js';
 import type { LastState } from '../../src/types/state.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
+  createTerminationDouble,
   createLiquidationCooldownTrackerDouble,
   createMonitorContextDouble,
   createOrderRecorderDouble,
@@ -84,11 +85,7 @@ function createLastState(): LastState {
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: {
-      monitorSymbol: 'HSI.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
+
     allTradingSymbols: new Set(),
   };
 }
@@ -326,6 +323,7 @@ describe('DailyLoss protective amount revision integration', () => {
     });
     const lastState = createLastState();
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
+      termination: createTerminationDouble(),
       getTrader: () => trader,
       lastState,
       onPositionsCommitted: async () => {},

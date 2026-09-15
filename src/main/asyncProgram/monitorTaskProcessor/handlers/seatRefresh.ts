@@ -161,13 +161,15 @@ export function createSeatRefreshHandler({
   monitorContext,
   marketDataClient,
   quoteSubscriptionRuntime,
+  canContinue,
 }: {
+  readonly canContinue: () => boolean;
   readonly clock: RuntimeClock;
   readonly monitorContext: MonitorContext;
   readonly marketDataClient: MarketDataClient;
   readonly quoteSubscriptionRuntime: Pick<
     QuoteSubscriptionRuntime,
-    'retainSymbols' | 'waitForAdmission'
+    'retainSymbols' | 'waitForAdmission' | 'releaseRetain'
   >;
 }): (
   task: MonitorTask<MonitorTaskDataMap, 'SEAT_REFRESH'>,
@@ -177,6 +179,8 @@ export function createSeatRefreshHandler({
     task: MonitorTask<MonitorTaskDataMap, 'SEAT_REFRESH'>,
     helpers: RefreshHelpers,
   ): Promise<MonitorTaskStatus> {
+    if (!canContinue()) return 'skipped';
+
     const data: SeatRefreshTaskData = task.data;
     const context = monitorContext;
 
@@ -209,26 +213,34 @@ export function createSeatRefreshHandler({
       return 'processed';
     }
 
-    let releaseSeatRefreshRetain: (() => void) | null = null;
+    const retainOwner = {
+      ownerKey: `SEAT_REFRESH_WAIT:${data.direction}:${data.seatVersion}`,
+      reason: 'SEAT_REFRESH_WAIT' as const,
+    };
     try {
       const quoteSymbols = [data.nextSymbol];
       if (data.previousSymbol && data.previousSymbol !== data.nextSymbol) {
         quoteSymbols.push(data.previousSymbol);
       }
 
-      releaseSeatRefreshRetain = await quoteSubscriptionRuntime.retainSymbols({
-        ownerKey: `SEAT_REFRESH_WAIT:${data.direction}:${data.seatVersion}`,
-        reason: 'SEAT_REFRESH_WAIT',
+      await quoteSubscriptionRuntime.retainSymbols({
+        ...retainOwner,
         symbols: quoteSymbols,
       });
+
+      if (!canContinue() || !resolveActivatingSeatSnapshot(context, data)) return 'skipped';
+
       await quoteSubscriptionRuntime.waitForAdmission(quoteSymbols);
+      if (!canContinue() || !resolveActivatingSeatSnapshot(context, data)) return 'skipped';
 
       const executionQuotes = await marketDataClient.getQuotes(quoteSymbols);
+      if (!canContinue() || !resolveActivatingSeatSnapshot(context, data)) return 'skipped';
+
       const nextExecutionQuote = executionQuotes.get(data.nextSymbol) ?? null;
 
       const allOrders = await helpers.ensureAllOrders();
       const preWriteSeatState = resolveActivatingSeatSnapshot(context, data);
-      if (!preWriteSeatState) {
+      if (!canContinue() || !preWriteSeatState) {
         logSeatRefreshSkipped({
           context,
           data,
@@ -263,7 +275,7 @@ export function createSeatRefreshHandler({
           ));
 
       const seatStateAfterOrderRefresh = resolveActivatingSeatSnapshot(context, data);
-      if (!seatStateAfterOrderRefresh) {
+      if (!canContinue() || !seatStateAfterOrderRefresh) {
         logSeatRefreshSkipped({
           context,
           data,
@@ -275,7 +287,7 @@ export function createSeatRefreshHandler({
       await helpers.refreshAccountCaches();
 
       const seatStateAfterAccountCacheRefresh = resolveActivatingSeatSnapshot(context, data);
-      if (!seatStateAfterAccountCacheRefresh) {
+      if (!canContinue() || !seatStateAfterAccountCacheRefresh) {
         logSeatRefreshSkipped({
           context,
           data,
@@ -294,7 +306,7 @@ export function createSeatRefreshHandler({
       );
 
       const latestSeatState = resolveActivatingSeatSnapshot(context, data);
-      if (!latestSeatState) {
+      if (!canContinue() || !latestSeatState) {
         logSeatRefreshSkipped({
           context,
           data,
@@ -348,7 +360,7 @@ export function createSeatRefreshHandler({
 
       return 'processed';
     } finally {
-      releaseSeatRefreshRetain?.();
+      await quoteSubscriptionRuntime.releaseRetain(retainOwner);
     }
   };
 }

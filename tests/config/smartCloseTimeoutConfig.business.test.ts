@@ -7,8 +7,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig as parseTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
-import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 
 function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
   return {
@@ -56,23 +55,8 @@ describe('smart close timeout config', () => {
   });
 
   it('非法值（负数/非整数/非法字符串）在配置校验阶段报错', async () => {
-    const signalConfig = {
-      conditionGroups: [
-        {
-          conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
-          requiredCount: 1,
-        },
-      ],
-    } as const;
-
-    const monitorConfig = createMonitorConfigDouble({
+    const monitorConfig = createMonitorConfig({
       orderOwnershipMapping: ['HSI'],
-      signalConfig: {
-        buycall: signalConfig,
-        sellcall: signalConfig,
-        buyput: signalConfig,
-        sellput: signalConfig,
-      },
     });
 
     const tradingConfig = createTradingConfig({

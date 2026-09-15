@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../../types/runtime.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
@@ -13,7 +14,6 @@ import type {
   MonitorTaskProcessor,
 } from '../../asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../../asyncProgram/monitorTaskQueue/types.js';
-import type { IndicatorCache } from '../../asyncProgram/indicatorCache/types.js';
 import type { TradingRiskEventRuntime } from '../../tradingRiskEventRuntime/types.js';
 import type { BusinessEventProgram } from '../../businessEventProgram/types.js';
 import type {
@@ -56,6 +56,7 @@ interface SignalRuntimePostTradeConsistencyRuntime {
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type SignalRuntimeDomainDeps = Readonly<{
+  termination: Pick<RuntimeTermination, 'isTerminated'>;
   logger: Pick<Logger, 'debug'>;
   monitorContext: MonitorContext;
   buyProcessor: Processor;
@@ -77,7 +78,6 @@ export type SignalRuntimeDomainDeps = Readonly<{
   seatRuntimeCleanupDispatcher: Pick<SeatRuntimeCleanupDispatcher, 'start' | 'stop'>;
   trader: Pick<Trader, 'startOrderMonitorRuntime' | 'stopOrderMonitorRuntimeAndDrain'>;
   postTradeConsistencyRuntime: SignalRuntimePostTradeConsistencyRuntime;
-  indicatorCache: IndicatorCache;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;

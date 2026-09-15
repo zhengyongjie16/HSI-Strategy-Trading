@@ -59,10 +59,17 @@ export function createQuoteSubscriptionRuntime(
 ): QuoteSubscriptionRuntime {
   const { logger } = deps;
   let running = false;
+  let accepting = true;
+  let drainPromise: Promise<void> | null = null;
+  let drainFailed = false;
   let mutationChain: Promise<void> = Promise.resolve();
   let unsubscribeSeatStateChanged: Unsubscribe | null = null;
   let unsubscribeOrderHoldChanged: Unsubscribe | null = null;
   const retainsByOwner: MutableQuoteSubscriptionRetainStore = new Map();
+
+  function isAccepting(): boolean {
+    return accepting;
+  }
 
   function readCommittedSymbolsFromLastState(): Set<string> {
     return new Set(deps.lastState.allTradingSymbols);
@@ -156,6 +163,8 @@ export function createQuoteSubscriptionRuntime(
   }
 
   function handleSeatChanged(event: SeatStateChangedEvent): void {
+    if (!running || deps.termination.isTerminated()) return;
+
     const symbols = collectSeatSymbols(event);
     projectAllSeatBound();
     void enqueueMutation().catch((error: unknown) => {
@@ -163,19 +172,29 @@ export function createQuoteSubscriptionRuntime(
         `[QuoteSubscriptionRuntime] 处理席位订阅变化失败 symbols=${symbols.join(',')}`,
         formatError(error),
       );
-      deps.onFatalError(error);
+      deps.termination.reportFatalError(error);
     });
   }
 
   function handleOrderHoldChanged(): void {
+    if (!running || deps.termination.isTerminated()) return;
+
     projectOrderHold();
     void enqueueMutation().catch((error: unknown) => {
       logger.error('[QuoteSubscriptionRuntime] 处理订单保留订阅变化失败', formatError(error));
-      deps.onFatalError(error);
+      deps.termination.reportFatalError(error);
     });
   }
 
   async function reconcileFromCurrentTruth(): Promise<void> {
+    if (deps.termination.isTerminated()) return;
+
+    if (drainPromise !== null) await drainPromise;
+
+    if (deps.termination.isTerminated()) return;
+
+    accepting = true;
+    drainPromise = null;
     projectMonitorBase();
     projectAllSeatBound();
     projectPositionHold();
@@ -184,12 +203,14 @@ export function createQuoteSubscriptionRuntime(
   }
 
   async function reconcilePositionHoldFromCurrentTruth(): Promise<void> {
+    if (!accepting) return;
+
     projectPositionHold();
     await enqueueMutation();
   }
 
   function start(): void {
-    if (running) {
+    if (running || deps.termination.isTerminated() || !accepting) {
       return;
     }
 
@@ -198,41 +219,66 @@ export function createQuoteSubscriptionRuntime(
     unsubscribeOrderHoldChanged = deps.trader.onOrderHoldSymbolsChanged(handleOrderHoldChanged);
   }
 
-  async function stopAndDrain(): Promise<void> {
+  /** 仅停止事件生产，保留在途 PostTrade/retain 调用方完成订阅收口的能力。 */
+  function stop(): void {
     running = false;
     unsubscribeSeatStateChanged?.();
     unsubscribeSeatStateChanged = null;
     unsubscribeOrderHoldChanged?.();
     unsubscribeOrderHoldChanged = null;
-    await mutationChain;
-    retainsByOwner.clear();
-    await enqueueMutation();
   }
 
-  async function retainSymbols(params: QuoteSubscriptionRetainParams): Promise<Unsubscribe> {
+  /**
+   * 在全部调用方排空后关闭准入，同一在途排空共享 Promise。
+   * 本轮失败原样交还所有等待方；只有后续显式 drain 才重试最终退订，
+   * reconcile 仍须等待最近一轮成功，不能借失败重新打开准入。
+   */
+  function stopAndDrain(): Promise<void> {
+    if (drainPromise !== null && !drainFailed) return drainPromise;
+
+    stop();
+    accepting = false;
+    // 首轮必须暴露已有 mutation 的失败；后续 drain 已观察该失败，才允许重新收口。
+    const pendingMutation = drainFailed ? Promise.resolve() : mutationChain;
+    drainFailed = false;
+    drainPromise = pendingMutation
+      .then(async () => {
+        retainsByOwner.clear();
+        await enqueueMutation();
+      })
+      .catch((error: unknown) => {
+        drainFailed = true;
+        throw error;
+      });
+    return drainPromise;
+  }
+
+  async function retainSymbols(params: QuoteSubscriptionRetainParams): Promise<void> {
+    if (!accepting) return;
+
     const owner: QuoteSubscriptionRetainOwner = {
       reason: params.reason,
       ownerKey: params.ownerKey,
     };
     setOwnerSymbols(owner, params.symbols);
     await enqueueMutation();
-    return () => {
-      void releaseRetain(owner).catch((error: unknown) => {
-        logger.error('[QuoteSubscriptionRuntime] 释放 retain 失败', formatError(error));
-        deps.onFatalError(error);
-      });
-    };
   }
 
   async function releaseRetain(
     params: Pick<QuoteSubscriptionRetainParams, 'ownerKey' | 'reason'>,
   ): Promise<void> {
+    if (!accepting) return;
+
     removeOwner(params);
     await enqueueMutation();
   }
 
   async function waitForAdmission(symbols: ReadonlyArray<string>): Promise<void> {
+    if (!accepting) return;
+
     await mutationChain;
+    if (!isAccepting()) return;
+
     const committedSymbols = readCommittedSymbolsFromLastState();
     const missing = normalizeSymbols(symbols).filter(
       (symbol) => !committedSymbols.has(symbol) && hasRetainForSymbol(retainsByOwner, symbol),
@@ -246,6 +292,7 @@ export function createQuoteSubscriptionRuntime(
     reconcileFromCurrentTruth,
     reconcilePositionHoldFromCurrentTruth,
     start,
+    stop,
     stopAndDrain,
     retainSymbols,
     releaseRetain,

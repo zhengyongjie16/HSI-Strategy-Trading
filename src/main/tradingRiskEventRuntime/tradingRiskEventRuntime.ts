@@ -58,7 +58,6 @@ export function createTradingRiskEventRuntime(
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
-  let routingIndexFatalError: Error | null = null;
   const routeStates = new Map<'LONG' | 'SHORT', RouteExecutionState>();
   const activeRoutePromises = new Set<Promise<void>>();
 
@@ -96,29 +95,13 @@ export function createTradingRiskEventRuntime(
     }
   }
 
-  /**
-   * 记录路由索引 fatal 并清空缓存，避免运行期风险路径继续使用旧 route。
-   *
-   * @param error 路由索引构建失败原因
-   * @returns 标准 Error 对象
-   */
-  function recordRoutingIndexFatal(error: unknown): Error {
-    const fatalError = error instanceof Error ? error : new Error(formatError(error));
-    cachedRoutingIndex = null;
-    routingIndexFatalError = fatalError;
-    return fatalError;
-  }
-
+  /** 索引不变量错误同步进入唯一 fatal，原始错误不做类型转换。 */
   function enterRoutingIndexFatal(error: unknown): void {
-    const fatalError = recordRoutingIndexFatal(error);
-    running = false;
-    unsubscribeQuoteUpdated?.();
-    unsubscribeQuoteUpdated = null;
-    unsubscribeSeatTruthChanged?.();
-    unsubscribeSeatTruthChanged = null;
+    deps.termination.reportFatalError(error);
+    stop();
+    cachedRoutingIndex = null;
     routeStates.clear();
-    logger.error('[TradingRiskEventRuntime] 路由索引进入 fatal 状态', formatError(fatalError));
-    deps.onFatalError(fatalError);
+    logger.error('[TradingRiskEventRuntime] 路由索引进入 fatal 状态', formatError(error));
   }
 
   /**
@@ -132,11 +115,11 @@ export function createTradingRiskEventRuntime(
         symbolRegistry: deps.symbolRegistry,
       });
       cachedRoutingIndex = routingIndex;
-      routingIndexFatalError = null;
       pruneRouteStates(routingIndex.activeRouteKeys);
       return routingIndex;
     } catch (error) {
-      throw recordRoutingIndexFatal(error);
+      enterRoutingIndexFatal(error);
+      throw error;
     }
   }
 
@@ -146,7 +129,7 @@ export function createTradingRiskEventRuntime(
    * @returns 当前可用路由索引，fatal 或未初始化时返回 null
    */
   function getActiveRoutingIndex(): TradingRiskRoutingIndex | null {
-    if (routingIndexFatalError !== null) {
+    if (deps.termination.isTerminated()) {
       return null;
     }
 
@@ -161,7 +144,12 @@ export function createTradingRiskEventRuntime(
    * @returns 允许执行风险事件时返回 true
    */
   function isExecutionGateOpen(): boolean {
-    if (!deps.lastState.isTradingEnabled || deps.lastState.canTrade !== true) {
+    if (
+      !running ||
+      deps.termination.isTerminated() ||
+      !deps.lastState.isTradingEnabled ||
+      deps.lastState.canTrade !== true
+    ) {
       return false;
     }
 
@@ -191,7 +179,7 @@ export function createTradingRiskEventRuntime(
     const processingPromise = processRouteQueue(direction).catch((error: unknown) => {
       logger.error('[TradingRiskEventRuntime] 风险事件处理失败', formatError(error));
       if (shouldExposeRouteProcessingError(error)) {
-        deps.onFatalError(error);
+        deps.termination.reportFatalError(error);
       }
     });
 
@@ -205,7 +193,7 @@ export function createTradingRiskEventRuntime(
    * 响应席位状态或版本 truth 变化并立即同步重投影路由索引。
    */
   function handleSeatTruthChanged(): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -222,7 +210,7 @@ export function createTradingRiskEventRuntime(
    * @param event quoteClient 发布的标准化 quote 事件
    */
   function handleQuoteUpdated(event: QuoteUpdatedEvent): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -351,7 +339,7 @@ export function createTradingRiskEventRuntime(
    * 启动 runtime 并订阅标准化 quote 事件。
    */
   function start(): void {
-    if (running) {
+    if (running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -367,24 +355,25 @@ export function createTradingRiskEventRuntime(
   /**
    * 停止 runtime 并等待当前 in-flight route 执行完成。
    */
-  async function stopAndDrain(): Promise<void> {
+  function stop(): void {
     running = false;
     unsubscribeQuoteUpdated?.();
     unsubscribeQuoteUpdated = null;
     unsubscribeSeatTruthChanged?.();
     unsubscribeSeatTruthChanged = null;
+  }
 
-    if (activeRoutePromises.size > 0) {
-      await Promise.allSettled(activeRoutePromises);
-    }
+  async function stopAndDrain(): Promise<void> {
+    stop();
+    await Promise.all(activeRoutePromises);
 
     routeStates.clear();
     cachedRoutingIndex = null;
-    routingIndexFatalError = null;
   }
 
   return {
     start,
+    stop,
     stopAndDrain,
   };
 }

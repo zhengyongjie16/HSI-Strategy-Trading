@@ -6,8 +6,7 @@
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { validateAllConfig } from '../../src/config/validator/index.js';
-import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 
 const oauthBuildCalls: Array<{ clientId: string; callbackPort?: number }> = [];
 const fromOAuthCalls: Array<{ oauth: unknown; extra: unknown }> = [];
@@ -73,28 +72,10 @@ mock.module('longbridge', () => ({
 
 import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
 
-function createSignalConfig() {
-  return {
-    conditionGroups: [
-      {
-        conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
-        requiredCount: 1,
-      },
-    ],
-  } as const;
-}
-
 function createTradingConfigForValidation() {
-  const signalConfig = createSignalConfig();
   return createTradingConfig({
-    monitor: createMonitorConfigDouble({
+    monitor: createMonitorConfig({
       orderOwnershipMapping: ['HSI'],
-      signalConfig: {
-        buycall: signalConfig,
-        sellcall: signalConfig,
-        buyput: signalConfig,
-        sellput: signalConfig,
-      },
     }),
   });
 }

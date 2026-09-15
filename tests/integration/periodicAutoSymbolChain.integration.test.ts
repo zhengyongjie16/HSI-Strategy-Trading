@@ -11,7 +11,6 @@ import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQ
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
-import { initMonitorState } from '../../src/utils/helpers/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
 import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
@@ -19,6 +18,7 @@ import type { MonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQu
 import type { SwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/types.js';
 
 import {
+  createTerminationDouble,
   createMarketDataClientDouble,
   createLoggerDouble,
   createMonitorConfigDouble,
@@ -67,7 +67,7 @@ function createLastState(): LastState {
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: initMonitorState(createMonitorConfigDouble()),
+
     allTradingSymbols: new Set(),
   };
 }
@@ -138,9 +138,11 @@ function createStartedSwitchWakeupRuntime(
     clearTimer: (handle) => {
       clearTimeout(handle);
     },
-    onFatalError: (error) => {
-      throw error;
-    },
+    termination: createTerminationDouble({
+      reportFatalError: (error) => {
+        throw error;
+      },
+    }),
   });
   runtime.start();
   return runtime;
@@ -269,7 +271,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();
@@ -450,7 +452,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();
@@ -602,7 +604,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();
@@ -754,7 +756,7 @@ describe('periodic auto-symbol full chain integration', () => {
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
       lastState,
       getCanTradeNow: () => true,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();

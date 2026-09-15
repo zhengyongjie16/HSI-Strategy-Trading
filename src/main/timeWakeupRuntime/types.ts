@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { TimeWakeupEvaluationResult } from '../timeWakeupEvaluationProgram/types.js';
 import type { Logger } from '../../utils/logger/types.js';
 
@@ -16,6 +17,7 @@ type TimeWakeupTimerHandle = ReturnType<typeof setTimeout>;
  * 使用范围：createTimeWakeupRuntime 工厂。
  */
 export type TimeWakeupRuntimeDeps<TTimerHandle = TimeWakeupTimerHandle> = Readonly<{
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   evaluate: () => Promise<TimeWakeupEvaluationResult>;
   now: () => Date;
   scheduleTimer: (callback: () => void, delayMs: number) => TTimerHandle;
@@ -32,5 +34,5 @@ export type TimeWakeupRuntimeDeps<TTimerHandle = TimeWakeupTimerHandle> = Readon
 export interface TimeWakeupRuntime {
   readonly start: () => Promise<void>;
   readonly stopAndDrain: () => Promise<void>;
-  readonly drainFatalError: () => Promise<never>;
+  readonly stop: () => void;
 }

@@ -4,50 +4,34 @@
  * 功能：
  * - 验证纯渲染器输出格式相关场景意图、边界条件与业务期望。
  */
-import { describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { logger } from '../../../src/utils/logger/index.js';
 
 const infoLogs: string[] = [];
 const warnLogs: string[] = [];
 
-mock.module('../../../src/utils/logger/index.js', () => ({
-  logger: {
-    debug: () => {},
-    info: (message: string) => {
-      infoLogs.push(message);
-    },
-    warn: (message: string) => {
-      warnLogs.push(message);
-    },
-    error: () => {},
-  },
-}));
+beforeEach(() => {
+  infoLogs.length = 0;
+  warnLogs.length = 0;
+  spyOn(logger, 'info').mockImplementation((message: string) => {
+    infoLogs.push(message);
+  });
+
+  spyOn(logger, 'warn').mockImplementation((message: string) => {
+    warnLogs.push(message);
+  });
+});
+
+afterEach(() => {
+  mock.restore();
+});
 
 import { createMarketMonitor } from '../../../src/services/marketMonitor/index.js';
 import {
   formatPositionDisplay,
   formatWarrantDistanceDisplay,
 } from '../../../src/services/marketMonitor/utils.js';
-import type { IndicatorSnapshot } from '../../../src/types/quote.js';
-import {
-  createIndicatorUsageProfileDouble,
-  createQuoteDouble,
-  createWarrantDistanceInfoDouble,
-} from '../../helpers/testDoubles.js';
-
-function createSnapshot(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot {
-  return {
-    price: 20_000,
-    changePercent: 0,
-    ema: { 7: 19_980 },
-    rsi: { 6: 52 },
-    psy: { 13: 58 },
-    mfi: 45,
-    kdj: { k: 51, d: 49, j: 55 },
-    macd: { macd: 10, dif: 3, dea: 2 },
-    adx: null,
-    ...overrides,
-  };
-}
+import { createQuoteDouble, createWarrantDistanceInfoDouble } from '../../helpers/testDoubles.js';
 
 describe('marketMonitor renderer', () => {
   it('formats warrant distance display with unified label', () => {
@@ -100,12 +84,13 @@ describe('marketMonitor renderer', () => {
     const monitor = createMarketMonitor();
 
     monitor.renderMonitorIndicators({
-      monitorSnapshot: createSnapshot(),
+      items: [
+        { label: 'EMA7', valueText: '19980.000' },
+        { label: 'K', valueText: '51.000' },
+        { label: 'MACD', valueText: '10.000' },
+      ],
       monitorQuote: createQuoteDouble('HSI.HK', 20_000),
       monitorSymbol: 'HSI.HK',
-      indicatorProfile: createIndicatorUsageProfileDouble({
-        displayPlan: ['price', 'changePercent', 'EMA:7', 'K', 'MACD'],
-      }),
       klineTimestamp: 1_708_000_000_000,
     });
 
@@ -169,5 +154,83 @@ describe('marketMonitor renderer', () => {
 
     expect(infoLogs).toEqual([]);
     expect(warnLogs).toEqual(['未获取到做多标的行情。']);
+  });
+});
+
+describe('marketMonitor neutral strategy projection', () => {
+  it('preserves arbitrary labels, text, order and missing-value policy without a host plan', () => {
+    const monitor = createMarketMonitor();
+    const params = {
+      items: [
+        { label: '自定义波动率', valueText: '0.0000123400 / ready' },
+        { label: '缺少样本', valueText: 'warming-up' },
+        { label: '状态', valueText: '' },
+        { label: 'K', valueText: '-' },
+      ],
+      monitorQuote: {
+        ...createQuoteDouble('HSI.HK', 20_100),
+        name: '恒生指数',
+        prevClose: 20_000,
+        timestamp: Date.UTC(2024, 0, 1, 8, 59),
+      },
+      monitorSymbol: 'HSI.HK',
+      klineTimestamp: Date.UTC(2024, 0, 1, 1, 30),
+    };
+    monitor.renderMonitorIndicators(params);
+    monitor.renderMonitorIndicators(params);
+
+    expect(infoLogs).toHaveLength(2);
+    expect(infoLogs[0]).toBe(infoLogs[1]);
+    expect(infoLogs[0]).toContain('[K线时间: 09:30:00.000] [监控标的] 恒生指数(HSI.HK)');
+    expect(infoLogs[0]).toContain('价格=20100.000 涨跌幅=+0.50%');
+    expect(infoLogs[0]).toContain(
+      '自定义波动率=0.0000123400 / ready 缺少样本=warming-up 状态= K=-',
+    );
+    expect(infoLogs[0]).not.toContain('16:59');
+  });
+
+  it('retains host quote facts and negative change when the strategy projection is empty', () => {
+    createMarketMonitor().renderMonitorIndicators({
+      items: [],
+      monitorQuote: { ...createQuoteDouble('HSI.HK', 19_900), prevClose: 20_000 },
+      monitorSymbol: 'HSI.HK',
+      klineTimestamp: null,
+    });
+    expect(infoLogs[0]).toContain('价格=19900.000 涨跌幅=-0.50%');
+    expect(infoLogs[0]).not.toContain('[K线时间:');
+  });
+
+  it('uses symbol and placeholders for missing quote while preserving strategy text', () => {
+    createMarketMonitor().renderMonitorIndicators({
+      items: [{ label: '就绪', valueText: 'yes' }],
+      monitorQuote: null,
+      monitorSymbol: 'HSI.HK',
+      klineTimestamp: null,
+    });
+    expect(infoLogs[0]).toContain('[监控标的] HSI.HK(HSI.HK) 价格=- 涨跌幅=- 就绪=yes');
+  });
+
+  it.each([
+    { price: Number.NaN, prevClose: 20_000, priceText: '-' },
+    { price: Number.POSITIVE_INFINITY, prevClose: 20_000, priceText: '-' },
+    { price: 20_000, prevClose: 0, priceText: '20000.000' },
+    { price: 20_000, prevClose: -1, priceText: '20000.000' },
+    { price: 20_000, prevClose: Number.NaN, priceText: '20000.000' },
+    { price: 20_000, prevClose: Number.POSITIVE_INFINITY, priceText: '20000.000' },
+    { price: 0, prevClose: 20_000, priceText: '0.000' },
+    { price: -1, prevClose: 20_000, priceText: '-1.000' },
+  ])('keeps invalid quote semantics for price=$price prevClose=$prevClose', (scenario) => {
+    createMarketMonitor().renderMonitorIndicators({
+      items: [],
+      monitorQuote: {
+        ...createQuoteDouble('HSI.HK', scenario.price),
+        name: null,
+        prevClose: scenario.prevClose,
+      },
+      monitorSymbol: 'HSI.HK',
+      klineTimestamp: Number.NaN,
+    });
+    expect(infoLogs[0]).toContain(`HSI.HK(HSI.HK) 价格=${scenario.priceText} 涨跌幅=-`);
+    expect(infoLogs[0]).not.toContain('[K线时间:');
   });
 });

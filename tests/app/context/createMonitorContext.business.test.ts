@@ -2,20 +2,18 @@
  * createMonitorContext 业务测试
  *
  * 覆盖：
- * - 默认策略工厂按 monitor 配置构造策略实例
- * - 支持注入自定义策略工厂并按唯一 monitor 配置调用
+ * - 宿主持有注入的唯一策略与风险实例
+ * - 名称从席位与行情派生，不复制策略或席位状态
  */
 import { describe, expect, it } from 'bun:test';
 import type { CreateMonitorContextParams, PreGateRuntime } from '../../../src/app/types.js';
 import { createMonitorContext as createMonitorContextImpl } from '../../../src/app/context/createMonitorContext.js';
-import { parseSignalConfig } from '../../../src/config/utils.js';
-import type { TradingSignalStrategyFactory } from '../../../src/core/strategy/types.js';
 import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
 import type { MonitorConfig, TradingConfig } from '../../../src/types/config.js';
 import type { Quote } from '../../../src/types/quote.js';
-import type { MonitorState } from '../../../src/types/state.js';
 import {
   createDailyLossTrackerDouble,
+  createMonitorContextDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createPositionCacheDouble,
@@ -26,34 +24,15 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 
-function createMonitorContext(params: Omit<CreateMonitorContextParams, 'clock' | 'scheduler'>) {
+function createMonitorContext(
+  params: Omit<CreateMonitorContextParams, 'clock' | 'strategy'> &
+    Partial<Pick<CreateMonitorContextParams, 'strategy'>>,
+) {
   return createMonitorContextImpl({
     ...params,
+    strategy: params.strategy ?? createMonitorContextDouble().strategy,
     clock: { now: () => new Date() },
-    scheduler: {
-      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-      clearTimer: (handle) => {
-        clearTimeout(handle);
-      },
-    },
   });
-}
-
-function createMonitorState(monitorSymbol: string): MonitorState {
-  return {
-    monitorSymbol,
-    lastMonitorSnapshot: null,
-    incrementalIndicatorRuntime: null,
-  };
-}
-
-function requireSignalConfig(configText: string) {
-  const signalConfig = parseSignalConfig(configText);
-  if (signalConfig === null) {
-    throw new Error(`failed to parse signal config: ${configText}`);
-  }
-
-  return signalConfig;
 }
 
 function createTradingConfig(monitor: MonitorConfig): TradingConfig {
@@ -95,8 +74,6 @@ function createRuntime(
   postGateRuntime: CreateMonitorContextParams['postGateRuntime'];
   quotesMap: ReadonlyMap<string, Quote | null>;
 } {
-  const monitorState = createMonitorState(monitor.monitorSymbol);
-
   const trader = createTraderDouble();
   const marketDataClient = createMarketDataClientDouble();
 
@@ -140,19 +117,10 @@ function createRuntime(
         },
       },
       tradingCalendarSnapshot: new Map([['2026-03-23', { isTradingDay: true, isHalfDay: false }]]),
-      monitorState,
       allTradingSymbols: new Set<string>(),
     },
     trader,
     riskChecker: createRiskCheckerDouble(),
-    indicatorCache: {
-      push: () => {},
-      getClosest: () => null,
-      clearAll: () => {},
-    },
-    onFatalError: (error) => {
-      throw error;
-    },
   };
 
   return {
@@ -162,30 +130,24 @@ function createRuntime(
   };
 }
 
-describe('createMonitorContext strategy factory behavior', () => {
-  it('hydrates seat names without creating a second seat truth cache', () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
-      signalConfig: {
-        buycall: null,
-        sellcall: null,
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 60,
-          indicators: ['K'],
-        },
-        sell: {
-          delaySeconds: 60,
-          indicators: ['K'],
-        },
-      },
-    });
+describe('createMonitorContext host assembly', () => {
+  it('holds the injected strategy identity and does not expose private strategy state', () => {
+    const runtime = createRuntime(createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }));
+    const strategy = createMonitorContextDouble().strategy;
+    const context = createMonitorContext({ ...runtime, strategy });
+    expect(context.strategy).toBe(strategy);
+    expect(context.riskChecker).toBe(runtime.postGateRuntime.riskChecker);
+    for (const field of ['state', 'indicatorProfile', 'delayedSignalVerifier', 'indicatorCache']) {
+      expect(field in context).toBeFalse();
+    }
+
+    expect('monitorState' in runtime.postGateRuntime.lastState).toBeFalse();
+  });
+
+  it('hydrates active seat names from registry and quotes without copying seat truth', () => {
     const symbolRegistry = createSymbolRegistryDouble({
       longSeat: {
-        symbol: 'LONG_READY.HK',
+        symbol: 'LONG.HK',
         status: 'ACTIVE',
         lastSwitchAt: null,
         lastSearchAt: null,
@@ -194,58 +156,6 @@ describe('createMonitorContext strategy factory behavior', () => {
         frozenTradingDayKey: null,
       },
       shortSeat: {
-        symbol: 'SHORT_READY.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 3,
-      shortVersion: 4,
-    });
-    const { preGateRuntime, postGateRuntime } = createRuntime(monitorConfig, symbolRegistry);
-
-    const context = createMonitorContext({
-      preGateRuntime,
-      postGateRuntime,
-      quotesMap: new Map<string, Quote | null>([
-        ['LONG_READY.HK', { ...createQuoteDouble('LONG_READY.HK', 1.01), name: 'LongReady' }],
-        ['SHORT_READY.HK', { ...createQuoteDouble('SHORT_READY.HK', 1.02), name: 'ShortReady' }],
-        ['HSI.HK', { ...createQuoteDouble('HSI.HK', 20_001), name: 'HangSeng' }],
-      ]),
-    });
-
-    expect(context.longSymbolName).toBe('LongReady');
-    expect(context.shortSymbolName).toBe('ShortReady');
-    expect(context.monitorSymbolName).toBe('HangSeng');
-    expect('seatState' in context).toBeFalse();
-    expect('seatVersion' in context).toBeFalse();
-  });
-
-  it('keeps inactive seat name empty, falls back to symbol names and compiles indicatorProfile', () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
-      signalConfig: {
-        buycall: null,
-        sellcall: null,
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 60,
-          indicators: ['K'],
-        },
-        sell: {
-          delaySeconds: 60,
-          indicators: ['K'],
-        },
-      },
-    });
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
         symbol: null,
         status: 'EMPTY',
         lastSwitchAt: null,
@@ -254,180 +164,23 @@ describe('createMonitorContext strategy factory behavior', () => {
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       },
-      shortSeat: {
-        symbol: 'SHORT_READY.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
     });
-    const { preGateRuntime, postGateRuntime } = createRuntime(monitorConfig, symbolRegistry);
-
+    const runtime = createRuntime(
+      createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
+      symbolRegistry,
+    );
     const context = createMonitorContext({
-      preGateRuntime,
-      postGateRuntime,
-      quotesMap: new Map<string, Quote | null>(),
+      ...runtime,
+      quotesMap: new Map([
+        ['LONG.HK', { ...createQuoteDouble('LONG.HK', 1), name: 'LongName' }],
+        ['HSI.HK', { ...createQuoteDouble('HSI.HK', 20_000), name: 'HangSeng' }],
+      ]),
     });
-
-    expect(context.longSymbolName).toBe('');
-    expect(context.shortSymbolName).toBe('SHORT_READY.HK');
-    expect(context.monitorSymbolName).toBe('HSI.HK');
-    expect(context.indicatorProfile.requiredFamilies.kdj).toBe(true);
-    expect(context.indicatorProfile.requiredPeriods.ema).toEqual([]);
-    expect(context.indicatorProfile.requiredPeriods.rsi).toEqual([]);
-    expect(context.indicatorProfile.requiredPeriods.psy).toEqual([]);
-    expect(context.indicatorProfile.displayPlan).toEqual(['price', 'changePercent', 'K', 'D', 'J']);
-  });
-
-  it('uses the default strategy factory and wires the unique monitor verification config into strategy output', () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
-      signalConfig: {
-        buycall: requireSignalConfig('(K>80)'),
-        sellcall: null,
-        buyput: null,
-        sellput: null,
-      },
-      verificationConfig: {
-        buy: {
-          delaySeconds: 15,
-          indicators: ['K'],
-        },
-        sell: {
-          delaySeconds: 15,
-          indicators: ['K'],
-        },
-      },
-    });
-    const { preGateRuntime, postGateRuntime, quotesMap } = createRuntime(monitorConfig);
-
-    const context = createMonitorContext({
-      preGateRuntime,
-      postGateRuntime,
-      quotesMap,
-    });
-
-    const signals = context.strategy.generateSignals(
-      {
-        price: 1,
-        changePercent: 0,
-        ema: null,
-        rsi: null,
-        psy: null,
-        mfi: null,
-        kdj: {
-          k: 90,
-          d: 80,
-          j: 95,
-        },
-        macd: null,
-        adx: null,
-      },
-      'BULL.HK',
-      'BEAR.HK',
-      postGateRuntime.trader.orderRecorder,
-      context.indicatorProfile,
-    );
-
-    expect(signals.immediateSignals).toHaveLength(0);
-    expect(signals.delayedSignals.length).toBeGreaterThan(0);
-  });
-
-  it('supports injected strategy factory and passes the unique monitor config subset to the factory', () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
-    });
-    const { preGateRuntime, postGateRuntime, quotesMap } = createRuntime(monitorConfig);
-    const factoryCalls: string[] = [];
-    const strategyFactory: TradingSignalStrategyFactory = (strategyConfig) => {
-      const buyIndicators = strategyConfig.verificationConfig.buy.indicators ?? [];
-      factoryCalls.push(buyIndicators.join(','));
-      return {
-        generateSignals: () => ({
-          immediateSignals: [
-            {
-              symbol: `${buyIndicators.join('|')}.INJECTED`,
-              action: 'BUYCALL',
-              symbolName: null,
-              seatVersion: null,
-              triggerTime: new Date('2026-03-23T09:30:00.000Z'),
-            },
-          ],
-          delayedSignals: [],
-        }),
-      };
-    };
-
-    const context = createMonitorContext({
-      preGateRuntime,
-      postGateRuntime,
-      quotesMap,
-      strategyFactory,
-    });
-
-    expect(factoryCalls).toHaveLength(1);
-
-    const output = context.strategy.generateSignals(
-      null,
-      'BULL.HK',
-      'BEAR.HK',
-      postGateRuntime.trader.orderRecorder,
-      context.indicatorProfile,
-    );
-
-    expect(output.immediateSignals[0]?.symbol).toBe('K|MACD.INJECTED');
-  });
-
-  it('creates monitorContext as a pure returned value without mutating bootstrap runtime', () => {
-    const monitorConfig = createMonitorConfigDouble({
-      monitorSymbol: 'HSI.HK',
-    });
-    const { preGateRuntime, postGateRuntime, quotesMap } = createRuntime(monitorConfig);
-    const strategyFactory: TradingSignalStrategyFactory = () => ({
-      generateSignals: () => ({
-        immediateSignals: [],
-        delayedSignals: [],
-      }),
-    });
-
-    const postGateRuntimeKeysBefore = Object.keys(postGateRuntime).sort((left, right) =>
-      left.localeCompare(right),
-    );
-
-    const firstContext = createMonitorContext({
-      preGateRuntime,
-      postGateRuntime,
-      quotesMap,
-      strategyFactory,
-    });
-
-    const secondContext = createMonitorContext({
-      preGateRuntime,
-      postGateRuntime,
-      quotesMap,
-      strategyFactory,
-    });
-
-    expect(secondContext).not.toBe(firstContext);
-    expect(Object.keys(postGateRuntime).sort((left, right) => left.localeCompare(right))).toEqual(
-      postGateRuntimeKeysBefore,
-    );
-  });
-
-  it('rejects a runtime assembled without the required trading calendar snapshot', () => {
-    const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
-    const { preGateRuntime, postGateRuntime, quotesMap } = createRuntime(monitorConfig);
-    Reflect.set(postGateRuntime.lastState, 'tradingCalendarSnapshot', undefined);
-
-    expect(() =>
-      createMonitorContext({
-        preGateRuntime,
-        postGateRuntime,
-        quotesMap,
-      }),
-    ).toThrow('交易日历快照');
+    expect(context.longSymbolName).toBe('LongName');
+    expect(context.shortSymbolName).toBe('');
+    expect(context.monitorSymbolName).toBe('HangSeng');
+    expect(context.symbolRegistry).toBe(symbolRegistry);
+    expect('seatState' in context).toBeFalse();
+    expect('seatVersion' in context).toBeFalse();
   });
 });

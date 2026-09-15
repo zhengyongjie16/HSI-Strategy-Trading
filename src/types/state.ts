@@ -1,12 +1,9 @@
-import type { IndicatorSnapshot } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { MonitorConfig } from './config.js';
 import type { SymbolRegistry, LifecycleState } from './seat.js';
 import type { OrderRecorder, PositionCache, RiskChecker, TradingDayInfo } from './services.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from './risk.js';
-import type { IndicatorUsageProfile } from './indicatorProfile.js';
-import type { AutoSymbolManagerPort, DelayedSignalVerifierPort } from './monitorContextPorts.js';
-import type { IndicatorIncrementalRuntime } from './indicatorRuntime.js';
+import type { AutoSymbolManagerPort } from './monitorContextPorts.js';
 import type { TradingSignalStrategy } from '../core/strategy/types.js';
 
 /**
@@ -19,27 +16,6 @@ type CachedLastStateTradingDayInfo = Readonly<{
   dateKey: string;
   info: TradingDayInfo;
 }>;
-
-/**
- * 单个监控标的的运行时状态。
- * 类型用途：承载唯一监控标的的指标快照与增量指标运行态，作为 MonitorContext.state、LastState.monitorState。
- * 数据来源：行情指标流水线持续更新。
- * 使用范围：LastState、MonitorContext 与指标计算链路；全项目可引用。
- */
-export type MonitorState = {
-  /** 监控标的代码 */
-  readonly monitorSymbol: string;
-
-  /**
-   * 运行中持续更新的状态字段（性能考虑保持可变）
-   * - lastMonitorSnapshot/incrementalIndicatorRuntime
-   */
-  /** 最新指标快照 */
-  lastMonitorSnapshot: IndicatorSnapshot | null;
-
-  /** 增量指标运行态（bootstrap 后在运行期持续推进） */
-  incrementalIndicatorRuntime: IndicatorIncrementalRuntime | null;
-};
 
 /**
  * 系统全局状态。
@@ -88,9 +64,6 @@ export type LastState = {
   /** 交易日历快照（YYYY-MM-DD -> 是否交易日/半日市） */
   tradingCalendarSnapshot: ReadonlyMap<string, TradingDayInfo>;
 
-  /** 唯一监控标的状态 */
-  readonly monitorState: MonitorState;
-
   /** 订阅标的集合（运行时动态维护） */
   allTradingSymbols: ReadonlySet<string>;
 };
@@ -104,9 +77,6 @@ export type LastState = {
 export type MonitorContext = {
   /** 监控标的配置 */
   readonly config: MonitorConfig;
-
-  /** 运行时状态 */
-  readonly state: MonitorState;
 
   /** 标的注册表 */
   readonly symbolRegistry: SymbolRegistry;
@@ -129,9 +99,6 @@ export type MonitorContext = {
   /** 浮亏监控器 */
   readonly unrealizedLossMonitor: UnrealizedLossMonitor;
 
-  /** 延迟信号验证器 */
-  readonly delayedSignalVerifier: DelayedSignalVerifierPort;
-
   /** 做多标的名称缓存 */
   longSymbolName: string;
 
@@ -140,7 +107,4 @@ export type MonitorContext = {
 
   /** 监控标的名称缓存 */
   monitorSymbolName: string;
-
-  /** 监控标的指标画像（启动编译，运行期只读） */
-  readonly indicatorProfile: IndicatorUsageProfile;
 };

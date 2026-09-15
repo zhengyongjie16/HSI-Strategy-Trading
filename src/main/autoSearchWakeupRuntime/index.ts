@@ -7,7 +7,6 @@
  * - 每次唤醒重新读取权威状态，不维护 seat 事实副本
  */
 import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../constants/index.js';
-import { toError } from '../../utils/error/index.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
 import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
@@ -62,8 +61,6 @@ export function createAutoSearchWakeupRuntime(
   const timers = new Map<AutoSearchRouteKey, BoundedOneShotTimerController>();
   const activeRouteKeys = new Set<AutoSearchRouteKey>();
   const activePromises = new Set<Promise<void>>();
-  const fatalRejectors = new Set<(error: Error) => void>();
-  let fatalError: Error | null = null;
 
   function clearRouteTimer(routeKey: AutoSearchRouteKey): void {
     const timer = timers.get(routeKey);
@@ -71,8 +68,8 @@ export function createAutoSearchWakeupRuntime(
       return;
     }
 
-    timer.cancel();
     timers.delete(routeKey);
+    timer.cancel();
   }
 
   function scheduleRouteTimer(params: {
@@ -88,6 +85,8 @@ export function createAutoSearchWakeupRuntime(
       scheduleTimer: deps.scheduleTimer,
       clearTimer: deps.clearTimer,
       onDue: () => {
+        if (timers.get(routeKey) !== timer) return;
+
         timers.delete(routeKey);
         triggerSeat(params.direction, params.seatVersion);
       },
@@ -95,27 +94,10 @@ export function createAutoSearchWakeupRuntime(
     timers.set(routeKey, timer);
   }
 
+  /** 内部异常交唯一终止入口，禁止寻标 owner 独立持有主错误。 */
   function handleFatalError(error: unknown): void {
-    if (fatalError !== null) {
-      return;
-    }
-
-    fatalError = toError(error);
-    for (const reject of fatalRejectors) {
-      reject(fatalError);
-    }
-
-    fatalRejectors.clear();
-  }
-
-  function drainFatalError(): Promise<never> {
-    if (fatalError !== null) {
-      return Promise.reject(fatalError);
-    }
-
-    return new Promise<never>((_, reject) => {
-      fatalRejectors.add(reject);
-    });
+    deps.termination.reportFatalError(error);
+    stop();
   }
 
   function registerActivePromise(promise: Promise<void>): void {
@@ -132,7 +114,7 @@ export function createAutoSearchWakeupRuntime(
    * 每次异步边界后按当前事实重读。开盘保护不属于该授权，它只阻断普通信号生成。
    */
   function isSearchExecutionAllowed(): boolean {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return false;
     }
 
@@ -181,7 +163,7 @@ export function createAutoSearchWakeupRuntime(
   }
 
   function triggerSeat(direction: 'LONG' | 'SHORT', expectedSeatVersion?: number): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -368,7 +350,7 @@ export function createAutoSearchWakeupRuntime(
   }
 
   function start(): void {
-    if (running) {
+    if (running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -381,7 +363,7 @@ export function createAutoSearchWakeupRuntime(
     seedEmptySeats();
   }
 
-  async function stopAndDrain(): Promise<void> {
+  function stop(): void {
     running = false;
     cancelRuntimeOwnedSearchingSeats();
     unsubscribeSeatStateChanged?.();
@@ -391,15 +373,16 @@ export function createAutoSearchWakeupRuntime(
     for (const routeKey of timers.keys()) {
       clearRouteTimer(routeKey);
     }
+  }
 
-    if (activePromises.size > 0) {
-      await Promise.allSettled(activePromises);
-    }
+  async function stopAndDrain(): Promise<void> {
+    stop();
+    await Promise.all(activePromises);
   }
 
   return {
     start,
     stopAndDrain,
-    drainFatalError,
+    stop,
   };
 }

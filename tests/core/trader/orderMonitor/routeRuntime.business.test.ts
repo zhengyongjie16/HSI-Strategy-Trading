@@ -21,8 +21,8 @@ import type {
 import type { QuoteUpdatedEvent } from '../../../../src/types/services.js';
 
 function createRouteRuntime(
-  deps: Omit<RouteRuntimeDeps, 'now' | 'scheduleTimer' | 'clearTimer' | 'onFatalError'> &
-    Partial<Pick<RouteRuntimeDeps, 'onFatalError'>>,
+  deps: Omit<RouteRuntimeDeps, 'now' | 'scheduleTimer' | 'clearTimer' | 'termination'> &
+    Partial<Pick<RouteRuntimeDeps, 'termination'>>,
 ) {
   return createRouteRuntimeImpl({
     ...deps,
@@ -31,7 +31,7 @@ function createRouteRuntime(
     clearTimer: (handle) => {
       clearTimeout(handle);
     },
-    onFatalError: deps.onFatalError ?? (() => {}),
+    termination: deps.termination ?? { isTerminated: () => false, reportFatalError: () => {} },
   });
 }
 
@@ -847,8 +847,11 @@ describe('orderMonitor route runtime', () => {
       processRoute: async () => {
         throw routeError;
       },
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -860,7 +863,7 @@ describe('orderMonitor route runtime', () => {
     expect(fatalErrors[0]).toBe(routeError);
   });
 
-  it('stopAndDrain 不会重复暴露同一条 route 失败', async () => {
+  it('stopAndDrain 不将已失败的排空周期伪装为成功', async () => {
     const runtime = createRuntimeStore();
     runtime.routeStatesBySymbol.set('BULL.HK', createRouteState('BULL.HK'));
     const firstPassEntered = createDeferred();
@@ -884,7 +887,10 @@ describe('orderMonitor route runtime', () => {
     const firstStopPromise = routeRuntime.stopAndDrain();
     releaseFirstPass.resolve();
     await expectPromiseRejectsToMatch(() => firstStopPromise, /route process failed once/);
-    await routeRuntime.stopAndDrain();
+    await expectPromiseRejectsToMatch(
+      () => routeRuntime.stopAndDrain(),
+      /route process failed once/,
+    );
   });
 
   it('in-flight 期间 ORDER_EVENT 后续收到 QUOTE 时补跑使用最新 QUOTE 唤醒原因', async () => {

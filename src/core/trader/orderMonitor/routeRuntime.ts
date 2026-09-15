@@ -130,13 +130,13 @@ export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
     now,
     scheduleTimer,
     clearTimer,
-    onFatalError,
+    termination,
   } = deps;
   const activeRoutePromises = new Set<Promise<void>>();
-  let firstRouteProcessingError: Error | null = null;
+  let routeDrain: Promise<void> = Promise.resolve();
 
   function isRouteRuntimeActive(): boolean {
-    return runtime.running && runtime.runtimeState === 'ACTIVE';
+    return !termination.isTerminated() && runtime.running && runtime.runtimeState === 'ACTIVE';
   }
 
   function getRouteState(symbol: string): OrderMonitorSymbolRouteState | null {
@@ -151,17 +151,23 @@ export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
 
     const promise = runRoute(symbol, routeState.generation, wakeupKind);
     activeRoutePromises.add(promise);
-    promise
-      .finally(() => {
-        activeRoutePromises.delete(promise);
-      })
-      .catch((error: unknown) => {
-        if (firstRouteProcessingError === null && error instanceof Error) {
-          firstRouteProcessingError = error;
-        }
+    routeDrain = Promise.all([routeDrain, promise]).then(() => {
+      /* 保留本周期排空结果。 */
+    });
 
-        onFatalError(error);
-      });
+    void routeDrain.catch(() => {
+      /* 错误由实际 route 上报，排空仍保留拒绝。 */
+    });
+
+    void promise.then(
+      () => {
+        activeRoutePromises.delete(promise);
+      },
+      (error: unknown) => {
+        activeRoutePromises.delete(promise);
+        termination.reportFatalError(error);
+      },
+    );
   }
 
   function resetRouteStateForStop(routeState: OrderMonitorSymbolRouteState): void {
@@ -357,11 +363,11 @@ export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
   }
 
   function start(): void {
-    if (runtime.running) {
+    if (runtime.running || termination.isTerminated()) {
       return;
     }
 
-    firstRouteProcessingError = null;
+    routeDrain = Promise.resolve();
     runtime.running = true;
     runtime.unsubscribeQuoteUpdated = marketDataClient.onQuoteUpdated((event) => {
       handleQuoteUpdated(event);
@@ -374,31 +380,12 @@ export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
     runtime.unsubscribeQuoteUpdated?.();
     runtime.unsubscribeQuoteUpdated = null;
 
-    let stopError: Error | null = null;
-    if (activeRoutePromises.size > 0) {
-      const results = await Promise.allSettled(activeRoutePromises);
-      for (const result of results) {
-        if (result.status === 'rejected' && result.reason instanceof Error) {
-          stopError = result.reason;
-          break;
-        }
-      }
-    }
-
+    await Promise.allSettled(activeRoutePromises);
     for (const routeState of runtime.routeStatesBySymbol.values()) {
       resetRouteStateForStop(routeState);
     }
 
-    if (stopError !== null) {
-      firstRouteProcessingError = null;
-      throw stopError;
-    }
-
-    if (firstRouteProcessingError !== null) {
-      const error = firstRouteProcessingError;
-      firstRouteProcessingError = null;
-      throw error;
-    }
+    await routeDrain;
   }
 
   return {

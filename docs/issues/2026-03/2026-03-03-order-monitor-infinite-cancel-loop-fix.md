@@ -847,7 +847,7 @@ describe('订单监控错误处理', () => {
 **运行命令**：
 
 ```bash
-bun test tests/core/trader/orderMonitor.business.test.ts
+bun test tests/core/trader/orderMonitor/orderMonitor.business.test.ts
 bun test tests/regression/order-monitor-regression.test.ts
 bun test tests/chaos/api-flaky-recovery.test.ts
 ```

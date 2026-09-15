@@ -1,43 +1,14 @@
 /**
  * monitorDisplayRuntime 业务测试
- *
- * 功能：
- * - 验证 monitor display runtime 在门禁打开时按请求渲染监控标的
- * - 验证单 route 的 latest-only collapse 只渲染最新快照
+ * 验证中性显示投影、行情来源、latest-only 合并、门禁与停止排空。
  */
-import { describe, expect, it, mock } from 'bun:test';
-import type { IndicatorSnapshot } from '../../../src/types/quote.js';
-import { createMonitorContextDouble, createQuoteDouble } from '../../helpers/testDoubles.js';
-
-const infoLogs: string[] = [];
-const warnLogs: string[] = [];
-
-mock.module('../../../src/utils/logger/index.js', () => ({
-  logger: {
-    debug: () => {},
-    info: (message: string) => {
-      infoLogs.push(message);
-    },
-    warn: (message: string) => {
-      warnLogs.push(message);
-    },
-    error: () => {},
-  },
-}));
-
-function createSnapshot(price: number): IndicatorSnapshot {
-  return {
-    price,
-    changePercent: 0,
-    ema: { 7: price - 1 },
-    rsi: { 6: 52 },
-    psy: { 13: 58 },
-    mfi: 45,
-    kdj: { k: 51, d: 49, j: 55 },
-    macd: { macd: 10, dif: 3, dea: 2 },
-    adx: null,
-  };
-}
+import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { TRADING } from '../../../src/constants/index.js';
+import { createMonitorDisplayRuntime } from '../../../src/main/monitorDisplayRuntime/index.js';
+import type { MonitorDisplayRuntimeDeps } from '../../../src/main/monitorDisplayRuntime/types.js';
+import type { RenderMonitorIndicatorsParams } from '../../../src/services/marketMonitor/types.js';
+import type { Quote } from '../../../src/types/quote.js';
+import { logger } from '../../../src/utils/logger/index.js';
 
 function waitTick(): Promise<void> {
   return new Promise((resolve) => {
@@ -45,113 +16,163 @@ function waitTick(): Promise<void> {
   });
 }
 
+function createHarness(overrides: Partial<MonitorDisplayRuntimeDeps> = {}) {
+  const rendered: RenderMonitorIndicatorsParams[] = [];
+  const quote: Quote = {
+    symbol: 'HSI.HK',
+    name: '恒生指数',
+    price: 20_010,
+    prevClose: 20_000,
+    timestamp: 1_708_000_100_000,
+  };
+  const getQuotes = mock(async () => new Map([['HSI.HK', quote]]));
+  const getCandlestickSnapshot = mock(() => ({
+    symbol: 'HSI.HK',
+    period: TRADING.CANDLE_PERIOD,
+    version: 1,
+    candles: [],
+    lastBarTimestamp: 1_708_000_000_000,
+    lastBarConfirmed: true,
+    initialized: true,
+  }));
+  const lastState = { isTradingEnabled: true, canTrade: true };
+  const runtime = createMonitorDisplayRuntime({
+    marketDataClient: { getQuotes, getCandlestickSnapshot },
+    monitorContext: { config: { monitorSymbol: 'HSI.HK' } },
+    lastState,
+    marketMonitor: {
+      renderMonitorIndicators: (params) => {
+        rendered.push(params);
+      },
+    },
+    ...overrides,
+  });
+  return { runtime, rendered, quote, getQuotes, getCandlestickSnapshot, lastState };
+}
+
+afterEach(() => {
+  mock.restore();
+});
+
 describe('monitorDisplayRuntime', () => {
-  it('renders latest monitor snapshot with current monitor quote', async () => {
-    infoLogs.length = 0;
-    warnLogs.length = 0;
-    const { createMonitorDisplayRuntime } =
-      await import('../../../src/main/monitorDisplayRuntime/index.js');
-    const runtime = createMonitorDisplayRuntime({
-      marketDataClient: {
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_010)]]),
-        getCandlestickSnapshot: () => ({
-          symbol: 'HSI.HK',
-          period: 0 as never,
-          version: 1,
-          candles: [],
-          lastBarTimestamp: 1_708_000_000_000,
-          lastBarConfirmed: true,
-          initialized: true,
-        }),
-      },
-      monitorContext: createMonitorContextDouble(),
-      lastState: {
-        isTradingEnabled: true,
-        canTrade: true,
-      },
-      marketMonitor: {
-        renderMonitorIndicators: (params: {
-          readonly monitorSymbol: string;
-          readonly monitorSnapshot: IndicatorSnapshot;
-        }) => {
-          infoLogs.push(`render:${params.monitorSymbol}:${params.monitorSnapshot.price}`);
-        },
-      },
-    });
-
-    runtime.start();
-    runtime.requestRender({
-      monitorSnapshot: createSnapshot(20_000),
-    });
+  it('passes arbitrary strategy text with the current quote and cached candle timestamp', async () => {
+    const harness = createHarness();
+    const items = [{ label: '新指标', valueText: 'ready / 0.012340' }];
+    harness.runtime.start();
+    harness.runtime.requestRender({ items });
     await waitTick();
 
-    expect(infoLogs).toContain('render:HSI.HK:20000');
-    await runtime.stopAndDrain();
+    expect(harness.getQuotes).toHaveBeenCalledWith(['HSI.HK']);
+    expect(harness.getCandlestickSnapshot).toHaveBeenCalledWith('HSI.HK', TRADING.CANDLE_PERIOD);
+    expect(harness.rendered).toEqual([
+      {
+        monitorSymbol: 'HSI.HK',
+        items,
+        monitorQuote: harness.quote,
+        klineTimestamp: 1_708_000_000_000,
+      },
+    ]);
+    await harness.runtime.stopAndDrain();
   });
 
-  it('collapses concurrent requests for the same monitor to the latest snapshot', async () => {
-    infoLogs.length = 0;
-    warnLogs.length = 0;
-    const { createMonitorDisplayRuntime } =
-      await import('../../../src/main/monitorDisplayRuntime/index.js');
-    let resolveQuotes: (() => void) | undefined;
-    const quoteBlocked = new Promise<void>((resolve) => {
-      resolveQuotes = resolve;
-    });
-    const runtime = createMonitorDisplayRuntime({
-      marketDataClient: {
-        getQuotes: async () => {
-          await quoteBlocked;
-          return new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_020)]]);
-        },
-        getCandlestickSnapshot: () => ({
-          symbol: 'HSI.HK',
-          period: 0 as never,
-          version: 1,
-          candles: [],
-          lastBarTimestamp: 1_708_000_000_000,
-          lastBarConfirmed: true,
-          initialized: true,
-        }),
-      },
-      monitorContext: createMonitorContextDouble(),
-      lastState: {
-        isTradingEnabled: true,
-        canTrade: true,
-      },
-      marketMonitor: {
-        renderMonitorIndicators: (params: {
-          readonly monitorSymbol: string;
-          readonly monitorSnapshot: IndicatorSnapshot;
-        }) => {
-          infoLogs.push(`render:${params.monitorSymbol}:${params.monitorSnapshot.price}`);
-        },
-      },
-    });
-
-    runtime.start();
-    runtime.requestRender({
-      monitorSnapshot: createSnapshot(20_000),
-    });
-
-    runtime.requestRender({
-      monitorSnapshot: createSnapshot(20_100),
-    });
-    resolveQuotes?.();
-    await waitTick();
+  it('collapses blocked quote requests to the latest projection with one quote read', async () => {
+    const blocked = Promise.withResolvers<Map<string, Quote>>();
+    const getQuotes = mock(() => blocked.promise);
+    const getCandlestickSnapshot = mock(() => null);
+    const harness = createHarness({ marketDataClient: { getQuotes, getCandlestickSnapshot } });
+    harness.runtime.start();
+    harness.runtime.requestRender({ items: [{ label: '旧', valueText: '1' }] });
+    harness.runtime.requestRender({ items: [{ label: '中间', valueText: '2' }] });
+    const latest = [{ label: '最新', valueText: '3' }];
+    harness.runtime.requestRender({ items: latest });
+    blocked.resolve(new Map());
     await waitTick();
 
-    expect(infoLogs).toEqual(['render:HSI.HK:20100']);
-    await runtime.stopAndDrain();
+    expect(getQuotes).toHaveBeenCalledTimes(1);
+    expect(harness.rendered).toEqual([
+      { monitorSymbol: 'HSI.HK', items: latest, monitorQuote: null, klineTimestamp: null },
+    ]);
+    await harness.runtime.stopAndDrain();
   });
 
-  it('logs and skips when quote fetch fails, then continues rendering later requests', async () => {
-    infoLogs.length = 0;
-    warnLogs.length = 0;
-    const { createMonitorDisplayRuntime } =
-      await import('../../../src/main/monitorDisplayRuntime/index.js');
+  it('accepts an empty projection without dropping host quote display', async () => {
+    const harness = createHarness();
+    harness.runtime.start();
+    harness.runtime.requestRender({ items: [] });
+    await waitTick();
+    expect(harness.rendered).toHaveLength(1);
+    expect(harness.rendered[0]?.items).toEqual([]);
+    await harness.runtime.stopAndDrain();
+  });
+
+  it('rejects requests before start and while either trading gate is closed', async () => {
+    const harness = createHarness();
+    harness.runtime.requestRender({ items: [] });
+    harness.runtime.start();
+    harness.lastState.isTradingEnabled = false;
+    harness.runtime.requestRender({ items: [] });
+    harness.lastState.isTradingEnabled = true;
+    harness.lastState.canTrade = false;
+    harness.runtime.requestRender({ items: [] });
+    await waitTick();
+    expect(harness.getQuotes).not.toHaveBeenCalled();
+    expect(harness.rendered).toEqual([]);
+    await harness.runtime.stopAndDrain();
+  });
+
+  it('rechecks the gate after a blocked quote read', async () => {
+    const blocked = Promise.withResolvers<Map<string, Quote>>();
+    const harness = createHarness({
+      marketDataClient: {
+        getQuotes: () => blocked.promise,
+        getCandlestickSnapshot: () => null,
+      },
+    });
+    harness.runtime.start();
+    harness.runtime.requestRender({ items: [{ label: '旧', valueText: '1' }] });
+    harness.lastState.canTrade = false;
+    blocked.resolve(new Map());
+    await waitTick();
+    harness.lastState.canTrade = true;
+    expect(harness.rendered).toEqual([]);
+    await harness.runtime.stopAndDrain();
+  });
+
+  it('clears pending display synchronously on stop and never renders late quote results', async () => {
+    const blocked = Promise.withResolvers<Map<string, Quote>>();
+    const getQuotes = mock(() => blocked.promise);
+    const getCandlestickSnapshot = mock(() => null);
+    const harness = createHarness({ marketDataClient: { getQuotes, getCandlestickSnapshot } });
+    harness.runtime.start();
+    harness.runtime.requestRender({ items: [{ label: '旧', valueText: '1' }] });
+    harness.runtime.requestRender({ items: [{ label: '待显示', valueText: '2' }] });
+    let drained = false;
+    const drain = harness.runtime.stopAndDrain().then(() => {
+      drained = true;
+    });
+    harness.runtime.requestRender({ items: [{ label: '停止后', valueText: '3' }] });
+    await waitTick();
+    expect(drained).toBe(false);
+    blocked.resolve(new Map());
+    await drain;
+    expect(harness.rendered).toEqual([]);
+    expect(getCandlestickSnapshot).not.toHaveBeenCalled();
+
+    harness.runtime.start();
+    await waitTick();
+    expect(getQuotes).toHaveBeenCalledTimes(1);
+    expect(harness.rendered).toEqual([]);
+    const freshItems = [{ label: '重启后', valueText: '4' }];
+    harness.runtime.requestRender({ items: freshItems });
+    await waitTick();
+    expect(harness.rendered[0]?.items).toEqual(freshItems);
+    await harness.runtime.stopAndDrain();
+  });
+
+  it('logs quote read failures and renders subsequent requests', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
     let shouldFail = true;
-    const runtime = createMonitorDisplayRuntime({
+    const harness = createHarness({
       marketDataClient: {
         getQuotes: async () => {
           if (shouldFail) {
@@ -159,48 +180,35 @@ describe('monitorDisplayRuntime', () => {
             throw new Error('quote fetch failed');
           }
 
-          return new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_030)]]);
+          return new Map();
         },
-        getCandlestickSnapshot: () => ({
-          symbol: 'HSI.HK',
-          period: 0 as never,
-          version: 1,
-          candles: [],
-          lastBarTimestamp: 1_708_000_000_000,
-          lastBarConfirmed: true,
-          initialized: true,
-        }),
-      },
-      monitorContext: createMonitorContextDouble(),
-      lastState: {
-        isTradingEnabled: true,
-        canTrade: true,
-      },
-      marketMonitor: {
-        renderMonitorIndicators: (params: {
-          readonly monitorSymbol: string;
-          readonly monitorSnapshot: IndicatorSnapshot;
-        }) => {
-          infoLogs.push(`render:${params.monitorSymbol}:${params.monitorSnapshot.price}`);
-        },
+        getCandlestickSnapshot: () => null,
       },
     });
+    harness.runtime.start();
+    harness.runtime.requestRender({ items: [] });
+    await waitTick();
+    harness.runtime.requestRender({ items: [{ label: '恢复', valueText: 'ok' }] });
+    await waitTick();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(harness.rendered[0]?.items).toEqual([{ label: '恢复', valueText: 'ok' }]);
+    await harness.runtime.stopAndDrain();
+  });
 
-    runtime.start();
-    runtime.requestRender({
-      monitorSnapshot: createSnapshot(20_000),
+  it('logs renderer failures without preventing later display requests', async () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    const renderMonitorIndicators = mock(() => {});
+    renderMonitorIndicators.mockImplementationOnce(() => {
+      throw new Error('render failed');
     });
+    const harness = createHarness({ marketMonitor: { renderMonitorIndicators } });
+    harness.runtime.start();
+    harness.runtime.requestRender({ items: [] });
     await waitTick();
+    harness.runtime.requestRender({ items: [] });
     await waitTick();
-
-    runtime.requestRender({
-      monitorSnapshot: createSnapshot(20_100),
-    });
-    await waitTick();
-    await waitTick();
-
-    expect(warnLogs).toHaveLength(1);
-    expect(infoLogs).toContain('render:HSI.HK:20100');
-    await runtime.stopAndDrain();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(renderMonitorIndicators).toHaveBeenCalledTimes(2);
+    await harness.runtime.stopAndDrain();
   });
 });

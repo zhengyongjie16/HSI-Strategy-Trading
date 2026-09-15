@@ -1,3 +1,5 @@
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+
 /**
  * createPreGateRuntime 启动前阶段测试
  *
@@ -26,7 +28,16 @@ describe('app createPreGateRuntime config error contract', () => {
 
     let caughtError: unknown = null;
     try {
-      await createPreGateRuntime({ env, cleanup: createCleanup() });
+      await createPreGateRuntime({
+        env,
+        cleanup: createCleanup(),
+        termination: createTerminationRuntime({
+          closeTradingGate: () => {},
+          closeProducerAdmission: () => {},
+          stopProducers: [],
+          onSecondaryError: () => {},
+        }),
+      });
     } catch (error) {
       caughtError = error;
     }

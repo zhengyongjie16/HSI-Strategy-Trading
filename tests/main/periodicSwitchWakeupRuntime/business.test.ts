@@ -1,9 +1,5 @@
-/**
- * PeriodicSwitchWakeupRuntime 业务测试
- *
- * 覆盖周期换标 due timer 的 ownership、baseline 隔离、waiting-empty 显式唤醒与 stop 清理语义。
- */
-import { describe, expect, it } from 'bun:test';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { TIME, TRADING } from '../../../src/constants/index.js';
 import { createPeriodicSwitchWakeupRuntime } from '../../../src/main/periodicSwitchWakeupRuntime/index.js';
 import {
@@ -24,6 +20,22 @@ import type {
 import type { MonitorTaskInput } from '../../../src/main/asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { calculateTradingDurationDueAtMs } from '../../../src/utils/time/index.js';
+
+let termination: ReturnType<typeof createTerminationRuntime>;
+beforeEach(() => {
+  termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+});
+
+/**
+ * PeriodicSwitchWakeupRuntime 业务测试
+ *
+ * 覆盖周期换标 due timer 的 ownership、baseline 隔离、waiting-empty 显式唤醒与 stop 清理语义。
+ */
 
 type ScheduledTask = MonitorTaskInput<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>;
 type TimerHandle = ReturnType<typeof setTimeout>;
@@ -214,6 +226,7 @@ function createHarness(
   const tasks: ScheduledTask[] = [];
 
   const runtime = createPeriodicSwitchWakeupRuntime({
+    termination,
     monitorContext: runtimeMonitorContext,
     symbolRegistry,
     monitorTaskQueue: {
@@ -221,6 +234,8 @@ function createHarness(
         if (task.type === 'AUTO_SYMBOL_TICK') {
           tasks.push(task);
         }
+
+        return true;
       },
     },
     trader: subscriptions.trader,

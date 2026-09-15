@@ -54,11 +54,6 @@ const lastState = {
   },
   cachedTradingDayInfo: null,
   tradingCalendarSnapshot: new Map(),
-  monitorState: {
-    monitorSymbol: 'HSI.HK',
-    lastMonitorSnapshot: null,
-    incrementalIndicatorRuntime: null,
-  },
   allTradingSymbols: new Set<string>(),
 } satisfies LastState;
 

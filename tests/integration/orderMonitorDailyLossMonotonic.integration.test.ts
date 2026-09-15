@@ -26,6 +26,7 @@ import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader
 import type { OrderHoldRegistry } from '../../src/core/trader/types.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
+  createTerminationDouble,
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createRateLimiterDouble,
@@ -167,9 +168,11 @@ describe('order monitor cumulative execution integration', () => {
         recordSettlementRefreshNeed: () => {},
       },
       isContinuousTradingAllowed: () => true,
-      onFatalError: (error) => {
-        throw error;
-      },
+      termination: createTerminationDouble({
+        reportFatalError: (error) => {
+          throw error;
+        },
+      }),
     });
     monitor.onOrderStateChanged((event) => {
       stateChanges.push(`${event.orderId}:${event.status}`);

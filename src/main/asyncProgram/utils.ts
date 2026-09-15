@@ -109,7 +109,7 @@ export function registerTaskAddedCallback(
 export function createBaseProcessor<TType extends string>(
   config: BaseProcessorConfig<TType>,
 ): Processor {
-  const { loggerPrefix, taskQueue, processTask, getCanProcessTask, onFatalError } = config;
+  const { loggerPrefix, taskQueue, processTask, getCanProcessTask, termination } = config;
   let running = false;
   let immediateHandle: ReturnType<typeof setImmediate> | null = null;
   let inFlightPromise: Promise<void> | null = null;
@@ -136,7 +136,7 @@ export function createBaseProcessor<TType extends string>(
    * @returns 无返回值
    */
   async function processQueue(): Promise<void> {
-    while (running && !taskQueue.isEmpty()) {
+    while (running && !termination.isTerminated() && !taskQueue.isEmpty()) {
       const task = taskQueue.pop();
       if (!task) break;
 
@@ -155,7 +155,9 @@ export function createBaseProcessor<TType extends string>(
    * @returns 无返回值
    */
   function scheduleNextProcess(): void {
-    if (!running) return;
+    if (!running || termination.isTerminated()) return;
+
+    if (inFlightPromise !== null || immediateHandle !== null) return;
 
     if (taskQueue.isEmpty()) {
       immediateHandle = null;
@@ -163,16 +165,17 @@ export function createBaseProcessor<TType extends string>(
     }
 
     immediateHandle = setImmediate(() => {
-      if (!running) return;
+      immediateHandle = null;
+      if (!running || termination.isTerminated()) return;
 
       if (taskQueue.isEmpty()) {
         immediateHandle = null;
       } else {
         inFlightPromise = processQueue()
           .catch((err: unknown) => {
+            termination.reportFatalError(err);
             stopScheduling();
             logger.error(`[${loggerPrefix}] 处理队列时发生错误`, formatError(err));
-            onFatalError(err);
           })
           .finally(() => {
             inFlightPromise = null;
@@ -187,6 +190,8 @@ export function createBaseProcessor<TType extends string>(
    * @returns 无返回值
    */
   function start(): void {
+    if (termination.isTerminated()) return;
+
     if (running) {
       logger.warn(`[${loggerPrefix}] 处理器已在运行中`);
       return;

@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { SellSignal } from '../../types/signal.js';
 import type {
@@ -102,7 +103,7 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
   >;
 
   /** route 内部错误可观测通道 */
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 }>;
 
 /**
@@ -135,7 +136,7 @@ export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   >['handoffPendingSwitch'];
 
   /** route 内部错误可观测通道 */
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 }>;
 
 /**
@@ -330,7 +331,7 @@ export type SwitchWakeupRuntimeDeps = Readonly<{
   clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
 
   /** route 内部错误可观测通道 */
-  onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 }>;
 
 /**
@@ -405,6 +406,7 @@ export interface MonitorQuoteEventRuntime {
   start: () => void;
 
   /** 停止监听并等待所有在途执行完成。 */
+  readonly stop: () => void;
   stopAndDrain: () => Promise<void>;
 }
 
@@ -415,6 +417,8 @@ export interface MonitorQuoteEventRuntime {
  * 使用范围：app cleanup、lifecycle、monitorTaskProcessor 与相关测试使用。
  */
 export interface SwitchWakeupRuntime {
+  readonly stop: () => void;
+
   /** 启动事件监听。 */
   start: () => void;
 

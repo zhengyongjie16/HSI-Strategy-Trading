@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { Logger } from '../../utils/logger/types.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import type { TradeLogHydrator } from '../../services/liquidationCooldown/types.js';
@@ -87,6 +88,7 @@ export interface DayLifecycleManager {
  * 使用范围：仅 lifecycle 及启动流程使用，内部使用。
  */
 export type DayLifecycleManagerDeps = Readonly<{
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   mutableState: LifecycleMutableState;
   cacheDomains: ReadonlyArray<CacheDomain>;
   logger: Pick<Logger, 'info' | 'warn' | 'error'>;
@@ -100,6 +102,7 @@ export type DayLifecycleManagerDeps = Readonly<{
  * 使用范围：仅 lifecycle 内部使用。
  */
 export type RebuildTradingDayStateDeps = Readonly<{
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   marketDataClient: MarketDataClient;
   trader: Trader;
   lastState: LastState;

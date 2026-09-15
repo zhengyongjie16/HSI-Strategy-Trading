@@ -67,6 +67,7 @@ function createMutationRateLimiter(): RateLimiter {
 function createOrderMonitorDouble(trackOrder: (params: TrackOrderParams) => void): OrderMonitor {
   return {
     initialize: async () => {},
+    teardown: async () => {},
     onOrderStateChanged: () => () => {},
     trackOrder,
     cancelOrder: async () => ({

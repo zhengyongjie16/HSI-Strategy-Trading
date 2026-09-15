@@ -223,7 +223,7 @@
 bun format
 bun lint
 bun type-check
-bun test tests/main/timeWakeupRuntime/business.test.ts tests/main/timeWakeupEvaluationProgram/business.test.ts tests/utils/timer.business.test.ts tests/core/trader/orderMonitor/routeRuntime.business.test.ts tests/main/periodicSwitchWakeupRuntime/business.test.ts tests/main/autoSearchWakeupRuntime/autoSearchWakeupRuntime.business.test.ts tests/app/runApp.business.test.ts tests/app/runtime/createAsyncRuntime.wiring.test.ts tests/main/asyncProgram/monitorTaskProcessor/business.test.ts tests/services/autoSymbolManager/autoSearch.business.test.ts tests/integration/auto-search-policy-consistency.integration.test.ts
+bun test tests/main/timeWakeupRuntime/business.test.ts tests/main/timeWakeupEvaluationProgram/business.test.ts tests/utils/timer/timer.business.test.ts tests/core/trader/orderMonitor/routeRuntime.business.test.ts tests/main/periodicSwitchWakeupRuntime/business.test.ts tests/main/autoSearchWakeupRuntime/autoSearchWakeupRuntime.business.test.ts tests/app/runApp.business.test.ts tests/app/runtime/createAsyncRuntime.wiring.test.ts tests/main/asyncProgram/monitorTaskProcessor/business.test.ts tests/services/autoSymbolManager/autoSearch.business.test.ts tests/integration/auto-search-policy-consistency.integration.test.ts
 bun test
 ```
 

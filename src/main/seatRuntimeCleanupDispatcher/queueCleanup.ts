@@ -2,11 +2,10 @@
  * 席位运行态队列清理模块
  *
  * 职责：
- * - 按方向清理延迟验证、买卖任务与监控任务
+ * - 按方向清理买卖任务与监控任务
  * - 为席位退场事件 owner 提供统一清理统计
  */
 import { isRecord } from '../../utils/helpers/index.js';
-import type { DelayedSignalVerifierPort } from '../../types/monitorContextPorts.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/tradeTaskQueue/types.js';
@@ -76,15 +75,12 @@ function removeSignalTasks(
  */
 export function clearMonitorDirectionQueues(params: {
   readonly direction: 'LONG' | 'SHORT';
-  readonly delayedSignalVerifier: DelayedSignalVerifierPort;
   readonly buyTaskQueue: TaskQueue<BuyTaskType>;
   readonly sellTaskQueue: TaskQueue<SellTaskType>;
   readonly monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
 }): QueueClearResult {
-  const { direction, delayedSignalVerifier, buyTaskQueue, sellTaskQueue, monitorTaskQueue } =
-    params;
+  const { direction, buyTaskQueue, sellTaskQueue, monitorTaskQueue } = params;
 
-  const removedDelayed = delayedSignalVerifier.cancelAllForDirection(direction);
   const removedBuy = removeSignalTasks(buyTaskQueue, direction);
   const removedSell = removeSignalTasks(sellTaskQueue, direction);
   const removedMonitorTasks = monitorTaskQueue.removeTasks((task) =>
@@ -92,7 +88,6 @@ export function clearMonitorDirectionQueues(params: {
   );
 
   return {
-    removedDelayed,
     removedBuy,
     removedSell,
     removedMonitorTasks,
@@ -112,13 +107,12 @@ export function logDirectionQueueCleanup(params: {
   readonly logger: { debug: (message: string) => void };
 }): void {
   const { source, direction, result, logger } = params;
-  const totalRemoved =
-    result.removedDelayed + result.removedBuy + result.removedSell + result.removedMonitorTasks;
+  const totalRemoved = result.removedBuy + result.removedSell + result.removedMonitorTasks;
   if (totalRemoved <= 0) {
     return;
   }
 
   logger.debug(
-    `[${source}] ${direction} 清理待执行信号：延迟=${result.removedDelayed} 买入=${result.removedBuy} 卖出=${result.removedSell} 监控任务=${result.removedMonitorTasks}`,
+    `[${source}] ${direction} 清理待执行信号：买入=${result.removedBuy} 卖出=${result.removedSell} 监控任务=${result.removedMonitorTasks}`,
   );
 }

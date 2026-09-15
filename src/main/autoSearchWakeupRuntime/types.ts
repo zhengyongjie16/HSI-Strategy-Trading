@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.js';
@@ -17,6 +18,7 @@ export type AutoSearchRouteKey = `${'LONG' | 'SHORT'}:${number}`;
  * 使用范围：AutoSearchWakeupRuntime 工厂。
  */
 export type AutoSearchWakeupRuntimeDeps = Readonly<{
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   symbolRegistry: SymbolRegistry;
   monitorContext: MonitorContext;
   lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
@@ -38,5 +40,5 @@ export type AutoSearchWakeupRuntimeDeps = Readonly<{
 export interface AutoSearchWakeupRuntime {
   readonly start: () => void;
   readonly stopAndDrain: () => Promise<void>;
-  readonly drainFatalError: () => Promise<never>;
+  readonly stop: () => void;
 }

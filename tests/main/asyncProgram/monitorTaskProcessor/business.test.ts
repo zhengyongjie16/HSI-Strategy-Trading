@@ -1,12 +1,5 @@
-/**
- * monitorTaskProcessor 业务测试
- *
- * 功能：
- * - 验证监控任务处理器相关场景意图、边界条件与业务期望。
- */
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-
 import { createMonitorTaskProcessor } from '../../../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
@@ -44,6 +37,13 @@ import {
 } from '../utils.js';
 import type { CreateBusinessProcessorParams } from '../types.js';
 
+/**
+ * monitorTaskProcessor 业务测试
+ *
+ * 功能：
+ * - 验证监控任务处理器相关场景意图、边界条件与业务期望。
+ */
+
 const MONITOR_TASK_NOW_MS = Date.parse('2026-03-13T02:00:00.000Z');
 const MONITOR_TASK_RUNTIME = {
   clock: {
@@ -76,7 +76,7 @@ function createBusinessProcessor(
       clearWaitingEmpty: () => {},
       replanRouteAfterTask: () => {},
     },
-    onFatalError,
+    termination,
   } = params;
   const resolvedTrader = {
     ...(trader ?? createTraderDouble()),
@@ -98,7 +98,7 @@ function createBusinessProcessor(
     getCanTradeNow,
     periodicSwitchWakeupRuntime,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
-    onFatalError: onFatalError ?? rethrowFatalError,
+    termination: termination ?? { isTerminated: () => false, reportFatalError: rethrowFatalError },
   });
 }
 
@@ -210,7 +210,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     await runProcessorFlow({
@@ -293,8 +293,11 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -370,8 +373,11 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -616,7 +622,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
       lastState: createLastState(),
       getCanTradeNow: () => currentNowMs < takeoverMs,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     processor.start();
@@ -1381,8 +1387,11 @@ describe('monitorTaskProcessor business flow', () => {
             ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
           ]),
       }),
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1473,8 +1482,11 @@ describe('monitorTaskProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]),
       }),
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1577,8 +1589,11 @@ describe('monitorTaskProcessor business flow', () => {
             ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
           ]),
       }),
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1750,8 +1765,11 @@ describe('monitorTaskProcessor business flow', () => {
               ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
             ]),
         }),
-        onFatalError: (error) => {
-          fatalErrors.push(error);
+        termination: {
+          isTerminated: () => false,
+          reportFatalError: (error) => {
+            fatalErrors.push(error);
+          },
         },
       });
 
@@ -1916,8 +1934,11 @@ describe('monitorTaskProcessor business flow', () => {
               ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
             ]),
         }),
-        onFatalError: (error) => {
-          fatalErrors.push(error);
+        termination: {
+          isTerminated: () => false,
+          reportFatalError: (error) => {
+            fatalErrors.push(error);
+          },
         },
       });
 
@@ -2109,6 +2130,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
 
     admissionDeferred.resolve(null);
+    await waitUntil(() => context.symbolRegistry.getSeatState('LONG').status === 'ACTIVE');
     await processor.stopAndDrain();
 
     expect(getQuotesCalls).toBe(1);
@@ -2335,8 +2357,11 @@ describe('monitorTaskProcessor business flow', () => {
           });
         },
       }),
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -2393,8 +2418,11 @@ describe('monitorTaskProcessor business flow', () => {
           return new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]);
         },
       }),
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -2739,5 +2767,56 @@ describe('monitorTaskProcessor business flow', () => {
       symbol: 'NEXT_BULL.HK',
       status: 'SWITCHING',
     });
+  });
+});
+
+describe('SEAT_REFRESH retry identity', () => {
+  it('stop 后同 key 新激活重试不会被旧取消 callback 删除或消费', async () => {
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const context = createMonitorContext();
+    const callbacks: Array<() => void> = [];
+    const failure = await createExternalApiRequestError({
+      operation: 'QuoteContext.realtimeQuote',
+      attempts: 1,
+      cause: new Error('network'),
+    });
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
+      symbol: 'BULL.HK',
+      status: 'ACTIVATING',
+      callPrice: 20000,
+    });
+    const processor = createBusinessProcessor({
+      queue,
+      context,
+      scheduler: {
+        scheduleTimer: (callback) => {
+          callbacks.push(callback);
+          const handle = setTimeout(() => {}, 0);
+          clearTimeout(handle);
+          return handle;
+        },
+        clearTimer: () => {},
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          throw failure;
+        },
+      }),
+    });
+    processor.start();
+    scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:IDENTITY');
+    await waitUntil(() => callbacks.length === 1);
+    await processor.stopAndDrain();
+    processor.start();
+    scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:IDENTITY');
+    await waitUntil(() => callbacks.length === 2);
+    callbacks[0]?.();
+    expect(queue.isEmpty()).toBe(true);
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    callbacks[1]?.();
+    await waitUntil(() => context.symbolRegistry.getSeatState('LONG').status === 'EMPTY');
+    await processor.stopAndDrain();
+    expect(callbacks).toHaveLength(2);
   });
 });

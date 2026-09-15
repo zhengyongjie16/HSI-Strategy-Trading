@@ -18,7 +18,13 @@ import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/trade
  */
 export type SeatRuntimeCleanupDispatcherDeps = Readonly<{
   symbolRegistry: SymbolRegistry;
-  monitorContext: MonitorContext;
+  monitorContext: {
+    readonly strategy: Pick<MonitorContext['strategy'], 'invalidateDirection'>;
+    readonly riskChecker: Pick<
+      MonitorContext['riskChecker'],
+      'clearLongWarrantInfo' | 'clearShortWarrantInfo'
+    >;
+  };
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
@@ -31,7 +37,6 @@ export type SeatRuntimeCleanupDispatcherDeps = Readonly<{
  * 使用范围：seatRuntimeCleanupDispatcher 内部使用。
  */
 export type QueueClearResult = Readonly<{
-  removedDelayed: number;
   removedBuy: number;
   removedSell: number;
   removedMonitorTasks: number;

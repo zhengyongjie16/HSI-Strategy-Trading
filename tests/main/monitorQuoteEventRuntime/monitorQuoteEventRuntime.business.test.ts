@@ -1,9 +1,4 @@
-/**
- * MonitorQuoteEventRuntime 业务测试
- *
- * 功能：
- * - 验证 monitor quote 事件运行时的公开默认工厂与生产行为契约
- */
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { describe, expect, it } from 'bun:test';
 import {
   createAutoSymbolManagerDouble,
@@ -28,15 +23,22 @@ import type { MonitorContext } from '../../../src/types/state.js';
 import type { StartSwitchOnDistanceResult } from '../../../src/types/monitorContextPorts.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
 
+/**
+ * MonitorQuoteEventRuntime 业务测试
+ *
+ * 功能：
+ * - 验证 monitor quote 事件运行时的公开默认工厂与生产行为契约
+ */
+
 type MonitorQuoteFreshnessDeps =
   CreateDefaultMonitorQuoteEventRuntimeDeps['postTradeConsistencyRuntime'];
 
 type TestMonitorQuoteRuntimeDeps = Omit<
   CreateDefaultMonitorQuoteEventRuntimeDeps,
-  'logger' | 'scheduleTimer' | 'clearTimer' | 'onFatalError'
+  'logger' | 'scheduleTimer' | 'clearTimer' | 'termination'
 > &
   Partial<
-    Pick<CreateDefaultMonitorQuoteEventRuntimeDeps, 'scheduleTimer' | 'clearTimer' | 'onFatalError'>
+    Pick<CreateDefaultMonitorQuoteEventRuntimeDeps, 'scheduleTimer' | 'clearTimer' | 'termination'>
   >;
 
 function createDefaultMonitorQuoteEventRuntime(
@@ -47,7 +49,7 @@ function createDefaultMonitorQuoteEventRuntime(
     clearTimer = (handle) => {
       clearTimeout(handle);
     },
-    onFatalError = () => {},
+    termination = { isTerminated: () => false, reportFatalError: () => {} },
     ...requiredDeps
   } = deps;
   return createDefaultMonitorQuoteEventRuntimeImpl({
@@ -55,7 +57,7 @@ function createDefaultMonitorQuoteEventRuntime(
     ...requiredDeps,
     scheduleTimer,
     clearTimer,
-    onFatalError,
+    termination,
   });
 }
 
@@ -293,7 +295,10 @@ function createDefaultDistanceSwitchHarness(
     readonly timerHarness?: DistanceSwitchTimerHarness;
     readonly doomsdayProtectionEnabled?: boolean;
     readonly markPendingSwitchBeforeFailure?: boolean;
-    readonly onFatalError?: (error: unknown) => void;
+    readonly termination?: {
+      readonly isTerminated: () => boolean;
+      readonly reportFatalError: (error: unknown) => void;
+    };
     readonly invalidStartedResult?: boolean;
   } = {},
 ): RuntimeHarness &
@@ -461,7 +466,7 @@ function createDefaultDistanceSwitchHarness(
           clearTimer: params.timerHarness.clearTimer,
         }
       : {}),
-    ...(params.onFatalError ? { onFatalError: params.onFatalError } : {}),
+    ...(params.termination ? { termination: params.termination } : {}),
     handoffPendingSwitch: (handoffParams) => {
       switchWakeupHandoffs.push({
         direction: handoffParams.direction,
@@ -506,6 +511,9 @@ function createDefaultStaticWaitHarness(
     readonly deferQuoteResponse?: boolean;
     readonly retainError?: Error;
     readonly releaseError?: Error;
+    readonly termination?: ReturnType<typeof createTerminationRuntime>;
+    readonly retainWork?: () => Promise<void>;
+    readonly releaseWork?: () => Promise<void>;
   } = {},
 ): RuntimeHarness &
   Readonly<{
@@ -681,21 +689,24 @@ function createDefaultStaticWaitHarness(
     postTradeConsistencyRuntime: createFreshnessRuntimeDouble(),
     doomsdayProtectionEnabled: false,
     now: () => new Date('2026-04-08T10:00:00+08:00'),
-    onFatalError: (error) => {
-      fatalErrors.push(error);
+    termination: params.termination ?? {
+      isTerminated: () => false,
+      reportFatalError: (error) => {
+        fatalErrors.push(error);
+      },
     },
     quoteSubscriptionRuntime: {
       retainSymbols: async ({ symbols }) => {
         retainCalls.push([...symbols]);
+        await params.retainWork?.();
         if (remainingRetainFailures > 0) {
           remainingRetainFailures -= 1;
           throw params.retainError ?? new Error('retain failed');
         }
-
-        return () => {};
       },
       releaseRetain: async ({ ownerKey, reason }) => {
         releaseCalls.push({ ownerKey, reason });
+        await params.releaseWork?.();
         if (params.releaseError !== undefined) {
           throw params.releaseError;
         }
@@ -913,7 +924,9 @@ describe('monitorQuoteEventRuntime contract', () => {
       ['HSI.HK', 'BULL.HK', 'BEAR.HK'],
     ]);
 
-    await harness.runtime.stopAndDrain();
+    expect(await harness.runtime.stopAndDrain().catch((error: unknown) => error)).toBeInstanceOf(
+      Error,
+    );
   });
 
   it('forwards static liquidation retain release failures to fatal handler', async () => {
@@ -924,7 +937,9 @@ describe('monitorQuoteEventRuntime contract', () => {
     harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
 
     await waitTick();
-    await harness.runtime.stopAndDrain();
+    expect(await harness.runtime.stopAndDrain().catch((error: unknown) => error)).toBe(
+      releaseError,
+    );
     await waitTick();
 
     expect(harness.getReleaseCalls()).toEqual([
@@ -940,7 +955,9 @@ describe('monitorQuoteEventRuntime contract', () => {
     harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
 
     await waitTick();
-    await harness.runtime.stopAndDrain();
+    expect(await harness.runtime.stopAndDrain().catch((error: unknown) => error)).toBeInstanceOf(
+      Error,
+    );
 
     expect(harness.getReleaseCalls()).toEqual([
       { ownerKey: 'HSI.HK', reason: 'STATIC_LIQUIDATION_WAIT' },
@@ -1135,8 +1152,11 @@ describe('monitorQuoteEventRuntime contract', () => {
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [precheckError],
       timerHarness,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1180,8 +1200,11 @@ describe('monitorQuoteEventRuntime contract', () => {
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [firstPrecheckError, secondPrecheckError],
       timerHarness,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1212,8 +1235,11 @@ describe('monitorQuoteEventRuntime contract', () => {
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [delayedPrecheckError.promise],
       timerHarness,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1236,8 +1262,11 @@ describe('monitorQuoteEventRuntime contract', () => {
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [routeError],
       timerHarness,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1257,8 +1286,11 @@ describe('monitorQuoteEventRuntime contract', () => {
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [routeError],
       timerHarness,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1282,8 +1314,11 @@ describe('monitorQuoteEventRuntime contract', () => {
     const harness = createDefaultDistanceSwitchHarness({
       switchFailures: [routeError],
       timerHarness,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1308,8 +1343,11 @@ describe('monitorQuoteEventRuntime contract', () => {
       switchFailures: [routeError],
       timerHarness,
       markPendingSwitchBeforeFailure: true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1342,8 +1380,11 @@ describe('monitorQuoteEventRuntime contract', () => {
         }),
       ],
       timerHarness,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1435,8 +1476,11 @@ describe('monitorQuoteEventRuntime contract', () => {
     const fatalErrors: unknown[] = [];
     const harness = createDefaultDistanceSwitchHarness({
       invalidStartedResult: true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1503,4 +1547,124 @@ describe('monitorQuoteEventRuntime contract', () => {
     expect(harness.switchWakeupHandoffs).toEqual([]);
     await harness.runtime.stopAndDrain();
   });
+});
+
+describe('monitor owner drain settlement', () => {
+  for (const fatal of [false, true]) {
+    it('keeps final cleanup behind owner settlement and preserves the global first fatal', async () => {
+      const retainGate = createDeferred<true>();
+      const releaseGate = createDeferred<true>();
+      const retainError = new Error('retain');
+      const firstFatal = new Error('first fatal');
+      let stopOwner = (): void => {};
+      const termination = createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [
+          () => {
+            stopOwner();
+          },
+        ],
+        onSecondaryError: () => {},
+      });
+      let retainCount = 0;
+      const retainWork = async (): Promise<void> => {
+        retainCount += 1;
+        await retainGate.promise;
+        throw retainError;
+      };
+
+      const releaseWork = async (): Promise<void> => {
+        await releaseGate.promise;
+        throw new Error('release');
+      };
+      const harness = createDefaultStaticWaitHarness({ termination, retainWork, releaseWork });
+      stopOwner = () => {
+        harness.runtime.stop();
+      };
+      harness.runtime.start();
+      harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
+      await waitTick();
+      if (fatal) termination.reportFatalError(firstFatal);
+      else termination.requestShutdown();
+
+      let quoteStopped = false;
+      const cleanup = (async () => {
+        try {
+          await harness.runtime.stopAndDrain();
+        } finally {
+          quoteStopped = true;
+        }
+      })().catch((error: unknown) => error);
+      retainGate.resolve(true);
+      await waitTick();
+      expect(quoteStopped).toBe(false);
+      releaseGate.resolve(true);
+      expect(await cleanup).toBe(retainError);
+      expect(quoteStopped).toBe(true);
+      expect(termination.getFatalState()).toEqual({
+        hasFatalError: true,
+        error: fatal ? firstFatal : retainError,
+      });
+      harness.runtime.start();
+      harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
+      await waitTick();
+      expect(retainCount).toBe(1);
+    });
+  }
+
+  for (const failure of [new Error('controlled retain failure'), null, undefined]) {
+    it('waits for pending release before propagating the original retain rejection', async () => {
+      const retainGate = createDeferred<true>();
+      const releaseGate = createDeferred<true>();
+      let releaseFinished = false;
+      let retainStarted = false;
+      let releaseStarted = false;
+      let failRetain = true;
+      const retainWork = async (): Promise<void> => {
+        retainStarted = true;
+        await retainGate.promise;
+        if (failRetain) {
+          const originalFailure: unknown = failure;
+          throw originalFailure;
+        }
+      };
+
+      const releaseWork = async (): Promise<void> => {
+        releaseStarted = true;
+        await releaseGate.promise;
+        releaseFinished = true;
+      };
+      const harness = createDefaultStaticWaitHarness({ retainWork, releaseWork });
+      harness.runtime.start();
+      harness.emitQuoteUpdated(createMonitorQuoteUpdatedEvent());
+      await waitTick();
+      expect(retainStarted).toBe(true);
+      const drain = harness.runtime.stopAndDrain();
+      expect(harness.runtime.stopAndDrain()).toBe(drain);
+      let settled = false;
+      const outcome = drain.then(
+        () => {
+          settled = true;
+          return { rejected: false, error: undefined };
+        },
+        (error: unknown) => {
+          settled = true;
+          return { rejected: true, error };
+        },
+      );
+      expect(releaseStarted).toBe(true);
+      retainGate.resolve(true);
+      await waitTick();
+      expect(settled).toBe(false);
+      expect(releaseFinished).toBe(false);
+      releaseGate.resolve(true);
+      expect(await outcome).toEqual({ rejected: true, error: failure });
+      expect(releaseFinished).toBe(true);
+      expect(harness.runtime.stopAndDrain()).toBe(drain);
+      failRetain = false;
+      harness.runtime.start();
+      await harness.runtime.stopAndDrain();
+    });
+  }
 });

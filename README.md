@@ -114,11 +114,8 @@ TARGET_NOTIONAL=10000
 MAX_POSITION_NOTIONAL=100000
 MAX_UNREALIZED_LOSS_PER_SYMBOL=3000
 
-# 信号示例
-SIGNAL_BUYCALL=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-20)
-SIGNAL_SELLCALL=(RSI:6>75,MFI>80,D>75,J>100)/3|(J>110)
-SIGNAL_BUYPUT=(RSI:6>75,MFI>80,D>75,J>100)/3|(J>120)
-SIGNAL_SELLPUT=(RSI:6<25,MFI<20,D<25,J<0)/3|(J<-15)
+# 唯一活跃策略；参数位于该策略目录相邻的 config.json
+ACTIVE_STRATEGY_ID=intraday-regression
 ```
 
 > 如果使用 `oauth` 模式且本地没有有效 token cache，程序启动后会在终端输出授权 URL。授权完成后，SDK 会复用并自动刷新用户目录下的 token cache，后续无需重复授权。
@@ -135,7 +132,7 @@ bun start
 | ---------------- | ---------------------------------- |
 | `bun start`      | 启动正式运行                       |
 | `bun dev`        | 开发模式启动（默认仍执行门禁检查） |
-| `bun build`      | 构建 TypeScript                    |
+| `bun run build`  | clean + tsc，输出静态 JSON 依赖    |
 | `bun test`       | 运行测试                           |
 | `bun type-check` | 执行类型检查                       |
 | `bun lint`       | 执行 ESLint 检查                   |
@@ -160,6 +157,19 @@ README 只保留最关键的配置规则，完整参数请直接阅读 [`./.env.
 - 当前版本只接受无下标的单监控配置键，例如 `MONITOR_SYMBOL`、`LONG_SYMBOL`、`SHORT_SYMBOL`。
 - 自动寻标、换标、风控与信号仍然保留 LONG/SHORT 双方向边界，但不再支持并行配置多个监控标的。
 
+### 单活跃策略与构建资产
+
+- 唯一选择键为精确的 `ACTIVE_STRATEGY_ID`，如 `intraday-regression` 对应 `src/core/strategy/intradayRegression/`。每个一级目录必须包含 `definition.ts` 与 `config.json`；新增策略无需中心登记，但必须通过完整构建并重启。
+- 当前策略的四个信号与 buy/sell 验证配置仅由 [策略 config.json](./src/core/strategy/intradayRegression/config.json) 提供，所有字段必须显式填写。definition 内部静态导入相邻 JSON，同步零参数 prepare 严格校验选中配置；未选 definition 不会被求值。
+- 升级前请从实际环境中**删除** `SIGNAL_BUYCALL`、`SIGNAL_SELLCALL`、`SIGNAL_BUYPUT`、`SIGNAL_SELLPUT`、`VERIFICATION_DELAY_SECONDS_BUY`、`VERIFICATION_DELAY_SECONDS_SELL`、`VERIFICATION_INDICATORS_BUY`、`VERIFICATION_INDICATORS_SELL`，即使值为空也会拒绝启动，再设置 `ACTIVE_STRATEGY_ID`。工具不会修改本地凭据或 `.env.local`。
+- `bun run build` 仅执行 `bun run clean && tsc -p tsconfig.build.json`，复用现有 rimraf clean。无目录扫描、全量 prepare 或原文复制；tsc 自动输出静态 JSON 依赖，保证配置深层语义一致，而非空白/转义/字节一致。
+- 启动保留选中目录、入口和相邻 config.json 的精确大小写、无 symlink/junction、realpath 边界检查；schema/type/range/DSL/指标校验由策略私有 parser 在 SDK context 创建前完成。只冻结规范化副本，不修改共享 JSON import 对象。build 不动态 prepare：非法 DSL 可以编译，但选中启动会失败；未选配置契约错误不阻断构建，编译器拒绝的静态依赖仍会失败。
+- 不再提供原文重复键、严格 UTF8 自检或源码/产物字节一致保障。Bun 与 tsc 的 JSON 语法差异属于工具边界，不增加自定义 validator。
+- 配置或源码修改后，dist 必须 rebuild 并 restart；直接运行源码也必须 restart，不支持 hot reload。任何构建失败均不得部署或运行该产物。
+- `tsconfig.build.json` 仅 include `src/**/*`，`rootDir=./`、`outDir=./dist`，`noEmitOnError=true`；产物仅 `dist/src/**/*.js` 与静态依赖 JSON，关闭 declaration/declarationMap/sourceMap。开发类型检查仍覆盖 tools/tests/mock，工具和测试不进入生产闭包。
+- 产物启动命令为 `bun dist/src/index.js`。源码只加载相邻 `definition.ts`/JSON，产物只加载相邻 `definition.js`/JSON；不存在源码回退、默认策略、注册清单或热切换。
+- 源码、JSON-only 变更及策略目录增删都需要显式重新完整构建，成功后才启动产物；不提供 watch，不继续使用失败构建或上一轮资产。先停旧进程并完成清理，再部署完整包并重启，禁止原地并发替换运行中的文件。
+
 ### 自动寻标说明
 
 如果启用：
@@ -176,7 +186,7 @@ AUTO_SEARCH_ENABLED=true
 
 1. 先读 `.env.example` 了解完整参数
 2. 再确认认证方式与唯一监控标的配置
-3. 最后根据策略需要微调信号、风控与自动寻标相关参数
+3. 在策略目录的 `config.json` 调整信号/验证参数；风控与自动寻标仍由环境配置控制
 
 ## 项目结构
 

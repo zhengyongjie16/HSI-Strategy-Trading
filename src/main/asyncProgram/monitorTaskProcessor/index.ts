@@ -76,8 +76,13 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     lastState,
     getCanProcessTask,
     getCanTradeNow,
-    onFatalError,
+    termination,
   } = deps;
+  let running = false;
+  function canRun(): boolean {
+    return running && !termination.isTerminated();
+  }
+
   const monitorSymbol = monitorContext.config.monitorSymbol;
 
   const handleAutoSymbolTick = createAutoSymbolTickHandler({
@@ -91,6 +96,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     monitorContext,
     marketDataClient,
     quoteSubscriptionRuntime,
+    canContinue: () => running && !termination.isTerminated() && (getCanProcessTask?.() ?? true),
   });
   const seatRefreshRetryTimers = new Map<string, SeatRefreshRetryTimer>();
 
@@ -102,7 +108,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return;
     }
 
-    if (!getCanTradeNow()) {
+    if (!running || termination.isTerminated() || !getCanTradeNow()) {
       return;
     }
 
@@ -119,7 +125,12 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
    * 为什么：席位刷新是任务性恢复链路，可由 owner 有界重试；但外部 API 故障不能在同一队列轮次内立即打回，避免瞬时故障被同步放大。
    */
   function retrySeatRefreshOnce(task: MonitorTask<MonitorTaskDataMap>): boolean {
-    if (task.type !== 'SEAT_REFRESH') {
+    if (
+      !running ||
+      termination.isTerminated() ||
+      (getCanProcessTask && !getCanProcessTask()) ||
+      task.type !== 'SEAT_REFRESH'
+    ) {
       return false;
     }
 
@@ -138,38 +149,53 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     }
 
     if (pendingTimer !== undefined) {
-      scheduler.clearTimer(pendingTimer.handle);
       seatRefreshRetryTimers.delete(task.dedupeKey);
+      scheduler.clearTimer(pendingTimer.handle);
     }
 
     const retryTimer = scheduler.scheduleTimer(() => {
-      seatRefreshRetryTimers.delete(task.dedupeKey);
-      const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
-      const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(task.data.direction);
-      if (
-        currentSeatVersion !== task.data.seatVersion ||
-        currentSeat.symbol !== task.data.nextSymbol ||
-        currentSeat.status !== 'ACTIVATING'
-      ) {
-        return;
-      }
+      try {
+        if (seatRefreshRetryTimers.get(task.dedupeKey)?.handle !== retryTimer) return;
 
-      monitorTaskQueue.scheduleLatest({
-        type: 'SEAT_REFRESH',
-        dedupeKey: task.dedupeKey,
-        data: {
-          ...task.data,
-          apiRetryAttempt: apiRetryAttempt + 1,
-        },
-      });
+        seatRefreshRetryTimers.delete(task.dedupeKey);
+        if (!running || termination.isTerminated() || (getCanProcessTask && !getCanProcessTask()))
+          return;
+
+        const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
+        const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(
+          task.data.direction,
+        );
+        if (
+          currentSeatVersion !== task.data.seatVersion ||
+          currentSeat.symbol !== task.data.nextSymbol ||
+          currentSeat.status !== 'ACTIVATING'
+        ) {
+          return;
+        }
+
+        const admitted = monitorTaskQueue.scheduleLatest({
+          type: 'SEAT_REFRESH',
+          dedupeKey: task.dedupeKey,
+          data: {
+            ...task.data,
+            apiRetryAttempt: apiRetryAttempt + 1,
+          },
+        });
+        if (!admitted && !termination.isTerminated()) {
+          termination.reportFatalError(new Error('[MonitorTaskProcessor] 非终态队列拒绝激活重试'));
+        }
+      } catch (error) {
+        termination.reportFatalError(error);
+      }
     }, API.DEFAULT_RETRY_DELAY_MS);
 
-    seatRefreshRetryTimers.set(task.dedupeKey, {
+    const retryEntry: SeatRefreshRetryTimer = {
       handle: retryTimer,
       direction: task.data.direction,
       seatVersion: task.data.seatVersion,
       nextSymbol: task.data.nextSymbol,
-    });
+    };
+    seatRefreshRetryTimers.set(task.dedupeKey, retryEntry);
     return true;
   }
 
@@ -203,11 +229,9 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
 
   /** 清理尚未触发的 SEAT_REFRESH 延迟重试，保证 stop/restart 后没有隐藏 timer。 */
   function clearSeatRefreshRetryTimers(): void {
-    for (const retryTimer of seatRefreshRetryTimers.values()) {
-      scheduler.clearTimer(retryTimer.handle);
-    }
-
+    const timers = [...seatRefreshRetryTimers.values()];
     seatRefreshRetryTimers.clear();
+    for (const retryTimer of timers) scheduler.clearTimer(retryTimer.handle);
   }
 
   /**
@@ -241,8 +265,13 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
 
   /** 循环消费监控任务队列直至为空；生命周期门禁关闭时跳过，处理结果按实际 status 通知 owner。 */
   async function processQueue(): Promise<void> {
-    const helpers = createRefreshHelpers({ trader, lastState, quoteSubscriptionRuntime });
-    while (!monitorTaskQueue.isEmpty()) {
+    const helpers = createRefreshHelpers({
+      trader,
+      lastState,
+      quoteSubscriptionRuntime,
+      canContinue: () => running && !termination.isTerminated() && (getCanProcessTask?.() ?? true),
+    });
+    while (running && !termination.isTerminated() && !monitorTaskQueue.isEmpty()) {
       const task = monitorTaskQueue.pop();
       if (!task) {
         break;
@@ -273,6 +302,8 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
         return 'failed' as const;
       });
 
+      if (!canRun()) return;
+
       if (status === 'processed' || status === 'skipped') {
         const retryTimer = seatRefreshRetryTimers.get(task.dedupeKey);
         if (retryTimer !== undefined) {
@@ -286,10 +317,11 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   }
   const queueRunner = createQueueRunner({
     monitorTaskQueue,
+    termination,
     processQueue,
     onQueueError: (err) => {
+      termination.reportFatalError(err);
       logger.error('[MonitorTaskProcessor] 处理队列时发生错误', formatError(err));
-      onFatalError(err);
     },
     onAlreadyRunning: () => {
       logger.warn('[MonitorTaskProcessor] 处理器已在运行中');
@@ -297,15 +329,27 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   });
   return {
     start: () => {
+      if (termination.isTerminated()) return;
+
+      running = true;
       queueRunner.start();
     },
+    stop: () => {
+      running = false;
+      clearSeatRefreshRetryTimers();
+      queueRunner.stop();
+    },
     stopAndDrain: async () => {
+      running = false;
       clearSeatRefreshRetryTimers();
       await queueRunner.stopAndDrain();
       clearSeatRefreshRetryTimers();
     },
     restart: () => {
       clearSeatRefreshRetryTimers();
+      if (termination.isTerminated()) return;
+
+      running = true;
       queueRunner.restart();
     },
   };

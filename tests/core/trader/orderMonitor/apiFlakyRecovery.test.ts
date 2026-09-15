@@ -1,0 +1,273 @@
+/**
+ * api-flaky-recovery 混沌测试
+ *
+ * 功能：
+ * - 验证 API 不稳定时的重试与恢复行为期望。
+ */
+import { describe, expect, it } from 'bun:test';
+import { OrderSide, OrderType, type TradeContext } from 'longbridge';
+
+import { API } from '../../../../src/constants/index.js';
+import { createOrderMonitor } from '../../../../src/core/trader/orderMonitor/index.js';
+import type { OrderMonitorDeps } from '../../../../src/core/trader/types.js';
+
+import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
+import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
+import {
+  createTerminationDouble,
+  createMarketDataClientDouble,
+  createOrderRecorderDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
+  createSymbolRegistryDouble,
+  createQuoteDouble,
+} from '../../../helpers/testDoubles.js';
+
+async function waitForObservedCondition(params: {
+  readonly description: string;
+  readonly isSatisfied: () => boolean;
+}): Promise<void> {
+  const maxMicrotaskTurns = 100;
+  for (let microtaskTurn = 0; microtaskTurn < maxMicrotaskTurns; microtaskTurn += 1) {
+    if (params.isSatisfied()) {
+      return;
+    }
+
+    await Promise.resolve();
+  }
+
+  throw new Error(
+    `[测试] 等待${params.description}超时，已推进 ${String(maxMicrotaskTurns)} 个 microtask turn`,
+  );
+}
+
+type RuntimeTimerHarness = {
+  readonly advanceBy: (delayMs: number) => Promise<void>;
+  readonly restore: () => void;
+  readonly waitForTimerAt: (delayMs: number) => Promise<void>;
+};
+
+function createRuntimeTimerHarness(initialNowMs: number): RuntimeTimerHarness {
+  const originalNow = Date.now;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nowMs = initialNowMs;
+  const timers = new Map<unknown, { readonly atMs: number; readonly callback: () => void }>();
+
+  function isTimerCallback(
+    handler: Parameters<typeof globalThis.setTimeout>[0],
+  ): handler is (...args: ReadonlyArray<unknown>) => void {
+    return typeof handler === 'function';
+  }
+
+  const fakeSetTimeout = Object.assign(
+    (
+      handler: Parameters<typeof globalThis.setTimeout>[0],
+      timeout?: number,
+    ): ReturnType<typeof originalSetTimeout> => {
+      if (!isTimerCallback(handler)) {
+        throw new TypeError('[测试] fake runtime timer 仅支持函数回调');
+      }
+
+      const handle = originalSetTimeout(() => {}, 0);
+      originalClearTimeout(handle);
+      timers.set(handle, {
+        atMs: nowMs + (typeof timeout === 'number' ? timeout : 0),
+        callback: () => {
+          handler();
+        },
+      });
+      return handle;
+    },
+    {
+      __promisify__: originalSetTimeout.__promisify__,
+    },
+  );
+
+  const fakeClearTimeout: typeof globalThis.clearTimeout = (handle) => {
+    timers.delete(handle);
+  };
+
+  Date.now = () => nowMs;
+  globalThis.setTimeout = fakeSetTimeout;
+  globalThis.clearTimeout = fakeClearTimeout;
+
+  function collectDueTimers() {
+    return [...timers.entries()].filter(([, timer]) => timer.atMs <= nowMs);
+  }
+
+  function runDueTimers(): void {
+    let dueTimers = collectDueTimers();
+    while (dueTimers.length > 0) {
+      for (const [handle, timer] of dueTimers) {
+        timers.delete(handle);
+        timer.callback();
+      }
+
+      dueTimers = collectDueTimers();
+    }
+  }
+
+  async function waitForTimerAt(delayMs: number): Promise<void> {
+    const expectedAtMs = nowMs + delayMs;
+    await waitForObservedCondition({
+      description: `atMs=${String(expectedAtMs)} 的 timer 注册`,
+      isSatisfied: () => [...timers.values()].some((timer) => timer.atMs === expectedAtMs),
+    });
+  }
+
+  return {
+    advanceBy: async (delayMs: number) => {
+      runDueTimers();
+      nowMs += delayMs;
+      runDueTimers();
+    },
+    restore: () => {
+      Date.now = originalNow;
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    },
+    waitForTimerAt,
+  };
+}
+
+function createOrderMonitorDeps(params?: {
+  readonly sellTimeoutSeconds?: number;
+  readonly orderRecorder?: ReturnType<typeof createOrderRecorderDouble>;
+}): { deps: OrderMonitorDeps; tradeCtx: ReturnType<typeof createTradeContextMock> } {
+  const tradeCtx = createTradeContextMock();
+  const deps: OrderMonitorDeps = {
+    now: () => new Date(),
+    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (handle) => {
+      clearTimeout(handle);
+    },
+    ctx: tradeCtx as unknown as TradeContext,
+    rateLimiter: createRateLimiterDouble(),
+    cacheManager: {
+      clearCache: () => {},
+      getPendingOrders: async () => [],
+    },
+    marketDataClient: createMarketDataClientDouble({
+      getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.01, 100)]]),
+    }),
+    orderRecorder: params?.orderRecorder ?? createOrderRecorderDouble(),
+    dailyLossTracker: {
+      resetAll: () => {},
+      prepareProtectionBoundary: (boundaryParams) => ({
+        ...boundaryParams,
+        orderBaselines: [],
+      }),
+      commitProtectionBoundary: () => {},
+      restoreExecutionSnapshot: () => {},
+      restoreProtectionBoundary: () => {},
+      recalculateFromAllOrders: () => {},
+      recordCumulativeExecution: () => ({
+        authoritativeFactChanged: false,
+        executionAdvanced: false,
+      }),
+      getLossOffset: () => 0,
+    },
+    orderHoldRegistry: {
+      trackOrder: () => {},
+      markOrderClosed: () => {},
+      seedFromOrders: () => {},
+      getHoldSymbols: () => new Set<string>(),
+      onOrderHoldSymbolsChanged: () => () => {},
+      clear: () => {},
+    },
+    persistProtectiveLiquidationExecutionProgress: () => {},
+    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    postTradeConsistencyRuntime: {
+      recordSettlementRefreshNeed: () => {},
+    },
+    tradingConfig: createTradingConfig({
+      global: {
+        ...createTradingConfig().global,
+        buyOrderTimeout: {
+          enabled: true,
+          timeoutSeconds: 999,
+        },
+        sellOrderTimeout: {
+          enabled: true,
+          timeoutSeconds: params?.sellTimeoutSeconds ?? 0,
+        },
+        orderMonitorPriceUpdateInterval: 0,
+      },
+    }),
+    symbolRegistry: createSymbolRegistryDouble(),
+    isContinuousTradingAllowed: () => true,
+    termination: createTerminationDouble({
+      reportFatalError: (error) => {
+        throw error;
+      },
+    }),
+  };
+
+  return { deps, tradeCtx };
+}
+
+describe('chaos: api flaky recovery', () => {
+  it('retries timeout cancel after backoff and still waits for WS after cancel succeeds', async () => {
+    const orderRecorder = createOrderRecorderDouble({
+      markSellCancelled: (orderId) => ({
+        orderId,
+        symbol: 'BULL.HK',
+        direction: 'LONG',
+        submittedQuantity: 100,
+        filledQuantity: 0,
+        relatedBuyOrderIds: ['BUY-001'],
+        status: 'cancelled',
+        submittedAt: Date.now(),
+      }),
+    });
+    const { deps, tradeCtx } = createOrderMonitorDeps({
+      sellTimeoutSeconds: 0,
+      orderRecorder,
+    });
+    tradeCtx.setFailureRule('cancelOrder', {
+      failAtCalls: [1],
+      maxFailures: 1,
+      errorMessage: 'network timeout',
+    });
+
+    const runtimeTimers = createRuntimeTimerHarness(Date.parse('2026-02-25T03:00:00.000Z'));
+    const monitor = createOrderMonitor(deps);
+    try {
+      await monitor.initialize();
+      await monitor.recoverOrderTrackingFromSnapshot([]);
+      monitor.startRuntime();
+
+      monitor.trackOrder({
+        orderId: 'SELL-CHAOS-001',
+        symbol: 'BULL.HK',
+        side: OrderSide.Sell,
+        price: 1,
+        initialSubmittedPrice: 1,
+        quantity: 100,
+        isLongSymbol: true,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: false,
+        orderType: OrderType.ELO,
+      });
+      await runtimeTimers.waitForTimerAt(API.DEFAULT_RETRY_DELAY_MS);
+
+      expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
+      expect(tradeCtx.getCalls('orderDetail')).toHaveLength(0);
+      expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+
+      await runtimeTimers.advanceBy(API.DEFAULT_RETRY_DELAY_MS);
+      await waitForObservedCondition({
+        description: '第二次 cancelOrder 调用',
+        isSatisfied: () => tradeCtx.getCalls('cancelOrder').length >= 2,
+      });
+      await runtimeTimers.waitForTimerAt(0);
+
+      expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(2);
+      expect(tradeCtx.getCalls('orderDetail')).toHaveLength(0);
+      expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    } finally {
+      runtimeTimers.restore();
+    }
+  });
+});

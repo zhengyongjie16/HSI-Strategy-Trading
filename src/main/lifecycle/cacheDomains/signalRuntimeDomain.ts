@@ -3,11 +3,10 @@
  *
  * 午夜清理：
  * - 先终止 freshness 等待，随后停止普通 K 线业务 owner、交易标的风险 runtime、monitor quote runtime、switch wakeup runtime、周期换标 runtime、自动寻标 runtime 与激活 dispatcher
- * - 再排空监控处理器并停止席位退场清理 owner，随后排空买卖处理器，最后停止订单监控 runtime、订阅 owner 与成交后一致性 runtime
+ * - 再排空监控处理器并停止席位退场清理 owner，随后排空买卖处理器，最后停止订单监控 runtime、成交后一致性 runtime（含持仓回调）与订阅 owner
  * - 清空交易任务队列（买入/卖出/监控）
- * - 取消所有延迟验证信号
+ * - 重置同一个策略实例的指标、样本及等待状态
  * - 调用成交后一致性 runtime 的跨日清理
- * - 清空指标计算缓存
  *
  * 开盘重建：
  * - 先启动成交后一致性 runtime，并完成 rebuild baseline
@@ -69,7 +68,6 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
     seatRuntimeCleanupDispatcher,
     trader,
     postTradeConsistencyRuntime,
-    indicatorCache,
     buyTaskQueue,
     sellTaskQueue,
     monitorTaskQueue,
@@ -92,28 +90,31 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
       await buyProcessor.stopAndDrain();
       await sellProcessor.stopAndDrain();
       await trader.stopOrderMonitorRuntimeAndDrain();
-      await quoteSubscriptionRuntime.stopAndDrain();
       await postTradeConsistencyRuntime.stopAndDrain();
+      await quoteSubscriptionRuntime.stopAndDrain();
 
       const queueResult = clearTradeQueues({
         buyTaskQueue,
         sellTaskQueue,
         monitorTaskQueue,
       });
-      const removedDelayed = monitorContext.delayedSignalVerifier.cancelAll();
+      monitorContext.strategy.resetForTradingDay();
 
       postTradeConsistencyRuntime.midnightClear();
-      indicatorCache.clearAll();
 
       logger.debug(
-        `[Lifecycle][signalRuntime] 午夜清理完成: delayed=${removedDelayed}, buy=${queueResult.removedBuy}, sell=${queueResult.removedSell}, monitor=${queueResult.removedMonitor}`,
+        `[Lifecycle][signalRuntime] 午夜清理完成: buy=${queueResult.removedBuy}, sell=${queueResult.removedSell}, monitor=${queueResult.removedMonitor}`,
       );
     },
     async openRebuild(): Promise<void> {
+      if (deps.termination.isTerminated()) return;
+
       postTradeConsistencyRuntime.resetAbort();
       postTradeConsistencyRuntime.start();
       postTradeConsistencyRuntime.completeRebuildBaseline();
       await quoteSubscriptionRuntime.reconcileFromCurrentTruth();
+      if (deps.termination.isTerminated()) return;
+
       tradingQuoteDisplayRuntime.start();
       quoteSubscriptionRuntime.start();
       seatRuntimeCleanupDispatcher.start();

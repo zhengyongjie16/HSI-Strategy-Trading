@@ -10,8 +10,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { createTradingConfig as parseTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
+import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 
 function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
   return {
@@ -22,29 +21,10 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
   };
 }
 
-function createSignalConfig() {
-  return {
-    conditionGroups: [
-      {
-        conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
-        requiredCount: 1,
-      },
-    ],
-  } as const;
-}
-
 function createValidTradingConfigForValidation() {
-  const signalConfig = createSignalConfig();
-
   return createTradingConfig({
-    monitor: createMonitorConfigDouble({
+    monitor: createMonitorConfig({
       orderOwnershipMapping: ['HSI'],
-      signalConfig: {
-        buycall: signalConfig,
-        sellcall: signalConfig,
-        buyput: signalConfig,
-        sellput: signalConfig,
-      },
     }),
   });
 }
@@ -123,16 +103,6 @@ const invalidMonitorEnvCases = [
     value: 'abc',
     extraEnv: { AUTO_SEARCH_ENABLED: 'true' },
   },
-  { envKey: 'VERIFICATION_DELAY_SECONDS_BUY', value: '-1' },
-  { envKey: 'VERIFICATION_DELAY_SECONDS_BUY', value: '121' },
-  { envKey: 'VERIFICATION_DELAY_SECONDS_BUY', value: 'abc' },
-  { envKey: 'VERIFICATION_DELAY_SECONDS_SELL', value: '-1' },
-  { envKey: 'VERIFICATION_DELAY_SECONDS_SELL', value: '121' },
-  { envKey: 'VERIFICATION_DELAY_SECONDS_SELL', value: 'abc' },
-  { envKey: 'VERIFICATION_INDICATORS_BUY', value: 'K,INVALID' },
-  { envKey: 'VERIFICATION_INDICATORS_BUY', value: 'INVALID' },
-  { envKey: 'VERIFICATION_INDICATORS_SELL', value: 'MACD,INVALID' },
-  { envKey: 'VERIFICATION_INDICATORS_SELL', value: 'INVALID' },
 ] as const;
 
 const invalidGlobalNumberEnvCases = [
@@ -184,7 +154,7 @@ const invalidParserOnlyBooleanEnvCases = [{ envKey: 'DEBUG', value: 'yes' }] as 
 
 function createAutoSearchEnabledTradingConfig() {
   return createTradingConfig({
-    monitor: createMonitorConfigDouble({
+    monitor: createMonitorConfig({
       autoSearchConfig: {
         autoSearchEnabled: true,
         autoSearchMinDistancePctBull: 0.35,
@@ -198,12 +168,6 @@ function createAutoSearchEnabledTradingConfig() {
         switchDistanceRangeBear: { min: -1.5, max: -0.2 },
       },
       orderOwnershipMapping: ['HSI'],
-      signalConfig: {
-        buycall: createSignalConfig(),
-        sellcall: createSignalConfig(),
-        buyput: createSignalConfig(),
-        sellput: createSignalConfig(),
-      },
     }),
   });
 }
@@ -252,7 +216,7 @@ describe('trading config fail-fast parsing', () => {
     expect(config.monitor.autoSearchConfig.switchIntervalMinutes).toBe(0);
 
     const disabledAutoSearchTradingConfig = createTradingConfig({
-      monitor: createMonitorConfigDouble({
+      monitor: createMonitorConfig({
         autoSearchConfig: {
           autoSearchEnabled: false,
           autoSearchMinDistancePctBull: null,
@@ -266,12 +230,6 @@ describe('trading config fail-fast parsing', () => {
           switchDistanceRangeBear: null,
         },
         orderOwnershipMapping: ['HSI'],
-        signalConfig: {
-          buycall: createSignalConfig(),
-          sellcall: createSignalConfig(),
-          buyput: createSignalConfig(),
-          sellput: createSignalConfig(),
-        },
       }),
     });
 
@@ -385,18 +343,11 @@ describe('trading config fail-fast parsing', () => {
 
 describe('trading config validator rules', () => {
   it('rejects identical LONG/SHORT trading symbols in single-monitor mode', async () => {
-    const signalConfig = createSignalConfig();
     const tradingConfig = createTradingConfig({
-      monitor: createMonitorConfigDouble({
+      monitor: createMonitorConfig({
         longSymbol: '55131.HK',
         shortSymbol: '55131.HK',
         orderOwnershipMapping: ['HSI'],
-        signalConfig: {
-          buycall: signalConfig,
-          sellcall: signalConfig,
-          buyput: signalConfig,
-          sellput: signalConfig,
-        },
       }),
     });
 
@@ -453,19 +404,13 @@ describe('trading config fail-fast validator consistency', () => {
   it('flags explicit bounded monitor values that violate the business upper and lower bounds', async () => {
     const autoSearchEnabledTradingConfig = createAutoSearchEnabledTradingConfig();
     const liquidationBoundedTradingConfig = createTradingConfig({
-      monitor: createMonitorConfigDouble({
+      monitor: createMonitorConfig({
         liquidationCooldown: {
           mode: 'minutes',
           minutes: 10,
         },
         liquidationTriggerLimit: 11,
         orderOwnershipMapping: ['HSI'],
-        signalConfig: {
-          buycall: createSignalConfig(),
-          sellcall: createSignalConfig(),
-          buyput: createSignalConfig(),
-          sellput: createSignalConfig(),
-        },
       }),
     });
 

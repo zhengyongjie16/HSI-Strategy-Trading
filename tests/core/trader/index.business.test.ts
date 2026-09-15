@@ -32,11 +32,11 @@ type TestTraderDeps = Omit<
   | 'clearTimer'
   | 'readCurrentTradingDayInfo'
   | 'isContinuousTradingAllowed'
-  | 'onFatalError'
+  | 'termination'
   | 'unrealizedLossBuyGate'
 > &
   Partial<
-    Pick<TraderDeps, 'now' | 'readCurrentTradingDayInfo' | 'onFatalError' | 'unrealizedLossBuyGate'>
+    Pick<TraderDeps, 'now' | 'readCurrentTradingDayInfo' | 'termination' | 'unrealizedLossBuyGate'>
   >;
 
 type TraderModuleShape = {
@@ -73,8 +73,11 @@ async function loadCreateTraderWithStubbedTradeContext(
       }),
       isContinuousTradingAllowed: () => true,
       unrealizedLossBuyGate: createRiskCheckerDouble(),
-      onFatalError: (error) => {
-        throw error;
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          throw error;
+        },
       },
       ...deps,
     });

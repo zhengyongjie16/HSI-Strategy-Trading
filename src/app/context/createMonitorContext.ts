@@ -6,18 +6,12 @@
  * - 消费 post-gate 已创建的唯一 RiskChecker，不在上下文内重复创建浮亏缓存
  * - 以 SymbolRegistry 作为席位真相，仅根据启动 quotesMap 派生标的名称缓存
  * - 将唯一 monitor 配置装配为纯返回值，由调用方持有唯一上下文
- * - 固化 monitorState 与 tradingConfig.monitor 的一一对应装配不变量
  */
-import { createMultiIndicatorTradingStrategy } from '../../core/strategy/index.js';
 import { createUnrealizedLossMonitor } from '../../core/riskController/unrealizedLossMonitor.js';
-import { createDelayedSignalVerifier } from '../../main/asyncProgram/delayedSignalVerifier/index.js';
 import { createAutoSymbolManager } from '../../services/autoSymbolManager/index.js';
-import { compileIndicatorUsageProfile } from '../../services/indicators/profile/index.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
 import type { CreateMonitorContextParams, MonitorContextFactoryDeps } from '../types.js';
-
-const DEFAULT_STRATEGY_FACTORY = createMultiIndicatorTradingStrategy;
 
 /**
  * 校验跨越运行时装配边界的交易日历事实，拒绝被强制注入的非法 undefined。
@@ -46,15 +40,14 @@ function applySymbolNamesToMonitorContext(
 
 /**
  * 创建监控标的运行时上下文，直接持有 SymbolRegistry 作为席位真相，从行情 Map 提取标的名称，
- * 并预编译指标画像，避免运行期重复解析。
+ * 并持有 composition root 创建的唯一策略实例。
  *
- * @param deps 工厂依赖（config、state、symbolRegistry、quotesMap、strategy、orderRecorder 等）
+ * @param deps 工厂依赖（config、symbolRegistry、quotesMap、strategy、orderRecorder 等）
  * @returns 该监控标的的 MonitorContext 实例
  */
 function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
   const {
     config,
-    state,
     symbolRegistry,
     quotesMap,
     strategy,
@@ -62,7 +55,6 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor,
-    delayedSignalVerifier,
     autoSymbolManager,
   } = deps;
   const symbolNames = resolveMonitorContextSymbolNames({
@@ -70,14 +62,9 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     monitorSymbol: config.monitorSymbol,
     quotesMap: quotesMap ?? new Map<string, null>(),
   });
-  const indicatorProfile = compileIndicatorUsageProfile({
-    signalConfig: config.signalConfig,
-    verificationConfig: config.verificationConfig,
-  });
 
   return {
     config,
-    state,
     symbolRegistry,
     autoSymbolManager,
     strategy,
@@ -85,11 +72,9 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor,
-    delayedSignalVerifier,
     longSymbolName: symbolNames.longSymbolName,
     shortSymbolName: symbolNames.shortSymbolName,
     monitorSymbolName: symbolNames.monitorSymbolName,
-    indicatorProfile,
   };
 }
 
@@ -114,31 +99,17 @@ export function syncMonitorContextSymbolNames(params: {
 
 /**
  * 创建唯一监控上下文。
- * 默认行为：唯一 monitor 直接绑定 lastState.monitorState，若状态标的与配置不一致则直接抛错。
+ * 默认行为：仅装配宿主能力，策略状态由已注入实例独占。
  *
  * @param params 监控上下文装配所需的 pre/post gate 运行时对象与 quotesMap
  * @returns 唯一 MonitorContext
  */
 export function createMonitorContext(params: CreateMonitorContextParams): MonitorContext {
-  const {
-    preGateRuntime,
-    postGateRuntime,
-    quotesMap,
-    clock,
-    scheduler,
-    strategyFactory = DEFAULT_STRATEGY_FACTORY,
-  } = params;
+  const { preGateRuntime, postGateRuntime, quotesMap, clock, strategy } = params;
 
   const monitorConfig = preGateRuntime.tradingConfig.monitor;
-  const monitorState = postGateRuntime.lastState.monitorState;
   const { riskChecker } = postGateRuntime;
   requireTradingCalendarSnapshot(postGateRuntime.lastState.tradingCalendarSnapshot);
-
-  if (monitorState.monitorSymbol !== monitorConfig.monitorSymbol) {
-    throw new Error(
-      `监控状态与配置标的不一致: state=${monitorState.monitorSymbol}, config=${monitorConfig.monitorSymbol}`,
-    );
-  }
 
   const autoSymbolManager = createAutoSymbolManager({
     monitorConfig,
@@ -151,14 +122,8 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     getTradingCalendarSnapshot: () => postGateRuntime.lastState.tradingCalendarSnapshot,
     clock,
   });
-  const strategy = strategyFactory({
-    signalConfig: monitorConfig.signalConfig,
-    verificationConfig: monitorConfig.verificationConfig,
-    clock,
-  });
   return buildMonitorContext({
     config: monitorConfig,
-    state: monitorState,
     symbolRegistry: preGateRuntime.symbolRegistry,
     quotesMap,
     strategy,
@@ -167,12 +132,6 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     riskChecker,
     unrealizedLossMonitor: createUnrealizedLossMonitor({
       maxUnrealizedLossPerSymbol: monitorConfig.maxUnrealizedLossPerSymbol,
-    }),
-    delayedSignalVerifier: createDelayedSignalVerifier({
-      indicatorCache: postGateRuntime.indicatorCache,
-      clock,
-      scheduler,
-      onFatalError: postGateRuntime.onFatalError,
     }),
     autoSymbolManager,
   });

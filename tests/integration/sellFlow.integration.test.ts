@@ -19,6 +19,7 @@ import {
   createStockPositionsResponse,
 } from '../../mock/factories/tradeFactory.js';
 import {
+  createTerminationDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
@@ -1067,9 +1068,11 @@ describe('sell-flow integration', () => {
       tradingConfig,
       symbolRegistry,
       isContinuousTradingAllowed: () => true,
-      onFatalError: (error) => {
-        throw error;
-      },
+      termination: createTerminationDouble({
+        reportFatalError: (error) => {
+          throw error;
+        },
+      }),
     });
     await orderMonitor.initialize();
     await orderMonitor.recoverOrderTrackingFromSnapshot([]);
@@ -1708,9 +1711,11 @@ describe('sell-flow integration', () => {
       tradingConfig,
       symbolRegistry,
       isContinuousTradingAllowed: () => true,
-      onFatalError: (error) => {
-        throw error;
-      },
+      termination: createTerminationDouble({
+        reportFatalError: (error) => {
+          throw error;
+        },
+      }),
     };
     const orderMonitor = createOrderMonitor(orderMonitorDeps);
     orderMonitor.trackOrder({
@@ -1851,9 +1856,11 @@ describe('sell-flow integration', () => {
       tradingConfig,
       symbolRegistry,
       isContinuousTradingAllowed: () => true,
-      onFatalError: (error) => {
-        throw error;
-      },
+      termination: createTerminationDouble({
+        reportFatalError: (error) => {
+          throw error;
+        },
+      }),
     });
     orderMonitor.trackOrder({
       orderId: 'SELL-PARTIAL-WITHDRAWAL-MISSING-EXECUTION',

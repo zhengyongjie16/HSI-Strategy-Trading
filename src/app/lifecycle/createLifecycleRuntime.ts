@@ -49,7 +49,6 @@ function createLifecycleCacheDomains(
   const { symbolRegistry, warrantListCacheConfig, marketDataClient } = preGateRuntime;
   const {
     monitorContext,
-    indicatorCache,
     buyTaskQueue,
     sellTaskQueue,
     monitorTaskQueue,
@@ -86,6 +85,7 @@ function createLifecycleCacheDomains(
   return [
     buildSignalRuntimeDomain({
       logger,
+      termination: params.termination,
       monitorContext,
       buyProcessor,
       sellProcessor,
@@ -103,7 +103,6 @@ function createLifecycleCacheDomains(
       seatRuntimeCleanupDispatcher,
       trader,
       postTradeConsistencyRuntime,
-      indicatorCache,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -162,5 +161,6 @@ export function createLifecycleRuntime(
     mutableState: postGateRuntime.lastState,
     cacheDomains,
     logger,
+    termination: params.termination,
   });
 }

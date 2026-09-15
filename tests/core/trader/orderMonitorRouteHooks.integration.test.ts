@@ -5,6 +5,7 @@
  * - 覆盖 createOrderMonitor 真实装配路径下的 route hooks 行为
  * - 验证 TRACKED / ORDER_EVENT / RECOVERED 只有在装配出的 route runtime 进入运行态后才会生效
  */
+import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType, TopicType, type TradeContext } from 'longbridge';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
@@ -175,8 +176,11 @@ function createDeps(): {
     }),
     symbolRegistry: createSymbolRegistryDouble(),
     isContinuousTradingAllowed: () => true,
-    onFatalError: (error) => {
-      throw error;
+    termination: {
+      isTerminated: () => false,
+      reportFatalError: (error) => {
+        throw error;
+      },
     },
   };
 
@@ -397,5 +401,127 @@ describe('createOrderMonitor route hooks integration', () => {
     await flushMicrotasks();
 
     expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(1);
+  });
+});
+
+describe('orderMonitor terminal subscription ownership', () => {
+  it('跨日 stop/start 保留 Private，最终退订一次并拒绝重新初始化', async () => {
+    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-normal');
+    const { deps, tradeCtx } = createDeps();
+    const monitor = createOrderMonitor(deps);
+    await Promise.all([monitor.initialize(), monitor.initialize()]);
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+    monitor.startRuntime();
+    await monitor.stopRuntimeAndDrain();
+    await monitor.initialize();
+    await monitor.recoverOrderTrackingFromSnapshot([]);
+    monitor.startRuntime();
+    expect(tradeCtx.getCalls('tradeSubscribe')).toHaveLength(1);
+    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+    await monitor.stopRuntimeAndDrain();
+    const final = monitor.teardown();
+    expect(monitor.teardown()).toBe(final);
+    await final;
+    await monitor.initialize();
+    monitor.startRuntime();
+    expect(tradeCtx.getCalls('tradeSubscribe')).toHaveLength(1);
+    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(1);
+    expect(tradeCtx.getSubscribedTopics().has(TopicType.Private)).toBe(false);
+  });
+
+  it('初始化晚到成功仍由 final owner 等待并退订，不伪造挂起已释放', async () => {
+    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-late');
+    const { deps, tradeCtx } = createDeps();
+    const gate = Promise.withResolvers<undefined>();
+    const originalSubscribe = tradeCtx.subscribe;
+    tradeCtx.subscribe = async (topics) => {
+      await gate.promise;
+      await originalSubscribe(topics);
+    };
+    const monitor = createOrderMonitor(deps);
+    const initialization = monitor.initialize();
+    const final = monitor.teardown();
+    let completed = false;
+    void final.then(() => {
+      completed = true;
+    });
+    await flushMicrotasks();
+    expect(completed).toBe(false);
+    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+    gate.resolve();
+    await initialization;
+    await final;
+    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(1);
+  });
+
+  it('subscribe 失败不伪造订阅成功或调用 unsubscribe', async () => {
+    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-subscribe-fail');
+    const { deps, tradeCtx } = createDeps();
+    tradeCtx.subscribe = () => Promise.reject(new Error('subscribe failed'));
+    const monitor = createOrderMonitor(deps);
+    expect(monitor.initialize()).rejects.toThrow();
+    await monitor.teardown();
+    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+  });
+
+  it('在途 subscribe 晚到失败由 final 汇总，不尝试无成功事实的退订', async () => {
+    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-late-fail');
+    const { deps, tradeCtx } = createDeps();
+    const gate = Promise.withResolvers<undefined>();
+    tradeCtx.subscribe = () => gate.promise;
+    const monitor = createOrderMonitor(deps);
+    const initialization = monitor.initialize();
+    const final = monitor.teardown();
+    const outcomes = Promise.allSettled([initialization, final]);
+    gate.reject(new Error('late subscribe failure'));
+    const settled = await outcomes;
+    expect(settled.map((result) => result.status)).toEqual(['rejected', 'rejected']);
+    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+    expect(monitor.teardown()).toBe(final);
+    await monitor.initialize();
+    expect(tradeCtx.getSubscribedTopics().size).toBe(0);
+  });
+
+  it('unsubscribe 失败保留单次结果且 cleanup 继续 PostTrade 和后续资源', async () => {
+    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-unsubscribe-fail');
+    const { deps, tradeCtx } = createDeps();
+    let attempts = 0;
+    const trace: string[] = [];
+    tradeCtx.unsubscribe = () => {
+      attempts += 1;
+      trace.push('unsubscribe');
+      return Promise.reject(new Error('unsubscribe failed'));
+    };
+    const monitor = createOrderMonitor(deps);
+    await monitor.initialize();
+    const cleanup = createCleanup();
+    cleanup.register({
+      phase: 'STOP_POST_TRADE_CONSISTENCY_RUNTIME',
+      step: 'post-trade',
+      handler: () => {
+        trace.push('post-trade');
+      },
+    });
+    cleanup.register({ phase: 'TEARDOWN_TRADER', step: 'private', handler: monitor.teardown });
+    cleanup.register({
+      phase: 'UNSUBSCRIBE_TRADER_LISTENER',
+      step: 'listener',
+      handler: () => {
+        trace.push('listener');
+      },
+    });
+
+    cleanup.register({
+      phase: 'STOP_ORDER_MONITOR_RUNTIME',
+      step: 'drain',
+      handler: async () => {
+        await monitor.stopRuntimeAndDrain();
+        trace.push('drain');
+      },
+    });
+    expect(cleanup.execute()).rejects.toThrow(AggregateError);
+    expect(monitor.teardown()).rejects.toThrow();
+    expect(attempts).toBe(1);
+    expect(trace).toEqual(['drain', 'listener', 'unsubscribe', 'post-trade']);
   });
 });

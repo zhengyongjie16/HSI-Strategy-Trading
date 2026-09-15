@@ -23,6 +23,11 @@
  * 3. 调用 signalProcessor.processSellSignals() 计算卖出数量
  * 4. 如果信号未被转为 HOLD，执行 trader.executeSignals()
  */
+import {
+  isStaleCrossDaySignal,
+  isLiquidationSignal,
+} from '../../../core/trader/orderExecutor/utils.js';
+
 import { ORDER_QUOTE_RETRY } from '../../../constants/index.js';
 import {
   createBaseProcessor,
@@ -60,7 +65,6 @@ function cloneSellSignal(signal: ExecutableSellSignal): ExecutableSellSignal {
   return {
     ...signal,
     triggerTime: signal.triggerTime ? new Date(signal.triggerTime) : null,
-    indicators1: signal.indicators1 ? { ...signal.indicators1 } : null,
     relatedBuyOrderIds: signal.relatedBuyOrderIds ? [...signal.relatedBuyOrderIds] : null,
   };
 }
@@ -107,10 +111,15 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     getLastState,
     postTradeConsistencyRuntime,
     getCanProcessTask,
-    onFatalError,
+    termination,
   } = deps;
   const retryStates = new Map<string, SellRetryState>();
   let lifecycleActive = true;
+
+  /** 重试与异步返回共同检查 owner、终态及适用交易授权。 */
+  function canContinue(): boolean {
+    return lifecycleActive && !termination.isTerminated() && (getCanProcessTask?.() ?? true);
+  }
 
   function clearRetryState(retryKey: string): void {
     const retryState = retryStates.get(retryKey);
@@ -118,11 +127,10 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       return;
     }
 
+    retryStates.delete(retryKey);
     if (retryState.handle) {
       scheduler.clearTimer(retryState.handle);
     }
-
-    retryStates.delete(retryKey);
   }
 
   function clearAllRetryStates(): void {
@@ -147,6 +155,8 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
 
         throw err;
       }
+
+      if (!canContinue()) return;
 
       const ctx = monitorContext;
       const { config, orderRecorder, symbolRegistry } = ctx;
@@ -181,6 +191,8 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
       }
 
       const executionQuotes = await marketDataClient.getQuotes(quoteSymbols);
+      if (!canContinue() || !validateSignalSeat({ signal, symbolRegistry }).valid) return;
+
       const longQuote = isSeatActive(longSeatState)
         ? (executionQuotes.get(longSeatState.symbol) ?? null)
         : null;
@@ -195,7 +207,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         requirement: 'PRICE',
       });
       if (quoteReadiness !== 'READY') {
-        if (!lifecycleActive) {
+        if (!canContinue()) {
           return;
         }
 
@@ -227,17 +239,35 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
               attempts: nextRetry.nextAttempts,
             };
             const retryHandle = scheduler.scheduleTimer(() => {
-              const pendingRetryState = retryStates.get(retryKey);
-              if (!pendingRetryState?.retrySignal || !lifecycleActive) {
-                return;
-              }
+              try {
+                const pendingRetryState = retryStates.get(retryKey);
+                if (pendingRetryState !== nextRetryState || !pendingRetryState.retrySignal) {
+                  return;
+                }
 
-              const queuedRetrySignal = pendingRetryState.retrySignal;
-              pendingRetryState.retrySignal = null;
-              taskQueue.push({
-                type: task.type,
-                data: queuedRetrySignal,
-              });
+                if (
+                  !canContinue() ||
+                  (!isLiquidationSignal(pendingRetryState.retrySignal) &&
+                    isStaleCrossDaySignal(pendingRetryState.retrySignal, clock.now())) ||
+                  !validateSignalSeat({ signal: pendingRetryState.retrySignal, symbolRegistry })
+                    .valid
+                ) {
+                  clearRetryState(retryKey);
+                  return;
+                }
+
+                const queuedRetrySignal = pendingRetryState.retrySignal;
+                pendingRetryState.retrySignal = null;
+                const admitted = taskQueue.push({
+                  type: task.type,
+                  data: queuedRetrySignal,
+                });
+                if (!admitted && !termination.isTerminated()) {
+                  termination.reportFatalError(new Error('[SellProcessor] 非终态队列拒绝重试任务'));
+                }
+              } catch (error) {
+                termination.reportFatalError(error);
+              }
             }, ORDER_QUOTE_RETRY.INTERVAL_MS);
             nextRetryState.handle = retryHandle;
             retryStates.set(retryKey, nextRetryState);
@@ -309,11 +339,13 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     taskQueue,
     processTask,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
-    onFatalError,
+    termination,
   });
 
   return {
     start: () => {
+      if (termination.isTerminated()) return;
+
       lifecycleActive = true;
       baseProcessor.start();
     },
@@ -330,8 +362,10 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     restart: () => {
       lifecycleActive = false;
       clearAllRetryStates();
-      baseProcessor.restart();
+      if (termination.isTerminated()) return;
+
       lifecycleActive = true;
+      baseProcessor.restart();
     },
   };
 }

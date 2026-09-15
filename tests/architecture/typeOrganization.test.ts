@@ -302,22 +302,18 @@ describe('type organization regressions', () => {
     expect(violations).toEqual([]);
   });
 
-  it('stores strategy contracts in core/strategy/types.ts and keeps factory naming neutral', async () => {
+  it('stores only neutral strategy contracts and injects the prepared instance into context', async () => {
     const strategyTypesSource = await readProjectFile('src/core/strategy/types.ts');
-    const strategySource = await readProjectFile('src/core/strategy/index.ts');
     const monitorContextSource = await readProjectFile('src/app/context/createMonitorContext.ts');
-    const strategyTypesExports = collectNamedExports(
+    const exportedNames = collectNamedExports(
       parseSourceFile('src/core/strategy/types.ts', strategyTypesSource),
     );
-    const strategyExports = collectNamedExports(
-      parseSourceFile('src/core/strategy/index.ts', strategySource),
-    );
-
-    expect([...strategyTypesExports]).toContain('TradingSignalStrategy');
-    expect([...strategyTypesExports]).toContain('TradingSignalStrategyFactory');
-    expect([...strategyExports]).toContain('createMultiIndicatorTradingStrategy');
-    expect(strategySource).not.toMatch(/HangSeng|hangseng/);
-    expect(monitorContextSource).not.toMatch(/HangSeng|hangseng/);
+    expect([...exportedNames]).toContain('TradingSignalStrategy');
+    expect([...exportedNames]).toContain('StrategyDefinition');
+    expect([...exportedNames]).toContain('PreparedStrategy');
+    expect([...exportedNames]).not.toContain('TradingSignalStrategyFactory');
+    expect(await exists('src/core/strategy/index.ts')).toBe(false);
+    expect(monitorContextSource).not.toMatch(/strategyFactory|createMultiIndicatorTradingStrategy/);
   });
 
   it('keeps config module internal helpers non-exported', async () => {

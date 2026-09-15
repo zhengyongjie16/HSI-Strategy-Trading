@@ -42,8 +42,8 @@
 | --- | --- | --- | --- | --- |
 | C-01 | 可触发运行缺陷 | 已修复 | 换标 admission 在进入 `SWITCHING` 前完成失败型读取；mutation 后始终交接非空 `WAIT` owner | `tests/services/autoSymbolManager/switchStateMachine.business.test.ts` |
 | C-02 | 可触发运行缺陷 | 已修复 | API 前授权只决定是否发请求；broker ack 后无条件承认远端订单事实并维持占用/追踪连续性 | `tests/core/trader/orderMonitor/routeProcessor.business.test.ts` |
-| C-03 | 可触发运行缺陷 | 已修复 | 以 `classifyOrderStatusLifecycle` 统一穷尽开放/终态分类 | `tests/core/orderStatusLifecycle.test.ts`、`tests/core/trader/orderMonitor/recoveryFlow.business.test.ts` |
-| C-04 | 可触发运行缺陷 | 已修复 | `orderFactMerge` 统一执行时间、累计成交量、状态生命周期和终态单调合并 | `tests/core/trader/orderMonitor/eventFlow.business.test.ts`、`tests/chaos/websocketOutOfOrder.test.ts` |
+| C-03 | 可触发运行缺陷 | 已修复 | 以 `classifyOrderStatusLifecycle` 统一穷尽开放/终态分类 | `tests/core/orderStatusLifecycle/orderStatusLifecycle.test.ts`、`tests/core/trader/orderMonitor/recoveryFlow.business.test.ts` |
+| C-04 | 可触发运行缺陷 | 已修复 | `orderFactMerge` 统一执行时间、累计成交量、状态生命周期和终态单调合并 | `tests/core/trader/orderMonitor/eventFlow.business.test.ts`、`tests/core/trader/orderMonitor/websocketOutOfOrder.test.ts` |
 | M-01 | 可触发运行缺陷 | 已修复 | 自动寻标 route 释放 active owner 后按权威 EMPTY 状态重排唯一 cooldown owner | `tests/main/autoSearchWakeupRuntime/autoSearchWakeupRuntime.business.test.ts` |
 | M-02 | 可触发运行缺陷 | 已修复 | 无候选、输入构造异常和外部请求失败共用失败计数/冻结状态转换 | `tests/services/autoSymbolManager/autoSearch.business.test.ts`、`tests/main/autoSearchWakeupRuntime/autoSearchWakeupRuntime.business.test.ts` |
 | M-03 | 可触发运行缺陷 | 已修复 | 最终 `submitOrder.beforeApi` 授权重新读取当前时间和当日交易日事实 | `tests/integration/buyFlow.integration.test.ts` |
@@ -54,7 +54,7 @@
 | M-08 | 结构风险，含静态 bootstrap 合法例外 | 已修复 | `SeatState` 改为判别联合；公共运行时写入严格校验，静态标的初始 ACTIVE 仅保留窄 bootstrap 成员 | `tests/types/seat.type.test.ts`、`tests/services/autoSymbolManager/utils.business.test.ts` |
 | M-09 | 未发现生产非法构造的结构存活性风险 | 已修复 | `WAIT` 使用非空 tuple；start/advance 结果以判别联合绑定 `stillPending`，runtime 再次 fail-fast | `tests/types/monitorContextPorts.type.test.ts`、`tests/main/monitorQuoteEventRuntime/switchWakeupRuntime.business.test.ts` |
 | M-10 | 结构风险 | 已修复 | 交易日历改为 required，删除消费者空 `Map` 回退，装配缺失直接失败 | `tests/types/state.type.test.ts`、`tests/app/context/createMonitorContext.business.test.ts` |
-| M-11 | 结构风险 | 已修复 | 风控接口收窄到 `BuySignal`，删除卖出兼容分支和缓存表面 | `tests/types/signalProcessor.type.test.ts`、`tests/core/signalProcessor/riskCheckPipeline.business.test.ts` |
+| M-11 | 结构风险 | 已修复 | 风控接口收窄到 `BuySignal`，删除卖出兼容分支和缓存表面 | `tests/core/signalProcessor/signalProcessor.type.test.ts`、`tests/core/signalProcessor/riskCheckPipeline.business.test.ts` |
 | m-01 | 结构冗余 | 已修复 | 删除 `MonitorState.signal` 与 `pendingDelayedSignals` 镜像 | `tests/types/state.type.test.ts`、残留扫描 |
 | m-02 | 可触发确定性缺陷 | 已修复 | 恢复分配与智能平仓共用 `price → executedTime → orderId` 排序策略 | `tests/core/orderRecorder/getSellableOrders.test.ts`、`tests/core/orderRecorder/sellDeductionPolicy.test.ts` |
 | m-03 | 未发现生产分叉的最终边界结构风险 | 已修复 | `ExecutableOrderCommand` 一次固化 action、symbol、direction、side、seatVersion 与关联买单身份 | `tests/integration/buyFlow.integration.test.ts`、`tests/integration/sellFlow.integration.test.ts` |
@@ -334,7 +334,7 @@
 **严重级别**：Critical **涉及文件**：
 
 - `src/core/trader/orderMonitor/eventFlow.ts:43-85`
-- `tests/chaos/websocketOutOfOrder.test.ts:68`
+- `tests/core/trader/orderMonitor/websocketOutOfOrder.test.ts:68`
 
 #### 触发条件
 

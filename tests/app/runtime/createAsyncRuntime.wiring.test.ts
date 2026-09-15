@@ -1,3 +1,7 @@
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
+import type { RuntimeTermination } from '../../../src/types/runtime.js';
+
 /**
  * app/createAsyncRuntime 接线测试
  *
@@ -6,7 +10,7 @@
  * - 外部 API 失败时以 failed 状态回写 owner；非 API 错误进入异步 fatal 通道且不回写 periodic route
  */
 import { describe, expect, it } from 'bun:test';
-import { createAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
+import { createAsyncRuntime as buildAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
@@ -35,11 +39,28 @@ import {
   runProcessorFlow,
 } from '../../main/asyncProgram/utils.js';
 
+let activeTermination: RuntimeTermination;
+function createAsyncRuntime(params: AsyncRuntimeFactoryDeps) {
+  const runtime = buildAsyncRuntime(params);
+  if (runtime === null) throw new Error('unexpected terminated runtime');
+
+  return runtime;
+}
+
+async function waitForFatalError(): Promise<unknown> {
+  await activeTermination.waitForTermination();
+  const state = activeTermination.getFatalState();
+  if (!state.hasFatalError) throw new Error('expected fatal');
+
+  return state.error;
+}
+
 function createPeriodicSwitchWakeupRuntimeRecorder(
   calls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][],
 ): PeriodicSwitchWakeupRuntime {
   return {
     start: () => {},
+    stop: () => {},
     stopAndDrain: async () => {},
     markWaitingEmpty: () => {},
     clearWaitingEmpty: () => {},
@@ -62,8 +83,17 @@ function createDeps(
     options;
   const warrantListCache = createWarrantListCache();
   const runtimeMonitorContext = monitorContext ?? createMonitorContext();
+  activeTermination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
 
   return {
+    termination: activeTermination,
+    resources: {},
+    cleanup: createCleanup(),
     clock: { now: clockNow ?? (() => new Date(Date.now())) },
     scheduler: {
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -110,16 +140,18 @@ function createDeps(
       seatRuntimeCleanupDispatcher: createSeatRuntimeCleanupDispatcherDouble(),
       autoSearchWakeupRuntime: {
         start: () => {},
+        stop: () => {},
         stopAndDrain: async () => {},
-        drainFatalError: () => new Promise<never>(() => {}),
       },
       periodicSwitchWakeupRuntime,
       tradingRiskEventRuntime: {
         start: () => {},
+        stop: () => {},
         stopAndDrain: async () => {},
       },
       monitorQuoteEventRuntime: {
         start: () => {},
+        stop: () => {},
         stopAndDrain: async () => {},
       },
       monitorDisplayRuntime: {
@@ -129,10 +161,12 @@ function createDeps(
       },
       tradingQuoteDisplayRuntime: {
         start: () => {},
+        stop: () => {},
         stopAndDrain: async () => {},
       },
       switchWakeupRuntime: {
         start: () => {},
+        stop: () => {},
         stopAndDrain: async () => {},
         handoffPendingSwitch: () => {},
       },
@@ -142,7 +176,7 @@ function createDeps(
         getStatus: () => ({ started: false, currentVersion: 0, staleVersion: 0 }),
         waitForFresh: async () => {},
         onFreshReached: () => () => {},
-        drainFatalError: () => new Promise<never>(() => {}),
+        stopScheduling: () => {},
         abortWaiting: () => {},
         resetAbort: () => {},
         start: () => {},
@@ -159,15 +193,9 @@ function createDeps(
         applyRiskChecks: async (signals) => signals,
         resetRiskCheckCooldown: () => {},
       },
-      indicatorCache: {
-        push: () => {},
-        getClosest: () => null,
-        clearAll: () => {},
-      },
       buyTaskQueue: createBuyTaskQueue(),
       sellTaskQueue: createSellTaskQueue(),
       monitorTaskQueue,
-      drainFatalError: () => new Promise<never>(() => {}),
     },
   };
 }
@@ -399,7 +427,7 @@ describe('app createAsyncRuntime wiring', () => {
           periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
         }),
       );
-      const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
+      const fatalErrorPromise = waitForFatalError();
 
       await runProcessorFlow({
         processor: runtime.monitorTaskProcessor,

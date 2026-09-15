@@ -9,11 +9,7 @@ import type { MonitorConfig } from '../../src/types/config.js';
 import type { CandleData } from '../../src/types/data.js';
 import type { Quote } from '../../src/types/quote.js';
 import type { Signal, SignalType } from '../../src/types/signal.js';
-import type {
-  DisplayIndicatorItem,
-  IndicatorUsageProfile,
-} from '../../src/types/indicatorProfile.js';
-import type { MonitorContext, MonitorState } from '../../src/types/state.js';
+import type { MonitorContext } from '../../src/types/state.js';
 import type {
   OrderRecorder,
   MarketDataClient,
@@ -32,6 +28,8 @@ import type {
 } from '../../src/types/services.js';
 import type { SymbolRegistry, SeatState, SeatStateChangedEvent } from '../../src/types/seat.js';
 import type { Candlestick, Config, Period, TradeContext } from 'longbridge';
+import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import type { RuntimeTermination } from '../../src/types/runtime.js';
 import type { TradingSignalStrategy } from '../../src/core/strategy/types.js';
 import type {
   DoomsdayProtection,
@@ -50,10 +48,7 @@ import type {
   RecordLiquidationTriggerParams,
   RestoreTriggerCountParams,
 } from '../../src/services/liquidationCooldown/types.js';
-import type {
-  AutoSymbolManagerPort,
-  DelayedSignalVerifierPort,
-} from '../../src/types/monitorContextPorts.js';
+import type { AutoSymbolManagerPort } from '../../src/types/monitorContextPorts.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { OrderMonitor } from '../../src/core/trader/types.js';
 import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
@@ -286,6 +281,7 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
     }),
     startOrderMonitorRuntime: () => {},
     stopOrderMonitorRuntimeAndDrain: async () => {},
+    teardown: async () => {},
     hasPendingProtectiveLiquidationOrders: () => false,
     initializeOrderMonitor: async () => {},
     onOrderStateChanged: () => () => {},
@@ -392,6 +388,7 @@ export function createRateLimiterDouble(options: RateLimiterDoubleOptions = {}):
 export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}): OrderMonitor {
   const base: OrderMonitor = {
     initialize: async () => {},
+    teardown: async () => {},
     onOrderStateChanged: () => () => {},
     trackOrder: () => {},
     cancelOrder: async () => ({
@@ -489,10 +486,12 @@ export function createStrategyDouble(
   overrides: Partial<TradingSignalStrategy> = {},
 ): TradingSignalStrategy {
   const base: TradingSignalStrategy = {
-    generateSignals: () => ({
-      immediateSignals: [],
-      delayedSignals: [],
-    }),
+    strategyId: 'test-strategy',
+    onCandlestick: () => null,
+    invalidateDirection: () => {},
+    invalidateAll: () => {},
+    resetForTradingDay: () => {},
+    destroy: () => {},
   };
 
   return {
@@ -511,29 +510,6 @@ export function createUnrealizedLossMonitorDouble(
 ): UnrealizedLossMonitor {
   const base: UnrealizedLossMonitor = {
     monitorDirectionalUnrealizedLoss: async () => {},
-  };
-
-  return {
-    ...base,
-    ...overrides,
-  };
-}
-
-/**
- * 创建延迟验证器测试替身。
- *
- * 默认提供空实现，供 app 装配与 cleanup 测试复用。
- */
-export function createDelayedSignalVerifierDouble(
-  overrides: Partial<DelayedSignalVerifierPort> = {},
-): DelayedSignalVerifierPort {
-  const base: DelayedSignalVerifierPort = {
-    addSignal: () => {},
-    onVerified: () => {},
-    cancelAll: () => 0,
-    cancelAllForDirection: () => 0,
-    getPendingCount: () => 0,
-    destroy: () => {},
   };
 
   return {
@@ -592,11 +568,12 @@ export function createQuoteSubscriptionRuntimeDouble(
   overrides: Partial<QuoteSubscriptionRuntime> = {},
 ): QuoteSubscriptionRuntime {
   const base: QuoteSubscriptionRuntime = {
+    stop: () => {},
     reconcileFromCurrentTruth: async () => {},
     reconcilePositionHoldFromCurrentTruth: async () => {},
     start: () => {},
     stopAndDrain: async () => {},
-    retainSymbols: async () => () => {},
+    retainSymbols: async () => {},
     releaseRetain: async () => {},
     waitForAdmission: async () => {},
   };
@@ -637,9 +614,9 @@ export function createAutoSearchWakeupRuntimeDouble(
   overrides: Partial<AutoSearchWakeupRuntime> = {},
 ): AutoSearchWakeupRuntime {
   const base: AutoSearchWakeupRuntime = {
+    stop: () => {},
     start: () => {},
     stopAndDrain: async () => {},
-    drainFatalError: () => new Promise<never>(() => {}),
   };
 
   return {
@@ -657,6 +634,7 @@ export function createPeriodicSwitchWakeupRuntimeDouble(
   overrides: Partial<PeriodicSwitchWakeupRuntime> = {},
 ): PeriodicSwitchWakeupRuntime {
   const base: PeriodicSwitchWakeupRuntime = {
+    stop: () => {},
     start: () => {},
     stopAndDrain: async () => {},
     markWaitingEmpty: () => {},
@@ -1294,69 +1272,6 @@ export function createMonitorConfigDouble(overrides: Partial<MonitorConfig> = {}
 }
 
 /**
- * 构造指标画像测试数据。
- *
- * 默认覆盖常见指标集合，支持按用例覆盖族开关、周期、动作指标、验证指标和展示计划。
- */
-export function createIndicatorUsageProfileDouble(overrides?: {
-  readonly requiredFamilies?: Partial<IndicatorUsageProfile['requiredFamilies']>;
-  readonly requiredPeriods?: Partial<IndicatorUsageProfile['requiredPeriods']>;
-  readonly verificationIndicatorsBySide?: Partial<
-    IndicatorUsageProfile['verificationIndicatorsBySide']
-  >;
-  readonly displayPlan?: ReadonlyArray<DisplayIndicatorItem>;
-}): IndicatorUsageProfile {
-  const requiredFamilies: IndicatorUsageProfile['requiredFamilies'] = {
-    mfi: overrides?.requiredFamilies?.mfi ?? true,
-    kdj: overrides?.requiredFamilies?.kdj ?? true,
-    macd: overrides?.requiredFamilies?.macd ?? true,
-    adx: overrides?.requiredFamilies?.adx ?? true,
-  };
-  const requiredPeriods: IndicatorUsageProfile['requiredPeriods'] = {
-    rsi: overrides?.requiredPeriods?.rsi ?? [6],
-    ema: overrides?.requiredPeriods?.ema ?? [7],
-    psy: overrides?.requiredPeriods?.psy ?? [13],
-  };
-
-  const verificationIndicatorsBySide: IndicatorUsageProfile['verificationIndicatorsBySide'] = {
-    buy: overrides?.verificationIndicatorsBySide?.buy ?? ['K', 'D', 'J'],
-    sell: overrides?.verificationIndicatorsBySide?.sell ?? ['K', 'D', 'J'],
-  };
-
-  const defaultDisplayPlan: ReadonlyArray<DisplayIndicatorItem> = [
-    'price',
-    'changePercent',
-    ...requiredPeriods.ema.map((period) => `EMA:${period}` as const),
-    ...requiredPeriods.rsi.map((period) => `RSI:${period}` as const),
-    ...(requiredFamilies.mfi ? (['MFI'] as const) : []),
-    ...requiredPeriods.psy.map((period) => `PSY:${period}` as const),
-    ...(requiredFamilies.kdj ? (['K', 'D', 'J'] as const) : []),
-    ...(requiredFamilies.adx ? (['ADX'] as const) : []),
-    ...(requiredFamilies.macd ? (['MACD', 'DIF', 'DEA'] as const) : []),
-  ];
-
-  return {
-    requiredFamilies,
-    requiredPeriods,
-    verificationIndicatorsBySide,
-    displayPlan: overrides?.displayPlan ?? defaultDisplayPlan,
-  };
-}
-
-/**
- * 构造单标的监控状态测试数据。
- *
- * 默认只提供最小运行时状态字段，便于组装层与 cleanup 测试复用。
- */
-function createMonitorStateDouble(monitorSymbol: string = 'HSI.HK'): MonitorState {
-  return {
-    monitorSymbol,
-    lastMonitorSnapshot: null,
-    incrementalIndicatorRuntime: null,
-  };
-}
-
-/**
  * 创建 MonitorContext 测试替身。
  *
  * 默认填充最小完整结构，允许调用方覆盖任意字段以聚焦特定断言。
@@ -1369,7 +1284,6 @@ export function createMonitorContextDouble(
 
   return {
     config,
-    state: overrides.state ?? createMonitorStateDouble(config.monitorSymbol),
     symbolRegistry,
     autoSymbolManager: overrides.autoSymbolManager ?? createAutoSymbolManagerDouble(),
     strategy: overrides.strategy ?? createStrategyDouble(),
@@ -1377,11 +1291,9 @@ export function createMonitorContextDouble(
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
     riskChecker: overrides.riskChecker ?? createRiskCheckerDouble(),
     unrealizedLossMonitor: overrides.unrealizedLossMonitor ?? createUnrealizedLossMonitorDouble(),
-    delayedSignalVerifier: overrides.delayedSignalVerifier ?? createDelayedSignalVerifierDouble(),
     longSymbolName: overrides.longSymbolName ?? '',
     shortSymbolName: overrides.shortSymbolName ?? '',
     monitorSymbolName: overrides.monitorSymbolName ?? config.monitorSymbol,
-    indicatorProfile: overrides.indicatorProfile ?? createIndicatorUsageProfileDouble(),
   };
 }
 
@@ -1400,5 +1312,25 @@ export function createSignalDouble<TAction extends SignalType>(
     symbolName: symbol,
     seatVersion: 1,
     triggerTime: new Date(),
+  };
+}
+
+/** 创建带真实首错锁存和终态语义的终止替身，按需覆盖测试观察端口。 */
+export function createTerminationDouble(
+  overrides: Partial<RuntimeTermination> = {},
+): RuntimeTermination {
+  const runtime = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+  return {
+    ...runtime,
+    ...overrides,
+    reportFatalError(error) {
+      runtime.reportFatalError(error);
+      overrides.reportFatalError?.(error);
+    },
   };
 }

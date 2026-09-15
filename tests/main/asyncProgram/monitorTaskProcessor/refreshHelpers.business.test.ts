@@ -1,13 +1,5 @@
-/**
- * refreshHelpers 业务测试
- *
- * 覆盖：
- * - 校验连续席位刷新各自获取最新全量订单事实
- * - 校验账户、持仓与订阅投影不会跨动态队列任务复用陈旧快照
- */
 import { describe, expect, it } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-
 import { createRefreshHelpers } from '../../../../src/main/asyncProgram/monitorTaskProcessor/helpers/refreshHelpers.js';
 import {
   createAccountSnapshotDouble,
@@ -16,6 +8,14 @@ import {
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
 import { createLastState } from '../utils.js';
+
+/**
+ * refreshHelpers 业务测试
+ *
+ * 覆盖：
+ * - 校验连续席位刷新各自获取最新全量订单事实
+ * - 校验账户、持仓与订阅投影不会跨动态队列任务复用陈旧快照
+ */
 
 describe('refreshHelpers business flow', () => {
   it('fetches a fresh all-orders snapshot for each seat refresh', async () => {
@@ -43,6 +43,7 @@ describe('refreshHelpers business flow', () => {
       },
     });
     const helpers = createRefreshHelpers({
+      canContinue: () => true,
       trader: createTraderDouble({ orderRecorder }),
       lastState: createLastState(),
     });
@@ -61,6 +62,7 @@ describe('refreshHelpers business flow', () => {
     let reconcileCalls = 0;
     const lastState = createLastState();
     const helpers = createRefreshHelpers({
+      canContinue: () => true,
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           accountCalls += 1;

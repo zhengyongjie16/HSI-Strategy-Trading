@@ -374,6 +374,8 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
   async function recoverOrderTrackingFromSnapshot(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
   ): Promise<void> {
+    if (deps.termination.isTerminated()) return;
+
     runtime.runtimeState = 'BOOTSTRAPPING';
     resetRecoveryTrackingState();
     let recoveredCount = 0;
@@ -403,6 +405,13 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
         if (order.side === OrderSide.Buy) {
           if (!ownership || !isMatched) {
             const cancelOutcome = await cancelOrder(order.orderId);
+            if (deps.termination.isTerminated()) {
+              resetRecoveryTrackingState();
+              clearBootstrappingEventBuffer();
+              runtime.runtimeState = 'STOPPED';
+              return;
+            }
+
             if (cancelOutcome.kind === 'CANCEL_CONFIRMED') {
               throw new Error(
                 `[订单监控] 买单 ${order.orderId} 不匹配且撤单请求成功，但终态未确认（等待 WS），阻断恢复`,
@@ -494,6 +503,14 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
         closedMismatchedBuyOrderIds,
         replayedOrderIds,
       });
+
+      if (deps.termination.isTerminated()) {
+        resetRecoveryTrackingState();
+        clearBootstrappingEventBuffer();
+        runtime.runtimeState = 'STOPPED';
+        return;
+      }
+
       runtime.runtimeState = 'ACTIVE';
 
       const closedMismatchedBuyCount = closedMismatchedBuyOrderIds.size;

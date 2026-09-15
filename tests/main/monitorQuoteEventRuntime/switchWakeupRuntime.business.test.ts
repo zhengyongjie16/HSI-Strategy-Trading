@@ -1,13 +1,4 @@
-/**
- * SwitchWakeupRuntime 业务测试
- *
- * 覆盖：
- * - WAIT wakeups 可由 ORDER_EVENT / FRESHNESS / SYMBOL_QUOTE / RETRY_TIMER 继续推进 pending switch
- * - route key 需要按 direction + seatVersion 隔离，并对旧 seatVersion 自然失效
- * - stopAndDrain 后旧事件与旧 timer 不再继续推进
- * - baseline / gate 关闭时事件只唤醒不推进，恢复后再由新事件继续推进
- * - 同一路由使用 single-flight + latest-only collapse
- */
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import {
   createMonitorContextDouble,
@@ -33,6 +24,17 @@ import type {
   TradingGateEventRuntime,
   TradingGateStateChangedEvent,
 } from '../../../src/main/tradingGateEventRuntime/types.js';
+
+/**
+ * SwitchWakeupRuntime 业务测试
+ *
+ * 覆盖：
+ * - WAIT wakeups 可由 ORDER_EVENT / FRESHNESS / SYMBOL_QUOTE / RETRY_TIMER 继续推进 pending switch
+ * - route key 需要按 direction + seatVersion 隔离，并对旧 seatVersion 自然失效
+ * - stopAndDrain 后旧事件与旧 timer 不再继续推进
+ * - baseline / gate 关闭时事件只唤醒不推进，恢复后再由新事件继续推进
+ * - 同一路由使用 single-flight + latest-only collapse
+ */
 
 function createDeferred<voidValue = void>(): {
   readonly promise: Promise<voidValue>;
@@ -180,7 +182,10 @@ describe('switchWakeupRuntime', () => {
         'retainSymbols' | 'releaseRetain'
       >;
       readonly tradingGateEventRuntime?: Pick<TradingGateEventRuntime, 'onGateStateChanged'>;
-      readonly onFatalError?: (error: unknown) => void;
+      readonly termination?: {
+        readonly isTerminated: () => boolean;
+        readonly reportFatalError: (error: unknown) => void;
+      };
     } = {},
   ): Readonly<{
     runtime: ReturnType<typeof createSwitchWakeupRuntime>;
@@ -240,11 +245,7 @@ describe('switchWakeupRuntime', () => {
       createMonitorContextDouble({
         config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
         symbolRegistry,
-        state: {
-          monitorSymbol: 'HSI.HK',
-          lastMonitorSnapshot: null,
-          incrementalIndicatorRuntime: null,
-        },
+
         ...(params.autoSymbolManager ? { autoSymbolManager: params.autoSymbolManager } : {}),
       });
     const trader = createTraderDouble({
@@ -292,7 +293,10 @@ describe('switchWakeupRuntime', () => {
       ...(params.quoteSubscriptionRuntime
         ? { quoteSubscriptionRuntime: params.quoteSubscriptionRuntime }
         : {}),
-      onFatalError: params.onFatalError ?? (() => {}),
+      termination: {
+        isTerminated: params.termination?.isTerminated ?? (() => false),
+        reportFatalError: params.termination?.reportFatalError ?? (() => {}),
+      },
     };
     const runtime = createSwitchWakeupRuntime(runtimeDeps);
 
@@ -341,8 +345,11 @@ describe('switchWakeupRuntime', () => {
   it('exposes pending switch route errors to fatal handler', async () => {
     const fatalErrors: unknown[] = [];
     const runtimeHarness = createBaseHarness({
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -395,8 +402,11 @@ describe('switchWakeupRuntime', () => {
     const fatalErrors: unknown[] = [];
     let advanceCalls = 0;
     const runtimeHarness = createBaseHarness({
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -450,8 +460,11 @@ describe('switchWakeupRuntime', () => {
     const releaseAdvance = createDeferred();
     let advanceCalls = 0;
     const runtimeHarness = createBaseHarness({
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -732,7 +745,7 @@ describe('switchWakeupRuntime', () => {
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
-      onFatalError: () => {},
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
 
     runtime.start();
@@ -895,7 +908,9 @@ describe('switchWakeupRuntime', () => {
     let advanceCalls = 0;
     const runtimeHarness = createBaseHarness({
       quoteSubscriptionRuntime: {
-        retainSymbols: async () => await retainDeferred.promise,
+        retainSymbols: async () => {
+          await retainDeferred.promise;
+        },
         releaseRetain: async () => {},
       },
       autoSymbolManager: {
@@ -949,7 +964,9 @@ describe('switchWakeupRuntime', () => {
     const runtimeHarness = createBaseHarness({
       symbolRegistry,
       quoteSubscriptionRuntime: {
-        retainSymbols: async () => await retainDeferred.promise,
+        retainSymbols: async () => {
+          await retainDeferred.promise;
+        },
         releaseRetain: async () => {},
       },
       autoSymbolManager: {
@@ -1015,11 +1032,13 @@ describe('switchWakeupRuntime', () => {
 
           retainCalls.push(symbol);
           if (symbol === 'BULL.HK') {
-            return await bullRetainDeferred.promise;
+            await bullRetainDeferred.promise;
+            return;
           }
 
           if (symbol === 'BEAR.HK') {
-            return await bearRetainDeferred.promise;
+            await bearRetainDeferred.promise;
+            return;
           }
 
           throw new Error(`unexpected retain symbol: ${symbol}`);
@@ -1092,8 +1111,6 @@ describe('switchWakeupRuntime', () => {
             remainingRetainFailures -= 1;
             throw retainError;
           }
-
-          return () => {};
         },
         releaseRetain: async () => {},
       },
@@ -1117,8 +1134,11 @@ describe('switchWakeupRuntime', () => {
         }),
         resetAllState: () => {},
       },
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
     const monitorContext = runtimeHarness.monitorContext;
@@ -1138,25 +1158,31 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
 
     expect(retainCalls).toEqual([['BULL.HK'], ['BULL.HK']]);
-    await runtimeHarness.runtime.stopAndDrain();
+    expect(
+      await runtimeHarness.runtime.stopAndDrain().catch((error: unknown) => error),
+    ).toBeInstanceOf(Error);
   });
 
   it('releases switch quote retain owner after failed retain when runtime stops', async () => {
     const releaseCalls: Array<{ readonly ownerKey: string; readonly reason: string }> = [];
     const releaseError = new Error('release failed');
+    const retainError = new Error('retain failed');
     const fatalErrors: unknown[] = [];
     const runtimeHarness = createBaseHarness({
       quoteSubscriptionRuntime: {
         retainSymbols: async () => {
-          throw new Error('retain failed');
+          throw retainError;
         },
         releaseRetain: async ({ ownerKey, reason }) => {
           releaseCalls.push({ ownerKey, reason });
           throw releaseError;
         },
       },
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
     const monitorContext = runtimeHarness.monitorContext;
@@ -1169,7 +1195,9 @@ describe('switchWakeupRuntime', () => {
     });
 
     await waitTick();
-    await runtimeHarness.runtime.stopAndDrain();
+    expect(await runtimeHarness.runtime.stopAndDrain().catch((error: unknown) => error)).toBe(
+      retainError,
+    );
     await waitTick();
 
     expect(releaseCalls).toEqual([{ ownerKey: 'LONG:1', reason: 'SWITCH_WAKEUP' }]);
@@ -1431,8 +1459,11 @@ describe('switchWakeupRuntime', () => {
     });
     const runtimeHarness = createBaseHarness({
       autoSymbolManager,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1473,8 +1504,11 @@ describe('switchWakeupRuntime', () => {
     });
     const runtimeHarness = createBaseHarness({
       autoSymbolManager,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
     runtimeHarness.runtime.start();
@@ -1510,8 +1544,11 @@ describe('switchWakeupRuntime', () => {
     });
     const runtimeHarness = createBaseHarness({
       autoSymbolManager,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
     runtimeHarness.runtime.start();
@@ -2128,5 +2165,142 @@ describe('switchWakeupRuntime', () => {
 
     expect(runtimeHarness.timerHarness.getPendingTimerCount()).toBe(0);
     await runtimeHarness.runtime.stopAndDrain();
+  });
+
+  describe('switch owner drain settlement', () => {
+    for (const fatal of [false, true]) {
+      it('keeps final cleanup behind owner settlement and preserves the global first fatal', async () => {
+        const retainGate = createDeferred<true>();
+        const releaseGate = createDeferred<true>();
+        const retainError = new Error('retain');
+        const firstFatal = new Error('first fatal');
+        let stopOwner = (): void => {};
+        const termination = createTerminationRuntime({
+          closeTradingGate: () => {},
+          closeProducerAdmission: () => {},
+          stopProducers: [
+            () => {
+              stopOwner();
+            },
+          ],
+          onSecondaryError: () => {},
+        });
+        let retainCount = 0;
+        const retainWork = async (): Promise<void> => {
+          retainCount += 1;
+          await retainGate.promise;
+          throw retainError;
+        };
+
+        const releaseWork = async (): Promise<void> => {
+          await releaseGate.promise;
+          throw new Error('release');
+        };
+        const harness = createBaseHarness({
+          termination,
+          quoteSubscriptionRuntime: { retainSymbols: retainWork, releaseRetain: releaseWork },
+        });
+        stopOwner = () => {
+          harness.runtime.stop();
+        };
+        harness.runtime.start();
+        harness.runtime.handoffPendingSwitch({
+          direction: 'LONG',
+          monitorContext: harness.monitorContext,
+          driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+        });
+        await waitTick();
+        if (fatal) termination.reportFatalError(firstFatal);
+        else termination.requestShutdown();
+
+        let quoteStopped = false;
+        const cleanup = (async () => {
+          try {
+            await harness.runtime.stopAndDrain();
+          } finally {
+            quoteStopped = true;
+          }
+        })().catch((error: unknown) => error);
+        retainGate.resolve(true);
+        await waitTick();
+        expect(quoteStopped).toBe(false);
+        releaseGate.resolve(true);
+        expect(await cleanup).toBe(retainError);
+        expect(quoteStopped).toBe(true);
+        expect(termination.getFatalState()).toEqual({
+          hasFatalError: true,
+          error: fatal ? firstFatal : retainError,
+        });
+        harness.runtime.start();
+        harness.runtime.handoffPendingSwitch({
+          direction: 'LONG',
+          monitorContext: harness.monitorContext,
+          driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+        });
+        await waitTick();
+        expect(retainCount).toBe(1);
+      });
+    }
+
+    for (const failure of [new Error('controlled retain failure'), null, undefined]) {
+      it('waits for pending release before propagating the original retain rejection', async () => {
+        const retainGate = createDeferred<true>();
+        const releaseGate = createDeferred<true>();
+        let releaseFinished = false;
+        let retainStarted = false;
+        let releaseStarted = false;
+        let failRetain = true;
+        const retainWork = async (): Promise<void> => {
+          retainStarted = true;
+          await retainGate.promise;
+          if (failRetain) {
+            const originalFailure: unknown = failure;
+            throw originalFailure;
+          }
+        };
+
+        const releaseWork = async (): Promise<void> => {
+          releaseStarted = true;
+          await releaseGate.promise;
+          releaseFinished = true;
+        };
+        const harness = createBaseHarness({
+          quoteSubscriptionRuntime: { retainSymbols: retainWork, releaseRetain: releaseWork },
+        });
+        harness.runtime.start();
+        harness.runtime.handoffPendingSwitch({
+          direction: 'LONG',
+          monitorContext: harness.monitorContext,
+          driveResult: createWaitResult([{ kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' }]),
+        });
+        await waitTick();
+        expect(retainStarted).toBe(true);
+        const drain = harness.runtime.stopAndDrain();
+        expect(harness.runtime.stopAndDrain()).toBe(drain);
+        let settled = false;
+        const outcome = drain.then(
+          () => {
+            settled = true;
+            return { rejected: false, error: undefined };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { rejected: true, error };
+          },
+        );
+        expect(releaseStarted).toBe(true);
+        retainGate.resolve(true);
+        await waitTick();
+        expect(settled).toBe(false);
+        expect(releaseFinished).toBe(false);
+        releaseGate.resolve(true);
+        expect(await outcome).toEqual({ rejected: true, error: failure });
+        expect(releaseFinished).toBe(true);
+        expect(harness.runtime.stopAndDrain()).toBe(drain);
+        failRetain = false;
+        harness.runtime.start();
+        await harness.runtime.stopAndDrain();
+      });
+    }
   });
 });

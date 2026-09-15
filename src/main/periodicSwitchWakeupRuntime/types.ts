@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
@@ -70,6 +71,8 @@ export type PeriodicSwitchRouteState = {
  * 使用范围：createPeriodicSwitchWakeupRuntime 工厂。
  */
 export type PeriodicSwitchWakeupRuntimeDeps = Readonly<{
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
+
   /** 当前唯一 monitorContext */
   monitorContext: Pick<MonitorContext, 'config'>;
 
@@ -114,6 +117,7 @@ export interface PeriodicSwitchWakeupRuntime {
   readonly start: () => void;
 
   /** 停止订阅、清理 timer 与 waiting-empty 状态 */
+  readonly stop: () => void;
   readonly stopAndDrain: () => Promise<void>;
 
   /** 标记当前 baseline 进入 waiting-empty 等待 */

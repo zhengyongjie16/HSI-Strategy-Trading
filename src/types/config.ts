@@ -1,33 +1,4 @@
 import type { OrderTypeConfig } from './signal.js';
-import type { SignalConfig } from './signalConfig.js';
-
-/**
- * 单个延迟验证配置。
- * 类型用途：配置买入或卖出的延迟验证时间与需验证的指标列表，作为 VerificationConfig 的 buy/sell 字段类型。
- * 数据来源：配置解析（如 MonitorConfig.verificationConfig）。
- * 使用范围：延迟验证器、配置校验等；全项目可引用。
- */
-export type SingleVerificationConfig = {
-  /** 延迟验证时间（秒） */
-  readonly delaySeconds: number;
-
-  /** 需验证的指标列表（null 表示不验证） */
-  readonly indicators: ReadonlyArray<string> | null;
-};
-
-/**
- * 延迟验证配置。
- * 类型用途：分别配置买入与卖出的延迟验证参数，作为 MonitorConfig.verificationConfig 的类型。
- * 数据来源：配置解析。
- * 使用范围：MonitorConfig、DelayedSignalVerifier 等；全项目可引用。
- */
-export type VerificationConfig = {
-  /** 买入信号验证配置 */
-  readonly buy: SingleVerificationConfig;
-
-  /** 卖出信号验证配置 */
-  readonly sell: SingleVerificationConfig;
-};
 
 /**
  * 数值范围配置。
@@ -79,26 +50,6 @@ export type AutoSearchConfig = {
 };
 
 /**
- * 信号配置集。
- * 类型用途：四种交易信号（买多/卖多/买空/卖空）的配置集合，作为 MonitorConfig.signalConfig 的类型。
- * 数据来源：配置解析。
- * 使用范围：MonitorConfig、策略、信号处理等；全项目可引用。
- */
-export type SignalConfigSet = {
-  /** 买入做多配置 */
-  readonly buycall: SignalConfig | null;
-
-  /** 卖出做多配置 */
-  readonly sellcall: SignalConfig | null;
-
-  /** 买入做空配置 */
-  readonly buyput: SignalConfig | null;
-
-  /** 卖出做空配置 */
-  readonly sellput: SignalConfig | null;
-};
-
-/**
  * 保护性清仓后的买入冷却配置。
  * 类型用途：保护性清仓后一段时间内禁止买入的策略（按分钟/半日/一日），作为 MonitorConfig.liquidationCooldown 的类型。
  * 数据来源：配置解析。
@@ -118,7 +69,7 @@ export type LiquidationCooldownConfig =
 
 /**
  * 单个监控标的的完整配置。
- * 类型用途：单监控标的的交易标的、风控参数、信号配置与延迟验证等，作为 MonitorContext.config、BuyRiskCheckContext.config 等类型。
+ * 类型用途：单监控标的的交易标的、席位、风控参数与执行政策，作为 MonitorContext.config、BuyRiskCheckContext.config 等类型。
  * 数据来源：配置解析（环境变量/配置文件）。
  * 使用范围：MonitorContext、信号处理、风控等；全项目可引用。
  */
@@ -155,12 +106,6 @@ export type MonitorConfig = {
 
   /** 触发买入冷却所需的保护性清仓次数（默认 1） */
   readonly liquidationTriggerLimit: number;
-
-  /** 延迟验证配置 */
-  readonly verificationConfig: VerificationConfig;
-
-  /** 信号配置集 */
-  readonly signalConfig: SignalConfigSet;
 
   /** 智能平仓开关（true 时启用三阶段智能平仓） */
   readonly smartCloseEnabled: boolean;

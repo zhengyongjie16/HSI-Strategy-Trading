@@ -21,17 +21,15 @@ import type { MarketDataClient, Trader } from '../../src/types/services.js';
 import type { TimeWakeupEvaluationContext } from '../../src/main/timeWakeupEvaluationProgram/types.js';
 import type { CancelOrderOutcome } from '../../src/types/trader.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
-import { initMonitorState } from '../../src/utils/helpers/index.js';
 import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
 
 import {
+  createTerminationDouble,
   createAccountSnapshotDouble,
   createAutoSymbolManagerDouble,
   createDailyLossTrackerDouble,
-  createDelayedSignalVerifierDouble,
-  createIndicatorUsageProfileDouble,
   createMarketDataClientDouble,
   createLoggerDouble,
   createMonitorConfigDouble,
@@ -138,9 +136,11 @@ async function createRealDoomsdayTrader(params: {
     },
     isExecutionAllowed: params.isExecutionAllowed ?? (() => true),
     isContinuousTradingAllowed: () => true,
-    onFatalError: (error) => {
-      throw error;
-    },
+    termination: createTerminationDouble({
+      reportFatalError: (error) => {
+        throw error;
+      },
+    }),
     now: params.now,
     readCurrentTradingDayInfo: () => {
       const currentTime = params.now();
@@ -172,7 +172,7 @@ function createLastState(): LastState {
     ]),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: initMonitorState(createMonitorConfigDouble()),
+
     allTradingSymbols: new Set(['BULL.HK', 'BEAR.HK']),
   };
 }
@@ -204,11 +204,7 @@ function createMonitorContext(
 
   return createMonitorContextDouble({
     config,
-    state: {
-      monitorSymbol: config.monitorSymbol,
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
+
     symbolRegistry,
     autoSymbolManager: createAutoSymbolManagerDouble(),
     strategy: createStrategyDouble(),
@@ -216,11 +212,9 @@ function createMonitorContext(
     dailyLossTracker: createDailyLossTrackerDouble(),
     riskChecker: createRiskCheckerDouble(),
     unrealizedLossMonitor: createUnrealizedLossMonitorDouble(),
-    delayedSignalVerifier: createDelayedSignalVerifierDouble(),
     longSymbolName: 'BULL.HK',
     shortSymbolName: 'BEAR.HK',
     monitorSymbolName: config.monitorSymbol,
-    indicatorProfile: createIndicatorUsageProfileDouble(),
   });
 }
 

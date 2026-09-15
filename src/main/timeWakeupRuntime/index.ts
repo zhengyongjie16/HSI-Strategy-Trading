@@ -12,10 +12,6 @@ import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
 import type { TimeWakeupRuntime, TimeWakeupRuntimeDeps } from './types.js';
 
-function normalizeFatalError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(formatError(error));
-}
-
 /**
  * 创建系统级时间唤醒 runtime。
  *
@@ -30,8 +26,6 @@ export function createTimeWakeupRuntime<TTimerHandle>(
   let dirty = false;
   let timer: BoundedOneShotTimerController | null = null;
   let activePromise: Promise<void> | null = null;
-  let fatalError: Error | null = null;
-  const fatalRejectors = new Set<(error: Error) => void>();
 
   function clearCurrentTimer(): void {
     if (timer === null) {
@@ -47,20 +41,9 @@ export function createTimeWakeupRuntime<TTimerHandle>(
    * fatal 表示权威时间事实不可确认或计划非法，必须停止 timer 与 dirty 重入，交给 app 顶层清理并暴露根因。
    */
   function failFatal(error: unknown): void {
-    if (fatalError !== null) {
-      return;
-    }
-
-    fatalError = normalizeFatalError(error);
-    running = false;
-    dirty = false;
-    clearCurrentTimer();
-    deps.logger.error('[TimeWakeupRuntime] 系统级时间唤醒进入 fatal 状态', fatalError.message);
-    for (const reject of fatalRejectors) {
-      reject(fatalError);
-    }
-
-    fatalRejectors.clear();
+    deps.termination.reportFatalError(error);
+    stop();
+    deps.logger.error('[TimeWakeupRuntime] 系统级时间唤醒进入 fatal 状态', formatError(error));
   }
 
   /**
@@ -69,7 +52,7 @@ export function createTimeWakeupRuntime<TTimerHandle>(
    */
   function scheduleAt(atMs: number | null): void {
     clearCurrentTimer();
-    if (!running || atMs === null) {
+    if (deps.termination.isTerminated() || !running || atMs === null) {
       return;
     }
 
@@ -113,7 +96,7 @@ export function createTimeWakeupRuntime<TTimerHandle>(
   }
 
   function shouldRunPendingEvaluation(): boolean {
-    return running && dirty;
+    return running && !deps.termination.isTerminated() && dirty;
   }
 
   /**
@@ -127,6 +110,8 @@ export function createTimeWakeupRuntime<TTimerHandle>(
         dirty = false;
         try {
           const result = await deps.evaluate();
+          if (!running || deps.termination.isTerminated()) return;
+
           scheduleAt(result.plan.hasWork ? result.plan.nextWakeupAtMs : null);
         } catch (error) {
           failFatal(error);
@@ -142,7 +127,7 @@ export function createTimeWakeupRuntime<TTimerHandle>(
    * 外部事件和 timer 到期都通过该入口收敛；运行中请求不重入，只转换为 dirty 标记。
    */
   function requestEvaluate(): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -161,7 +146,9 @@ export function createTimeWakeupRuntime<TTimerHandle>(
   }
 
   async function start(): Promise<void> {
-    if (!running) {
+    if (deps.termination.isTerminated()) return;
+
+    if (!running || deps.termination.isTerminated()) {
       running = true;
       requestEvaluate();
     }
@@ -171,28 +158,17 @@ export function createTimeWakeupRuntime<TTimerHandle>(
     }
   }
 
-  async function stopAndDrain(): Promise<void> {
+  /** 同步撤销 timer 与 dirty 授权，排空交给生命周期。 */
+  function stop(): void {
     running = false;
     dirty = false;
     clearCurrentTimer();
-    if (activePromise !== null) {
-      await Promise.allSettled([activePromise]);
-    }
   }
 
-  function drainFatalError(): Promise<never> {
-    if (fatalError !== null) {
-      return Promise.reject(fatalError);
-    }
-
-    return new Promise<never>((_, reject) => {
-      fatalRejectors.add(reject);
-    });
+  async function stopAndDrain(): Promise<void> {
+    stop();
+    if (activePromise !== null) await activePromise;
   }
 
-  return {
-    start,
-    stopAndDrain,
-    drainFatalError,
-  };
+  return { start, stop, stopAndDrain };
 }

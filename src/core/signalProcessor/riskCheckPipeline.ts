@@ -9,7 +9,7 @@
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { logger } from '../../utils/logger/index.js';
 import { formatSymbolDisplayFromQuote } from '../utils.js';
-import { VERIFICATION } from '../../constants/index.js';
+import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../constants/index.js';
 import { getDoomsdayBuyCutoffWindowRangeLabel } from '../doomsdayProtection/utils.js';
 import { getSymbolName, isBuyPriceWithinLatestOrderLimit } from './utils.js';
 import type { Quote } from '../../types/quote.js';
@@ -40,6 +40,13 @@ function assertBuySignals(signals: ReadonlyArray<BuySignal>): void {
         `买入风控只接受 BUYCALL 或 BUYPUT，收到 ${String(runtimeAction)}: ${signal.symbol}`,
       );
     }
+  }
+}
+
+/** 防御绕过静态类型的内部调用；行情不符合入口准入契约时禁止继续风控。 */
+function assertMonitorQuote(monitorQuote: Quote | null): void {
+  if (!isValidPositiveNumber(monitorQuote?.price)) {
+    throw new Error('买入风控内部契约错误：monitorQuote 必须包含有效正有限价格');
   }
 }
 
@@ -99,7 +106,7 @@ export const createRiskCheckPipeline = ({
   signals: ReadonlyArray<BuySignal>,
   context: BuyRiskCheckContext,
 ) => Promise<ReadonlyArray<BuySignal>>) => {
-  /** 对买入信号列表应用固定顺序的风险检查，过滤不符合条件的信号。 */
+  /** 先验证内部行情契约，再按固定顺序过滤买入信号；契约误用必须在冷却和风控副作用前抛错。 */
   const applyRiskChecks = async (
     signals: ReadonlyArray<BuySignal>,
     context: BuyRiskCheckContext,
@@ -113,7 +120,6 @@ export const createRiskCheckPipeline = ({
       longQuote,
       shortQuote,
       monitorQuote,
-      monitorSnapshot,
       longSymbol,
       shortSymbol,
       longSymbolName,
@@ -123,12 +129,14 @@ export const createRiskCheckPipeline = ({
       doomsdayProtection,
     } = context;
 
+    assertMonitorQuote(monitorQuote);
+
     // 在本次调用入口固定当前毫秒时间，供冷却过滤/冷却写入/清仓冷却查询复用
     const currentTimeMs = currentTime.getTime();
 
     // 先过滤风险检查冷却期信号
     // 这样可以避免冷却期内信号进入后续检查与实时数据拉取
-    const cooldownMs = VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000;
+    const cooldownMs = BUY_RISK_CHECK_COOLDOWN_MS;
     const signalsAfterCooldown: BuySignal[] = [];
     for (const sig of signals) {
       const sigSymbol = sig.symbol;
@@ -239,11 +247,10 @@ export const createRiskCheckPipeline = ({
         continue;
       }
 
-      const monitorCurrentPrice = monitorQuote?.price ?? monitorSnapshot?.price ?? null;
       const warrantRiskResult = riskChecker.checkWarrantRisk(
         sig.symbol,
         sig.action,
-        monitorCurrentPrice ?? 0,
+        monitorQuote.price,
       );
       if (warrantRiskResult.allowed) {
         if (warrantRiskResult.warrantInfo?.isWarrant) {

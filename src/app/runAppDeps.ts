@@ -1,3 +1,5 @@
+import { lstat, readdir, realpath } from 'node:fs/promises';
+
 /**
  * runApp 生产默认依赖。
  *
@@ -18,26 +20,18 @@ import { createPreGateRuntime } from './runtime/createPreGateRuntime.js';
 import { createCleanup } from './shutdown/createCleanup.js';
 import { loadStartupSnapshot } from './startup/startupSnapshot.js';
 import { collectRuntimeValidationSymbols } from './startup/runtimeValidation.js';
-import { registerDelayedSignalHandlers } from './wiring/registerDelayedSignalHandlers.js';
+import { prepareStrategy } from './startup/prepareStrategy.js';
 import { applyStartupSnapshotFailureState } from '../main/lifecycle/startupFailureState.js';
 import type { RunAppDeps } from './types.js';
 
-/**
- * 等待 app 进程关闭信号。
- *
- * @returns 收到 SIGINT 或 SIGTERM 后完成的 Promise
- */
-function waitForShutdownSignal(): Promise<void> {
-  return new Promise((resolve) => {
-    const handleShutdown = (): void => {
-      process.off('SIGINT', handleShutdown);
-      process.off('SIGTERM', handleShutdown);
-      resolve();
-    };
-
-    process.once('SIGINT', handleShutdown);
-    process.once('SIGTERM', handleShutdown);
-  });
+/** 在首次资源创建前订阅退出；回调同步关闭交易，清理由 root 等待装配落定后执行。 */
+function subscribeShutdownSignal(onShutdown: () => void): () => void {
+  process.on('SIGINT', onShutdown);
+  process.on('SIGTERM', onShutdown);
+  return () => {
+    process.off('SIGINT', onShutdown);
+    process.off('SIGTERM', onShutdown);
+  };
 }
 
 export const DEFAULT_RUN_APP_DEPS: RunAppDeps = {
@@ -47,13 +41,19 @@ export const DEFAULT_RUN_APP_DEPS: RunAppDeps = {
   collectRuntimeValidationSymbols,
   createRebuildTradingDayState,
   displayAccountAndPositions,
-  registerDelayedSignalHandlers,
+  prepareStrategy: (params) =>
+    prepareStrategy(params, {
+      readDirectory: readdir,
+      lstat,
+      realpath,
+      importModule: (href): Promise<unknown> => import(href),
+    }),
   createBusinessEventProgram,
   createAsyncRuntime,
   createLifecycleRuntime,
   createCleanup,
   createTimeWakeupRuntime,
-  waitForShutdownSignal,
+  subscribeShutdownSignal,
   logger,
   formatError,
   validateRuntimeSymbolsFromQuotesMap,

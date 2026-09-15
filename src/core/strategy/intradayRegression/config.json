@@ -1,0 +1,18 @@
+{
+  "signals": {
+    "BUYCALL": "(RSI:6<25,MFI<15,D<25,J<0.5)/3|(J<-25)",
+    "SELLCALL": "(RSI:6>70,MFI>75,D>70,J>90)/3|(J>125)",
+    "BUYPUT": "(RSI:6>80,MFI>85,D>80,J>95)/3|(J>125)",
+    "SELLPUT": "(RSI:6<30,MFI<20,D<30,J<5)/3|(J<-25)"
+  },
+  "verification": {
+    "buy": {
+      "delaySeconds": 60,
+      "indicators": ["D", "ADX"]
+    },
+    "sell": {
+      "delaySeconds": 60,
+      "indicators": ["K"]
+    }
+  }
+}

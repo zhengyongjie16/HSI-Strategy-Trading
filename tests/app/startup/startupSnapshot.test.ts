@@ -31,11 +31,6 @@ function createMinimalLastState(): LastState {
     },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: {
-      monitorSymbol: 'HSI.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
     allTradingSymbols: new Set(),
   };
 }

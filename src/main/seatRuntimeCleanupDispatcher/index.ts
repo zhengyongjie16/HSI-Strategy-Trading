@@ -3,7 +3,7 @@
  *
  * 职责：
  * - 监听 SymbolRegistry 的 seat state event
- * - 在席位从 ACTIVE 退出时清理该方向旧信号、旧任务与牛熊证缓存
+ * - 在席位从 ACTIVE 退出或身份变化时清理该方向旧信号、旧任务与牛熊证缓存
  * - 保持席位清理从时间循环迁移到席位状态边沿事件
  */
 import { logger } from '../../utils/logger/index.js';
@@ -13,7 +13,12 @@ import type { Unsubscribe } from '../../types/services.js';
 import type { SeatRuntimeCleanupDispatcher, SeatRuntimeCleanupDispatcherDeps } from './types.js';
 
 function shouldCleanupDirectionRuntime(event: SeatStateChangedEvent): boolean {
-  return event.previousState.status === 'ACTIVE' && event.nextState.status !== 'ACTIVE';
+  return (
+    event.previousState.status === 'ACTIVE' &&
+    (event.nextState.status !== 'ACTIVE' ||
+      event.previousState.symbol !== event.nextState.symbol ||
+      event.previousVersion !== event.nextVersion)
+  );
 }
 
 function cleanupDirectionRuntime(
@@ -21,6 +26,8 @@ function cleanupDirectionRuntime(
   event: SeatStateChangedEvent,
 ): void {
   const monitorContext = deps.monitorContext;
+
+  monitorContext.strategy.invalidateDirection(event.direction);
 
   if (event.direction === 'LONG') {
     monitorContext.riskChecker.clearLongWarrantInfo();
@@ -30,7 +37,6 @@ function cleanupDirectionRuntime(
 
   const result = clearMonitorDirectionQueues({
     direction: event.direction,
-    delayedSignalVerifier: monitorContext.delayedSignalVerifier,
     buyTaskQueue: deps.buyTaskQueue,
     sellTaskQueue: deps.sellTaskQueue,
     monitorTaskQueue: deps.monitorTaskQueue,
@@ -45,7 +51,7 @@ function cleanupDirectionRuntime(
 
 /**
  * 创建席位运行态清理 dispatcher。
- * 该 dispatcher 只消费 ACTIVE 退出的 seat state event，不在启动时扫描补偿历史状态。
+ * 该 dispatcher 消费 ACTIVE 退出及标的/版本身份变化的同步 seat state event，不在启动时扫描补偿历史状态。
  *
  * @param deps dispatcher 依赖
  * @returns SeatRuntimeCleanupDispatcher 实例

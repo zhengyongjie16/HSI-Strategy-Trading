@@ -19,14 +19,12 @@ describe('monitor context shared ports', () => {
     expect(content).not.toContain('interface DelayedSignalVerifier');
   });
 
-  it('does not keep a second DelayedSignalVerifier behavior interface in delayedSignalVerifier/types.ts', () => {
-    const delayedVerifierTypesPath = path.join(
-      process.cwd(),
-      'src/main/asyncProgram/delayedSignalVerifier/types.ts',
+  it('exposes only strategy lifecycle, not host-owned verification or indicator state', () => {
+    const content = readFileSync(stateTypesPath, 'utf8');
+    expect(content).toContain('readonly strategy: TradingSignalStrategy');
+    expect(content).not.toMatch(
+      /DelayedSignalVerifier|indicatorProfile|MonitorState|IndicatorIncrementalRuntime/,
     );
-    const content = readFileSync(delayedVerifierTypesPath, 'utf8');
-
-    expect(content).not.toContain('export interface DelayedSignalVerifier');
   });
 
   it('keeps cancel outcome helpers in a single utility source', () => {

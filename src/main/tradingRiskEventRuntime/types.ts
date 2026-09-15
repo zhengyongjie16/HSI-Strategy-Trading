@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { MarketDataClient, QuoteUpdatedEvent, Trader } from '../../types/services.js';
 import type { SymbolRegistry } from '../../types/seat.js';
@@ -81,7 +82,7 @@ export type TradingRiskEventRuntimeDeps = Readonly<{
   readonly postTradeConsistencyRuntime: TradingRiskConsistencyPort;
   readonly doomsdayProtectionEnabled: boolean;
   readonly now: () => Date;
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 }>;
 
 /**
@@ -91,6 +92,8 @@ export type TradingRiskEventRuntimeDeps = Readonly<{
  * 使用范围：app lifecycle / cleanup / startup 装配使用。
  */
 export interface TradingRiskEventRuntime {
+  readonly stop: () => void;
+
   /** 启动 quote 监听并开始处理风险事件。 */
   start: () => void;
 

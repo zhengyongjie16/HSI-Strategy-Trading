@@ -708,7 +708,7 @@ route runtime 层
 
 订单业务语义层
 
-- 改造 tests/core/trader/orderMonitor.business.test.ts
+- 改造 tests/core/trader/orderMonitor/orderMonitor.business.test.ts
 - 确保以下链路仍成立：
   - 买单超时只撤单
   - 卖单超时：撤单确认后才转市价
@@ -824,7 +824,7 @@ Trader / app / lifecycle / main loop
 
 测试
 
-- tests/core/trader/orderMonitor.business.test.ts
+- tests/core/trader/orderMonitor/orderMonitor.business.test.ts
 - tests/core/trader/orderMonitor/settlementFlow.business.test.ts
 - tests/core/trader/orderMonitor/routeRuntime.business.test.ts（新增）
 - tests/app/createLifecycleRuntime.wiring.test.ts

@@ -39,19 +39,19 @@ describe('tradeTaskQueue business behavior', () => {
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-1.HK',
     });
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-2.HK',
     });
 
     pushBuyTask({
       queue,
-      type: 'VERIFIED_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-3.HK',
     });
 
@@ -68,19 +68,19 @@ describe('tradeTaskQueue business behavior', () => {
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-1.HK',
     });
 
     pushBuyTask({
       queue,
-      type: 'VERIFIED_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BEAR-1.HK',
     });
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-2.HK',
     });
 
@@ -98,13 +98,13 @@ describe('tradeTaskQueue business behavior', () => {
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-1.HK',
     });
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-2.HK',
     });
 
@@ -125,7 +125,7 @@ describe('tradeTaskQueue business behavior', () => {
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-1.HK',
     });
 
@@ -133,7 +133,7 @@ describe('tradeTaskQueue business behavior', () => {
 
     pushBuyTask({
       queue,
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       symbol: 'BULL-2.HK',
     });
 

@@ -1,11 +1,7 @@
-/**
- * createPostTradeConsistencyRuntime 测试
- *
- * 覆盖最小成交后一致性运行时切片：启动前积压 stale、启动后消费刷新、
- * 以及 completeRebuildBaseline 的最小 freshness 推进行为。
- */
+import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
+import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
-
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createPostTradeConsistencyRuntime as buildPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type {
@@ -14,8 +10,8 @@ import type {
 } from '../../../src/app/types.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
-
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -29,6 +25,13 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
+
+/**
+ * createPostTradeConsistencyRuntime 测试
+ *
+ * 覆盖最小成交后一致性运行时切片：启动前积压 stale、启动后消费刷新、
+ * 以及 completeRebuildBaseline 的最小 freshness 推进行为。
+ */
 
 /**
  * 创建可由测试手动控制完成与失败时机的 Promise。
@@ -71,7 +74,7 @@ async function flushMicrotasks(): Promise<void> {
  *
  * @returns scheduler 契约与按期望延迟推进下一个 timer 的测试端口
  */
-function createManualScheduler(): ManualScheduler {
+function createManualScheduler(onScheduled?: (callback: () => void) => void): ManualScheduler {
   const timers = new Map<
     ReturnType<typeof setTimeout>,
     Readonly<{ callback: () => void; delayMs: number }>
@@ -83,6 +86,7 @@ function createManualScheduler(): ManualScheduler {
         const handle = setTimeout(() => {}, 2_147_483_647);
         clearTimeout(handle);
         timers.set(handle, { callback, delayMs });
+        onScheduled?.(callback);
         return handle;
       },
       clearTimer: (handle) => {
@@ -111,17 +115,25 @@ function createManualScheduler(): ManualScheduler {
 }
 
 let manualScheduler: ManualScheduler;
+let termination: ReturnType<typeof createTerminationRuntime>;
 
 beforeEach(() => {
   manualScheduler = createManualScheduler();
+  termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
 });
 
 function createPostTradeConsistencyRuntime(
-  deps: Omit<PostTradeConsistencyRuntimeDeps, 'scheduler'>,
+  deps: Omit<PostTradeConsistencyRuntimeDeps, 'scheduler' | 'termination'>,
 ): PostTradeConsistencyRuntime {
   return buildPostTradeConsistencyRuntime({
     ...deps,
     scheduler: manualScheduler.runtime,
+    termination,
   });
 }
 
@@ -139,11 +151,6 @@ function createLastState(): LastState {
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: {
-      monitorSymbol: 'HSI.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
     allTradingSymbols: new Set(),
   };
 }
@@ -741,10 +748,18 @@ describe('createPostTradeConsistencyRuntime', () => {
       () => null,
       (error: unknown) => error,
     );
-    const fatalResult = runtime.drainFatalError().then(
-      () => null,
-      (error: unknown) => error,
-    );
+    const fatalResult = termination
+      .waitForTermination()
+      .then(() => {
+        const state = termination.getFatalState();
+        if (state.hasFatalError) throw state.error;
+
+        throw new Error('expected fatal');
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
 
     runtime.start();
     await manualScheduler.runNext(0);
@@ -805,10 +820,18 @@ describe('createPostTradeConsistencyRuntime', () => {
       refreshPositions: true,
     });
 
-    const fatalPromise = runtime.drainFatalError().then(
-      () => null,
-      (error: unknown) => error,
-    );
+    const fatalPromise = termination
+      .waitForTermination()
+      .then(() => {
+        const state = termination.getFatalState();
+        if (state.hasFatalError) throw state.error;
+
+        throw new Error('expected fatal');
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
     runtime.start();
     await manualScheduler.runNext(0);
     const fatalResult = await fatalPromise;
@@ -1477,5 +1500,259 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     expect(committedProtectionBoundaryCalls).toEqual([]);
     expect(cooldownCalls).toEqual([]);
+  });
+});
+
+describe('PostTrade drain dependency', () => {
+  it('does not let a cancelled retry callback replace the restarted cycle retry', async () => {
+    const callbacks: Array<() => void> = [];
+    manualScheduler = createManualScheduler((callback) => {
+      callbacks.push(callback);
+    });
+    const failure = await createExternalApiRequestError({
+      operation: 'TradeContext.accountBalance',
+      attempts: 1,
+      cause: new Error('retry'),
+    });
+    let accountCalls = 0;
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => {
+            accountCalls += 1;
+            throw failure;
+          },
+        }),
+      lastState: createLastState(),
+      onPositionsCommitted: async () => {},
+    });
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: false });
+    runtime.start();
+    await manualScheduler.runNext(0);
+    const oldRetry = callbacks[1];
+    if (oldRetry === undefined) throw new Error('missing old retry callback');
+
+    await runtime.stopAndDrain();
+    runtime.start();
+    await manualScheduler.runNext(0);
+    expect(manualScheduler.pendingDelays()).toEqual([300]);
+    oldRetry();
+    await flushMicrotasks();
+    expect(accountCalls).toBe(2);
+    expect(manualScheduler.pendingDelays()).toEqual([300]);
+    await runtime.stopAndDrain();
+    expect(manualScheduler.pendingDelays()).toEqual([]);
+  });
+
+  it.each([false, true])(
+    'ignores cancelled run callbacks after restart while running=%s',
+    async (fireWhileRunning) => {
+      const callbacks: Array<() => void> = [];
+      manualScheduler = createManualScheduler((callback) => {
+        callbacks.push(callback);
+      });
+      const positions = createDeferred<ReadonlyArray<ReturnType<typeof createPositionDouble>>>();
+      const committed = createDeferred<null>();
+      const events: Array<string> = [];
+      let positionCalls = 0;
+      const runtime = createPostTradeConsistencyRuntime({
+        getTrader: () =>
+          createTraderDouble({
+            getStockPositions: () => {
+              positionCalls += 1;
+              return positions.promise;
+            },
+          }),
+        lastState: createLastState(),
+        onPositionsCommitted: async () => {
+          events.push('callback-start');
+          await committed.promise;
+          events.push('callback-end');
+        },
+      });
+      bindMinimalBusinessDeps(runtime);
+      runtime.recordSettlementRefreshNeed({ refreshAccount: false, refreshPositions: true });
+      runtime.start();
+      const oldCallback = callbacks[0];
+      if (oldCallback === undefined) throw new Error('missing old run callback');
+
+      const oldDrain = runtime.stopAndDrain();
+      await oldDrain;
+      runtime.start();
+      if (!fireWhileRunning) {
+        oldCallback();
+        expect(positionCalls).toBe(0);
+        expect(manualScheduler.pendingDelays()).toEqual([0]);
+        await runtime.stopAndDrain();
+        expect(manualScheduler.pendingDelays()).toEqual([]);
+        runtime.start();
+      }
+
+      await manualScheduler.runNext(0);
+      oldCallback();
+      const drain = runtime.stopAndDrain();
+      expect(drain).not.toBe(oldDrain);
+      expect(runtime.stopAndDrain()).toBe(drain);
+      void drain.then(() => events.push('drained'));
+      await flushMicrotasks();
+      expect(events).toEqual([]);
+      expect(positionCalls).toBe(1);
+      positions.resolve([]);
+      await flushMicrotasks();
+      expect(events).toEqual(['callback-start']);
+      committed.resolve(null);
+      await drain;
+      expect(events).toEqual(['callback-start', 'callback-end', 'drained']);
+      expect(manualScheduler.pendingDelays()).toEqual([]);
+    },
+  );
+
+  it('同一周期共享排空，持仓请求及订阅回调均须结束，下一周期可恢复', async () => {
+    const positions = createDeferred<ReadonlyArray<never>>();
+    const committed = createDeferred<null>();
+    const events: string[] = [];
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () => createTraderDouble({ getStockPositions: () => positions.promise }),
+      lastState: createLastState(),
+      onPositionsCommitted: async () => {
+        events.push('callback-start');
+        await committed.promise;
+        events.push('callback-end');
+      },
+    });
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: false, refreshPositions: true });
+    runtime.start();
+    await manualScheduler.runNext(0);
+    runtime.stopScheduling();
+    const first = runtime.stopAndDrain();
+    const second = runtime.stopAndDrain();
+    expect(first).toBe(second);
+    void first.then(() => {
+      events.push('drained');
+    });
+    await flushMicrotasks();
+    expect(events).toEqual([]);
+    positions.resolve([]);
+    await flushMicrotasks();
+    expect(events).toEqual(['callback-start']);
+    committed.resolve(null);
+    await Promise.all([first, second]);
+    expect(events).toEqual(['callback-start', 'callback-end', 'drained']);
+    runtime.resetAbort();
+    runtime.start();
+    const next = runtime.stopAndDrain();
+    expect(next).not.toBe(first);
+    expect(next).toBe(runtime.stopAndDrain());
+    await next;
+  });
+});
+
+describe('PostTrade → Quote shutdown dependency', () => {
+  it('正常终止中的晚到持仓完成订阅提交，两个 owner 排空后不再 mutation', async () => {
+    const pendingPositions =
+      createDeferred<ReadonlyArray<ReturnType<typeof createPositionDouble>>>();
+    const subscription = createDeferred<null>();
+    const lastState = createLastState();
+    const events: string[] = [];
+    const trader = createTraderDouble({ getStockPositions: () => pendingPositions.promise });
+    const quote = createQuoteSubscriptionRuntime({
+      logger: createLoggerDouble(),
+      tradingConfig: createTradingConfig(),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trader,
+      lastState,
+      termination,
+      marketDataClient: {
+        subscribeSymbols: async () => {
+          events.push('subscribe-start');
+          await subscription.promise;
+          events.push('subscribe-end');
+        },
+        unsubscribeSymbols: async () => {
+          events.push('unsubscribe');
+        },
+      },
+    });
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () => trader,
+      lastState,
+      onPositionsCommitted: async () => {
+        await quote.reconcilePositionHoldFromCurrentTruth();
+        events.push('committed');
+      },
+    });
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: false, refreshPositions: true });
+    runtime.start();
+    await manualScheduler.runNext(0);
+    termination.requestShutdown();
+    runtime.stopScheduling();
+    quote.stop();
+    const drain = runtime.stopAndDrain();
+    pendingPositions.resolve([
+      createPositionDouble({ symbol: 'LATE.HK', quantity: 100, availableQuantity: 100 }),
+    ]);
+    await flushMicrotasks();
+    expect(events).toEqual(['subscribe-start']);
+    subscription.resolve(null);
+    await drain;
+    events.push('posttrade-drained');
+    await quote.stopAndDrain();
+    events.push('quote-drained');
+    expect(events).toEqual([
+      'subscribe-start',
+      'subscribe-end',
+      'committed',
+      'posttrade-drained',
+      'unsubscribe',
+      'quote-drained',
+    ]);
+    await quote.reconcilePositionHoldFromCurrentTruth();
+    await quote.retainSymbols({
+      reason: 'SEAT_REFRESH_WAIT',
+      ownerKey: 'late',
+      symbols: ['AFTER.HK'],
+    });
+    expect(events.at(-1)).toBe('quote-drained');
+    expect(lastState.allTradingSymbols.size).toBe(0);
+  });
+});
+
+describe('PostTrade rejected request drain', () => {
+  it('账户请求已失败仍等待未返回的持仓请求，不提前宣称排空', async () => {
+    const positions = createDeferred<ReadonlyArray<ReturnType<typeof createPositionDouble>>>();
+    const failure = new TypeError('account invariant');
+    let drained = false;
+    const runtime = createPostTradeConsistencyRuntime({
+      getTrader: () =>
+        createTraderDouble({
+          getAccountSnapshot: async () => {
+            throw failure;
+          },
+          getStockPositions: () => positions.promise,
+        }),
+      lastState: createLastState(),
+      onPositionsCommitted: async () => {},
+    });
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
+    runtime.start();
+    await manualScheduler.runNext(0);
+    const drain = runtime.stopAndDrain().then(
+      () => {
+        drained = true;
+      },
+      (error: unknown) => {
+        drained = true;
+        return error;
+      },
+    );
+    await flushMicrotasks();
+    expect(drained).toBe(false);
+    positions.resolve([]);
+    expect(await drain).toBe(failure);
+    expect(drained).toBe(true);
   });
 });

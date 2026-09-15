@@ -1,3 +1,5 @@
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+
 /**
  * app/createLifecycleRuntime 接线测试
  *
@@ -66,6 +68,7 @@ function createMonitorTaskProcessorDouble(): MonitorTaskProcessor {
     start: () => {
       factoryCalls.push('monitorTaskProcessor.start');
     },
+    stop: () => {},
     stopAndDrain: async () => {},
     restart: () => {},
   };
@@ -76,6 +79,7 @@ function createTradingRiskEventRuntimeDouble() {
     start: () => {
       factoryCalls.push('tradingRiskEventRuntime.start');
     },
+    stop: () => {},
     stopAndDrain: async () => {},
   };
 }
@@ -85,6 +89,7 @@ function createSwitchWakeupRuntimeDouble() {
     start: () => {
       factoryCalls.push('switchWakeupRuntime.start');
     },
+    stop: () => {},
     stopAndDrain: async () => {},
     handoffPendingSwitch: () => {},
   };
@@ -95,6 +100,7 @@ function createMonitorQuoteEventRuntimeDouble() {
     start: () => {
       factoryCalls.push('monitorQuoteEventRuntime.start');
     },
+    stop: () => {},
     stopAndDrain: async () => {},
   };
 }
@@ -114,6 +120,7 @@ function createTradingQuoteDisplayRuntimeDouble() {
     start: () => {
       factoryCalls.push('tradingQuoteDisplayRuntime.start');
     },
+    stop: () => {},
     stopAndDrain: async () => {},
   };
 }
@@ -129,7 +136,7 @@ function createPostTradeConsistencyRuntimeDouble(): PostTradeConsistencyRuntime 
     }),
     waitForFresh: async () => {},
     onFreshReached: () => () => {},
-    drainFatalError: () => new Promise<never>(() => {}),
+    stopScheduling: () => {},
     abortWaiting: () => {
       factoryCalls.push('postTradeConsistencyRuntime.abortWaiting');
     },
@@ -172,11 +179,6 @@ function createLastState(): LastState {
     },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: {
-      monitorSymbol: 'HSI.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
     allTradingSymbols: new Set(),
   };
 }
@@ -188,6 +190,12 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
   const monitorContext = createMonitorContextDouble();
 
   return {
+    termination: createTerminationRuntime({
+      closeTradingGate: () => {},
+      closeProducerAdmission: () => {},
+      stopProducers: [],
+      onSecondaryError: () => {},
+    }),
     logger: createLoggerDouble(),
     preGateRuntime: {
       config: createSdkConfigDouble(),
@@ -209,8 +217,8 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
     },
     businessEventProgram: {
       start: () => {},
+      stop: () => {},
       stopAndDrain: async () => {},
-      drainFatalError: () => new Promise<never>(() => {}),
     },
     postGateRuntime: {
       liquidationCooldownTracker: {
@@ -255,13 +263,9 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
         }),
       },
       signalProcessor: createSignalProcessorDouble(),
-      indicatorCache: {
-        push: () => {},
-        getClosest: () => null,
-        clearAll: () => {},
-      },
       buyTaskQueue: {
-        push: () => {},
+        push: () => true,
+        close: () => {},
         pop: () => null,
         isEmpty: () => true,
         removeTasks: () => 0,
@@ -269,7 +273,8 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
         onTaskAdded: () => () => {},
       },
       sellTaskQueue: {
-        push: () => {},
+        push: () => true,
+        close: () => {},
         pop: () => null,
         isEmpty: () => true,
         removeTasks: () => 0,
@@ -277,20 +282,19 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
         onTaskAdded: () => () => {},
       },
       monitorTaskQueue: {
-        scheduleLatest: () => {},
+        scheduleLatest: () => true,
+        close: () => {},
         pop: () => null,
         isEmpty: () => true,
         removeTasks: () => 0,
         clearAll: () => 0,
         onTaskAdded: () => () => {},
       },
-      drainFatalError: () => new Promise<never>(() => {}),
     },
     asyncRuntime: {
       monitorTaskProcessor: createMonitorTaskProcessorDouble(),
       buyProcessor: createNamedProcessor('buyProcessor'),
       sellProcessor: createNamedProcessor('sellProcessor'),
-      drainFatalError: () => new Promise<never>(() => {}),
     },
     rebuildTradingDayState: async () => {},
   };

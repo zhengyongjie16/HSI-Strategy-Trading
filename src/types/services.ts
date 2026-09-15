@@ -20,7 +20,7 @@ import type {
   ExecutableSignal,
   SignalType,
 } from './signal.js';
-import type { Quote, IndicatorSnapshot } from './quote.js';
+import type { Quote } from './quote.js';
 import type { AccountSnapshot, Position } from './account.js';
 import type { MonitorConfig } from './config.js';
 import type { TradingCalendarSnapshot } from './tradingCalendar.js';
@@ -756,6 +756,9 @@ export interface Trader {
   /** 初始化订单监控（WebSocket 订阅） */
   initializeOrderMonitor: () => Promise<void>;
 
+  /** 最终释放交易私有订阅；必须先排空业务，跨日不可调用。 */
+  teardown: () => Promise<void>;
+
   /** 订阅订单终态结算事件 */
   onOrderStateChanged: (listener: (event: OrderStateChangedEvent) => void) => Unsubscribe;
 
@@ -960,11 +963,8 @@ export type BuyRiskCheckContext = {
   /** 做空标的行情 */
   readonly shortQuote: Quote | null;
 
-  /** 监控标的行情 */
-  readonly monitorQuote: Quote | null;
-
-  /** 监控标的指标快照 */
-  readonly monitorSnapshot: IndicatorSnapshot | null;
+  /** 已由买入入口准入的监控行情，价格必须为有效正有限数 */
+  readonly monitorQuote: Quote;
 
   /** 做多标的代码 */
   readonly longSymbol: string;

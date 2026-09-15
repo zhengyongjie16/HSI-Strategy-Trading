@@ -1,15 +1,27 @@
-/**
- * SeatActivationDispatcher 业务测试
- *
- * 覆盖：runtime 阶段 seat 进入 ACTIVATING 后立即调度 SEAT_REFRESH。
- */
-import { describe, expect, it } from 'bun:test';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { createSeatActivationDispatcher } from '../../../src/main/seatActivationDispatcher/index.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
 import { createMonitorConfigDouble } from '../../helpers/testDoubles.js';
+
+let termination: ReturnType<typeof createTerminationRuntime>;
+beforeEach(() => {
+  termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+});
+
+/**
+ * SeatActivationDispatcher 业务测试
+ *
+ * 覆盖：runtime 阶段 seat 进入 ACTIVATING 后立即调度 SEAT_REFRESH。
+ */
 
 describe('SeatActivationDispatcher', () => {
   it('在 SWITCHING -> ACTIVATING 正常换标链路中写入真实旧标的', () => {
@@ -20,6 +32,7 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
+      termination,
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -69,6 +82,7 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
+      termination,
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -98,6 +112,7 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
+      termination,
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -149,6 +164,7 @@ describe('SeatActivationDispatcher', () => {
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const dispatcher = createSeatActivationDispatcher({
+      termination,
       symbolRegistry,
       monitorTaskQueue,
     });

@@ -27,7 +27,7 @@ import type { CreatePreGateRuntimeParams, PreGateRuntime } from '../types.js';
  */
 function createPreGateRuntimeFactory(
   deps: typeof DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS,
-): (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime> {
+): (params: CreatePreGateRuntimeParams) => Promise<PreGateRuntime | null> {
   const {
     createSdkConfigFromAuth: buildSdkConfigFromAuth,
     createMarketDataClient: buildMarketDataClient,
@@ -35,10 +35,11 @@ function createPreGateRuntimeFactory(
 
   return async function createPreGateRuntime(
     params: CreatePreGateRuntimeParams,
-  ): Promise<PreGateRuntime> {
-    const { env, cleanup } = params;
+  ): Promise<PreGateRuntime | null> {
+    const { env, cleanup, termination } = params;
     const tradingConfig = createTradingConfig({ env });
     await validateAllConfig({ env, tradingConfig });
+    if (termination.isTerminated()) return null;
 
     const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
     const warrantListCache = createWarrantListCache();
@@ -54,12 +55,17 @@ function createPreGateRuntimeFactory(
         logger.info(`请在浏览器中完成 Longbridge OAuth 授权：${url}`);
       },
     });
+    if (termination.isTerminated()) return null;
+
     const marketDataClient = await buildMarketDataClient({ config });
     cleanup.register({
       phase: 'RESET_MARKET_DATA_RUNTIME',
       step: '重置行情运行态订阅与缓存',
       handler: () => marketDataClient.resetRuntimeSubscriptionsAndCaches(),
     });
+
+    if (termination.isTerminated()) return null;
+
     const resolveTradingDayInfo = createTradingDayInfoResolver({
       marketDataClient,
       getHKDateKey,
@@ -82,6 +88,8 @@ function createPreGateRuntimeFactory(
 
       startupTradingDayInfo = null;
     }
+
+    if (termination.isTerminated()) return null;
 
     return {
       config,

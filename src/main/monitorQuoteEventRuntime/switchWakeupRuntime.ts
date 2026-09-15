@@ -176,7 +176,7 @@ function isBaselineReady(deps: SwitchWakeupRuntimeDeps): boolean {
  * @returns 当前 pending switch route 必须终止时返回 true
  */
 function shouldTerminatePendingSwitchRoute(deps: SwitchWakeupRuntimeDeps): boolean {
-  if (!deps.lastState.isTradingEnabled) {
+  if (deps.termination.isTerminated() || !deps.lastState.isTradingEnabled) {
     return true;
   }
 
@@ -279,8 +279,12 @@ function removeRouteKeyFromSymbolIndex(
  * @returns runtime 实例
  */
 export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): SwitchWakeupRuntime {
-  const { logger, onFatalError } = deps;
+  const { logger, termination } = deps;
   let running = false;
+  let hasDrainFailure = false;
+  let drainFailure: unknown;
+  let drainPromise: Promise<void> | null = null;
+  let draining = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeOrderStateChanged: (() => void) | null = null;
   let unsubscribeFreshReached: (() => void) | null = null;
@@ -289,6 +293,25 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   const quoteWakeupsBySymbol = new Map<string, Set<SwitchWakeupRouteKey>>();
   const orderWakeupsBySymbol = new Map<string, Set<SwitchWakeupRouteKey>>();
   const activeRoutePromises = new Set<Promise<void>>();
+  const quoteMutationPromises = new Set<Promise<void>>();
+
+  /** 订阅 retain/release 属于本 owner 排空依赖，不允许晚于 Quote stop 完成。 */
+  function trackWork(promise: Promise<void>, promises: Set<Promise<void>>): void {
+    promises.add(promise);
+    void promise.then(
+      () => {
+        promises.delete(promise);
+      },
+      (error: unknown) => {
+        if (!hasDrainFailure) {
+          hasDrainFailure = true;
+          drainFailure = error;
+        }
+
+        promises.delete(promise);
+      },
+    );
+  }
 
   /**
    * 取消指定 route 当前持有的 retry timer。
@@ -300,8 +323,9 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       return;
     }
 
-    deps.clearTimer(routeState.retryTimerHandle);
+    const handle = routeState.retryTimerHandle;
     routeState.retryTimerHandle = null;
+    deps.clearTimer(handle);
   }
 
   /**
@@ -325,15 +349,17 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       return;
     }
 
-    void quoteSubscriptionRuntime
+    const quoteMutation = quoteSubscriptionRuntime
       .releaseRetain({
         ownerKey: routeKey,
         reason: 'SWITCH_WAKEUP',
       })
       .catch((error: unknown) => {
         logger.error('[SwitchWakeupRuntime] 释放 quote retain 失败', formatError(error));
-        onFatalError(error);
+        termination.reportFatalError(error);
+        throw error;
       });
+    trackWork(quoteMutation, quoteMutationPromises);
   }
 
   /**
@@ -373,7 +399,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       return;
     }
 
-    void quoteSubscriptionRuntime
+    const quoteMutation = quoteSubscriptionRuntime
       .retainSymbols({
         ownerKey: routeKey,
         reason: 'SWITCH_WAKEUP',
@@ -396,8 +422,10 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         }
 
         logger.error('[SwitchWakeupRuntime] 注册 quote retain 失败', formatError(error));
-        onFatalError(error);
+        termination.reportFatalError(error);
+        throw error;
       });
+    trackWork(quoteMutation, quoteMutationPromises);
   }
 
   /**
@@ -562,7 +590,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     clearRetryTimer(routeState);
     removeRouteWakeupIndexes(routeKey);
 
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       routeState.wakeups = [];
       releaseSwitchWakeupRetain(routeKey);
       return;
@@ -577,10 +605,14 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     }
 
     const delayMs = Math.max(0, retryWakeup.atMs - deps.now().getTime());
-    routeState.retryTimerHandle = deps.scheduleTimer(() => {
+    const handle = deps.scheduleTimer(() => {
+      if (routeStates.get(routeKey) !== routeState || routeState.retryTimerHandle !== handle)
+        return;
+
       routeState.retryTimerHandle = null;
       triggerRoute(routeKey, 'RETRY_TIMER');
     }, delayMs);
+    routeState.retryTimerHandle = handle;
   }
 
   /**
@@ -616,12 +648,9 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         formatError(error),
       );
 
-      onFatalError(error);
+      termination.reportFatalError(error);
     });
-    activeRoutePromises.add(processingPromise);
-    void processingPromise.finally(() => {
-      activeRoutePromises.delete(processingPromise);
-    });
+    trackWork(processingPromise, activeRoutePromises);
   }
 
   /**
@@ -679,6 +708,8 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           return;
         }
 
+        if (routeStates.get(routeKey) !== routeState) return;
+
         const authoritativeRoute = resolveAuthoritativeRoute(routeState);
         if (authoritativeRoute === null) {
           deleteRoute(routeKey);
@@ -702,6 +733,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           canContinue: createPendingSwitchCanContinue(authoritativeRoute),
         });
         assertValidAdvanceResult(result, authoritativeRoute.direction);
+        if (routeStates.get(routeKey) !== routeState) return;
 
         if (shouldTerminatePendingSwitchRoute(deps)) {
           deleteRoute(routeKey);
@@ -736,18 +768,15 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       }
     } finally {
       const nextState = routeStates.get(routeKey);
-      if (nextState !== undefined) {
+      if (nextState === routeState) {
         nextState.inFlight = false;
         if (nextState.dirty && running) {
           nextState.inFlight = true;
           const processingPromise = processRouteQueue(routeKey).catch((error: unknown) => {
             logger.error('[SwitchWakeupRuntime] pending switch 重入推进失败', formatError(error));
-            onFatalError(error);
+            termination.reportFatalError(error);
           });
-          activeRoutePromises.add(processingPromise);
-          void processingPromise.finally(() => {
-            activeRoutePromises.delete(processingPromise);
-          });
+          trackWork(processingPromise, activeRoutePromises);
         }
       }
     }
@@ -771,7 +800,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @param symbol 本次订单事件关联 symbol
    */
   function handleOrderStateChanged(symbol: string | null): void {
-    if (!running || symbol === null) {
+    if (!running || deps.termination.isTerminated() || symbol === null) {
       return;
     }
 
@@ -791,7 +820,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @param symbol 行情 symbol
    */
   function handleQuoteUpdated(symbol: string): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -831,10 +860,13 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * 启动 runtime 并订阅行情、订单状态、freshness 追平和交易门禁变化四类事件源。
    */
   function start(): void {
-    if (running) {
+    if (running || draining || deps.termination.isTerminated()) {
       return;
     }
 
+    hasDrainFailure = false;
+    drainFailure = undefined;
+    drainPromise = null;
     running = true;
     unsubscribeQuoteUpdated = deps.marketDataClient.onQuoteUpdated((event) => {
       handleQuoteUpdated(event.symbol);
@@ -856,7 +888,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   /**
    * 停止 runtime，取消所有注册并等待在途推进完成。
    */
-  async function stopAndDrain(): Promise<void> {
+  function stop(): void {
     running = false;
     unsubscribeQuoteUpdated?.();
     unsubscribeQuoteUpdated = null;
@@ -875,10 +907,25 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
 
     quoteWakeupsBySymbol.clear();
     orderWakeupsBySymbol.clear();
+  }
 
-    if (activeRoutePromises.size > 0) {
-      await Promise.allSettled(activeRoutePromises);
+  /** 同周期共享排空结果；关闭入口后，全部在途工作落定才传播原始失败。 */
+  function stopAndDrain(): Promise<void> {
+    if (drainPromise !== null) {
+      return drainPromise;
     }
+
+    draining = true;
+    drainPromise = drain().finally(() => {
+      draining = false;
+    });
+    return drainPromise;
+  }
+
+  /** allSettled 不提前退出，并持续捕获清理过程中新增的 release。 */
+  async function drain(): Promise<void> {
+    stop();
+    while (activeRoutePromises.size > 0) await Promise.allSettled(activeRoutePromises);
 
     for (const routeState of routeStates.values()) {
       clearRetryTimer(routeState);
@@ -890,6 +937,11 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     quoteWakeupsBySymbol.clear();
     orderWakeupsBySymbol.clear();
     routeStates.clear();
+    while (quoteMutationPromises.size > 0) await Promise.allSettled(quoteMutationPromises);
+
+    if (hasDrainFailure) {
+      throw drainFailure;
+    }
   }
 
   /**
@@ -898,7 +950,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @param params handoff 参数
    */
   function handoffPendingSwitch(params: SwitchWakeupHandoffParams): void {
-    if (!running || shouldTerminatePendingSwitchRoute(deps)) {
+    if (!running || deps.termination.isTerminated() || shouldTerminatePendingSwitchRoute(deps)) {
       return;
     }
 
@@ -929,6 +981,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
 
   return {
     start,
+    stop,
     stopAndDrain,
     handoffPendingSwitch,
   };

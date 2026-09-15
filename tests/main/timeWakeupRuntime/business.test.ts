@@ -1,9 +1,5 @@
-/**
- * TimeWakeupRuntime 业务测试
- *
- * 覆盖系统级 one-shot 时间唤醒 runtime 的 start、dirty、停止等待与 fatal 暴露语义。
- */
-import { describe, expect, it } from 'bun:test';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { TIME } from '../../../src/constants/index.js';
 import { timeWakeupEvaluationProgram } from '../../../src/main/timeWakeupEvaluationProgram/index.js';
 import { createTimeWakeupRuntime } from '../../../src/main/timeWakeupRuntime/index.js';
@@ -21,6 +17,22 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import { createLastState } from '../asyncProgram/utils.js';
+
+let termination: ReturnType<typeof createTerminationRuntime>;
+beforeEach(() => {
+  termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+});
+
+/**
+ * TimeWakeupRuntime 业务测试
+ *
+ * 覆盖系统级 one-shot 时间唤醒 runtime 的 start、dirty、停止等待与 fatal 暴露语义。
+ */
 
 type TimerRecord = {
   readonly callback: () => void;
@@ -111,6 +123,7 @@ function createRuntimeHarness(
   let rejectNext = false;
 
   const runtime = createTimeWakeupRuntime<TimerRecord>({
+    termination,
     evaluate: async () => {
       evaluations.push(nowMs);
       if (rejectNext) {
@@ -177,6 +190,7 @@ function createControlledEvaluationHarness(): ControlledEvaluationHarness {
   let stopping = false;
 
   const runtime = createTimeWakeupRuntime<TimerRecord>({
+    termination,
     evaluate: async () => {
       const nextWakeupAtMs = await new Promise<number | null>((resolve) => {
         resolveEvaluation = resolve;
@@ -280,7 +294,13 @@ describe('TimeWakeupRuntime', () => {
     await Bun.sleep(0);
 
     expect(harness.timers).toHaveLength(0);
-    await expectPromiseRejectsWithMessage(harness.runtime.drainFatalError(), /evaluation failed/);
+    await expectPromiseRejectsWithMessage(
+      termination.waitForTermination().then(() => {
+        const state = termination.getFatalState();
+        if (state.hasFatalError) throw state.error;
+      }),
+      /evaluation failed/,
+    );
   });
 
   it('交易日 API 失败经评估链路向上进入 time wakeup fatal，不生成恢复性 retry', async () => {
@@ -297,6 +317,7 @@ describe('TimeWakeupRuntime', () => {
       },
     });
     const runtime = createTimeWakeupRuntime<TimerRecord>({
+      termination,
       evaluate: () => timeWakeupEvaluationProgram(context),
       now: () => new Date('2026-04-29T09:30:00.000+08:00'),
       scheduleTimer: (callback, delayMs) => {
@@ -316,7 +337,13 @@ describe('TimeWakeupRuntime', () => {
     await Bun.sleep(0);
 
     expect(timers).toHaveLength(0);
-    await expectPromiseRejectsWithMessage(runtime.drainFatalError(), /trading day retry exhausted/);
+    await expectPromiseRejectsWithMessage(
+      termination.waitForTermination().then(() => {
+        const state = termination.getFatalState();
+        if (state.hasFatalError) throw state.error;
+      }),
+      /trading day retry exhausted/,
+    );
   });
 
   it('评估期间刚到达计划边界时立即重评估而不走恢复性 retry', async () => {
@@ -325,6 +352,7 @@ describe('TimeWakeupRuntime', () => {
     let nowMs = 1_000;
 
     const runtime = createTimeWakeupRuntime<TimerRecord>({
+      termination,
       evaluate: async () => {
         evaluations.push(nowMs);
         if (evaluations.length === 1) {
@@ -363,7 +391,13 @@ describe('TimeWakeupRuntime', () => {
     await Bun.sleep(0);
 
     expect(harness.timers).toHaveLength(0);
-    await expectPromiseRejectsWithMessage(harness.runtime.drainFatalError(), /时间唤醒计划非法/);
+    await expectPromiseRejectsWithMessage(
+      termination.waitForTermination().then(() => {
+        const state = termination.getFatalState();
+        if (state.hasFatalError) throw state.error;
+      }),
+      /时间唤醒计划非法/,
+    );
   });
 
   it('评估耗时跨过计划边界时立即重评估而不停止系统级唤醒', async () => {
@@ -373,6 +407,7 @@ describe('TimeWakeupRuntime', () => {
     let nowMs = 1_000;
 
     const runtime = createTimeWakeupRuntime<TimerRecord>({
+      termination,
       evaluate: async () => {
         evaluations.push(nowMs);
         if (evaluations.length === 1) {
@@ -419,6 +454,7 @@ describe('TimeWakeupRuntime', () => {
       gateEvents,
     });
     const runtime = createTimeWakeupRuntime<TimerRecord>({
+      termination,
       evaluate: () => timeWakeupEvaluationProgram(context),
       now: () => new Date(nowMs),
       scheduleTimer: (callback, delayMs) => {
@@ -469,6 +505,7 @@ describe('TimeWakeupRuntime', () => {
     const nowValues = [1_000, dueAtMs - 1, dueAtMs];
 
     const runtime = createTimeWakeupRuntime<TimerRecord>({
+      termination,
       evaluate: async () => {
         evaluations.push(evaluations.length + 1);
         if (evaluations.length === 1) {

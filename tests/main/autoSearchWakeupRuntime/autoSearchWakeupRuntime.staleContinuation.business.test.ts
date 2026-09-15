@@ -1,10 +1,5 @@
-/**
- * AutoSearchWakeupRuntime 异步 owner 业务测试
- *
- * 覆盖：连续交易授权关闭、末日清仓接管、生命周期关闭与 stopAndDrain 必须使运行时拥有的
- * SEARCHING owner 失效；旧 finder 结果不能推进 ACTIVATING，因而不能产生 SEAT_REFRESH。
- */
-import { describe, expect, it } from 'bun:test';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createAutoSearchWakeupRuntime } from '../../../src/main/autoSearchWakeupRuntime/index.js';
@@ -49,6 +44,23 @@ import {
   createWarrantCandidate,
   getDefaultAutoSearchConfig,
 } from '../../services/autoSymbolManager/utils.js';
+
+let termination: ReturnType<typeof createTerminationRuntime>;
+beforeEach(() => {
+  termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+});
+
+/**
+ * AutoSearchWakeupRuntime 异步 owner 业务测试
+ *
+ * 覆盖：连续交易授权关闭、末日清仓接管、生命周期关闭与 stopAndDrain 必须使运行时拥有的
+ * SEARCHING owner 失效；旧 finder 结果不能推进 ACTIVATING，因而不能产生 SEAT_REFRESH。
+ */
 
 function createTradingGateEventRuntime() {
   return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
@@ -145,6 +157,7 @@ function createRuntimeHarness(params: {
 
   const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
   const seatActivationDispatcher = createSeatActivationDispatcher({
+    termination,
     symbolRegistry,
     monitorTaskQueue,
   });
@@ -185,6 +198,7 @@ function createRuntimeHarness(params: {
   };
   const tradingGateEventRuntime = createAutoSearchAuthorizationEventRuntimeHarness();
   const runtime = createAutoSearchWakeupRuntime({
+    termination,
     symbolRegistry,
     monitorContext,
     lastState,
@@ -245,6 +259,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
 
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const seatActivationDispatcher = createSeatActivationDispatcher({
+      termination,
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -297,11 +312,12 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
         info: { isTradingDay: true, isHalfDay: false },
       },
       tradingCalendarSnapshot: new Map([['2026-04-10', { isTradingDay: true, isHalfDay: false }]]),
-      monitorState: monitorContext.state,
+
       allTradingSymbols: new Set<string>(),
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState,
@@ -667,7 +683,13 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       await Bun.sleep(0);
       expect(finderCalls).toBe(2);
 
-      const fatalErrorPromise = harness.runtime.drainFatalError().catch((error: unknown) => error);
+      const fatalErrorPromise = termination
+        .waitForTermination()
+        .then(() => {
+          const state = termination.getFatalState();
+          if (state.hasFatalError) throw state.error;
+        })
+        .catch((error: unknown) => error);
       secondResult.reject(new TypeError('finder contract broken'));
       const fatalError = await fatalErrorPromise;
       expect(fatalError).toMatchObject({ message: 'finder contract broken' });

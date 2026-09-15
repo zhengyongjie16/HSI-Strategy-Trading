@@ -1,3 +1,5 @@
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+
 /**
  * 交易日状态重建单元测试
  *
@@ -153,6 +155,12 @@ function createRebuildDeps(
     recoverOrderTrackingFromSnapshot: async () => {},
   } as unknown as Trader;
   return {
+    termination: createTerminationRuntime({
+      closeTradingGate: () => {},
+      closeProducerAdmission: () => {},
+      stopProducers: [],
+      onSecondaryError: () => {},
+    }),
     marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
     trader,
     lastState: createMinimalLastState(),

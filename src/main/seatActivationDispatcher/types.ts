@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
@@ -28,6 +29,7 @@ export type PendingSeatActivation = Readonly<{
  * 使用范围：SeatActivationDispatcher 工厂。
  */
 export type SeatActivationDispatcherDeps = Readonly<{
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   symbolRegistry: SymbolRegistry;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
 }>;

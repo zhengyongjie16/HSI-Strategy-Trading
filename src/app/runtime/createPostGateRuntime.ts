@@ -7,7 +7,7 @@
  * - 固定 lastState、trader、快照加载器与异步基础设施的唯一创建点
  * - 保持 post-gate 对象所有权清单集中
  */
-import { INDICATOR_CACHE, TIME, VERIFICATION } from '../../constants/index.js';
+import { TIME } from '../../constants/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
 import { createRiskChecker } from '../../core/riskController/index.js';
@@ -18,7 +18,6 @@ import { createDoomsdayProtection } from '../../core/doomsdayProtection/index.js
 import { createSignalProcessor } from '../../core/signalProcessor/index.js';
 import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createIndicatorCache } from '../../main/asyncProgram/indicatorCache/index.js';
 import { createMonitorTaskQueue } from '../../main/asyncProgram/monitorTaskQueue/index.js';
 import {
   createBuyTaskQueue,
@@ -42,14 +41,13 @@ import { createLiquidationCooldownTracker } from '../../services/liquidationCool
 import { createTradeLogHydrator } from '../../services/liquidationCooldown/tradeLogHydrator.js';
 import { createMixedTradeLogRepository } from '../../services/mixedTradeLogRepository/index.js';
 import { createPositionCache } from '../../utils/positionCache/index.js';
-import { initMonitorState, isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
 import {
   calculateTradingDurationDueAtMs,
   getRequiredHKDateKey,
   toHongKongTimeIso,
 } from '../../utils/time/index.js';
-import { toError } from '../../utils/error/index.js';
 import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
 import type { LastState } from '../../types/state.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../types/risk.js';
@@ -212,13 +210,24 @@ function persistProtectiveLiquidationExecutionProgress(params: {
  */
 function createPostGateRuntimeFactory(
   deps: typeof DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS,
-): (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime> {
+): (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime | null> {
   const { createTrader: buildTrader, createMonitorContext: buildMonitorContext } = deps;
 
   return async function createPostGateRuntime(
     params: CreatePostGateRuntimeParams,
-  ): Promise<PostGateRuntime> {
-    const { env, preGateRuntime, now, clock, scheduler, cleanup, logger } = params;
+  ): Promise<PostGateRuntime | null> {
+    const {
+      env,
+      preGateRuntime,
+      now,
+      clock,
+      scheduler,
+      cleanup,
+      logger,
+      termination,
+      resources,
+      strategy,
+    } = params;
     const {
       config,
       tradingConfig,
@@ -274,9 +283,9 @@ function createPostGateRuntimeFactory(
         initialTradingDayInfo === null
           ? new Map()
           : new Map([[initialDayKey, initialTradingDayInfo]]),
-      monitorState: initMonitorState(tradingConfig.monitor),
       allTradingSymbols: new Set(),
     };
+    resources.lastState = lastState;
     cleanup.register({
       phase: 'CLOSE_TRADING_GATE',
       step: '关闭交易门禁',
@@ -285,13 +294,7 @@ function createPostGateRuntimeFactory(
       },
     });
 
-    cleanup.register({
-      phase: 'CLEAR_MONITOR_SNAPSHOT',
-      step: '清空监控快照引用',
-      handler: () => {
-        lastState.monitorState.lastMonitorSnapshot = null;
-      },
-    });
+    if (termination.isTerminated()) return null;
 
     const traderBinding =
       createSingleAssignmentBinding<
@@ -301,6 +304,7 @@ function createPostGateRuntimeFactory(
       'QuoteSubscriptionRuntime',
     );
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
+      termination,
       getTrader: traderBinding.get,
       lastState,
       onPositionsCommitted: async () => {
@@ -308,6 +312,7 @@ function createPostGateRuntimeFactory(
       },
       scheduler,
     });
+    resources.postTradeConsistencyRuntime = postTradeConsistencyRuntime;
     cleanup.register({
       phase: 'ABORT_FRESHNESS_WAITING',
       step: '终止 Freshness 等待',
@@ -316,36 +321,15 @@ function createPostGateRuntimeFactory(
       },
     });
 
+    if (termination.isTerminated()) return null;
+
     cleanup.register({
       phase: 'STOP_POST_TRADE_CONSISTENCY_RUNTIME',
       step: '停止 PostTradeConsistencyRuntime',
       handler: () => postTradeConsistencyRuntime.stopAndDrain(),
     });
-    let fatalError: Error | null = null;
-    const fatalRejectors = new Set<(error: Error) => void>();
 
-    const handleFatalError = (error: unknown): void => {
-      if (fatalError !== null) {
-        return;
-      }
-
-      fatalError = toError(error);
-      for (const reject of fatalRejectors) {
-        reject(fatalError);
-      }
-
-      fatalRejectors.clear();
-    };
-
-    const drainFatalError = (): Promise<never> => {
-      if (fatalError !== null) {
-        return Promise.reject(fatalError);
-      }
-
-      return new Promise<never>((_, reject) => {
-        fatalRejectors.add(reject);
-      });
-    };
+    if (termination.isTerminated()) return null;
 
     const trader = await buildTrader({
       config,
@@ -362,20 +346,31 @@ function createPostGateRuntimeFactory(
         });
       },
       postTradeConsistencyRuntime,
-      isExecutionAllowed: () => lastState.isTradingEnabled,
-      isContinuousTradingAllowed: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      isExecutionAllowed: () => !termination.isTerminated() && lastState.isTradingEnabled,
+      isContinuousTradingAllowed: () =>
+        !termination.isTerminated() && lastState.isTradingEnabled && lastState.canTrade === true,
       now: clock.now,
       scheduleTimer: scheduler.scheduleTimer,
       clearTimer: scheduler.clearTimer,
       readCurrentTradingDayInfo: () => lastState.cachedTradingDayInfo,
-      onFatalError: handleFatalError,
+      termination,
     });
     traderBinding.bind(trader);
+    resources.trader = trader;
     cleanup.register({
       phase: 'STOP_ORDER_MONITOR_RUNTIME',
       step: '停止订单监控 runtime',
       handler: () => trader.stopOrderMonitorRuntimeAndDrain(),
     });
+
+    cleanup.register({
+      phase: 'TEARDOWN_TRADER',
+      step: '退订 Trader Private 主题',
+      handler: () => trader.teardown(),
+    });
+
+    if (termination.isTerminated()) return null;
+
     const tradeLogHydrator = createTradeLogHydrator({
       nowMs: () => clock.now().getTime(),
       logger,
@@ -386,10 +381,15 @@ function createPostGateRuntimeFactory(
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    resources.buyTaskQueue = buyTaskQueue;
+    resources.sellTaskQueue = sellTaskQueue;
+    resources.monitorTaskQueue = monitorTaskQueue;
     const seatActivationDispatcher = createSeatActivationDispatcher({
+      termination,
       symbolRegistry,
       monitorTaskQueue,
     });
+    resources.seatActivationDispatcher = seatActivationDispatcher;
     cleanup.register({
       phase: 'STOP_SEAT_ACTIVATION_DISPATCHER',
       step: '停止 SeatActivationDispatcher',
@@ -397,6 +397,8 @@ function createPostGateRuntimeFactory(
         seatActivationDispatcher.stop();
       },
     });
+
+    if (termination.isTerminated()) return null;
 
     const loadTradingDayRuntimeSnapshot = createLoadTradingDayRuntimeSnapshot({
       marketDataClient,
@@ -423,14 +425,17 @@ function createPostGateRuntimeFactory(
       marketDataClient,
       trader,
       lastState,
-      onFatalError: handleFatalError,
+      termination,
     });
     quoteSubscriptionRuntimeBinding.bind(quoteSubscriptionRuntime);
+    resources.quoteSubscriptionRuntime = quoteSubscriptionRuntime;
     cleanup.register({
       phase: 'STOP_QUOTE_SUBSCRIPTION_RUNTIME',
       step: '停止 QuoteSubscriptionRuntime',
       handler: () => quoteSubscriptionRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
 
     const unsubscribeOrderStateChanged = trader.onOrderStateChanged((event) => {
       try {
@@ -440,7 +445,7 @@ function createPostGateRuntimeFactory(
           appendTradeRecord: mixedTradeLogRepository.appendTradeRecord,
         });
       } catch (error) {
-        handleFatalError(error);
+        termination.reportFatalError(error);
         throw error;
       }
     });
@@ -450,25 +455,7 @@ function createPostGateRuntimeFactory(
       handler: unsubscribeOrderStateChanged,
     });
 
-    const maxDelaySeconds = Math.max(
-      tradingConfig.monitor.verificationConfig.buy.delaySeconds,
-      tradingConfig.monitor.verificationConfig.sell.delaySeconds,
-    );
-    const indicatorCacheRetentionSeconds =
-      maxDelaySeconds +
-      VERIFICATION.READY_DELAY_SECONDS +
-      INDICATOR_CACHE.RETENTION_SAFETY_MARGIN_SECONDS;
-    // 额外保留缓存安全余量，确保延迟验证读取最近样本时窗口充足。
-    const indicatorCache = createIndicatorCache({
-      retentionWindowMs: indicatorCacheRetentionSeconds * TIME.MILLISECONDS_PER_SECOND,
-    });
-    cleanup.register({
-      phase: 'CLEAR_INDICATOR_CACHE',
-      step: '清空指标缓存',
-      handler: () => {
-        indicatorCache.clearAll();
-      },
-    });
+    if (termination.isTerminated()) return null;
 
     const monitorContext = buildMonitorContext({
       preGateRuntime,
@@ -476,22 +463,12 @@ function createPostGateRuntimeFactory(
         trader,
         dailyLossTracker,
         riskChecker,
-        indicatorCache,
         lastState,
-        onFatalError: handleFatalError,
       },
       quotesMap: null,
       clock,
-      scheduler,
+      strategy,
     });
-    cleanup.register({
-      phase: 'DESTROY_DELAYED_SIGNAL_VERIFIER',
-      step: `销毁延迟验证器 ${monitorContext.config.monitorSymbol}`,
-      handler: () => {
-        monitorContext.delayedSignalVerifier.destroy();
-      },
-    });
-
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext,
       dailyLossTracker,
@@ -510,13 +487,17 @@ function createPostGateRuntimeFactory(
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
       now: clock.now,
-      onFatalError: handleFatalError,
+      termination,
     });
+    resources.tradingRiskEventRuntime = tradingRiskEventRuntime;
     cleanup.register({
       phase: 'STOP_TRADING_RISK_EVENT_RUNTIME',
       step: '停止 TradingRiskEventRuntime',
       handler: () => tradingRiskEventRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
+
     const switchWakeupRuntime = createSwitchWakeupRuntime({
       logger,
       marketDataClient,
@@ -531,13 +512,17 @@ function createPostGateRuntimeFactory(
       now: clock.now,
       scheduleTimer: scheduler.scheduleTimer,
       clearTimer: scheduler.clearTimer,
-      onFatalError: handleFatalError,
+      termination,
     });
+    resources.switchWakeupRuntime = switchWakeupRuntime;
     cleanup.register({
       phase: 'STOP_SWITCH_WAKEUP_RUNTIME',
       step: '停止 SwitchWakeupRuntime',
       handler: () => switchWakeupRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
+
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
       logger,
       marketDataClient,
@@ -551,13 +536,17 @@ function createPostGateRuntimeFactory(
       scheduleTimer: scheduler.scheduleTimer,
       clearTimer: scheduler.clearTimer,
       handoffPendingSwitch: switchWakeupRuntime.handoffPendingSwitch,
-      onFatalError: handleFatalError,
+      termination,
     });
+    resources.monitorQuoteEventRuntime = monitorQuoteEventRuntime;
     cleanup.register({
       phase: 'STOP_MONITOR_QUOTE_EVENT_RUNTIME',
       step: '停止 MonitorQuoteEventRuntime',
       handler: () => monitorQuoteEventRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
+
     const monitorDisplayRuntime = createMonitorDisplayRuntime({
       marketDataClient,
       monitorContext,
@@ -569,6 +558,9 @@ function createPostGateRuntimeFactory(
       step: '停止 MonitorDisplayRuntime',
       handler: () => monitorDisplayRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
+
     const tradingQuoteDisplayRuntime = createTradingQuoteDisplayRuntime({
       logger,
       marketDataClient,
@@ -592,13 +584,17 @@ function createPostGateRuntimeFactory(
           displayInfo,
         });
       },
-      onFatalError: handleFatalError,
+      termination,
     });
+    resources.tradingQuoteDisplayRuntime = tradingQuoteDisplayRuntime;
     cleanup.register({
       phase: 'STOP_TRADING_QUOTE_DISPLAY_RUNTIME',
       step: '停止 TradingQuoteDisplayRuntime',
       handler: () => tradingQuoteDisplayRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
+
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker,
@@ -610,6 +606,7 @@ function createPostGateRuntimeFactory(
       sellTaskQueue,
       monitorTaskQueue,
     });
+    resources.seatRuntimeCleanupDispatcher = seatRuntimeCleanupDispatcher;
     cleanup.register({
       phase: 'STOP_SEAT_RUNTIME_CLEANUP_DISPATCHER',
       step: '停止 SeatRuntimeCleanupDispatcher',
@@ -618,7 +615,10 @@ function createPostGateRuntimeFactory(
       },
     });
 
+    if (termination.isTerminated()) return null;
+
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
+      termination,
       symbolRegistry,
       monitorContext,
       lastState,
@@ -628,12 +628,17 @@ function createPostGateRuntimeFactory(
       scheduleTimer: scheduler.scheduleTimer,
       clearTimer: scheduler.clearTimer,
     });
+    resources.autoSearchWakeupRuntime = autoSearchWakeupRuntime;
     cleanup.register({
       phase: 'STOP_AUTO_SEARCH_WAKEUP_RUNTIME',
       step: '停止 AutoSearchWakeupRuntime',
       handler: () => autoSearchWakeupRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
+
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
+      termination,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue,
@@ -650,11 +655,14 @@ function createPostGateRuntimeFactory(
       scheduleTimer: scheduler.scheduleTimer,
       clearTimer: scheduler.clearTimer,
     });
+    resources.periodicSwitchWakeupRuntime = periodicSwitchWakeupRuntime;
     cleanup.register({
       phase: 'STOP_PERIODIC_SWITCH_WAKEUP_RUNTIME',
       step: '停止 PeriodicSwitchWakeupRuntime',
       handler: () => periodicSwitchWakeupRuntime.stopAndDrain(),
     });
+
+    if (termination.isTerminated()) return null;
 
     return {
       liquidationCooldownTracker,
@@ -678,11 +686,9 @@ function createPostGateRuntimeFactory(
       loadTradingDayRuntimeSnapshot,
       doomsdayProtection,
       signalProcessor,
-      indicatorCache,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
-      drainFatalError,
     };
   };
 }

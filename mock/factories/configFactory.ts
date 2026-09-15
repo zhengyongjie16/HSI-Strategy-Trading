@@ -5,16 +5,6 @@
  * - 提供可覆盖默认值的监控配置与全局交易配置构建能力
  */
 import type { MonitorConfig, TradingConfig } from '../../src/types/config.js';
-import type { SignalConfig } from '../../src/types/signalConfig.js';
-
-const DEFAULT_SIGNAL_CONFIG: SignalConfig = {
-  conditionGroups: [
-    {
-      conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
-      requiredCount: null,
-    },
-  ],
-};
 
 /**
  * 构造单监控配置，供测试或 Mock 使用；未传字段使用默认监控/风控参数。
@@ -44,22 +34,6 @@ export function createMonitorConfig(overrides: Partial<MonitorConfig> = {}): Mon
     buyIntervalSeconds: 60,
     liquidationCooldown: null,
     liquidationTriggerLimit: 1,
-    verificationConfig: {
-      buy: {
-        delaySeconds: 60,
-        indicators: ['K', 'MACD'],
-      },
-      sell: {
-        delaySeconds: 60,
-        indicators: ['K', 'MACD'],
-      },
-    },
-    signalConfig: {
-      buycall: DEFAULT_SIGNAL_CONFIG,
-      sellcall: DEFAULT_SIGNAL_CONFIG,
-      buyput: DEFAULT_SIGNAL_CONFIG,
-      sellput: DEFAULT_SIGNAL_CONFIG,
-    },
     smartCloseEnabled: true,
     smartCloseTimeoutMinutes: null,
     ...overrides,

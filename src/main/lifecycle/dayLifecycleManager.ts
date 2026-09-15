@@ -17,6 +17,7 @@
  * - 开盘重建：按注册逆序依次执行各 CacheDomain 的 openRebuild
  * - 失败自动重试：指数退避策略，不吞错
  */
+import type { RuntimeTermination } from '../../types/runtime.js';
 import { LIFECYCLE } from '../../constants/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
@@ -59,8 +60,11 @@ function buildLifecycleContext(
 async function runMidnightClearForDomains(
   domains: ReadonlyArray<CacheDomain>,
   ctx: LifecycleContext,
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
 ): Promise<void> {
   for (const domain of domains) {
+    if (termination.isTerminated()) return;
+
     await domain.midnightClear(ctx);
   }
 }
@@ -69,12 +73,15 @@ async function runMidnightClearForDomains(
 async function runOpenRebuildForDomains(
   domains: ReadonlyArray<CacheDomain>,
   ctx: LifecycleContext,
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
 ): Promise<void> {
   for (let idx = domains.length - 1; idx >= 0; idx -= 1) {
     const domain = domains[idx];
     if (!domain) {
       continue;
     }
+
+    if (termination.isTerminated()) return;
 
     await domain.openRebuild(ctx);
   }
@@ -100,6 +107,7 @@ function resolveRetryDelayMs(baseDelayMs: number, rebuildFailureCount: number): 
 export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLifecycleManager {
   const {
     mutableState,
+    termination,
     cacheDomains,
     logger,
     rebuildRetryDelayMs = LIFECYCLE.DEFAULT_REBUILD_RETRY_DELAY_MS,
@@ -123,6 +131,11 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
    * 外部 API 失败记录错误并进入指数退避重试；内部逻辑错误直接抛出以保持 fail-fast。
    */
   async function tick(now: Date, runtime: LifecycleRuntimeFlags): Promise<DayLifecycleTickResult> {
+    if (termination.isTerminated()) {
+      mutableState.isTradingEnabled = false;
+      return buildTickResult();
+    }
+
     if (shouldRunMidnightClear(runtime, mutableState)) {
       invalidateSeatActivationCarryoverOnMidnightClear =
         invalidateSeatActivationCarryoverOnMidnightClear ||
@@ -144,7 +157,9 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
         invalidateSeatActivationCarryoverOnMidnightClear,
       );
       try {
-        await runMidnightClearForDomains(cacheDomains, midnightContext);
+        await runMidnightClearForDomains(cacheDomains, midnightContext, termination);
+        if (termination.isTerminated()) return buildTickResult();
+
         mutableState.currentDayKey = runtime.dayKey ?? mutableState.currentDayKey;
         mutableState.lifecycleState = 'MIDNIGHT_CLEANED';
         mutableState.pendingOpenRebuild = true;
@@ -156,6 +171,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
         logger.info('[Lifecycle] 已完成午夜清理，等待开盘重建');
       } catch (err) {
         if (!isExternalApiRequestError(err)) {
+          termination.reportFatalError(err);
           throw err;
         }
 
@@ -191,7 +207,9 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
     logger.info('[Lifecycle] 开始执行开盘重建');
     const rebuildContext = buildLifecycleContext(now, runtime);
     try {
-      await runOpenRebuildForDomains(cacheDomains, rebuildContext);
+      await runOpenRebuildForDomains(cacheDomains, rebuildContext, termination);
+      if (termination.isTerminated()) return buildTickResult();
+
       mutableState.pendingOpenRebuild = false;
       mutableState.lifecycleState = 'ACTIVE';
       mutableState.isTradingEnabled = true;
@@ -200,6 +218,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
       logger.info('[Lifecycle] 开盘重建完成，交易门禁已恢复');
     } catch (err) {
       if (!isExternalApiRequestError(err)) {
+        termination.reportFatalError(err);
         throw err;
       }
 

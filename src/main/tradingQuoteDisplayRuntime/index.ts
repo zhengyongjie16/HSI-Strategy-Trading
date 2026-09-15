@@ -42,10 +42,13 @@ export function createTradingQuoteDisplayRuntime(
   const activePromises = new Set<Promise<void>>();
   const routeStates = new Map<'LONG' | 'SHORT', TradingQuoteDisplayRouteState>();
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
-  let fatalError: Error | null = null;
   let running = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
+
+  function isRunning(): boolean {
+    return running && !deps.termination.isTerminated();
+  }
 
   function trackPromise(promise: Promise<void>): void {
     activePromises.add(promise);
@@ -65,20 +68,11 @@ export function createTradingQuoteDisplayRuntime(
   }
 
   function enterFatalState(error: unknown, logMessage: string): void {
-    const nextFatalError = error instanceof Error ? error : new Error(formatError(error));
-    if (fatalError !== null) {
-      return;
-    }
-
-    fatalError = nextFatalError;
-    running = false;
+    deps.termination.reportFatalError(error);
+    stop();
     cachedRoutingIndex = null;
     routeStates.clear();
-    logger.error(logMessage, formatError(nextFatalError));
-    deps.onFatalError?.(nextFatalError);
-    if (!deps.onFatalError) {
-      throw nextFatalError;
-    }
+    logger.error(logMessage, formatError(error));
   }
 
   /**
@@ -87,7 +81,7 @@ export function createTradingQuoteDisplayRuntime(
    * @returns 尚未初始化时返回 null
    */
   function getCurrentRoutingIndex(): TradingRiskRoutingIndex | null {
-    if (fatalError !== null) {
+    if (deps.termination.isTerminated()) {
       return null;
     }
 
@@ -125,7 +119,7 @@ export function createTradingQuoteDisplayRuntime(
           return;
         }
 
-        if (!isGateOpen(deps.lastState)) {
+        if (deps.termination.isTerminated() || !isGateOpen(deps.lastState)) {
           return;
         }
 
@@ -158,6 +152,8 @@ export function createTradingQuoteDisplayRuntime(
 
         const routingIndex = getCurrentRoutingIndex();
         if (
+          !isRunning() ||
+          deps.termination.isTerminated() ||
           routingIndex === null ||
           !isGateOpen(deps.lastState) ||
           !isTradingRiskRouteCurrent(route, routingIndex)
@@ -189,7 +185,7 @@ export function createTradingQuoteDisplayRuntime(
   function handleQuoteUpdated(
     event: Parameters<TradingQuoteDisplayRuntimeDeps['renderTradingQuote']>[0]['event'],
   ): void {
-    if (fatalError !== null || !running || !isGateOpen(deps.lastState)) {
+    if (deps.termination.isTerminated() || !running || !isGateOpen(deps.lastState)) {
       return;
     }
 
@@ -216,12 +212,11 @@ export function createTradingQuoteDisplayRuntime(
   }
 
   function start(): void {
-    if (running) {
+    if (running || deps.termination.isTerminated()) {
       return;
     }
 
     rebuildRoutingIndex();
-    fatalError = null;
     running = true;
     unsubscribeSeatTruthChanged = deps.symbolRegistry.onSeatTruthChanged(() => {
       try {
@@ -236,23 +231,25 @@ export function createTradingQuoteDisplayRuntime(
     });
   }
 
-  async function stopAndDrain(): Promise<void> {
+  function stop(): void {
     running = false;
     unsubscribeQuoteUpdated?.();
     unsubscribeQuoteUpdated = null;
     unsubscribeSeatTruthChanged?.();
     unsubscribeSeatTruthChanged = null;
     cachedRoutingIndex = null;
-    fatalError = null;
-    if (activePromises.size > 0) {
-      await Promise.allSettled(activePromises);
-    }
+  }
+
+  async function stopAndDrain(): Promise<void> {
+    stop();
+    await Promise.all(activePromises);
 
     routeStates.clear();
   }
 
   return {
     start,
+    stop,
     stopAndDrain,
   };
 }

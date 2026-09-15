@@ -9,25 +9,28 @@ import {
   createEmaState,
   commitEmaClose,
   readEmaValue,
-} from '../../src/services/indicators/runtime/ema.js';
+} from '../../src/core/strategy/intradayRegression/runtime/ema.js';
 import {
   createKdjState,
   commitKdjCandle,
   readKdjValue,
-} from '../../src/services/indicators/runtime/kdj.js';
+} from '../../src/core/strategy/intradayRegression/runtime/kdj.js';
 import {
   createMfiState,
   commitMfiCandle,
   readMfiValue,
-} from '../../src/services/indicators/runtime/mfi.js';
+} from '../../src/core/strategy/intradayRegression/runtime/mfi.js';
 import {
   createRsiState,
   commitRsiClose,
   readRsiValue,
-} from '../../src/services/indicators/runtime/rsi.js';
-import { toNumber, validatePercentage } from '../../src/services/indicators/runtime/utils.js';
+} from '../../src/core/strategy/intradayRegression/runtime/rsi.js';
+import {
+  toNumber,
+  validatePercentage,
+} from '../../src/core/strategy/intradayRegression/runtime/utils.js';
 import type { CandleData } from '../../src/types/data.js';
-import type { KDJIndicator } from '../../src/types/quote.js';
+import type { KDJIndicator } from '../../src/core/strategy/intradayRegression/runtime/types.js';
 
 /**
  * 输出工具内部的调试日志。默认行为：非调试模式直接跳过。

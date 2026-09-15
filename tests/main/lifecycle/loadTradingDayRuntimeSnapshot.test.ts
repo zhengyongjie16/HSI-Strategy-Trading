@@ -22,7 +22,7 @@ import type {
   LoadTradingDayRuntimeSnapshotParams,
 } from '../../../src/main/lifecycle/types.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { LastState, MonitorState } from '../../../src/types/state.js';
+import type { LastState } from '../../../src/types/state.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { MixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/types.js';
@@ -48,14 +48,6 @@ function getInFlight(_key: string): undefined {
   return;
 }
 
-function createMinimalMonitorState(monitorSymbol = 'HSI.HK'): MonitorState {
-  return {
-    monitorSymbol,
-    lastMonitorSnapshot: null,
-    incrementalIndicatorRuntime: null,
-  };
-}
-
 function createMinimalLastState(): LastState {
   return {
     canTrade: null,
@@ -70,7 +62,6 @@ function createMinimalLastState(): LastState {
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: createMinimalMonitorState(),
     allTradingSymbols: new Set<string>(),
   };
 }
@@ -629,6 +620,12 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const seatActivationDispatcher = createSeatActivationDispatcher({
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          throw error;
+        },
+      },
       symbolRegistry,
       monitorTaskQueue,
     });

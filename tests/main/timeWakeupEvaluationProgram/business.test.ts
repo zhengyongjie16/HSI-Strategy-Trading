@@ -20,11 +20,9 @@ import type {
   CancelPendingBuyOrdersResult,
   DoomsdayClearanceResult,
 } from '../../../src/core/doomsdayProtection/types.js';
-import type { DelayedSignalVerifierPort } from '../../../src/types/monitorContextPorts.js';
 import type { TradingDayInfo } from '../../../src/types/services.js';
 import {
   createAccountSnapshotDouble,
-  createDelayedSignalVerifierDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
   createLoggerDouble,
@@ -42,7 +40,7 @@ type TimeWakeupEvaluationHarnessOptions = Readonly<{
   initialCanTrade?: boolean | null;
   morningProtectionMinutes?: number | null;
   afternoonProtectionMinutes?: number | null;
-  verifier?: DelayedSignalVerifierPort;
+  invalidateStrategy?: () => void;
   lifecycleTick?: (now: Date, runtime: LifecycleRuntimeFlags) => Promise<DayLifecycleTickResult>;
   emitGateStateChanged?: () => void;
   emitAutoSearchAuthorizationChanged?: (event: AutoSearchAuthorizationChangedEvent) => void;
@@ -101,11 +99,6 @@ function createLastState(
       },
     },
     tradingCalendarSnapshot: new Map([['2026-04-29', { isTradingDay: true, isHalfDay: false }]]),
-    monitorState: {
-      monitorSymbol: '700.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
     allTradingSymbols: new Set(),
   };
 }
@@ -142,7 +135,14 @@ function createTimeWakeupEvaluationHarness(
   const monitorConfig = createMonitorConfigDouble({ monitorSymbol: '700.HK' });
   const monitorContext = createMonitorContextDouble({
     config: monitorConfig,
-    ...(options.verifier ? { delayedSignalVerifier: options.verifier } : {}),
+    ...(options.invalidateStrategy
+      ? {
+          strategy: {
+            ...createMonitorContextDouble().strategy,
+            invalidateAll: options.invalidateStrategy,
+          },
+        }
+      : {}),
   });
   return {
     logger: options.logger ?? createLoggerDouble(),
@@ -460,17 +460,12 @@ describe('timeWakeupEvaluationProgram', () => {
   it('12:00 关闭连续交易门禁并取消普通延迟验证', async () => {
     let cancelAllCalls = 0;
     const authorizationEvents: AutoSearchAuthorizationChangedEvent[] = [];
-    const verifier = createDelayedSignalVerifierDouble({
-      getPendingCount: () => 2,
-      cancelAll: () => {
-        cancelAllCalls += 1;
-        return 2;
-      },
-    });
     const context = createTimeWakeupEvaluationHarness({
       now: new Date('2026-04-29T12:00:00.000+08:00'),
       initialCanTrade: true,
-      verifier,
+      invalidateStrategy: () => {
+        cancelAllCalls += 1;
+      },
       emitAutoSearchAuthorizationChanged: (event) => {
         authorizationEvents.push(event);
       },

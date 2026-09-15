@@ -7,7 +7,7 @@ import type {
 import type { ExecutableSellSignal } from '../../../types/signal.js';
 import type { TaskQueue, SellTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
-import type { RuntimeClock, RuntimeScheduler } from '../../../types/runtime.js';
+import type { RuntimeClock, RuntimeScheduler, RuntimeTermination } from '../../../types/runtime.js';
 
 /**
  * 卖出 quote retry 状态。
@@ -56,5 +56,5 @@ export type SellProcessorDeps = {
   readonly getCanProcessTask?: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 };

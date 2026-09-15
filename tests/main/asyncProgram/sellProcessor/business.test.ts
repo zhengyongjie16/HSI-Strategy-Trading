@@ -1,11 +1,5 @@
-/**
- * sellProcessor 业务测试
- *
- * 功能：
- * - 验证卖出处理器相关场景意图、边界条件与业务期望。
- */
+import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
 import { describe, expect, it } from 'bun:test';
-
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
@@ -15,12 +9,9 @@ import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monito
 import { clearMonitorDirectionQueues } from '../../../../src/main/seatRuntimeCleanupDispatcher/queueCleanup.js';
 import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
-
 import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { ExecutableSellSignal, Signal } from '../../../../src/types/signal.js';
-
 import {
-  createDelayedSignalVerifierDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createQuoteDouble,
@@ -36,6 +27,13 @@ import {
   runProcessorFlow,
   waitUntil,
 } from '../utils.js';
+
+/**
+ * sellProcessor 业务测试
+ *
+ * 功能：
+ * - 验证卖出处理器相关场景意图、边界条件与业务期望。
+ */
 
 function requireSignal(signal: Signal | null): Signal {
   if (signal === null) {
@@ -66,11 +64,11 @@ describe('sellProcessor business flow', () => {
 
     for (const task of [
       {
-        type: 'IMMEDIATE_BUY' as const,
+        type: 'STRATEGY_BUY' as const,
         data: createSignalDouble('BUYCALL', 'BULL.HK'),
       },
       {
-        type: 'IMMEDIATE_BUY' as const,
+        type: 'STRATEGY_BUY' as const,
         data: createSignalDouble('BUYPUT', 'BEAR.HK'),
       },
     ]) {
@@ -79,11 +77,11 @@ describe('sellProcessor business flow', () => {
 
     for (const task of [
       {
-        type: 'IMMEDIATE_SELL' as const,
+        type: 'STRATEGY_SELL' as const,
         data: createSignalDouble('SELLCALL', 'BULL.HK'),
       },
       {
-        type: 'IMMEDIATE_SELL' as const,
+        type: 'STRATEGY_SELL' as const,
         data: createSignalDouble('SELLPUT', 'BEAR.HK'),
       },
     ]) {
@@ -116,16 +114,13 @@ describe('sellProcessor business flow', () => {
 
     const result = clearMonitorDirectionQueues({
       direction: 'LONG',
-      delayedSignalVerifier: createDelayedSignalVerifierDouble({
-        cancelAllForDirection: () => 3,
-      }),
+
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
     });
 
     expect(result).toEqual({
-      removedDelayed: 3,
       removedBuy: 1,
       removedSell: 1,
       removedMonitorTasks: 1,
@@ -210,16 +205,16 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+        queue.push({ type: 'STRATEGY_SELL', data: signal });
       },
       waitCondition: () => capturedInput !== null,
     });
@@ -300,16 +295,16 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+        queue.push({ type: 'STRATEGY_SELL', data: signal });
       },
       waitCondition: () => executedSignal !== null,
     });
@@ -335,6 +330,12 @@ describe('sellProcessor business flow', () => {
     });
 
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
+      termination: createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      }),
       getTrader: () => trader,
       lastState,
       onPositionsCommitted: async () => {},
@@ -412,14 +413,14 @@ describe('sellProcessor business flow', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
 
     await Bun.sleep(50);
     expect(processSellCalls).toBe(0);
@@ -472,16 +473,19 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
     await waitUntil(() => waitForFreshCalls === 1);
     await processor.stopAndDrain();
 
@@ -531,14 +535,14 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let staleSignal = createSignalDouble('SELLCALL', 'BULL.HK');
     staleSignal = { ...staleSignal, seatVersion: 1 };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: staleSignal });
+    queue.push({ type: 'STRATEGY_SELL', data: staleSignal });
 
     await Bun.sleep(40);
     await processor.stopAndDrain();
@@ -594,16 +598,16 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+        queue.push({ type: 'STRATEGY_SELL', data: signal });
       },
       waitCondition: () => processSellCalls === 1,
       timeoutMs: 800,
@@ -655,7 +659,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
         scheduleTimer: (callback) => {
           scheduledRetries.push(callback);
@@ -668,10 +672,10 @@ describe('sellProcessor business flow', () => {
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
     await waitUntil(() => scheduledRetries.length === 1);
     expect(processSellCalls).toBe(0);
     expect(executeCalls).toBe(0);
@@ -727,7 +731,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
         scheduleTimer: (callback) => {
           scheduledRetries.push(callback);
@@ -738,10 +742,10 @@ describe('sellProcessor business flow', () => {
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
     await Bun.sleep(40);
     await processor.stopAndDrain();
 
@@ -793,7 +797,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
         scheduleTimer: (callback) => {
           scheduledRetries.push(callback);
@@ -806,10 +810,10 @@ describe('sellProcessor business flow', () => {
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
     await waitUntil(() => scheduledRetries.length === 1);
 
     await processor.stopAndDrain();
@@ -869,7 +873,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
         scheduleTimer: (callback) => {
           scheduledRetries.push(callback);
@@ -882,10 +886,10 @@ describe('sellProcessor business flow', () => {
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
     await waitUntil(() => scheduledRetries.length === 1);
 
     const firstRetry = scheduledRetries[0];
@@ -895,6 +899,8 @@ describe('sellProcessor business flow', () => {
 
     firstRetry();
     await waitUntil(() => scheduledRetries.length === 2);
+    firstRetry();
+    expect(queue.isEmpty()).toBe(true);
     expect(processSellCalls).toBe(0);
 
     quoteReady = true;
@@ -911,7 +917,7 @@ describe('sellProcessor business flow', () => {
     expect(clearedRetryHandles).toBe(1);
   });
 
-  it('re-enqueues sell retry with detached indicators snapshot', async () => {
+  it('re-enqueues sell retry with detached trigger time and related buy order IDs', async () => {
     const queue = createSellTaskQueue();
     let quoteReady = false;
     let executedSignal: Signal | null = null;
@@ -947,7 +953,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
         scheduleTimer: (callback) => {
           scheduledRetries.push(callback);
@@ -957,16 +963,18 @@ describe('sellProcessor business flow', () => {
       },
     });
 
-    const indicators1 = { K: 80 };
+    const relatedBuyOrderIds = ['BUY-1'];
+    const triggerTime = new Date(SELL_PROCESSOR_NOW_MS);
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
-    signal = { ...signal, indicators1: indicators1 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
+    signal = { ...signal, relatedBuyOrderIds, triggerTime };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
     await waitUntil(() => scheduledRetries.length === 1);
 
-    indicators1.K = 20;
+    relatedBuyOrderIds.push('BUY-2');
+    triggerTime.setTime(SELL_PROCESSOR_NOW_MS + 1);
     quoteReady = true;
     const retryCallback = scheduledRetries[0];
     if (!retryCallback) {
@@ -978,8 +986,10 @@ describe('sellProcessor business flow', () => {
     await processor.stopAndDrain();
 
     const submittedSignal = requireSignal(executedSignal);
-    expect(submittedSignal.indicators1).toEqual({ K: 80 });
-    expect(submittedSignal.indicators1).not.toBe(indicators1);
+    expect(submittedSignal.relatedBuyOrderIds).toEqual(['BUY-1']);
+    expect(submittedSignal.relatedBuyOrderIds).not.toBe(relatedBuyOrderIds);
+    expect(submittedSignal.triggerTime?.getTime()).toBe(SELL_PROCESSOR_NOW_MS);
+    expect(submittedSignal.triggerTime).not.toBe(triggerTime);
   });
 
   it('does not register new sell retry after stopAndDrain begins while task is still in flight', async () => {
@@ -1012,7 +1022,7 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
         scheduleTimer: (callback) => {
           scheduledRetries.push(callback);
@@ -1023,10 +1033,10 @@ describe('sellProcessor business flow', () => {
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
     await waitUntil(() => releaseQuotes !== null);
 
     const drainPromise = processor.stopAndDrain();
@@ -1088,16 +1098,16 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+        queue.push({ type: 'STRATEGY_SELL', data: signal });
       },
       waitCondition: () => processSellCalls === 1,
       timeoutMs: 800,
@@ -1145,8 +1155,11 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1154,8 +1167,8 @@ describe('sellProcessor business flow', () => {
       processor,
       pushTask: () => {
         let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-        signal = { ...signal, seatVersion: 2 };
-        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+        signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
+        queue.push({ type: 'STRATEGY_SELL', data: signal });
       },
       waitCondition: () => fatalErrors.length === 1,
     });
@@ -1204,8 +1217,11 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => true,
-      onFatalError: (error) => {
-        fatalErrors.push(error);
+      termination: {
+        isTerminated: () => false,
+        reportFatalError: (error) => {
+          fatalErrors.push(error);
+        },
       },
     });
 
@@ -1213,8 +1229,8 @@ describe('sellProcessor business flow', () => {
       processor,
       pushTask: () => {
         let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-        signal = { ...signal, seatVersion: 2 };
-        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+        signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
+        queue.push({ type: 'STRATEGY_SELL', data: signal });
       },
       waitCondition: () => executeCalls === 1,
     });
@@ -1262,14 +1278,14 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: () => false,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     processor.start();
-    queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+    queue.push({ type: 'STRATEGY_SELL', data: signal });
 
     await Bun.sleep(40);
     await processor.stopAndDrain();
@@ -1283,10 +1299,12 @@ describe('sellProcessor business flow', () => {
     const queue = createSellTaskQueue();
 
     let processSellCalls = 0;
+    let authorized = true;
     const signalProcessor = {
       applyRiskChecks: async () => [],
       processSellSignals: ({ signals }: { signals: ReadonlyArray<ExecutableSellSignal> }) => {
         processSellCalls += 1;
+        authorized = false;
         return signals;
       },
       resetRiskCheckCooldown: () => {},
@@ -1300,11 +1318,7 @@ describe('sellProcessor business flow', () => {
       },
     });
 
-    let gateCheckCount = 0;
-    const dynamicGate = () => {
-      gateCheckCount += 1;
-      return gateCheckCount === 1;
-    };
+    const dynamicGate = () => authorized;
 
     const processor = createSellProcessor({
       ...SELL_PROCESSOR_RUNTIME,
@@ -1325,16 +1339,16 @@ describe('sellProcessor business flow', () => {
         onFreshReached: () => () => {},
       },
       getCanProcessTask: dynamicGate,
-      onFatalError: rethrowFatalError,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
 
     let signal = createSignalDouble('SELLCALL', 'BULL.HK');
-    signal = { ...signal, seatVersion: 2 };
+    signal = { ...signal, seatVersion: 2, triggerTime: new Date(SELL_PROCESSOR_NOW_MS) };
 
     await runProcessorFlow({
       processor,
       pushTask: () => {
-        queue.push({ type: 'IMMEDIATE_SELL', data: signal });
+        queue.push({ type: 'STRATEGY_SELL', data: signal });
       },
       waitCondition: () => processSellCalls === 1,
       timeoutMs: 800,

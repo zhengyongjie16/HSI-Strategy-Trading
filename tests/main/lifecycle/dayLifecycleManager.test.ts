@@ -1,10 +1,5 @@
-/**
- * 交易日生命周期管理器单元测试
- *
- * 覆盖：跨日检测、午夜清理顺序与失败重试、开盘重建触发条件与逆序执行、
- * 重试退避、边界（无 pendingOpenRebuild、非交易日、空 domains）
- */
-import { describe, it, expect } from 'bun:test';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { beforeEach, describe, it, expect } from 'bun:test';
 import type { Logger } from '../../../src/utils/logger/types.js';
 import type {
   CacheDomain,
@@ -20,6 +15,23 @@ import {
   createQuoteDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
+
+let termination: ReturnType<typeof createTerminationRuntime>;
+beforeEach(() => {
+  termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+});
+
+/**
+ * 交易日生命周期管理器单元测试
+ *
+ * 覆盖：跨日检测、午夜清理顺序与失败重试、开盘重建触发条件与逆序执行、
+ * 重试退避、边界（无 pendingOpenRebuild、非交易日、空 domains）
+ */
 
 function createMutableState(overrides?: Partial<LifecycleMutableState>): LifecycleMutableState {
   return {
@@ -64,6 +76,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -100,6 +113,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -126,6 +140,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -160,6 +175,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -194,6 +210,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -226,6 +243,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: createSilentLifecycleLogger(),
@@ -272,6 +290,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: createSilentLifecycleLogger(),
@@ -315,6 +334,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -345,6 +365,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: createSilentLifecycleLogger(),
@@ -386,6 +407,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -427,6 +449,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -470,6 +493,7 @@ describe('createDayLifecycleManager', () => {
         } as never,
       });
       const rebuildTradingDayState = createRebuildTradingDayState({
+        termination,
         marketDataClient: {
           getTradingDays: async () => ({
             tradingDays: ['2025-02-15'],
@@ -506,6 +530,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: createSilentLifecycleLogger(),
@@ -544,6 +569,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -575,6 +601,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: createSilentLifecycleLogger(),
@@ -600,9 +627,9 @@ describe('createDayLifecycleManager', () => {
         secondError = error;
       }
 
-      expect(secondError).toBeInstanceOf(TypeError);
-      expect((secondError as Error).message).toBe('open rebuild contract broken');
-      expect(openRebuildCalls).toBe(2);
+      expect(secondError).toBeNull();
+      expect(termination.isTerminated()).toBe(true);
+      expect(openRebuildCalls).toBe(1);
     });
 
     it('午夜清理成功进入新周期时清空上一轮开盘重建重试计划', async () => {
@@ -633,6 +660,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: createSilentLifecycleLogger(),
@@ -672,6 +700,7 @@ describe('createDayLifecycleManager', () => {
     it('午夜清理失败时返回下一次重试时间且不恢复交易门禁', async () => {
       const mutableState = createMutableState({ currentDayKey: '2026-04-28' });
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         rebuildRetryDelayMs: 1_000,
         cacheDomains: [
@@ -709,6 +738,7 @@ describe('createDayLifecycleManager', () => {
         isTradingEnabled: false,
       });
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         rebuildRetryDelayMs: 2_000,
         cacheDomains: [
@@ -747,6 +777,7 @@ describe('createDayLifecycleManager', () => {
         isTradingEnabled: false,
       });
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         rebuildRetryDelayMs: 1_000,
         cacheDomains: [],
@@ -770,6 +801,7 @@ describe('createDayLifecycleManager', () => {
     it('domains 为空数组时午夜清理与开盘重建均不抛错', async () => {
       const mutableState = createMutableState({ currentDayKey: '2025-02-14' });
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: [],
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -797,6 +829,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -825,6 +858,7 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        termination,
         mutableState,
         cacheDomains: domains,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
@@ -834,5 +868,47 @@ describe('createDayLifecycleManager', () => {
       expect(resolved).toBe(true);
       expect(mutableState.lifecycleState).toBe('ACTIVE');
     });
+  });
+});
+
+describe('lifecycle terminal authorization', () => {
+  it('重建 await 期间正常终止，后续 domain 和交易 reopen 都禁止', async () => {
+    const mutableState = createMutableState({
+      currentDayKey: '2025-02-15',
+      pendingOpenRebuild: true,
+      isTradingEnabled: false,
+    });
+    const pending = Promise.withResolvers<null>();
+    const events: string[] = [];
+    const manager = createDayLifecycleManager({
+      termination,
+      mutableState,
+      logger: createSilentLifecycleLogger(),
+      cacheDomains: [
+        {
+          midnightClear: () => {},
+          openRebuild: () => {
+            events.push('later');
+          },
+        },
+        {
+          midnightClear: () => {},
+          openRebuild: async () => {
+            events.push('started');
+            await pending.promise;
+          },
+        },
+      ],
+    });
+    const tick = manager.tick(new Date(), createRuntime());
+    expect(events).toEqual(['started']);
+    termination.requestShutdown();
+    pending.resolve(null);
+    await tick;
+    expect(events).toEqual(['started']);
+    expect(mutableState.isTradingEnabled).toBe(false);
+    expect(mutableState.pendingOpenRebuild).toBe(true);
+    await manager.tick(new Date(), createRuntime());
+    expect(events).toEqual(['started']);
   });
 });

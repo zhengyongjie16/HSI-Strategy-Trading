@@ -2,7 +2,9 @@
 
 > 本文是最终待实施设计合同，不是完成报告。目标是将**当前策略及其延迟验证整体封装为独立个体**，不是重新定义交易策略，也不是建设多策略交易平台。新增策略只新增符合约定的目录，不修改中心注册文件；通过 `ACTIVE_STRATEGY_ID` 选择，构建部署后重启，进程始终只创建并运行一个选中实例。
 >
-> 实施执行入口：[single-active-strategy-runtime-execution-plan.md](./single-active-strategy-runtime-execution-plan.md)。本合同与执行计划同步用户已确认的 D1–D5：私有常量局部例外、午夜失败保持原语义、极小正delay保持旧行为、严格命名免注册加载、构建全量校验而启动仅校验选中项。文件级任务、精化时序和验收以执行计划为准；两份文档均不表示代码已迁移。
+> 实施执行入口：[single-active-strategy-runtime-execution-plan.md](./single-active-strategy-runtime-execution-plan.md)。本合同与执行计划同步用户已确认的 D1–D5：私有常量局部例外、午夜失败保持原语义、极小正delay保持旧行为、严格命名免注册加载、构建仅 clean + tsc而启动仅校验选中项。文件级任务、精化时序和验收以执行计划为准；两份文档均不表示代码已迁移。
+
+> **本轮补充（用户已独立批准，无业务歧义）**：数学全私有化、tools direct leaf/type、固定同步 onCandlestick 正式纳入方案。D1–D5/T01–T34 其余决策和业务不变。历史 S01–S07 记录仅描述上一轮；本轮实施范围见末尾 J01–J05，保留策略参数、env 和暂存区。本轮补充 S01–S07 已完成：A/B/C、独立 review 与 final gates 均通过；这里只核销补充范围，不变更原 WP9 尚未验收的发布事实，不宣称 native 退出问题已修复，也未进行真实 launch。
 
 ## 1. 需求、业务边界与复核依据
 
@@ -40,7 +42,7 @@
 
 ### 1.3 非目标
 
-不实现多策略同时运行、信号合并、跨策略 barrier、热切换、运行期热发现、启动导入全部策略、人工或生成式 registry、策略级账户账本、策略状态持久化或跨进程 callback 恢复。构建期自动目录发现属于本次范围。策略身份不参与订单、持仓、成交、损益或风险分区。
+不实现多策略同时运行、信号合并、跨策略 barrier、热切换、运行期热发现、启动导入全部策略、人工或生成式 registry、策略级账户账本、策略状态持久化或跨进程 callback 恢复。不增加构建目录扫描。策略身份不参与订单、持仓、成交、损益或风险分区。
 
 不重做订单恢复、风险政策、智能平仓、自动寻标、换标状态机或 Broker 语义。真实安全问题不能因控制范围而忽略，但也不能以“策略独立化”为由强制建设完整进程 supervisor、manifest 平台或语义静态分析框架。
 
@@ -54,12 +56,14 @@ src/constants/strategy.ts                   # 共享命名/固定文件名规则
 src/core/strategy/types.ts                  # 公共：策略无关的事实/输出/生命周期接口
 src/core/strategy/utils.ts                  # 中性ID/目录映射及definition校验
 src/core/strategy/intradayRegression/
-  definition.ts                            # 固定导出strategyDefinition：id、configHref、prepare
+  definition.ts                            # 固定导出strategyDefinition：id、prepare
   config.json                              # 唯一策略配置资产
   config.ts                                # 严格解析、规范化、校验
   index.ts                                 # 唯一实例工厂；事件与生命周期端口
   types.ts                                 # 私有配置、指标、pending 等类型
-  ...                                      # DSL、指标编排、采样、验证、显示等私有模块
+  runtime/                                 # 私有编排与五个数学实现，无math层
+    types.ts                               # 现有文件合并六个旧数学类型
+  ...                                      # DSL、采样、验证、显示等私有模块
 ```
 
 目录名按 camelCase，与严格 kebab-case ID 按 §3.3 双向对应；当前为 `intraday-regression → intradayRegression`。策略根每个一级子目录都必须是完整策略，不以缺入口为由跳过；公共内容放根级文件或根外中性模块。具体策略可按职责拆私有文件，不要求为每个概念新建目录。旧 `src/core/strategy/index.ts` 通用工厂在切换后删除，不保留转发入口；不创建原方案的 `src/config/strategy.ts`。
@@ -71,7 +75,13 @@ src/core/strategy/intradayRegression/
 - 指标增量状态、活动柱 preview、验证样本和 pending；
 - 该策略的原因文本、指标展示名称、顺序和格式。
 
-纯数学运算、时间单位、日志等真正中性能力可以复用。当前指标模块若只服务本策略，直接随策略迁入，比建立新的通用指标插件框架更小。不得把“支持哪些信号指标”“如何验证趋势”等政策作为公共 helper 留在目录外。
+时间单位、日志等中性能力可复用；数学归属按本轮固定，不按工具消费者保留公共模块。
+
+五个旧实现 ema.ts/kdj.ts/mfi.ts/rsi.ts/utils.ts 全部从 src/services/indicators/runtime 直接迁入 src/core/strategy/intradayRegression/runtime，不增加 math 层、不复制、不留兼容转发/re-export，最终删除整个 src/services/indicators。旧 runtime/types 的六类型 BufferNewPush、EmaStreamState、RsiStreamState、MfiStreamState、KdjStreamState、KDJIndicator 合并现有策略 runtime/types.ts，不建公共源或 alias。ADX/MACD/PSY 与真实 state 直接使用私有 leaf/type；删除 opaque handle、Symbol 品牌转换和 unwrap，不复制包装。
+
+非生产 tools 允许直接引用策略私有计算 leaf 与 import type 私有类型，不经 index/definition/config/logger 导入链新增副作用；不为工具保留公共模块或排除编译。dailyIndicatorAnalysis 仅跟进直接 imports/types，不扩项重构算法/CLI/错误口径；既有工具包装器自身 logger 副作用不扩入本次治理。
+
+该例外绝不适用于 src：生产宿主/公共模块只用中性契约及唯一受限加载边界，生产策略绝不跨策略私有 import，不开放 services → core 全目录例外。CandleData 保持中性行情类型，不随数学迁移，宽类型仍不构成深冻结证明。
 
 固定算法规则不必全部变成可配置项；保留为本策略私有规则即可。确需配置的参数放本目录 JSON。依用户明确确认的 D1，仅策略私有常量可放具体策略目录，这是 TypeScript skill 常量目录条款的局部例外；共享常量（包括ID/路径发现规则）仍统一放 `src/constants/`，其他规范不变。
 
@@ -158,7 +168,7 @@ type StrategyDeps = {
 
 interface TradingSignalStrategy {
   readonly strategyId: string;
-  readonly handleMarketEvent: (
+  readonly onCandlestick: (
     context: StrategyMarketContext,
     emit: StrategyEmitter,
   ) => ReadonlyArray<StrategyDisplayItem> | null;
@@ -174,14 +184,13 @@ interface PreparedStrategy {
 
 interface StrategyDefinition {
   readonly id: string;
-  readonly configHref: string;
-  readonly prepare: (rawText: string) => PreparedStrategy;
+  readonly prepare: () => PreparedStrategy;
 }
 ```
 
 `prepare` 在具体目录内完成解析、校验、规范化和私有 profile 编译，返回闭包捕获结果的 `create`。公共 prepared 对象不暴露具体 config/profile；无泛型配置擦除、`any`、具体类型联合或运行期类型断言适配层。配置和 profile 为递归只读值；工厂接收的 clock/scheduler 是基础能力，不持有任何策略 delayed 状态。
 
-`handleMarketEvent` 同步执行，不进行网络或 Broker I/O。返回值仅用于显示；`null` 表示本次没有可显示的策略快照，不表示内部错误被吞掉。同步未处理异常由调用边界进入统一 fatal；异步 timer 的未处理异常由策略通过注入的 fatal sink 报告。
+`onCandlestick` 同步执行，不进行网络或 Broker I/O。返回值仅用于显示；`null` 表示本次没有可显示的策略快照，不表示内部错误被吞掉。同步未处理异常由调用边界在同一调用栈、返回/上抛前进入统一 fatal 并关门，不等待外层 Promise.catch；异步 timer 的未处理异常由策略通过注入的 fatal sink 报告。
 
 输出按单动作传递，不建立“所有动作必须共用时间”的 envelope。一个事件可以产生多个不同动作，当前策略保持现有动作顺序；同一 origin 每个 action 最多输出一次。没有信号就不调用 emitter，不输出 HOLD。
 
@@ -195,17 +204,16 @@ interface StrategyDefinition {
 
 ### 3.3 免注册自动定位与精确选择
 
-用户已接受严格命名及跨平台冲突规则（D4），以及“构建全量校验、启动只校验选中策略”（D5）。不创建静态/生成式注册表、manifest 或手工维护的 ID/path 清单。
+用户已接受严格命名及跨平台冲突规则（D4），以及“构建仅 clean + tsc、启动只校验选中策略”（D5）。不创建静态/生成式注册表、manifest 或手工维护的 ID/path 清单。
 
 1. 启动读取一次 `ACTIVE_STRATEGY_ID` 原值，严格匹配 `^[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*$`；缺失、空白、别名、大小写变体、连续/尾随连字符、路径字符均失败。不 trim，不默认选择，不 URL 解码后补救。
-2. 连字符后首字母大写得到 camelCase 目录；每个大写字母反向转换必须还原原 ID。`foo-1` 非法，不能与 `foo1` 指向同目录。实际目录名必须规范；构建拒绝大小写折叠冲突与 Windows 保留设备名，避免跨平台身份变化。
+2. 连字符后首字母大写得到 camelCase 目录；每个大写字母反向转换必须还原原 ID。`foo-1` 非法，不能与 `foo1` 指向同目录。实际目录名必须规范；选中启动拒绝大小写折叠冲突与 Windows 保留设备名，避免跨平台身份变化。
 3. 根由加载器自身 `import.meta.url` 相对定位，不能使用 cwd/env 指定任意根。用目录元信息核对真实拼写、选中项相关名字冲突、入口和资产文件；做真实路径边界检查，拒绝候选目录及definition/config的symlink/junction。启动可枚举必要名字，但不检查无关未选目录内容或导入它们。
 4. source 模式只定位 `definition.ts`，dist 模式只定位 `definition.js`；模式由定位模块自身明确 `.ts`/`.js` 扩展名决定，其他形态失败。导入前确认该精确文件存在；不尝试另一扩展名、cwd或源码根，不以运行器扩展名补全作为fallback。使用标准路径/URL API处理Windows、空格和非根cwd。
-5. 只动态 import 选中入口一次，固定命名导出为 `strategyDefinition`。动态结果先作为 unknown 校验对象/id/configHref/prepare；prepare返回须含同步create，实例须符合全部公共方法和strategyId；不使用any、类型断言、default导出兼容或Promise替身适配。实例可清理时仍返回即登记destroy，再核验其余契约。
-6. definition 的 `configHref` 必须精确指向自身相邻 `new URL('./config.json', import.meta.url).href`，只接受规范本地file URL，无query/hash。仅读取该原文一次、prepare一次、create一次；选择ID、目录ID、definition.id和实例identity一致。
-7. 入口及其传递依赖求值无副作用：不读JSON、不启动timer、不监听事件、不访问网络、不创建实例。禁止策略间私有依赖和聚合barrel，不能通过选中A间接执行B；日志作为现有Logger依赖注入，不在策略内部创建。
-8. 加载、传递依赖、导出形状、身份、配置错误均在SDK创建前失败，保留真实cause和阶段，不能一律伪装成“未知策略”或回退其他实现。未选策略模块/配置错误不通过启动全量加载影响选中项，但仍阻断正式全量build。
-9. 动态加载只面向可信本地发布包，不是沙箱；新增策略需要构建部署和重启。发布包不能运行期原地并发替换文件，不增加热切换或模块缓存绕过机制。不另设kind/capability标签。
+5. 只动态 import 选中入口一次，固定命名导出为 `strategyDefinition`。动态结果先作为 unknown 校验对象/id/prepare；prepare返回须含同步create，实例须符合全部公共方法和strategyId；不使用any、类型断言、default导出兼容或Promise替身适配。实例可清理时仍返回即登记destroy，再核验其余契约。选中 definition 内部 `import config from './config.json'`；同步零参数 `prepare(): PreparedStrategy` 消费该对象，返回闭包 create 延后创建实例。宿主只校验相邻 config.json 元信息，不读取内容。导入允许 Decimal 等库模块求值，但不创建 SDK context 或网络。
+6. 入口允许静态 JSON 和 Decimal 等库模块求值；不自行读配置文件、不启动 timer、不监听事件、不访问网络、不创建 SDK context 或策略实例。禁止策略间私有依赖和聚合barrel，不能通过选中A间接执行B；日志作为现有Logger依赖注入，不在策略内部创建。
+7. 加载、传递依赖、导出、身份、配置错误在 SDK context 创建前失败，保留 cause 与阶段，不伪装未知策略或 fallback。未选目录不做构建契约/prepare 校验；tsc 仍会编译 include 与静态依赖（缺失/编译器拒绝的 JSON 可导致编译失败）。选中或未选非法 DSL 可以编译，选中启动 prepare 必须在 SDK context 创建前失败。
+8. 动态加载只面向可信本地发布包，不是沙箱；新增策略需要构建部署和重启。发布包不能运行期原地并发替换文件，不增加热切换或模块缓存绕过机制。不另设kind/capability标签。
 
 具体路径校验、依赖注入、构建资产落点和测试按执行计划 §4.5–§4.6、WP1/WP7 落实。非根cwd测试显式提供fixture env，不改变现有dotenv装载政策。
 
@@ -230,7 +238,7 @@ verification:
 
 这是 schema 说明，不是可部署配置。不得用猜测表达式或占位符生成生产资产。
 
-所有字段必须显式存在；未知字段、重复 object key、null、错误类型和非法 DSL/指标都失败。保留 raw text 以检出重复键（包括转义后相同的 key）；可使用标准 JSON 解析配合原文结构检查，不需要建立通用配置语言或完整 AST 平台。不能仅靠正则匹配 key，也不能在 key 已被覆盖后假称完成重复检测。
+配置 parser 接受静态导入的 unknown 对象，精确 own 字段、类型、范围、DSL、指标校验后复制规范化并深冻；不读文件，不 parse/stringify 伪原文，不冻结共享 import 缓存。原文重复键、严格 UTF8 自检和源/产物字节一致已获批准撤销；JSON 语法由 Bun/tsc 各自负责，工具接受集合差别不是自定义校验职责。
 
 指标名称、周期范围、DSL 组数、阈值、组内 N-of-M 和组间 OR 均保持当前解析规则。验证列表去重及顺序保持当前口径。解析返回新建规范化配置，递归冻结；运行时不重读文件、不重新编译 profile。
 
@@ -303,8 +311,8 @@ prepare/create 的唯一生产调用点是 composition root；`createMonitorCont
   → 宿主在监听时读取 observedAtMs
   → single-flight/latest-only 保存最新待处理事件及其 observedAtMs
   → 读取最新权威 K 线缓存；缺失/未初始化/空则不调用策略
-  → 捕获 origin day/ACTIVE seat route，投影只读行情和订单事实
-  → strategy.handleMarketEvent(context, eventEmitter) 一次
+  → 捕获 origin day/ACTIVE seat route、allowNewEvaluation，深冻结权威行情和订单事实投影，创建本 origin emitter
+  → strategy.onCandlestick(context, eventEmitter) 一次
       → 推进私有指标增量状态，构建本次 snapshot
       → 若不能形成当前策略有效 snapshot，正常无输出
       → 按 observedAtMs 无条件写一次私有验证样本
@@ -314,6 +322,10 @@ prepare/create 的唯一生产调用点是 composition root；`createMonitorCont
   → 宿主将显示投影交显示 owner
   → 普通 decision 统一经 host adapter 进入 STRATEGY_BUY/STRATEGY_SELL
 ```
+
+`onCandlestick` 是唯一固定同步 K 线 hook，返回中性显示投影或 null；不声明 async，不接受 Promise | value，不保留旧方法 alias，不新增 hooks 注册总线或算法步骤 hooks。调用粒度为宿主 singleflight/latestOnly 实际消费的一次权威快照，不是 SDK 每条原始推送都计算，也不是仅确认收线才计算；有效活动柱更新仍推进 preview/采样。
+
+显示门禁与 allowNewEvaluation 保持原差别：禁止新评估不停止指标/采样，返回投影不代表显示放行；宿主按原显示门禁提交/消费请求，不反向阻断策略计算。
 
 `allowNewEvaluation` 使用现行 ordinarySignalGuard、有效 currentDayKey 和非开盘保护条件。host 不计算、传递或解释 delay policy。
 
@@ -377,7 +389,7 @@ scheduleTimer(callback, timerDelayMs)
 
 ### 6.1 统一 host emission adapter
 
-每次策略调用创建一个 origin emitter，捕获当时 currentDayKey、允许新判断与否、LONG/SHORT ACTIVE route（direction + symbol + seatVersion）。它可由策略私有 pending 保存，**handleMarketEvent 返回不使该 emitter 自动失效**。
+每次策略调用创建一个 origin emitter，捕获当时 currentDayKey、允许新判断与否、LONG/SHORT ACTIVE route（direction + symbol + seatVersion）。它可由策略私有 pending 保存，**onCandlestick 返回不使该 emitter 自动失效**。
 
 host 不检查策略 pending token，不建立 pending 授权表或 delayed 回调接口。token 有效性由策略负责；host 只检查自己掌握的 origin/current 事实。
 
@@ -436,7 +448,7 @@ adapter 不读取 execution Quote，不做 sizing/risk，不判断来源是 imme
 
 `SymbolRegistry` 的 state/truth listener 同步分发。方向取消必须在 mutation 返回前完成，不能只依靠未来异步 cleanup。已入队任务仍由 processor 和 Broker 的 seatVersion 门禁阻断。
 
-`invalidateAll` 不清样本和指标；跨日 reset 才清。所有操作幂等；destroy 后 handleMarketEvent、invalidate/reset 以及迟到 timer 首先检查终态，零采样、零输出、零重排。不得让旧 callback 删除相同 key 下后来创建的新 pending，必须比较 token/entry identity。
+`invalidateAll` 不清样本和指标；跨日 reset 才清。所有操作幂等；destroy 后 onCandlestick、invalidate/reset 以及迟到 timer 首先检查终态，零采样、零输出、零重排。不得让旧 callback 删除相同 key 下后来创建的新 pending，必须比较 token/entry identity。
 
 ### 7.2 最小共享 fatal 入口
 
@@ -500,21 +512,17 @@ strategy handler 只销毁该实例；宿主资源各由自己的 owner 清理�
 
 ### 8.1 一次性构建与启动
 
-当前 `build` 为 clean + tsc，`start` 直接启动源码；JSON 不会因普通 tsc 编译自动进入 dist。必须补齐资产，但不强制生产 start 增加 supervisor 或 manifest。
+正式 build 为 `bun run clean && tsc -p tsconfig.build.json`，复用 rimraf clean；没有 scripts 构建工具或扫描/动态 prepare/复制资产流程。tsconfig.build 仅 src 和静态依赖，rootDir=./、outDir=./dist，noEmitOnError=true，关闭 declaration/declarationMap/sourceMap。开发检查保留 tools/tests/mock。
 
-新增最小资产工具，自动枚举 `src/core/strategy/` 每个一级子目录；所有目录都是候选，非法名字、大小写冲突、路径越界、缺definition/config、无策略均使构建失败，不因缺文件静默跳过。共享内容放根级文件或根外。项目根/输出根由工具模块位置和实际tsconfig布局解析，不依赖cwd，不维护或生成ID/path清单。
+definition 内部静态导入相邻 config.json，编译器输出到 dist/src/core/strategy/<目录>/config.json；仅保证深层语义一致，空白和转义可以变化。产物只有 src JS 与静态依赖 JSON，不含工具/测试/声明/maps。
 
-- 全部候选元信息预检后 clean → tsc → 核对并动态导入各编译definition.js → 验证固定导出/id/相邻产物configHref → 读取对应源JSON原文一次并交该编译prepare验证 → 将同一原文完整写入/原子替换到相邻产物地址；全部成功才退出0。构建使用编译定义，目标JSON复制前不存在也不影响纯prepare，不允许其自行读文件。
-- 当前实际布局为 `dist/src/core/strategy/<目录>/definition.js` 和相邻config.json，入口为 `dist/src/index.js`；不是dist/core。source与dist启动各自只有一个本地地址，无扩展名或源码fallback。构建从源码资产复制到产物是显式构建步骤，不是运行时补值。
-- 全部策略在构建阶段prepare但不create、不访问SDK或认证配置；应用运行时只import/read/prepare选中项。验证和复制使用同一原文，不能二次读文件引入不一致。每轮构建的资产校验用独立进程，防模块缓存验证上一轮定义；不以随机URL query绕过缓存。
-- `start` 可保留明确的源码入口；另行验证 dist 入口。若调整入口，package scripts 和部署说明必须一致，不得找不到 dist 后回退源码。
-- 运行进程持有启动时的不可变配置，不做热重读。生产配置变更经停机/重启生效；外部文件改动不是运行期 fallback 触发器。
+构建不验证策略 schema/DSL 或未选目录；编译器拒绝的静态 JSON/源错误仍阻断编译。选中启动严格路径元信息与同步零参数 prepare，失败先于 SDK context 创建。definition 导入可能引起 Decimal 等库求值，不宣称零 SDK 模块导入，也不允许创建 SDK context 或网络。未知 schema 仅由策略私有 parser 负责，宿主不读取 JSON 内容。
 
-### 8.2 开发循环的最小正确行为
+离线验收覆盖 JSON-only、新增导入、删除策略 clean、失败 noEmitOnError、源移走后 dist 任意 cwd 加载和缺相邻 JSON 拒绝。package 构建命令仍按项目根 cwd 执行。不再保证原文重复键、严格 UTF8 自检、源/产物字节一致，也不恢复自定义验证器补齐 Bun/tsc 语法差别。
 
-不假设 `readFile(configHref)` 或动态import会被Bun模块watcher完整跟踪。本仓库不提供 watch 命令（`dev:watch`/`build:watch`/`test:watch` 及 `concurrently` 已移除）；源码或策略资产变更后显式执行完整 build（clean → tsc → 资产校验与同步）并全部成功才启动，不得继续运行过期 dist 或旧产物配置；缺入口的半成品策略目录、删除或非法的策略配置使构建非零退出，失败构建的产物不得当作可启动资产使用。已有选择配置文件变化沿停机/重启生效，不热读运行中env。
+### 8.2 修改与重启
 
-开发循环不使用 watcher，也不要求 production start、宿主 owners 或部署平台为此新增 supervisor。不能通过 touch 假模块、随机 URL query、源码路径 fallback 或继续保留过期 dist 来掩盖 JSON-only 未生效。
+源码或配置变更后，dist 必须完整 clean + tsc 并 restart；直接运行 source 也必须 restart。仓库无 watch/hot reload，不绕过模块缓存。构建失败不得继续部署产物；选中配置仍必须通过启动 prepare。原文重复键、严格 UTF8 自检与字节一致保障不再提供。运行期 env 不热读，选择变化沿停机/重启生效。
 
 ### 8.3 恢复与发布
 
@@ -534,7 +542,7 @@ strategy handler 只销毁该实例；宿主资源各由自己的 owner 清理�
 
 - 固定当前有效配置、四表达式、两侧延迟、N-of-M、指标增量、ADX、nearest/tie-break、采样时间和派生保留窗口。
 - 新增具体 definition/config/parser/工厂；迁入当前 `core/strategy` 规则、`services/indicators` 策略编排、DSL/指标 helper、验证常量及 verifier/cache 行为。
-- 策略工厂自身拥有全部状态；保留必要纯数学实现，不为尚不存在的复用创建平台。`tools/dailyIndicatorAnalysis/indicatorCalculators.ts` 实际复用EMA/KDJ/MFI/RSI数学与类型，按执行计划保留这些中性模块并更新直接imports，不能排除tools编译或残留旧re-export掩盖。
+- 策略工厂自身拥有全部状态；五数学实现直迁私有 runtime，六类型合并现有 runtime/types，删除整个 services/indicators。tools/dailyIndicatorAnalysis 直接引用私有 leaf/type，不经入口/config/logger 新增副作用，不保留公共数学模块、math 层、复制或转发；既有工具包装器 logger 不扩项。
 - 更新私有类型和头注释，具体策略测试迁入 `tests/core/strategy/intradayRegression/`，目录与源码对应。
 
 ### 9.2 宿主接口、显示与风险切换
@@ -558,17 +566,36 @@ strategy handler 只销毁该实例；宿主资源各由自己的 owner 清理�
 
 目标生产路径必须删除：
 
+- `src/services/indicators/` 整个目录（按 §2.1 完成五实现和六类型迁移后）；
 - `src/main/asyncProgram/delayedSignalVerifier/`；
 - `src/main/asyncProgram/indicatorCache/`；
 - `src/app/wiring/registerDelayedSignalHandlers.ts`；
 - 旧 `createMultiIndicatorTradingStrategy`、默认/可选旧 strategyFactory、immediate/delayed 返回接口；
 - `IMMEDIATE_*`/`VERIFIED_*` 普通任务分类和旧策略 env parser/类型/导出。
 
-旧 verifier/cache 测试在行为移植后删除；共享目录中只用于该策略的 profile/runtime/types/helpers 同步移动或删除，不留 re-export。混合工具文件只迁移本次相关函数，其余通用配置和宿主工具保留。
+旧 verifier/cache 测试在行为移植后删除；旧 indicators 的 profile/runtime/types 全部私有化或删除，不因 tools 保留公共模块，不留 re-export；策略 helpers 同步迁移。混合工具文件只迁移本次相关函数，其余通用配置和宿主工具保留。
 
 `src/types/indicatorProfile.ts`、`src/types/signalConfig.ts` 及 `src/types/quote.ts` 的具体指标结构，按最终消费者归入私有目录；删除 `src/types/indicatorRuntime.ts` 的公共 opaque handle，不建私有句柄替身，不以测试引用保留生产公共契约。同步检查 `src/constants/index.ts` 的相关类型 import 和混合常量成员。
 
 更新资产工具、package scripts、`.env.example`、README、直接相关部署引用及 `mock/`。不扩展修改无关 docs/tools。
+
+### 9.5 已批准补充工作包
+
+执行计划 S01–S07 正式属于本合同，依次覆盖路径/六类型清零、工具 direct leaf/type 与新增副作用边界、仅 src 生产禁令、固定同步 hook、合并后一次调用及门禁、数学与业务时序对拍、离线验证。原 D1–D5 和 T01–T34 其他业务不变，不改策略参数和 env；原配置迁移及发布门禁保留。C-docs 确认后 A/B/C、独立 review 与 final gates 已完成，S01–S07 补充验收全部通过。该历史轮次只更新文档记录，不改架构代码/暂存区，原 WP9 未验收事实保持。
+
+#### 补充验收记录（S01–S07）
+
+以下为本轮 A/B/C、独立 review 和最终门禁的已报告证据，本次文档恢复不重复执行代码测试或真实启动。证据目录：`C:WINDOWSTEMPhsi-final-gate-T9qRTT`。
+
+| 范围 | 实际验收结果 |
+| --- | --- |
+| S01、S06：数学迁移等价 | 五 math 实现与六 types 经独立 AST 对照 index 基线等价；192025 项值/状态对拍通过。 |
+| S02、S03：工具与生产边界 | C 架构测试 71 pass；私有 leaf/type 工具正例及 src 生产边界通过，既有工具包装器 logger 不扩项。 |
+| S04、S05：同步 K 线 hook | B 完成 18 个代码文件替换；旧方法 alias 不存在，旧事件方法名和旧 import 源在代码中均为零；独立 review 未发现确认缺陷，S01–S06 已核销。 |
+| S07：历史最终顺序门禁 | format → lint → type-check → test → build 严格顺序执行，各退出码均为 0；全量测试 2342 pass / 0 fail，181 files，8145 expect。 |
+| S01、S07：源码/产物闭合 | source/dist 旧 services/indicators 均不存在；新私有五 leaf 与 types 齐全；JSON 字节一致；source/dist prepare 检查均退出 0，未调用 create。 |
+
+**结论：S01–S07 补充实施与验收已完成。** 这不核销原主方案 WP9 的真实部署、单进程、恢复/回滚等未验收事实；不表示 native 正常退出问题已修复或已验收，也不表示执行过真实 launch。原方案历史状态保留为历史记录，不用于否定本节已完成的补充证据，也不据本节推定全部发布门禁通过。
 
 ## 10. 验收与发布门禁
 
@@ -576,7 +603,7 @@ strategy handler 只销毁该实例；宿主资源各由自己的 owner 清理�
 
 | 领域 | 必须证明 |
 | --- | --- |
-| 选择/装配 | ID精确映射；非法ID、选中路径/导出/身份/配置错误在SDK前失败；未选模块零import/read/prepare/create；实例仅创建一次，资源先于完整context，部分失败无泄漏 |
+| 选择/装配 | ID 精确映射；非法 ID、选中路径/导出/身份/配置错误在 SDK context 创建前失败；未选模块零 import/prepare/create；实例仅创建一次，资源先于完整 context，部分失败无泄漏 |
 | 策略独立性 | 临时根新增不同schema/私有指标的测试策略目录，不改中心文件即可选择运行；宿主/公共类型无具体策略静态依赖，策略间无私有import或聚合入口 |
 | 配置保持 | 四表达式必填；两侧 0–120 数值范围；空列表/零延迟为显式立即语义；非法配置不补值；已核实旧有效值可显式迁移；无虚构生产参数 |
 | 指标 | 当前 committed/preview、确认/换柱、窗口衔接、partial snapshot、N-of-M 与原行为一致；同版本处理不擅自改变采样集合；内部异常不伪装无信号 |
@@ -588,8 +615,8 @@ strategy handler 只销毁该实例；宿主资源各由自己的 owner 清理�
 | queue/fatal | 同步关门、防reopen、终态后零入队/通知、正常跨日可restart；各producer收口；最终退出单个stop/cleanup错误不阻断其他清理，不覆盖主错误；午夜保留D2中断/分类重试 |
 | 清理依赖 | 午夜、正常退出和 fatal 均先排空 PostTrade 在途请求及订阅回调，再停止 Quote；Quote 停止完成后无旧生产者订阅 mutation；启动/重建仍可在监听 start 前显式 reconcile |
 | 清仓/recovery | 任意普通 reason 不授权清仓；typed 清仓不变；既有延迟 SELL 不因清仓提交后清空记录而提前丢弃，智能平仓关闭时仍经过 freshness 按最新可用持仓处理；匹配/不匹配 BUY/SELL 恢复矩阵不变；strategyId 不分账 |
-| 资产 | 全目录自动发现；缺入口/配置、跨平台名字冲突和未选坏配置均阻断build；编译prepare与资产同原文且零create；隔离dist/非cwd无源码fallback；首次build期间新增目录和JSON-only变更均不漏报，不用旧资产 |
-| 加载边界 | ID/目录可逆且精确拼写；拒绝symlink/junction、错误URL/扩展名；固定导出及同步prepared/instance验证；传递依赖错误保留cause；构建全量校验、启动仅选中校验有分别的证据 |
+| 资产 | clean + tsc，仅 src JS 与静态 JSON，语义一致；JSON-only/新增导入/删除策略 clean；编译失败 noEmitOnError；非法 DSL 可编译但选中 prepare 失败；dist 任意 cwd 和移走 source 无 fallback |
+| 加载边界 | ID/目录可逆且精确拼写；拒绝symlink/junction、错误URL/扩展名；固定导出及同步prepared/instance验证；传递依赖错误保留cause；构建仅 clean + tsc、启动仅选中校验有分别的证据 |
 
 以下关键边界必须使用可控时序和明确结果分类直接验证：
 
@@ -605,7 +632,7 @@ strategy handler 只销毁该实例；宿主资源各由自己的 owner 清理�
 采用三类互补证据：
 
 1. 生产/旧测试路径存在性检查，确认旧 owner 真正删除。
-2. 有界import/module graph检查：生产宿主仅由prepareStrategy的受限动态加载边界装配，构建工具是独立阶段的全量加载入口；公共类型/事件/执行/显示/lifecycle不依赖具体目录，禁止跨策略私有import/barrel。静态import/type/export及字面量/计算动态import均纳入；受准入口核验URL构造/导入前路径检查，并以实际求值计数补足静态图。
+2. 有界import/module graph检查：生产规则仅作用于 src，保留宿主/公共模块及跨策略私有依赖禁令；tools 私有 leaf/type 单独为正例，另验旧 services/indicators 整个目录不存在。生产宿主仅由prepareStrategy的受限动态加载边界装配，构建不加载模块；公共类型/事件/执行/显示/lifecycle不依赖具体目录，禁止跨策略私有import/barrel。静态import/type/export及字面量/计算动态import均纳入；受准入口核验URL构造/导入前路径检查，并以实际求值计数补足静态图。
 3. 构造次数、引用身份、cancel/reset/destroy 及迟到回调行为测试。
 
 不要求开发能证明“任意改名的等价 owner”不存在的语义分析系统；结构规则和运行行为须共同复核。针对原路径执行搜索并逐项归类：
@@ -621,7 +648,7 @@ rg -n "isTradingEnabled\s*=\s*true|failFatal|fatalError|drainFatalError|onFatalE
 rg -n "\.(push|scheduleLatest)\(|onTaskAdded|scheduleTimer" src/main src/app
 ```
 
-具体指标/profile 名称允许存在于策略私有目录；旧环境键仅允许拒绝旧键测试、一次性迁移资料和必要迁移说明。宿主风险冷却仍保留真实宿主职责，不应被名称搜索误删。每项残留须有实际消费者证据，不能单凭 grep 无命中宣布完成。
+具体指标/profile 名称在 src 仅允许位于策略私有目录，非生产 tools 的 leaf/type 消费按 §2.1 正例验收，不套用生产禁令；旧环境键仅允许拒绝旧键测试、一次性迁移资料和必要迁移说明。宿主风险冷却仍保留真实宿主职责，不应被名称搜索误删。每项残留须有实际消费者证据，不能单凭 grep 无命中宣布完成。
 
 ### 10.3 验证命令与状态
 
@@ -640,6 +667,27 @@ bun run build
 
 新增结构测试放现有 architecture 测试体系，并由完整 `bun test` 执行；最终命令不得继续指定已删除的旧 verifier/cache 测试目录。实际目录调整时同步更新命令，不能用不存在路径当作通过记录。
 
-另外执行 clean-dist/临时 cwd 下 JSON-only 更新、删除、非法输入后重新构建的检查。format/lint/type-check 按项目要求顺序运行；不为纯文档修订运行会改写全仓的 format。
+另外执行 clean-dist/临时 cwd 下 JSON-only 更新、删除、非法输入后重建的离线 fixture 检查；禁止启动真实 src/index.ts/dist/src/index.js 交易入口或使用生产凭据。format/lint/type-check 按项目要求顺序运行；不为纯文档修订运行会改写全仓的 format。
 
-当前状态：D1–D5已确认，免注册自动加载已同步本设计合同和最终执行计划；生产代码尚未迁移。执行入口为配套execution-plan，发布必须具备目标测试、引用清理、完整校验和构建资产证据；部署配置、单进程及恢复演练由真实部署证明。不得以最终文档、旧实现测试通过或回滚可用代替目标验收。
+当前状态： 本轮补充 S01–S07 已完成：A/B/C、独立 review 与 final gates 均通过；这里只核销补充范围，不变更原 WP9 尚未验收的发布事实，不宣称 native 退出问题已修复，也未进行真实 launch。以下原计划状态仅为历史记录，不代表当前 staged 实现完成度，须按实际 HEAD/证据复核并保留已有修改。D1–D5已确认，免注册自动加载已同步本设计合同和最终执行计划；当前分支已有生产改动的完成度需按实际验证确认，C-docs 不宣告完成。执行入口为配套execution-plan，发布必须具备目标测试、引用清理、完整校验和构建资产证据；部署配置、单进程及恢复演练由真实部署证明。不得以最终文档、旧实现测试通过或回滚可用代替目标验收。
+
+## 静态 JSON 与简化构建执行补充（现行合同）
+
+用户已批准替代原 D5 和原文资产合同；上文历史验收记录不构成本轮已撤销保障。
+
+- [x] J01 completed：definition 静态 JSON、同步零参数 prepare、对象精确校验与副本深冻；交易 runtime/hooks/createDeps 不变。
+- [x] J02 completed：宿主移除配置内容 I/O，保相邻 metadata、选中隔离、thenable/cause 和 SDK 前失败。
+- [x] J03 completed：删除 scripts 构建工具；clean + tsc、noEmitOnError、开发检查仍含 tools/tests/mock。
+- [x] J04 completed：更新 fixtures、启动/配置/真实编译重建测试；语义比较而非字节比较。
+- [x] J05 completed：README、残留检查、format → lint → type-check → 全 test → build；独立 review 另行进行。
+
+配置源码修改后：dist 必须 rebuild 并 restart；直接源码运行也必须 restart，不提供 hot reload。停机完整部署约束和 WP9 真实发布门禁不变。
+
+### 本轮执行证据（静态 JSON / 简化构建）
+
+- 已执行 format → lint → type-check → 全 test → build，各退出码 0；1902 pass / 0 fail，180 files，6890 expect。相较历史数量减少包含已撤销的重复键原文矩阵及旧脚本专属测试，不将删除的保障假称保留。
+- `tests/build/productionBuild.test.ts` 三个真实 src 隔离工程测试通过：package clean + tsc、真实 JSON 语义比较、JSON-only、新增导入、删除策略 clean、坏 DSL/未知 schema 编译成功而选中 prepare 失败、未导入坏 JSON 隔离、源码移走及缺 dist JSON、编译失败 noEmitOnError。启动另有真实 invalid JSON/missing dependency cause 与相邻 JSON 大小写/链接拒绝。
+- 实际 dist：260 JS + 1 JSON，均位于 dist/src；无 scripts/tools/tests/mock/declaration/maps。TypeScript 非 declaration 闭包 261 文件，全部 src；JSON 深语义相等，不要求字节相等。
+- 残留检查 src/tests/两原计划/README/package/tsconfig：旧配置 URL 字段、配置 read-text 端口、raw-text prepare 和旧脚本路径引用均为 0；构建脚本目录与旧脚本专属测试目录已删除。相邻 config.json metadata 校验仍在。
+- 暂存区基线 SHA256：`1bb19ec00e0b6a938d3f277e084b6c87e465f299ce156ade3b8e7d0abb0426c2`，执行后保持一致。非凭据文件基线与门禁日志位于系统临时目录 `strategy-baseline-PmLz49`；全 format 的 13 个无关文件副作用逐字节恢复，原策略 JSON 参数未改。未 stage/reset/checkout/commit，未改 env，未启动实际应用或 SDK context/网络。
+- 独立 review 由主代理后续安排；此处 completed 只核销本 writer 实现和门禁，不宣称独立 review、真实发布或 WP9 已完成。

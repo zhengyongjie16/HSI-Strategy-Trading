@@ -8,7 +8,7 @@ import { describe, expect, it, setSystemTime } from 'bun:test';
 import { OrderSide, OrderType, TimeInForceType } from 'longbridge';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createOrderExecutor as createOrderExecutorCore } from '../../src/core/trader/orderExecutor/index.js';
-import { VERIFICATION } from '../../src/constants/index.js';
+import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../src/constants/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
@@ -100,17 +100,7 @@ function createRiskContext(params: {
     longQuote: createQuoteDouble('BULL.HK', 5, 100),
     shortQuote: createQuoteDouble('BEAR.HK', 5, 100),
     monitorQuote: createQuoteDouble('HSI.HK', 20000),
-    monitorSnapshot: {
-      price: 20000,
-      changePercent: 0,
-      ema: null,
-      rsi: null,
-      psy: null,
-      mfi: null,
-      kdj: { k: 50, d: 50, j: 50 },
-      macd: { macd: 0, dif: 0, dea: 0 },
-      adx: null,
-    },
+
     longSymbol: 'BULL.HK',
     shortSymbol: 'BEAR.HK',
     longSymbolName: 'BULL.HK',
@@ -1288,29 +1278,24 @@ describe('buy-flow integration', () => {
     const blockedSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs:
-        successAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
+      triggerTimeMs: successAuthorizationMs + BUY_RISK_CHECK_COOLDOWN_MS + 1,
       reason: 'should-be-frequency-blocked',
     });
 
-    await withMockedNow(
-      successNow + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
-      async () => {
-        successClockMs =
-          successAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1;
-        const blockedResult = await signalProcessor.applyRiskChecks(
-          [blockedSignal],
-          createRiskContext({
-            trader: successTrader,
-            riskChecker: successRiskChecker,
-            orderRecorder: successOrderRecorder,
-            currentTime: new Date(successClockMs),
-          }),
-        );
-        expect(blockedResult).toHaveLength(0);
-        expect(blockedSignal.reason).toBe('should-be-frequency-blocked');
-      },
-    );
+    await withMockedNow(successNow + BUY_RISK_CHECK_COOLDOWN_MS + 1, async () => {
+      successClockMs = successAuthorizationMs + BUY_RISK_CHECK_COOLDOWN_MS + 1;
+      const blockedResult = await signalProcessor.applyRiskChecks(
+        [blockedSignal],
+        createRiskContext({
+          trader: successTrader,
+          riskChecker: successRiskChecker,
+          orderRecorder: successOrderRecorder,
+          currentTime: new Date(successClockMs),
+        }),
+      );
+      expect(blockedResult).toHaveLength(0);
+      expect(blockedSignal.reason).toBe('should-be-frequency-blocked');
+    });
 
     const failedNow = 4_000_000;
     const failedAuthorizationMs = Date.parse('1970-01-01T03:00:00.000Z');
@@ -1400,28 +1385,23 @@ describe('buy-flow integration', () => {
     const secondAllowedSignal = createSignal({
       symbol: 'BULL.HK',
       action: 'BUYCALL',
-      triggerTimeMs:
-        failedAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
+      triggerTimeMs: failedAuthorizationMs + BUY_RISK_CHECK_COOLDOWN_MS + 1,
       reason: 'should-pass-frequency-check-after-failed-submit',
     });
 
-    await withMockedNow(
-      failedNow + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1,
-      async () => {
-        failedClockMs =
-          failedAuthorizationMs + VERIFICATION.VERIFIED_SIGNAL_COOLDOWN_SECONDS * 1000 + 1;
-        const allowedResult = await signalProcessor.applyRiskChecks(
-          [secondAllowedSignal],
-          createRiskContext({
-            trader: failedTrader,
-            riskChecker: failedRiskChecker,
-            orderRecorder: failedOrderRecorder,
-            currentTime: new Date(failedClockMs),
-          }),
-        );
-        expect(allowedResult).toHaveLength(0);
-        expect(secondAllowedSignal.reason).toBe('should-pass-frequency-check-after-failed-submit');
-      },
-    );
+    await withMockedNow(failedNow + BUY_RISK_CHECK_COOLDOWN_MS + 1, async () => {
+      failedClockMs = failedAuthorizationMs + BUY_RISK_CHECK_COOLDOWN_MS + 1;
+      const allowedResult = await signalProcessor.applyRiskChecks(
+        [secondAllowedSignal],
+        createRiskContext({
+          trader: failedTrader,
+          riskChecker: failedRiskChecker,
+          orderRecorder: failedOrderRecorder,
+          currentTime: new Date(failedClockMs),
+        }),
+      );
+      expect(allowedResult).toHaveLength(0);
+      expect(secondAllowedSignal.reason).toBe('should-pass-frequency-check-after-failed-submit');
+    });
   });
 });

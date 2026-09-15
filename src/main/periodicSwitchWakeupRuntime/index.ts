@@ -86,8 +86,9 @@ export function createPeriodicSwitchWakeupRuntime(
       return;
     }
 
-    state.timerHandle.cancel();
+    const handle = state.timerHandle;
     state.timerHandle = null;
+    handle.cancel();
   }
 
   function readCurrentBaseline(direction: 'LONG' | 'SHORT'): PeriodicSwitchRouteBaseline | null {
@@ -125,6 +126,8 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function dispatchAutoSymbolTick(baseline: PeriodicSwitchRouteBaseline): void {
+    if (!running || deps.termination.isTerminated()) return;
+
     const currentTimeMs = deps.now().getTime();
     const data: MonitorTaskDataMap['AUTO_SYMBOL_TICK'] = {
       direction: baseline.direction,
@@ -139,7 +142,11 @@ export function createPeriodicSwitchWakeupRuntime(
       data,
     };
 
-    deps.monitorTaskQueue.scheduleLatest(task);
+    if (!deps.monitorTaskQueue.scheduleLatest(task) && !deps.termination.isTerminated()) {
+      deps.termination.reportFatalError(
+        new Error('[PeriodicSwitchWakeupRuntime] 非终态队列拒绝换标任务'),
+      );
+    }
   }
 
   function invalidateRouteIfBaselineChanged(
@@ -167,7 +174,7 @@ export function createPeriodicSwitchWakeupRuntime(
    * baseline 不完整或 dueAtMs 为 null 时只清理旧派生状态，不额外补排到期动作。
    */
   function planRoute(direction: 'LONG' | 'SHORT'): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -209,12 +216,12 @@ export function createPeriodicSwitchWakeupRuntime(
       scheduleTimer: deps.scheduleTimer,
       clearTimer: deps.clearTimer,
       onDue: () => {
-        if (state.timerHandle !== timerHandle) {
+        if (routeStates.get(baseline.direction) !== state || state.timerHandle !== timerHandle) {
           return;
         }
 
         state.timerHandle = null;
-        if (!running) {
+        if (!running || deps.termination.isTerminated()) {
           return;
         }
 
@@ -238,7 +245,7 @@ export function createPeriodicSwitchWakeupRuntime(
   };
 
   function redispatchWaitingEmptyRoutes(): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -274,7 +281,7 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function markWaitingEmpty(baseline: PeriodicSwitchRouteBaseline): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -317,7 +324,7 @@ export function createPeriodicSwitchWakeupRuntime(
   function replanRouteAfterTask(
     params: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0],
   ): void {
-    if (!running) {
+    if (!running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -376,7 +383,7 @@ export function createPeriodicSwitchWakeupRuntime(
 
           state.timerHandle = null;
           state.failureReevaluationAtMs = null;
-          if (!running) {
+          if (!running || deps.termination.isTerminated()) {
             return;
           }
 
@@ -422,7 +429,7 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function start(): void {
-    if (running) {
+    if (running || deps.termination.isTerminated()) {
       return;
     }
 
@@ -438,7 +445,7 @@ export function createPeriodicSwitchWakeupRuntime(
     seedRoutes();
   }
 
-  function stopAndDrain(): Promise<void> {
+  function stop(): void {
     running = false;
     unsubscribeSeatTruthChanged?.();
     unsubscribeSeatTruthChanged = null;
@@ -456,10 +463,15 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     routeStates.clear();
+  }
+
+  function stopAndDrain(): Promise<void> {
+    stop();
     return Promise.resolve();
   }
 
   return {
+    stop,
     start,
     stopAndDrain,
     markWaitingEmpty,

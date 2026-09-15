@@ -8,8 +8,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { createTradingConfig as parseTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
-import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 
 function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
   return {
@@ -20,17 +19,6 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
   };
 }
 
-function createSignalConfig() {
-  return {
-    conditionGroups: [
-      {
-        conditions: [{ indicator: 'K', operator: '>', threshold: 1 }],
-        requiredCount: 1,
-      },
-    ],
-  } as const;
-}
-
 function createAutoSearchMonitorConfig(
   overrides: {
     readonly autoSearchMinDistancePctBull?: number;
@@ -39,8 +27,7 @@ function createAutoSearchMonitorConfig(
     readonly switchDistanceRangeBear?: { readonly min: number; readonly max: number };
   } = {},
 ) {
-  const signalConfig = createSignalConfig();
-  return createMonitorConfigDouble({
+  return createMonitorConfig({
     autoSearchConfig: {
       autoSearchEnabled: true,
       autoSearchMinDistancePctBull: overrides.autoSearchMinDistancePctBull ?? 0.35,
@@ -54,12 +41,6 @@ function createAutoSearchMonitorConfig(
       switchDistanceRangeBear: overrides.switchDistanceRangeBear ?? { min: -1.5, max: -0.2 },
     },
     orderOwnershipMapping: ['HSI'],
-    signalConfig: {
-      buycall: signalConfig,
-      sellcall: signalConfig,
-      buyput: signalConfig,
-      sellput: signalConfig,
-    },
   });
 }
 

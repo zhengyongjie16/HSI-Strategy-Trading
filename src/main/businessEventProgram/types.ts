@@ -1,109 +1,62 @@
 import type { TradingConfig } from '../../types/config.js';
-import type { IndicatorSnapshot } from '../../types/quote.js';
-import type { MonitorContext, LastState } from '../../types/state.js';
-import type { MarketDataClient } from '../../types/services.js';
-import type { IndicatorCache } from '../asyncProgram/indicatorCache/types.js';
+import type { LastState, MonitorContext } from '../../types/state.js';
+import type { MarketDataClient, OrderRecorder } from '../../types/services.js';
+import type { SymbolRegistry } from '../../types/seat.js';
+import type { RuntimeClock, RuntimeTermination } from '../../types/runtime.js';
+import type { StrategyDisplayItem, TradingSignalStrategy } from '../../core/strategy/types.js';
 import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/tradeTaskQueue/types.js';
-import type { RuntimeClock } from '../../types/runtime.js';
 
-/**
- * K 线业务程序行为契约。
- * 类型用途：统一普通 K 线业务 owner 的启停能力。
- * 数据来源：由 createBusinessEventProgram 创建。
- * 使用范围：app 装配、lifecycle、cleanup 使用。
- */
+/** 普通行情 owner 的启停端口；fatal 由共享 termination 独占。 */
 export interface BusinessEventProgram {
-  /** 启动 K 线事件监听。 */
   readonly start: () => void;
-
-  /** 停止监听并等待在途业务路由完成。 */
+  readonly stop: () => void;
   readonly stopAndDrain: () => Promise<void>;
-
-  /** 等待 K 线业务链路 fatal error。 */
-  readonly drainFatalError: () => Promise<never>;
 }
 
-/**
- * 单 monitor 的业务事件路由状态。
- * 类型用途：实现 single-flight + latest-only collapse。
- * 数据来源：由 businessEventProgram 在运行期维护。
- * 使用范围：仅 businessEventProgram 模块内部使用。
- */
-export type BusinessEventRouteState =
-  | {
-      readonly inFlight: boolean;
-      readonly dirty: false;
-    }
-  | {
-      readonly inFlight: boolean;
-      readonly dirty: true;
-      readonly pendingObservedAtMs: number;
-    };
+/** 宿主使用的最小监控事实；策略只获得其冻结的行情和席位投影。 */
+type BusinessEventMonitorContext = {
+  readonly config: Pick<MonitorContext['config'], 'monitorSymbol'>;
+  readonly strategy: TradingSignalStrategy;
+  readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+  readonly orderRecorder: Pick<OrderRecorder, 'getBuyOrdersForSymbol'>;
+  readonly longSymbolName: string;
+  readonly shortSymbolName: string;
+};
 
-/**
- * monitor indicator 显示 runtime 最小契约。
- * 类型用途：约束 businessEventProgram 在普通 K 线指标推进后提交显示请求的能力。
- * 数据来源：由 app 层注入 MonitorDisplayRuntime 实例。
- * 使用范围：仅 businessEventProgram 模块使用。
- */
-type BusinessEventMonitorDisplayRuntime = Readonly<{
-  requestRender: (params: { readonly monitorSnapshot: IndicatorSnapshot }) => void;
-}>;
+/** 中性显示端口；不向宿主泄露策略指标实现。 */
+interface BusinessEventMonitorDisplayRuntime {
+  readonly requestRender: (params: { readonly items: ReadonlyArray<StrategyDisplayItem> }) => void;
+}
 
-/**
- * K 线业务程序依赖。
- * 类型用途：收口普通 K 线业务 owner 所需的唯一 monitorContext、共享服务、状态、任务队列与显示 runtime。
- * 数据来源：由 app 顶层装配注入。
- * 使用范围：仅 businessEventProgram 模块使用。
- */
-export type BusinessEventProgramDeps = Readonly<{
-  clock: RuntimeClock;
-  marketDataClient: Pick<MarketDataClient, 'getCandlestickSnapshot' | 'onCandlestickUpdated'>;
-  monitorContext: MonitorContext;
-  lastState: LastState;
-  tradingConfig: TradingConfig;
-  buyTaskQueue: TaskQueue<BuyTaskType>;
-  sellTaskQueue: TaskQueue<SellTaskType>;
-  indicatorCache: IndicatorCache;
-  monitorDisplayRuntime: BusinessEventMonitorDisplayRuntime;
-}>;
-
-/**
- * K 线业务事件运行时门禁参数。
- * 类型用途：表达普通 K 线事件链路执行信号流水线时需要的当前时刻与开盘保护快照。
- * 数据来源：由 businessEventProgram 在事件处理时按 lastState 组装。
- * 使用范围：仅 businessEventProgram 信号流水线使用。
- */
-type BusinessEventRuntimeFlags = Readonly<{
-  currentTime: Date;
-  openProtectionActive: boolean;
-}>;
-
-/**
- * 指标流水线参数（执行指标计算与最新快照写入时的入参）。
- * 类型用途：封装指标流水线所需的监控上下文与 K 线缓存读取端口。
- * 数据来源：由 businessEventProgram 按 K 线事件组装。
- * 使用范围：仅普通 K 线业务事件链路使用。
- */
-export type IndicatorPipelineParams = Readonly<{
-  monitorContext: MonitorContext;
-  mainContext: Readonly<{
-    marketDataClient: Pick<MarketDataClient, 'getCandlestickSnapshot'>;
-  }>;
-}>;
-
-/**
- * 信号流水线参数（执行信号生成、延迟验证入队等时的入参）。
- * 类型用途：封装信号流水线所需的上下文与指标快照。
- * 数据来源：由 businessEventProgram 从指标流水线输出等组装；席位身份在流水线中直接从唯一注册表读取。
- * 使用范围：仅普通 K 线业务事件链路使用。
- */
-export type SignalPipelineParams = Readonly<{
-  monitorContext: MonitorContext;
-  mainContext: Pick<
-    BusinessEventProgramDeps,
-    'lastState' | 'tradingConfig' | 'buyTaskQueue' | 'sellTaskQueue'
+/** composition root 注入的行情、普通授权、输出与终态端口。 */
+export type BusinessEventProgramDeps = {
+  readonly clock: RuntimeClock;
+  readonly marketDataClient: Pick<
+    MarketDataClient,
+    'getCandlestickSnapshot' | 'onCandlestickUpdated'
   >;
-  runtimeFlags: BusinessEventRuntimeFlags;
-  monitorSnapshot: IndicatorSnapshot;
-}>;
+  readonly monitorContext: BusinessEventMonitorContext;
+  readonly lastState: Pick<
+    LastState,
+    'isTradingEnabled' | 'canTrade' | 'isHalfDay' | 'currentDayKey' | 'openProtectionActive'
+  >;
+  readonly tradingConfig: { readonly global: Pick<TradingConfig['global'], 'doomsdayProtection'> };
+  readonly buyTaskQueue: Pick<TaskQueue<BuyTaskType>, 'push'>;
+  readonly sellTaskQueue: Pick<TaskQueue<SellTaskType>, 'push'>;
+  readonly monitorDisplayRuntime: BusinessEventMonitorDisplayRuntime;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
+};
+
+/** 宿主私有 origin route；不把版本或订单记录传给策略。 */
+export type StrategyOriginRoute = {
+  readonly direction: 'LONG' | 'SHORT';
+  readonly symbol: string;
+  readonly seatVersion: number;
+  readonly hasFilledBuyOrders: boolean;
+};
+
+/** 新评估获准时保存的不可变授权；不随当前 gate/席位变化回写。 */
+export type StrategyOrigin = {
+  readonly dayKey: string;
+  readonly routes: ReadonlyArray<StrategyOriginRoute>;
+};

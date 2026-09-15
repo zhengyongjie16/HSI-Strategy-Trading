@@ -1,39 +1,12 @@
 import type { CleanupController } from '../../../src/app/types.js';
-import type { LastState, MonitorState } from '../../../src/types/state.js';
+import type { LastState } from '../../../src/types/state.js';
 import { createMonitorContextDouble } from '../../helpers/testDoubles.js';
 import type { CleanupTestOverrides } from './types.js';
 
-/**
- * 构造单监控标的的 MonitorState，含默认指标快照，供 cleanup 测试使用。
- *
- * @param monitorSymbol 监控标的代码
- * @returns 用于测试的 MonitorState
+/** 构造 cleanup 测试用宿主状态。
+ * @returns 不含策略状态的宿主快照
  */
-export function createMonitorState(monitorSymbol: string): MonitorState {
-  return {
-    monitorSymbol,
-    lastMonitorSnapshot: {
-      price: 20_000,
-      changePercent: 0,
-      ema: null,
-      rsi: null,
-      psy: null,
-      mfi: null,
-      kdj: { k: 50, d: 50, j: 50 },
-      macd: { macd: 0, dif: 0, dea: 0 },
-      adx: null,
-    },
-    incrementalIndicatorRuntime: null,
-  };
-}
-
-/**
- * 构造 LastState，仅填充 monitorState 与基础字段，其余为测试用占位，供 cleanup 测试使用。
- *
- * @param monitorState 唯一监控状态
- * @returns 用于测试的 LastState
- */
-export function createLastState(monitorState: MonitorState): LastState {
+export function createLastState(): LastState {
   return {
     canTrade: true,
     isHalfDay: false,
@@ -50,7 +23,6 @@ export function createLastState(monitorState: MonitorState): LastState {
     },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState,
     allTradingSymbols: new Set(),
   };
 }
@@ -67,7 +39,7 @@ export function registerCleanupSteps(
   steps: string[],
   overrides: CleanupTestOverrides = {},
 ): void {
-  const lastState = overrides.lastState ?? createLastState(createMonitorState('HSI.HK'));
+  const lastState = overrides.lastState ?? createLastState();
   const monitorContext = overrides.monitorContext ?? createMonitorContextDouble();
   const registerStep = (
     phase: Parameters<CleanupController['register']>[0]['phase'],
@@ -167,20 +139,8 @@ export function registerCleanupSteps(
     steps.push('postTradeConsistencyRuntime');
   });
 
-  registerStep(
-    'DESTROY_DELAYED_SIGNAL_VERIFIER',
-    `销毁延迟验证器 ${monitorContext.config.monitorSymbol}`,
-    () => {
-      monitorContext.delayedSignalVerifier.destroy();
-    },
-  );
-
-  registerStep('CLEAR_INDICATOR_CACHE', '清空指标缓存', () => {
-    steps.push('clearIndicatorCache');
-  });
-
-  registerStep('CLEAR_MONITOR_SNAPSHOT', '清空监控快照引用', () => {
-    lastState.monitorState.lastMonitorSnapshot = null;
+  registerStep('DESTROY_STRATEGY', `销毁策略 ${monitorContext.config.monitorSymbol}`, () => {
+    monitorContext.strategy.destroy();
   });
 
   registerStep('RESET_MARKET_DATA_RUNTIME', '重置行情运行态订阅与缓存', () => {

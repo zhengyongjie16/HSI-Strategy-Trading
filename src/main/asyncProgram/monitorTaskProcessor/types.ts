@@ -4,7 +4,7 @@ import type { MonitorTaskQueue } from '../monitorTaskQueue/types.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
 import type { RawOrderFromAPI, Trader, MarketDataClient } from '../../../types/services.js';
 import type { QuoteSubscriptionRuntime } from '../../quoteSubscriptionRuntime/types.js';
-import type { RuntimeClock, RuntimeScheduler } from '../../../types/runtime.js';
+import type { RuntimeClock, RuntimeScheduler, RuntimeTermination } from '../../../types/runtime.js';
 
 /**
  * 席位快照（任务创建时点的席位状态）。
@@ -107,7 +107,7 @@ export type MonitorTaskProcessorDeps = Readonly<{
   marketDataClient: MarketDataClient;
   quoteSubscriptionRuntime: Pick<
     QuoteSubscriptionRuntime,
-    'retainSymbols' | 'waitForAdmission' | 'reconcilePositionHoldFromCurrentTruth'
+    'retainSymbols' | 'releaseRetain' | 'waitForAdmission' | 'reconcilePositionHoldFromCurrentTruth'
   >;
   switchWakeupRuntime: Pick<SwitchWakeupRuntime, 'handoffPendingSwitch'>;
   periodicSwitchWakeupRuntime: Pick<
@@ -123,7 +123,7 @@ export type MonitorTaskProcessorDeps = Readonly<{
   getCanTradeNow: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
-  onFatalError: (error: unknown) => void;
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 }>;
 
 /**
@@ -134,6 +134,7 @@ export type MonitorTaskProcessorDeps = Readonly<{
  */
 export interface MonitorTaskProcessor {
   readonly start: () => void;
+  readonly stop: () => void;
   readonly stopAndDrain: () => Promise<void>;
   readonly restart: () => void;
 }

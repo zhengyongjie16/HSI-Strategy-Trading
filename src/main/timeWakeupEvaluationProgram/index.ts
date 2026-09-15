@@ -32,18 +32,6 @@ const autoSearchAuthorizationByLastState = new WeakMap<
 >();
 
 /**
- * 取消当前单实例中的普通延迟验证信号。
- *
- * @param monitorContext 监控上下文
- * @returns 取消的信号总数
- */
-function cancelAllDelayedSignals(
-  monitorContext: TimeWakeupEvaluationContext['monitorContext'],
-): number {
-  return monitorContext.delayedSignalVerifier.cancelAll();
-}
-
-/**
  * 发布自动寻标授权变化。
  *
  * 自动寻标授权由生命周期交易开关、连续交易门禁与末日清仓接管共同决定；开盘保护只阻断普通信号，
@@ -341,10 +329,8 @@ export async function timeWakeupEvaluationProgram({
       logger.info(`进入连续交易时段${isHalfDayToday ? '（半日交易）' : ''}，开始正常交易。`);
     } else if (isTradingDayToday) {
       logger.info('当前为竞价或非连续交易时段，连续交易门禁关闭。');
-      const totalCancelled = cancelAllDelayedSignals(monitorContext);
-      if (totalCancelled > 0) {
-        logger.info(`[交易时段结束] 已清理 ${totalCancelled} 个待验证信号`);
-      }
+      monitorContext.strategy.invalidateAll();
+      logger.info('[交易时段结束] 已清理普通待验证意图');
     }
   }
 
@@ -394,10 +380,8 @@ export async function timeWakeupEvaluationProgram({
     tradingConfig.global.doomsdayProtection &&
     isWithinDoomsdayClearanceTakeoverWindow(currentTime, isHalfDayToday);
   if (!previousTakeoverActive && doomsdayTakeoverActive) {
-    const totalCancelled = cancelAllDelayedSignals(monitorContext);
-    if (totalCancelled > 0) {
-      logger.info(`[清仓接管] 已清理 ${totalCancelled} 个普通待验证信号`);
-    }
+    monitorContext.strategy.invalidateAll();
+    logger.info('[清仓接管] 已清理普通待验证意图');
   }
 
   takeoverStateByLastState.set(lastState, doomsdayTakeoverActive);

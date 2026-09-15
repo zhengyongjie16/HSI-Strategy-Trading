@@ -1,3 +1,4 @@
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type { Task, TaskQueue } from './tradeTaskQueue/types.js';
 
 /**
@@ -40,5 +41,5 @@ export type BaseProcessorConfig<TType extends string> = {
   readonly getCanProcessTask?: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
-  readonly onFatalError: (error: unknown) => void;
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 };

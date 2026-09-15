@@ -9,6 +9,7 @@
 import type { MonitorTaskQueue } from '../monitorTaskQueue/types.js';
 import { scheduleWhenTaskAdded } from '../utils.js';
 import type { MonitorTaskDataMap } from './types.js';
+import type { RuntimeTermination } from '../../../types/runtime.js';
 
 /**
  * 创建监控任务队列调度器。
@@ -22,10 +23,12 @@ import type { MonitorTaskDataMap } from './types.js';
  */
 export function createQueueRunner({
   monitorTaskQueue,
+  termination,
   processQueue,
   onQueueError,
   onAlreadyRunning,
 }: {
+  readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
   readonly processQueue: () => Promise<void>;
   readonly onQueueError: (err: unknown) => void;
@@ -77,9 +80,11 @@ export function createQueueRunner({
    * 为什么：使用 setImmediate 将调度与消费解耦，保证同一时刻仅有一个消费在飞行，避免递归调用堆叠。
    */
   function scheduleNextProcess(): void {
-    if (!running) {
+    if (!running || termination.isTerminated()) {
       return;
     }
+
+    if (inFlightPromise !== null || immediateHandle !== null) return;
 
     if (monitorTaskQueue.isEmpty()) {
       immediateHandle = null;
@@ -93,7 +98,8 @@ export function createQueueRunner({
      * @returns 无返回值
      */
     function handleImmediate(): void {
-      if (!running) {
+      immediateHandle = null;
+      if (!running || termination.isTerminated()) {
         return;
       }
 
@@ -117,6 +123,8 @@ export function createQueueRunner({
    * 启动调度器，注册任务新增监听并触发首次调度
    */
   function start(): void {
+    if (termination.isTerminated()) return;
+
     if (running) {
       onAlreadyRunning();
       return;

@@ -29,6 +29,7 @@ import type {
 function createTaskQueue<TType extends string>(): TaskQueue<TType> {
   let items: Task<TType>[] = [];
   let headIndex = 0;
+  let closed = false;
   const callbacks: TaskAddedCallback[] = [];
 
   function compactQueue(): void {
@@ -45,13 +46,23 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
   }
 
   return {
-    push(task: TaskInput<TType>): void {
+    push(task: TaskInput<TType>): boolean {
+      if (closed) {
+        return false;
+      }
+
       const fullTask: Task<TType> = {
         type: task.type,
         data: task.data,
       };
       items.push(fullTask);
       notifyTaskAddedCallbacks(callbacks);
+      return true;
+    },
+
+    close(): void {
+      closed = true;
+      callbacks.length = 0;
     },
 
     pop(): Task<TType> | null {
@@ -102,6 +113,12 @@ function createTaskQueue<TType extends string>(): TaskQueue<TType> {
     },
 
     onTaskAdded(callback: TaskAddedCallback): () => void {
+      if (closed) {
+        return () => {
+          // 终态不注册监听，因此注销无需修改队列。
+        };
+      }
+
       return registerTaskAddedCallback(callbacks, callback);
     },
   };

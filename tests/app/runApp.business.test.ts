@@ -1,3 +1,5 @@
+import type { RuntimeTermination } from '../../src/types/runtime.js';
+
 /**
  * runApp 业务测试
  *
@@ -91,16 +93,15 @@ const runAppDepsProxy: RunAppDeps = {
   displayAccountAndPositions: (params) => {
     requireActiveRunAppDeps().displayAccountAndPositions(params);
   },
-  registerDelayedSignalHandlers: (params) => {
-    requireActiveRunAppDeps().registerDelayedSignalHandlers(params);
-  },
+  prepareStrategy: (params) => requireActiveRunAppDeps().prepareStrategy(params),
+  subscribeShutdownSignal: (callback) =>
+    requireActiveRunAppDeps().subscribeShutdownSignal(callback),
   createBusinessEventProgram: (deps) => requireActiveRunAppDeps().createBusinessEventProgram(deps),
   createAsyncRuntime: (params) => requireActiveRunAppDeps().createAsyncRuntime(params),
   createLifecycleRuntime: (params, factories) =>
     requireActiveRunAppDeps().createLifecycleRuntime(params, factories),
   createCleanup: () => requireActiveRunAppDeps().createCleanup(),
   createTimeWakeupRuntime: (deps) => requireActiveRunAppDeps().createTimeWakeupRuntime(deps),
-  waitForShutdownSignal: () => requireActiveRunAppDeps().waitForShutdownSignal(),
   logger: {
     debug: (...args) => {
       requireActiveRunAppDeps().logger.debug(...args);
@@ -140,11 +141,6 @@ function createMinimalLastState(): LastState {
     },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: {
-      monitorSymbol: 'HSI.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
     allTradingSymbols: new Set(),
   };
 }
@@ -165,27 +161,17 @@ function createProcessorRecorder(name: string): AsyncRuntime['buyProcessor'] {
   };
 }
 
-function createMonitorTaskProcessorRecorder(name: string): AsyncRuntime['monitorTaskProcessor'] {
-  return {
-    start: () => {
-      recordSteadyRuntimeStart(name);
-    },
-    stopAndDrain: async () => {},
-    restart: () => {},
-  };
-}
-
 function createStartStopRecorder(name: string): {
   readonly start: () => void;
   readonly stopAndDrain: () => Promise<void>;
-  readonly drainFatalError: () => Promise<never>;
+  readonly stop: () => void;
 } {
   return {
     start: () => {
       recordSteadyRuntimeStart(name);
     },
+    stop: () => {},
     stopAndDrain: async () => {},
-    drainFatalError: () => new Promise<never>(() => {}),
   };
 }
 
@@ -195,7 +181,8 @@ function noopAsync(): void {}
 
 function createTradeTaskQueueDouble<TType extends string>(): TaskQueue<TType> {
   return {
-    push: () => {},
+    push: () => true,
+    close: () => {},
     pop: () => null,
     isEmpty: () => true,
     removeTasks: () => 0,
@@ -206,7 +193,8 @@ function createTradeTaskQueueDouble<TType extends string>(): TaskQueue<TType> {
 
 function createMonitorTaskQueueDouble(): PostGateRuntime['monitorTaskQueue'] {
   return {
-    scheduleLatest: () => {},
+    scheduleLatest: () => true,
+    close: () => {},
     pop: () => null,
     isEmpty: () => true,
     removeTasks: () => 0,
@@ -249,9 +237,6 @@ function createMockPreGateRuntime(): PreGateRuntime {
 function createMockPostGateRuntime(
   lastState: LastState,
   monitorContext: PostGateRuntime['monitorContext'],
-  autoSearchFatalPromise: Promise<never> = new Promise<never>(() => {}),
-  postTradeFatalPromise: Promise<never> = new Promise<never>(() => {}),
-  postGateFatalPromise: Promise<never> = new Promise<never>(() => {}),
 ): PostGateRuntime {
   const signalProcessor: SignalProcessor = {
     processSellSignals: ({
@@ -301,7 +286,6 @@ function createMockPostGateRuntime(
       start: () => {
         recordSteadyRuntimeStart('autoSearchWakeupRuntime.start');
       },
-      drainFatalError: () => autoSearchFatalPromise,
     }),
     periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble({
       start: () => {
@@ -325,6 +309,7 @@ function createMockPostGateRuntime(
       getStatus: () => ({ started: false, currentVersion: 0, staleVersion: 0 }),
       waitForFresh: async () => {},
       onFreshReached: () => noop,
+      stopScheduling: () => {},
       abortWaiting: () => {},
       resetAbort: () => {},
       start: () => {
@@ -333,7 +318,6 @@ function createMockPostGateRuntime(
       completeRebuildBaseline: () => {
         recordSteadyRuntimeStart('postTradeConsistencyRuntime.completeRebuildBaseline');
       },
-      drainFatalError: () => postTradeFatalPromise,
       stopAndDrain: async () => {},
       midnightClear: () => {},
     },
@@ -342,46 +326,38 @@ function createMockPostGateRuntime(
     loadTradingDayRuntimeSnapshot: async () => ({ allOrders: [], quotesMap: new Map() }),
     doomsdayProtection: createDoomsdayProtectionDouble(),
     signalProcessor,
-    indicatorCache: {
-      push: () => {},
-      getClosest: () => null,
-      clearAll: () => {},
-    },
     buyTaskQueue: createTradeTaskQueueDouble(),
     sellTaskQueue: createTradeTaskQueueDouble(),
     monitorTaskQueue: createMonitorTaskQueueDouble(),
-    drainFatalError: () => postGateFatalPromise,
   };
 }
 
 function createMockAsyncRuntime(): AsyncRuntime {
   return {
-    monitorTaskProcessor: createMonitorTaskProcessorRecorder('monitorTaskProcessor.start'),
+    monitorTaskProcessor: createProcessorRecorder('monitorTaskProcessor.start'),
     buyProcessor: createProcessorRecorder('buyProcessor.start'),
     sellProcessor: createProcessorRecorder('sellProcessor.start'),
-    drainFatalError: () => new Promise<never>(() => {}),
   };
 }
 
-function createShutdownController(): {
-  readonly waitForShutdownSignal: () => Promise<void>;
-  readonly triggerShutdown: () => void;
-} {
-  let resolveShutdown: (() => void) | null = null;
-  const shutdownPromise = new Promise<void>((resolve) => {
-    resolveShutdown = resolve;
-  });
-
+function createShutdownController() {
+  let onShutdown: (() => void) | null = null;
   return {
-    waitForShutdownSignal: () => shutdownPromise,
+    subscribeShutdownSignal: (callback: () => void) => {
+      onShutdown = callback;
+      return () => {
+        onShutdown = null;
+      };
+    },
     triggerShutdown: () => {
-      resolveShutdown?.();
+      onShutdown?.();
     },
   };
 }
 
 function createRunAppHarnessState(
   options: {
+    readonly deps?: Partial<RunAppDeps>;
     readonly rejectTimeWakeupDuringStart?: boolean;
     readonly cleanupError?: Error;
     readonly runtimeValidationValid?: boolean;
@@ -391,33 +367,17 @@ function createRunAppHarnessState(
 ) {
   const lastState = createMinimalLastState();
   const shutdownController = createShutdownController();
-  let rejectTimeWakeupFatal: ((error: Error) => void) | null = null;
-  let rejectAutoSearchFatal: ((error: Error) => void) | null = null;
-  let rejectBusinessEventFatal: ((error: Error) => void) | null = null;
-  let rejectPostTradeFatal: ((error: Error) => void) | null = null;
-  let rejectPostGateFatal: ((error: Error) => void) | null = null;
-  const timeWakeupFatalPromise = new Promise<never>((_, reject) => {
-    rejectTimeWakeupFatal = reject;
-  });
-  const autoSearchFatalPromise = new Promise<never>((_, reject) => {
-    rejectAutoSearchFatal = reject;
-  });
-  const businessEventFatalPromise = new Promise<never>((_, reject) => {
-    rejectBusinessEventFatal = reject;
-  });
-  const postTradeFatalPromise = new Promise<never>((_, reject) => {
-    rejectPostTradeFatal = reject;
-  });
-  const postGateFatalPromise = new Promise<never>((_, reject) => {
-    rejectPostGateFatal = reject;
-  });
-  void timeWakeupFatalPromise.catch(() => {});
-  void autoSearchFatalPromise.catch(() => {});
-  void businessEventFatalPromise.catch(() => {});
-  void postTradeFatalPromise.catch(() => {});
-  void postGateFatalPromise.catch(() => {});
+  let termination: RuntimeTermination | null = null;
   const deps = {
-    createPreGateRuntime: async ({ cleanup }: CreatePreGateRuntimeParams) => {
+    prepareStrategy: async () => ({
+      strategyId: createMonitorContextDouble().strategy.strategyId,
+      prepared: { create: () => createMonitorContextDouble().strategy },
+    }),
+    createPreGateRuntime: async ({
+      cleanup,
+      termination: sharedTermination,
+    }: CreatePreGateRuntimeParams) => {
+      termination = sharedTermination;
       cleanup.register({
         phase: 'CLOSE_TRADING_GATE',
         step: '记录 cleanup 执行',
@@ -454,7 +414,7 @@ function createRunAppHarnessState(
 
       if (options.cleanupError !== undefined) {
         cleanup.register({
-          phase: 'CLEAR_INDICATOR_CACHE',
+          phase: 'DESTROY_STRATEGY',
           step: '释放失败的测试资源',
           handler: () => {
             const cleanupError = options.cleanupError;
@@ -470,9 +430,6 @@ function createRunAppHarnessState(
       const runtime = createMockPostGateRuntime(
         lastState,
         options.postGateMonitorContext ?? createMonitorContextDouble(),
-        autoSearchFatalPromise,
-        postTradeFatalPromise,
-        postGateFatalPromise,
       );
       return runtime;
     },
@@ -511,7 +468,6 @@ function createRunAppHarnessState(
       }
     },
     displayAccountAndPositions: noopAsync,
-    registerDelayedSignalHandlers: noop,
     createBusinessEventProgram: () => {
       if (options.wiringError !== undefined) {
         throw options.wiringError;
@@ -519,7 +475,6 @@ function createRunAppHarnessState(
 
       return {
         ...createStartStopRecorder('businessEventProgram.start'),
-        drainFatalError: () => businessEventFatalPromise,
       };
     },
     createAsyncRuntime: () => createMockAsyncRuntime(),
@@ -527,20 +482,20 @@ function createRunAppHarnessState(
       tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
     }),
     createCleanup,
-    waitForShutdownSignal: shutdownController.waitForShutdownSignal,
+    subscribeShutdownSignal: shutdownController.subscribeShutdownSignal,
     createTimeWakeupRuntime: () => ({
       start: async () => {
         timeWakeupStartCount += 1;
         runtimeStartSteps.push('timeWakeupRuntime.start.begin');
         if (options.rejectTimeWakeupDuringStart === true) {
-          rejectTimeWakeupFatal?.(new Error('time wakeup initial fatal'));
+          termination?.reportFatalError(new Error('time wakeup initial fatal'));
         }
 
         await Promise.resolve();
         runtimeStartSteps.push('timeWakeupRuntime.start.end');
       },
+      stop: () => {},
       stopAndDrain: async () => {},
-      drainFatalError: () => timeWakeupFatalPromise,
     }),
     logger: {
       debug: () => {},
@@ -560,22 +515,22 @@ function createRunAppHarnessState(
   } satisfies RunAppDeps;
 
   return {
-    deps,
+    deps: { ...deps, ...options.deps },
     triggerShutdown: shutdownController.triggerShutdown,
     triggerTimeWakeupFatal: (error: Error) => {
-      rejectTimeWakeupFatal?.(error);
+      termination?.reportFatalError(error);
     },
     triggerAutoSearchFatal: (error: Error) => {
-      rejectAutoSearchFatal?.(error);
+      termination?.reportFatalError(error);
     },
     triggerBusinessEventFatal: (error: Error) => {
-      rejectBusinessEventFatal?.(error);
+      termination?.reportFatalError(error);
     },
     triggerPostTradeFatal: (error: Error) => {
-      rejectPostTradeFatal?.(error);
+      termination?.reportFatalError(error);
     },
     triggerPostGateFatal: (error: Error) => {
-      rejectPostGateFatal?.(error);
+      termination?.reportFatalError(error);
     },
   };
 }
@@ -610,7 +565,9 @@ async function flushMicrotasks(times: number): Promise<void> {
     await Promise.resolve();
   }
 
-  await Bun.sleep(0);
+  for (let attempt = 0; attempt < 100 && timeWakeupStartCount === 0; attempt += 1) {
+    await Bun.sleep(1);
+  }
 }
 
 async function waitForSteadyRuntimeStart(name: string): Promise<void> {
@@ -623,6 +580,16 @@ async function waitForSteadyRuntimeStart(name: string): Promise<void> {
   }
 
   throw new Error(`[测试] 未等到稳态运行时启动: ${name}`);
+}
+
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+
+  throw new Error('Expected rejection');
 }
 
 async function expectPromiseRejectsWithMessage(
@@ -668,6 +635,56 @@ describe.serial('runApp business flow', () => {
     steadyRuntimeStarts = [];
     runtimeStartSteps = [];
   });
+
+  it.each(['success', 'fatal', 'cleanupFailure'] as const)(
+    'logs normal completion only after successful cleanup: %s',
+    async (outcome) => {
+      const debugMessages: string[] = [];
+      const failure = new Error('completion route failure');
+      const harness = createRunAppHarness({
+        ...(outcome === 'cleanupFailure' ? { cleanupError: failure } : {}),
+        deps: {
+          logger: {
+            debug: (message) => {
+              expect(cleanupResetCount).toBe(1);
+              debugMessages.push(message);
+            },
+            info: () => {},
+            warn: () => {},
+            error: () => {},
+          },
+        },
+      });
+      const execution = harness.runApp({ env: {} });
+      await flushMicrotasks(20);
+      expect(debugMessages).toEqual([]);
+      if (outcome === 'fatal') {
+        harness.triggerTimeWakeupFatal(failure);
+      } else {
+        harness.triggerShutdown();
+      }
+
+      if (outcome === 'success') {
+        await execution;
+        expect(debugMessages).toEqual(['[App] 运行与清理完成，即将正常返回']);
+      } else {
+        const caught = await rejectionOf(execution);
+        if (outcome === 'fatal') {
+          expect(caught).toBe(failure);
+        } else {
+          expect(caught).toBeInstanceOf(AggregateError);
+          if (!(caught instanceof AggregateError))
+            throw new Error('Expected cleanup AggregateError');
+
+          expect(caught.errors).toEqual([failure]);
+        }
+
+        expect(debugMessages).toEqual([]);
+      }
+
+      expect(cleanupResetCount).toBe(1);
+    },
+  );
 
   it('cleans acquired resources exactly once and preserves AppStartupAbortError on runtime validation failure', async () => {
     currentScenario = 'initialRebuildSucceeds';
@@ -808,7 +825,7 @@ describe.serial('runApp business flow', () => {
     const harness = createRunAppHarness();
     const runPromise = harness.runApp({ env: {} });
 
-    await flushMicrotasks(20);
+    await waitForSteadyRuntimeStart('businessEventProgram.start');
     harness.triggerBusinessEventFatal(new Error('business event fatal'));
 
     await expectPromiseRejectsWithMessage(runPromise, /business event fatal/);
@@ -886,5 +903,113 @@ describe.serial('runApp business flow', () => {
     });
 
     await runAppAndTriggerShutdown(harness.runApp, harness.triggerShutdown);
+  });
+
+  it('subscribes shutdown then prepares before touching SDK resources', async () => {
+    const calls: string[] = [];
+    const prepareFailure = new Error('invalid selected config');
+    const harness = createRunAppHarness({
+      deps: {
+        subscribeShutdownSignal: () => {
+          calls.push('subscribe');
+          return () => {
+            calls.push('unsubscribe');
+          };
+        },
+        prepareStrategy: async () => {
+          calls.push('prepare');
+          throw prepareFailure;
+        },
+        createPreGateRuntime: async () => {
+          calls.push('SDK');
+          return null;
+        },
+      },
+    });
+    expect(await rejectionOf(harness.runApp({ env: {} }))).toBe(prepareFailure);
+    expect(calls).toEqual(['subscribe', 'prepare', 'unsubscribe']);
+  });
+
+  it('waits for late acquisition, registers its disposer and skips later assembly after shutdown', async () => {
+    let finish: (() => void) | undefined;
+    let shutdown: (() => void) | undefined;
+    const acquired = { current: false };
+    let disposed = 0;
+    let postGateCalls = 0;
+    const harness = createRunAppHarness({
+      deps: {
+        subscribeShutdownSignal: (callback) => {
+          shutdown = callback;
+          return () => {};
+        },
+        createPreGateRuntime: async ({ cleanup }) => {
+          acquired.current = true;
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+
+          cleanup.register({
+            phase: 'RESET_MARKET_DATA_RUNTIME',
+            step: 'late quote',
+            handler: () => {
+              disposed++;
+            },
+          });
+          return createMockPreGateRuntime();
+        },
+        createPostGateRuntime: async () => {
+          postGateCalls++;
+          return null;
+        },
+      },
+    });
+    const running = harness.runApp({ env: {} });
+    while (!acquired.current) await Bun.sleep(1);
+
+    shutdown?.();
+    await Promise.resolve();
+    expect(disposed).toBe(0);
+    finish?.();
+    await running;
+    expect(disposed).toBe(1);
+    expect(postGateCalls).toBe(0);
+  });
+
+  it('normal shutdown does not hide a subsequent internal acquisition error', async () => {
+    let finish: (() => void) | undefined;
+    const acquired = { current: false };
+    const fatal = new Error('late acquisition invariant');
+    const harness = createRunAppHarness({
+      deps: {
+        createPreGateRuntime: async ({ termination }) => {
+          acquired.current = true;
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
+          termination.requestShutdown();
+          throw fatal;
+        },
+      },
+    });
+    const running = harness.runApp({ env: {} });
+    while (!acquired.current) await Bun.sleep(1);
+
+    harness.triggerShutdown();
+    finish?.();
+    expect(await rejectionOf(running)).toBe(fatal);
+  });
+
+  it('preserves original fatal identity when a later awaited operation throws', async () => {
+    const first = { message: 'first raw fatal' };
+    const second = new Error('later awaited error');
+    const harness = createRunAppHarness({
+      deps: {
+        createPreGateRuntime: async ({ termination }) => {
+          termination.reportFatalError(first);
+          throw second;
+        },
+      },
+    });
+    expect(await rejectionOf(harness.runApp({ env: {} }))).toBe(first);
   });
 });

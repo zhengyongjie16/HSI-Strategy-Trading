@@ -7,11 +7,12 @@
  * - 在唯一装配入口中复用 monitorContext，并组装 async runtime、lifecycle 与 cleanup
  */
 import { timeWakeupEvaluationProgram } from '../main/timeWakeupEvaluationProgram/index.js';
-import { toError } from '../utils/error/index.js';
+import { createTerminationRuntime } from './runtime/createTerminationRuntime.js';
+import { createSelectedStrategy } from './startup/createSelectedStrategy.js';
 import { isExternalApiRequestError } from '../utils/apiFailure/index.js';
 import { syncMonitorContextSymbolNames } from './context/createMonitorContext.js';
 import { DEFAULT_RUN_APP_DEPS } from './runAppDeps.js';
-import type { AppEnvironmentParams, RunAppDeps } from './types.js';
+import type { AppEnvironmentParams, RunAppDeps, RuntimeAssemblyResources } from './types.js';
 import type { RuntimeClock, RuntimeScheduler } from '../types/runtime.js';
 
 const SYSTEM_RUNTIME_CLOCK: RuntimeClock = {
@@ -53,13 +54,13 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
     collectRuntimeValidationSymbols: buildRuntimeValidationCollector,
     createRebuildTradingDayState: buildRebuildTradingDayState,
     displayAccountAndPositions: renderAccountAndPositions,
-    registerDelayedSignalHandlers: bindDelayedSignalHandlers,
+    prepareStrategy: prepareSelectedStrategy,
+    subscribeShutdownSignal,
     createBusinessEventProgram: buildBusinessEventProgram,
     createAsyncRuntime: buildAsyncRuntime,
     createLifecycleRuntime: buildLifecycleRuntime,
     createCleanup: buildCleanup,
     createTimeWakeupRuntime: buildTimeWakeupRuntime,
-    waitForShutdownSignal: waitForShutdown,
     logger: appLogger,
     formatError: formatAppError,
     validateRuntimeSymbolsFromQuotesMap: validateRuntimeSymbols,
@@ -69,11 +70,68 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
   return async function runApp(params: AppEnvironmentParams): Promise<void> {
     const runtimeEnv = buildAppRuntimeEnv(params.env);
     const cleanup = buildCleanup();
-    let hasPrimaryError = false;
-    let primaryError: unknown;
+    const resources: RuntimeAssemblyResources = {};
+    const termination = createTerminationRuntime({
+      closeTradingGate: () => {
+        if (resources.lastState !== undefined) resources.lastState.isTradingEnabled = false;
+      },
+      closeProducerAdmission: () => {
+        resources.buyTaskQueue?.close();
+        resources.sellTaskQueue?.close();
+        resources.monitorTaskQueue?.close();
+      },
+      stopProducers: [
+        () => resources.strategy?.invalidateAll(),
+        () => resources.timeWakeupRuntime?.stop(),
+        () => resources.businessEventProgram?.stop(),
+        () => resources.postTradeConsistencyRuntime?.abortWaiting(),
+        () => resources.postTradeConsistencyRuntime?.stopScheduling(),
+        () => resources.tradingRiskEventRuntime?.stop(),
+        () => resources.monitorQuoteEventRuntime?.stop(),
+        () => resources.tradingQuoteDisplayRuntime?.stop(),
+        () => resources.switchWakeupRuntime?.stop(),
+        () => resources.periodicSwitchWakeupRuntime?.stop(),
+        () => resources.autoSearchWakeupRuntime?.stop(),
+        () => resources.seatActivationDispatcher?.stop(),
+        () => resources.seatRuntimeCleanupDispatcher?.stop(),
+        () => resources.monitorTaskProcessor?.stop(),
+        () => resources.buyProcessor?.stop(),
+        () => resources.sellProcessor?.stop(),
+      ],
+      onSecondaryError: (error) => {
+        appLogger.error('[runApp] 次要终止错误', formatAppError(error));
+      },
+    });
 
-    try {
-      const preGateRuntime = await buildPreGateRuntime({ env: runtimeEnv, cleanup });
+    async function assembleAndRun(): Promise<void> {
+      const unsubscribeShutdown = subscribeShutdownSignal(termination.requestShutdown);
+      cleanup.register({
+        phase: 'UNSUBSCRIBE_SHUTDOWN_SIGNAL',
+        step: '取消退出信号监听',
+        handler: unsubscribeShutdown,
+      });
+
+      if (termination.isTerminated()) return;
+
+      const selection = await prepareSelectedStrategy({ env: runtimeEnv });
+      if (termination.isTerminated()) return;
+
+      const strategy = createSelectedStrategy(
+        selection,
+        {
+          clock: SYSTEM_RUNTIME_CLOCK,
+          scheduler: SYSTEM_RUNTIME_SCHEDULER,
+          logger: appLogger,
+          onFatalError: termination.reportFatalError,
+        },
+        cleanup,
+      );
+      resources.strategy = strategy;
+      if (termination.isTerminated()) return;
+
+      const preGateRuntime = await buildPreGateRuntime({ env: runtimeEnv, cleanup, termination });
+      if (preGateRuntime === null || termination.isTerminated()) return;
+
       const startupNow = SYSTEM_RUNTIME_CLOCK.now();
       const postGateRuntime = await buildPostGateRuntime({
         env: runtimeEnv,
@@ -83,7 +141,12 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         scheduler: SYSTEM_RUNTIME_SCHEDULER,
         cleanup,
         logger: appLogger,
+        termination,
+        resources,
+        strategy,
       });
+      if (postGateRuntime === null || termination.isTerminated()) return;
+
       const startupSnapshot = await loadStartupRuntimeSnapshot({
         now: startupNow,
         lastState: postGateRuntime.lastState,
@@ -92,6 +155,8 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         logger: appLogger,
         formatError: formatAppError,
       });
+      if (termination.isTerminated()) return;
+
       const runtimeValidationCollector = buildRuntimeValidationCollector({
         tradingConfig: preGateRuntime.tradingConfig,
         symbolRegistry: preGateRuntime.symbolRegistry,
@@ -135,6 +200,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
       }
 
       const rebuildTradingDayState = buildRebuildTradingDayState({
+        termination,
         marketDataClient: preGateRuntime.marketDataClient,
         trader: postGateRuntime.trader,
         lastState: postGateRuntime.lastState,
@@ -149,24 +215,12 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         postGateRuntime,
         clock: SYSTEM_RUNTIME_CLOCK,
         scheduler: SYSTEM_RUNTIME_SCHEDULER,
+        termination,
+        resources,
+        cleanup,
       });
-      cleanup.register({
-        phase: 'STOP_MONITOR_TASK_PROCESSOR',
-        step: '停止 MonitorTaskProcessor',
-        handler: () => asyncRuntime.monitorTaskProcessor.stopAndDrain(),
-      });
+      if (asyncRuntime === null || termination.isTerminated()) return;
 
-      cleanup.register({
-        phase: 'STOP_BUY_PROCESSOR',
-        step: '停止 BuyProcessor',
-        handler: () => asyncRuntime.buyProcessor.stopAndDrain(),
-      });
-
-      cleanup.register({
-        phase: 'STOP_SELL_PROCESSOR',
-        step: '停止 SellProcessor',
-        handler: () => asyncRuntime.sellProcessor.stopAndDrain(),
-      });
       const businessEventProgram = buildBusinessEventProgram({
         clock: SYSTEM_RUNTIME_CLOCK,
         marketDataClient: preGateRuntime.marketDataClient,
@@ -175,15 +229,20 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         tradingConfig: preGateRuntime.tradingConfig,
         buyTaskQueue: postGateRuntime.buyTaskQueue,
         sellTaskQueue: postGateRuntime.sellTaskQueue,
-        indicatorCache: postGateRuntime.indicatorCache,
+        termination,
         monitorDisplayRuntime: postGateRuntime.monitorDisplayRuntime,
       });
+      resources.businessEventProgram = businessEventProgram;
       cleanup.register({
         phase: 'STOP_BUSINESS_EVENT_PROGRAM',
         step: '停止 BusinessEventProgram',
         handler: () => businessEventProgram.stopAndDrain(),
       });
+
+      if (termination.isTerminated()) return;
+
       const dayLifecycleManager = buildLifecycleRuntime({
+        termination,
         logger: appLogger,
         preGateRuntime,
         postGateRuntime,
@@ -192,17 +251,8 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         rebuildTradingDayState,
       });
 
-      bindDelayedSignalHandlers({
-        monitorContext,
-        lastState: postGateRuntime.lastState,
-        buyTaskQueue: postGateRuntime.buyTaskQueue,
-        sellTaskQueue: postGateRuntime.sellTaskQueue,
-        logger: appLogger,
-        doomsdayProtectionEnabled: preGateRuntime.tradingConfig.global.doomsdayProtection,
-        now: SYSTEM_RUNTIME_CLOCK.now,
-      });
-
       const timeWakeupRuntime = buildTimeWakeupRuntime({
+        termination,
         evaluate: () =>
           timeWakeupEvaluationProgram({
             logger: appLogger,
@@ -222,11 +272,14 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         clearTimer: SYSTEM_RUNTIME_SCHEDULER.clearTimer,
         logger: appLogger,
       });
+      resources.timeWakeupRuntime = timeWakeupRuntime;
       cleanup.register({
         phase: 'STOP_TIME_WAKEUP_RUNTIME',
         step: '停止 TimeWakeupRuntime',
         handler: () => timeWakeupRuntime.stopAndDrain(),
       });
+
+      if (termination.isTerminated()) return;
 
       let initialRebuildSucceeded = false;
       if (startupSnapshot.kind === 'API_RETRY_PENDING') {
@@ -241,8 +294,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
           initialRebuildSucceeded = true;
         } catch (err) {
           if (!isExternalApiRequestError(err)) {
-            const rebuildError = err instanceof Error ? err : new Error(formatAppError(err));
-            throw rebuildError;
+            throw err;
           }
 
           applyStartupSnapshotFailure(postGateRuntime.lastState);
@@ -253,77 +305,61 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         }
       }
 
-      const waitForInitialTimeWakeup = (): Promise<void> =>
-        Promise.race([timeWakeupRuntime.start(), timeWakeupRuntime.drainFatalError()]);
+      if (termination.isTerminated()) return;
 
-      let waitError: Error | null = null;
-      try {
-        if (initialRebuildSucceeded) {
-          postGateRuntime.postTradeConsistencyRuntime.start();
-          postGateRuntime.postTradeConsistencyRuntime.completeRebuildBaseline();
-          await postGateRuntime.quoteSubscriptionRuntime.reconcileFromCurrentTruth();
-          postGateRuntime.tradingQuoteDisplayRuntime.start();
-          postGateRuntime.quoteSubscriptionRuntime.start();
-          postGateRuntime.seatRuntimeCleanupDispatcher.start();
-          postGateRuntime.seatActivationDispatcher.start();
-          postGateRuntime.autoSearchWakeupRuntime.start();
-          postGateRuntime.periodicSwitchWakeupRuntime.start();
-          postGateRuntime.monitorDisplayRuntime.start();
-          postGateRuntime.tradingRiskEventRuntime.start();
-          postGateRuntime.monitorQuoteEventRuntime.start();
-          postGateRuntime.switchWakeupRuntime.start();
-          asyncRuntime.monitorTaskProcessor.start();
-          asyncRuntime.buyProcessor.start();
-          asyncRuntime.sellProcessor.start();
-          postGateRuntime.trader.startOrderMonitorRuntime();
-          await waitForInitialTimeWakeup();
-          businessEventProgram.start();
-        } else {
-          await waitForInitialTimeWakeup();
-        }
+      if (initialRebuildSucceeded) {
+        postGateRuntime.postTradeConsistencyRuntime.start();
+        postGateRuntime.postTradeConsistencyRuntime.completeRebuildBaseline();
+        await postGateRuntime.quoteSubscriptionRuntime.reconcileFromCurrentTruth();
+        if (termination.isTerminated()) return;
 
-        appLogger.info('程序开始运行，在交易时段将进行实时监控和交易（按 Ctrl+C 退出）');
-        await Promise.race([
-          waitForShutdown(),
-          timeWakeupRuntime.drainFatalError(),
-          businessEventProgram.drainFatalError(),
-          asyncRuntime.drainFatalError(),
-          postGateRuntime.drainFatalError(),
-          postGateRuntime.postTradeConsistencyRuntime.drainFatalError(),
-          postGateRuntime.autoSearchWakeupRuntime.drainFatalError(),
-        ]);
-      } catch (error) {
-        waitError = toError(error);
+        postGateRuntime.tradingQuoteDisplayRuntime.start();
+        postGateRuntime.quoteSubscriptionRuntime.start();
+        postGateRuntime.seatRuntimeCleanupDispatcher.start();
+        postGateRuntime.seatActivationDispatcher.start();
+        postGateRuntime.autoSearchWakeupRuntime.start();
+        postGateRuntime.periodicSwitchWakeupRuntime.start();
+        postGateRuntime.monitorDisplayRuntime.start();
+        postGateRuntime.tradingRiskEventRuntime.start();
+        postGateRuntime.monitorQuoteEventRuntime.start();
+        postGateRuntime.switchWakeupRuntime.start();
+        asyncRuntime.monitorTaskProcessor.start();
+        asyncRuntime.buyProcessor.start();
+        asyncRuntime.sellProcessor.start();
+        postGateRuntime.trader.startOrderMonitorRuntime();
       }
 
-      if (waitError !== null) {
-        throw waitError;
-      }
-    } catch (error) {
-      hasPrimaryError = true;
-      primaryError = error;
+      await timeWakeupRuntime.start();
+      if (termination.isTerminated()) return;
+
+      if (initialRebuildSucceeded) businessEventProgram.start();
+
+      appLogger.info('程序开始运行，在交易时段将进行实时监控和交易（按 Ctrl+C 退出）');
+      await termination.waitForTermination();
     }
 
     try {
-      await cleanup.execute();
-    } catch (cleanupError) {
-      if (hasPrimaryError) {
-        appLogger.error('[runApp] cleanup 失败，保留原始错误', formatAppError(cleanupError));
-      } else {
-        throw toError(cleanupError);
-      }
+      await assembleAndRun();
+    } catch (error) {
+      termination.reportFatalError(error);
     }
 
-    if (hasPrimaryError) {
-      throw primaryError;
+    termination.requestShutdown();
+    try {
+      await cleanup.execute();
+    } catch (cleanupError) {
+      const fatalState = termination.getFatalState();
+      if (!fatalState.hasFatalError) throw cleanupError;
+
+      appLogger.error('[runApp] cleanup 失败，保留原始错误', formatAppError(cleanupError));
     }
+
+    const fatalState = termination.getFatalState();
+    if (fatalState.hasFatalError) throw fatalState.error;
+
+    appLogger.debug('[App] 运行与清理完成，即将正常返回');
   };
 }
 
-/**
- * 运行应用主入口。
- *
- * @param params 当前环境变量
- * @returns 启动运行时后等待 shutdown；初始化失败或 cleanup 聚合错误会抛出
- */
+/** 运行唯一 app 装配，待当前资源创建落定后统一排空，保留首个原始 fatal。 */
 export const runApp = createRunApp(DEFAULT_RUN_APP_DEPS);

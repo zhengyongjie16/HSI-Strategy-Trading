@@ -237,7 +237,10 @@ function assertUnreachableOrderMutationRequest(request: never): never {
 function isOrderMutationAuthorized(
   request: OrderMutationRequest,
   stage: OrderActionAuthorizationStage,
+  termination: OrderOpsDeps['termination'],
 ): boolean {
+  if (termination.isTerminated()) return false;
+
   switch (request.kind) {
     case 'ORDER_FACT': {
       return true;
@@ -461,7 +464,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
           rateLimiter.withTradeMutation(async (permit) => {
             if (
               request.kind !== 'DOOMSDAY_WINDOW' &&
-              !isOrderMutationAuthorized(request, 'cancelOrder.beforeApi')
+              !isOrderMutationAuthorized(request, 'cancelOrder.beforeApi', deps.termination)
             ) {
               return { kind: 'AUTHORIZATION_REVOKED' } as const;
             }
@@ -694,7 +697,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
           return { kind: 'EXECUTION_FACT_CHANGED' } as const;
         }
 
-        if (!isOrderMutationAuthorized(request, 'replaceOrder.beforeApi')) {
+        if (!isOrderMutationAuthorized(request, 'replaceOrder.beforeApi', deps.termination)) {
           return { kind: 'AUTHORIZATION_REVOKED' } as const;
         }
 

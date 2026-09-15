@@ -1,3 +1,6 @@
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import type { RuntimeTermination } from '../../../src/types/runtime.js';
+
 /**
  * createPostGateRuntime 交易日志持久化测试
  *
@@ -12,9 +15,9 @@ import { createTradingConfig, createMonitorConfig } from '../../../mock/factorie
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
-import { createSignal } from '../../../mock/factories/signalFactory.js';
 import {
   createAccountSnapshotDouble,
+  createMonitorContextDouble,
   createLoggerDouble,
   createMarketDataClientDouble,
   createPositionDouble,
@@ -27,7 +30,7 @@ import type { TraderDeps } from '../../../src/core/trader/types.js';
 import type { OrderStateChangedEvent } from '../../../src/types/services.js';
 
 const TEST_LOG_ROOT_DIR = path.join(process.cwd(), 'tests', 'logs', 'post-gate-runtime');
-const FATAL_DRAIN_TIMEOUT_MS = 100;
+let activeTermination: RuntimeTermination;
 let capturedOrderStateChangedListener: ((event: OrderStateChangedEvent) => void) | null = null;
 
 type CreateTraderForTest = (deps: TraderDeps) => Promise<ReturnType<typeof createTraderDouble>>;
@@ -47,18 +50,23 @@ mock.module('../../../src/app/runtime/createPostGateRuntimeDeps.js', () => ({
   },
 }));
 
-const { createPostGateRuntime } = await import('../../../src/app/runtime/createPostGateRuntime.js');
+const { createPostGateRuntime: buildPostGateRuntime } =
+  await import('../../../src/app/runtime/createPostGateRuntime.js');
+async function createPostGateRuntime(
+  params: CreatePostGateRuntimeParams,
+): Promise<PostGateRuntime> {
+  const runtime = await buildPostGateRuntime(params);
+  if (runtime === null) throw new Error('unexpected terminated runtime');
 
-async function waitForFatalError(runtime: PostGateRuntime): Promise<Error> {
-  const fatalError = await Promise.race([
-    runtime.drainFatalError().catch((error: unknown) => error),
-    Bun.sleep(FATAL_DRAIN_TIMEOUT_MS).then(() => null),
-  ]);
-  if (!(fatalError instanceof Error)) {
-    throw new Error('expected delayed verifier failure to reject post-gate fatal drain');
-  }
+  return runtime;
+}
 
-  return fatalError;
+async function waitForFatalError(): Promise<unknown> {
+  await activeTermination.waitForTermination();
+  const fatalState = activeTermination.getFatalState();
+  if (!fatalState.hasFatalError) throw new Error('expected fatal');
+
+  return fatalState.error;
 }
 
 function createTestEnv(): NodeJS.ProcessEnv {
@@ -75,8 +83,17 @@ function createRuntimeParams(
 ): CreatePostGateRuntimeParams {
   const warrantListCache = createWarrantListCache();
   const monitorConfig = createMonitorConfig({ monitorSymbol: 'HSI.HK' });
+  activeTermination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
   return {
     logger: createLoggerDouble(),
+    termination: activeTermination,
+    resources: {},
+    strategy: createMonitorContextDouble().strategy,
     env: createTestEnv(),
     now: new Date('2026-03-13T09:30:00+08:00'),
     clock: { now: () => new Date('2026-03-13T09:30:00+08:00') },
@@ -317,8 +334,8 @@ describe('createPostGateRuntime trade log persistence', () => {
     fs.writeFileSync(logFile, '{invalid json', 'utf8');
 
     configurePostGateRuntimeTrader();
-    const runtime = await createPostGateRuntime(createRuntimeParams());
-    const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
+    await createPostGateRuntime(createRuntimeParams());
+    const fatalErrorPromise = waitForFatalError();
     const listener = requireCapturedOrderStateChangedListener();
     const event: OrderStateChangedEvent = {
       orderId: 'BUY-BROKEN-LOG',
@@ -349,8 +366,8 @@ describe('createPostGateRuntime trade log persistence', () => {
     fs.writeFileSync(logFile, '{}', 'utf8');
 
     configurePostGateRuntimeTrader();
-    const runtime = await createPostGateRuntime(createRuntimeParams());
-    const fatalErrorPromise = runtime.drainFatalError().catch((error: unknown) => error);
+    await createPostGateRuntime(createRuntimeParams());
+    const fatalErrorPromise = waitForFatalError();
     const listener = requireCapturedOrderStateChangedListener();
     const event: OrderStateChangedEvent = {
       orderId: 'BUY-NON-ARRAY-LOG',
@@ -403,32 +420,20 @@ describe('createPostGateRuntime trade log persistence', () => {
     });
   });
 
-  it('drains a delayed verifier indicator-cache exception as a post-gate fatal error', async () => {
+  it('passes one termination owner into Trader and blocks reopen after termination', async () => {
     const params = createRuntimeParams();
-    const runtime = await createPostGateRuntime(params);
-    const originalGetClosest = runtime.indicatorCache.getClosest;
-    runtime.indicatorCache.getClosest = () => {
-      throw new TypeError('indicator cache invariant broken');
+    let captured: TraderDeps | undefined;
+    createTraderForTest = async (deps) => {
+      captured = deps;
+      return createTraderDouble();
     };
-
-    try {
-      runtime.monitorContext.delayedSignalVerifier.addSignal({
-        signal: createSignal({
-          symbol: 'BULL.HK',
-          action: 'BUYCALL',
-          triggerTimeMs: Date.now() - 11_000,
-          indicators1: { K: 10 },
-        }),
-        verificationIndicators: ['K'],
-      });
-
-      const fatalError = await waitForFatalError(runtime);
-
-      expect(fatalError).toBeInstanceOf(TypeError);
-      expect(fatalError.message).toBe('indicator cache invariant broken');
-    } finally {
-      runtime.indicatorCache.getClosest = originalGetClosest;
-      await params.cleanup.execute();
-    }
+    const runtime = await createPostGateRuntime(params);
+    expect(captured?.termination).toBe(params.termination);
+    runtime.lastState.isTradingEnabled = true;
+    runtime.lastState.canTrade = true;
+    params.termination.requestShutdown();
+    expect(captured?.isExecutionAllowed()).toBeFalse();
+    expect(captured?.isContinuousTradingAllowed()).toBeFalse();
+    await params.cleanup.execute();
   });
 });

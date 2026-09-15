@@ -16,10 +16,7 @@ import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createIndicatorCache as createIndicatorCacheImpl } from '../../src/main/asyncProgram/indicatorCache/index.js';
-import { createDelayedSignalVerifier as createDelayedSignalVerifierImpl } from '../../src/main/asyncProgram/delayedSignalVerifier/index.js';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
-import { initMonitorState } from '../../src/utils/helpers/index.js';
 import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
 import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
@@ -44,28 +41,6 @@ import type {
   QuoteUpdatedEvent,
 } from '../../src/types/services.js';
 
-function createIndicatorCache(retentionWindowMs: number) {
-  return createIndicatorCacheImpl({
-    retentionWindowMs,
-  });
-}
-
-function createDelayedSignalVerifier(params: {
-  readonly indicatorCache: ReturnType<typeof createIndicatorCacheImpl>;
-  readonly onFatalError: (error: unknown) => void;
-}) {
-  return createDelayedSignalVerifierImpl({
-    ...params,
-    clock: { now: () => new Date(Date.now()) },
-    scheduler: {
-      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-      clearTimer: (handle) => {
-        clearTimeout(handle);
-      },
-    },
-  });
-}
-
 function rethrowFatalError(error: unknown): never {
   throw error;
 }
@@ -83,6 +58,8 @@ const ASYNC_PROCESSOR_RUNTIME = {
 import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import {
   createAccountSnapshotDouble,
+  createStrategyDouble,
+  createTerminationDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
@@ -188,7 +165,6 @@ function createTradingConfigForMonitor(monitorConfig: MonitorConfig): TradingCon
 
 function createSimulationLastState(params: {
   readonly monitorConfig: MonitorConfig;
-  readonly monitorState: ReturnType<typeof initMonitorState>;
   readonly positions: ReadonlyArray<ReturnType<typeof createPositionDouble>>;
   readonly currentDayKey: string;
 }): LastState {
@@ -213,7 +189,7 @@ function createSimulationLastState(params: {
     tradingCalendarSnapshot: new Map([
       [params.currentDayKey, { isTradingDay: true, isHalfDay: false }],
     ]),
-    monitorState: params.monitorState,
+
     allTradingSymbols: new Set<string>(),
   };
 }
@@ -271,16 +247,13 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache(300_000);
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
-    const monitorState = initMonitorState(monitorConfig);
     const positions = [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 300, availableQuantity: 300 }),
     ];
     const lastState = createSimulationLastState({
       monitorConfig,
-      monitorState,
       positions,
       currentDayKey: '2026-02-16',
     });
@@ -293,6 +266,17 @@ describe('full business simulation integration', () => {
     });
 
     const orderRecorder = createOrderRecorderDouble({
+      getBuyOrdersForSymbol: () => [
+        {
+          orderId: 'BUY-ORIGIN',
+          symbol: 'BULL.HK',
+          executedPrice: 1,
+          executedQuantity: 100,
+          executedTime: 1,
+          submittedAt: undefined,
+          updatedAt: undefined,
+        },
+      ],
       getCostAveragePrice: () => 1.2,
       selectSellableOrders: () => ({
         orders: [
@@ -310,41 +294,31 @@ describe('full business simulation integration', () => {
       }),
     });
 
-    const delayedSignalVerifier = createDelayedSignalVerifier({
-      indicatorCache,
-      onFatalError: rethrowFatalError,
-    });
+    const strategy = createStrategyDouble({
+      onCandlestick: (context, emit) => {
+        emit({
+          action: 'BUYCALL',
+          reason: 'full-simulation-buy',
+          triggerTimeMs: context.observedAtMs,
+        });
 
-    const strategy = {
-      generateSignals: () => ({
-        immediateSignals: [
-          createSignal({
-            symbol: 'BULL.HK',
-            action: 'BUYCALL',
-            reason: 'full-simulation-buy',
-            triggerTimeMs: Date.now(),
-          }),
-          createSignal({
-            symbol: 'BULL.HK',
-            action: 'SELLCALL',
-            reason: 'full-simulation-sell',
-            triggerTimeMs: Date.now(),
-          }),
-        ],
-        delayedSignals: [],
-      }),
-    };
+        emit({
+          action: 'SELLCALL',
+          reason: 'full-simulation-sell',
+          triggerTimeMs: context.observedAtMs,
+        });
+        return null;
+      },
+    });
 
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
-      state: monitorState,
       symbolRegistry,
       strategy,
       orderRecorder,
       dailyLossTracker: createNoopDailyLossTracker(),
       riskChecker,
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
-      delayedSignalVerifier,
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({
@@ -428,7 +402,7 @@ describe('full business simulation integration', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
       ...ASYNC_PROCESSOR_RUNTIME,
@@ -457,7 +431,7 @@ describe('full business simulation integration', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => lastState.isTradingEnabled,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     const candles = createCandles(120, 100, 0.2);
@@ -468,6 +442,7 @@ describe('full business simulation integration', () => {
 
     const candlestickUpdatedEvents = createSingleListenerEventSource<CandlestickUpdatedEvent>();
     const businessEventProgram = createBusinessEventProgram({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       clock: { now: () => new Date('2026-02-16T01:31:00.000Z') },
       marketDataClient: {
         ...createMarketDataClientDouble({
@@ -484,7 +459,6 @@ describe('full business simulation integration', () => {
       tradingConfig,
       buyTaskQueue,
       sellTaskQueue,
-      indicatorCache,
       monitorDisplayRuntime: {
         requestRender: () => {},
       },
@@ -505,7 +479,6 @@ describe('full business simulation integration', () => {
       expect(submittedActions).toEqual(['SELLCALL']);
     } finally {
       await businessEventProgram.stopAndDrain();
-      delayedSignalVerifier.destroy();
       await Promise.all([buyProcessor.stopAndDrain(), sellProcessor.stopAndDrain()]);
     }
   });
@@ -559,14 +532,11 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache(300_000);
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorState = initMonitorState(monitorConfig);
     const lastState = createSimulationLastState({
       monitorConfig,
-      monitorState,
       positions: [],
       currentDayKey: '2026-02-16',
     });
@@ -655,25 +625,14 @@ describe('full business simulation integration', () => {
     });
     const runtimeNow = () => new Date('2026-02-16T01:00:00.000Z');
 
-    const delayedSignalVerifier = createDelayedSignalVerifier({
-      indicatorCache,
-      onFatalError: rethrowFatalError,
-    });
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
-      state: monitorState,
       symbolRegistry,
-      strategy: {
-        generateSignals: () => ({
-          immediateSignals: [],
-          delayedSignals: [],
-        }),
-      },
+      strategy: createStrategyDouble(),
       orderRecorder,
       dailyLossTracker: createNoopDailyLossTracker(),
       riskChecker,
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
-      delayedSignalVerifier,
       autoSymbolManager,
     });
     const postTradeConsistencyRuntime = {
@@ -693,7 +652,7 @@ describe('full business simulation integration', () => {
       marketDataClient: autoSwitchMarketDataClient,
       trader,
       lastState,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const switchWakeupRuntime = createSwitchWakeupRuntime({
       logger: { error: () => {} },
@@ -713,9 +672,10 @@ describe('full business simulation integration', () => {
         clearTimeout(handle);
       },
       quoteSubscriptionRuntime,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       symbolRegistry,
       monitorContext,
       lastState,
@@ -730,6 +690,7 @@ describe('full business simulation integration', () => {
       },
     });
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       monitorContext,
       symbolRegistry,
       monitorTaskQueue,
@@ -747,6 +708,7 @@ describe('full business simulation integration', () => {
       },
     });
     const seatActivationDispatcher = createSeatActivationDispatcher({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -762,7 +724,7 @@ describe('full business simulation integration', () => {
       lastState,
       getCanProcessTask: () => true,
       getCanTradeNow: () => lastState.canTrade === true,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
       logger: { error: () => {} },
@@ -776,7 +738,7 @@ describe('full business simulation integration', () => {
       lastState,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled: false,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       now: runtimeNow,
       handoffPendingSwitch: switchWakeupRuntime.handoffPendingSwitch,
       quoteSubscriptionRuntime,
@@ -806,7 +768,7 @@ describe('full business simulation integration', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
       ...ASYNC_PROCESSOR_RUNTIME,
@@ -820,7 +782,7 @@ describe('full business simulation integration', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => lastState.isTradingEnabled,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     function emitMonitorQuoteUpdated(price: number): void {
@@ -941,7 +903,6 @@ describe('full business simulation integration', () => {
       expect(finalSeat.symbol).toBe('NEW_BULL.HK');
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(3);
     } finally {
-      delayedSignalVerifier.destroy();
       await Promise.all([
         autoSearchWakeupRuntime.stopAndDrain(),
         quoteSubscriptionRuntime.stopAndDrain(),
@@ -990,11 +951,9 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const indicatorCache = createIndicatorCache(300_000);
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorState = initMonitorState(monitorConfig);
     const longPosition = createPositionDouble({
       symbol: 'BULL.HK',
       quantity: 200,
@@ -1002,12 +961,22 @@ describe('full business simulation integration', () => {
     });
     const lastState = createSimulationLastState({
       monitorConfig,
-      monitorState,
       positions: [longPosition],
       currentDayKey: '1999-01-01',
     });
 
     const orderRecorder = createOrderRecorderDouble({
+      getBuyOrdersForSymbol: () => [
+        {
+          orderId: 'BUY-ORIGIN',
+          symbol: 'BULL.HK',
+          executedPrice: 1,
+          executedQuantity: 100,
+          executedTime: 1,
+          submittedAt: undefined,
+          updatedAt: undefined,
+        },
+      ],
       getCostAveragePrice: () => 1.2,
       selectSellableOrders: () => ({
         orders: [
@@ -1024,35 +993,20 @@ describe('full business simulation integration', () => {
         totalQuantity: 100,
       }),
     });
-    let cancelAllCalls = 0;
-    const delayedSignalVerifier = {
-      addSignal: () => {},
-      cancelAllForSymbol: () => 0,
-      cancelAllForDirection: () => 0,
-      cancelAll: () => {
-        cancelAllCalls += 1;
-        return 1;
-      },
-      getPendingCount: () => 1,
-      onVerified: () => {},
-      destroy: () => {},
-    };
+    let resetForTradingDayCalls = 0;
 
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
-      state: monitorState,
       symbolRegistry,
-      strategy: {
-        generateSignals: () => ({
-          immediateSignals: [],
-          delayedSignals: [],
-        }),
-      },
+      strategy: createStrategyDouble({
+        resetForTradingDay: () => {
+          resetForTradingDayCalls += 1;
+        },
+      }),
       orderRecorder,
       dailyLossTracker: createNoopDailyLossTracker(),
       riskChecker: createRiskCheckerDouble(),
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
-      delayedSignalVerifier,
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({
@@ -1135,7 +1089,7 @@ describe('full business simulation integration', () => {
       doomsdayProtection: createDoomsdayProtectionDouble(),
       getIsHalfDay: () => false,
       getCanProcessTask: () => lastState.isTradingEnabled,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
       ...ASYNC_PROCESSOR_RUNTIME,
@@ -1164,7 +1118,7 @@ describe('full business simulation integration', () => {
       getLastState: () => lastState,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => lastState.isTradingEnabled,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
       ...ASYNC_PROCESSOR_RUNTIME,
@@ -1180,7 +1134,7 @@ describe('full business simulation integration', () => {
       lastState,
       getCanProcessTask: () => lastState.isTradingEnabled,
       getCanTradeNow: () => lastState.canTrade === true,
-      onFatalError: rethrowFatalError,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     let runOpenRebuildCount = 0;
@@ -1188,6 +1142,7 @@ describe('full business simulation integration', () => {
     let postTradeStopCount = 0;
 
     const signalRuntimeDomain = createSignalRuntimeDomain({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       logger: createLoggerDouble(),
       monitorContext,
       buyProcessor,
@@ -1214,6 +1169,7 @@ describe('full business simulation integration', () => {
         stopAndDrain: async () => {},
       },
       monitorQuoteEventRuntime: {
+        stop: () => {},
         start: () => {},
         stopAndDrain: async () => {},
       },
@@ -1235,7 +1191,6 @@ describe('full business simulation integration', () => {
       seatActivationDispatcher: createSeatActivationDispatcherDouble(),
       seatRuntimeCleanupDispatcher: createSeatRuntimeCleanupDispatcherDouble(),
       trader,
-      indicatorCache,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,
@@ -1261,6 +1216,7 @@ describe('full business simulation integration', () => {
     });
 
     const dayLifecycleManager = createDayLifecycleManager({
+      termination: createTerminationDouble(),
       mutableState: lastState,
       cacheDomains: [signalRuntimeDomain, globalStateDomain],
       logger: {
@@ -1272,7 +1228,7 @@ describe('full business simulation integration', () => {
     });
 
     buyTaskQueue.push({
-      type: 'IMMEDIATE_BUY',
+      type: 'STRATEGY_BUY',
       data: createSignal({
         symbol: 'BULL.HK',
         action: 'BUYCALL',
@@ -1282,7 +1238,7 @@ describe('full business simulation integration', () => {
     });
 
     sellTaskQueue.push({
-      type: 'IMMEDIATE_SELL',
+      type: 'STRATEGY_SELL',
       data: createSignal({
         symbol: 'BULL.HK',
         action: 'SELLCALL',
@@ -1334,7 +1290,7 @@ describe('full business simulation integration', () => {
       expect(lastState.isTradingEnabled).toBeFalse();
       expect(buyTaskQueue.isEmpty()).toBeTrue();
       expect(sellTaskQueue.isEmpty()).toBeTrue();
-      expect(cancelAllCalls).toBe(1);
+      expect(resetForTradingDayCalls).toBe(1);
       expect(postTradeStopCount).toBe(1);
 
       await timeWakeupEvaluationProgram({
@@ -1358,7 +1314,7 @@ describe('full business simulation integration', () => {
       expect(postTradeStartCount).toBe(1);
 
       sellTaskQueue.push({
-        type: 'IMMEDIATE_SELL',
+        type: 'STRATEGY_SELL',
         data: createSignal({
           symbol: 'BULL.HK',
           action: 'SELLCALL',

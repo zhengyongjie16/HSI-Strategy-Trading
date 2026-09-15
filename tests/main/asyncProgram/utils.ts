@@ -82,11 +82,7 @@ export function createLastState(overrides: Partial<LastState> = {}): LastState {
     positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
-    monitorState: {
-      monitorSymbol: 'HSI.HK',
-      lastMonitorSnapshot: null,
-      incrementalIndicatorRuntime: null,
-    },
+
     allTradingSymbols: new Set(),
     ...overrides,
   };
@@ -101,12 +97,11 @@ export function createLastState(overrides: Partial<LastState> = {}): LastState {
  */
 function buildMonitorContextBase(
   options: Readonly<{
-    state: MonitorContext['state'];
     monitorSymbolName: string;
   }>,
   overrides: Partial<MonitorContext>,
 ): MonitorContext {
-  const { state, monitorSymbolName } = options;
+  const { monitorSymbolName } = options;
   const symbolRegistry = createSymbolRegistryDouble({
     longSeat: {
       symbol: 'BULL.HK',
@@ -131,7 +126,6 @@ function buildMonitorContextBase(
   });
 
   return createMonitorContextDouble({
-    state,
     symbolRegistry,
     monitorSymbolName,
     longSymbolName: 'BULL.HK',
@@ -149,11 +143,6 @@ function buildMonitorContextBase(
 export function createMonitorContext(overrides: Partial<MonitorContext> = {}): MonitorContext {
   return buildMonitorContextBase(
     {
-      state: {
-        monitorSymbol: 'HSI.HK',
-        lastMonitorSnapshot: null,
-        incrementalIndicatorRuntime: null,
-      },
       monitorSymbolName: 'HSI.HK',
     },
     overrides,
