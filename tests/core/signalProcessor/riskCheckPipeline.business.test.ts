@@ -89,6 +89,7 @@ describe('riskCheckPipeline business flow', () => {
         tradingConfig: createTradingConfig(),
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
         lastRiskCheckTime,
+        reportFatalError: () => {},
       });
 
       await rejects(
@@ -136,6 +137,7 @@ describe('riskCheckPipeline business flow', () => {
         },
       }),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -237,6 +239,7 @@ describe('riskCheckPipeline business flow', () => {
         },
       }),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const result = await withMockedNow(30_000, async () =>
@@ -311,6 +314,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const result = await withMockedNow(35_000, async () =>
@@ -363,6 +367,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const result = await withMockedNow(40_000, async () =>
@@ -398,6 +403,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const firstBuySignal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -457,6 +463,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const result = await withMockedNow(45_000, async () =>
@@ -494,6 +501,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     let caught: unknown = null;
@@ -540,6 +548,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     let caught: unknown = null;
@@ -590,6 +599,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const result = await withMockedNow(48_000, async () =>
@@ -647,6 +657,7 @@ describe('riskCheckPipeline business flow', () => {
         },
       }),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -723,6 +734,7 @@ describe('riskCheckPipeline business flow', () => {
         },
       }),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const signal = createSignalDouble('BUYPUT', 'BEAR.HK');
@@ -789,6 +801,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -850,6 +863,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
@@ -904,6 +918,7 @@ describe('riskCheckPipeline business flow', () => {
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     const signal = createSignalDouble('BUYPUT', 'BEAR.HK');
@@ -973,6 +988,7 @@ describe('riskCheckPipeline business flow', () => {
         },
       }),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     let caught: unknown = null;
@@ -1078,6 +1094,7 @@ describe('riskCheckPipeline business flow', () => {
         },
       }),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
 
     let caught: unknown = null;
@@ -1170,6 +1187,7 @@ describe('riskCheckPipeline business flow', () => {
         },
       }),
       lastRiskCheckTime,
+      reportFatalError: () => {},
     });
     // 仅此负向测试故意绕过 TypeScript 静态边界，模拟恶意 JS 调用；不代表 SELL 可进入买入风控。
     const forcedSellSignal = createSignalDouble('SELLCALL', 'BULL.HK') as unknown as BuySignal;
@@ -1218,5 +1236,81 @@ describe('riskCheckPipeline business flow', () => {
     expect(buyCutoffCheckCount).toBe(0);
     expect(warrantRiskCheckCount).toBe(0);
     expect(baseRiskCheckCount).toBe(0);
+  });
+
+  it('waits for both realtime reads and throws the internal error with fatal reported when external fails first', async () => {
+    const externalError = await createExternalApiRequestError({
+      operation: 'TradeContext.accountBalance',
+      attempts: 1,
+      cause: new Error('temporary'),
+    });
+    const internalError = new TypeError('positions contract broken');
+    const positionsRelease = Promise.withResolvers<undefined>();
+    let baseRiskCheckCount = 0;
+    const fatalErrors: unknown[] = [];
+    const signal = createSignalDouble('BUYCALL', 'BULL.HK');
+    const trader = createTraderDouble({
+      canTradeNow: () => ({ canTrade: true }),
+      getAccountSnapshot: async () => {
+        throw externalError;
+      },
+      getStockPositions: async () => {
+        await positionsRelease.promise;
+        throw internalError;
+      },
+    });
+
+    const pipeline = createRiskCheckPipeline({
+      tradingConfig: createTradingConfig(),
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      lastRiskCheckTime,
+      reportFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
+
+    let settled = false;
+    const pending = pipeline(
+      [signal],
+      createContext({
+        trader,
+        riskChecker: createRiskCheckerDouble({
+          checkWarrantRisk: () => ({ allowed: true }),
+          checkBeforeOrder: () => {
+            baseRiskCheckCount += 1;
+            return { allowed: true };
+          },
+        }),
+        orderRecorder: createOrderRecorderDouble(),
+      }),
+    );
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await Bun.sleep(0);
+    // 仅外部失败时不上报 fatal；内部请求未落定前不得提前结束排空。
+    expect(fatalErrors).toEqual([]);
+    expect(settled).toBe(false);
+
+    positionsRelease.resolve();
+    let caught: unknown = 'unset';
+    try {
+      await pending;
+    } catch (error) {
+      caught = error;
+    }
+
+    // 内部错误优先并保留原始身份，且未进入基础风控（无半提交）。
+    expect(caught).toBe(internalError);
+    expect(fatalErrors).toEqual([internalError]);
+    expect(baseRiskCheckCount).toBe(0);
+    expect(signal.reason).toBeUndefined();
+    expect(lastRiskCheckTime.has('BULL.HK_BUY')).toBe(true);
   });
 });

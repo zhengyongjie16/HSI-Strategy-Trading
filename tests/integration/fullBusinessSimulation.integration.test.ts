@@ -369,6 +369,7 @@ describe('full business simulation integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const postTradeConsistencyRuntime = {
@@ -754,6 +755,7 @@ describe('full business simulation integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const buyProcessor = createBuyProcessor({
@@ -1056,6 +1058,7 @@ describe('full business simulation integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const postTradeConsistencyRuntime = {

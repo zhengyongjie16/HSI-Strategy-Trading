@@ -138,6 +138,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
   const signalProcessor = createSignalProcessor({
     tradingConfig,
     liquidationCooldownTracker: tracker,
+    reportFatalError: () => {},
   });
   const context = createRiskContext({
     trader,
@@ -281,6 +282,7 @@ describe('liquidation-cooldown-recovery integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker: tracker,
+      reportFatalError: () => {},
     });
     const context = createRiskContext({
       trader,

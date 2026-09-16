@@ -8,6 +8,7 @@
  */
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { logger } from '../../utils/logger/index.js';
+import { readAccountAndPositionsBothSettled } from '../../utils/accountPositions/index.js';
 import { formatSymbolDisplayFromQuote } from '../utils.js';
 import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../constants/index.js';
 import { getDoomsdayBuyCutoffWindowRangeLabel } from '../doomsdayProtection/utils.js';
@@ -92,16 +93,18 @@ function getSignalQuote(params: {
 /**
  * 创建风险检查流水线
  * 返回一个只接受买入信号的异步函数：先做统一冷却过滤，再按固定顺序执行风控。
- * 轻检查通过后实时拉取账户/持仓并执行基础风险检查。
+ * 轻检查通过后使用专用双读取实时拉取账户/持仓：两个请求全部落定，内部错误优先并上报 fatal。
  */
 export const createRiskCheckPipeline = ({
   tradingConfig,
   liquidationCooldownTracker,
   lastRiskCheckTime,
+  reportFatalError,
 }: {
   readonly tradingConfig: TradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
   readonly lastRiskCheckTime: Map<string, number>;
+  readonly reportFatalError: (error: unknown) => void;
 }): ((
   signals: ReadonlyArray<BuySignal>,
   context: BuyRiskCheckContext,
@@ -195,7 +198,7 @@ export const createRiskCheckPipeline = ({
        * 5. 末日保护程序
        * 6. 牛熊证风险
        * 7. 信号报价的浮亏保护预筛（P1 最终执行报价门禁由 submitFlow 在 mutation permit 内执行）
-       * 8. Promise.all([trader.getAccountSnapshot(), trader.getStockPositions()])
+       * 8. 专用双读取实时账户与持仓（两个请求全部落定，内部错误优先）
        * 9. 基础风险检查（使用第 8 步实时数据）
        */
       const tradeCheck = trader.canTradeNow(sig.action);
@@ -283,10 +286,12 @@ export const createRiskCheckPipeline = ({
         }
       }
 
-      const [realtimeAccount, realtimePositions] = await Promise.all([
-        trader.getAccountSnapshot({ retryConfig: HIGH_FRESHNESS_API_RETRY_CONFIG }),
-        trader.getStockPositions({ retryConfig: HIGH_FRESHNESS_API_RETRY_CONFIG }),
-      ]);
+      const { account: realtimeAccount, positions: realtimePositions } =
+        await readAccountAndPositionsBothSettled({
+          trader,
+          retryConfig: HIGH_FRESHNESS_API_RETRY_CONFIG,
+          reportFatalError,
+        });
 
       const orderNotional = context.config.targetNotional;
       const buyRiskResult = riskChecker.checkBeforeOrder({

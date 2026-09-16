@@ -73,6 +73,14 @@ export type MonitorTaskDataMap = Readonly<{
 }>;
 
 /**
+ * SEAT_REFRESH 外部 API 失败后的重试去向。
+ * 类型用途：区分取消（停止/终止/生命周期门禁关闭）与重试次数真正耗尽，只有耗尽才允许把 ACTIVATING 席位回落 EMPTY。
+ * 数据来源：MonitorTaskProcessor 根据当前运行态与任务 apiRetryAttempt 判定。
+ * 使用范围：仅 monitorTaskProcessor 内部使用。
+ */
+export type SeatRefreshRetryOutcome = 'scheduled' | 'canceled' | 'exhausted';
+
+/**
  * 监控任务处理状态（任务处理结果）。
  * 类型用途：任务处理完成后的结果状态。
  * 数据来源：由 MonitorTaskProcessor 在处理单任务后根据执行结果设置。

@@ -201,7 +201,7 @@ function createDeps(
 }
 
 describe('app createAsyncRuntime wiring', () => {
-  it('does not replan periodic route when lifecycle gate skips AUTO_SYMBOL_TICK', async () => {
+  it('reports skipped outcome to periodic route when lifecycle gate skips AUTO_SYMBOL_TICK', async () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     const runtime = createAsyncRuntime(
@@ -230,10 +230,19 @@ describe('app createAsyncRuntime wiring', () => {
       waitCondition: () => monitorTaskQueue.isEmpty(),
     });
 
-    expect(replanCalls).toEqual([]);
+    expect(replanCalls).toEqual([
+      {
+        direction: 'LONG',
+        seatVersion: 7,
+        symbol: 'BULL.HK',
+        lastSeatActivatedAt: 1_000,
+        taskTimeMs: 2_000,
+        status: 'skipped',
+      },
+    ]);
   });
 
-  it('does not replan periodic route when doomsday gate blocks AUTO_SYMBOL_TICK', async () => {
+  it('reports blocked outcome to periodic route when doomsday gate blocks AUTO_SYMBOL_TICK', async () => {
     const originalNow = Date.now;
     const injectedNow = new Date(Date.UTC(2026, 1, 16, 7, 56));
     Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
@@ -299,7 +308,16 @@ describe('app createAsyncRuntime wiring', () => {
       });
 
       expect(periodicDueCalls).toBe(0);
-      expect(replanCalls).toEqual([]);
+      expect(replanCalls).toEqual([
+        {
+          direction: 'LONG',
+          seatVersion: 2,
+          symbol: 'BULL.HK',
+          lastSeatActivatedAt: 12_000,
+          taskTimeMs: 70_000,
+          status: 'blocked',
+        },
+      ]);
     } finally {
       Date.now = originalNow;
     }

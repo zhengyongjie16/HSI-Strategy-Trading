@@ -30,11 +30,13 @@ import type { SignalProcessor, SignalProcessorDeps } from './types.js';
  * 创建信号处理器（工厂函数）
  * @param tradingConfig - 交易配置，包含监控标的配置和风控参数
  * @param liquidationCooldownTracker - 清仓冷却追踪器，用于判断是否在冷却期内
+ * @param reportFatalError - 运行时 fatal 上报入口，用于买入风控双读取发现内部错误时立即上报
  * @returns SignalProcessor 实例
  */
 export const createSignalProcessor = ({
   tradingConfig,
   liquidationCooldownTracker,
+  reportFatalError,
 }: SignalProcessorDeps): SignalProcessor => {
   /** 买入风险冷却记录：Map<symbol_BUY, timestamp>，防止同标的重复信号频繁触发检查。 */
   const lastRiskCheckTime = new Map<string, number>();
@@ -42,6 +44,7 @@ export const createSignalProcessor = ({
     tradingConfig,
     liquidationCooldownTracker,
     lastRiskCheckTime,
+    reportFatalError,
   });
 
   /**

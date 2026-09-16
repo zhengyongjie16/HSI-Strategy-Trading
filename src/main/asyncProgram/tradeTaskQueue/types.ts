@@ -10,16 +10,16 @@ export type TaskAddedCallback = () => void;
 
 /**
  * 买入任务类型（任务 type 字段字面量）。
- * 类型用途：区分立即买入与验证后买入，供 TaskQueue<BuyTaskType> 与 BuyProcessor 使用。
- * 数据来源：由信号流水线/延迟验证回调在入队时指定。
+ * 类型用途：标识统一的普通策略买入任务，供 TaskQueue<BuyTaskType> 与 BuyProcessor 使用；不区分策略立即输出与策略内延迟验证输出。
+ * 数据来源：由策略 emitter 输出，经策略输出适配器（emissionAdapter）检查后入队时指定。
  * 使用范围：tradeTaskQueue、buyProcessor、业务 runtime 等，仅内部使用。
  */
 export type BuyTaskType = 'STRATEGY_BUY';
 
 /**
  * 卖出任务类型（任务 type 字段字面量）。
- * 类型用途：区分立即卖出与验证后卖出，供 TaskQueue<SellTaskType> 与 SellProcessor 使用。
- * 数据来源：由信号流水线/延迟验证回调在入队时指定。
+ * 类型用途：标识统一的普通策略卖出任务，供 TaskQueue<SellTaskType> 与 SellProcessor 使用；不区分策略立即输出与策略内延迟验证输出。
+ * 数据来源：由策略 emitter 输出，经策略输出适配器（emissionAdapter）检查后入队时指定。
  * 使用范围：tradeTaskQueue、sellProcessor、业务 runtime 等，仅内部使用。
  */
 export type SellTaskType = 'STRATEGY_SELL';
@@ -53,7 +53,7 @@ export type Task<TType extends string> = {
 /**
  * 任务入队负载类型。
  * 类型用途：描述调用方传入 TaskQueue.push() 的任务负载。
- * 数据来源：由 signal pipeline、延迟验证回调等调用方构造并传入 push()。
+ * 数据来源：由策略输出适配器（emissionAdapter）按统一普通策略任务构造并传入 push()，策略立即输出与策略内延迟验证输出共用同一负载形态。
  * 使用范围：tradeTaskQueue、buyProcessor、sellProcessor、业务 runtime 等，仅内部使用。
  */
 export type TaskInput<TType extends string> = {
@@ -67,8 +67,8 @@ export type TaskInput<TType extends string> = {
 /**
  * 通用任务队列接口（行为契约）。
  * 类型用途：买卖任务队列的入队/出队/清空/按条件移除及任务添加回调；泛型 TType 为 BuyTaskType 或 SellTaskType。
- * 数据来源：由主程序创建（createBuyTaskQueue/createSellTaskQueue），买卖处理器及 signal pipeline 调用。
- * 使用范围：业务 runtime、buyProcessor、sellProcessor、signal pipeline、lifecycle 等，仅内部使用。
+ * 数据来源：由主程序创建（createBuyTaskQueue/createSellTaskQueue）；任务由策略输出适配器（emissionAdapter）push 写入，由买卖处理器 pop 消费，lifecycle 与 seatRuntimeCleanupDispatcher 调用 clearAll/removeTasks。
+ * 使用范围：业务 runtime、businessEventProgram、buyProcessor、sellProcessor、lifecycle 等，仅内部使用。
  */
 export interface TaskQueue<TType extends string> {
   /** 入队任务；队列已 close 时返回 false 且不产生任何 mutation 或通知。 */

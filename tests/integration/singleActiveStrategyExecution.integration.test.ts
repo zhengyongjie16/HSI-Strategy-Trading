@@ -185,7 +185,11 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     protectiveLiquidationEpisodeTracker,
     mixedTradeLogRepository: { appendCompletionIdempotent: () => {} },
   });
-  const signalProcessor = createSignalProcessor({ tradingConfig, liquidationCooldownTracker });
+  const signalProcessor = createSignalProcessor({
+    tradingConfig,
+    liquidationCooldownTracker,
+    reportFatalError: () => {},
+  });
   const processedSells: ProcessedSellSignal[] = [];
   const buyTaskQueue = createBuyTaskQueue();
   const sellTaskQueue = createSellTaskQueue();

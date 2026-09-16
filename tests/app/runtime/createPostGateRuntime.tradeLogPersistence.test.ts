@@ -436,4 +436,31 @@ describe('createPostGateRuntime trade log persistence', () => {
     expect(captured?.isContinuousTradingAllowed()).toBeFalse();
     await params.cleanup.execute();
   });
+
+  it('wires lifecycle refresh fatal observation into the shared termination owner', async () => {
+    const internalError = new TypeError('TradeContext.accountBalance contract broken');
+    createTraderForTest = async () =>
+      createTraderDouble({
+        getAccountSnapshot: async () => {
+          throw internalError;
+        },
+      });
+    const runtime = await createPostGateRuntime(createRuntimeParams());
+
+    let caught: unknown = null;
+    try {
+      await runtime.loadTradingDayRuntimeSnapshot({
+        now: new Date('2026-03-13T09:30:00+08:00'),
+        requireTradingDay: false,
+        resetRuntimeSubscriptions: false,
+        hydrateCooldownFromTradeLog: false,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(internalError);
+    const fatalError = await waitForFatalError();
+    expect(fatalError).toBe(internalError);
+  });
 });

@@ -102,10 +102,11 @@ export interface SignalProcessor {
 /**
  * 创建 SignalProcessor 所需依赖。
  * 类型用途：约束 createSignalProcessor 的依赖注入形状。
- * 数据来源：由 app 组装层在启动时注入。
+ * 数据来源：由 app 组装层在启动时注入；reportFatalError 必须来自真实 termination，禁止默认 no-op。
  * 使用范围：仅 signalProcessor 工厂创建阶段使用。
  */
 export type SignalProcessorDeps = {
   readonly tradingConfig: TradingConfig;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
+  readonly reportFatalError: (error: unknown) => void;
 };

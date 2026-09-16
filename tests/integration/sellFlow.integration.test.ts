@@ -146,6 +146,7 @@ describe('sell-flow integration', () => {
     const signalProcessor = createSignalProcessor({
       tradingConfig: createTradingConfig(),
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      reportFatalError: () => {},
     });
     const protectiveSignal: ProtectiveLiquidationSellSignal = {
       symbol: 'BULL.HK',
@@ -282,6 +283,7 @@ describe('sell-flow integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const storage = createOrderStorage();
@@ -414,6 +416,7 @@ describe('sell-flow integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
     const storage = createOrderStorage();
     storage.addBuyOrder('BULL.HK', 1, 100, true, Date.now() - 1_000);
@@ -579,6 +582,7 @@ describe('sell-flow integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const storage = createOrderStorage();
@@ -728,6 +732,7 @@ describe('sell-flow integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const storage = createOrderStorage();

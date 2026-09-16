@@ -51,6 +51,7 @@ async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
   const signalProcessor = createSignalProcessor({
     tradingConfig,
     liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    reportFatalError: () => {},
   });
   let executeCalls = 0;
   const trader = createTraderDouble({

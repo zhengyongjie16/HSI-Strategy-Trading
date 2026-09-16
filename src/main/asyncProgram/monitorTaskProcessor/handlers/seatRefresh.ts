@@ -5,8 +5,18 @@
  * - 作为 seat activation barrier，在 ACTIVATING 阶段完成 quote admission 与风险缓存初始化
  * - 在执行时拉取行情后刷新订单、账户、浮亏与牛熊证信息
  * - 成功后推进到 ACTIVE，业务校验失败则回 EMPTY 并 bump version
+ *
+ * 清理语义：
+ * - retain 的释放始终完整 await；主体与清理的错误按 fatal/外部分类收口
+ * - 任何内部错误（主体或清理）保留原始身份进入 fatal，双外部 API 失败聚合后仍保持外部分类
+ * - 次级诊断的格式化与日志为 best-effort：其自身失败不得覆盖已收口的错误
  */
 import { logger } from '../../../../utils/logger/index.js';
+import {
+  createExternalApiAggregateRequestError,
+  isExternalApiRequestError,
+} from '../../../../utils/apiFailure/index.js';
+import { formatError } from '../../../../utils/error/index.js';
 import { isSeatVersionMatch } from '../../../../utils/seat/guards.js';
 
 import type { MarketDataClient } from '../../../../types/services.js';
@@ -46,6 +56,71 @@ function logSeatRefreshProcessed(params: {
   logger.debug(
     `[SEAT_REFRESH processed] direction=${data.direction} seatVersion=${data.seatVersion} previousSymbol=${data.previousSymbol ?? 'null'} nextSymbol=${data.nextSymbol} result=${result}${reasonSuffix}`,
   );
+}
+
+/**
+ * best-effort 记录次级诊断。
+ *
+ * 为什么：诊断值可能带抛错的 message getter，logger 也可能自身抛错；两者都发生在 finally 中，
+ * 一旦逸出就会替换在途的主体错误，因此这里必须完整隔离格式化与日志的失败。
+ *
+ * @param message 诊断日志消息
+ * @param diagnostic 次级诊断值
+ * @returns 无返回值
+ */
+function logSecondaryDiagnosticBestEffort(message: string, diagnostic: unknown): void {
+  try {
+    logger.error(message, formatError(diagnostic));
+  } catch {
+    // 诊断失败只允许丢弃，不能覆盖已选定的主体错误
+  }
+}
+
+/**
+ * 收口席位刷新主体失败与 releaseRetain 清理失败的错误归属。
+ *
+ * 为什么：finally 中的清理错误不能覆盖主体错误。内部错误必须保持 fatal 分类与原始身份，
+ * 外部失败只有在主体与清理同为外部 API 失败时才允许聚合后继续保持外部分类；
+ * 主体内部错误存在时，清理错误只作为次级诊断记录，且该诊断自身失败不得覆盖主体错误。
+ *
+ * @param params 主体失败标记、主体错误与清理错误
+ * @returns 无返回值；仅当清理错误应成为最终错误时抛出
+ */
+function resolveRefreshReleaseFailure(params: {
+  readonly hasBodyFailure: boolean;
+  readonly bodyFailure: unknown;
+  readonly releaseFailure: unknown;
+}): void {
+  const { hasBodyFailure, bodyFailure, releaseFailure } = params;
+
+  if (hasBodyFailure && !isExternalApiRequestError(bodyFailure)) {
+    logSecondaryDiagnosticBestEffort(
+      '[SEAT_REFRESH] releaseRetain 失败（主体已有内部错误，保留主体 fatal 身份）',
+      releaseFailure,
+    );
+    return;
+  }
+
+  if (isExternalApiRequestError(releaseFailure)) {
+    if (hasBodyFailure && isExternalApiRequestError(bodyFailure)) {
+      throw createExternalApiAggregateRequestError({
+        operation: 'SEAT_REFRESH.releaseRetain',
+        attempts: 1,
+        causes: [bodyFailure, releaseFailure],
+      });
+    }
+
+    throw releaseFailure;
+  }
+
+  if (hasBodyFailure) {
+    logSecondaryDiagnosticBestEffort(
+      '[SEAT_REFRESH] 主体外部 API 失败后 releaseRetain 内部失败（保留清理 fatal 身份）',
+      bodyFailure,
+    );
+  }
+
+  throw releaseFailure;
 }
 
 function setDirectionSymbolName(
@@ -217,6 +292,8 @@ export function createSeatRefreshHandler({
       ownerKey: `SEAT_REFRESH_WAIT:${data.direction}:${data.seatVersion}`,
       reason: 'SEAT_REFRESH_WAIT' as const,
     };
+    let hasBodyFailure = false;
+    let bodyFailure: unknown = null;
     try {
       const quoteSymbols = [data.nextSymbol];
       if (data.previousSymbol && data.previousSymbol !== data.nextSymbol) {
@@ -359,8 +436,16 @@ export function createSeatRefreshHandler({
       });
 
       return 'processed';
+    } catch (error) {
+      hasBodyFailure = true;
+      bodyFailure = error;
+      throw error;
     } finally {
-      await quoteSubscriptionRuntime.releaseRetain(retainOwner);
+      try {
+        await quoteSubscriptionRuntime.releaseRetain(retainOwner);
+      } catch (releaseFailure) {
+        resolveRefreshReleaseFailure({ hasBodyFailure, bodyFailure, releaseFailure });
+      }
     }
   };
 }

@@ -39,6 +39,7 @@ import {
   createSeatActivationDispatcherDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 
 function getEntry(_key: string): undefined {
   return;
@@ -110,6 +111,7 @@ function createBaseDeps(
     warrantListCacheConfig: overrides.warrantListCacheConfig ?? createWarrantListCacheConfig(),
     seatActivationDispatcher:
       overrides.seatActivationDispatcher ?? createSeatActivationDispatcherDouble(),
+    reportFatalError: overrides.reportFatalError ?? (() => {}),
   };
 }
 
@@ -444,7 +446,11 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
   });
 
   it('账户快照契约失败时 fail-fast，不能按空账户继续重建', async () => {
+    const reportFatalErrors: unknown[] = [];
     const deps = createBaseDeps({
+      reportFatalError: (error) => {
+        reportFatalErrors.push(error);
+      },
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           throw new TypeError('TradeContext.accountBalance returned no primary account');
@@ -466,6 +472,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect((caught as Error).message).toBe(
       'TradeContext.accountBalance returned no primary account',
     );
+    expect(reportFatalErrors).toEqual([caught]);
   });
 
   it('持仓快照拉取失败时 fail-fast，不能按空持仓继续重建', async () => {
@@ -491,8 +498,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       caughtError = error;
     }
 
+    // 保留原始错误身份，不再包装成“无法刷新账户和持仓信息”。
     expect(caughtError).toBeInstanceOf(Error);
-    expect((caughtError as Error).message).toMatch(/无法刷新账户和持仓信息/);
+    expect((caughtError as Error).message).toBe('positions unavailable');
     expect(fetchAllOrdersCalled).toBe(false);
   });
 
@@ -508,6 +516,106 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const load = createLoadTradingDayRuntimeSnapshot(deps);
 
     expect(load(createLoadParams())).rejects.toThrow(/API 超时/);
+  });
+
+  it('外部先失败且内部后失败时等待两个请求落定，保留内部错误并上报 fatal', async () => {
+    const externalError = await createExternalApiRequestError({
+      operation: 'TradeContext.accountBalance',
+      attempts: 1,
+      cause: new Error('temporary'),
+    });
+    const internalError = new TypeError('positions contract broken');
+    const positionsRelease = Promise.withResolvers<undefined>();
+    const reportFatalErrors: unknown[] = [];
+    let fetchAllOrdersCalled = false;
+    const lastState = createMinimalLastState();
+    const deps = createBaseDeps({
+      lastState,
+      reportFatalError: (error) => {
+        reportFatalErrors.push(error);
+      },
+      trader: createReadyTrader({
+        getAccountSnapshot: async () => {
+          throw externalError;
+        },
+        getStockPositions: async () => {
+          await positionsRelease.promise;
+          throw internalError;
+        },
+        fetchAllOrdersFromAPI: async () => {
+          fetchAllOrdersCalled = true;
+          return [];
+        },
+      }),
+    });
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+
+    let settled = false;
+    const outcome = load(createLoadParams()).then(
+      () => ({ kind: 'resolved' as const }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
+    void outcome.then(() => {
+      settled = true;
+    });
+
+    await Bun.sleep(0);
+    // 仅外部失败时不得提前上报 fatal，也不得提前结束排空。
+    expect(reportFatalErrors).toEqual([]);
+    expect(settled).toBe(false);
+
+    positionsRelease.resolve();
+    const result = await outcome;
+    expect(result.kind).toBe('rejected');
+    if (result.kind !== 'rejected') {
+      throw new Error('expected loadTradingDayRuntimeSnapshot to reject');
+    }
+
+    expect(result.error).toBe(internalError);
+    expect(reportFatalErrors).toEqual([internalError]);
+    // 无半提交：失败时不得写入账户缓存，也不得继续拉取订单。
+    expect(lastState.cachedAccount).toBeNull();
+    expect(lastState.cachedPositions).toEqual([]);
+    expect(fetchAllOrdersCalled).toBe(false);
+  });
+
+  it('纯外部读取失败时原样透传且不上报 fatal，不进行半提交', async () => {
+    const externalError = await createExternalApiRequestError({
+      operation: 'TradeContext.stockPositions',
+      attempts: 1,
+      cause: new Error('positions api down'),
+    });
+    const reportFatalErrors: unknown[] = [];
+    let fetchAllOrdersCalled = false;
+    const lastState = createMinimalLastState();
+    const deps = createBaseDeps({
+      lastState,
+      reportFatalError: (error) => {
+        reportFatalErrors.push(error);
+      },
+      trader: createReadyTrader({
+        getStockPositions: async () => {
+          throw externalError;
+        },
+        fetchAllOrdersFromAPI: async () => {
+          fetchAllOrdersCalled = true;
+          return [];
+        },
+      }),
+    });
+    const load = createLoadTradingDayRuntimeSnapshot(deps);
+
+    let caught: unknown = null;
+    try {
+      await load(createLoadParams());
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(externalError);
+    expect(reportFatalErrors).toEqual([]);
+    expect(lastState.cachedAccount).toBeNull();
+    expect(fetchAllOrdersCalled).toBe(false);
   });
 
   it('only runs startup auto-search after continuous session and morning delay are both satisfied', async () => {

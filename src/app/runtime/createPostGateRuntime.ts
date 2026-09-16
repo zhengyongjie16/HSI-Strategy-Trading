@@ -412,6 +412,7 @@ function createPostGateRuntimeFactory(
       mixedTradeLogRepository,
       warrantListCacheConfig,
       seatActivationDispatcher,
+      reportFatalError: termination.reportFatalError,
     });
     const marketMonitor = createMarketMonitor();
     const doomsdayProtection = createDoomsdayProtection({ now: clock.now });
@@ -598,6 +599,7 @@ function createPostGateRuntimeFactory(
     const signalProcessor = createSignalProcessor({
       tradingConfig,
       liquidationCooldownTracker,
+      reportFatalError: termination.reportFatalError,
     });
     const seatRuntimeCleanupDispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,

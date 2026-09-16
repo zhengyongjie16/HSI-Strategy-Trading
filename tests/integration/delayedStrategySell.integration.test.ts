@@ -197,6 +197,7 @@ describe('delayed strategy sell integration', () => {
         signalProcessor: createSignalProcessor({
           tradingConfig,
           liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+          reportFatalError: () => {},
         }),
         marketDataClient,
         getLastState: () => lastState,

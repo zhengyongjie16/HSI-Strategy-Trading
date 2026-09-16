@@ -154,7 +154,7 @@ export type LoadTradingDayRuntimeSnapshotResult = Readonly<{
 /**
  * loadTradingDayRuntimeSnapshot 的外部依赖。
  * 类型用途：封装行情客户端、交易、配置及辅助服务，作为 loadTradingDayRuntimeSnapshot 的入参。
- * 数据来源：由启动流程或开盘重建调用方组装传入。
+ * 数据来源：由启动流程或开盘重建调用方组装传入；reportFatalError 必须来自真实 termination，禁止默认 no-op。
  * 使用范围：仅 lifecycle 内部使用。
  */
 export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
@@ -169,6 +169,7 @@ export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
   mixedTradeLogRepository: MixedTradeLogRepository;
   warrantListCacheConfig: WarrantListCacheConfig;
   seatActivationDispatcher: Pick<SeatActivationDispatcher, 'dispatchCurrentActivatingSeats'>;
+  reportFatalError: (error: unknown) => void;
 }>;
 
 /**

@@ -561,14 +561,14 @@ describe('monitorTaskProcessor business flow', () => {
     expect(intervalCallArgs).toHaveLength(0);
   });
 
-  it('does not hand off or replan AUTO_SYMBOL_TICK after takeover begins during periodic evaluation', async () => {
+  it('reports blocked outcome to periodic route without stale switch wakeup handoff after takeover begins', async () => {
     const beforeTakeoverMs = Date.parse('2026-02-16T07:54:59.000Z');
     const takeoverMs = Date.parse('2026-02-16T07:55:00.000Z');
     let currentNowMs = beforeTakeoverMs;
     const periodicEvaluationStarted = createDeferred<null>();
     const releasePeriodicEvaluation = createDeferred<null>();
     const handoffCalls: string[] = [];
-    const periodicWakeupCalls: string[] = [];
+    const periodicWakeupCalls: Array<{ kind: string; status?: MonitorTaskStatus }> = [];
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const context = createMonitorContext({
       autoSymbolManager: {
@@ -611,13 +611,13 @@ describe('monitorTaskProcessor business flow', () => {
       },
       periodicSwitchWakeupRuntime: {
         markWaitingEmpty: () => {
-          periodicWakeupCalls.push('mark');
+          periodicWakeupCalls.push({ kind: 'mark' });
         },
         clearWaitingEmpty: () => {
-          periodicWakeupCalls.push('clear');
+          periodicWakeupCalls.push({ kind: 'clear' });
         },
-        replanRouteAfterTask: () => {
-          periodicWakeupCalls.push('replan');
+        replanRouteAfterTask: (params) => {
+          periodicWakeupCalls.push({ kind: 'replan', status: params.status });
         },
       },
       lastState: createLastState(),
@@ -641,10 +641,11 @@ describe('monitorTaskProcessor business flow', () => {
     await periodicEvaluationStarted.promise;
     currentNowMs = takeoverMs;
     releasePeriodicEvaluation.resolve(null);
+    await waitUntil(() => periodicWakeupCalls.length === 1, 500);
     await processor.stopAndDrain();
 
     expect(handoffCalls).toEqual([]);
-    expect(periodicWakeupCalls).toEqual([]);
+    expect(periodicWakeupCalls).toEqual([{ kind: 'replan', status: 'blocked' }]);
   });
 
   it('marks periodic route waiting-empty when AUTO_SYMBOL_TICK leaves periodic pending state', async () => {
@@ -824,7 +825,7 @@ describe('monitorTaskProcessor business flow', () => {
     ]);
   });
 
-  it('returns blocked without replanning periodic route outside ordinary trade gate', async () => {
+  it('reports blocked outcome to periodic route outside ordinary trade gate so gate reopen can recover', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Array<{
       direction: 'LONG' | 'SHORT';
@@ -904,7 +905,16 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(periodicDueCalls).toBe(0);
     expect(clearCalls).toEqual([]);
-    expect(replanCalls).toEqual([]);
+    expect(replanCalls).toEqual([
+      {
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        seatVersion: 2,
+        lastSeatActivatedAt: 12_000,
+        taskTimeMs: 70_000,
+        status: 'blocked',
+      },
+    ]);
   });
 
   it('skips AUTO_SYMBOL_TICK when seat snapshot is stale', async () => {

@@ -4,7 +4,15 @@
  * 职责：
  * - 作为稳态运行期 quote 订阅集合唯一 owner
  * - 以 retain reason 汇总 monitor、seat、position、order 与临时等待需求
- * - 串行执行 subscribe/unsubscribe mutation，并在提交成功后更新 committed set 与 lastState.allTradingSymbols
+ * - 串行执行 subscribe/unsubscribe mutation，并在每个 SDK 阶段成功后立即更新 committed set 与 lastState.allTradingSymbols
+ *
+ * 准入纪律：
+ * - 基础投影与 retain 注册都与其对应的 SDK mutation 在同一条串行命令内执行；
+ *   排队中的旧命令只观察自己执行时已注册的 desired state，不会消费后来注册的 activation retain。
+ * - 未准入的 ACTIVATING 新标的不进入 SEAT_BOUND；首次 admission 只由 awaited activation retain 发起，
+ *   席位进入 ACTIVE 后才由 SEAT_BOUND 接棒；已准入的标的保持订阅，避免启动与换标期间的订阅抖动。
+ * - 事件驱动的普通 seat/order 变化没有恢复 owner，mutation 失败仍进入 fatal 通道；
+ *   activation retain 的 mutation 失败会回滚本次注册，把原错误交还 awaited 调用方，由 owner 决定有限重试。
  */
 import type { Position } from '../../types/account.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
@@ -49,7 +57,7 @@ function hasRetainForSymbol(
 
 /**
  * 创建 quote 订阅 runtime。
- * runtime 不复制业务事实，只在事件到达时从权威状态重投影对应 retain reason。
+ * runtime 不复制业务事实，只在命令执行时从权威状态重投影对应 retain reason。
  *
  * @param deps 运行期依赖
  * @returns QuoteSubscriptionRuntime 实例
@@ -101,6 +109,23 @@ export function createQuoteSubscriptionRuntime(
     return desired;
   }
 
+  /**
+   * 把当前已确认的 SDK 订阅事实写回 lastState，供后续投影与命令读取。
+   *
+   * @param committedSymbols 已确认在 SDK 生效的 symbol 集合
+   */
+  function writeCommittedSymbols(committedSymbols: ReadonlySet<string>): void {
+    deps.lastState.allTradingSymbols = new Set(committedSymbols);
+  }
+
+  /**
+   * 收敛 desired 与 committed 差异，逐阶段执行 SDK mutation。
+   *
+   * 为什么每个阶段成功后立即写回 committed：SDK 调用成功即成为既成事实，
+   * 后续阶段失败不能把前一阶段的成功一起丢掉；否则后续命令与显式 drain 会按失真的
+   * committed 计算退订范围，已订阅的标的永久泄漏却假装收口成功。
+   * 每个阶段只在对应 SDK 调用成功后登记确认事实，失败指令由调用方或后续命令继续收口。
+   */
   async function applyMutation(): Promise<void> {
     const desired = collectDesiredSymbols();
     const committedSymbols = readCommittedSymbolsFromLastState();
@@ -112,6 +137,8 @@ export function createQuoteSubscriptionRuntime(
       for (const symbol of added) {
         committedSymbols.add(symbol);
       }
+
+      writeCommittedSymbols(committedSymbols);
     }
 
     if (removed.length > 0) {
@@ -119,13 +146,26 @@ export function createQuoteSubscriptionRuntime(
       for (const symbol of removed) {
         committedSymbols.delete(symbol);
       }
-    }
 
-    deps.lastState.allTradingSymbols = new Set(committedSymbols);
+      writeCommittedSymbols(committedSymbols);
+    }
   }
 
-  function enqueueMutation(): Promise<void> {
-    mutationChain = mutationChain.then(applyMutation, applyMutation);
+  /**
+   * 把 desired state 更新与对应 SDK mutation 作为同一条串行命令入队。
+   *
+   * 为什么：更新必须在自己的命令执行时才生效；若在入队前同步改写 store，
+   * 排队中的旧命令会读到后来注册的 retain，代替其 owner 执行首次 admission。
+   *
+   * @param update 本条命令执行时需要先应用的 desired state 更新；省略时仅按当前 store 收口
+   * @returns 本条命令的完成 Promise；失败原样拒绝调用方，后续命令仍继续串行执行
+   */
+  function enqueueSubscriptionSync(update?: () => void): Promise<void> {
+    const runCommand = async (): Promise<void> => {
+      update?.();
+      await applyMutation();
+    };
+    mutationChain = mutationChain.then(runCommand, runCommand);
     return mutationChain;
   }
 
@@ -136,13 +176,25 @@ export function createQuoteSubscriptionRuntime(
     );
   }
 
+  /**
+   * 投影两个方向席位的 SEAT_BOUND 标的。
+   * 未准入的 ACTIVATING 新标的不在此处订阅：其首次 admission 由 awaited activation retain 完成；
+   * 已准入的标的继续保留，避免启动快照与换标推进期间的退订抖动。ACTIVE 席位始终由本投影接管。
+   */
   function projectAllSeatBound(): void {
+    const committedSymbols = deps.lastState.allTradingSymbols;
     const seatSymbols: string[] = [];
     for (const direction of ['LONG', 'SHORT'] as const) {
       const seatState = deps.symbolRegistry.getSeatState(direction);
-      if (seatState.status !== 'EMPTY' && seatState.status !== 'SEARCHING') {
-        seatSymbols.push(seatState.symbol);
+      if (seatState.status === 'EMPTY' || seatState.status === 'SEARCHING') {
+        continue;
       }
+
+      if (seatState.status === 'ACTIVATING' && !committedSymbols.has(seatState.symbol)) {
+        continue;
+      }
+
+      seatSymbols.push(seatState.symbol);
     }
 
     setOwnerSymbols({ reason: 'SEAT_BOUND', ownerKey: 'all-seats' }, seatSymbols);
@@ -166,8 +218,7 @@ export function createQuoteSubscriptionRuntime(
     if (!running || deps.termination.isTerminated()) return;
 
     const symbols = collectSeatSymbols(event);
-    projectAllSeatBound();
-    void enqueueMutation().catch((error: unknown) => {
+    void enqueueSubscriptionSync(projectAllSeatBound).catch((error: unknown) => {
       logger.error(
         `[QuoteSubscriptionRuntime] 处理席位订阅变化失败 symbols=${symbols.join(',')}`,
         formatError(error),
@@ -179,8 +230,7 @@ export function createQuoteSubscriptionRuntime(
   function handleOrderHoldChanged(): void {
     if (!running || deps.termination.isTerminated()) return;
 
-    projectOrderHold();
-    void enqueueMutation().catch((error: unknown) => {
+    void enqueueSubscriptionSync(projectOrderHold).catch((error: unknown) => {
       logger.error('[QuoteSubscriptionRuntime] 处理订单保留订阅变化失败', formatError(error));
       deps.termination.reportFatalError(error);
     });
@@ -195,18 +245,18 @@ export function createQuoteSubscriptionRuntime(
 
     accepting = true;
     drainPromise = null;
-    projectMonitorBase();
-    projectAllSeatBound();
-    projectPositionHold();
-    projectOrderHold();
-    await enqueueMutation();
+    await enqueueSubscriptionSync(() => {
+      projectMonitorBase();
+      projectAllSeatBound();
+      projectPositionHold();
+      projectOrderHold();
+    });
   }
 
   async function reconcilePositionHoldFromCurrentTruth(): Promise<void> {
     if (!accepting) return;
 
-    projectPositionHold();
-    await enqueueMutation();
+    await enqueueSubscriptionSync(projectPositionHold);
   }
 
   function start(): void {
@@ -242,10 +292,11 @@ export function createQuoteSubscriptionRuntime(
     const pendingMutation = drainFailed ? Promise.resolve() : mutationChain;
     drainFailed = false;
     drainPromise = pendingMutation
-      .then(async () => {
-        retainsByOwner.clear();
-        await enqueueMutation();
-      })
+      .then(() =>
+        enqueueSubscriptionSync(() => {
+          retainsByOwner.clear();
+        }),
+      )
       .catch((error: unknown) => {
         drainFailed = true;
         throw error;
@@ -253,6 +304,13 @@ export function createQuoteSubscriptionRuntime(
     return drainPromise;
   }
 
+  /**
+   * 注册临时 retain，并等待包含本次注册的 admission mutation。
+   *
+   * 为什么失败回滚：admission 失败后若继续保留 desired，后续无关命令会读到该 retain
+   * 并代替本 owner 重复尝试首次 admission，既偷走 owner 的有限重试，
+   * 也会把外部失败送进没有恢复 owner 的 fatal 通道；重试统一由 awaited 调用方重新注册。
+   */
   async function retainSymbols(params: QuoteSubscriptionRetainParams): Promise<void> {
     if (!accepting) return;
 
@@ -260,8 +318,14 @@ export function createQuoteSubscriptionRuntime(
       reason: params.reason,
       ownerKey: params.ownerKey,
     };
-    setOwnerSymbols(owner, params.symbols);
-    await enqueueMutation();
+    try {
+      await enqueueSubscriptionSync(() => {
+        setOwnerSymbols(owner, params.symbols);
+      });
+    } catch (error: unknown) {
+      removeOwner(owner);
+      throw error;
+    }
   }
 
   async function releaseRetain(
@@ -269,8 +333,9 @@ export function createQuoteSubscriptionRuntime(
   ): Promise<void> {
     if (!accepting) return;
 
-    removeOwner(params);
-    await enqueueMutation();
+    await enqueueSubscriptionSync(() => {
+      removeOwner(params);
+    });
   }
 
   async function waitForAdmission(symbols: ReadonlyArray<string>): Promise<void> {
@@ -284,7 +349,7 @@ export function createQuoteSubscriptionRuntime(
       (symbol) => !committedSymbols.has(symbol) && hasRetainForSymbol(retainsByOwner, symbol),
     );
     if (missing.length > 0) {
-      await enqueueMutation();
+      await enqueueSubscriptionSync();
     }
   }
 

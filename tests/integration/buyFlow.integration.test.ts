@@ -810,6 +810,7 @@ describe('buy-flow integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const tradeCtx = createTradeContextMock();
@@ -1205,6 +1206,7 @@ describe('buy-flow integration', () => {
         clearMidnightEligible: () => {},
         resetAllTriggerCounts: () => {},
       },
+      reportFatalError: () => {},
     });
 
     const successNow = 3_000_000;

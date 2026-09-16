@@ -31,6 +31,7 @@ import type {
   MonitorTaskProcessorDeps,
   MonitorTaskStatus,
   RefreshHelpers,
+  SeatRefreshRetryOutcome,
   SeatRefreshRetryTimer,
 } from './types.js';
 
@@ -100,6 +101,13 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   });
   const seatRefreshRetryTimers = new Map<string, SeatRefreshRetryTimer>();
 
+  /**
+   * 将 AUTO_SYMBOL_TICK 的非 processed 结果交回周期换标 runtime。
+   *
+   * 为什么：blocked/skipped 结果必须回写，才能在等待空仓占用失效时解除占用，并在门禁恢复后
+   * 由 runtime 重新 plan；这里只保留运行态与终止身份校验，不叠加交易门禁。
+   * 回写只重建计划与 waiting-empty 状态，实际换标任务仍由 handler 在执行时按门禁放行。
+   */
   function handoffPeriodicTaskOutcome(
     task: MonitorTask<MonitorTaskDataMap>,
     status: MonitorTaskStatus,
@@ -108,7 +116,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return;
     }
 
-    if (!running || termination.isTerminated() || !getCanTradeNow()) {
+    if (!running || termination.isTerminated()) {
       return;
     }
 
@@ -121,22 +129,25 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   }
 
   /**
-   * 为 SEAT_REFRESH 外部 API 失败安排一次延迟重试。
-   * 为什么：席位刷新是任务性恢复链路，可由 owner 有界重试；但外部 API 故障不能在同一队列轮次内立即打回，避免瞬时故障被同步放大。
+   * 根据当前运行态决定 SEAT_REFRESH 外部 API 失败后的重试去向。
+   *
+   * 为什么：停止、进程终止与生命周期门禁关闭属于取消，取消只是放弃本次任务的 retry owner，
+   * 不得在迟到外部失败到达时把仍在 ACTIVATING 的席位 finalize 为 EMPTY；
+   * 只有重试次数真正耗尽才允许回落 EMPTY。
+   *
+   * @param task 当前失效的 SEAT_REFRESH 任务
+   * @returns 'scheduled' 已安排延迟重试；'canceled' 运行态已取消；'exhausted' 重试次数耗尽
    */
-  function retrySeatRefreshOnce(task: MonitorTask<MonitorTaskDataMap>): boolean {
-    if (
-      !running ||
-      termination.isTerminated() ||
-      (getCanProcessTask && !getCanProcessTask()) ||
-      task.type !== 'SEAT_REFRESH'
-    ) {
-      return false;
+  function retrySeatRefreshOnce(
+    task: MonitorTask<MonitorTaskDataMap, 'SEAT_REFRESH'>,
+  ): SeatRefreshRetryOutcome {
+    if (!running || termination.isTerminated() || (getCanProcessTask && !getCanProcessTask())) {
+      return 'canceled';
     }
 
     const apiRetryAttempt = task.data.apiRetryAttempt ?? 0;
     if (apiRetryAttempt >= 1) {
-      return false;
+      return 'exhausted';
     }
 
     const pendingTimer = seatRefreshRetryTimers.get(task.dedupeKey);
@@ -145,7 +156,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       pendingTimer.seatVersion === task.data.seatVersion &&
       pendingTimer.nextSymbol === task.data.nextSymbol
     ) {
-      return true;
+      return 'scheduled';
     }
 
     if (pendingTimer !== undefined) {
@@ -196,14 +207,12 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       nextSymbol: task.data.nextSymbol,
     };
     seatRefreshRetryTimers.set(task.dedupeKey, retryEntry);
-    return true;
+    return 'scheduled';
   }
 
-  function finalizeExhaustedSeatRefresh(task: MonitorTask<MonitorTaskDataMap>): void {
-    if (task.type !== 'SEAT_REFRESH') {
-      return;
-    }
-
+  function finalizeExhaustedSeatRefresh(
+    task: MonitorTask<MonitorTaskDataMap, 'SEAT_REFRESH'>,
+  ): void {
     const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
     const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(task.data.direction);
     if (
@@ -294,8 +303,8 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
           `[MonitorTaskProcessor] 处理任务失败 type=${task.type} monitor=${monitorSymbol} dedupe=${task.dedupeKey}`,
           formatError(err),
         );
-        const retryScheduled = retrySeatRefreshOnce(task);
-        if (!retryScheduled) {
+
+        if (task.type === 'SEAT_REFRESH' && retrySeatRefreshOnce(task) === 'exhausted') {
           finalizeExhaustedSeatRefresh(task);
         }
 
