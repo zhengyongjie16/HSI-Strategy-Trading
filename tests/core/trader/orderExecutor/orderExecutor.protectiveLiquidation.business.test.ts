@@ -10,7 +10,6 @@ import { TRADING } from '../../../../src/constants/index.js';
 import { createOrderExecutor as createOrderExecutorCore } from '../../../../src/core/trader/orderExecutor/index.js';
 import type {
   OrderExecutorDeps,
-  OrderMonitor,
   TrackOrderParams,
 } from '../../../../src/core/trader/types.js';
 import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
@@ -30,6 +29,7 @@ import { createTradeContextMock } from '../../../../mock/longbridge/tradeContext
 import { getRequiredHKDateKey } from '../../../../src/utils/time/index.js';
 import {
   createMarketDataClientDouble,
+  createOrderMonitorDouble as createSharedOrderMonitorDouble,
   createOrderRecorderDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
@@ -79,30 +79,13 @@ function createFinalQuoteMarketDataClient() {
 
 function createOrderMonitorDouble(params: {
   readonly onTrackOrder: (trackedOrder: TrackOrderParams) => void;
-}): OrderMonitor {
-  return {
-    initialize: async () => {},
-    teardown: async () => {},
-    onOrderStateChanged: () => () => {},
+}): ReturnType<typeof createSharedOrderMonitorDouble> {
+  return createSharedOrderMonitorDouble({
     trackOrder: (trackedOrder) => {
       params.onTrackOrder(trackedOrder);
     },
-    cancelOrder: async () => ({
-      kind: 'CANCEL_CONFIRMED',
-      relatedBuyOrderIds: null,
-    }),
-    cancelDoomsdayOrder: async () => ({
-      kind: 'CANCEL_CONFIRMED',
-      relatedBuyOrderIds: null,
-    }),
     replaceOrderPriceWithPermit: async () => ({ kind: 'BROKER_CONFIRMED' }),
-    startRuntime: () => {},
-    stopRuntimeAndDrain: async () => {},
-    recoverOrderTrackingFromSnapshot: async () => {},
-    getPendingSellOrders: () => [],
-    hasPendingProtectiveLiquidationOrders: () => false,
-    clearTrackedOrders: () => {},
-  };
+  });
 }
 
 /** 构造直接覆盖末日命令授权边界的最小真实执行器。 */

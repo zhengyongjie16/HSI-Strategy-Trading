@@ -14,12 +14,13 @@ import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMoc
 import { createAccountService } from '../../../src/core/trader/accountService.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { TraderDeps } from '../../../src/core/trader/types.js';
-import type { RateLimiter, TradeMutationPermit, Trader } from '../../../src/types/services.js';
+import type { Trader } from '../../../src/types/services.js';
 import { getRequiredHKDateKey } from '../../../src/utils/time/index.js';
 import {
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
   createTradeContextDouble,
@@ -92,19 +93,6 @@ function createEmptyStockPositionsResponse(): StockPositionsResponse {
         channels: [],
       };
     },
-  };
-}
-
-/** 构造只用于账户读取场景的无副作用限流器。 */
-function createRateLimiterDouble(): RateLimiter {
-  return {
-    throttle: async () => {},
-    withTradeMutation: async <T>(
-      callback: (permit: TradeMutationPermit) => Promise<T>,
-    ): Promise<T> =>
-      callback({
-        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
-      }),
   };
 }
 

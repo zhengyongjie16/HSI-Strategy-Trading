@@ -7,22 +7,9 @@ import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderStatus, OrderType } from 'longbridge';
 
 import { createOrderCacheManager } from '../../../src/core/trader/orderCacheManager.js';
-import type { RateLimiter, TradeMutationPermit } from '../../../src/types/services.js';
+import { createRateLimiterDouble } from '../../helpers/testDoubles.js';
 
 const TEST_NOW = (): Date => new Date('2026-04-10T01:00:00.000Z');
-
-/** 构造订单缓存读取测试使用的无副作用限流器。 */
-function createRateLimiterDouble(): RateLimiter {
-  return {
-    throttle: async () => {},
-    withTradeMutation: async <T>(
-      callback: (permit: TradeMutationPermit) => Promise<T>,
-    ): Promise<T> =>
-      callback({
-        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
-      }),
-  };
-}
 
 describe('orderCacheManager business flow', () => {
   it('returns pending orders from valid SDK todayOrders payload', async () => {

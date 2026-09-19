@@ -7,22 +7,19 @@
 import { describe, expect, it } from 'bun:test';
 import type { SubmitOrderOptions, SubmitOrderResponse, TradeContext } from 'longbridge';
 import { createOrderExecutor } from '../../../src/core/trader/orderExecutor/index.js';
-import type { OrderMonitor, TrackOrderParams } from '../../../src/core/trader/types.js';
+import type { TrackOrderParams } from '../../../src/core/trader/types.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { logger } from '../../../src/utils/logger/index.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
-import type {
-  OrderRecord,
-  OrderRecorder,
-  RateLimiter,
-  TradeMutationPermit,
-} from '../../../src/types/services.js';
+import type { OrderRecord, OrderRecorder } from '../../../src/types/services.js';
 import { createMonitorConfig, createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../mock/factories/signalFactory.js';
 import { createStockPositionsResponse } from '../../../mock/factories/tradeFactory.js';
 import {
   createMarketDataClientDouble,
+  createOrderMonitorDouble,
   createOrderRecorderDouble,
+  createRateLimiterDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
@@ -41,51 +38,13 @@ type SubmitFlowFixtureParams = {
   readonly targetNotional?: number;
 };
 
-function createMutationRateLimiter(): RateLimiter {
-  return {
-    throttle: async () => {},
-    withTradeMutation: async <T>(
-      callback: (permit: TradeMutationPermit) => Promise<T>,
-    ): Promise<T> => {
-      let invoked = false;
-      const permit: TradeMutationPermit = {
-        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => {
-          if (invoked) {
-            throw new Error('mutation permit invoked more than once');
-          }
-
-          invoked = true;
-          return operation();
-        },
-      };
-
-      return callback(permit);
-    },
-  };
-}
-
-function createOrderMonitorDouble(trackOrder: (params: TrackOrderParams) => void): OrderMonitor {
-  return {
-    initialize: async () => {},
-    teardown: async () => {},
-    onOrderStateChanged: () => () => {},
+function createOrderMonitorForSubmitFlow(
+  trackOrder: (params: TrackOrderParams) => void,
+): ReturnType<typeof createOrderMonitorDouble> {
+  return createOrderMonitorDouble({
     trackOrder,
-    cancelOrder: async () => ({
-      kind: 'CANCEL_CONFIRMED',
-      relatedBuyOrderIds: null,
-    }),
-    cancelDoomsdayOrder: async () => ({
-      kind: 'CANCEL_CONFIRMED',
-      relatedBuyOrderIds: null,
-    }),
     replaceOrderPriceWithPermit: async () => ({ kind: 'BROKER_CONFIRMED' }),
-    startRuntime: () => {},
-    stopRuntimeAndDrain: async () => {},
-    recoverOrderTrackingFromSnapshot: async () => {},
-    getPendingSellOrders: () => [],
-    hasPendingProtectiveLiquidationOrders: () => false,
-    clearTrackedOrders: () => {},
-  };
+  });
 }
 
 function createSubmitFlowFixture(params: SubmitFlowFixtureParams = {}) {
@@ -117,7 +76,7 @@ function createSubmitFlowFixture(params: SubmitFlowFixtureParams = {}) {
   } as unknown as TradeContext;
   const executor = createOrderExecutor({
     ctx,
-    rateLimiter: createMutationRateLimiter(),
+    rateLimiter: createRateLimiterDouble(),
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async (symbols) => {
         expect([...symbols]).toEqual(['BULL.HK']);
@@ -129,7 +88,7 @@ function createSubmitFlowFixture(params: SubmitFlowFixtureParams = {}) {
       clearCache: params.clearCache ?? (() => {}),
       getPendingOrders: async () => [],
     },
-    orderMonitor: createOrderMonitorDouble((trackParams) => {
+    orderMonitor: createOrderMonitorForSubmitFlow((trackParams) => {
       trackedOrders.push(trackParams);
       params.trackOrder?.(trackParams);
     }),

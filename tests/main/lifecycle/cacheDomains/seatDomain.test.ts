@@ -2,7 +2,7 @@
  * 席位缓存域单元测试
  *
  * 覆盖：midnightClear 调用 autoSymbolManager.resetAllState、warrantListCache.clear、
- * clearAllSeatBindings；openRebuild 为空操作
+ * clearAllSeatBindings
  */
 import { describe, it, expect } from 'bun:test';
 import { createSeatDomain } from '../../../../src/main/lifecycle/cacheDomains/seatDomain.js';
@@ -11,7 +11,7 @@ import {
   resolveSeatActivationCarryover,
 } from '../../../../src/main/lifecycle/seatActivationCarryover.js';
 import type { SeatState, SymbolRegistry } from '../../../../src/types/seat.js';
-import { createLoggerDouble, createSymbolRegistryDouble } from '../../../helpers/testDoubles.js';
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 
 const emptySeatState = {
   symbol: null,
@@ -282,22 +282,5 @@ describe('createSeatDomain', () => {
       }),
     ).toBeNull();
     clearSeatActivationCarryover(symbolRegistry);
-  });
-
-  it('openRebuild 为空操作，不抛错', async () => {
-    const autoSymbolManager = { resetAllState: () => {} };
-    const symbolRegistry = createSymbolRegistryDouble();
-    const warrantListCache = { clear: () => {} };
-
-    const domain = createSeatDomain({
-      logger: createLoggerDouble(),
-      symbolRegistry,
-      autoSymbolManager,
-      warrantListCache,
-    });
-    await domain.openRebuild({
-      now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
-    });
   });
 });

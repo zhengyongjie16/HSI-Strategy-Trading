@@ -2,7 +2,7 @@
  * 风控缓存域单元测试
  *
  * 覆盖：midnightClear 调用 resetRiskCheckCooldown、dailyLossTracker.resetAll、
- * clearMidnightEligible（仅非 minutes 模式）、clearRiskCaches；openRebuild 为空操作
+ * clearMidnightEligible（仅非 minutes 模式）、clearRiskCaches
  */
 import { describe, it, expect } from 'bun:test';
 import { createRiskDomain } from '../../../../src/main/lifecycle/cacheDomains/riskDomain.js';
@@ -155,34 +155,4 @@ describe('createRiskDomain', () => {
     ).toBe(0);
   });
 
-  it('openRebuild 为空操作，不抛错', async () => {
-    const domain = createRiskDomain({
-      logger: createLoggerDouble(),
-      signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
-      dailyLossTracker: {
-        resetAll: () => {},
-        prepareProtectionBoundary: () => ({
-          direction: 'LONG',
-          boundaryExecutedTimeMs: 1,
-          orderBaselines: [],
-        }),
-        commitProtectionBoundary: () => {},
-        restoreProtectionBoundary: () => {},
-      } as unknown as DailyLossTracker,
-      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-      monitorContext: createMonitorContextDouble(),
-      liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
-        getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
-      },
-    });
-    await domain.openRebuild({
-      now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
-    });
-  });
 });

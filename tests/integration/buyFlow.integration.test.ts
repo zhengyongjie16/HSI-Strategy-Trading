@@ -29,6 +29,8 @@ import type { ExecutableSignal } from '../../src/types/signal.js';
 import type { BuyRiskCheckContext } from '../../src/types/services.js';
 import type { OrderExecutorDeps, OrderMonitor } from '../../src/core/trader/types.js';
 
+const createMutationRateLimiter = createRateLimiterDouble;
+
 type OrderMonitorTestOverrides = Omit<Partial<OrderMonitor>, 'replaceOrderPriceWithPermit'>;
 
 type OrderExecutorTestDeps = Omit<
@@ -52,10 +54,6 @@ function createOrderExecutor(deps: OrderExecutorTestDeps) {
     unrealizedLossBuyGate,
     orderMonitor: createOrderMonitorDouble(orderMonitor),
   });
-}
-
-function createMutationRateLimiter() {
-  return createRateLimiterDouble();
 }
 
 /** 创建可供最终提交阶段读取的显式行情客户端。 */

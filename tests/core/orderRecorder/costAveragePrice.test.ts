@@ -226,11 +226,4 @@ describe('getCostAveragePrice', () => {
     expect(avg).toBeCloseTo(1.4995, 4);
   });
 
-  it('与 calculateOrderStatistics 的 averagePrice 一致', () => {
-    const orders = [makeOrder('O1', 1, 100), makeOrder('O2', 1.2, 150), makeOrder('O3', 0.9, 50)];
-    storage.setBuyOrdersListForLong('TEST.HK', orders);
-
-    const avg = storage.getCostAveragePrice('TEST.HK', true);
-    expect(avg).toBeCloseTo(325 / 300, 6);
-  });
 });

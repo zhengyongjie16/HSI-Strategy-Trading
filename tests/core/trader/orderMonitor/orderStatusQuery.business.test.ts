@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Decimal, OrderSide, OrderType, type OrderDetail, type TradeContext } from 'longbridge';
 import { createOrderStatusQuery } from '../../../../src/core/trader/orderMonitor/orderStatusQuery.js';
-import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
+import { createRateLimiterDouble } from '../../../helpers/testDoubles.js';
 
 const OPEN_API_ORDER_STATUS_FILLED = 5;
 const OPEN_API_ORDER_STATUS_REJECTED = 14;
@@ -16,19 +16,6 @@ const OPEN_API_ORDER_STATUS_CANCELED = 15;
 const OPEN_API_ORDER_STATUS_EXPIRED = 16;
 const OPEN_API_ORDER_STATUS_PARTIAL_WITHDRAWAL = 17;
 const OPEN_API_ORDER_STATUS_PENDING_CANCEL = 12;
-
-/** 构造权威订单查询测试使用的无副作用限流器。 */
-function createRateLimiterDouble(): RateLimiter {
-  return {
-    throttle: async () => {},
-    withTradeMutation: async <T>(
-      callback: (permit: TradeMutationPermit) => Promise<T>,
-    ): Promise<T> =>
-      callback({
-        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
-      }),
-  };
-}
 
 function createOrderSnapshot(params: {
   readonly orderId: string;

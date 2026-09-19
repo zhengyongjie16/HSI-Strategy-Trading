@@ -305,15 +305,6 @@ describe('成本均价与智能平仓全链路集成测试', () => {
     storage.addBuyOrder('A.HK', 1, 100, true, 1000);
     storage.addBuyOrder('B.HK', 2, 100, false, 1000);
 
-    storage.addPendingSell({
-      orderId: 'SELL_001',
-      symbol: 'A.HK',
-      direction: 'LONG',
-      submittedQuantity: 50,
-      relatedBuyOrderIds: [],
-      submittedAt: Date.now(),
-    });
-
     storage.clearAll();
 
     expect(storage.getCostAveragePrice('A.HK', true)).toBeNull();

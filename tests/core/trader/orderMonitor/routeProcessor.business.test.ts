@@ -21,16 +21,13 @@ import type {
   RouteProcessorDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderMonitorConfig, TrackOrderParams } from '../../../../src/core/trader/types.js';
-import type {
-  OrderRecord,
-  RateLimiter,
-  TradeMutationPermit,
-} from '../../../../src/types/services.js';
+import type { OrderRecord, TradeMutationPermit } from '../../../../src/types/services.js';
 import { toDecimal } from '../../../../src/core/trader/utils.js';
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 import {
   createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
   createQuoteDouble,
   createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
@@ -71,19 +68,6 @@ function createConfig(params?: {
     priceUpdateIntervalMs: params?.priceUpdateIntervalMs ?? 0,
     priceDiffThreshold: 0.001,
     allowBuyOrderTrackingAboveInitialPrice: params?.allowBuyOrderTrackingAboveInitialPrice ?? true,
-  };
-}
-
-/** 构造 routeProcessor 默认路径使用的无副作用 callback permit 限流器。 */
-function createRateLimiterDouble(): RateLimiter {
-  return {
-    throttle: async () => {},
-    withTradeMutation: async <T>(
-      callback: (permit: TradeMutationPermit) => Promise<T>,
-    ): Promise<T> =>
-      callback({
-        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
-      }),
   };
 }
 
