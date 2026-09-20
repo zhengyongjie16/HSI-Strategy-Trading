@@ -16,6 +16,8 @@ import {
   buildSnapshotFromRuntime,
   updateRuntimeForCandlestickSnapshot,
 } from '../../../../../src/core/strategy/intradayRegression/runtime/index.js';
+import { buildStrategyDisplay } from '../../../../../src/core/strategy/intradayRegression/display.js';
+import { projectVerificationSampleValues } from '../../../../../src/core/strategy/intradayRegression/verification/utils.js';
 import { createIndicatorUsageProfileDouble, normalizeCandles } from '../fixtures.js';
 
 function createCandle(params: {
@@ -332,6 +334,251 @@ describe('indicators/runtime incremental business flow', () => {
       runtimeSnapshot: buildSnapshotFromRuntime(runtime),
       candles: appendedCandles,
     });
+  });
+
+  it('keeps current KDJ availability separate across bootstrap, preview replacement, confirmation, shift, multi-add and rebuild', () => {
+    const profile = createIndicatorUsageProfileDouble({
+      requiredFamilies: {
+        mfi: false,
+        kdj: true,
+        macd: false,
+        adx: false,
+      },
+      requiredPeriods: {
+        ema: [],
+        rsi: [],
+        psy: [],
+      },
+      displayPlan: ['price', 'K', 'D', 'J'],
+    });
+    const history = createTrendCandles(20, 100, 0.25);
+    const previous = history.at(-1);
+    if (!previous || typeof previous.timestamp !== 'number') throw new Error('expected history');
+
+    const activeGood = createCandle({
+      timestamp: previous.timestamp + 60_000,
+      close: Number(previous.close) + 0.4,
+    });
+    const activeBad = { ...activeGood, high: null };
+
+    let runtime = bootstrapIndicatorRuntime({
+      symbol: 'HSI.HK',
+      cacheSnapshot: createCacheSnapshot({
+        candles: [...history, activeBad],
+        version: 1,
+        lastBarConfirmed: false,
+      }),
+      indicatorProfile: profile,
+    });
+    expect(runtime).not.toBeNull();
+    if (runtime === null) throw new Error('expected bootstrap runtime');
+
+    const historyRuntime = bootstrapIndicatorRuntime({
+      symbol: 'HSI.HK',
+      cacheSnapshot: createCacheSnapshot({ candles: history, version: 1, lastBarConfirmed: true }),
+      indicatorProfile: profile,
+    });
+    expect(historyRuntime).not.toBeNull();
+    if (historyRuntime === null) throw new Error('expected history runtime');
+
+    expect(runtime.committed.kdjState).toEqual(historyRuntime.committed.kdjState);
+    expect(buildSnapshotFromRuntime(runtime)?.kdj).toBeNull();
+
+    runtime = updateRuntimeForCandlestickSnapshot({
+      runtime,
+      cacheSnapshot: createCacheSnapshot({
+        candles: [...history, activeGood],
+        version: 2,
+        lastBarConfirmed: false,
+      }),
+    });
+    expect(runtime).not.toBeNull();
+    if (runtime === null) throw new Error('expected good preview runtime');
+
+    expect(buildSnapshotFromRuntime(runtime)?.kdj).not.toBeNull();
+    const committedAfterGoodPreview = structuredClone(runtime.committed.kdjState);
+
+    runtime = updateRuntimeForCandlestickSnapshot({
+      runtime,
+      cacheSnapshot: createCacheSnapshot({
+        candles: [...history, activeBad],
+        version: 3,
+        lastBarConfirmed: false,
+      }),
+    });
+    expect(runtime).not.toBeNull();
+    if (runtime === null) throw new Error('expected bad preview runtime');
+
+    expect(buildSnapshotFromRuntime(runtime)?.kdj).toBeNull();
+    expect(runtime.committed.kdjState).toEqual(committedAfterGoodPreview);
+
+    runtime = updateRuntimeForCandlestickSnapshot({
+      runtime,
+      cacheSnapshot: createCacheSnapshot({
+        candles: [...history, activeBad],
+        version: 4,
+        lastBarConfirmed: true,
+      }),
+    });
+    expect(runtime).not.toBeNull();
+    if (runtime === null) throw new Error('expected bad confirmation runtime');
+
+    expect(buildSnapshotFromRuntime(runtime)?.kdj).toBeNull();
+    expect(runtime.committed.kdjState).toEqual(committedAfterGoodPreview);
+
+    const next = createCandle({
+      timestamp: activeGood.timestamp! + 60_000,
+      close: Number(activeGood.close) + 0.2,
+    });
+    runtime = updateRuntimeForCandlestickSnapshot({
+      runtime,
+      cacheSnapshot: createCacheSnapshot({
+        candles: [...history, activeBad, next],
+        version: 5,
+        lastBarConfirmed: false,
+      }),
+    });
+    expect(runtime).not.toBeNull();
+    if (runtime === null) throw new Error('expected shifted runtime');
+
+    expect(buildSnapshotFromRuntime(runtime)?.kdj).not.toBeNull();
+
+    const nextTwo = createCandle({
+      timestamp: next.timestamp! + 60_000,
+      close: Number(next.close) + 0.2,
+    });
+    const nextThree = createCandle({
+      timestamp: nextTwo.timestamp! + 60_000,
+      close: Number(nextTwo.close) + 0.2,
+    });
+    const multiAddedCandles = [...history, activeBad, next, nextTwo, nextThree];
+    runtime = updateRuntimeForCandlestickSnapshot({
+      runtime,
+      cacheSnapshot: createCacheSnapshot({
+        candles: multiAddedCandles,
+        version: 6,
+        lastBarConfirmed: false,
+      }),
+    });
+    expect(runtime).not.toBeNull();
+    if (runtime === null) throw new Error('expected multi-add runtime');
+
+    expect(buildSnapshotFromRuntime(runtime)).toEqual(
+      buildIndicatorSnapshot(multiAddedCandles, profile),
+    );
+
+    const rebuilt = updateRuntimeForCandlestickSnapshot({
+      runtime,
+      cacheSnapshot: {
+        ...createCacheSnapshot({
+          candles: multiAddedCandles,
+          version: 7,
+          lastBarConfirmed: false,
+        }),
+        lastBarTimestamp: null,
+      },
+    });
+    expect(rebuilt).not.toBeNull();
+    if (rebuilt === null) throw new Error('expected rebuilt runtime');
+
+    expect(buildSnapshotFromRuntime(rebuilt)).toEqual(
+      buildIndicatorSnapshot(multiAddedCandles, profile),
+    );
+  });
+
+  it('keeps zero-range runtime output unavailable while display and samples omit old KDJ, then recovers', () => {
+    const profile = createIndicatorUsageProfileDouble({
+      requiredFamilies: {
+        mfi: false,
+        kdj: true,
+        macd: false,
+        adx: false,
+      },
+      requiredPeriods: {
+        ema: [],
+        rsi: [],
+        psy: [],
+      },
+      displayPlan: ['price', 'K', 'D', 'J'],
+    });
+    const validHistory = createTrendCandles(20, 100, 0.25);
+    const validHistoryLast = validHistory.at(-1);
+    const validHistoryLastTimestamp = validHistoryLast?.timestamp;
+    if (validHistoryLastTimestamp === undefined) throw new Error('expected valid history');
+
+    const zeroRangeCandles = Array.from({ length: 9 }, (_, index) => ({
+      timestamp: validHistoryLastTimestamp + (index + 1) * 60_000,
+      open: 50,
+      high: 50,
+      low: 50,
+      close: 50,
+      volume: 1_000,
+    }));
+    const zeroRangeHistory = [...validHistory, ...zeroRangeCandles];
+    const baseline = bootstrapIndicatorRuntime({
+      symbol: 'HSI.HK',
+      cacheSnapshot: createCacheSnapshot({
+        candles: validHistory,
+        version: 1,
+        lastBarConfirmed: true,
+      }),
+      indicatorProfile: profile,
+    });
+    const zeroRuntime = bootstrapIndicatorRuntime({
+      symbol: 'HSI.HK',
+      cacheSnapshot: createCacheSnapshot({
+        candles: zeroRangeHistory,
+        version: 2,
+        lastBarConfirmed: true,
+      }),
+      indicatorProfile: profile,
+    });
+    expect(baseline).not.toBeNull();
+    expect(zeroRuntime).not.toBeNull();
+    if (baseline === null || zeroRuntime === null) throw new Error('expected runtime');
+
+    const baselineKdj = baseline.committed.kdjState;
+    const zeroKdj = zeroRuntime.committed.kdjState;
+    expect(zeroKdj?.index).toBe((baselineKdj?.index ?? 0) + zeroRangeCandles.length);
+    expect(zeroKdj?.hasKdjValue).toBe(true);
+
+    const zeroSnapshot = buildSnapshotFromRuntime(zeroRuntime);
+    expect(zeroSnapshot).not.toBeNull();
+    if (zeroSnapshot === null) throw new Error('expected zero-range snapshot');
+
+    expect(zeroSnapshot.kdj).toBeNull();
+    expect(
+      buildStrategyDisplay(zeroSnapshot, profile).find((item) => item.label === 'K'),
+    ).toBeUndefined();
+
+    expect(projectVerificationSampleValues(zeroSnapshot, ['K', 'D', 'J'])).toEqual({
+      K: { kind: 'missing' },
+      D: { kind: 'missing' },
+      J: { kind: 'missing' },
+    });
+
+    const zeroRangeHistoryLast = zeroRangeHistory.at(-1);
+    const zeroRangeHistoryLastTimestamp = zeroRangeHistoryLast?.timestamp;
+    if (zeroRangeHistoryLastTimestamp === undefined) throw new Error('expected zero-range history');
+
+    const recoveredCandle = createCandle({
+      timestamp: zeroRangeHistoryLastTimestamp + 60_000,
+      close: 60,
+      highOffset: 0,
+      lowOffset: 20,
+    });
+    const recovered = updateRuntimeForCandlestickSnapshot({
+      runtime: zeroRuntime,
+      cacheSnapshot: createCacheSnapshot({
+        candles: [...zeroRangeHistory, recoveredCandle],
+        version: 3,
+        lastBarConfirmed: true,
+      }),
+    });
+    expect(recovered).not.toBeNull();
+    if (recovered === null) throw new Error('expected recovered runtime');
+
+    expect(buildSnapshotFromRuntime(recovered)?.kdj).not.toBeNull();
   });
 
   it('finalizes the previous active bar when the next tick only sees a shifted snapshot', () => {

@@ -18,6 +18,15 @@ import type {
 import type { EventHarness, EventHarnessMutable } from './types.js';
 import type { BusinessEventProgramDeps } from '../../../src/main/businessEventProgram/types.js';
 
+type EventHarnessOptions = {
+  readonly strategy?: TradingSignalStrategy;
+  readonly createBusinessEventProgram?: typeof createBusinessEventProgram;
+  readonly createBuyTaskQueue?: typeof createBuyTaskQueue;
+  readonly createSellTaskQueue?: typeof createSellTaskQueue;
+  readonly createSymbolRegistry?: typeof createSymbolRegistry;
+  readonly createTerminationRuntime?: typeof createTerminationRuntime;
+};
+
 /** 仅供真实席位注册表使用的宿主配置。 */
 export function monitorConfig(): MonitorConfig {
   return {
@@ -49,7 +58,7 @@ export function monitorConfig(): MonitorConfig {
 }
 
 /** 可显式推进时间和事件；同步 fatal 使用真实共享终止 owner。 */
-export function createEventHarness(): EventHarness {
+export function createEventHarness(options: EventHarnessOptions = {}): EventHarness {
   const mutable: EventHarnessMutable = {
     nowMs: Date.parse('2026-07-15T02:00:00Z'),
     filled: true,
@@ -74,27 +83,45 @@ export function createEventHarness(): EventHarness {
     currentDayKey: '2026-07-15',
     openProtectionActive: false,
   };
-  const buyTaskQueue = createBuyTaskQueue();
-  const sellTaskQueue = createSellTaskQueue();
-  const symbolRegistry = createSymbolRegistry(monitorConfig());
+  const buyTaskQueue = (options.createBuyTaskQueue ?? createBuyTaskQueue)();
+  const sellTaskQueue = (options.createSellTaskQueue ?? createSellTaskQueue)();
+  const symbolRegistry = (options.createSymbolRegistry ?? createSymbolRegistry)(monitorConfig());
   const contexts: StrategyMarketContext[] = [];
   const emitters: StrategyEmitter[] = [];
   const displays: ReadonlyArray<StrategyDisplayItem>[] = [];
   const listeners = new Set<(event: CandlestickUpdatedEvent) => void>();
-  const strategy: TradingSignalStrategy = {
+  const defaultStrategy: TradingSignalStrategy = {
     strategyId: 'event-test',
-    onCandlestick: (context, emit) => {
-      contexts.push(context);
-      emitters.push(emit);
-      return mutable.handler ? mutable.handler(context, emit) : [{ label: 'test', valueText: '1' }];
-    },
+    onCandlestick: (context, emit) =>
+      mutable.handler ? mutable.handler(context, emit) : [{ label: 'test', valueText: '1' }],
     invalidateDirection: () => {},
     invalidateAll: () => {},
     resetForTradingDay: () => {},
     destroy: () => {},
   };
+  const configuredStrategy = options.strategy ?? defaultStrategy;
+  const strategy: TradingSignalStrategy = {
+    strategyId: configuredStrategy.strategyId,
+    onCandlestick: (context, emit) => {
+      contexts.push(context);
+      emitters.push(emit);
+      return configuredStrategy.onCandlestick(context, emit);
+    },
+    invalidateDirection: (direction) => {
+      configuredStrategy.invalidateDirection(direction);
+    },
+    invalidateAll: () => {
+      configuredStrategy.invalidateAll();
+    },
+    resetForTradingDay: () => {
+      configuredStrategy.resetForTradingDay();
+    },
+    destroy: () => {
+      configuredStrategy.destroy();
+    },
+  };
   const stopProducers: Array<() => void> = [];
-  const termination = createTerminationRuntime({
+  const termination = (options.createTerminationRuntime ?? createTerminationRuntime)({
     closeTradingGate: () => {
       lastState.isTradingEnabled = false;
     },
@@ -154,7 +181,7 @@ export function createEventHarness(): EventHarness {
       },
     },
   };
-  const program = createBusinessEventProgram(deps);
+  const program = (options.createBusinessEventProgram ?? createBusinessEventProgram)(deps);
   stopProducers.push(program.stop);
   return {
     mutable,

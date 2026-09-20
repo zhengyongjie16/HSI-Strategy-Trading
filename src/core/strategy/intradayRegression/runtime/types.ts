@@ -88,6 +88,9 @@ export type IndicatorRuntimeState = {
   activeBar: CandleData | null;
   lastBarTimestamp: number | null;
   lastBarConfirmed: boolean | null;
+
+  /** 最近一根已提交柱是否产生了当前可用的 K/D/J；不属于 committed 数学状态。 */
+  lastKdjAvailable: boolean;
   committed: IndicatorCommittedState;
 };
 
@@ -156,7 +159,7 @@ export type MfiStreamState = {
  * KDJ 流式状态。
  * 类型用途：维护 RSV 窗口单调队列与 K/D 平滑状态，支持逐根增量推进。
  * 数据来源：bootstrap 与运行期增量推进。
- * 使用范围：仅 indicators/runtime 模块内部使用。
+ * 使用范围：仅 indicators/runtime 模块内部使用；不保存某一轮输入的可用性。
  */
 export type KdjStreamState = {
   readonly period: number;
@@ -173,6 +176,20 @@ export type KdjStreamState = {
   hasKdjValue: boolean;
   lastK: number;
   lastD: number;
+};
+
+/**
+ * KDJ 单根提交结果。
+ * 类型用途：区分 H/L/C 是否被 KDJ 接受，以及本轮是否实际产生可输出的 K/D/J；可用性不写入 KDJ 持久数学状态。
+ * 数据来源：commitKdjCandle 的当前输入与窗口计算。
+ * 使用范围：KDJ runtime 与增量快照构造。
+ */
+export type KdjCandleCommitResult = {
+  /** H/L/C 均为有限数值并已推进 KDJ 输入窗口。 */
+  readonly accepted: boolean;
+
+  /** 当前这根柱实际产生了可读取的 K/D/J。 */
+  readonly available: boolean;
 };
 
 /**

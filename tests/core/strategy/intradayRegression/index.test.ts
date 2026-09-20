@@ -6,7 +6,38 @@ import { prepareFixture, configObject, createHarness, marketContext } from './fi
 
 const now = 1_700_000_000_000;
 
+function independentlyTriggerableSignals() {
+  return {
+    BUYCALL: '(RSI:6>-1000)',
+    SELLCALL: '(RSI:6>-1000)',
+    BUYPUT: '(RSI:6>-1000)',
+    SELLPUT: '(RSI:6>-1000)',
+  } as const;
+}
+
 describe('intraday regression instance', () => {
+  it('can trigger all four immediate actions through an independent indicator', () => {
+    const h = createHarness();
+    const strategy = prepareFixture({
+      ...configObject(),
+      signals: independentlyTriggerableSignals(),
+    }).create(h.deps);
+    const emitted: StrategyDecision[] = [];
+
+    strategy.onCandlestick(marketContext(), (decision) => {
+      emitted.push(decision);
+    });
+
+    expect(emitted.map((decision) => decision.action)).toEqual([
+      'BUYCALL',
+      'SELLCALL',
+      'BUYPUT',
+      'SELLPUT',
+    ]);
+    expect(h.errors).toEqual([]);
+    strategy.destroy();
+  });
+
   it('reads each action clock before any registration; emits entire immediate batch before delayed registration', () => {
     const h = createHarness();
     h.setReads([now, now + 1, now + 2, now + 3, now + 100, now + 200]);
@@ -55,6 +86,262 @@ describe('intraday regression instance', () => {
       },
     );
     expect(emitted.map((value) => value.action)).toEqual(['BUYCALL', 'BUYPUT']);
+    strategy.destroy();
+  });
+
+  it('propagates unavailable current KDJ through display and signal N-of-M while retaining other indicators', () => {
+    const h = createHarness();
+    const strategy = prepareFixture({
+      ...configObject(0, 0, ['D', 'ADX'], ['K']),
+      signals: independentlyTriggerableSignals(),
+    }).create(h.deps);
+    const initial = marketContext();
+    const latest = initial.candlesticks.candles.at(-1);
+    if (!latest || typeof latest.timestamp !== 'number') throw new Error('expected latest candle');
+
+    const bad = { ...latest, high: null, close: 80 };
+    const badContext = {
+      ...initial,
+      candlesticks: {
+        ...initial.candlesticks,
+        version: 2,
+        candles: [...initial.candlesticks.candles.slice(0, -1), bad],
+        lastBarTimestamp: latest.timestamp,
+      },
+    };
+    const emitted: StrategyDecision[] = [];
+    const display = strategy.onCandlestick(badContext, (decision) => {
+      emitted.push(decision);
+    });
+
+    expect(display?.find((item) => item.label === 'K')).toBeUndefined();
+    expect(display?.find((item) => item.label === 'RSI6')).not.toBeUndefined();
+    expect(emitted.map((decision) => decision.action)).toEqual([
+      'BUYCALL',
+      'SELLCALL',
+      'BUYPUT',
+      'SELLPUT',
+    ]);
+
+    const good = { ...latest, high: 100, low: 1, close: 80 };
+    const goodDisplay = strategy.onCandlestick(
+      {
+        ...badContext,
+        allowNewEvaluation: false,
+        candlesticks: {
+          ...badContext.candlesticks,
+          version: 3,
+          candles: [...badContext.candlesticks.candles.slice(0, -1), good],
+        },
+      },
+      () => {},
+    );
+    expect(goodDisplay?.find((item) => item.label === 'K')).not.toBeUndefined();
+    strategy.destroy();
+  });
+
+  it('does not create timers or immediate fallback for all actions when initial KDJ values are missing', () => {
+    const context = marketContext();
+    const latest = context.candlesticks.candles.at(-1);
+    if (!latest || typeof latest.timestamp !== 'number') throw new Error('expected latest candle');
+
+    const cases = [
+      {
+        name: 'bad HLC',
+        candles: [
+          ...context.candlesticks.candles.slice(0, -1),
+          { ...latest, high: null, close: 80 },
+        ],
+      },
+      {
+        name: 'zero range',
+        candles: context.candlesticks.candles.map((candle, index) =>
+          index < context.candlesticks.candles.length - 9
+            ? candle
+            : { ...candle, high: 50, low: 50, close: 50 },
+        ),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const h = createHarness();
+      const strategy = prepareFixture({
+        ...configObject(60, 60, ['D', 'ADX'], ['K']),
+        signals: independentlyTriggerableSignals(),
+      }).create(h.deps);
+      const emitted: StrategyDecision[] = [];
+      strategy.onCandlestick(
+        {
+          ...context,
+          candlesticks: {
+            ...context.candlesticks,
+            version: 2,
+            candles: testCase.candles,
+            lastBarTimestamp: latest.timestamp,
+          },
+        },
+        (decision) => {
+          emitted.push(decision);
+        },
+      );
+
+      expect(h.timers, testCase.name).toHaveLength(0);
+      expect(emitted, testCase.name).toHaveLength(0);
+      expect(h.errors, testCase.name).toEqual([]);
+      strategy.destroy();
+    }
+  });
+
+  it('keeps pending through a zero-range sample when recovered nearest samples pass verification', () => {
+    const h = createHarness();
+    const strategy = prepareFixture({
+      ...configObject(60, 0, ['K'], []),
+      signals: independentlyTriggerableSignals(),
+    }).create(h.deps);
+    const baseContext = marketContext();
+    const baseTimestamp = 1_700_100_000_000;
+    const validHistory = Array.from({ length: 20 }, (_, index) => {
+      const close = 100 + index;
+      return {
+        timestamp: baseTimestamp + index * 60_000,
+        open: close - 0.2,
+        high: close + 0.4,
+        low: close - 0.6,
+        close,
+        volume: 1_000,
+      };
+    });
+    const zeroRangeHistory = Array.from({ length: 8 }, (_, index) => ({
+      timestamp: baseTimestamp + (20 + index) * 60_000,
+      open: 50,
+      high: 50,
+      low: 50,
+      close: 50,
+      volume: 1_000,
+    }));
+    const activeTimestamp = baseTimestamp + 28 * 60_000;
+    const activeGood = {
+      timestamp: activeTimestamp,
+      open: 0.1,
+      high: 100,
+      low: 0,
+      close: 0.1,
+      volume: 1_000,
+    };
+    const seats = [{ direction: 'LONG' as const, symbol: 'BULL.HK', hasFilledBuyOrders: false }];
+    const candles = [...validHistory, ...zeroRangeHistory];
+    const contextFor = (params: {
+      readonly version: number;
+      readonly observedAtMs: number;
+      readonly active: typeof activeGood;
+    }) => ({
+      ...baseContext,
+      observedAtMs: params.observedAtMs,
+      allowNewEvaluation: params.version === 1,
+      seats,
+      candlesticks: {
+        ...baseContext.candlesticks,
+        version: params.version,
+        candles: [...candles, params.active],
+        lastBarTimestamp: activeTimestamp,
+        lastBarConfirmed: false,
+      },
+    });
+
+    const emitted: StrategyDecision[] = [];
+    const initialDisplay = strategy.onCandlestick(
+      contextFor({ version: 1, observedAtMs: now, active: activeGood }),
+      (decision) => {
+        emitted.push(decision);
+      },
+    );
+    const initialKText = initialDisplay?.find((item) => item.label === 'K')?.valueText;
+    if (initialKText === undefined) throw new Error('expected initial KDJ value');
+
+    expect(h.timers).toHaveLength(1);
+    expect(emitted).toHaveLength(0);
+
+    const zeroRange = {
+      ...activeGood,
+      open: 50,
+      high: 50,
+      low: 50,
+      close: 50,
+    };
+    const zeroDisplay = strategy.onCandlestick(
+      contextFor({ version: 2, observedAtMs: now + 59_000, active: zeroRange }),
+      () => {
+        throw new Error('zero-range sample must not create a new decision');
+      },
+    );
+    expect(zeroDisplay?.find((item) => item.label === 'K')).toBeUndefined();
+    expect(h.timers).toHaveLength(1);
+    expect(h.timers[0]?.cleared).toBe(false);
+
+    const recovered = {
+      ...activeGood,
+      open: 99,
+      close: 100,
+    };
+    for (const [version, observedAtMs] of [
+      [3, now + 60_000],
+      [4, now + 65_000],
+      [5, now + 70_000],
+    ] as const) {
+      const recoveredDisplay = strategy.onCandlestick(
+        contextFor({ version, observedAtMs, active: recovered }),
+        () => {
+          throw new Error('recovery samples must not create a new decision');
+        },
+      );
+      const recoveredKText = recoveredDisplay?.find((item) => item.label === 'K')?.valueText;
+      expect(recoveredKText).not.toBeUndefined();
+      if (recoveredKText === undefined) throw new Error('expected recovered KDJ value');
+
+      expect(Number(recoveredKText)).toBeGreaterThan(Number(initialKText));
+    }
+
+    h.timers[0]?.callback();
+    expect(emitted.map((decision) => decision.action)).toEqual(['BUYCALL']);
+    expect(h.errors).toEqual([]);
+    strategy.destroy();
+  });
+
+  it('does not cancel or refill existing pending verification when a bad KDJ bar is sampled', () => {
+    const h = createHarness();
+    const strategy = prepareFixture(configObject(60, 60, ['K'], ['K'])).create(h.deps);
+    const emitted: StrategyDecision[] = [];
+    const initial = marketContext();
+    strategy.onCandlestick(initial, (decision) => {
+      emitted.push(decision);
+    });
+    expect(h.timers).toHaveLength(4);
+
+    const latest = initial.candlesticks.candles.at(-1);
+    if (!latest || typeof latest.timestamp !== 'number') throw new Error('expected latest candle');
+
+    strategy.onCandlestick(
+      {
+        ...initial,
+        observedAtMs: now + 70_000,
+        allowNewEvaluation: false,
+        candlesticks: {
+          ...initial.candlesticks,
+          version: 2,
+          candles: [
+            ...initial.candlesticks.candles.slice(0, -1),
+            { ...latest, high: null, close: 80 },
+          ],
+          lastBarTimestamp: latest.timestamp,
+        },
+      },
+      () => {},
+    );
+    expect(h.timers.every((timer) => !timer.cleared)).toBe(true);
+    for (const timer of h.timers) timer.callback();
+
+    expect(emitted).toHaveLength(0);
+    expect(h.errors).toEqual([]);
     strategy.destroy();
   });
 
@@ -125,7 +412,10 @@ describe('intraday regression instance', () => {
 
   it('initial missing ADX drops delayed candidates without immediate fallback', () => {
     const h = createHarness();
-    const strategy = prepareFixture(configObject(60, 60, ['ADX'], ['ADX'])).create(h.deps);
+    const strategy = prepareFixture({
+      ...configObject(60, 60, ['ADX'], ['ADX']),
+      signals: independentlyTriggerableSignals(),
+    }).create(h.deps);
     const emitted: StrategyDecision[] = [];
     strategy.onCandlestick(marketContext(), (value) => {
       emitted.push(value);

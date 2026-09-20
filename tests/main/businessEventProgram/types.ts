@@ -53,3 +53,48 @@ export type StrategyTimer = {
   readonly handle: ReturnType<typeof setTimeout>;
   cleared: boolean;
 };
+
+/**
+ * 有状态替代策略测试可验证的策略方向。
+ * 用途：标记延迟动作所属的席位方向。
+ * 使用范围：statefulStrategyFixture.ts 的 pending 状态与生命周期观察。
+ */
+export type Direction = 'LONG' | 'SHORT';
+
+/**
+ * 有状态替代策略测试的延迟买入动作。
+ * 用途：限制 fixture 只产生可验证的普通买入动作。
+ * 数据来源：由测试 fixture 根据席位方向选择。
+ * 使用范围：statefulStrategyFixture.ts 的 pending 状态。
+ */
+export type Action = 'BUYCALL' | 'BUYPUT';
+
+/**
+ * 有状态替代策略的待处理延迟项。
+ * 用途：保存延迟 emitter、生命周期代数与可取消的 timer 状态。
+ * 数据来源：由 statefulStrategyFixture.ts 在策略评估时创建。
+ * 使用范围：statefulStrategyFixture.ts 的取消、重置与销毁流程。
+ */
+export type PendingEntry = {
+  readonly action: Action;
+  readonly direction: Direction;
+  readonly emit: StrategyEmitter;
+  readonly generation: number;
+  timerHandle: ReturnType<typeof setTimeout> | null;
+  settled: boolean;
+};
+
+/**
+ * 有状态替代策略测试 fixture 的公共结果。
+ * 用途：向验收用例提供策略实例及生命周期观察值。
+ * 数据来源：由 statefulStrategyFixture.ts 创建。
+ * 使用范围：statefulStrategy.test.ts 与 fixture 工厂函数。
+ */
+export type StatefulStrategyFixture = {
+  readonly strategy: TradingSignalStrategy;
+  readonly lifecycle: {
+    readonly invalidatedDirections: ReadonlyArray<Direction>;
+    readonly resetCount: number;
+    readonly destroyCount: number;
+  };
+};

@@ -113,8 +113,9 @@ function cloneCommittedState(committed: IndicatorCommittedState): IndicatorCommi
  *
  * @param state committed 指标状态
  * @param candle 已确认收线的 K 线
+ * @returns 本根柱是否产生当前可用的 K/D/J
  */
-function commitCandleToCommittedState(state: IndicatorCommittedState, candle: CandleData): void {
+function commitCandleToCommittedState(state: IndicatorCommittedState, candle: CandleData): boolean {
   const close = toNumber(candle.close);
   if (isValidPositiveNumber(close)) {
     state.previousValidClose = state.lastValidClose;
@@ -141,13 +142,14 @@ function commitCandleToCommittedState(state: IndicatorCommittedState, candle: Ca
     commitMfiCandle(state.mfiState, candle);
   }
 
-  if (state.kdjState !== null) {
-    commitKdjCandle(state.kdjState, candle);
-  }
+  const kdjAvailable =
+    state.kdjState === null ? false : commitKdjCandle(state.kdjState, candle).available;
 
   if (state.adxState !== null) {
     commitAdxCandle(state.adxState, candle);
   }
+
+  return kdjAvailable;
 }
 
 function buildPeriodSnapshotRecord<T>(params: {
@@ -191,8 +193,9 @@ function buildPeriodSnapshotRecord<T>(params: {
 function buildSnapshotFromCommitted(params: {
   readonly profile: IndicatorUsageProfile;
   readonly committed: IndicatorCommittedState;
+  readonly kdjAvailable: boolean;
 }): IndicatorSnapshot | null {
-  const { profile, committed } = params;
+  const { profile, committed, kdjAvailable } = params;
   const price = committed.lastValidClose;
   if (price === null) {
     return null;
@@ -226,7 +229,7 @@ function buildSnapshotFromCommitted(params: {
       ? readMfiValue(committed.mfiState)
       : null;
   const kdj =
-    profile.requiredFamilies.kdj && committed.kdjState !== null
+    profile.requiredFamilies.kdj && kdjAvailable && committed.kdjState !== null
       ? readKdjValue(committed.kdjState)
       : null;
   const macd =
@@ -287,13 +290,14 @@ export function bootstrapIndicatorRuntime(params: {
   const committed = buildCommittedState(indicatorProfile);
   const closedCandlesEnd =
     activeBar === null ? cacheSnapshot.candles.length : cacheSnapshot.candles.length - 1;
+  let lastKdjAvailable = false;
   for (let index = 0; index < closedCandlesEnd; index += 1) {
     const candle = cacheSnapshot.candles[index];
     if (!candle) {
       continue;
     }
 
-    commitCandleToCommittedState(committed, candle);
+    lastKdjAvailable = commitCandleToCommittedState(committed, candle);
   }
 
   return {
@@ -304,6 +308,7 @@ export function bootstrapIndicatorRuntime(params: {
     activeBar,
     lastBarTimestamp: cacheSnapshot.lastBarTimestamp,
     lastBarConfirmed: cacheSnapshot.lastBarConfirmed,
+    lastKdjAvailable,
     committed,
   };
 }
@@ -353,10 +358,11 @@ function commitShiftedCandles(params: {
   }
 
   const nextCommitted = cloneCommittedState(runtime.committed);
+  let lastKdjAvailable = runtime.lastKdjAvailable;
   if (runtime.lastBarConfirmed === false) {
     const finalizedPrevious = cacheSnapshot.candles[previousIndex];
     if (finalizedPrevious) {
-      commitCandleToCommittedState(nextCommitted, finalizedPrevious);
+      lastKdjAvailable = commitCandleToCommittedState(nextCommitted, finalizedPrevious);
     }
   }
 
@@ -376,7 +382,7 @@ function commitShiftedCandles(params: {
       continue;
     }
 
-    commitCandleToCommittedState(nextCommitted, candle);
+    lastKdjAvailable = commitCandleToCommittedState(nextCommitted, candle);
   }
 
   return {
@@ -386,6 +392,7 @@ function commitShiftedCandles(params: {
     activeBar,
     lastBarTimestamp: cacheSnapshot.lastBarTimestamp,
     lastBarConfirmed: cacheSnapshot.lastBarConfirmed,
+    lastKdjAvailable,
     committed: nextCommitted,
   };
 }
@@ -438,7 +445,7 @@ export function updateRuntimeForCandlestickSnapshot(params: {
 
     if (runtimeState.lastBarConfirmed === false && cacheSnapshot.lastBarConfirmed === true) {
       const nextCommitted = cloneCommittedState(runtimeState.committed);
-      commitCandleToCommittedState(nextCommitted, latestCandle);
+      const lastKdjAvailable = commitCandleToCommittedState(nextCommitted, latestCandle);
       return {
         ...runtimeState,
         lastProcessedVersion: cacheSnapshot.version,
@@ -446,6 +453,7 @@ export function updateRuntimeForCandlestickSnapshot(params: {
         activeBar: null,
         lastBarTimestamp: cacheSnapshot.lastBarTimestamp,
         lastBarConfirmed: cacheSnapshot.lastBarConfirmed,
+        lastKdjAvailable,
         committed: nextCommitted,
       };
     }
@@ -470,15 +478,17 @@ export function buildSnapshotFromRuntime(runtime: IndicatorRuntimeState): Indica
 
   if (runtimeState.activeBar !== null && runtimeState.activeBarConfirmed === false) {
     const previewCommitted = cloneCommittedState(runtimeState.committed);
-    commitCandleToCommittedState(previewCommitted, runtimeState.activeBar);
+    const kdjAvailable = commitCandleToCommittedState(previewCommitted, runtimeState.activeBar);
     return buildSnapshotFromCommitted({
       profile: runtimeState.profile,
       committed: previewCommitted,
+      kdjAvailable,
     });
   }
 
   return buildSnapshotFromCommitted({
     profile: runtimeState.profile,
     committed: runtimeState.committed,
+    kdjAvailable: runtimeState.lastKdjAvailable,
   });
 }

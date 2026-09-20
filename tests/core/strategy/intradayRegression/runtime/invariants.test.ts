@@ -6,6 +6,13 @@ import {
   updateRuntimeForCandlestickSnapshot,
 } from '../../../../../src/core/strategy/intradayRegression/runtime/index.js';
 import { parseStrategyConfig } from '../../../../../src/core/strategy/intradayRegression/config.js';
+import {
+  cloneKdjState,
+  commitKdjCandle,
+  createKdjState,
+  readKdjValue,
+} from '../../../../../src/core/strategy/intradayRegression/runtime/kdj.js';
+import type { CandleData } from '../../../../../src/types/data.js';
 
 import { prepareFixture, configObject, createHarness, marketContext } from '../fixtures.js';
 
@@ -51,6 +58,180 @@ it('rebuilds an authoritative disconnected window but never hides a symbol misma
       indicatorProfile: profile,
     }),
   ).toThrow('symbol');
+});
+
+it('rejects every invalid H/L/C input atomically and compares only accepted numeric candles', () => {
+  const state = createKdjState(3, 2);
+  const validCandles: ReadonlyArray<CandleData> = [
+    { high: 10, low: 1, close: 5 },
+    { high: 11, low: 2, close: 6 },
+    { high: 12, low: 3, close: 7 },
+    { high: 13, low: 4, close: 8 },
+    { open: null, volume: undefined, high: ' 14 ', low: ' 5 ', close: ' 9 ' },
+  ];
+  for (const candle of validCandles) {
+    expect(commitKdjCandle(state, candle).accepted).toBe(true);
+  }
+
+  const signedState = createKdjState(1, 1);
+  expect(
+    commitKdjCandle(signedState, {
+      open: null,
+      volume: undefined,
+      high: 0,
+      low: -1,
+      close: -2,
+    }),
+  ).toEqual({ accepted: true, available: true });
+
+  const acceptedOnly = cloneKdjState(state);
+  const beforeInvalid = cloneKdjState(state);
+  const invalidCandles: ReadonlyArray<CandleData> = [
+    { high: null, low: 1, close: 5 },
+    { high: 10, low: undefined, close: 5 },
+    { high: 10, low: 1 },
+    { high: 10, close: 5 },
+    { high: 10, low: 1, close: null },
+    { high: '   ', low: 1, close: 5 },
+    { high: 10, low: 'not-a-number', close: 5 },
+    { high: Number.NaN, low: 1, close: 5 },
+    { high: Number.POSITIVE_INFINITY, low: 1, close: 5 },
+    { high: 10, low: Number.NEGATIVE_INFINITY, close: 5 },
+    { high: 10, low: 1, close: 'NaN' },
+  ];
+  for (const candle of invalidCandles) {
+    expect(commitKdjCandle(state, candle)).toEqual({ accepted: false, available: false });
+    expect(state).toEqual(beforeInvalid);
+  }
+
+  const reference = createKdjState(3, 2);
+  for (const candle of validCandles) commitKdjCandle(reference, candle);
+
+  expect(state).toEqual(reference);
+  expect(readKdjValue(state)).toEqual(readKdjValue(acceptedOnly));
+});
+
+it('recomputes default rolling sums after extreme RSV values leave the window', () => {
+  const state = createKdjState();
+  for (let index = 0; index < 10; index += 1) {
+    expect(commitKdjCandle(state, { high: 1, low: 0, close: 1e306 }).accepted).toBe(true);
+  }
+
+  expect(state.rsvWindowSum).toBe(Infinity);
+  expect(readKdjValue(state)).toBeNull();
+
+  let lastResult = { accepted: true, available: false };
+  for (let index = 0; index < 100; index += 1) {
+    lastResult = commitKdjCandle(state, { high: 1, low: 0, close: 0.5 });
+  }
+
+  expect(lastResult).toEqual({ accepted: true, available: true });
+  expect(state.rsvWindow).toEqual([50, 50, 50]);
+  expect(state.rsvWindowSum).toBe(150);
+  expect(state.kWindow).toEqual([50, 50, 50]);
+  expect(state.kWindowSum).toBe(150);
+  expect(readKdjValue(state)).toEqual({ k: 50, d: 50, j: 50 });
+});
+
+it('recovers a finite RSV sum when opposite extreme replacement would overflow the delta', () => {
+  const state = createKdjState(1, 3);
+  const positive = { high: 1, low: 0, close: 1e306 };
+  const negative = { high: 1, low: 0, close: -1e306 };
+
+  commitKdjCandle(state, positive);
+  commitKdjCandle(state, negative);
+  commitKdjCandle(state, positive);
+  const result = commitKdjCandle(state, negative);
+
+  expect(result).toEqual({ accepted: true, available: false });
+  expect(state.rsvWindow).toEqual([-1e308, 1e308, -1e308]);
+  expect(state.rsvWindowSum).toBe(-1e308);
+  expect(Number.isFinite(state.rsvWindowSum)).toBe(true);
+});
+
+it('recovers both RSV and K rolling windows across positive and negative extremes', () => {
+  const state = createKdjState(1, 1);
+  const positive = { high: 1, low: 0, close: 1e306 };
+  const negative = { high: 1, low: 0, close: -1e306 };
+
+  expect(commitKdjCandle(state, positive)).toEqual({ accepted: true, available: false });
+  expect(commitKdjCandle(state, negative)).toEqual({ accepted: true, available: false });
+
+  expect(state.rsvWindowSum).toBe(-1e308);
+  expect(state.kWindowSum).toBe(-1e308);
+  expect(state.rsvWindow).toEqual([-1e308]);
+  expect(state.kWindow).toEqual([-1e308]);
+  expect(readKdjValue(state)).toBeNull();
+});
+
+it('counts only accepted candles while prewarming KDJ around invalid inputs', () => {
+  const state = createKdjState(3, 2);
+  const reference = createKdjState(3, 2);
+  const acceptedCandles: ReadonlyArray<CandleData> = [
+    { high: 10, low: 1, close: 5 },
+    { high: 11, low: 2, close: 6 },
+    { high: 12, low: 3, close: 7 },
+    { high: 13, low: 4, close: 8 },
+    { high: 14, low: 5, close: 9 },
+  ];
+  const invalidCandles: ReadonlyArray<CandleData> = [
+    { high: null, low: 1, close: 5 },
+    { high: 11, low: undefined, close: 6 },
+    { high: 12, low: 3, close: 'not-a-number' },
+  ];
+
+  for (const [index, candle] of acceptedCandles.entries()) {
+    commitKdjCandle(reference, candle);
+    commitKdjCandle(state, candle);
+    const invalid = invalidCandles[index];
+    if (invalid === undefined) continue;
+
+    const beforeInvalid = cloneKdjState(state);
+    expect(commitKdjCandle(state, invalid)).toEqual({ accepted: false, available: false });
+    expect(state).toEqual(beforeInvalid);
+  }
+
+  expect(state).toEqual(reference);
+  expect(state.hasKdjValue).toBe(true);
+  expect(readKdjValue(state)).toEqual(readKdjValue(reference));
+});
+
+it('advances a legal zero-range window without erasing smoothing history and recovers on range restoration', () => {
+  const state = createKdjState(3, 2);
+  for (const candle of [
+    { high: 10, low: 1, close: 5 },
+    { high: 11, low: 2, close: 6 },
+    { high: 12, low: 3, close: 7 },
+    { high: 13, low: 4, close: 8 },
+    { high: 14, low: 5, close: 9 },
+  ]) {
+    expect(commitKdjCandle(state, candle).accepted).toBe(true);
+  }
+
+  for (let index = 0; index < 2; index += 1) {
+    const result = commitKdjCandle(state, { high: 0, low: 0, close: 0 });
+    expect(result.accepted).toBe(true);
+  }
+
+  const beforeZeroRange = cloneKdjState(state);
+  const previousValue = readKdjValue(state);
+  expect(previousValue).not.toBeNull();
+  const zeroRangeResult = commitKdjCandle(state, { high: 0, low: 0, close: 0 });
+  expect(zeroRangeResult.accepted).toBe(true);
+  expect(zeroRangeResult.available).toBe(false);
+
+  expect(state.index).toBe(beforeZeroRange.index + 1);
+  expect(state.rsvWindow).toEqual(beforeZeroRange.rsvWindow);
+  expect(state.rsvWindowSum).toBe(beforeZeroRange.rsvWindowSum);
+  expect(state.kWindow).toEqual(beforeZeroRange.kWindow);
+  expect(state.kWindowSum).toBe(beforeZeroRange.kWindowSum);
+  expect(state.lastK).toBe(beforeZeroRange.lastK);
+  expect(state.lastD).toBe(beforeZeroRange.lastD);
+  expect(state.hasKdjValue).toBe(true);
+  expect(readKdjValue(state)).toEqual(previousValue);
+
+  const recovered = commitKdjCandle(state, { high: 6, low: 4, close: 5 });
+  expect(recovered).toEqual({ accepted: true, available: true });
 });
 
 it('keeps partial N-of-M evaluable and does not commit a no-price candidate over valid old state', () => {

@@ -51,6 +51,30 @@ describe('VerificationSampleStore utils', () => {
     });
   });
 
+  it('projects null KDJ as missing without hiding independent verification indicators', () => {
+    const values = projectVerificationSampleValues(
+      {
+        price: 100,
+        changePercent: 0,
+        ema: null,
+        rsi: null,
+        psy: null,
+        mfi: 50,
+        kdj: null,
+        macd: null,
+        adx: 30,
+      },
+      ['K', 'D', 'J', 'ADX'],
+    );
+
+    expect(values).toEqual({
+      K: { kind: 'missing' },
+      D: { kind: 'missing' },
+      J: { kind: 'missing' },
+      ADX: { kind: 'value', value: 30 },
+    });
+  });
+
   it('stores verification sample values instead of full snapshot', () => {
     const queue = createSampleQueue();
     pushToQueue(
