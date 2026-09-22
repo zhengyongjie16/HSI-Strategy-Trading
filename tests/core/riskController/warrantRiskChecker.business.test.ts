@@ -13,8 +13,11 @@ import {
   MIN_MONITOR_PRICE_THRESHOLD,
 } from '../../../src/constants/index.js';
 import { createWarrantRiskChecker } from '../../../src/core/riskController/warrantRiskChecker.js';
-import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import type { MarketDataClient } from '../../../src/types/services.js';
+import { createMarketDataClient } from '../../../src/services/quoteClient/index.js';
+import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createWarrantQuote } from '../../../mock/factories/quoteFactory.js';
+import { createQuoteContextMock } from '../../../mock/longbridge/quoteContextMock.js';
+import { createSdkConfigDouble } from '../../helpers/testDoubles.js';
 
 describe('warrantRiskChecker business boundaries', () => {
   it('accepts and rejects bull distance exactly at threshold boundaries', () => {
@@ -85,21 +88,23 @@ describe('warrantRiskChecker business boundaries', () => {
     expect(result.allowed).toBe(true);
   });
 
-  it('throws ExternalApiRequestError when warrant refresh api fails and keeps previous warrant fact', async () => {
+  it('keeps the previous warrant fact after client retries are exhausted, then refreshes on the next call', async () => {
     const checker = createWarrantRiskChecker();
     checker.setWarrantInfoFromCallPrice('BULL.HK', 20000, true, 'BULL.HK');
-    const marketDataClient = {
-      getQuoteContext: async () => ({
-        warrantQuote: async () => {
-          throw await createExternalApiRequestError({
-            operation: 'QuoteContext.warrantQuote',
-            attempts: 1,
-            cause: new Error('api down'),
-          });
-        },
-        warrantList: async () => [],
-      }),
-    } as unknown as MarketDataClient;
+
+    const quoteCtx = createQuoteContextMock();
+    quoteCtx.seedWarrantQuotes([
+      createWarrantQuote({ symbol: 'BULL.HK', callPrice: 19000, category: 3 }),
+    ]);
+
+    quoteCtx.setFailureRule('warrantQuote', {
+      failAtCalls: [1, 2, 3],
+      errorMessage: 'network unavailable',
+    });
+    const marketDataClient = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: async () => quoteCtx,
+    });
 
     let caught: unknown = null;
     try {
@@ -108,13 +113,33 @@ describe('warrantRiskChecker business boundaries', () => {
       caught = error;
     }
 
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).name).toBe('ExternalApiRequestError');
-    expect((caught as Error & { operation?: string }).operation).toBe('QuoteContext.warrantQuote');
+    expect(isExternalApiRequestError(caught)).toBeTrue();
+    expect(quoteCtx.getCalls('warrantQuote')).toHaveLength(3);
+    expect(caught).toMatchObject({
+      name: 'ExternalApiRequestError',
+      operation: 'QuoteContext.warrantQuote',
+      attempts: 3,
+    });
 
-    const riskResult = checker.checkRisk('BULL.HK', 'BUYCALL', 20000);
-    expect(riskResult.allowed).toBe(false);
-    expect(riskResult.reason).toContain('牛证距离回收价百分比');
+    expect((caught as Error & { cause?: unknown }).cause).toBe(
+      quoteCtx.getCalls('warrantQuote')[2]?.error,
+    );
+
+    const riskBeforeRefresh = checker.checkRisk('BULL.HK', 'BUYCALL', 20000);
+    expect(riskBeforeRefresh.allowed).toBe(false);
+    expect(riskBeforeRefresh.reason).toContain('牛证距离回收价百分比');
+
+    const refreshResult = await checker.refreshWarrantInfoForSymbol(
+      marketDataClient,
+      'BULL.HK',
+      true,
+      'BULL.HK',
+    );
+    expect(refreshResult).toEqual({ status: 'ok', isWarrant: true });
+    expect(quoteCtx.getCalls('warrantQuote')).toHaveLength(4);
+
+    const riskAfterRefresh = checker.checkRisk('BULL.HK', 'BUYCALL', 20000);
+    expect(riskAfterRefresh.allowed).toBe(true);
   });
 
   it('returns status error on invalid call price input and keeps previous warrant fact', () => {

@@ -34,11 +34,7 @@ import type {
 import type { WarrantInfo, WarrantRiskChecker } from './types.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatError } from '../../utils/error/index.js';
-import {
-  isExternalApiRequestError,
-  isProgramError,
-  wrapExternalApiRequest,
-} from '../../utils/apiFailure/index.js';
+import { isExternalApiRequestError, isProgramError } from '../../utils/apiFailure/index.js';
 import {
   BULL_WARRANT_MIN_DISTANCE_PERCENT,
   BEAR_WARRANT_MAX_DISTANCE_PERCENT,
@@ -338,11 +334,8 @@ async function checkWarrantType(
 ): Promise<WarrantInfo> {
   const ctx = await marketDataClient.getQuoteContext();
 
-  // 使用 warrantQuote API 获取牛熊证信息
-  const warrantQuotesRaw = await wrapExternalApiRequest({
-    operation: 'QuoteContext.warrantQuote',
-    request: () => ctx.warrantQuote([symbol]),
-  });
+  // 使用 warrantQuote API 获取牛熊证信息；重试由 quoteClient 的上下文边界负责。
+  const warrantQuotesRaw = await ctx.warrantQuote([symbol]);
   const warrantQuote = warrantQuotesRaw[0] ?? null;
   if (!warrantQuote) {
     return { isWarrant: false };

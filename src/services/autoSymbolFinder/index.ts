@@ -15,7 +15,6 @@ import {
 } from 'longbridge';
 import { DEFAULT_PERCENT_DECIMALS, DEFAULT_PRICE_DECIMALS } from '../../constants/index.js';
 import { buildExpiryDateFilters, selectBestWarrant } from './utils.js';
-import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
 import { formatDecimal } from '../../utils/numeric/index.js';
 import type {
   DirectionalAutoSearchPolicy,
@@ -140,19 +139,15 @@ function requestWarrantList({
   warrantType,
   expiryFilters,
 }: WarrantListRequestParams): Promise<ReadonlyArray<WarrantListItem>> {
-  return wrapExternalApiRequest({
-    operation: 'QuoteContext.warrantList',
-    request: () =>
-      ctx.warrantList({
-        symbol: monitorSymbol,
-        sortBy: WarrantSortBy.Turnover,
-        sortOrder: SortOrderType.Descending,
-        types: [warrantType],
-        issuerIds: null,
-        expiryFilters: [...expiryFilters],
-        inOutBoundsTypes: [FilterWarrantInOutBoundsType.In],
-        status: [WarrantStatus.Normal],
-      }),
+  return ctx.warrantList({
+    symbol: monitorSymbol,
+    sortBy: WarrantSortBy.Turnover,
+    sortOrder: SortOrderType.Descending,
+    types: [warrantType],
+    issuerIds: null,
+    expiryFilters: [...expiryFilters],
+    inOutBoundsTypes: [FilterWarrantInOutBoundsType.In],
+    status: [WarrantStatus.Normal],
   });
 }
 

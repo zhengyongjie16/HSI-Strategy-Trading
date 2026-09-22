@@ -17,6 +17,8 @@ import {
 
 import { findBestWarrant } from '../../../src/services/autoSymbolFinder/index.js';
 import { resolveDirectionalAutoSearchPolicy } from '../../../src/services/autoSymbolFinder/policyResolver.js';
+import { createMarketDataClient } from '../../../src/services/quoteClient/index.js';
+import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import {
   buildExpiryDateFilters,
   createWarrantListCache,
@@ -29,7 +31,7 @@ import type {
   WarrantListItem,
 } from '../../../src/services/autoSymbolFinder/types.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
-import { createQuoteContextDouble } from '../../helpers/testDoubles.js';
+import { createQuoteContextDouble, createSdkConfigDouble } from '../../helpers/testDoubles.js';
 
 function createLoggerRecorder(): {
   readonly logger: Logger;
@@ -667,30 +669,73 @@ describe('autoSymbolFinder business flow', () => {
     expect(quoteCtx.getCalls('warrantList')).toHaveLength(2);
   });
 
-  it('throws ExternalApiRequestError when warrantList api call fails', async () => {
+  it('shares one client-retry failure across same-key calls and reuses the next success from cache', async () => {
     const quoteCtx = createQuoteContextMock();
+    quoteCtx.seedWarrantList('HSI.HK', [
+      toWarrantInfo(
+        createWarrantListItem({
+          symbol: 'BULL-1.HK',
+          apiDistanceRatio: toApiDistanceRatio(0.55),
+          turnover: 300_000,
+        }),
+      ),
+    ]);
+
     quoteCtx.setFailureRule('warrantList', {
       failAtCalls: [1, 2, 3],
       errorMessage: 'service unavailable',
     });
 
+    const marketDataClient = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: async () => quoteCtx,
+    });
     const { logger } = createLoggerRecorder();
-    let error: unknown = null;
-    try {
-      await findBestWarrant({
-        ctx: createQuoteContextDouble(quoteCtx),
-        monitorSymbol: 'HSI.HK',
-        tradingMinutes: 10,
-        policy: createDirectionalPolicy('LONG'),
-        expiryMinMonths: 3,
-        logger,
-      });
-    } catch (err) {
-      error = err;
+    const cache = createWarrantListCache();
+    const baseInput = {
+      ctx: await marketDataClient.getQuoteContext(),
+      monitorSymbol: 'HSI.HK',
+      tradingMinutes: 10,
+      policy: createDirectionalPolicy('LONG'),
+      expiryMinMonths: 3,
+      logger,
+      cacheConfig: {
+        cache,
+        ttlMs: 3_000,
+        nowMs: () => 1_000,
+      },
+    };
+
+    const firstAttempt = findBestWarrant(baseInput);
+    const secondAttempt = findBestWarrant(baseInput);
+    const [firstResult, secondResult] = await Promise.allSettled([firstAttempt, secondAttempt]);
+
+    expect(firstResult.status).toBe('rejected');
+    expect(secondResult.status).toBe('rejected');
+    if (firstResult.status !== 'rejected' || secondResult.status !== 'rejected') {
+      throw new Error('expected both same-key finder requests to reject');
     }
 
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).name).toBe('ExternalApiRequestError');
+    expect(secondResult.reason).toBe(firstResult.reason);
+    expect(isExternalApiRequestError(firstResult.reason)).toBeTrue();
+    expect(firstResult.reason).toMatchObject({
+      name: 'ExternalApiRequestError',
+      operation: 'QuoteContext.warrantList',
+      attempts: 3,
+    });
+
+    expect((firstResult.reason as Error & { cause?: unknown }).cause).toBe(
+      quoteCtx.getCalls('warrantList')[2]?.error,
+    );
+    expect(quoteCtx.getCalls('warrantList')).toHaveLength(3);
+
+    const nextAttempt = await findBestWarrant(baseInput);
+    expect(nextAttempt?.symbol).toBe('BULL-1.HK');
+    expect(quoteCtx.getCalls('warrantList')).toHaveLength(4);
+
+    const cachedAttempt = await findBestWarrant(baseInput);
+    expect(cachedAttempt?.symbol).toBe('BULL-1.HK');
+    expect(quoteCtx.getCalls('warrantList')).toHaveLength(4);
   });
 
   it('returns null and logs when no warrant can satisfy business thresholds', async () => {

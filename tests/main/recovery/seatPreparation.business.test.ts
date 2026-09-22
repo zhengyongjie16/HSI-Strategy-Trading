@@ -20,6 +20,7 @@ import {
 } from '../../helpers/testDoubles.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 
 function createLoggerStub(): Logger {
   return {
@@ -311,12 +312,6 @@ describe('recovery seat preparation business flow', () => {
         frozenTradingDayKey: null,
       },
     });
-    const quoteCtx = createQuoteContextMock();
-    quoteCtx.setFailureRule('warrantList', {
-      failAtCalls: [1, 2, 3],
-      errorMessage: 'network',
-    });
-
     let error: unknown = null;
     try {
       await prepareSeatsForRuntime({
@@ -325,7 +320,16 @@ describe('recovery seat preparation business flow', () => {
         positions: [],
         orders: [],
         marketDataClient: createMarketDataClientDouble({
-          getQuoteContext: async () => createQuoteContextDouble(quoteCtx),
+          getQuoteContext: async () => ({
+            warrantQuote: async () => [],
+            warrantList: async () => {
+              throw await createExternalApiRequestError({
+                operation: 'QuoteContext.warrantList',
+                attempts: 3,
+                cause: new Error('network'),
+              });
+            },
+          }),
         }),
         now: () => new Date('2026-02-16T01:35:00.000Z'),
         logger: createLoggerStub(),
