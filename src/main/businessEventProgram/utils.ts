@@ -1,20 +1,10 @@
-import type { CandleData } from '../../types/data.js';
 import type { CandlestickCacheSnapshot } from '../../types/services.js';
 import type { StrategyCandlestickSnapshot, StrategyDecision } from '../../core/strategy/types.js';
 
 /**
- * 保留 primitive 原值，把 SDK Decimal 脱离缓存转换为字符串。
- * @param value 权威缓存字段
- * @returns 不含缓存对象引用的字段值
- */
-function projectCandleValue(value: CandleData['close']): number | string | null | undefined {
-  return typeof value === 'object' && value !== null ? value.toString() : value;
-}
-
-/**
- * 深冻结完整 K 线投影；不补缺失值，不按版本过滤策略采样。
+ * 冻结显式行情元数据与独立数组，复用缓存已冻结 candle；不补缺失值，不按版本过滤策略采样。
  * @param snapshot 当前权威缓存快照
- * @returns 与缓存后续 mutation 隔离的只读行情
+ * @returns 与缓存数组后续 mutation 隔离的只读行情
  */
 export function projectCandlesticks(
   snapshot: CandlestickCacheSnapshot,
@@ -26,18 +16,7 @@ export function projectCandlesticks(
     initialized: snapshot.initialized,
     lastBarTimestamp: snapshot.lastBarTimestamp,
     lastBarConfirmed: snapshot.lastBarConfirmed,
-    candles: Object.freeze(
-      snapshot.candles.map((candle) =>
-        Object.freeze({
-          ...(candle.timestamp === undefined ? {} : { timestamp: candle.timestamp }),
-          open: projectCandleValue(candle.open),
-          high: projectCandleValue(candle.high),
-          low: projectCandleValue(candle.low),
-          close: projectCandleValue(candle.close),
-          volume: projectCandleValue(candle.volume),
-        }),
-      ),
-    ),
+    candles: Object.freeze([...snapshot.candles]),
   });
 }
 

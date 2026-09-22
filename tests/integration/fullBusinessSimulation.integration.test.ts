@@ -30,7 +30,7 @@ import { createTradingGateEventRuntime as createProductionTradingGateEventRuntim
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { Period } from 'longbridge';
-import type { CandleData } from '../../src/types/data.js';
+import type { NormalizedCandle } from '../../src/types/data.js';
 import type { LastState } from '../../src/types/state.js';
 import type { MonitorConfig, TradingConfig } from '../../src/types/config.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
@@ -89,17 +89,19 @@ function createTradingGateEventRuntime() {
 
 let autoSymbolCandidates: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
 
-function createCandles(length: number, start: number, step: number): CandleData[] {
-  const candles: CandleData[] = [];
+function createCandles(length: number, start: number, step: number): NormalizedCandle[] {
+  const candles: NormalizedCandle[] = [];
   for (let index = 0; index < length; index += 1) {
     const close = start + index * step;
-    candles.push({
-      open: close - 0.2,
-      high: close + 0.3,
-      low: close - 0.4,
-      close,
-      volume: 5_000 + index,
-    });
+    candles.push(
+      Object.freeze({
+        open: close - 0.2,
+        high: close + 0.3,
+        low: close - 0.4,
+        close,
+        volume: 5_000 + index,
+      }),
+    );
   }
 
   return candles;
@@ -107,7 +109,7 @@ function createCandles(length: number, start: number, step: number): CandleData[
 
 function createCandlestickSnapshot(
   symbol: string,
-  candles: ReadonlyArray<CandleData>,
+  candles: ReadonlyArray<NormalizedCandle>,
   version: number = 1,
 ): CandlestickCacheSnapshot | null {
   if (candles.length === 0) {

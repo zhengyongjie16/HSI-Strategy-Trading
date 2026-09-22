@@ -32,7 +32,7 @@ import type {
   ExecuteSignalsResult,
   OrderClosedReason,
 } from './trader.js';
-import type { CandleData } from './data.js';
+import type { NormalizedCandle } from './data.js';
 import type { ExternalApiRetryConfig } from '../utils/apiFailure/types.js';
 import type { DecimalLike } from '../utils/helpers/types.js';
 
@@ -133,7 +133,7 @@ export type CandlestickCacheSnapshot = {
   readonly symbol: string;
   readonly period: Period;
   readonly version: number;
-  readonly candles: ReadonlyArray<CandleData>;
+  readonly candles: ReadonlyArray<NormalizedCandle>;
   readonly lastBarTimestamp: number | null;
   readonly lastBarConfirmed: boolean | null;
   readonly initialized: boolean;

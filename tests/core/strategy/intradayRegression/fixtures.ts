@@ -66,14 +66,16 @@ export function createIndicatorUsageProfileDouble(overrides?: {
 export function normalizeCandles(
   candles: ReadonlyArray<CandleData>,
 ): StrategyCandlestickSnapshot['candles'] {
-  return candles.map((candle) => ({
-    ...(typeof candle.timestamp === 'number' ? { timestamp: candle.timestamp } : {}),
-    open: primitive(candle.open),
-    high: primitive(candle.high),
-    low: primitive(candle.low),
-    close: primitive(candle.close),
-    volume: primitive(candle.volume),
-  }));
+  return candles.map((candle) =>
+    Object.freeze({
+      ...(typeof candle.timestamp === 'number' ? { timestamp: candle.timestamp } : {}),
+      open: primitive(candle.open),
+      high: primitive(candle.high),
+      low: primitive(candle.low),
+      close: primitive(candle.close),
+      volume: primitive(candle.volume),
+    }),
+  );
 }
 
 function primitive(value: CandleData['close']): number | string | null | undefined {

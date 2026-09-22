@@ -1,6 +1,7 @@
 /** 普通行情事件的 latest-only、不可变投影及同步 fatal 回归。 */
 import { describe, expect, it } from 'bun:test';
 import { Period } from 'longbridge';
+import type { NormalizedCandle } from '../../../src/types/data.js';
 import { createEventHarness } from './fixtures.js';
 
 describe('businessEventProgram 中性事件宿主', () => {
@@ -46,16 +47,17 @@ describe('businessEventProgram 中性事件宿主', () => {
     await h.program.stopAndDrain();
   });
 
-  it('完整行情、每根 candle、每个 seat 和 context 深冻结且不补零', async () => {
+  it('完整行情、共享 candle 与宿主数组冻结且不补零', async () => {
     const h = createEventHarness();
-    const candle = {
+    const candle: NormalizedCandle = Object.freeze({
       open: undefined,
       high: Number.NaN,
       low: Number.POSITIVE_INFINITY,
       close: null,
-      volume: { toString: () => '123.4' },
-    };
-    h.mutable.snapshot = { ...h.mutable.snapshot, candles: [candle] };
+      volume: '123.4',
+    });
+    const sourceCandles = [candle];
+    h.mutable.snapshot = { ...h.mutable.snapshot, candles: sourceCandles };
     h.program.start();
     h.publish();
     await Promise.resolve();
@@ -88,6 +90,8 @@ describe('businessEventProgram 中性事件宿主', () => {
       hasFilledBuyOrders: true,
     });
 
+    expect(context.candlesticks.candles).not.toBe(sourceCandles);
+    expect(context.candlesticks.candles[0]).toBe(candle);
     expect(context.candlesticks.candles[0]).toEqual({
       open: undefined,
       high: Number.NaN,
@@ -96,9 +100,10 @@ describe('businessEventProgram 中性事件宿主', () => {
       volume: '123.4',
     });
     expect(Reflect.set(context.candlesticks.candles[0] ?? {}, 'close', 100)).toBeFalse();
-    candle.high = 999;
+    sourceCandles[0] = Object.freeze({ ...candle, close: 100 });
     expect(context.candlesticks.candles[0]?.high).toBeNaN();
-    expect(candle.close).toBeNull();
+    expect(context.candlesticks.candles[0]?.close).toBeNull();
+    expect(Reflect.set(candle, 'high', 999)).toBeFalse();
     await h.program.stopAndDrain();
   });
 

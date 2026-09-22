@@ -1,35 +1,13 @@
 import type { Period } from 'longbridge';
+import type { NormalizedCandle } from '../../types/data.js';
 import type { Logger } from '../../utils/logger/types.js';
 import type { RuntimeClock, RuntimeScheduler } from '../../types/runtime.js';
 import type { SignalType } from '../../types/signal.js';
 
 /**
- * 策略可接收的单根 K 线字段值。
- * 类型用途：表达行情缓存标准化后仍可能存在的缺失值，不把缺失值伪造成有效价格。
- * 数据来源：由行情缓存标准化后投影到策略输入。
- * 使用范围：StrategyCandle 与 StrategyCandlestickSnapshot。
- */
-type StrategyCandleValue = number | string | null | undefined;
-
-/**
- * 策略可接收的单根 K 线快照。
- * 类型用途：承载策略指标计算所需的 OHLCV 只读事实。
- * 数据来源：由宿主从已标准化的本地 K 线缓存创建并冻结。
- * 使用范围：StrategyCandlestickSnapshot 与具体策略实例。
- */
-type StrategyCandle = {
-  readonly timestamp?: number;
-  readonly open: StrategyCandleValue;
-  readonly high: StrategyCandleValue;
-  readonly low: StrategyCandleValue;
-  readonly close: StrategyCandleValue;
-  readonly volume: StrategyCandleValue;
-};
-
-/**
  * 策略行情 K 线快照。
  * 类型用途：向策略提供单次行情事件对应的不可变 K 线事实与缓存版本。
- * 数据来源：由宿主从行情缓存投影得到，不包含行情客户端或 Broker 能力。
+ * 数据来源：由宿主从行情缓存投影得到，复用缓存已冻结 candle 并冻结元数据与数组，不包含行情客户端或 Broker 能力。
  * 使用范围：StrategyMarketContext 与策略实例。
  */
 export type StrategyCandlestickSnapshot = {
@@ -39,7 +17,7 @@ export type StrategyCandlestickSnapshot = {
   readonly initialized: boolean;
   readonly lastBarTimestamp: number | null;
   readonly lastBarConfirmed: boolean | null;
-  readonly candles: ReadonlyArray<StrategyCandle>;
+  readonly candles: ReadonlyArray<NormalizedCandle>;
 };
 
 /**

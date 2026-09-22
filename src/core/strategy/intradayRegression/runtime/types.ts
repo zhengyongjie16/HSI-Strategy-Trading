@@ -1,4 +1,4 @@
-import type { CandleData } from '../../../../types/data.js';
+import type { NormalizedCandle } from '../../../../types/data.js';
 import type { IndicatorUsageProfile } from '../profile/types.js';
 
 /**
@@ -85,7 +85,7 @@ export type IndicatorRuntimeState = {
   readonly profile: IndicatorUsageProfile;
   lastProcessedVersion: number;
   activeBarConfirmed: boolean | null;
-  activeBar: CandleData | null;
+  activeBar: NormalizedCandle | null;
   lastBarTimestamp: number | null;
   lastBarConfirmed: boolean | null;
 

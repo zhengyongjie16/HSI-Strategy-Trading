@@ -73,7 +73,16 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
       initialized: true,
       lastBarTimestamp: 1000,
       lastBarConfirmed: false,
-      candles: [{ timestamp: 1000, open: '100', high: 110, low: 90, close: 101, volume: 1000 }],
+      candles: [
+        Object.freeze({
+          timestamp: 1000,
+          open: '100',
+          high: 110,
+          low: 90,
+          close: 101,
+          volume: 1000,
+        }),
+      ],
     },
   };
   const lastState: BusinessEventProgramDeps['lastState'] = {

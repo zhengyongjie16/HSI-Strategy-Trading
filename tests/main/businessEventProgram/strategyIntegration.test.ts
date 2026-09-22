@@ -52,14 +52,16 @@ function setCandles(h: EventHarness, close: number): void {
     ...h.mutable.snapshot,
     version: h.mutable.snapshot.version + 1,
     lastBarTimestamp: 1_200_000,
-    candles: Array.from({ length: 21 }, (_, index) => ({
-      timestamp: index * 60_000,
-      open: 50,
-      high: 100,
-      low: 1,
-      close: index === 20 ? close : 50,
-      volume: 1000,
-    })),
+    candles: Array.from({ length: 21 }, (_, index) =>
+      Object.freeze({
+        timestamp: index * 60_000,
+        open: 50,
+        high: 100,
+        low: 1,
+        close: index === 20 ? close : 50,
+        volume: 1000,
+      }),
+    ),
   };
 }
 

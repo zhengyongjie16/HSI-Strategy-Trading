@@ -6,7 +6,7 @@
  */
 import type { Position, AccountSnapshot } from '../../src/types/account.js';
 import type { MonitorConfig } from '../../src/types/config.js';
-import type { CandleData } from '../../src/types/data.js';
+import type { CandleData, NormalizedCandle } from '../../src/types/data.js';
 import type { Quote } from '../../src/types/quote.js';
 import type { Signal, SignalType } from '../../src/types/signal.js';
 import type { MonitorContext } from '../../src/types/state.js';
@@ -81,7 +81,7 @@ type TestSeatTruthChangedEvent = Parameters<Parameters<SymbolRegistry['onSeatTru
 function createCandlestickCacheSnapshot(
   symbol: string,
   period: Period,
-  candles: ReadonlyArray<CandleData>,
+  candles: ReadonlyArray<NormalizedCandle>,
   version: number,
 ): CandlestickCacheSnapshot | null {
   if (candles.length === 0) {
@@ -141,32 +141,78 @@ function listHKDateKeysInRange(startDate: Date, endDate: Date): ReadonlyArray<st
 }
 
 /**
- * 将测试中的 Candlestick / CandleData 统一收敛为本地缓存使用的 CandleData。
+ * 将测试中的 Candlestick / CandleData 收敛为本地缓存使用的 primitive-only K 线。
  *
  * @param candles 来自 SDK seed 或测试 fixture 的 K 线数组
- * @returns 可供本地快照与指标计算消费的 CandleData 数组
+ * @returns 可供本地快照与指标计算消费的 K 线数组；每根 K 线独立冻结，数组保持可变
  */
 function normalizeCandlestickData(
   candles: ReadonlyArray<Candlestick | CandleData>,
-): ReadonlyArray<CandleData> {
+): ReadonlyArray<NormalizedCandle> {
   return candles.map((candle) => {
-    const normalized: CandleData = {
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
-      volume: candle.volume,
+    const timestamp = normalizeTimestamp(candle.timestamp);
+    const normalized = {
+      open: normalizeCandleValue(candle.open),
+      high: normalizeCandleValue(candle.high),
+      low: normalizeCandleValue(candle.low),
+      close: normalizeCandleValue(candle.close),
+      volume: normalizeCandleValue(candle.volume),
     };
-
-    if (typeof candle.timestamp === 'number') {
-      return {
-        ...normalized,
-        timestamp: candle.timestamp,
-      };
-    }
-
-    return normalized;
+    return Object.freeze(timestamp === undefined ? normalized : { ...normalized, timestamp });
   });
+}
+
+/**
+ * 将测试行情值收敛为缓存边界允许的 primitive。
+ *
+ * @param value 原始行情值
+ * @returns primitive 行情值；不可转换的对象返回 undefined
+ */
+function normalizeCandleValue(value: unknown): number | string | null | undefined {
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'number' ||
+    typeof value === 'string'
+  ) {
+    return value;
+  }
+
+  if (typeof value !== 'object') {
+    return undefined;
+  }
+
+  const toNumber = Reflect.get(value, 'toNumber');
+  if (typeof toNumber !== 'function') {
+    return undefined;
+  }
+
+  const normalized = Reflect.apply(toNumber, value, []);
+  return typeof normalized === 'number' && Number.isFinite(normalized) ? normalized : undefined;
+}
+
+/**
+ * 将测试 K 线时间字段收敛为有效毫秒时间戳。
+ *
+ * @param value 原始时间字段
+ * @returns 有效毫秒时间戳；无法解析时返回 undefined
+ */
+function normalizeTimestamp(value: unknown): number | undefined {
+  if (value instanceof Date) {
+    const timestamp = value.getTime();
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? timestamp : undefined;
+  }
+
+  return undefined;
 }
 
 /**
@@ -739,7 +785,7 @@ export function createMarketDataClientDouble(
   overrides: Partial<MarketDataClient> = {},
 ): MarketDataClient {
   const quoteContext = createQuoteContextDouble();
-  const candlestickCache = new Map<string, ReadonlyArray<CandleData>>();
+  const candlestickCache = new Map<string, ReadonlyArray<NormalizedCandle>>();
   const candlestickVersions = new Map<string, number>();
   const baseOnQuoteUpdated: NonNullable<MarketDataClient['onQuoteUpdated']> = () => () => {};
 

@@ -6,7 +6,7 @@
  * - 对外快照统一构造成普通值对象，不承载对象池生命周期
  */
 import { isValidPositiveNumber } from '../../../../utils/helpers/index.js';
-import type { CandleData } from '../../../../types/data.js';
+import type { CandleData, NormalizedCandle } from '../../../../types/data.js';
 import type { IndicatorSnapshot } from '../types.js';
 import type { IndicatorUsageProfile } from '../profile/types.js';
 import type { StrategyCandlestickSnapshot } from '../../types.js';
@@ -255,9 +255,9 @@ function buildSnapshotFromCommitted(params: {
 }
 
 function resolveActiveBar(params: {
-  readonly candles: ReadonlyArray<CandleData>;
+  readonly candles: ReadonlyArray<NormalizedCandle>;
   readonly lastBarConfirmed: boolean | null;
-}): CandleData | null {
+}): NormalizedCandle | null {
   if (params.lastBarConfirmed !== false) {
     return null;
   }
@@ -366,7 +366,7 @@ function commitShiftedCandles(params: {
     }
   }
 
-  let activeBar: CandleData | null = null;
+  let activeBar: NormalizedCandle | null = null;
   let activeBarConfirmed: boolean | null = cacheSnapshot.lastBarConfirmed;
   const lastIndex = cacheSnapshot.candles.length - 1;
   for (let index = previousIndex + 1; index < cacheSnapshot.candles.length; index += 1) {

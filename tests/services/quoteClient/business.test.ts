@@ -773,8 +773,8 @@ describe('quoteClient business flow', () => {
 
   it('marks last bar confirmed when same-timestamp confirmed push arrives', async () => {
     const seedCandles = [
-      makeCandlestick(100, '2026-02-16T01:00:00.000Z'),
-      makeCandlestick(101, '2026-02-16T01:01:00.000Z'),
+      { ...makeCandlestick(100, '2026-02-16T01:00:00.000Z'), volume: 1 },
+      { ...makeCandlestick(101, '2026-02-16T01:01:00.000Z'), volume: 1 },
     ];
     quoteMock.seedCandlesticks('BULL.HK', RealPeriod.Min_1, seedCandles);
 
@@ -783,6 +783,19 @@ describe('quoteClient business flow', () => {
       quoteContextFactory: async () => quoteMock,
     });
     await client.subscribeCandlesticks('BULL.HK', RealPeriod.Min_1);
+
+    const before = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
+    expect(before).not.toBeNull();
+    if (before === null) {
+      throw new Error('expected candlestick snapshot before confirmation');
+    }
+
+    const beforeCandles = before.candles;
+    const beforeCandle = before.candles.at(-1);
+    const events: Array<{ readonly snapshot: typeof before }> = [];
+    const dispose = client.onCandlestickUpdated((event) => {
+      events.push({ snapshot: event.snapshot });
+    });
 
     quoteMock.emitCandlestick(
       createPushCandlestickEvent({
@@ -797,9 +810,18 @@ describe('quoteClient business flow', () => {
 
     const snapshot = client.getCandlestickSnapshot('BULL.HK', RealPeriod.Min_1);
     expect(snapshot).not.toBeNull();
-    expect(snapshot?.lastBarConfirmed).toBe(true);
+    if (snapshot === null) {
+      throw new Error('expected confirmed snapshot');
+    }
 
-    const firstVersion = snapshot?.version ?? 0;
+    expect(snapshot.lastBarConfirmed).toBe(true);
+    expect(snapshot.version).toBe(before.version + 1);
+    expect(snapshot.candles).toBe(beforeCandles);
+    expect(snapshot.candles.at(-1)).toBe(beforeCandle);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.snapshot).toBe(snapshot);
+
+    const firstVersion = snapshot.version;
     quoteMock.emitCandlestick(
       createPushCandlestickEvent({
         symbol: 'BULL.HK',
@@ -831,6 +853,8 @@ describe('quoteClient business flow', () => {
     expect(rollbackSnapshot?.lastBarConfirmed).toBe(true);
     const rollbackClose = Number(rollbackSnapshot?.candles.at(-1)?.close?.toString() ?? Number.NaN);
     expect(rollbackClose).toBe(101);
+    expect(events).toHaveLength(1);
+    dispose();
   });
 
   it('appends next bar when push timestamp advances', async () => {

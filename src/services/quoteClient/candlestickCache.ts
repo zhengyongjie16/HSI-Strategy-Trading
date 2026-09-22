@@ -7,12 +7,11 @@
  * - 提供只读快照读取与清理能力
  */
 import type { Period } from 'longbridge';
-import type { CandleData } from '../../types/data.js';
+import type { NormalizedCandle } from '../../types/data.js';
 import type { CandlestickCacheSnapshot } from '../../types/services.js';
 import type {
   ApplyCandlestickPushParams,
   CandlestickCacheStore,
-  NormalizedCandleValue,
   SeedCandlestickSeriesParams,
 } from './types.js';
 import { isRecord } from '../../utils/helpers/index.js';
@@ -42,9 +41,9 @@ function createCandlestickKey(symbol: string, period: Period): string {
  * 标准化 K 线数值字段。
  *
  * @param value 原始字段值
- * @returns 标准化后的 CandleValue 值
+ * @returns 标准化后的 primitive 值
  */
-function normalizeCandleValue(value: unknown): NormalizedCandleValue {
+function normalizeCandleValue(value: unknown): number | string | null | undefined {
   if (
     value === null ||
     value === undefined ||
@@ -89,9 +88,9 @@ function normalizeTimestamp(value: unknown): number | undefined {
  * 标准化单根 K 线。
  *
  * @param candle 原始 K 线
- * @returns CandleData（当结构非法时返回 null）
+ * @returns 标准化 K 线（当结构非法时返回 null）
  */
-function normalizeCandlestick(candle: unknown): CandleData | null {
+function normalizeCandlestick(candle: unknown): NormalizedCandle | null {
   if (!isRecord(candle)) {
     return null;
   }
@@ -117,8 +116,8 @@ function normalizeCandlestick(candle: unknown): CandleData | null {
 function normalizeCandlestickSeries(
   candles: ReadonlyArray<unknown>,
   maxCandles: number,
-): ReadonlyArray<CandleData> {
-  const normalized: CandleData[] = [];
+): ReadonlyArray<NormalizedCandle> {
+  const normalized: NormalizedCandle[] = [];
   for (const candle of candles) {
     const normalizedCandle = normalizeCandlestick(candle);
     if (normalizedCandle !== null) {
@@ -126,21 +125,27 @@ function normalizeCandlestickSeries(
     }
   }
 
-  if (normalized.length <= maxCandles) {
-    return normalized;
+  const retained =
+    normalized.length <= maxCandles ? normalized : normalized.slice(normalized.length - maxCandles);
+  for (const candle of retained) {
+    Object.freeze(candle);
   }
 
-  return normalized.slice(normalized.length - maxCandles);
+  return retained;
 }
 
 /**
  * 判断两根 K 线语义是否一致（用于 push 幂等判定）。
+ * 这里保留严格相等，以维持原有版本与事件语义。
  *
  * @param left 左值
  * @param right 右值
  * @returns 是否语义一致
  */
-function areCandlesEqual(left: CandleData | undefined, right: CandleData | undefined): boolean {
+function areCandlesEqual(
+  left: NormalizedCandle | undefined,
+  right: NormalizedCandle | undefined,
+): boolean {
   if (!left || !right) {
     return false;
   }
@@ -156,6 +161,31 @@ function areCandlesEqual(left: CandleData | undefined, right: CandleData | undef
 }
 
 /**
+ * 判断两根 K 线字段是否精确一致（用于确认事件中的数据复用）。
+ *
+ * @param left 左值
+ * @param right 右值
+ * @returns 是否每个字段均保持精确表示
+ */
+function areCandlesExactlyEqual(
+  left: NormalizedCandle | undefined,
+  right: NormalizedCandle | undefined,
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+
+  return (
+    Object.is(left.timestamp, right.timestamp) &&
+    Object.is(left.open, right.open) &&
+    Object.is(left.high, right.high) &&
+    Object.is(left.low, right.low) &&
+    Object.is(left.close, right.close) &&
+    Object.is(left.volume, right.volume)
+  );
+}
+
+/**
  * 通过当前 candles 与 lastBarConfirmed 构造快照。
  *
  * @param params 快照构建参数
@@ -165,7 +195,7 @@ function buildSnapshot(params: {
   readonly symbol: string;
   readonly period: Period;
   readonly version: number;
-  readonly candles: ReadonlyArray<CandleData>;
+  readonly candles: ReadonlyArray<NormalizedCandle>;
   readonly lastBarConfirmed: boolean | null;
   readonly initialized: boolean;
 }): CandlestickCacheSnapshot {
@@ -270,10 +300,12 @@ export function applyCandlestickPush(
       return currentSnapshot;
     }
 
-    const nextCandles =
-      currentCandles.length === 0
-        ? [normalizedCandle]
-        : [...currentCandles.slice(0, -1), normalizedCandle];
+    // 事件门禁沿用严格相等；只有复用数据时才要求字段保持精确表示。
+    const reuseCurrentCandle =
+      !candleChanged && areCandlesExactlyEqual(previousLastCandle, normalizedCandle);
+    const nextCandles = reuseCurrentCandle
+      ? currentCandles
+      : [...currentCandles.slice(0, -1), Object.freeze(normalizedCandle)];
     const updatedSnapshot = buildSnapshot({
       symbol,
       period,
@@ -286,10 +318,11 @@ export function applyCandlestickPush(
     return updatedSnapshot;
   }
 
+  const frozenCandle = Object.freeze(normalizedCandle);
   const appendedCandles =
     currentCandles.length + 1 <= store.maxCandles
-      ? [...currentCandles, normalizedCandle]
-      : [...currentCandles.slice(currentCandles.length + 1 - store.maxCandles), normalizedCandle];
+      ? [...currentCandles, frozenCandle]
+      : [...currentCandles.slice(currentCandles.length + 1 - store.maxCandles), frozenCandle];
   const updatedSnapshot = buildSnapshot({
     symbol,
     period,

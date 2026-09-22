@@ -141,11 +141,3 @@ export type ApplyCandlestickPushParams = {
  * 使用范围：quoteClient 模块内部事件派发使用。
  */
 export type CandlestickUpdatedListener = (event: CandlestickUpdatedEvent) => void;
-
-/**
- * 标准化 K 线字段值。
- * 类型用途：约束缓存标准化过程中可保留的 K 线数值字段类型。
- * 数据来源：由原始 SDK K 线字段标准化得到。
- * 使用范围：仅 quoteClient/candlestickCache 内部使用。
- */
-export type NormalizedCandleValue = number | string | null | undefined;
