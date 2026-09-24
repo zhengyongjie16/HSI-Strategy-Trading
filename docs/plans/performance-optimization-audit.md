@@ -209,7 +209,9 @@ cache 主要复制引用数组，并非每次深拷贝全部旧 candle；strateg
 
 ### PERF-03：Logger 双流重复解析和格式化
 
-**判定：**重复成本已确认，应与 K 线分配一起进行首轮 profiling。
+**实施状态：**已完成局部等价优化；保留 Pino 10.3.1 序列化和四方法 Logger 接口。普通 Writable 入口现在只做一次 Buffer 解码、JSON.parse、结构校验、时间/extra 准备和双端格式化，再按 file→console 顺序投递到两个独立 objectMode sink。内部契约错误通过统一一次诊断进入非零 fatal 链路，外部文件/console 失败策略保持原样。本次不实现优雅停机的完整 sink 排空。
+
+**判定：**重复成本已确认；实现消除了两端重复 parse、时间格式化和 extra inspect/stringify。实际吞吐、分配和尾延迟收益仍需目标环境 profiling，不宣称固定加速比例。
 
 #### 证据
 
@@ -242,9 +244,10 @@ cache 主要复制引用数组，并非每次深拷贝全部旧 candle；strateg
 
 #### 验证
 
-- 两端输出格式、级别、ANSI、extra 和顺序一致。
-- 停止时日志完整排空。
-- 在目标 Bun 环境测日志吞吐、分配量和事件循环延迟。
+- `tests/utils/logger/index.test.ts` 用真实 Pino 字节验证一次 parse/extra 准备、两端输出格式、级别、ANSI、primitive/object extra、重复日志和 file→console 路由。
+- 同一测试用慢端、per-sink FIFO、外部文件 callback 失败隔离、内部失败子进程非零退出/单次诊断/非递归，以及真实临时文件午夜、回拨和 retention 验证行为。
+- 可复现性能对比方法：在目标 Bun 版本分别运行 `bun test tests/utils/logger/index.test.ts`，再用临时（不入库）脚本对固定数量的相同 Pino 记录测量入口 CPU/墙钟、分配/GC 与 event-loop delay；基线是旧版 console/file 各自 parse+format，新版是一次入口准备后双 sink 分发。测试证明工作次数与输出等价，不替代目标环境实测，也不推导未经测量的收益。
+- 已知限制：`cleanupSync` 仍沿用既有同步关闭策略，不等待两个 sink 完整优雅排空；本次不宣称强退排空，也不扩展停机重构。
 
 ### PERF-04：延迟验证样本队列线性操作
 

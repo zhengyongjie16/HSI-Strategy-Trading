@@ -39,11 +39,11 @@ const HK_FEE_RATES: HKFeeRates = {
 };
 
 /** 默认交易日志文件路径 */
-const DEFAULT_TRADES_FILE = path.join(process.cwd(), 'logs', 'trades', '2026-01-21.json');
+const DEFAULT_TRADES_FILE = path.join(process.cwd(), 'logs', 'trades', '2026-01-21.jsonl');
 
 function main(): void {
-  const rawTrades: unknown = JSON.parse(readFileSync(DEFAULT_TRADES_FILE, 'utf8'));
-  const trades: ReadonlyArray<Trade> = parseTrades(rawTrades);
+  const rawTradeLog = readFileSync(DEFAULT_TRADES_FILE, 'utf8');
+  const trades: ReadonlyArray<Trade> = parseTrades(rawTradeLog);
 
   console.log('=== 2026-01-21 交易费用计算 ===\n');
   console.log(`总订单数：${trades.length}\n`);

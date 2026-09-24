@@ -1,3 +1,4 @@
+import { parseMixedRecord } from '../../src/services/mixedTradeLogRepository/index.js';
 import type { FeeSummary, HKFeeRates, OrderFees, Trade, TieredFeeRate } from './types.js';
 
 const TRADE_STRING_FIELDS = [
@@ -125,25 +126,59 @@ export function calculateOrderFees(
 }
 
 /**
- * 校验并解析交易日志 JSON 根对象。交易日志来自文件边界，字段缺失或类型错误必须 fail-fast。
+ * 按 JSONL 行解析混合交易日志，仅返回普通成交；空行、非完整 JSON、未知类型和无效成交均 fail-fast。
  *
- * @param raw 从 JSON.parse 得到的未知交易日志内容
- * @returns 校验后的交易记录数组
+ * @param raw UTF-8 交易日志文本，最后一条记录必须以 LF 结束
+ * @returns 校验后的普通成交记录数组
  */
-export function parseTrades(raw: unknown): ReadonlyArray<Trade> {
-  if (!Array.isArray(raw)) {
-    throw new TypeError('交易日志必须是数组');
+export function parseTrades(raw: string): ReadonlyArray<Trade> {
+  if (raw.length === 0) {
+    throw new TypeError('交易日志不能为空');
   }
 
-  return raw.map((record, index) => {
-    const invalidFields = findInvalidTradeFields(record);
-    if (invalidFields.length > 0) {
-      throw new Error(`第 ${index + 1} 条交易记录字段无效：${invalidFields.join(', ')}`);
+  if (!raw.endsWith('\n')) {
+    throw new TypeError('交易日志必须以 LF 结束');
+  }
+
+  const lines = raw.slice(0, -1).split('\n');
+  const trades: Trade[] = [];
+
+  for (const [index, line] of lines.entries()) {
+    const lineNumber = index + 1;
+    if (line.trim().length === 0) {
+      throw new TypeError(`第 ${lineNumber} 行交易日志为空行`);
     }
 
-    // 外部 JSON 边界已通过字段 schema 校验，此处收窄为内部 Trade。
-    return record as Trade;
-  });
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      throw new SyntaxError(`第 ${lineNumber} 行交易日志 JSON 无效：${details}`, { cause: error });
+    }
+
+    let mixedRecord: ReturnType<typeof parseMixedRecord>;
+    try {
+      mixedRecord = parseMixedRecord(record);
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      throw new Error(`第 ${lineNumber} 行混合交易记录无效：${details}`, { cause: error });
+    }
+
+    if ('recordType' in mixedRecord) {
+      continue;
+    }
+
+    const invalidFields = findInvalidTradeFields(mixedRecord);
+    if (invalidFields.length > 0) {
+      throw new Error(`第 ${lineNumber} 行交易记录字段无效：${invalidFields.join(', ')}`);
+    }
+
+    // 仓储 schema 校验并已通过费用字段校验，此处收窄为内部 Trade。
+    trades.push(mixedRecord as Trade);
+  }
+
+  return trades;
 }
 
 /**

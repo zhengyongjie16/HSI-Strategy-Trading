@@ -2,7 +2,11 @@ import { strategyDefinition } from '../../src/core/strategy/intradayRegression/d
 
 /** T20/T21：离线真实 post-gate owner 的 root 挂起终止矩阵，不访问账户或入口。 */
 import { describe, expect, it, mock } from 'bun:test';
+import os from 'node:os';
+import path from 'node:path';
 import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
+import { createMixedTradeLogRepository } from '../../src/services/mixedTradeLogRepository/index.js';
+import type { MixedTradeLogRepositoryDeps } from '../../src/services/mixedTradeLogRepository/types.js';
 import { createMonitorContext } from '../../src/app/context/createMonitorContext.js';
 import { createTimeWakeupRuntime } from '../../src/main/timeWakeupRuntime/index.js';
 
@@ -92,6 +96,12 @@ async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownE
         trace.push('context');
         return createMonitorContext(params);
       },
+      createMixedTradeLogRepository: (repositoryDeps: MixedTradeLogRepositoryDeps) =>
+        createMixedTradeLogRepository({
+          ...repositoryDeps,
+          resolveLogRootDir: () =>
+            path.join(os.tmpdir(), `post-gate-matrix-${process.pid}-${importSequence}`),
+        }),
     },
   }));
   const postGateModule = await import(

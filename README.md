@@ -248,7 +248,7 @@ flowchart TD
 - 控制台：实时运行状态与关键事件
 - `logs/system/`：系统级日志
 - `logs/debug/`：调试日志（启用 `DEBUG=true` 时更有价值）
-- `logs/trades/YYYY-MM-DD.json`：交易明细及保护性清仓执行进度、完成边界
+- `logs/trades/YYYY-MM-DD.jsonl`：交易明细及保护性清仓执行进度、完成边界
 - `logs/sdk/`：Longbridge SDK 日志（启用相关配置时输出）
 
 ## 相关资源

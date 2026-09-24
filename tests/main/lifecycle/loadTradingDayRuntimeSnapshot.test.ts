@@ -4,9 +4,14 @@
  * 覆盖：requireTradingDay 且非交易日时抛错、账户信息缺失时抛错、
  * 订单拉取失败时抛错、正常返回 allOrders 与 quotesMap
  */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
 import { OrderSide, OrderStatus, OrderType, WarrantStatus, WarrantType } from 'longbridge';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
+import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
+import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import { createQuoteContextMock } from '../../../mock/longbridge/quoteContextMock.js';
 import { toMockDecimal } from '../../../mock/longbridge/decimal.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
@@ -1861,6 +1866,97 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       },
     ]);
     expect(tracker.getInProgressEpisodes()).toEqual([]);
+  });
+
+  it('replays file-backed JSONL progress and persists the crash-gap completion for the next rebuild', async () => {
+    const now = new Date('2026-03-13T03:00:00.000Z');
+    const orderRevisionMs = Date.parse('2026-03-13T02:30:00.000Z');
+    const lastExecutionTimeMs = orderRevisionMs - 10_000;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-trade-log-recovery-'));
+    const monitor = createProtectiveMonitor();
+    const protectiveOrder = createProtectiveOrder({
+      orderId: 'file-backed-protective-recovery',
+      status: OrderStatus.Canceled,
+      price: 9,
+      quantity: 10,
+      executedPrice: 9,
+      executedQuantity: 5,
+      updatedAtMs: orderRevisionMs,
+    });
+    const createDailyLossTrackerForRecovery = () =>
+      createDailyLossTracker({
+        ...createDailyLossOrderAnalysisDeps(),
+        resolveOrderOwnership: (order) =>
+          order.orderId === protectiveOrder.orderId
+            ? { monitorSymbol: 'HSI.HK', direction: 'LONG' }
+            : null,
+        toHongKongTimeIso,
+      });
+
+    try {
+      const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => tempRoot });
+      repository.appendExecutionProgressIdempotent({
+        monitorSymbol: 'HSI.HK',
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        orderId: protectiveOrder.orderId,
+        factStage: 'TERMINAL',
+        cumulativeQuantity: '5',
+        cumulativeAmount: '45',
+        lastExecutionTimeMs,
+        orderRevisionMs,
+      });
+
+      const episodeTracker = createProtectiveLiquidationEpisodeTracker();
+      const deps = createBaseDeps({
+        tradingConfig: createTradingConfig(monitor),
+        trader: createReadyTrader({
+          fetchAllOrdersFromAPI: async () => [protectiveOrder],
+        }),
+        dailyLossTracker: createDailyLossTrackerForRecovery(),
+        protectiveLiquidationEpisodeTracker: episodeTracker,
+        mixedTradeLogRepository: repository,
+      });
+
+      await createLoadTradingDayRuntimeSnapshot(deps)(
+        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      );
+
+      const logFile = buildTradeLogPath(tempRoot, now);
+      expect(path.basename(logFile)).toBe('2026-03-13.jsonl');
+      expect(fs.existsSync(logFile)).toBe(true);
+      expect(repository.loadCompletionRecords('2026-03-13')).toHaveLength(1);
+      expect(repository.loadCompletionRecords('2026-03-13')[0]?.boundaryExecutedTimeMs).toBe(
+        lastExecutionTimeMs,
+      );
+      expect(episodeTracker.getInProgressEpisodes()).toEqual([]);
+
+      const restartedRepository = createMixedTradeLogRepository({
+        resolveLogRootDir: () => tempRoot,
+      });
+      const restartedEpisodeTracker = createProtectiveTrackerRecorder();
+      await createLoadTradingDayRuntimeSnapshot(
+        createBaseDeps({
+          tradingConfig: createTradingConfig(monitor),
+          trader: createReadyTrader({
+            fetchAllOrdersFromAPI: async () => [protectiveOrder],
+          }),
+          dailyLossTracker: createDailyLossTrackerForRecovery(),
+          protectiveLiquidationEpisodeTracker: restartedEpisodeTracker.tracker,
+          mixedTradeLogRepository: restartedRepository,
+        }),
+      )(createLoadParams({ now, hydrateCooldownFromTradeLog: true }));
+
+      expect(restartedRepository.loadCompletionRecords('2026-03-13')).toHaveLength(1);
+      expect(restartedRepository.loadExecutionProgressRecords('2026-03-13')).toHaveLength(1);
+      expect(restartedEpisodeTracker.restoreCompletedCalls).toEqual([
+        { direction: 'LONG', boundaryExecutedTimeMs: lastExecutionTimeMs },
+      ]);
+      expect(restartedEpisodeTracker.restoreInProgressCalls).toEqual([]);
+      expect(fs.readFileSync(logFile, 'utf8').trimEnd().split('\n')).toHaveLength(2);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('restores same-revision OPEN then TERMINAL amount correction and freezes the final authoritative amount', async () => {

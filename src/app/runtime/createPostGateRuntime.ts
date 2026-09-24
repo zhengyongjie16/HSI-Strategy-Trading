@@ -39,7 +39,7 @@ import { createMarketMonitor } from '../../services/marketMonitor/index.js';
 import { buildPriceDisplayInfo } from '../../services/marketMonitor/priceDisplayInfo.js';
 import { createLiquidationCooldownTracker } from '../../services/liquidationCooldown/index.js';
 import { createTradeLogHydrator } from '../../services/liquidationCooldown/tradeLogHydrator.js';
-import { createMixedTradeLogRepository } from '../../services/mixedTradeLogRepository/index.js';
+import type { MixedTradeLogRepository } from '../../services/mixedTradeLogRepository/types.js';
 import { createPositionCache } from '../../utils/positionCache/index.js';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
@@ -195,7 +195,7 @@ function persistTradeRecordFromOrderStateChangedEvent(params: {
 }
 
 function persistProtectiveLiquidationExecutionProgress(params: {
-  readonly repository: ReturnType<typeof createMixedTradeLogRepository>;
+  readonly repository: MixedTradeLogRepository;
   readonly input: ProtectiveLiquidationExecutionProgressInput;
 }): void {
   const { repository, input } = params;
@@ -211,7 +211,11 @@ function persistProtectiveLiquidationExecutionProgress(params: {
 function createPostGateRuntimeFactory(
   deps: typeof DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS,
 ): (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime | null> {
-  const { createTrader: buildTrader, createMonitorContext: buildMonitorContext } = deps;
+  const {
+    createTrader: buildTrader,
+    createMonitorContext: buildMonitorContext,
+    createMixedTradeLogRepository: buildMixedTradeLogRepository,
+  } = deps;
 
   return async function createPostGateRuntime(
     params: CreatePostGateRuntimeParams,
@@ -253,7 +257,7 @@ function createPostGateRuntimeFactory(
       toHongKongTimeIso,
     });
     const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
-    const mixedTradeLogRepository = createMixedTradeLogRepository({
+    const mixedTradeLogRepository = buildMixedTradeLogRepository({
       resolveLogRootDir: () => resolveLogRootDir(env),
     });
     const initialDayKey = getRequiredHKDateKey(now);
