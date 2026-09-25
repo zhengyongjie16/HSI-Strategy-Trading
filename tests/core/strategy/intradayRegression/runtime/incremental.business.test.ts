@@ -140,7 +140,7 @@ describe('indicators/runtime incremental business flow', () => {
     });
   });
 
-  it('preserves price/changePercent semantics from the latest two valid closes', () => {
+  it('builds a valid snapshot when some candle closes are invalid', () => {
     const profile = createIndicatorUsageProfileDouble({
       requiredFamilies: {
         mfi: false,
@@ -153,7 +153,6 @@ describe('indicators/runtime incremental business flow', () => {
         rsi: [],
         psy: [],
       },
-      displayPlan: ['price', 'changePercent'],
     });
     const baseTs = 1_710_100_000_000;
     const candles: ReadonlyArray<CandleData> = [
@@ -179,13 +178,12 @@ describe('indicators/runtime incremental business flow', () => {
     }
 
     const runtimeSnapshot = buildSnapshotFromRuntime(runtime);
+    expect(runtimeSnapshot).not.toBeNull();
     expectRuntimeSnapshotEqualsFull({
       profile,
       runtimeSnapshot,
       candles,
     });
-    expect(runtimeSnapshot?.price).toBe(103);
-    expect(runtimeSnapshot?.changePercent).toBe(3);
   });
 
   it('matches rounding and invalid-value semantics for RSI/MFI/ADX and non-rounded indicators', () => {
@@ -349,7 +347,7 @@ describe('indicators/runtime incremental business flow', () => {
         rsi: [],
         psy: [],
       },
-      displayPlan: ['price', 'K', 'D', 'J'],
+      displayPlan: ['K', 'D', 'J'],
     });
     const history = createTrendCandles(20, 100, 0.25);
     const previous = history.at(-1);
@@ -499,7 +497,7 @@ describe('indicators/runtime incremental business flow', () => {
         rsi: [],
         psy: [],
       },
-      displayPlan: ['price', 'K', 'D', 'J'],
+      displayPlan: ['K', 'D', 'J'],
     });
     const validHistory = createTrendCandles(20, 100, 0.25);
     const validHistoryLast = validHistory.at(-1);

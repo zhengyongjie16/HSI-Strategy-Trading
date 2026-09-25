@@ -58,8 +58,6 @@ export const createOrderStorage = (): OrderStorage => {
   // 使用 Map 存储订单，key 为 symbol，提供 O(1) 查找性能
   const longBuyOrdersMap: Map<string, OrderRecord[]> = new Map();
   const shortBuyOrdersMap: Map<string, OrderRecord[]> = new Map();
-  const longSellRecordMap: Map<string, OrderRecord> = new Map();
-  const shortSellRecordMap: Map<string, OrderRecord> = new Map();
   const sellRecordsByOrderId: Map<string, OrderRecord> = new Map();
 
   // 待成交卖出订单追踪
@@ -111,27 +109,6 @@ export const createOrderStorage = (): OrderStorage => {
   /** 替换做空标的的买入订单列表 */
   const setBuyOrdersListForShort = (symbol: string, newList: ReadonlyArray<OrderRecord>): void => {
     setBuyOrdersList(symbol, newList, false);
-  };
-
-  /** 更新指定标的的最新卖出记录（仅保留时间最新的一条） */
-  const setLatestSellRecord = (
-    symbol: string,
-    isLongSymbol: boolean,
-    record: OrderRecord,
-  ): void => {
-    const targetMap = isLongSymbol ? longSellRecordMap : shortSellRecordMap;
-    const existing = targetMap.get(symbol);
-    if (!existing || record.executedTime >= existing.executedTime) {
-      targetMap.set(symbol, record);
-    }
-
-    sellRecordsByOrderId.set(record.orderId, record);
-  };
-
-  /** 获取指定标的的最新卖出记录 */
-  const getLatestSellRecord = (symbol: string, isLongSymbol: boolean): OrderRecord | null => {
-    const targetMap = isLongSymbol ? longSellRecordMap : shortSellRecordMap;
-    return targetMap.get(symbol) ?? null;
   };
 
   /** 按订单 ID 获取卖出成交记录 */
@@ -198,7 +175,7 @@ export const createOrderStorage = (): OrderStorage => {
     assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
     const list = getBuyOrdersList(symbol, isLongSymbol);
 
-    setLatestSellRecord(symbol, isLongSymbol, {
+    const sellRecord: OrderRecord = {
       orderId: orderId ?? createLocalOrderId('LOCAL_SELL', executedTimeMs),
       symbol,
       executedPrice,
@@ -206,7 +183,8 @@ export const createOrderStorage = (): OrderStorage => {
       executedTime: executedTimeMs,
       submittedAt: undefined,
       updatedAt: undefined,
-    });
+    };
+    sellRecordsByOrderId.set(sellRecord.orderId, sellRecord);
 
     if (list.length === 0) {
       return;
@@ -535,8 +513,6 @@ export const createOrderStorage = (): OrderStorage => {
   function clearAll(): void {
     longBuyOrdersMap.clear();
     shortBuyOrdersMap.clear();
-    longSellRecordMap.clear();
-    shortSellRecordMap.clear();
     sellRecordsByOrderId.clear();
     pendingSells.clear();
   }
@@ -646,7 +622,6 @@ export const createOrderStorage = (): OrderStorage => {
     updateAfterSell,
     clearBuyOrders,
     getLatestBuyOrderPrice,
-    getLatestSellRecord,
     getSellRecordByOrderId,
 
     // 待成交卖出订单追踪

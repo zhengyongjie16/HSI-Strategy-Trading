@@ -11,8 +11,6 @@ export function buildStrategyDisplay(
 ): ReadonlyArray<StrategyDisplayItem> {
   const items: StrategyDisplayItem[] = [];
   for (const indicator of profile.displayPlan) {
-    if (indicator === 'price' || indicator === 'changePercent') continue;
-
     let value: number | null;
     if (indicator === 'MFI') value = snapshot.mfi;
     else if (indicator.startsWith('RSI:')) {

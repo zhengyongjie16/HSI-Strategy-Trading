@@ -360,7 +360,6 @@ function createPostGateRuntimeFactory(
       termination,
     });
     traderBinding.bind(trader);
-    resources.trader = trader;
     cleanup.register({
       phase: 'STOP_ORDER_MONITOR_RUNTIME',
       step: '停止订单监控 runtime',
@@ -433,7 +432,6 @@ function createPostGateRuntimeFactory(
       termination,
     });
     quoteSubscriptionRuntimeBinding.bind(quoteSubscriptionRuntime);
-    resources.quoteSubscriptionRuntime = quoteSubscriptionRuntime;
     cleanup.register({
       phase: 'STOP_QUOTE_SUBSCRIPTION_RUNTIME',
       step: '停止 QuoteSubscriptionRuntime',

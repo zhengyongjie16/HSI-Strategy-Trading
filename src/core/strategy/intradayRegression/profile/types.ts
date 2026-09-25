@@ -48,11 +48,11 @@ export type VerificationIndicator =
 
 /**
  * 指标展示项。
- * 类型用途：定义监控日志输出顺序中的单个展示元素，包含价格/涨跌幅与技术指标项。
+ * 类型用途：定义监控日志输出顺序中的单个技术指标展示项。
  * 数据来源：由 indicatorProfile.displayPlan 编译生成。
  * 使用范围：当前策略的显示投影。
  */
-export type DisplayIndicatorItem = 'price' | 'changePercent' | ProfileIndicator;
+export type DisplayIndicatorItem = Exclude<ProfileIndicator, 'price' | 'changePercent'>;
 
 /**
  * 监控标的指标画像。

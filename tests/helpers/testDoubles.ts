@@ -273,7 +273,6 @@ export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}
     recordLocalSell: () => {},
     clearBuyOrders: () => {},
     getLatestBuyOrderPrice: () => null,
-    getLatestSellRecord: () => null,
     getSellRecordByOrderId: () => null,
     fetchAllOrdersFromAPI: async () => [],
     validateRebuildSnapshot: () => {},
@@ -614,7 +613,6 @@ export function createQuoteSubscriptionRuntimeDouble(
   overrides: Partial<QuoteSubscriptionRuntime> = {},
 ): QuoteSubscriptionRuntime {
   const base: QuoteSubscriptionRuntime = {
-    stop: () => {},
     reconcileFromCurrentTruth: async () => {},
     reconcilePositionHoldFromCurrentTruth: async () => {},
     start: () => {},

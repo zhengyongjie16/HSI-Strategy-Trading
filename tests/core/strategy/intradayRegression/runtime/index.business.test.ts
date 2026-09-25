@@ -89,8 +89,6 @@ describe('indicators/runtime business flow', () => {
     const snapshot = buildIndicatorSnapshot(candles, indicatorProfile);
 
     expect(snapshot).not.toBeNull();
-    expect(snapshot?.price).toBe(139.5);
-    expect(snapshot?.changePercent).toBeCloseTo((0.5 / 139) * 100, 8);
     expect(snapshot?.rsi?.[6]).toBeFinite();
     expect(snapshot?.rsi?.[14]).toBeFinite();
     expect(snapshot?.rsi?.[0]).toBeUndefined();
@@ -124,7 +122,6 @@ describe('indicators/runtime business flow', () => {
             ema: [],
             psy: [],
           },
-          displayPlan: ['price', 'changePercent'],
         }),
       ),
     ).toBeNull();
@@ -198,7 +195,7 @@ describe('indicators/runtime business flow', () => {
         ema: [],
         psy: [],
       },
-      displayPlan: ['price', 'changePercent', 'K', 'D', 'J'],
+      displayPlan: ['K', 'D', 'J'],
     });
 
     const snapshot = buildIndicatorSnapshot(candles, profile);

@@ -43,8 +43,6 @@ export function createIndicatorUsageProfileDouble(overrides?: {
   };
 
   const defaultDisplayPlan: ReadonlyArray<DisplayIndicatorItem> = [
-    'price',
-    'changePercent',
     ...requiredPeriods.ema.map((period) => `EMA:${period}` as const),
     ...requiredPeriods.rsi.map((period) => `RSI:${period}` as const),
     ...(requiredFamilies.mfi ? (['MFI'] as const) : []),

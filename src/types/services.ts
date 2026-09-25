@@ -567,9 +567,6 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
   /** 获取最新买入订单价格 */
   getLatestBuyOrderPrice: (symbol: string, isLongSymbol: boolean) => number | null;
 
-  /** 获取最新卖出订单记录 */
-  getLatestSellRecord: (symbol: string, isLongSymbol: boolean) => OrderRecord | null;
-
   /** 按订单 ID 获取卖出成交记录 */
   getSellRecordByOrderId: (orderId: string) => OrderRecord | null;
 

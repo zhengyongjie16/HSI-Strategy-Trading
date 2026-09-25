@@ -1689,7 +1689,6 @@ describe('PostTrade → Quote shutdown dependency', () => {
     await manualScheduler.runNext(0);
     termination.requestShutdown();
     runtime.stopScheduling();
-    quote.stop();
     const drain = runtime.stopAndDrain();
     pendingPositions.resolve([
       createPositionDouble({ symbol: 'LATE.HK', quantity: 100, availableQuantity: 100 }),

@@ -216,14 +216,14 @@ function readFiniteKdjValue(value: CandleData['close']): number | null {
  *
  * @param state KDJ 状态
  * @param candle K 线
- * @returns 本根是否被接受及本轮 K/D/J 是否可用
+ * @returns 本轮 K/D/J 是否可用
  */
 export function commitKdjCandle(state: KdjStreamState, candle: CandleData): KdjCandleCommitResult {
   const high = readFiniteKdjValue(candle.high);
   const low = readFiniteKdjValue(candle.low);
   const close = readFiniteKdjValue(candle.close);
   if (high === null || low === null || close === null) {
-    return { accepted: false, available: false };
+    return { available: false };
   }
 
   const i = state.index;
@@ -258,7 +258,7 @@ export function commitKdjCandle(state: KdjStreamState, candle: CandleData): KdjC
   state.minValueDeque.push(low);
 
   if (i < state.period - 1) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   const windowStart = i - state.period + 1;
@@ -267,17 +267,17 @@ export function commitKdjCandle(state: KdjStreamState, candle: CandleData): KdjC
   const highestHigh = state.maxValueDeque[0];
   const lowestLow = state.minValueDeque[0];
   if (highestHigh === undefined || lowestLow === undefined) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   const range = highestHigh - lowestLow;
   if (!Number.isFinite(range) || range === 0) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   const rsv = ((close - lowestLow) / range) * 100;
   if (!Number.isFinite(rsv)) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   state.rsvWindowSum = pushAndSumRollingWindow(
@@ -288,16 +288,16 @@ export function commitKdjCandle(state: KdjStreamState, candle: CandleData): KdjC
   );
 
   if (!Number.isFinite(state.rsvWindowSum)) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   if (state.rsvWindow.length < state.signalPeriod) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   const kValue = state.rsvWindowSum / state.signalPeriod;
   if (!Number.isFinite(kValue)) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   state.lastK = kValue;
@@ -309,26 +309,26 @@ export function commitKdjCandle(state: KdjStreamState, candle: CandleData): KdjC
   );
 
   if (!Number.isFinite(state.kWindowSum)) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   if (state.kWindow.length < state.signalPeriod) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   const dValue = state.kWindowSum / state.signalPeriod;
   if (!Number.isFinite(dValue)) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   const jValue = 3 * kValue - 2 * dValue;
   if (!Number.isFinite(jValue)) {
-    return { accepted: true, available: false };
+    return { available: false };
   }
 
   state.lastD = dValue;
   state.hasKdjValue = true;
-  return { accepted: true, available: true };
+  return { available: true };
 }
 
 /**

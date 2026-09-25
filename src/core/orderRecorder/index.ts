@@ -293,11 +293,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     return storage.getLatestBuyOrderPrice(symbol, isLongSymbol);
   }
 
-  /** 获取指定标的的最新卖出记录 */
-  function getLatestSellRecord(symbol: string, isLongSymbol: boolean): OrderRecord | null {
-    return storage.getLatestSellRecord(symbol, isLongSymbol);
-  }
-
   /** 按订单 ID 获取卖出成交记录 */
   function getSellRecordByOrderId(orderId: string): OrderRecord | null {
     return storage.getSellRecordByOrderId(orderId);
@@ -452,7 +447,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     recordLocalSell,
     clearBuyOrders,
     getLatestBuyOrderPrice,
-    getLatestSellRecord,
     getSellRecordByOrderId,
     fetchAllOrdersFromAPI,
     validateRebuildSnapshot,

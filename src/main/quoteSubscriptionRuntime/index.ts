@@ -357,7 +357,6 @@ export function createQuoteSubscriptionRuntime(
     reconcileFromCurrentTruth,
     reconcilePositionHoldFromCurrentTruth,
     start,
-    stop,
     stopAndDrain,
     retainSymbols,
     releaseRetain,

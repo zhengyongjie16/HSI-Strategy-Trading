@@ -79,7 +79,6 @@ export interface QuoteSubscriptionRuntime {
   readonly reconcileFromCurrentTruth: () => Promise<void>;
   readonly reconcilePositionHoldFromCurrentTruth: () => Promise<void>;
   readonly start: () => void;
-  readonly stop: () => void;
   readonly stopAndDrain: () => Promise<void>;
   readonly retainSymbols: (params: QuoteSubscriptionRetainParams) => Promise<void>;
   readonly releaseRetain: (

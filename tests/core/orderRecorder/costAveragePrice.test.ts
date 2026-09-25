@@ -225,5 +225,4 @@ describe('getCostAveragePrice', () => {
     const avg = storage.getCostAveragePrice('TEST.HK', true);
     expect(avg).toBeCloseTo(1.4995, 4);
   });
-
 });

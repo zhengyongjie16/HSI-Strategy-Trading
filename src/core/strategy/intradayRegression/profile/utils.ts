@@ -110,7 +110,7 @@ export function toSortedPeriods(periods: ReadonlySet<number>): ReadonlyArray<num
 }
 
 /**
- * 根据收集结果生成展示计划。默认行为：固定以价格、涨跌幅开头，并按既定家族顺序追加指标。
+ * 根据收集结果生成展示计划。默认行为：按既定家族顺序输出所需指标。
  *
  * @param collector 指标收集器
  * @returns 展示计划（固定顺序）
@@ -118,7 +118,7 @@ export function toSortedPeriods(periods: ReadonlySet<number>): ReadonlyArray<num
 export function buildDisplayPlan(
   collector: IndicatorCollector,
 ): ReadonlyArray<DisplayIndicatorItem> {
-  const displayPlan: DisplayIndicatorItem[] = ['price', 'changePercent'];
+  const displayPlan: DisplayIndicatorItem[] = [];
   const emaPeriods = toSortedPeriods(collector.requiredPeriods.ema);
   for (const period of emaPeriods) {
     displayPlan.push(`EMA:${period}`);

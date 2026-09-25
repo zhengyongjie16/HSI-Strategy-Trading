@@ -68,7 +68,6 @@ function cloneRecord<T>(source: Record<number, T>, cloneState: (value: T) => T):
 function buildCommittedState(profile: IndicatorUsageProfile): IndicatorCommittedState {
   return {
     lastValidClose: null,
-    previousValidClose: null,
     emaStates: createRecordFromPeriods({
       periods: profile.requiredPeriods.ema,
       isValidPeriod: validateEmaPeriod,
@@ -94,7 +93,6 @@ function buildCommittedState(profile: IndicatorUsageProfile): IndicatorCommitted
 function cloneCommittedState(committed: IndicatorCommittedState): IndicatorCommittedState {
   return {
     lastValidClose: committed.lastValidClose,
-    previousValidClose: committed.previousValidClose,
     emaStates: cloneRecord(committed.emaStates, cloneEmaState),
     rsiStates: cloneRecord(committed.rsiStates, cloneRsiState),
     psyStates: cloneRecord(committed.psyStates, clonePsyState),
@@ -118,7 +116,6 @@ function cloneCommittedState(committed: IndicatorCommittedState): IndicatorCommi
 function commitCandleToCommittedState(state: IndicatorCommittedState, candle: CandleData): boolean {
   const close = toNumber(candle.close);
   if (isValidPositiveNumber(close)) {
-    state.previousValidClose = state.lastValidClose;
     state.lastValidClose = close;
 
     for (const emaState of Object.values(state.emaStates)) {
@@ -201,11 +198,6 @@ function buildSnapshotFromCommitted(params: {
     return null;
   }
 
-  let changePercent: number | null = null;
-  if (committed.previousValidClose !== null) {
-    changePercent = ((price - committed.previousValidClose) / committed.previousValidClose) * 100;
-  }
-
   const ema = buildPeriodSnapshotRecord({
     periods: profile.requiredPeriods.ema,
     isValidPeriod: validateEmaPeriod,
@@ -242,8 +234,6 @@ function buildSnapshotFromCommitted(params: {
       : null;
 
   return {
-    price,
-    changePercent,
     ema,
     rsi,
     psy,

@@ -72,8 +72,6 @@ describe('signalConfigParser business flow', () => {
 
     const unavailable = validateIndicatorsForAction({
       state: {
-        price: 1,
-        changePercent: null,
         ema: null,
         rsi: null,
         psy: null,
@@ -88,8 +86,6 @@ describe('signalConfigParser business flow', () => {
 
     const available = validateIndicatorsForAction({
       state: {
-        price: 1,
-        changePercent: null,
         ema: null,
         rsi: { 6: 65 },
         psy: null,

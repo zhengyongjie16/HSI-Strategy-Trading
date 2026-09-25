@@ -11,8 +11,6 @@ import type { IndicatorSnapshot } from '../../../../src/core/strategy/intradayRe
 
 function createSnapshot(overrides: Partial<IndicatorSnapshot> = {}): IndicatorSnapshot {
   return {
-    price: 1,
-    changePercent: null,
     ema: null,
     rsi: { 14: 61.2345, 6: 52.3456 },
     psy: { 24: 40.6789, 12: 55.4321 },
@@ -48,8 +46,6 @@ describe('strategy utils display semantics', () => {
 
   it('returns empty string when all displayable indicators are absent', () => {
     const text = buildIndicatorDisplayString({
-      price: 1,
-      changePercent: null,
       ema: null,
       rsi: null,
       psy: null,

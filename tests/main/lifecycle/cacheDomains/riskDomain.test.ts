@@ -154,5 +154,4 @@ describe('createRiskDomain', () => {
       clearMidnightEligibleDirections === null ? 0 : clearMidnightEligibleDirections.size,
     ).toBe(0);
   });
-
 });

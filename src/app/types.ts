@@ -601,12 +601,10 @@ export type LifecycleRuntimeFactories = Readonly<{
 export type RuntimeAssemblyResources = {
   lastState?: LastState;
   strategy?: TradingSignalStrategy;
-  trader?: Trader;
   buyTaskQueue?: TaskQueue<BuyTaskType>;
   sellTaskQueue?: TaskQueue<SellTaskType>;
   monitorTaskQueue?: MonitorTaskQueue<MonitorTaskDataMap>;
   postTradeConsistencyRuntime?: PostTradeConsistencyRuntime;
-  quoteSubscriptionRuntime?: QuoteSubscriptionRuntime;
   seatActivationDispatcher?: SeatActivationDispatcher;
   seatRuntimeCleanupDispatcher?: SeatRuntimeCleanupDispatcher;
   autoSearchWakeupRuntime?: AutoSearchWakeupRuntime;

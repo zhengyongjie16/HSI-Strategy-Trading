@@ -31,8 +31,6 @@ describe('VerificationSampleStore utils', () => {
   it('projects NaN indicator values to invalid sample points', () => {
     const values = projectVerificationSampleValues(
       {
-        price: 100,
-        changePercent: 0,
         ema: {
           5: Number.NaN,
         },
@@ -54,8 +52,6 @@ describe('VerificationSampleStore utils', () => {
   it('projects null KDJ as missing without hiding independent verification indicators', () => {
     const values = projectVerificationSampleValues(
       {
-        price: 100,
-        changePercent: 0,
         ema: null,
         rsi: null,
         psy: null,

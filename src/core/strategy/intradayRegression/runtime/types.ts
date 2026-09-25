@@ -64,7 +64,6 @@ export type AdxStreamState = {
  */
 export type IndicatorCommittedState = {
   lastValidClose: number | null;
-  previousValidClose: number | null;
   emaStates: Record<number, EmaStreamState>;
   rsiStates: Record<number, RsiStreamState>;
   psyStates: Record<number, PsyStreamState>;
@@ -180,14 +179,11 @@ export type KdjStreamState = {
 
 /**
  * KDJ 单根提交结果。
- * 类型用途：区分 H/L/C 是否被 KDJ 接受，以及本轮是否实际产生可输出的 K/D/J；可用性不写入 KDJ 持久数学状态。
+ * 类型用途：表示本轮是否实际产生可输出的 K/D/J；可用性不写入 KDJ 持久数学状态。
  * 数据来源：commitKdjCandle 的当前输入与窗口计算。
  * 使用范围：KDJ runtime 与增量快照构造。
  */
 export type KdjCandleCommitResult = {
-  /** H/L/C 均为有限数值并已推进 KDJ 输入窗口。 */
-  readonly accepted: boolean;
-
   /** 当前这根柱实际产生了可读取的 K/D/J。 */
   readonly available: boolean;
 };

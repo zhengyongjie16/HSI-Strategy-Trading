@@ -88,7 +88,6 @@ describe('OrderRecorder execution-fact boundary', () => {
         );
       }).toThrow(/执行事实/);
       expect(recorder.getBuyOrdersForSymbol(SYMBOL, true)).toEqual(beforeBuyOrders);
-      expect(recorder.getLatestSellRecord(SYMBOL, true)).toBeNull();
     });
 
     it(`rejects invalid ${invalidFact.label} at direct storage entrypoints without mutation`, () => {
@@ -116,7 +115,6 @@ describe('OrderRecorder execution-fact boundary', () => {
         );
       }).toThrow(/执行事实/);
       expect(storage.getBuyOrdersList(SYMBOL, true)).toEqual(beforeBuyOrders);
-      expect(storage.getLatestSellRecord(SYMBOL, true)).toBeNull();
     });
   }
 
@@ -135,11 +133,5 @@ describe('OrderRecorder execution-fact boundary', () => {
         executedTime: 3_000,
       },
     ]);
-
-    expect(recorder.getLatestSellRecord(SYMBOL, true)).toMatchObject({
-      executedPrice: 1.1,
-      executedQuantity: 200,
-      executedTime: 4_000,
-    });
   });
 });

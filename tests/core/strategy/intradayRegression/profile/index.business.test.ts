@@ -58,8 +58,6 @@ describe('indicators/profile business flow', () => {
     expect(indicatorProfile.verificationIndicatorsBySide.buy).toEqual(['EMA:7', 'DIF']);
     expect(indicatorProfile.verificationIndicatorsBySide.sell).toEqual(['EMA:21', 'K']);
     expect(indicatorProfile.displayPlan).toEqual([
-      'price',
-      'changePercent',
       'EMA:7',
       'EMA:21',
       'RSI:6',

@@ -68,12 +68,6 @@ export type MACDIndicator = {
  * 使用范围：当前策略的条件判断与私有验证；仅当前策略私有模块与直接测试引用。
  */
 export type IndicatorSnapshot = {
-  /** 当前价格 */
-  readonly price: number;
-
-  /** 涨跌幅（百分比） */
-  readonly changePercent: number | null;
-
   /** EMA 指数移动平均（周期 -> 值） */
   readonly ema: Readonly<Record<number, number>> | null;
 
