@@ -5,13 +5,14 @@
  * - 执行 monitor quote 驱动的静态距回收价清仓
  * - 复用历史清仓执行态的清仓、清缓存与浮亏刷新语义
  */
-import { ORDER_QUOTE_RETRY, WARRANT_LIQUIDATION_ORDER_TYPE } from '../../constants/index.js';
+import { WARRANT_LIQUIDATION_ORDER_TYPE } from '../../constants/index.js';
 import { validateSignalSeat } from '../../services/autoSymbolManager/utils.js';
 import type { SellSignal } from '../../types/signal.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { QuoteUpdatedEvent } from '../../types/services.js';
 import { isSeatActive } from '../../utils/seat/guards.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import { resolveNextQuoteRetry } from '../../utils/quoteRetry/index.js';
 import type {
   CreateStaticLiquidationExecutorDeps,
   StaticLiquidationCandidate,
@@ -29,24 +30,6 @@ function buildStaticLiquidationWakeupSymbols(params: {
 }
 
 /**
- * 计算本轮 WAIT 后下一次 retry 的唤醒时间。
- *
- * @param retryAttempts 当前已执行的 retry 次数
- * @returns 下一次 retry 时间；达到上限时返回 null
- */
-function resolveStaticLiquidationRetryAtMs(
-  retryAttempts: number,
-  waitResolvedAtMs: number,
-): number | null {
-  const nextRetryAttempts = retryAttempts + 1;
-  if (nextRetryAttempts > ORDER_QUOTE_RETRY.MAX_ATTEMPTS) {
-    return null;
-  }
-
-  return waitResolvedAtMs + ORDER_QUOTE_RETRY.INTERVAL_MS;
-}
-
-/**
  * 创建静态清仓 WAIT 返回值。
  *
  * @param wakeupSymbols 需要继续等待的唤醒 symbols
@@ -61,7 +44,10 @@ function createStaticLiquidationWaitResult(
   return {
     kind: 'WAIT',
     wakeupSymbols,
-    retryAtMs: resolveStaticLiquidationRetryAtMs(retryAttempts, waitResolvedAtMs),
+    retryAtMs: resolveNextQuoteRetry({
+      attempts: retryAttempts,
+      nowMs: waitResolvedAtMs,
+    }).nextRetryAt,
   };
 }
 

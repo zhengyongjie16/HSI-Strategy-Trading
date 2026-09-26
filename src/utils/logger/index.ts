@@ -27,7 +27,7 @@ import { toHongKongTimeLog } from '../time/index.js';
  * @param currentFileName 即将写入的文件名（如 '2026-02-13.log'）。若传入且在目录中已存在，则按"覆盖"语义保留 maxFiles 个；否则按"新建"语义保留 maxFiles - 1 个
  * @returns 无返回值
  */
-export function retainLatestLogFiles(
+function retainLatestLogFiles(
   logDir: string,
   maxFiles: number,
   extension: string,
@@ -391,14 +391,14 @@ const debugFileStream = IS_DEBUG ? new DateRotatingStream(logRootDir, 'debug') :
  * @param timeout 超时时间（毫秒）
  * @param callback 完成回调函数
  * @param onTimeout 超时时的回调函数
- * @returns 包含 drain 事件处理器和超时 ID 的对象
+ * @returns drain 事件处理器
  */
 function createDrainHandler(
   stream: NodeJS.WriteStream | fs.WriteStream,
   timeout: number,
   callback: () => void,
   onTimeout?: () => void,
-): { onDrain: () => void; timeoutId: NodeJS.Timeout } {
+): { onDrain: () => void } {
   let resolved = false;
   const timeoutId = setTimeout(() => {
     if (resolved) return;
@@ -421,7 +421,7 @@ function createDrainHandler(
     callback();
   }
 
-  return { onDrain, timeoutId };
+  return { onDrain };
 }
 
 /**

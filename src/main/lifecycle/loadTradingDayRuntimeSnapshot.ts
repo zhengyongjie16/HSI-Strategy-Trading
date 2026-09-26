@@ -29,7 +29,8 @@ import {
 } from '../../utils/time/index.js';
 import { logger } from '../../utils/logger/index.js';
 import { prepareSeatsForRuntime } from '../recovery/seatPreparation.js';
-import { collectRuntimeQuoteSymbols, refreshAccountAndPositions } from '../utils.js';
+import { collectRuntimeQuoteSymbols } from '../utils.js';
+import { readAccountAndPositionsBothSettled } from '../../utils/accountPositions/index.js';
 import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { resolveOrderOwnership } from '../../core/orderRecorder/index.js';
 import { classifyOrderStatusLifecycle } from '../../core/orderStatusLifecycle/index.js';
@@ -161,6 +162,38 @@ function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
       );
     }
   }
+}
+
+/**
+ * 刷新生命周期加载器使用的账户与持仓缓存。
+ * 默认行为：仅当 lastState.cachedAccount 为空时双读取账户和持仓；两项请求均成功后才依次提交
+ * cachedAccount、cachedPositions 与 positionCache，任一读取失败不提交。
+ *
+ * 失败语义：非外部 API 失败在观察点立即经 reportFatalError 上报，两个请求全部落定后抛出原始错误
+ * （内部错误优先、保留原始身份）；纯外部失败保持原样，交由上层恢复/重试策略处理。
+ *
+ * @param trader Trader 实例，用于拉取账户与持仓
+ * @param lastState 状态对象，用于读取/更新账户与持仓缓存
+ * @param reportFatalError 运行时 fatal 上报入口，必须由调用方注入真实 termination 回调
+ * @returns Promise<void>，无返回值；任一读取失败时抛出原始错误
+ */
+async function refreshAccountAndPositions(
+  trader: LoadTradingDayRuntimeSnapshotDeps['trader'],
+  lastState: LoadTradingDayRuntimeSnapshotDeps['lastState'],
+  reportFatalError: LoadTradingDayRuntimeSnapshotDeps['reportFatalError'],
+): Promise<void> {
+  if (lastState.cachedAccount !== null) {
+    return;
+  }
+
+  const { account, positions } = await readAccountAndPositionsBothSettled({
+    trader,
+    reportFatalError,
+  });
+
+  lastState.cachedAccount = account;
+  lastState.cachedPositions = positions;
+  lastState.positionCache.update(positions);
 }
 
 /**

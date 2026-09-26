@@ -15,10 +15,6 @@ import type {
 } from './types.js';
 import { resolveCooldownEndMs } from './utils.js';
 
-function buildDirectionCooldownKey(direction: 'LONG' | 'SHORT'): 'LONG' | 'SHORT' {
-  return direction;
-}
-
 /**
  * 创建清仓冷却追踪器，记录保护性清仓成交时间并计算剩余冷却时长。
  * 内部以 direction 为键存储成交时间戳，查询时按冷却模式动态计算结束时间。
@@ -43,7 +39,7 @@ export function createLiquidationCooldownTracker(
       return;
     }
 
-    cooldownMap.set(buildDirectionCooldownKey(direction), executedTimeMs);
+    cooldownMap.set(direction, executedTimeMs);
   }
 
   /**
@@ -66,10 +62,8 @@ export function createLiquidationCooldownTracker(
       return;
     }
 
-    const key = buildDirectionCooldownKey(direction);
-
     if (cooldownConfig !== null) {
-      const previousCooldownExecutedTimeMs = cooldownMap.get(key);
+      const previousCooldownExecutedTimeMs = cooldownMap.get(direction);
       if (
         previousCooldownExecutedTimeMs !== undefined &&
         Number.isFinite(previousCooldownExecutedTimeMs)
@@ -86,17 +80,17 @@ export function createLiquidationCooldownTracker(
           return;
         }
 
-        cooldownMap.delete(key);
-        triggerCountMap.delete(key);
+        cooldownMap.delete(direction);
+        triggerCountMap.delete(direction);
       }
     }
 
-    const previousCount = triggerCountMap.get(key) ?? 0;
+    const previousCount = triggerCountMap.get(direction) ?? 0;
     const currentCount = previousCount + 1;
-    triggerCountMap.set(key, currentCount);
+    triggerCountMap.set(direction, currentCount);
 
     if (currentCount >= triggerLimit) {
-      cooldownMap.set(key, executedTimeMs);
+      cooldownMap.set(direction, executedTimeMs);
     }
   }
 
@@ -106,7 +100,7 @@ export function createLiquidationCooldownTracker(
       return;
     }
 
-    triggerCountMap.set(buildDirectionCooldownKey(direction), count);
+    triggerCountMap.set(direction, count);
   }
 
   /**
@@ -118,8 +112,7 @@ export function createLiquidationCooldownTracker(
     cooldownConfig,
     currentTimeMs,
   }: GetRemainingMsParams): number {
-    const key = buildDirectionCooldownKey(direction);
-    const executedTimeMs = cooldownMap.get(key);
+    const executedTimeMs = cooldownMap.get(direction);
     if (executedTimeMs === undefined || !Number.isFinite(executedTimeMs)) {
       return 0;
     }

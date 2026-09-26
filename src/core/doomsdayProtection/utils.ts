@@ -1,6 +1,7 @@
-import { DOOMSDAY, TIME } from '../../constants/index.js';
+import { DOOMSDAY } from '../../constants/index.js';
 import type { Quote } from '../../types/quote.js';
 import type { MarketDataClient } from '../../types/services.js';
+import { getHKTime } from '../../utils/time/index.js';
 
 /**
  * 批量获取行情数据。默认行为：symbols 为空时返回空 Map，否则调用 marketDataClient.getQuotes。
@@ -52,7 +53,7 @@ export function hasReachedDoomsdayBuyCutoff(
     return false;
   }
 
-  const hkTime = resolveHKTime(date);
+  const hkTime = getHKTime(date);
   if (!hkTime) {
     return false;
   }
@@ -114,7 +115,7 @@ function isBeforeCloseMinutes(
     return false;
   }
 
-  const hkTime = resolveHKTime(date);
+  const hkTime = getHKTime(date);
   if (!hkTime) {
     return false;
   }
@@ -152,24 +153,4 @@ function formatHourMinute(totalMinutes: number): string {
   const hour = Math.floor(normalizedTotalMinutes / 60);
   const minute = normalizedTotalMinutes % 60;
   return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
-}
-
-/**
- * 将 UTC 时间转换为香港时区（UTC+8）的小时与分钟。默认行为：date 为 null/undefined 时返回 null。
- *
- * @param date 时间对象（UTC）
- * @returns 香港时区的小时与分钟（hkHour、hkMinute），无效时返回 null
- */
-function resolveHKTime(date: Date | null | undefined): { hkHour: number; hkMinute: number } | null {
-  if (!date) {
-    return null;
-  }
-
-  const utcHour = date.getUTCHours();
-  const utcMinute = date.getUTCMinutes();
-  const offsetHours = TIME.HONG_KONG_TIMEZONE_OFFSET_MS / (60 * 60 * 1000);
-  return {
-    hkHour: (utcHour + offsetHours) % 24,
-    hkMinute: utcMinute,
-  };
 }

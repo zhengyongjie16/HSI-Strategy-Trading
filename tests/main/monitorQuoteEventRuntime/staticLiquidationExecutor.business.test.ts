@@ -392,6 +392,23 @@ describe('staticLiquidationExecutor', () => {
     expect(result.retryAtMs).toBe(EXPECTED_WAIT_RESOLVED_RETRY_AT_MS);
   });
 
+  it('exhausts static liquidation retry scheduling at the configured limit', async () => {
+    const harness = createExecutorHarness({
+      monitorQuoteAvailable: false,
+    });
+
+    const result = await harness.executor({
+      monitorContext: harness.monitorContext,
+      retryAttempts: ORDER_QUOTE_RETRY.MAX_ATTEMPTS,
+    });
+
+    expect(result).toEqual({
+      kind: 'WAIT',
+      wakeupSymbols: ['HSI.HK', 'BULL.HK', 'BEAR.HK'],
+      retryAtMs: null,
+    });
+  });
+
   it('returns WAIT with monitor and trading wakeup symbols when long trading quote is unavailable', async () => {
     const harness = createExecutorHarness({
       longQuoteAvailable: false,

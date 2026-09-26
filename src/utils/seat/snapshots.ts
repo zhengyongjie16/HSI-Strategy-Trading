@@ -1,23 +1,7 @@
 import type { Quote } from '../../types/quote.js';
-import type { SymbolRegistry, SeatState } from '../../types/seat.js';
+import type { SymbolRegistry } from '../../types/seat.js';
 import type { MonitorContextSeatSnapshot, MonitorContextSymbolNames } from './types.js';
-
-/**
- * 解析可消费的 ACTIVE 席位标的代码。
- * 默认行为：仅当 seat 处于 ACTIVE 且 symbol 为非空字符串时返回 symbol，否则返回 null。
- *
- * @param seatState 席位状态
- * @returns 当前可消费的席位标的代码，或 null
- */
-function resolveActiveSeatSymbol(seatState: SeatState): string | null {
-  if (seatState.status !== 'ACTIVE') {
-    return null;
-  }
-
-  return typeof seatState.symbol === 'string' && seatState.symbol.length > 0
-    ? seatState.symbol
-    : null;
-}
+import { isSeatActive } from './guards.js';
 
 /**
  * 解析唯一 monitorContext 的席位快照。
@@ -40,8 +24,8 @@ export function resolveMonitorContextSeatSnapshot(
       long: symbolRegistry.getSeatVersion('LONG'),
       short: symbolRegistry.getSeatVersion('SHORT'),
     },
-    longSymbol: resolveActiveSeatSymbol(longSeatState),
-    shortSymbol: resolveActiveSeatSymbol(shortSeatState),
+    longSymbol: isSeatActive(longSeatState) ? longSeatState.symbol : null,
+    shortSymbol: isSeatActive(shortSeatState) ? shortSeatState.symbol : null,
   };
 }
 
