@@ -6,7 +6,15 @@
 >
 > **范围更新：金融精度重构已纳入同次架构重构。**设计文档 §8.4 及相关条款中“保留旧 number 转换位置”“精度升级另立需求”的要求，以及 `OrderCommand.price: number` 示例，现在仅作为迁移前基线，不再是数值终态；数值表示、迁移与验收以本计划 §4.4、P0.4、§13.4.2 和 §15 为准。其余目录、owner、事件与事务边界仍沿用设计。本次只更新实施文档，未选择或安装十进制库，未修改代码、依赖或测试。
 >
-> 源码核对基线：`HEAD=a2f0ca972695e7cc1a7a21555bc87d46df98ce4d`。本计划引用 `architecture-assessment.md` §4/§5.6、`architecture-refactoring-design.md` §4/§12/附录 A，并核对主要 writer、消费者、freshness、席位、SDK 和生命周期调用链。设计附录 A 已同步为目标落地位置，旧路径仅作为迁移来源；不将过渡位置误读为最终架构。下列验收项均为未来实施要求，不是本次已通过的交易测试。
+> **本轮用户确认记录（用户已确认全文及精度解释；以下口径为后续实施唯一依据。今后如需改变该口径，须再次确认）：**
+>
+> - 已确认 protective 责任边界：`PostTradeSettlementWorkflow` 独占保护性清仓最终完成判定、同步 durable append、daily-loss/cooldown/episode 内存提交及 ready；protective workflow 只负责触发、目的识别、执行前门禁和执行。订单 tracking 提供可信事实，domain 可提供纯规则，但不能形成第二判定者或提交者。
+> - 用户精度原话为“所有精度保证小数点后三位”，本次回答为“确认全文及精度解释”，即确认下述解释口径。
+> - 已确认本轮实施验收为离线全链路验收，不发布、不打开交易门禁、不连接实盘。离线静态/动态全链路及 mock/脱敏 fixtures 恢复演练是未来实施完成门槛；真实历史逐条对账及候选/回退版本完整恢复演练仍是未来生产发布阻断项。本次确认仅登记计划口径，不授权恢复代码重构或执行测试，也不授权发布/实盘操作。
+>
+> **已确认精度口径（后续实施唯一依据）：**“金融计算至少保证结果准确到小数点后三位；三位不是输入/中间状态的统一 scale 上限，原始输入与中间运算保留额外有效位，不每步量化到三位；整手数量仍精确 floor，显示维持各字段既定展示位数并 half-even，V1 历史文本/schema 保真、不改写，技术指标不全量升级。P0 只验证库版本、范围与内部计算容量满足该口径，不擅自另选业务量化/舍入政策。”例如 `1 ÷ 3` 后再 `× 3`，不能先把中间值统一量化为 `0.333` 而得到 `0.999`；应保留额外中间有效位，使最终结果至少在小数后三位与 `1.000` 一致。
+>
+> 实施计划中上述已确认条款优先于相关设计文档中的示意；例如 design §7.4 若示意 protective 自行核对空仓、持久化 completion 并提交内存状态，应按本文 settlement 独占边界理解。本轮只修改本目标文档，不改 design 或其他文件。下列验收项均为未来实施要求，不表示本次文档修改已通过交易测试或实际恢复演练。
 >
 > 阅读顺序：先看第 4 节终态归属和第 5 节依赖，再按 Phase 0–6 执行；第 7 节列出不可拆分纵切，各阶段给出代码影响、实施任务和验收条件，第 17 节汇总最终验收清单。
 >
@@ -41,14 +49,14 @@
    - submit 结果不可确认按上述决策直接 fatal；撤单确认、订单终态和成交金额修正语义保持不变。
 
 4. **业务 owner 与生命周期 owner 收口**
-   - 保护性清仓、成交后结算、席位激活/换标和末日清仓拥有清晰的 application owner。
+   - 保护性清仓触发/执行、成交后结算及 readiness、席位激活/换标和末日清仓拥有清晰的 application owner；保护性完成判定与完成事务只归 `PostTradeSettlementWorkflow`。
    - 生命周期使用静态、有序、可检查的资源清单，但不替换现有异构 stop/drain 编排。
 
 5. **金融精度与显示边界收口**
-   - 价格、金额、成本、盈亏及金融比率/阈值在输入、计算、比较、财务状态和恢复中保持十进制语义；去除旧金融链路不必要的 number 投影和多次往返。
+   - 按文首已确认口径处理价格、金额、成本、盈亏及金融比率/阈值；P0 按该口径完成库版本、范围与内部计算容量工程验证后，去除旧金融链路不必要的 number 投影和多次往返。
    - 时间、版本、计数和经证明的安全整数数量继续使用 number；技术指标保留现有 number 算法、投影、比较和无效值语义，不统一为全量 Decimal。
-   - 金融显示按显式精度/舍入规则直接生成定点字符串，durable 数据按 V1 规范序列化，两者不复用补零文本。
-   - 保持业务公式、单位、阈值及包含关系、排序键顺序和完成条件；由消除浮点误差带来的临界结果变化必须在 P0 登记并用十进制目标断言验证，不把旧误差冻结为正确答案。
+   - 按已确认口径，显示维持各字段既定展示位数并 half-even；durable 数据按 V1 规范序列化，两者不复用补零文本，且不得把显示舍入前移到中间状态。
+   - 保持业务公式、单位、阈值及包含关系、排序键顺序和完成条件；由消除浮点误差带来的临界结果变化必须按已确认口径登记并验证，不把旧误差冻结为正确答案。
 
 ### 1.2 不变的业务安全约束
 
@@ -59,7 +67,7 @@
 - 普通 BUY、普通 SELL、换标回补、保护性清仓、静态距回收价清仓、末日清仓继续使用不同 policy。
 - 未知 submit 不自动重提。
 - cancel acknowledged 不等于订单终态。
-- 保护性清仓必须按“成交 progress 持久化 → 权威持仓/待成交保护性订单确认 → completion 持久化 → daily loss/cooldown/episode 内存提交”的顺序推进。
+- 保护性清仓必须按“成交 progress 持久化 → 权威持仓/待成交保护性订单事实确认 → `PostTradeSettlementWorkflow` 最终完成判定 → 同步 completion 持久化 → daily loss/cooldown/episode 内存提交 → ready”的顺序推进；protective workflow 不另作完成判定或提交。
 - `ACTIVATING` 未完成全部准入步骤前不能进入 `ACTIVE`。
 - 午休、开盘保护、末日接管、跨日清理、开盘重建分别保留各自门禁。
 - 外部暂时性失败与内部契约/不变量错误继续采用不同失败语义。
@@ -73,14 +81,16 @@
 - 全部 canonical account/position writer 已移除或改为调用 `application/accountPositionSnapshot` 的唯一 owner。
 - `LastState` 不再向业务层暴露可写 snapshot 镜像和 `positionCache.update()` 能力。
 - 旧 `dayEpoch`、`snapshotGeneration`、`seatVersion`、`settlementVersion` 结果不能覆盖新事实或放行旧业务。
-- snapshot commit、settlement ready、seat ACTIVE、liquidation completion 各自只有一个真实 owner。
+- snapshot commit、settlement ready、seat ACTIVE 各自只有一个真实 owner；保护性清仓最终完成判定、completion append、daily-loss/cooldown/episode 内存提交和 ready 仅由 `PostTradeSettlementWorkflow` 拥有。
 - application/domain 不依赖 Longbridge SDK；SDK DTO、枚举、Decimal、push/query 和错误映射只由对应 infrastructure adapter 处理，阶段性迁移例外已清零。
 - 顶层物理结构收口为 `app/`、`domain/`、`application/`、`runtime/`、`infrastructure/`、`config/`、`constants/`、`types/`、`utils/`；`src/core/`、`src/main/`、`src/services/` 不再包含生产实现、旧 façade、转发层或兼容入口。
 - 普通 BUY/SELL、换标、保护性清仓、静态距回收价清仓、末日清仓、订单恢复和跨日生命周期既有语义测试通过；既有普通交易 owner 直接迁移，不另加 wrapper owner。
 - 新增并发/失效/未知结果/生命周期清单测试通过；测试最终目录镜像 `src/` 的职责布局，迁移前基线路径与目标路径有明确对应关系。
 - `bun format`、`bun lint`、`bun type-check`、`bun build` 和完整 `bun test` 通过。
-- 已有 V1 durable log 的结构、字段、严格文本校验、ID 和幂等规则保持；历史 payload/ID 不改写，逐条恢复语义不变，完整恢复及指定代码回退版本通过 §15 的生产切换门禁。
-- P0.4 / §13.4.2 的金融精度验收通过：金融输入/状态/运算不经未授权 number 投影，买量、距离、成本/盈亏、日损益、progress/baseline 和金融显示达到明确的十进制目标。保留纯十进制基线的有效结果，受控修正旧浮点误差；不要求所有新财务值与旧 number 投影结果相等。
+- V1 durable log 的结构、字段、严格文本校验、ID 和幂等规则保持；离线实施验收须通过静态/动态全链路及 mock/脱敏 fixtures 恢复演练。真实历史 V1 与权威订单逐条对账、精度迁移后候选版本和指定回退版本的完整恢复，均为未来生产发布阻断项；fixtures 不替代这些验证。
+- P0.4 / §13.4.2 按文首已确认精度口径完成离线工程验收：金融输入/状态/运算不经未授权 number 投影，买量、距离、成本/盈亏、日损益、progress/baseline 和金融显示达到目标。实施完成不表示真实历史对账或发布/回退演练已完成。
+
+**本轮实施完成与生产发布边界：** 实施完成必须通过离线静态与动态全链路验收、mock/脱敏 fixtures 恢复演练；本轮不发布、不打开交易门禁、不连接实盘，也不声称完成真实历史 V1+权威订单逐条对账或精度迁移后候选/回退版本完整恢复。后两项保持为未来生产发布阻断门禁，不能以 fixtures 替代。
 
 **架构/物理归属完成定义：** 每个生产职责在第 4 节的来源→职责→终态目录→阶段→旧入口移除/验证映射中有且只有一个最终 owner；跨层事实契约落在最近共同父级的窄 `src/types/*` 文件，模块内契约留在相邻 `types.ts`。所有旧入口在其闭合阶段移除，P6 只做残留清理和物理收尾，不是首次确定分层或首次迁移业务。
 
@@ -193,7 +203,7 @@ recordSettlementRefreshNeed
   -> 账户/持仓读取
   -> positionCache 更新
   -> onPositionsCommitted
-  -> 保护性完成/冷却/日损益/R1/N1 等后置业务
+  -> settlement workflow 基于 tracking 提供的事实独占判定 protective completion，并推进冷却/日损益/R1/N1 等后置业务
   -> refreshGate.markFresh
 ```
 
@@ -302,7 +312,7 @@ src/
 │   ├── seatActivation/
 │   ├── seatSwitch/
 │   ├── autoSearch/
-│   ├── protectiveLiquidation/
+│   ├── protectiveLiquidation/     # trigger/purpose/pre-execution gate/execution；最终 completion 归 postTradeSettlement
 │   ├── staticLiquidation/
 │   ├── doomsdayClearance/
 │   ├── tradingDayRebuild/
@@ -372,7 +382,7 @@ tests/                            # 最终职责镜像；基线旧路径只保�
 | `src/core/trader/orderExecutor/**`, `src/core/trader/orderHoldRegistry.ts`, `src/core/trader/rateLimiter.ts` | 命令执行、持有/限速与纯数量/业务门禁 | `application/orderExecution` + 必要 `domain/order`; broker I/O 在 `infrastructure/longbridge/trade` | P3/P4 | 不把整个 trader 搬 infra；UNKNOWN/602013/WAIT_WS_ONLY 等价测试 |
 | `src/core/trader/accountService.ts`, `src/core/trader/index.ts`, `src/core/trader/orderCacheManager.ts` | SDK context/read；业务组装；订单查询缓存分别归属 | SDK部分在`infrastructure/longbridge/trade`，用例组装在app，订单事实投影在`application/orderTracking`；缓存不得成为第二账本 | P1最小facts+mapper，P4完整收口 | P1新application无SDK；复用同一context，P4创建权仅在adapter；不整块搬Trader |
 | `src/app/types.ts` | app本地装配参数与跨层能力契约分开 | 本地参数留app；其他能力按最近共同父级放窄types | P1/P2/P3/P4随切面，P6残留 | 删除对已迁移旧owner类型的依赖；type-only边界检查 |
-| `src/core/trader/protectiveLiquidationEpisodeTracker/**`, `src/core/riskController/**`, `src/core/signalProcessor/**` | episode/daily loss 状态及风险纯规则；触发、失败策略为用例 | `domain/liquidation`, `domain/risk`, `application/protectiveLiquidation`, `riskRefresh` | P3B/P3F | completion 无 await 持久化事务单一 owner；SELL/risk 策略等价测试 |
+| `src/core/trader/protectiveLiquidationEpisodeTracker/**`, `src/core/riskController/**`, `src/core/signalProcessor/**` | episode/daily-loss 状态及风险纯规则；protective trigger、目的识别、执行前门禁与执行归 protective 用例；可信 progress/订单事实由既有 tracking/settlement 路径提供 | `domain/liquidation`, `domain/risk`, `application/protectiveLiquidation`, `application/postTradeSettlement`, `riskRefresh` | P2/P3B/P3F | `PostTradeSettlementWorkflow` 独占最终完成判定、同步持久化及 daily-loss/cooldown/episode 内存提交；无第二判定/提交者；SELL/risk 策略等价测试 |
 | `src/core/strategy/**`（含 intradayRegression definition/runtime/verification）、`src/app/startup/{prepareStrategy,strategyLoaderHelpers,createSelectedStrategy}.ts` | 纯指标/样本/验证与私有 pending/timer/emitter 执行、factory/config/动态加载拆开 | 纯计算/状态在 `domain/strategy`；现存私有执行在 `runtime/strategy/<策略目录>/`；definition prepare/create 与加载装配在 `app/startup`，配置解析在 `config` | P3F执行/加载闭合，所需SDK-free/Period切片提前；P4/P6仅收剩余映射/残留 | 仅加载并prepare选中入口一次；同步更新目录定位和definition/config位置校验；保存emitter、先失效后取消、同实例reset/destroy及一分钟线语义测试 |
 | `src/core/utils.ts` 及 core 各 `utils.ts` | 领域辅助按最近 owner 收口，纯通用 helper 保留 | `domain/*` 或 `utils/` | P3–P6 | 清理跨层业务工具入口，依赖静态检查 |
 | `src/main/asyncProgram/{buyProcessor,sellProcessor,tradeTaskQueue,monitorTaskQueue,monitorTaskProcessor}` | queue/worker/handler调度；买卖与席位业务分开 | `runtime/asyncProgram/**`; `application/ordinaryBuy`, `ordinarySell`, `seatActivation` | P1读路径，P3/P3F owner迁移 | 保留 FIFO/串行语义，移除业务副本；queue/UNKNOWN/方向隔离测试 |
@@ -384,11 +394,11 @@ tests/                            # 最终职责镜像；基线旧路径只保�
 | `src/services/accountDisplay/**`, `src/services/marketMonitor/**` | 展示/market读取按外部IO与纯呈现分开 | `infrastructure/display`, `infrastructure/longbridge/market`; 金融派生/纯呈现规则进domain/utils | P1起随字段消费者同步迁移，P4收口，P6仅扫残留 | 金融估值/涨跌使用十进制并直接输出string；不让展示成为业务 owner；§13.4.2输出测试 |
 | `src/services/autoSymbolFinder/**` | warrant SDK query/cache、筛选、失败/重试三分 | `infrastructure/longbridge/market`, `domain/seat`, `application/autoSearch` | P3F/P4 | finder不再是复合owner；SDK import仅adapter；缓存/筛选/失败矩阵 |
 | `src/services/autoSymbolManager/**` | seat state/selection/switch workflow分开 | `domain/seat`, `application/seatActivation`, `application/seatSwitch`, `application/autoSearch` | P3C/P3D/P3F | manager复合 owner 与委托 façade 清零；seatVersion/policy tests |
-| `src/services/liquidationCooldown/**` | index/utils的计数冷却规则；tradeLogHydrator的读取/恢复用例分开 | `domain/liquidation/cooldown` + `application/protectiveLiquidation` 恢复职责；文件读取仍归persistence adapter | P3B | domain无仓储/日志IO；恢复顺序和completion唯一owner测试 |
+| `src/services/liquidationCooldown/**` | index/utils的计数冷却规则；tradeLogHydrator的读取/恢复用例分开 | `domain/liquidation/cooldown` + `application/protectiveLiquidation` 恢复职责；文件读取仍归persistence adapter；completion事务归 `application/postTradeSettlement` | P2/P3B | domain无仓储/日志IO；恢复顺序不变；最终完成判定与提交唯一归 settlement 测试 |
 | `src/services/mixedTradeLogRepository/**` | durable mixed trade-log append/read | `infrastructure/persistence/mixedTradeLogRepository` | P2/P3B/P4 | application经窄port；格式/同步append语义测试 |
 | `src/services/quoteClient/**` | quote SDK client/market mapper | `infrastructure/longbridge/market` | P1/P3首个金融消费前完成所需mapper，P4收余项 | 金融价格不先toNumber；指标投影独立；SDK仅market adapter，candle语义测试 |
 | `src/utils/refreshGate/**`, `src/utils/positionCache/**` | readiness waiters 与 canonical position private index | `application/postTradeSettlement`, `application/accountPositionSnapshot` | P1迁移，P2正式归属 | 删除旧导出/LastState mirror；writer/late result tests |
-| `src/utils/numeric/**`, `src/utils/accountPositions/**` | SDK mapper、领域算术、恢复比较与通用十进制算术分离 | SDK在`infrastructure/longbridge/{trade,market}`；规则在对应`domain/order`、`position`、`risk`；恢复归application；独立库纯算术在`utils/numeric` | P0锁定精度目标；P1起随首个消费纵切闭合，P4只收剩余mapper/显示 | 金融输入/状态/输出去除未授权number投影，整数/指标例外显式列出；§13.4.2目标与差分均通过 |
+| `src/utils/numeric/**`, `src/utils/accountPositions/**` | SDK mapper、领域算术、恢复比较与通用十进制算术分离 | SDK在`infrastructure/longbridge/{trade,market}`；规则在对应`domain/order`、`position`、`risk`；恢复归application；独立库纯算术在`utils/numeric` | P0仅按文首已确认口径验证库版本/范围/内部容量；P1起随首个消费纵切闭合，P4只收剩余mapper/显示 | 金融输入/状态/输出去除未授权number投影，整数/指标例外显式列出；按已确认口径完成§13.4.2离线目标与差分验收 |
 | `src/utils/quoteRetry/**`, `src/utils/logger/**`, `src/utils/display/**`, `src/utils/time/**`, `src/utils/timer/**` | external retry/log/output/clock 与规则/调度分开 | quote IO在`infrastructure/longbridge/market`; `infrastructure/logger`, `infrastructure/display`, `infrastructure/time`; 唤醒编排在runtime，业务内聚pump仍属其owner；纯规则在domain/utils | 金融呈现P1起随首个消费者；其余P3–P6 | 金融格式化不经number；quote retry不留utils；timer经注入使用，domain不持timer；边界测试 |
 | `src/utils/seat/**`, `src/utils/trading/**`, `src/utils/helpers/**`, `src/utils/error/**`, `src/utils/apiFailure/**`, `src/utils/runtime/**`, `src/utils/types.ts` | helper 按职责分到领域/use case/契约；通用纯工具保留 | `domain/seat`或`domain/order`, 对应 `application/*`, `src/types/` 或 `utils/` | 金融helper P1起随纵切；其余P3–P6 | 清理未授权decimalToNumber等金融调用，合法整数/指标保留；utils无业务owner，边界及分类差分测试 |
 | `src/app/runtime/createPostTradeConsistencyRuntime.ts` | snapshot提交、settlement投影/readiness、调度与工厂拆开 | `application/accountPositionSnapshot`, `application/postTradeSettlement`；独立运行调度归runtime，app仅组装 | P1安全切片，P2 owner闭合 | 删除app中的业务完成实现，不以同义委托保留旧owner；r10/r11及wiring测试 |
@@ -405,13 +415,13 @@ tests/                            # 最终职责镜像；基线旧路径只保�
 | 事实/流程 | 唯一 owner 与物理位置 | 允许的输入 | 禁止的职责 |
 | --- | --- | --- | --- |
 | canonical account/position facts | `AccountPositionSnapshotCoordinator` + 私有 store；`application/accountPositionSnapshot` | broker read port、refresh request、day/generation token | domain 持 store/IO；业务 retry policy；第二 store；直接修改 LastState |
-| post-trade business ready | `PostTradeSettlementWorkflow`；`application/postTradeSettlement` | snapshot receipt、order settlement facts、projection result | SDK DTO、canonical snapshot 写入、第二 completion owner |
+| post-trade ready 与 protective completion | `PostTradeSettlementWorkflow`；`application/postTradeSettlement` | snapshot receipt、order tracking 提供的可信 settlement/progress facts、position/待成交订单事实、projection result；domain 可提供纯判定规则 | protective/tracking 不得另作最终完成判定；不得有第二 completion append、daily-loss/cooldown/episode 内存提交者；SDK DTO、canonical snapshot 写入 |
 | 席位身份/selection rules | `domain/seat` state/model + pure rules | seat commands、explicit time、seatVersion | 发 API、timer、直接更新账户/持仓 |
 | 席位激活 | `application/seatActivation` | candidate、seatVersion、market/order/snapshot receipts | 直接决定其他方向状态 |
 | 换标 | `application/seatSwitch` + `domain/seat` 显式 policy | periodic/distance policy、旧席位事实、新候选 | 合并不同 policy 为隐式 bool；新 wrapper owner |
 | 普通 BUY / ordinary SELL | 现有 owner 分别直接迁至 `application/ordinaryBuy` / `application/ordinarySell` | 原信号、gate、实时事实和窄 port | 新增 facade/wrapper；统一交易流程 |
 | auto search | `application/autoSearch`；筛选规则在 `domain/seat`，warrant IO/cache 在 infrastructure market | search trigger、strategy input、market facts | SDK查询、失败重试散落 runtime、重复缓存 owner |
-| protective/static/doomsday liquidation | 各自 `application/protectiveLiquidation`, `staticLiquidation`, `doomsdayClearance`; shared rules in domain/liquidation | purpose-specific trigger/order/position/readiness facts | 共享第二订单账；跨目的混用 cooldown/completion |
+| protective trigger/execution、static/doomsday liquidation | 分别由 `application/protectiveLiquidation`, `staticLiquidation`, `doomsdayClearance` 持有；纯规则在 `domain/liquidation` | purpose-specific trigger/order/position facts；protective 接收 readiness/gate | protective 不拥有最终 completion 判定/append/ready；不建共享第二订单账或跨目的混用 cooldown/completion；static/doomsday 仍保留各自既有 policy |
 | order execution | `application/orderExecution` | internal command、gates、order facts | SDK类型/TradeContext、重复 tracking state |
 | order tracking/recovery | `application/orderTracking` + `domain/order` | push/query facts、recovery input、durable facts | 另一个订单 ledger、ACK即终态、不同序列化 recovery owner |
 | SDK command/fact mapping | `infrastructure/longbridge/trade`；market SDK映射在 `infrastructure/longbridge/market` | neutral internal facts/commands、SDK response/push | 买入风控、席位归属、清仓完成 |
@@ -435,9 +445,9 @@ PositionSnapshotCommitted != PostTradeBusinessReady
 queued notification completed != durable business commit
 ```
 
-### 4.4 数值分类与精度终态
+### 4.4 数值分类与已确认精度口径
 
-**本节是本次已批准的数值目标，不是只迁移 SDK 的行为冻结，也不是所有数字统一 Decimal。**
+**精度边界以文首已确认记录为准；本节按已确认解释口径执行，不是只迁移 SDK 的行为冻结，也不是所有数字统一 Decimal。**
 
 | 数值类别 | 目标表示与运算 | 允许的 number 边界 |
 | --- | --- | --- |
@@ -454,10 +464,10 @@ queued notification completed != durable business commit
 2. `OrderCommand.price` 采用 `string | null`，`quantity` 延续十进制 string；account/position、quote、order execution、risk、switch 和 settlement 的金融字段及全部调用方同步迁移。整数数量可以有经过验证的 number view，但不可把该规则推广到价格/金额。
 3. 成本乘加、估值/涨跌、买量、回收价距离、候选筛选、R1/R2、日损益、累计金额及 baseline 差额/均价留在所属 domain；恢复/择新编排留 application，通用纯算术留 `utils/numeric`。SDK mapper 不代算业务公式，display adapter 不成为金融事实或完成条件 owner。
 4. 删除金融链路旧 `decimalToNumber`、`toNumber`、原生金融 `+/-/*//`、`Math.min/max` 和 `toFixed` 的未授权使用及旧 number 缓存；替换为明确十进制运算。合法整数/指标调用仍可保留，不全仓机械禁用这些函数或运算符。
-5. P0 锁定独立库、版本、输入范围、有效位/除法精度和舍入规则。乘加在支持范围内不能静默丢位；非终止除法按明确精度舍入，不能承诺数学无限精度。整手继续向下取整；金融显示沿用既有 Decimal `roundDp` 的中点取偶规则，价格步进/订单约束保持，金融中间值不按显示位数提前量化。策略在启动前固定，不允许运行中修改全局精度。
-6. 金融显示直接舍入并生成定点文本，按价格/金额/百分比配置保留尾零；零值、符号和位数分别验证。V1 写入采用其既有无指数、无多余尾零的规范文本，读取不改写旧文本。恢复后的金融状态不转 number；同量时间/revision 择新、排序键优先级和 OPEN/TERMINAL 规则保持。
+5. P0 按文首已确认口径验证独立库版本、合法输入范围及内部计算容量满足至少三位精度要求；不自行决定新的业务量化/舍入政策，也不以“三位”作为输入或中间值的统一 scale 上限。乘加不得静默丢失支持范围内所需有效位；保留原始输入和中间有效位，不逐步量化到三位。整手继续精确向下取整；显示维持各字段既定展示位数并 half-even，价格步进/订单约束保持。策略在启动前固定，不允许运行中修改全局精度。
+6. 按文首已确认口径，金融显示直接舍入并生成定点文本，维持各字段既定展示位数及 half-even；零值、符号和位数分别验证。V1 写入采用其既有无指数、无多余尾零的规范文本，读取不改写旧文本/schema。恢复后的金融状态不转 number；同量时间/revision 择新、排序键优先级和 OPEN/TERMINAL 规则保持。
 
-**迁移门禁：**P0 记录旧输入/运算/投影位置，并为每个金融字段列出目标契约、生产者、全部消费方、允许投影及闭合阶段。首个相关新层消费前，完成独立 numeric、所需 mapper、财务状态/全部调用方及显示的完整纵切；可先在旧来源实现必要切片，不能增加有损兼容层、双写或把缺口推迟到 P4。精度变化按 §13.4.2 分类验收，历史恢复及回退按 §15 单独阻断发布。
+**迁移门禁：**P0 记录旧输入/运算/投影位置，并为每个金融字段列出目标契约、生产者、全部消费方、允许投影及闭合阶段；P0 只按文首已确认口径做库版本、输入范围与内部计算容量的工程验证，不另定业务量化/舍入政策。首个相关新层消费前，完成独立 numeric、所需 mapper、财务状态/全部调用方及显示的完整纵切；可先在旧来源实现必要切片，不能增加有损兼容层、双写或把缺口推迟到 P4。精度变化按 §13.4.2 做离线验收；真实历史恢复和候选/回退版本证明仍是 §15 的未来生产发布阻断项。
 
 ---
 
@@ -466,16 +476,18 @@ queued notification completed != durable business commit
 ### 5.1 总体依赖图与依赖白名单矩阵
 
 ```text
-P0 行为基线、金融精度目标/独立库验证、终态矩阵和 staged probes
+P0 行为基线、文首已确认精度口径的独立库工程验证、终态矩阵和 staged probes
   -> P1 snapshot 正确性纵切 + 保真 account/position facts/mapper 与全部金融消费者/所需 quote 切片
-  -> P2 settlement readiness 正式 owner + 所需成交金额/损益/baseline 财务状态精度闭合
-  -> P3A owner收口验收 -> P3B protective -> P3C activation -> P3D switch
+  -> P2 settlement readiness 与 protective completion 唯一 owner 闭合 + 所需成交金额/损益/baseline 财务状态精度闭合
+  -> P3A owner收口验收 -> P3B protective trigger/purpose/pre-execution gate/execution -> P3C activation -> P3D switch
        -> P3E doomsday -> P3F ordinary buy/sell + autoSearch + static liquidation + risk refresh
   -> P4.1 internal facts/ports -> P4.2 command execution -> P4.3 order tracking/recovery
        -> P4.4 snapshot-read seam 收尾（不是首次建模/映射） -> P4.5 SDK leakage zero
   -> P5 rebuild owner 闭合 + runtime lifecycle checklist + app assembly/cleanup 验证
   -> P6 旧目录/旧入口/宽契约残留清理与物理验收
-  -> 全量验收与发布准备
+  -> 离线静态/动态全链路验收与 mock/脱敏 fixtures 恢复演练
+
+真实历史逐条对账及精度迁移后候选/回退版本完整恢复属于后续生产发布阻断，不计作本轮离线实施完成；本轮不发布、不开门、不连接实盘。
 ```
 
 P1/P2 修改 `core/main/services` 现有来源代码是闭合安全切面的必要工作，不因目标目录已确定而推迟。P1 提前建立最小账户/持仓中性 facts、窄 read port 和 Longbridge mapper，阻断 SDK 契约进入 snapshot/application；P2 的 readiness receipts 和协作 port 同样只能用内部事实，若现存协作者类型泄漏 SDK，先做最小 facts/mapper 切片，不可新增 legacy SDK 例外。任何 P3 workflow 在移入 `application/**` 前，必须先闭合其所需的最小内部 facts/ports/adapter mapper；缺口可在旧来源路径做切片或暂留未闭合旧实现，不可把 SDK import 带入新 owner。P4 继续收口其余 order/query/market adapter；P4.4 只收尾剩余 account/position SDK read/query 映射和 BUY/SELL 读路径，不是第一次创建 account/position contract、mapper 或 snapshot port。
@@ -511,12 +523,12 @@ P1/P2 修改 `core/main/services` 现有来源代码是闭合安全切面的必�
 
 | 阶段 | 精度闭合要求 |
 | --- | --- |
-| P0 | 记录旧转换位置、建立十进制目标/受控差异清单，锁定独立库与策略，验证 V1 历史对账/完整恢复和回退风险 |
+| P0 | 按文首已确认精度口径记录旧转换位置、建立目标/受控差异清单，仅做库版本、输入范围、内部计算容量的工程验证及 mock/脱敏 fixtures 离线恢复验证，不自行决定业务量化/舍入政策。真实历史对账和候选/回退完整恢复留作未来发布门禁 |
 | P1 | account/position 金融事实、最小 trade/quote mapper、全部 reader 的估值/风控/显示同步迁移；相依成交/风险字段提前做必要切片，不回转旧 number 接口 |
 | P2 / P3B | 首次 settlement 消费前闭合累计金额、日损益、R1/N1、progress/baseline 与 durable 输入；P3B 迁移 owner 时复验，不首次补救已放行的有损状态 |
 | P3D / P3F | 换标预算/回补、普通 BUY/SELL、价格限制、距离/静态清仓、autoSearch 金融筛选与风险计算闭合；公式、单位和阈值关系保持 |
 | P4 | 收余下 SDK query/push/command mapper 与金融显示；§13.4.2 全矩阵复验，未授权金融 number 边界清零 |
-| P5 / P6 | 完整启动/开盘重建/日切、生产切换与代码回退演练；清理旧契约/工具调用/测试引用，不首次迁移金融精度 |
+| P5 / P6 | 完整启动/开盘重建/日切离线链路及 fixtures 恢复演练；清理旧契约/工具调用/测试引用，不首次迁移金融精度。真实历史对账、精度迁移后候选/回退完整恢复仍是未来生产发布阻断项 |
 
 可并行：P2 后可准备 P4 order DTO/mapping 研究和 adapter 专属测试；不能因此把 P4 未闭合类型引入新 workflow。P3/P4 改同一调用链时串行。P5 等 P3/P4 owner 闭合；P6 等 P1–P5 业务与精度迁移完成。
 
@@ -543,7 +555,7 @@ P1/P2 修改 `core/main/services` 现有来源代码是闭合安全切面的必�
 
 ### 6.1 目标
 
-在任何 owner 迁移前，建立可重复验证的旧行为基线及 §4.4 金融精度目标；只增加验证、静态检查和观测，不改变生产交易逻辑。旧浮点误差只作为差分证据，不冻结为目标正确行为。
+在任何 owner 迁移前，建立可重复验证的旧行为基线及 §4.4 精度验收准备；精度口径已由用户确认，P0 只增加离线验证、静态检查和观测，不改变生产交易逻辑；旧浮点误差只作为差分证据，不冻结为目标正确行为。
 
 ### 6.2 任务清单
 
@@ -620,30 +632,30 @@ P0 冻结例外是测试扫描的已知旧源白名单，不是生产兼容层�
 
 #### P0.4 建立金融精度目标与独立十进制迁移门禁
 
-以设计 §8.4 和本计划 §3.6 的真实调用链记录旧 number/string → Decimal → number/string 及多次投影，但不再冻结这些金融投影为终态。按 §4.4 列出每个金融字段的保真输入、状态、公式/比较、输出及全部消费方；安全整数和技术指标的合法 number 边界单独登记。
+以设计 §8.4 和本计划 §3.6 的真实调用链记录旧 number/string → Decimal → number/string 及多次投影，但不再冻结这些金融投影为终态。按文首已确认口径及 §4.4 列出每个金融字段的保真输入、状态、公式/比较、输出及全部消费方；安全整数和技术指标的合法 number 边界单独登记。
 
 - 承接固定为 **独立十进制库 + SDK 无关 `utils/numeric` 纯算术**。领域公式/财务状态归对应 domain，用例/恢复排序归 application；SDK 构造/解析归 adapter，不包装 Longbridge，也不让 mapper 计算买量/盈亏。
-- 候选库须通过 §13.4.2 后锁定版本、合法输入范围、有效位/乘加容量、非终止除法精度、各业务舍入、整手取整及显示/V1 序列化。显式验证默认配置，不以“使用 Decimal”冒充无限精度；P0 不修改生产逻辑或旧日志。
+- 按文首已确认口径，P0 只验证库版本、合法输入范围与内部计算容量足以满足该口径；不得另行选择业务量化/舍入政策，也不把三位设为输入/中间值统一 scale。离线验证不以“使用 Decimal”冒充无限精度；P0 不修改生产逻辑或旧日志。
 - 差分分三类：①旧纯十进制有效结果、业务公式/单位/阈值关系及非金融行为保持；②旧 number 运算/投影误差按独立十进制目标修正并登记临界决策变化；③历史 durable 冲突、无法证明恢复或回退的情况按 §15 阻断，不以容差或改写文本消解。目标断言不能只复制旧实现。
 - 强制买量：旧输入金额 `7000`、价格 `0.07`、每手 `10000` 与新金融文本输入必须同得 `100000`，不能退化为 number 算法的 `90000`。同时验证原生 `0.1 + 0.2` 的误差、事后转 Decimal 不能修复，以及移除金融投影后的目标结果。
-- 金融显示验证 Decimal 直接定点输出；现有 `roundDp` 中点取偶样例 `1.005 → 1.00`、`1.015 → 1.02` 保留。金额/价格/百分比的显示位数不用于中间状态量化；指标 number.toFixed 不在删除范围。
-- 对旧 V1 日志与对应权威订单输入做完整恢复对账，覆盖买/卖单 baseline、同 revision 数量/金额/阶段、crash-gap completion、日损益分段及冷却。结构/ID/冲突规则保持，不要求新精确金额文本与旧 number 结果相同，不伪造权威 revision。
+- 按已确认口径离线验证金融显示直接定点输出、沿用各字段既定展示位数及 half-even；现有 `roundDp` 样例 `1.005 → 1.00`、`1.015 → 1.02` 用于显示规则验证。显示位数不用于中间状态量化；指标 number.toFixed 不在删除范围。
+- 离线 P0 使用 mock/脱敏 fixtures 演练 V1 读取、买/卖 baseline、同 revision 数量/金额/阶段、crash-gap completion、日损益分段及冷却；fixtures 只验证离线链路，不替代真实历史对账。结构/ID/冲突规则保持，不要求新精确金额文本与旧 number 结果相同，不伪造权威 revision。真实旧 V1 日志与对应权威订单输入的逐条对账及完整恢复留作未来生产发布阻断。
 - SDK 基线/映射探针只在 `tests/infrastructure/longbridge/{trade,market}/`，目标 numeric/domain/application 用中性 fixture；测试从创建时遵循最终职责镜像。
 - 首个相关新层消费前完成通用算术、所需保真 mapper、全部调用方和财务状态/显示切片，并删对应旧例外。P1/P2/P3 所需切片不等 P4；旧 `utils/numeric` 的 SDK 依赖或有损 number 接口不能成为过渡例外。
 
-以下任务和 §13.4.2 均为未来实施要求；此次仅修订计划，没有选定/安装库或新增测试，不表示已实现精度升级。
+以下任务和 §13.4.2 均为未来实施要求；此次仅修订计划，没有选定/安装库或新增测试，不表示已实现精度升级或完成恢复演练。
 
 ### 6.3 P0 验收
 
 - 基线测试通过。
 - 已记录当前各切面的测试命令和结果。
-- P0.4 旧转换位置、目标字段/边界与受控差异已登记，独立库版本/精度策略经验证锁定；有效旧十进制结果保留，旧浮点误差用独立目标验证，不用宽松误差容限抹平差异。
+- P0.4 旧转换位置、目标字段/边界与受控差异已登记；按文首已确认精度口径，对库版本、输入范围和内部计算容量经离线工程验证。有效旧十进制结果保留，旧浮点误差用独立目标验证，不用宽松误差容限抹平差异。
 - 架构扫描能够识别新增违规。
 - 没有交易逻辑和持久化格式变化。
 
 ### 6.4 P0 退出条件
 
-P0 完成后才能开始 P1。若基线测试存在失败，必须先区分既有失败与本次新增失败；未建立清晰基线，或 P0.4 的目标/库验证、差异分类及恢复风险门禁未明确，不得进入 snapshot writer 和金融契约迁移。生产数据对账与完整恢复/回退证明还必须在发布前按 §15 执行。
+P0 完成后才能开始 P1。若基线测试存在失败，必须先区分既有失败与本次新增失败；未建立清晰基线，或 P0.4 的目标/库工程验证、差异分类及离线 fixtures 恢复演练未明确，不得进入 snapshot writer 和相关金融契约/数值迁移。真实生产数据对账与候选/回退版本完整恢复证明仍必须在发布前按 §15 执行，不能由离线 fixtures 替代。
 
 ---
 
@@ -814,7 +826,7 @@ pending
 - QuoteSubscriptionRuntime 继续独占订阅，通知只标记 dirty，并按当前事实 single-flight 对账；迟到 r10 callback 不可回写 r10 期望集合。
 - pending settlement 的订阅、completion 准备、R1/N1 均携带 receipt；每个 await 后复核 epoch/generation/revision 和适用 seatVersion。r11 到达后丢弃 r10 尚未提交的派生结果，获取当前 receipt（字段不足才请求补齐），为同一 settlement 目标重算，不重新 mark stale。
 - R1/N1 分开准备与发布：同步计算使用无 await 的校验—计算—发布段；有异步输入时使用 compare-and-publish。禁止先写缓存再在函数返回后检查 token。
-- completion 最终 token/订单事实/seat 校验 → 同步 durable append → daily loss boundary/cooldown/episode commit 为同一无 await 原子段；保持同步 repository，不改变日志格式。
+- `PostTradeSettlementWorkflow` 独占 protective 最终完成判定；它基于 order tracking 提供的可信 progress/order facts、snapshot/待成交订单 facts（可调用 domain 纯规则）完成最终 token/事实/seat 校验 → 同步 durable append → daily loss boundary/cooldown/episode 内存提交，并在全部原有 ready 条件满足后发布 ready。此段无 await；protective workflow 和 tracking 均不另作完成判定或提交。保持既有同步 repository、progress 持久化路径及顺序，不改变日志格式。
 - 后续 R1/N1 和所有既有 ready 条件完成后才能 `markFresh()`；若新成交到达，等待者继续追赶最新 settlement 水位。
 - SELL、风险、monitor quote、switch wakeup 在等待、行情读取和提交间的 epoch/settlement/seat/positionRevision 复核也在 P1 接通。持仓变化由原 owner 重选/重评估，不创建自动交易重试。
 
@@ -943,7 +955,7 @@ PostTradeBusinessReady
   = subscription、保护性完成判断、R1/N1、日损益/冷却等后置业务已完成
 ```
 
-`waitForFresh()` 保持为正式业务门禁名称，不新增兼容入口。P1 已经实现上述分离和所有并发防护；P2 的增量是正式契约与职责迁移，不再次改变交易准入政策。
+`waitForFresh()` 保持为正式业务门禁名称，不新增兼容入口。保护性清仓最终完成判定、completion 同步 append、daily-loss/cooldown/episode 内存提交及 ready 推进均独占归 `PostTradeSettlementWorkflow`；tracking 只提供权威事实，纯 domain rule 可由该 workflow 调用，但没有第二判定者/提交者。P1 已经实现上述分离和所有并发防护；P2 的增量是正式契约与职责迁移，不再次改变交易准入政策。
 
 ### 8.2 任务清单
 
@@ -977,22 +989,22 @@ src/application/postTradeSettlement/
 流程：
 
 ```text
-可信订单事实结算（保护性累计 progress 必须先同步持久化）
+可信订单事实由既有 order tracking/settlement 路径推进（保护性累计 progress 仍先同步持久化，路径与顺序不变）
   -> 同步登记 generation 失效、settlementVersion 和 refresh need
   -> 请求 snapshot refresh / 接收 commit receipt
   -> 持仓订阅投影
-  -> 保护性完成条件准备
-  -> 最终 token/订单事实/seat 校验
+  -> settlement 收集 tracking 提供的保护性 progress、权威持仓和待成交订单事实；可调用 domain 纯规则准备资格结果
+  -> PostTradeSettlementWorkflow 独占最终完成判定及 token/订单事实/seat 校验
   -> 同步 completion append
   -> daily loss boundary commit
-  -> cooldown / episode commit
+  -> cooldown / episode 内存提交
   -> R1/N1 刷新（使用已提交的新 boundary）
   -> 发布 readiness
 ```
 
 P2 首次消费前闭合执行价格/累计金额、成本、日损益/亏损偏移、R1/R2 和 progress/baseline 财务状态的 §4.4 契约；移除金融中间 number 投影，数量按其整数/Decimal 契约处理。SDK/order fact、仓储输入及所有协作者一并做必要切片，不能用字符串外壳保留内部 number 运算；历史恢复冲突按 §15 验证。
 
-最终 completion 校验 → 同步 append → boundary/cooldown/episode 内存提交之间不插入 await，不把仓储异步化。如果 P3B 拆分会切断这个事务，就保留 P2 的唯一 owner 内聚函数。
+`PostTradeSettlementWorkflow` 是唯一最终判定与事务 owner：completion 校验 → 同步 append → boundary/cooldown/episode 内存提交之间不插入 await，不把仓储异步化。protective/tracking 不另行判定或提交；该 completion 事务始终内聚于 P2 settlement，P3B 不得迁出或复制。
 
 其他异步 await 返回后检查：
 
@@ -1004,17 +1016,18 @@ P2 首次消费前闭合执行价格/累计金额、成本、日损益/亏损偏
 
 #### P2.3 保留并强化 protection completion 顺序
 
-必须保持：
+必须由 `PostTradeSettlementWorkflow` 独占最终完成判定与下列提交顺序：
 
 ```text
-completion persistence 成功
+settlement 最终判定通过
+  -> completion persistence 成功
   -> daily loss boundary commit
-  -> cooldown/episode commit
+  -> cooldown/episode 内存提交
   -> R1/N1 按新 boundary 刷新
-  -> readiness 可推进
+  -> 所有既有条件满足后 readiness 可推进
 ```
 
-持久化失败时：
+tracking 提供可信事实，domain 可提供纯规则；二者都不是第二判定者或提交者。保护性累计 progress 的既有 tracking/settlement 持久化路径与先后关系不变。持久化失败时：
 
 - 不推进内存 cooldown。
 - 不推进 daily loss 分段边界。
@@ -1104,7 +1117,7 @@ r10 settlement commit
 
 ## 9. Phase 3：迁移 Application Workflow 业务所有权
 
-> 每个 workflow 必须完成“入口、状态、完成条件、失败处理、事件/receipt、测试”的闭合迁移。只创建文件或包裹旧 runtime 不算完成。P2 已建立 settlement 的安全语义与 application owner；P3A 只验收残留物理/调用边界，不能重复迁移或建立第二 workflow。P3B-E 按各自目的迁独立职责；共享 completion 无 await 事务留在唯一原 owner。P3F 补齐普通交易、搜索、静态清仓及必要风险刷新，使第 4.1.2 映射无遗漏。
+> 每个 workflow 必须完成“入口、状态、完成条件、失败处理、事件/receipt、测试”的闭合迁移。只创建文件或包裹旧 runtime 不算完成。P2 已建立 settlement 的安全语义与 application owner；P3A 只验收残留物理/调用边界，不能重复迁移或建立第二 workflow。P3B-E 按各自目的迁独立职责；protective 最终完成判定、同步 append、daily-loss/cooldown/episode 内存提交及 ready 始终由唯一 `PostTradeSettlementWorkflow` 拥有，P3B 不迁出/复制该事务。P3F 补齐普通交易、搜索、静态清仓及必要风险刷新，使第 4.1.2 映射无遗漏。
 
 ### 9.1 P3A：PostTradeSettlementWorkflow 收口验收
 
@@ -1144,19 +1157,19 @@ P2 已创建并迁移正式 settlement owner；P3A 不再创建第二个 workflo
 
 #### 任务
 
-- workflow 负责 trigger、目的识别、执行前门禁、提交后事实收口、completion 条件和 ready 影响。
-- 订单事实解析仍由 order monitor/adapter 负责。
+- protective workflow 只负责 trigger、目的识别、执行前门禁和执行；不负责 protective 最终完成判定、completion durable append、daily-loss/cooldown/episode 内存提交或 ready。
+- 可信订单/progress 事实仍由既有 `application/orderTracking` 与 settlement 路径推进和持久化，顺序不变；order tracking 解析并提供事实，不成为第二最终判定者或 completion 提交者。
+- `PostTradeSettlementWorkflow` 独占 protective 最终完成判定、completion 同步 append、daily-loss boundary/cooldown/episode 内存提交及 readiness 推进。它基于 tracking 提供的可信 progress/order facts、权威持仓及待成交订单事实作最终判定；纯规则可留 `domain/liquidation` / `domain/risk` 并由 settlement 调用，但不得形成第二判定者或提交者。
 - progress 持久化仍先于日损益/episode/cooldown 内存提交；复验 P2 已闭合的精确累计金额、日损益、亏损偏移和 baseline 状态，迁移 owner 不重新引入 number 投影。
 - 保留保护性与静态距回收价清仓的副作用差异；共享合单的已知缺口按 §9.6 显式修正，不将现有算法整体视为等价迁移目标。
-- 保护性完成仍要求已有进行中的 progress、方向空仓且无待成交保护性卖单。静态卖出可使旧合法 episode 满足完成条件，不能因静态目的而压制该 completion；它仍归旧保护性成交事实。
-- completion 只能由一个 owner 提交。若保护性 workflow 与 settlement 拆分会共同拥有同一无 await 事务，则保留 settlement 中的内聚 completion 函数；保护性 workflow 仅处理独立 trigger/执行职责，不为名称齐全拆事务。
+- 保护性完成资格仍以既有进行中的 progress、方向空仓且无待成交保护性卖单为事实条件；最终是否满足只由 settlement 判定。静态卖出可使旧合法 episode 的事实条件满足，但不能自行宣告完成；其事实仍归旧保护性成交记录。
 - 重启恢复继续从 durable progress、completion boundary 和累计基线恢复；不足以精确恢复时阻断恢复。
 
 #### 验收
 
-- 保护性清仓完成条件只存在一个 application owner。
-- 同一事件不会被重复累计或重复激活冷却。
-- 真实 protective 事实、最后执行时间及既有 completion/daily-loss/cooldown 事务保持，此前合法 episode 仍可完成。静态新增量的跨目的隔离在 P3F（§9.6 / §13.4.1）首次闭合并验收，不作为 P3B 的前置门槛。
+- protective trigger、purpose、执行前门禁与执行归 `application/protectiveLiquidation`；protective 最终完成判定、同步 append、daily-loss/cooldown/episode 内存提交及 ready 只归 `application/postTradeSettlement`。
+- 同一事件不会被重复累计或重复激活冷却；order tracking 只提供事实，domain 纯规则不另成判定者/提交者。
+- 真实 protective progress、最后执行时间及既有提交顺序保持，此前合法 episode 仍可由 settlement 合法完成。静态新增量的跨目的隔离在 P3F（§9.6 / §13.4.1）首次闭合并验收，不作为 P3B 的前置门槛。
 
 ### 9.3 P3C：SeatActivationWorkflow
 
@@ -1300,7 +1313,7 @@ submit request attempted
 - 普通买入：现有 `src/main/asyncProgram/buyProcessor/**`、`src/main/ordinarySignalGuard/**`、`src/core/signalProcessor/**` 按职责拆为 `runtime/asyncProgram` 队列、`domain/risk|strategy` 纯规则和 `application/ordinaryBuy/` 既有 BUY owner。直接迁移既有 owner，不新增 wrapper，不改变 BUY 原有临时账户/持仓读取和风控集合。
 - 普通卖出：现有 `src/main/asyncProgram/sellProcessor/**`、sell quantity/risk 调用方迁入 `application/ordinarySell/`；FIFO queue 留 `runtime/asyncProgram/sellProcessor/`。最终执行前仍按 §8 gate 校验 position revision，不扩大 BUY 或 SELL 策略。
 - 自动寻标：现有 `src/services/autoSymbolFinder/**` 必须拆为 `infrastructure/longbridge/market` 的 warrantList SDK query/cache/外部 IO retry、`domain/seat` 的纯筛选排序规则、`application/autoSearch` 的调用/失败/重试决策；wakeup timer 留 `runtime/autoSearchWakeupRuntime/`。新层禁止直接依赖 SDK。
-- 静态距回收价清仓：现有 `src/main/monitorQuoteEventRuntime/staticLiquidationExecutor.ts` 拆成 `runtime/monitorQuoteEventRuntime` 触发 + `application/staticLiquidation/` 执行与失败 owner + `domain/liquidation` 纯规则。静态新增量及其成交不归入 protective progress/episode，也不独立产生保护性 completion、cooldown 或分段边界；实际成交仍参与正常结算与日损益计算。若此前已有真实 protective episode，静态成交使方向空仓后仍允许旧 episode 按其真实执行边界合法完成。此目标必须同时闭合以下共享执行修正，而非仅保留入口的 `false` 标识。
+- 静态距回收价清仓：现有 `src/main/monitorQuoteEventRuntime/staticLiquidationExecutor.ts` 拆成 `runtime/monitorQuoteEventRuntime` 触发 + `application/staticLiquidation/` 执行与失败 owner + `domain/liquidation` 纯规则。静态新增量及其成交不归入 protective progress/episode，也不独立产生保护性 completion、cooldown 或分段边界；实际成交仍参与正常结算与日损益计算。若此前已有真实 protective episode，静态成交使方向空仓后只提供 settlement 判定所需事实；旧 episode 仍由 `PostTradeSettlementWorkflow` 按其真实执行边界判定、完成与提交。此目标必须同时闭合以下共享执行修正，而非仅保留入口的 `false` 标识。
 - 风险刷新：现有 `src/main/tradingRiskEventRuntime/**` / `src/core/riskController/**` 中真实独立的风险事实刷新由 `application/riskRefresh/` 持有；P3B 已迁移的 protective trigger、daily-loss completion 不重复迁入。若没有独立入口/完成条件，则并入真正的 activation/settlement/risk owner，不为目录齐全创建第二 workflow。
 - `application/orderRecovery/` 仅在恢复构成独立于 tracking 的真实用例入口/失败策略时拆出；否则 recovery 与订单事实更新继续内聚在 `application/orderTracking/` 的一个串行入口。二者不并行拥有 order facts，不拆 durable completion transaction。
 
@@ -1312,7 +1325,7 @@ submit request attempted
 2. **共享决策（P4.2 最小切片）。** `src/core/trader/utils.ts#resolveSellMergeDecision` 对有效剩余量旧单检查身份：非 protective 新量遇 protective 旧单，选择已有 `CANCEL_AND_SUBMIT`，禁止扩量 `REPLACE`。新 protective 请求保留原撤旧规则，普通非 protective 单张同类型可改单旧单仍允许 `REPLACE`，其他合单限制不变。`submitFlow.ts` 的初次决策与提交前最新事实复核使用同一规则，事实变化时不沿用旧 `REPLACE`。
 3. **终态与数量（P4.2 执行连接）。** 复用 `submitFlow.ts` / `orderOps.ts`：ACK（当前 `CANCEL_CONFIRMED`）不是 canceled terminal；取得可信非 FILLED 终态并完成本地结算后，重新读取 broker 可卖量，扣除实际已成交需求并按原数量策略重规划、授权及报价后提交新 orderId，保留非 protective tracking/remark。`FILLED`、查询仍 OPEN、终态成交量缺失或事实不可信时不能继续换单；不新增委托、不提前清理静态买单记录，保持既有失败分类和重评估 owner。
 4. **身份与恢复（P4.3 最小切片）。** `orderOps.ts` 不清除旧 protective 标志或改写 remark；`recoveryFlow.ts` 按既有 broker `|PL` 后缀恢复身份，并将其带入 pending-sell 决策。零成交挂单不创建 progress/episode；已有 episode 时仍阻止提前完成。精确恢复沿用 loader 的 durable progress/completion 匹配，不能使用 `order.updatedAt` 补造成交时间。关联买单数量校验可能拒绝改单，但空关联或恰好匹配均不能成为跨目的扩量豁免。
-5. **原成交与完成。** `settlementFlow.ts` / DailyLossTracker / episode tracker 保留旧单真实累计成交和执行时间，包括撤单窗口新增成交；不得清除旧身份、按混合数量比例拆归属或压制旧合法 episode。静态新单不推进 protective progress；旧 episode 在方向空仓且无同方向 OPEN protective SELL 后，仍按 completion 持久化 → daily-loss boundary commit → cooldown 计数 → episode commit 完成，激活冷却继续受原触发阈值约束。
+5. **原成交与完成。** `settlementFlow.ts` / order tracking、DailyLossTracker / episode tracker 保留旧单真实累计成交和执行时间，包括撤单窗口新增成交；不得清除旧身份、按混合数量比例拆归属或压制旧合法 episode。静态新单不推进 protective progress；旧 episode 在方向空仓且无同方向 OPEN protective SELL 后，由 `PostTradeSettlementWorkflow` 基于这些事实独占最终判定，并按 completion 持久化 → daily-loss boundary commit → cooldown 计数 → episode commit 完成，激活冷却继续受原触发阈值约束。
 
 这些来源按 §4 迁至 `domain/order` 规则、`application/orderExecution` / `orderTracking` 和 trade adapter；最小切片可先在旧来源完成，再随 P3F 闭合迁移，不能把 SDK 类型带入新 application。P3F 不得以“现有静态单测通过”或“已有 OrderCommand.purpose”为隔离验收；必须执行 §13.4.1 的真实跨模块检查，未闭合前不发布该切面。
 
@@ -1327,12 +1340,12 @@ submit request attempted
 
 ### 9.7 Phase 3 共享验收
 
-- application workflow 是唯一业务完成条件 owner。
+- application workflow 是唯一业务完成条件 owner；其中 protective 最终完成判定/事务只归 `PostTradeSettlementWorkflow`，不由 `ProtectiveLiquidationWorkflow` 或 order tracking 复制。
 - runtime 只做事件路由、队列、timer、stop/drain。
 - domain 纯规则不发网络、不写 LastState、不安排 timer。
 - workflow 失败 owner 不被其他 runtime 重复接管。
 - 既有交易目的矩阵未被统一流程抹平。
-- P3F 的 §13.4.1 隔离链路通过：静态新增量不推进 protective progress/episode、执行时间或分段边界；旧真实 protective episode 的合法完成与冷却计数保持。
+- P3F 的 §13.4.1 隔离链路通过：静态新增量不推进 protective progress/episode、执行时间或分段边界；旧真实 protective episode 的最终判定与完成只由 settlement owner 作出，合法完成与冷却计数保持。
 
 ---
 
@@ -1385,8 +1398,8 @@ DOOMSDAY_CLEARANCE
 
 - P1 已有的 account/position facts、read port 和最小 mapper 继续复用；P4 仅补齐尚未收口的账户/持仓 query/result paths，不创建第二套契约/mapper。
 - 迁移剩余 SDK order DTO/query/push -> 内部 `OrderFact`/fact event；SDK enums -> 内部联合类型。
-- SDK Decimal 构造/解析与映射只在 infra mapper；金融输入直接读十进制文本，领域计算/状态使用 P0.4 锁定的独立库，command 金融值由文本直接构造 SDK 值，不经 number 往返。
-- 执行 §4.4 已批准的金融精度升级，不保留旧金融 number 投影；保留安全整数/指标边界、公式/单位、阈值包含关系及 V1 schema/ID 规则。领域公式、整手规则、progress/baseline 比较不得迁入 broker mapper，mapper 不承担金融规则。
+- SDK Decimal 构造/解析与映射只在 infra mapper；金融输入直接读十进制文本，领域计算/状态使用按文首已确认口径经 P0.4 工程验证的独立库，command 金融值由文本直接构造 SDK 值，不经 number 往返。
+- 按已确认 §4.4 口径执行金融精度升级并移除旧金融 number 投影。保留安全整数/指标边界、公式/单位、阈值包含关系及 V1 schema/ID 规则。领域公式、整手规则、progress/baseline 比较不得迁入 broker mapper，mapper 不承担金融规则。
 
 #### P4.2 迁移 submit/replace/cancel
 
@@ -1498,7 +1511,7 @@ tests/architecture/longbridgeBoundary.test.ts
 - 生产代码全部扫描后 Longbridge SDK import/type-only import 仅在 `src/infrastructure/longbridge/trade/**`、`src/infrastructure/longbridge/market/**` 的 adapter/mapper；`app/domain/application/runtime/config/constants/types/utils` 均为零。
 - 生产业务模块和 app composition 不直接创建/暴露 `TradeContext`。
 - adapter 是 SDK status/DTO/Decimal/push/query/error 映射的唯一边界；纯筛选、cooldown、risk rule 及领域数学/恢复比较不属于 adapter。
-- P0.4 / §13.4.2 全矩阵复验通过：金融事实/状态/计算/显示无未授权 number 投影，独立库无 SDK 依赖；V1 结构/校验/ID 规则保持，新数值变化、旧记录对账及完整恢复分别验收。
+- P0.4 / §13.4.2 按文首已确认精度口径完成全矩阵离线复验：金融事实/状态/计算/显示无未授权 number 投影，独立库无 SDK 依赖；V1 结构/校验/ID 规则保持，fixtures 离线恢复通过。真实历史逐条对账及候选/回退完整恢复仍是未来生产发布门禁。
 - submit UNKNOWN 按 §1.1 统一为 fatal；保留 UNKNOWN/ACK/terminal 区分，cancel/replace 的既有错误分类及重试时机不变。
 - 除 §1.1 / §9.6 已列修复及 §4.4 / §13.4.2 明确登记的金融精度变化外，普通交易、换标、清仓和恢复链路行为等价；公式、门禁、目的隔离与旧合法 protective 完成保持。
 
@@ -1733,24 +1746,24 @@ bun build
 
 #### 13.4.1 清仓目的隔离与既有 episode 完成
 
-在 P3F 首次闭合、P4 SDK 收口后复验。连接真实 static executor → shared order executor → order monitor/recorder → DailyLossTracker / episode tracker，仅 mock broker、行情、时钟和持久化 IO 边界；静态单测中的 `executeSignals` 替身不能覆盖该链路。检查事实归属、broker 调用和 durable progress/completion，而非仅断言入口标识。
+在 P3F 首次闭合、P4 SDK 收口后复验。连接真实 static executor → shared order executor → order tracking/recorder → `PostTradeSettlementWorkflow` / DailyLossTracker / episode tracker，仅 mock broker、行情、时钟和持久化 IO 边界（不连接实盘）；静态单测中的 `executeSignals` 替身不能覆盖该链路。检查事实归属、broker 调用、durable progress，以及由 settlement 独占的最终 completion 判定、同步 append 和内存提交，不只断言入口标识。
 
 | 场景 | 必须断言 |
 | --- | --- |
-| live 零成交 protective ELO + 静态新增量 | `replaceOrder` 为零；可信取消结算后重读可卖量，提交非 protective 新 orderId / remark；新单成交不创建 protective progress/episode |
+| 模拟在途零成交 protective ELO + 静态新增量（mock broker） | `replaceOrder` 为零；可信取消结算后重读可卖量，提交非 protective 新 orderId / remark；新单成交不创建 protective progress/episode |
 | 旧总量 1,500、已成交 500、剩余 1,000 + 静态新增 1,000 | 真实 partial fill 先记录旧 progress；若无撤单窗口新增成交则旧 protective 累计量始终为 500，不把静态新增量算入；新单按可信终态及最新可卖量重规划 |
-| 静态卖出后方向空仓 | 旧进行中 episode 在无同方向 OPEN protective SELL 时恰好完成一次，boundary 使用旧最后真实保护性执行时间；不使用静态成交时间，按原 triggerLimit 决定是否激活 cooldown |
+| 静态卖出后方向空仓 | 旧进行中 episode 在无同方向 OPEN protective SELL 时，由 `PostTradeSettlementWorkflow` 独占最终判定并恰好完成一次；同步 completion append 后再按既有顺序提交 boundary/cooldown/episode。boundary 使用旧最后真实保护性执行时间，不使用静态成交时间；是否激活 cooldown 仍按原 triggerLimit 决定 |
 | 仅 cancel ACK、查询仍 OPEN、可信终态数量缺失 | 不 `REPLACE`、不提交新单、不执行静态买单清理；旧身份/progress 保留，后续权威终态仍可由原流程安全重评估 |
 | 撤单窗口新增 partial fill | 新成交归旧 protective orderId，先持久化/结算其累计事实；重规划扣除真实已成交量，不重复卖出需求 |
 | recovered protective ELO，零成交/部分成交、关联买单为空/非空 | 同一目的规则始终生效，不依赖精确关联数量恰好拒绝改单；旧真实 progress 保留，静态新单不推进它 |
 | 普通非 protective 同类型可改单旧单 | 原合法 `REPLACE` 与最终授权/报价/数量校验继续通过，不扩大修正为禁止全部合单 |
-| 完整启动 loader 与 cooldown hydration | remark provenance、durable progress/completion 按原精确事实恢复；单独零成交挂单不创建 episode，已有 progress + 零成交 protective 挂单仍阻止完成；不从 `order.updatedAt` 补造时间，缺失精确事实仍阻断恢复 |
+| 完整启动 loader 与 cooldown hydration | remark provenance、durable progress/completion 按原精确事实恢复；单独零成交挂单不创建 episode；已有 progress + 零成交 protective 挂单是 settlement 判定不可完成的权威事实，不能由 tracking/episode 状态自行提交 completion；不从 `order.updatedAt` 补造时间，缺失精确事实仍阻断恢复 |
 
 跨 owner 场景留 `tests/integration/`。入口基线为 `tests/main/monitorQuoteEventRuntime/staticLiquidationExecutor.business.test.ts`；普通改单复用 `tests/core/trader/finalQuoteMutationPermit.business.test.ts` / `tests/integration/sellFlow.integration.test.ts`；恢复结合 `tests/main/lifecycle/loadTradingDayRuntimeSnapshot.test.ts` 和 cooldown recovery 测试，随迁移更新最终镜像。仅调用 tracking/episode restore 的 recovered-order 检查不得宣称覆盖完整启动 loader、crash-gap completion 和 hydration；后者须单独验收。这些是未来测试要求，本次未修改测试或程序。
 
 #### 13.4.2 金融精度目标、差分与恢复验收
 
-P0 记录旧实现并建立独立十进制期望、验证候选库；首个相关新层消费前通过，P4 全矩阵复验，发布前用真实历史输入执行 §15。分别报告“原有效行为保持”“旧浮点误差受控修正”“历史冲突/恢复阻断”，不把旧 number 输出视作通用正确答案。不得用宽松 epsilon、显示舍入、文本改写或复制旧公式掩盖差异；非终止除法按锁定精度给出确切目标。这些是未来验收要求，不表示此次已实现后端或新增测试。
+按文首已确认精度口径，P0 建立离线十进制目标并工程验证候选库，首个相关新层消费前通过，P4 全矩阵离线复验。未来实施验收使用 mock/脱敏 fixtures 做静态、动态全链路及恢复演练；真实历史原始 V1+权威订单逐条对账、精度迁移后候选/回退版本完整恢复只作为未来生产发布阻断项，不以 fixtures 代替。分别报告“原有效行为保持”“旧浮点误差受控修正”“历史冲突/恢复阻断”，不把旧 number 输出视作通用正确答案。不得用宽松 epsilon、显示舍入、文本改写或复制旧公式掩盖差异；非终止除法的验证遵循已确认口径，P0 不擅自选定业务量化/舍入政策。这些是未来验收要求，不表示此次已实现后端或新增测试。
 
 | 范围 | 必须断言的目标 |
 | --- | --- |
@@ -1761,9 +1774,9 @@ P0 记录旧实现并建立独立十进制期望、验证候选库；首个相�
 | 成本、累计金额与日损益 | 成交价×累计量、成本乘加、R1/R2、baseline 差额/分段均价/realizedPnL、盈利归零与亏损符号符合十进制目标；状态、返回值和后续计算不经金融 number 投影，不按金额显示两位提前量化。数量不变时合法权威金额修正仍生效。 |
 | progress/baseline 比较与择新 | 数值比较不用字典序；数量依 safe-int/Decimal 契约，金融金额始终 Decimal。保留同订单 orderId/revision/数量/阶段与跨订单执行时间/revision/数量/阶段/orderId 排序、边界快照 TERMINAL 优先和同量择新。baseline 精确匹配与恢复后的财务状态一起验证，不保留旧金融 number 比较。 |
 | V1 durable 规则 | 结构、字段、ID组成、严格文本语法、同ID/同payload去重及异payload失败保持；新文本从精确状态规范序列化，不经 number、不承诺等于旧投影文本。不同ID旧 JSONL逐条恢复，不折叠latest-only；拒绝`0.30`/指数文本，旧`.json`/legacy completion拒绝语义不放宽，读取不改写。 |
-| 历史对账与恢复/回退 | 用旧日志＋对应权威订单输入连接完整 loader/rebuild、progress/completion、买/卖 baseline、crash-gap、损益分段/冷却；同revision/同量但精度不一致不得伪造新事实或借阶段更新吞掉冲突。真实权威金额修正与精度差异分开判定，不可证明时关门fail-fast。指定旧版本还须完整恢复新日志，而不只是解析V1。 |
+| 离线 fixtures 与未来历史恢复/回退 | 当前离线完成使用 mock/脱敏 fixtures 演练完整 loader/rebuild、progress/completion、买/卖 baseline、crash-gap、损益分段/冷却；该结果不声称真实历史逐条对账。未来生产发布前，须以原始 V1 历史日志及对应权威订单输入逐条对账，并分别演练精度迁移后候选版本和指定回退版本完整恢复。所有阶段均不得伪造新事实或借阶段更新吞掉冲突；真实权威金额修正与精度差异分开判定，不可证明时关门 fail-fast。 |
 | 技术指标与非金融路径 | EMA/MACD/KDJ/RSI/ADX/MFI/PSY 的 number算法、三位投影、空值/NaN/Infinity/缺量等原处理保持；信号 Decimal比较及延迟验证原生number比较边界分别验证。金融 fact 的独立指标投影不回写财务值；timer、索引、计数无需Decimal。 |
-| 金融显示 | 账户差额/持仓估值/行情涨跌先按十进制计算，再直接定点string；按价格/金额/百分比位数验证正负/零/尾零及中点取偶（`1.005→1.00`、`1.015→1.02`）。支持范围内超过number有效位的输入仍显示正确；不调用`toNumber().toFixed()`，不将补零显示文本写入V1，指标toFixed可保留。 |
+| 金融显示 | 按文首已确认精度口径：账户差额/持仓估值/行情涨跌先按十进制计算，再直接定点 string；显示维持各字段既定展示位数并 half-even，验证正负/零/尾零及既有样例（`1.005→1.00`、`1.015→1.02`）。支持范围内超过 number 有效位的输入仍显示正确；不调用 `toNumber().toFixed()`，不将补零显示文本写入 V1，指标 `toFixed` 可保留。 |
 
 测试按职责镜像：独立算术/格式化在 `tests/utils/numeric/`，金融配置在 `tests/config/`，公式在对应 `tests/domain/{order,position,risk,seat}/`，指标在 `tests/domain/strategy/`，用例/恢复在 `tests/application/{accountPositionSnapshot,postTradeSettlement,orderExecution,orderTracking,seatSwitch,protectiveLiquidation,tradingDayRebuild}/`；SDK 基线/映射只在 `tests/infrastructure/longbridge/{trade,market}/`，显示输出在 `tests/infrastructure/display/`，日志 IO 在 `tests/infrastructure/persistence/mixedTradeLogRepository/`。只有真实跨 owner 场景放 `tests/integration/`，SDK fixture 不带入 domain/application。
 
@@ -1875,9 +1888,11 @@ requestAttempted
 
 ## 15. 发布、回退与数据安全
 
+本节定义未来生产发布/回退的独立安全门禁，不属于本轮离线实施验收的替代项。本轮须通过离线静态、动态全链路及 mock/脱敏 fixtures 恢复演练，但不发布、不打开交易门禁、不连接实盘；当前不声称已完成真实历史逐条对账或候选/回退版本完整恢复。真实历史原始 V1 + 权威订单逐条对账、以及精度迁移后候选版本和指定回退版本的完整恢复，必须在未来生产发布前完成；mock/脱敏 fixtures 不能替代这些生产门禁。
+
 ### 15.1 发布前检查
 
-生产发布前必须：
+未来实际生产发布前必须：
 
 1. 使用旧版本正常终止，完成 drain 和 cleanup。
 2. 确认 durable trade log、订单事实和保护性 progress 可被新版本读取。
@@ -1885,9 +1900,9 @@ requestAttempted
 4. 核对无遗留旧 snapshot writer、旧 SDK 业务 import、旧 façade。
 5. 核对日志能够输出 epoch/generation/revision/seatVersion/settlementVersion。
 6. 确认订单恢复先订阅并 BOOTSTRAPPING 缓冲，再加载事实、恢复归属和占用、按现有规则合并回放/对账，最后进入 ACTIVE。
-7. 冻结旧日志与对应权威订单输入，完成 §13.4.2 的历史逐条对账和完整启动/开盘重建演练，覆盖买/卖 baseline、损益分段、episode/冷却；V1 可解析不代表新精度恢复必然成立。
-8. 记录金融精度受控差异、仍受支持的输入范围及所有恢复阻断；对无法证明的旧事实保持关门并沿既有人工对账流程处理，不自动修写日志。确认时间/revision及number数量满足各自整数契约。
-9. 指定回退版本对“新版本实际生成的durable事实＋对应券商事实”通过完整恢复与金融状态核验；未证明前不承诺生产回退可用，不发布。
+7. 冻结原始旧 V1 日志与对应权威订单输入，完成 §13.4.2 的真实历史逐条对账和完整启动/开盘重建演练，覆盖买/卖 baseline、损益分段、episode/冷却；V1 可解析不代表新精度恢复必然成立。该项是未来生产发布阻断，不是本轮离线完成项，当前未验证。
+8. 记录金融精度受控差异、仍受支持的输入范围及所有恢复阻断；对无法证明的旧事实保持关门并沿既有人工对账流程处理，不自动修写日志。确认时间/revision及 number 数量满足各自整数契约。
+9. 指定回退版本对“精度迁移后候选版本实际生成的 durable 事实＋对应券商事实”通过完整恢复与金融状态核验；未证明前不承诺生产回退可用，不发布。该完整演练也不是可由 fixtures 替代的离线完成证据。
 
 ### 15.2 运行中异常处理
 
@@ -1898,14 +1913,14 @@ requestAttempted
 - 未知 submit：直接上报 fatal、关闭交易放行并执行既有终止清理，不重复提交，不新增 unresolved/overlay 持久状态或自动恢复分支。
 - cancel acknowledged：继续等待订单事实，不直接标记终态。
 - seatVersion 过期：丢弃结果，不改变当前席位。
-- 保护性 completion 持久化失败：不推进冷却、日损益边界和 episode 完成。
+- 保护性 completion 持久化失败：由唯一 `PostTradeSettlementWorkflow` 不推进冷却、日损益边界和 episode 完成；protective/tracking 不另行判定或提交。
 - 内部金融精度/范围/状态契约错误：fail-fast，禁止转number、静默舍入或降级继续交易；已明确允许丢弃/重试的外部缺失输入仍由原 owner 处理，指标无效值规则不改变。
 - 历史amount/baseline与新精确事实冲突：只由删除number投影造成的差异不是新的权威修正，不能借OPEN→TERMINAL、伪造revision/ID或容差吞掉；阶段转换或“金额更精确”本身不是修正证据。正常可证明的权威修正仍按原协议处理，但不豁免同ID异payload冲突、baseline匹配和单调性校验。无法区分或无法精确恢复时fail-fast并关门，不推进损益边界/冷却/episode/ready，不改历史payload。
 - lifecycle cleanup 单步失败：继续后续清理并汇总失败；保留首个 fatal。
 
 ### 15.3 回退方式
 
-回退只针对代码版本，不回滚已经发生的券商动作、订单事实、成交日志或持久化完成事实。回退目标必须具备保真处理新金融状态的能力，可指定本轮已经闭合并验证精度纵切的版本；不得默认退到精度改造前的number实现。保留V1结构不能弥补旧实现的数值能力不足，发布前必须准备并验证可用回退目标。
+回退只针对代码版本，不回滚已经发生的券商动作、订单事实、成交日志或持久化完成事实。以下是未来生产发布前必须完成的回退安全演练，不属于本轮离线实施验收；本轮不声称已演练。回退目标必须具备保真处理新金融状态的能力，且必须对精度迁移后候选版本生成的数据及对应券商事实完成完整恢复验证；不得默认退到精度改造前的 number 实现。保留 V1 结构不能弥补旧实现的数值能力不足，生产发布前必须准备并验证可用回退目标。
 
 回退步骤：
 
@@ -1951,7 +1966,7 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 | warrant查询与筛选/失败策略混放 | SDK泄漏、重复缓存/重试或筛选规则绑厂商 | infrastructure market查询/cache；domain/seat纯筛选；application/autoSearch失败策略 | 新 domain/application imports Longbridge，或 autoSearch重试有第二owner |
 | cooldown错误列为持久化 | 误把 Map冷却规则与durable log混同 | `domain/liquidation/cooldown`；仅 mixedTradeLogRepository进persistence | 文档/实现把 cooldown Map称repository/persistence owner |
 | 只换类型/格式器仍保留金融number | 输入或状态已丢精度，财务/阈值继续错误 | §4.4字段纵切与§13.4.2真实链路验证；全部生产者/消费者同步 | 金融mapper先toNumber、财务状态number或显示回转number |
-| Decimal默认精度/舍入被误认为无限精确 | 乘加丢位、临界信号/取整或显示改变 | P0锁定库/范围/有效位/除法及分业务舍入；指标与整数单独保留 | 无明确策略、静默溢出/丢位、显示舍入参与决策 |
+| Decimal默认精度/舍入被误认为无限精确 | 乘加丢位、临界信号/取整或显示改变 | P0按文首已确认口径工程验证库版本/输入范围/内部容量；不另定业务量化/舍入政策，指标与整数单独保留 | 未按已确认口径完成工程验证即迁移、静默溢出/丢位、显示舍入参与决策 |
 | 历史精度冲突被当权威修正 | 旧baseline/分段/冷却错误恢复或ID冲突被绕过 | 旧日志＋权威输入对账，完整loader/crash-gap验收，不改payload/revision | 以容差/阶段转换/改写旧文本消解不可证明冲突 |
 | V1可读被当代码回退安全 | 旧版本投影number后无法恢复新baseline | 指定回退版本完整恢复新日志及金融状态，失败保持关门 | 未演练却承诺回退，或删新事实/改日志强行开门 |
 
@@ -1976,7 +1991,8 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 
 - [ ] `waitForFresh()` 仍表示 post-trade business ready。
 - [ ] snapshot commit 不直接 resolve readiness。
-- [ ] protection completion persistence 成功后才推进 cooldown/daily loss/episode。
+- [ ] protective 最终完成判定、同步 durable append、daily-loss/cooldown/episode 内存提交及 ready 只由 `PostTradeSettlementWorkflow` 拥有；tracking 提供事实，domain 纯规则不形成第二判定/提交者。
+- [ ] completion persistence 成功后才推进 cooldown/daily loss/episode。
 - [ ] 新 settlement 使旧 token 失效。
 - [ ] 普通 seat commit 不无故制造 settlement stale。
 - [ ] 不存在 snapshot owner self-await。
@@ -1989,18 +2005,19 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 - [ ] UNKNOWN submit 直接 fatal、不重提，不新增 UNKNOWN 查询接管或重启恢复协议。
 - [ ] cancel acknowledged 不等于 terminal。
 - [ ] pending-sell 保留旧 protective 身份，非 protective 新量不扩量 `REPLACE` protective 旧单；可信终态结算后按新鲜可卖量重新提交，§13.4.1 跨模块场景通过。
-- [ ] 静态成交不推进 protective progress/episode；旧真实 episode 仍可按最后保护性执行时间合法完成，并保留原 durable commit / cooldown 计数顺序。
+- [ ] 静态成交不推进 protective progress/episode；旧真实 episode 由 settlement owner 按最后保护性执行时间独占判定/完成，并保留原 durable commit / cooldown 计数顺序。
 - [ ] 恢复 protective tracking 与精确 episode 区分，空/非空关联买单不替代目的隔离；完整 loader / hydration 单独验收。
 - [ ] 累计成交和金额 revision 语义不变。
 - [ ] P1.7 的 API → 同单 WS/query、已消除 BUY、已消费 SELL、空结果、OPEN partial → 同量终态及同量金额修正回归通过；经济去重不虚构成交数量推进、不跳过 pending/hold/routing/tracking 收尾，最终日损与 R1/N1 正确。
 - [ ] P0.4 / §13.4.2 金融目标与差分通过：输入/状态/运算/显示无未授权number投影，买量、距离、成本/盈亏、日损益与progress/baseline符合十进制目标，旧浮点修正明确登记。
 - [ ] 安全整数数量/时间/版本/计数契约通过，技术指标算法/投影/信号与延迟验证语义保持，未一刀切全量Decimal。
-- [ ] V1结构/文本校验/ID/冲突规则和择新顺序保持，旧记录逐条对账；新数值不要求等于旧number文本，历史冲突不伪装权威修正。
-- [ ] 金融显示直接定点字符串，显示舍入不影响交易判断，补零显示文本不写durable；完整恢复及指定旧版本对新日志的回退证明通过。
+- [ ] V1 结构/文本校验/ID/冲突规则和择新顺序保持；离线 mock/脱敏 fixtures 恢复演练通过，新数值不要求等于旧 number 文本，历史冲突不伪装权威修正。
+- [ ] 金融显示直接定点字符串，显示维持既有位数并 half-even，不影响交易判断，补零显示文本不写 durable。
+- [ ] 未来生产发布阻断：真实原始 V1 + 权威订单逐条对账，以及精度迁移后候选/指定回退版本完整恢复演练；当前未验证，fixtures 不替代，不计作本轮离线完成。
 - [ ] 运行期 ACTIVE 只在 §9.3 完整 activation barrier 后出现；受控 rebuild/static bootstrap 例外独立审计，完整基线完成前不得打开全局交易门禁。
 - [ ] 末日窗口和跨日门禁不提前放行。
 - [ ] 已知成交事实结算、generation 同步失效、settlement stale/refresh-need 登记位于同一同步段；保护性 progress 持久化失败不提前发布成交事实。
-- [ ] r10/r11 compare-and-publish 覆盖 subscription/R1/N1/completion，旧派生不写；最终 completion token/order/seat 校验→同步 durable append→daily-loss/cooldown/episode 内存提交无 await。
+- [ ] r10/r11 compare-and-publish 覆盖 subscription/R1/N1/completion，旧派生不写；`PostTradeSettlementWorkflow` 独占最终 completion 判定，token/order/seat 校验→同步 durable append→daily-loss/cooldown/episode 内存提交无 await；tracking 仅提供事实。
 - [ ] doomsday submit UNKNOWN 直接 fatal、不自动重提，旧特殊刷新/重评估分支已删除；已确认订单沿既有事实链路防重且不使 positions flat；原条件下 account invalidation 同步推进 generation，旧 paired read 不能恢复 valid，失效本身不增加 settlementVersion/专属重评估，后续当前代次 paired commit 才恢复有效性。
 
 ### 17.4 可维护性与边界
@@ -2020,15 +2037,24 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 
 ### 17.5 验证与交付
 
+以下区分离线实施完成与未来生产发布门禁。本轮只要求离线门槛，不发布、不开门、不连接实盘，也不声称未来发布门禁已验证。
+
+**离线实施完成门槛：**静态/动态全链路验收及 mock/脱敏 fixtures 恢复演练必须通过；fixtures 不替代真实历史、候选或回退版本的生产发布验证。
+
+- [ ] 按文首已确认精度口径完成离线工程验证；P0 不自行决定业务量化/舍入政策。
 - [ ] `bun format` 通过。
 - [ ] `bun lint` 通过。
 - [ ] `bun type-check` 通过。
 - [ ] `bun test` 通过。
 - [ ] `bun build` 通过。
 - [ ] 相关架构测试通过，`tests/` 按最终 `src/` 职责镜像；基线旧测试路径均已迁移，新增测试没有旧路径。
-- [ ] 启动恢复、订单恢复、保护性清仓、末日清仓、autoSearch、静态清仓、普通BUY/SELL、换标、跨日和终止集成测试通过。
-- [ ] 发布前完成旧版本 drain、旧日志/权威事实精度对账、完整恢复与指定回退版本演练，无未解决的精度恢复冲突。
-- [ ] 已记录库版本/精度/舍入策略、字段级数值边界、受控误差修正、回退步骤和未解决风险；未证明安全时不发布/开门。
+- [ ] 启动恢复、订单恢复、保护性清仓、末日清仓、autoSearch、静态清仓、普通BUY/SELL、换标、跨日和终止集成的离线静态/动态全链路测试通过。
+- [ ] mock/脱敏 fixtures 覆盖恢复链路并演练通过。
+
+**未来生产发布阻断（不属于本轮离线实施完成，当前未验证）：**
+
+- [ ] 生产发布前完成旧版本 drain、原始 V1 日志与权威订单事实逐条精度对账、完整候选版本恢复及指定回退版本演练，无未解决的精度恢复冲突；不得以 fixtures 替代。
+- [ ] 按文首已确认精度口径记录实际库版本/输入范围/内部容量验证、字段级数值边界、受控误差修正、回退步骤和未解决风险；未证明安全时不发布/不开门。
 
 ---
 
@@ -2036,7 +2062,7 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 
 按以下顺序开始实际编码，不跳过 P0，不把旧来源路径当作终态，也不在P1完成前交付半套 writer owner：
 
-1. 记录工作树与旧基线；冻结第4.1.2映射、§5.1例外，增设writer/SDK/lifecycle探针。完成P0.4的字段分类、独立十进制目标/差分、库版本/精度/舍入锁定及历史恢复/回退风险验证；旧转换位置用于定位删除点，不冻结为金融终态。
+1. 记录工作树与旧基线；冻结第4.1.2映射、§5.1例外，增设writer/SDK/lifecycle探针。按用户已确认的文首精度口径完成P0.4字段分类、独立十进制目标/差分和库版本/范围/内部计算容量工程验证，并用 mock/脱敏 fixtures 做离线恢复演练。不得自行锁定业务量化/舍入政策；真实历史对账与候选/回退完整恢复保留为未来发布阻断，旧转换位置仅用于定位删除点。
 2. P1定义 `application/accountPositionSnapshot` owner 与 `src/types/accountPosition.ts` 保真facts/read port，提前完成trade/所需quote mapper、所有金融reader/状态/显示及相依切片；新层消费前闭合，不回转旧number接口、不等P4。
 3. 由 `app/runtime/createPostGateRuntime` 工厂仅装配 snapshot owner；一次性闭合全部旧来源 writer/readers、同步失效/epoch、P1.7 早期订单栅栏及跨入口经济投影消费基线、r10/r11派生防旧写，并将末日 submit UNKNOWN 统一为直接 fatal、不重提；保留已接受订单路径的 account invalidation，移除 LastState 写镜像。
 4. P2 基于P1既有安全协议，将 `createPostTradeConsistencyRuntime` 的业务 owner和`refreshGate`迁至`application/postTradeSettlement`，把共享receipt放`src/types`；先切断遗留SDK协作者类型，不重复实现P1协议、不强拆completion无await事务。
@@ -2044,7 +2070,7 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 6. P4按submit/replace/cancel、order facts/query/push/recovery、剩余account/position/market read和金融显示收口；P4.4仅补齐P1既有契约/mapper，不首次建模或首次补精度；SDK仅infra/longbridge，§13.4.2全矩阵复验。
 7. P5登记静态lifecycle checklist；验证app factory、runtime日切协调、application/tradingDayRebuild及唯一cleanup executor分工，并保持所有具名顺序。
 8. P6按既定表清理宽契约、无用代码、所有 `src/{core,main,services}/` 生产残留、旧facade/转发层/测试旧路径；对应实施时才定向更新README、AGENTS、源码旧路径文档，不现在全局批量改写。
-9. 完成各阶段镜像/全量测试、构建、架构扫描、生产精度对账、完整恢复及指定回退版本演练；未解决历史冲突不发布/开门，不在迁移中引入热切换。
+9. 完成各阶段镜像/全量测试、构建、架构扫描、离线静态/动态全链路及 mock/脱敏 fixtures 恢复演练；本轮不发布、不开门、不连接实盘。真实历史逐条对账及候选/指定回退版本完整恢复作为未来生产发布阻断，未通过不得发布/开门；不在迁移中引入热切换。
 
 ---
 
@@ -2061,8 +2087,8 @@ src/infrastructure      Longbridge、persistence、time、logger、display adapt
 src/config/constants/types/utils
 ```
 
-其中 `application/accountPositionSnapshot` 独占 network request coordination、generation、private store、internal pump；`application/postTradeSettlement` 独占 readiness，且与 snapshot commit 分离；各交易目的有各自既有业务 owner，不创建第二订单账或 wrapper；SDK 最终只留 `infrastructure/longbridge/{trade,market}`。P1一次完成全部 snapshot writers/readers 和安全失效协议，submit UNKNOWN 统一为直接 fatal、不重提；P2正式收口 settlement owner，P3按职责迁业务，P4收余下adapter，P5闭合重建用例并验证生命周期单一编排，P6仅清扫旧目录/契约残留。完成后 `src/{core,main,services}/` 不留生产实现、混合职责或转发/兼容层。
+其中 `application/accountPositionSnapshot` 独占 network request coordination、generation、private store、internal pump；`application/postTradeSettlement` 独占 readiness，且与 snapshot commit 分离，并独占 protective 最终完成判定、同步 durable append、daily-loss/cooldown/episode 内存提交；protective 只触发/识别目的/执行前门禁/执行，tracking 提供事实、domain 纯规则不形成第二判定或提交者。各交易目的有各自既有业务 owner，不创建第二订单账或 wrapper；SDK 最终只留 `infrastructure/longbridge/{trade,market}`。P1一次完成全部 snapshot writers/readers 和安全失效协议，submit UNKNOWN 统一为直接 fatal、不重提；P2正式收口 settlement owner，P3按职责迁业务，P4收余下adapter，P5闭合重建用例并验证生命周期单一编排，P6仅清扫旧目录/契约残留。完成后 `src/{core,main,services}/` 不留生产实现、混合职责或转发/兼容层。
 
-金融精度升级已纳入上述阶段：金融输入、计算/比较、财务状态、恢复和显示按 §4.4 贯穿独立十进制语义，安全整数与技术指标保留 number；旧金融投影是迁移删除点，不是终态约束。P0 建立目标/受控差分，P1起随首个消费切面闭合，P4复验，发布前通过历史对账、完整恢复和指定回退版本门禁。V1 schema/ID规则保持不等于新数值字节等价或旧版本自动可恢复。
+金融精度升级纳入上述阶段，按文首已确认解释口径实施：用户原话为“所有精度保证小数点后三位”，本次回答为“确认全文及精度解释”。据此，金融计算至少准确到小数点后三位，输入与中间运算保留额外有效位、不逐步量化到三位，整手向下取整，显示维持既定位数并 half-even，V1 历史文本/schema 保真不改写；P0 仅作库版本/范围/内部容量工程验证，不另定业务量化/舍入政策。安全整数与技术指标保留 number。离线完成须通过静态/动态全链路及 mock/脱敏 fixtures 恢复演练，不发布/不开门/不连接实盘。真实历史 V1+权威订单逐条对账及精度迁移后候选/回退版本完整恢复是未来生产发布阻断项，当前未验证，fixtures 不替代；V1 schema/ID规则保持不等于新数值字节等价或旧版本自动可恢复。
 
 `backtest-kit@4c5f3c668798a594dcfe4e004466bdc55680f104` 只借鉴架构原则，不复制全局容器/registry。此计划不授权全量数字Decimal化、技术指标算法升级、多进程一致性、统一 reservation/交易流程、UNKNOWN自动重试/恢复、统一 EventBus、动态生命周期 registry 或 backtest-kit 迁移。超出本计划的业务政策或持久化schema变更须另行明确批准。
