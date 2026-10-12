@@ -4,6 +4,7 @@
  * 负责聚合 Longbridge 认证校验与交易配置校验，
  * 保持当前错误收集顺序、日志输出语义与运行时标的校验行为不变。
  */
+import { exactCompare } from '../../utils/numeric/exact.js';
 import { logger } from '../../utils/logger/index.js';
 import { createConfigValidationError } from '../utils.js';
 import { readAuthMode } from '../auth/utils.js';
@@ -196,7 +197,7 @@ export async function validateAllConfig({
 
   logger.info(`目标买入金额: ${monitorConfig.targetNotional} HKD`);
   logger.info(`最大持仓市值: ${monitorConfig.maxPositionNotional} HKD`);
-  if (monitorConfig.maxUnrealizedLossPerSymbol && monitorConfig.maxUnrealizedLossPerSymbol > 0) {
+  if (exactCompare(monitorConfig.maxUnrealizedLossPerSymbol, '0') > 0) {
     logger.info(`单标的浮亏保护阈值: ${monitorConfig.maxUnrealizedLossPerSymbol} HKD`);
   } else {
     logger.info('单标的浮亏保护: 已禁用');

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "status": "capability and physical owner stage resolution closed per original owner/phase plan; not overall P0/P1 exit proof",
+  "uses": [],
+  "legacy": [],
+  "helperCalls": [],
+  "physicalOwnerDeadlines": [],
+  "physicalOwnerResolution": {
+    "evidence": "plan §4.1.2 source/final owner mapping and §5.1 stage ordering; P4 shorthand means entire Phase4 exit P4.5; parenthetical earlier safety obligations do not determine final physical deletion",
+    "resolvedFiles": 73
+  }
+}

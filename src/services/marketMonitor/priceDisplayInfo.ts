@@ -10,7 +10,7 @@ import type { OrderRecorder, RiskChecker } from '../../types/services.js';
 
 /**
  * 构建单方向价格展示信息。
- * 统一复用 riskChecker 的实时计算结果，避免显示链路重复实现业务公式。
+ * 原始价格文本直接交给 riskChecker 精确计算，展示舍入仅在终端字段出口执行。
  *
  * @param params 席位就绪状态、标的、监控价格、quote 价格、方向与依赖
  * @returns 价格展示信息；席位未就绪时返回 null
@@ -18,8 +18,8 @@ import type { OrderRecorder, RiskChecker } from '../../types/services.js';
 export function buildPriceDisplayInfo(params: {
   readonly seatActive: boolean;
   readonly symbol: string;
-  readonly monitorCurrentPrice: number | null;
-  readonly quotePrice: number | null;
+  readonly monitorCurrentPrice: string | null;
+  readonly quotePrice: string | null;
   readonly isLongSymbol: boolean;
   readonly riskChecker: RiskChecker;
   readonly orderRecorder: OrderRecorder;

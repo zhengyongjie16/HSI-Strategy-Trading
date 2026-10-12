@@ -4,9 +4,12 @@
  * 功能：
  * - 验证双认证模式下的启动配置校验行为
  */
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
+import { createSdkModuleMock } from '../infrastructure/longbridge/trade/sdkModuleMock.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
+
+const sdkModuleMock = createSdkModuleMock();
 
 const oauthBuildCalls: Array<{ clientId: string; callbackPort?: number }> = [];
 const fromOAuthCalls: Array<{ oauth: unknown; extra: unknown }> = [];
@@ -63,12 +66,12 @@ const OAuth = {
   },
 };
 
-mock.module('longbridge', () => ({
+sdkModuleMock.install({
   Config,
   OAuth,
   Language,
   PushCandlestickMode,
-}));
+});
 
 import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
 
@@ -91,6 +94,19 @@ async function validateEnv(env: NodeJS.ProcessEnv): Promise<unknown> {
     return error;
   }
 }
+
+afterAll(async () => {
+  const beforeCalls = [oauthBuildCalls.length, fromOAuthCalls.length, fromApikeyCalls.length];
+  sdkModuleMock.restore();
+  await sdkModuleMock.assertRestored();
+  expect([oauthBuildCalls.length, fromOAuthCalls.length, fromApikeyCalls.length]).toEqual(
+    beforeCalls,
+  );
+
+  expect(oauthBuildCalls).toHaveLength(0);
+  expect(fromOAuthCalls).toHaveLength(0);
+  expect(fromApikeyCalls).toHaveLength(0);
+});
 
 beforeEach(() => {
   oauthBuildCalls.length = 0;

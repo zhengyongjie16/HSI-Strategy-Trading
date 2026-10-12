@@ -1,3 +1,11 @@
+import {
+  exactCompare,
+  exactMultiply,
+  formatDecimal,
+  formatRatio,
+  sumSafeQuantities,
+} from '../../utils/numeric/exact.js';
+import type { OrderCostBasis } from '../../types/orderRecorder.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { OrderRecorder } from '../../types/services.js';
@@ -16,14 +24,15 @@ function isValidPositionAndQuote(
   position: Position | null,
   quote: Quote | null,
 ): position is Position & { availableQuantity: number } {
-  return (
-    position !== null &&
-    Number.isFinite(position.availableQuantity) &&
-    position.availableQuantity > 0 &&
-    quote !== null &&
-    Number.isFinite(quote.price) &&
-    quote.price > 0
-  );
+  if (quote !== null) exactCompare(quote.price, '0');
+
+  if (position === null || quote === null) return false;
+
+  if (!Number.isSafeInteger(position.availableQuantity) || position.availableQuantity < 0) {
+    throw new RangeError('可用持仓数量必须为非负安全整数');
+  }
+
+  return position.availableQuantity > 0 && exactCompare(quote.price, '0') > 0;
 }
 
 /**
@@ -31,14 +40,30 @@ function isValidPositionAndQuote(
  * 默认行为：最新成交价或候选价格缺失时不在此处拦截；两者均存在时，候选价必须严格低于最新成交价。
  *
  * @param candidatePrice 候选买入价格
- * @param latestBuyPrice 同方向标的最新已成交买入价
+ * @param latestBuyCost 同方向标的最新已成交买入成本金额/数量
  * @returns true 表示允许继续后续检查或提交
  */
 export function isBuyPriceWithinLatestOrderLimit(
-  candidatePrice: number | null,
-  latestBuyPrice: number | null,
+  candidatePrice: string | null,
+  latestBuyCost: OrderCostBasis | null,
 ): boolean {
-  return !(candidatePrice !== null && latestBuyPrice !== null && candidatePrice >= latestBuyPrice);
+  if (candidatePrice !== null) exactCompare(candidatePrice, '0');
+
+  if (latestBuyCost === null) return true;
+
+  if (!Number.isSafeInteger(latestBuyCost.quantity))
+    throw new RangeError('最新买入成本数量必须为安全整数');
+
+  if (latestBuyCost.quantity <= 0) throw new TypeError('最新买入成本数量必须为正安全整数');
+
+  exactCompare(latestBuyCost.costAmount, '0');
+  return (
+    candidatePrice === null ||
+    exactCompare(
+      exactMultiply(candidatePrice, String(latestBuyCost.quantity)),
+      latestBuyCost.costAmount,
+    ) < 0
+  );
 }
 
 /**
@@ -112,7 +137,7 @@ export function resolveSellQuantityBySmartClose({
   tradingCalendarSnapshot,
 }: {
   orderRecorder: OrderRecorder | null;
-  currentPrice: number;
+  currentPrice: string;
   availableQuantity: number;
   direction: 'LONG' | 'SHORT';
   symbol: string;
@@ -135,15 +160,28 @@ export function resolveSellQuantityBySmartClose({
     };
   }
 
+  if (!Number.isSafeInteger(availableQuantity) || availableQuantity < 0)
+    throw new RangeError('可用数量必须为非负安全整数');
+
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new TypeError('卖出时间必须为非负安全整数');
+
   const isLongSymbol = direction === 'LONG';
-  const costAveragePrice = orderRecorder.getCostAveragePrice(symbol, isLongSymbol);
+  const costBasis = orderRecorder.getCostBasis(symbol, isLongSymbol);
+  if (costBasis !== null) {
+    if (!Number.isSafeInteger(costBasis.quantity)) throw new RangeError('成本数量必须为安全整数');
+
+    if (costBasis.quantity <= 0) throw new TypeError('成本数量必须为正安全整数');
+  }
 
   const isOverallProfitable =
-    costAveragePrice !== null &&
-    Number.isFinite(costAveragePrice) &&
-    costAveragePrice > 0 &&
-    currentPrice > costAveragePrice;
-  const costAverageLabel = costAveragePrice?.toFixed(3) ?? 'N/A';
+    costBasis !== null &&
+    exactCompare(costBasis.costAmount, '0') > 0 &&
+    exactCompare(exactMultiply(currentPrice, String(costBasis.quantity)), costBasis.costAmount) > 0;
+  const costAverageLabel =
+    costBasis === null
+      ? 'N/A'
+      : formatRatio(costBasis.costAmount, String(costBasis.quantity), 3, 'preserve');
+  const currentPriceLabel = formatDecimal(currentPrice, 3, 'preserve');
   const timeoutLabel = smartCloseTimeoutMinutes ?? 'null';
 
   if (isOverallProfitable) {
@@ -155,13 +193,19 @@ export function resolveSellQuantityBySmartClose({
       maxSellQuantity: availableQuantity,
     });
 
+    if (!Number.isSafeInteger(stage1Result.totalQuantity) || stage1Result.totalQuantity < 0)
+      throw new RangeError('可卖订单数量必须为非负安全整数');
+
+    if (stage1Result.totalQuantity > availableQuantity)
+      throw new TypeError('可卖订单数量超过授权上限');
+
     if (stage1Result.totalQuantity > 0 && stage1Result.orders.length > 0) {
       const relatedBuyOrderIds = stage1Result.orders.map((order) => order.orderId);
       return {
         quantity: stage1Result.totalQuantity,
         shouldHold: false,
         reason:
-          `智能平仓：当前价=${currentPrice.toFixed(3)}，成本均价=${costAverageLabel}，` +
+          `智能平仓：当前价=${currentPriceLabel}，成本均价=${costAverageLabel}，` +
           `overallProfitMatched=true，stage2Quantity=0，stage3Quantity=0，timeoutMinutes=${timeoutLabel}，` +
           `timedOutOrderCount=0，remainingAfterStage2=0，isHalfDay=${isHalfDay}，可卖出=${stage1Result.totalQuantity}股，关联订单=${relatedBuyOrderIds.length}个`,
         relatedBuyOrderIds,
@@ -185,6 +229,11 @@ export function resolveSellQuantityBySmartClose({
   });
   const stage2OrderIds = new Set(stage2Result.orders.map((order) => order.orderId));
   const stage2Quantity = stage2Result.totalQuantity;
+  if (!Number.isSafeInteger(stage2Quantity) || stage2Quantity < 0)
+    throw new RangeError('盈利订单数量必须为非负安全整数');
+
+  if (stage2Quantity > availableQuantity) throw new TypeError('盈利订单数量超过授权上限');
+
   const remainingAfterStage2 = Math.max(0, availableQuantity - stage2Quantity);
 
   let stage3Quantity = 0;
@@ -204,20 +253,25 @@ export function resolveSellQuantityBySmartClose({
       excludeOrderIds: stage2OrderIds,
     });
     stage3Quantity = stage3Result.totalQuantity;
+    if (!Number.isSafeInteger(stage3Quantity) || stage3Quantity < 0)
+      throw new RangeError('超时订单数量必须为非负安全整数');
+
+    if (stage3Quantity > remainingAfterStage2) throw new TypeError('超时订单数量超过授权上限');
+
     stage3OrdersCount = stage3Result.orders.length;
     for (const order of stage3Result.orders) {
       stage3OrderIds.push(order.orderId);
     }
   }
 
-  const finalQuantity = stage2Quantity + stage3Quantity;
+  const finalQuantity = sumSafeQuantities([String(stage2Quantity), String(stage3Quantity)]);
   if (finalQuantity > 0) {
     const relatedBuyOrderIds = [...stage2OrderIds, ...stage3OrderIds];
     return {
       quantity: finalQuantity,
       shouldHold: false,
       reason:
-        `智能平仓：当前价=${currentPrice.toFixed(3)}，成本均价=${costAverageLabel}，` +
+        `智能平仓：当前价=${currentPriceLabel}，成本均价=${costAverageLabel}，` +
         `overallProfitMatched=false，stage2Quantity=${stage2Quantity}，stage3Quantity=${stage3Quantity}，timeoutMinutes=${timeoutLabel}，` +
         `timedOutOrderCount=${stage3OrdersCount}，remainingAfterStage2=${remainingAfterStage2}，isHalfDay=${isHalfDay}，可卖出=${finalQuantity}股，关联订单=${relatedBuyOrderIds.length}个`,
       relatedBuyOrderIds,
@@ -255,6 +309,10 @@ export function resolveSellQuantityByFullClose({
   reason: string;
   relatedBuyOrderIds: readonly string[];
 } {
+  if (!Number.isSafeInteger(availableQuantity) || availableQuantity < 0) {
+    throw new RangeError('可用数量必须为非负安全整数');
+  }
+
   return {
     quantity: availableQuantity,
     shouldHold: false,

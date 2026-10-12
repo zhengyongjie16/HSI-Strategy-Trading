@@ -1,4 +1,5 @@
 import type { RuntimeTermination } from '../../../types/runtime.js';
+import type { AccountPositionSnapshot, SnapshotToken } from '../../../types/accountPosition.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
@@ -46,7 +47,7 @@ interface SignalRuntimePostTradeConsistencyRuntime {
   readonly start: () => void;
   readonly stopAndDrain: () => Promise<void>;
   readonly midnightClear: () => void;
-  readonly completeRebuildBaseline: () => void;
+  readonly completeRebuildBaseline: () => Promise<boolean>;
 }
 
 /**
@@ -140,7 +141,13 @@ export type MarketDataDomainDeps = Readonly<{
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type GlobalStateDomainDeps = Readonly<{
+  snapshot: Pick<AccountPositionSnapshot, 'getStatus' | 'requestClear' | 'isCurrent'>;
   logger: Pick<Logger, 'debug'>;
   lastState: LastState;
-  runTradingDayOpenRebuild: (now: Date) => Promise<void>;
+  runTradingDayOpenRebuild: (
+    now: Date,
+  ) => Promise<
+    | { readonly status: 'COMMITTED'; readonly snapshotToken: SnapshotToken }
+    | { readonly status: 'ABORTED' }
+  >;
 }>;

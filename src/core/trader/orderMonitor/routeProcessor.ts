@@ -1,3 +1,8 @@
+import {
+  NON_REPLACEABLE_READ_STATUSES,
+  NON_REPLACEABLE_READ_TYPES,
+} from '../../../constants/orderReadMetadata.js';
+
 /**
  * orderMonitor routeProcessor 模块
  *
@@ -6,11 +11,9 @@
  * - 保持 timeout 优先于 replace 的动作语义
  * - 在卖单超时等待终态确认后执行结算与转市价提交
  */
-import { OrderSide, OrderType, TimeInForceType } from 'longbridge';
+import { exactCompare } from '../../../utils/numeric/exact.js';
 import { logger } from '../../../utils/logger/index.js';
 import {
-  NON_REPLACEABLE_ORDER_STATUSES,
-  NON_REPLACEABLE_ORDER_TYPES,
   ORDER_MONITOR_CANCEL_RETRY_BASE_DELAY_MS,
   ORDER_MONITOR_CANCEL_RETRY_MAX_DELAY_MS,
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
@@ -22,7 +25,7 @@ import {
   resolveNextQuoteRetry,
   resolveQuoteReadinessForRequirement,
 } from '../../../utils/quoteRetry/index.js';
-import { extractOrderId, toDecimal } from '../utils.js';
+import { extractOrderId } from '../utils.js';
 import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
 import type { TrackedOrder } from '../types.js';
 import type {
@@ -44,7 +47,7 @@ import {
   peekQueriedTerminalState,
 } from './orderOps.js';
 import {
-  calculatePriceDiffDecimal,
+  calculatePriceDifference,
   isClosedStatus,
   isWaitWsOnlyReplaceMode,
   normalizePriceText,
@@ -106,7 +109,7 @@ function resolveTerminalSettlementInput(
   }
 
   assertProtectiveSellRawTerminalStateFactsReady(order, rawTerminalState);
-  const isProtectiveSell = order.side === OrderSide.Sell && order.isProtectiveLiquidation;
+  const isProtectiveSell = order.side === 'SELL' && order.isProtectiveLiquidation;
   const normalizedTerminalState = normalizeTerminalStateSnapshot(
     order,
     rawTerminalState,
@@ -126,6 +129,7 @@ function resolveTerminalSettlementInput(
         closedReason: resolvedClosedReason,
         source: 'API',
         executedPrice: normalizedTerminalState.executedPrice,
+        executedAmount: normalizedTerminalState.executedAmount,
         executedQuantity: normalizedTerminalState.executedQuantity,
         executedTimeMs: normalizedTerminalState.executedTimeMs,
         orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
@@ -154,7 +158,7 @@ function resolveRemainingQuantityForConversion(
 
 function canHandleClosedTimeoutRoute(order: OrderMonitorTrackedOrder): boolean {
   return (
-    order.side === OrderSide.Sell &&
+    order.side === 'SELL' &&
     order.timeoutMarketConversionPending &&
     order.timeoutMarketConversionTerminalState !== null
   );
@@ -224,6 +228,7 @@ function resolvePendingTimeoutSettlementInput(
       closedReason: terminalState.closedReason,
       source: terminalState.source,
       executedPrice: terminalState.executedPrice,
+      executedAmount: terminalState.executedAmount,
       executedQuantity: terminalState.executedQuantity,
       executedTimeMs: terminalState.executedTimeMs,
       orderUpdatedAtMs: terminalState.orderUpdatedAtMs,
@@ -366,13 +371,14 @@ function settlePendingReplaceTerminal(
   }
 
   assertProtectiveSellRawTerminalStateFactsReady(order, rawTerminalState);
-  const isProtectiveSell = order.side === OrderSide.Sell && order.isProtectiveLiquidation;
+  const isProtectiveSell = order.side === 'SELL' && order.isProtectiveLiquidation;
   const terminal = normalizeTerminalStateSnapshot(order, rawTerminalState, isProtectiveSell);
   const settlementResult = deps.settleOrder({
     orderId: order.orderId,
     closedReason: terminal.closedReason,
     source: 'STATE_CHECK',
     executedPrice: terminal.executedPrice,
+    executedAmount: terminal.executedAmount,
     executedQuantity: terminal.executedQuantity,
     executedTimeMs: terminal.executedTimeMs,
     orderUpdatedAtMs: terminal.orderUpdatedAtMs,
@@ -486,7 +492,7 @@ async function submitTimeoutMarketOrder(
   }
 
   const monitorSymbol = order.monitorSymbol;
-  const { ctx } = deps;
+  const { tradeMutationPort } = deps;
   let timeoutConversionRemark = `超时转市价-原订单${order.orderId}`;
   if (order.isProtectiveLiquidation) {
     timeoutConversionRemark += TRADING.PROTECTIVE_LIQUIDATION_REMARK_SUFFIX;
@@ -519,26 +525,50 @@ async function submitTimeoutMarketOrder(
       }
 
       return permit.invoke(async () => {
+        const phase = { remoteIssued: false };
+        const finalAuthorizationAborted = new Error('[订单监控] 原route在SDK序列化后失效');
         try {
-          const brokerResponse = await wrapExternalApiRequest({
-            operation: 'TradeContext.submitOrder.timeoutMarketConversion',
-            request: () =>
-              ctx.submitOrder({
-                symbol: order.symbol,
-                side: order.side,
-                orderType: OrderType.MO,
-                submittedQuantity: toDecimal(marketConversionQuantity),
-                timeInForce: TimeInForceType.Day,
-                remark: timeoutConversionRemark,
-              }),
-            retryConfig: {
-              retries: 0,
-              delayMs: 0,
+          const brokerResponse = await tradeMutationPort.submitOrder(
+            {
+              symbol: order.symbol,
+              side: order.executionSide,
+              orderType: 'MO',
+              submittedQuantity: marketConversionQuantity,
+              timeInForce: 'DAY',
+              remark: timeoutConversionRemark,
             },
-          });
+            () => {
+              if (
+                !isRouteGenerationCurrent(deps.runtime, params) ||
+                !deps.isContinuousTradingAllowed()
+              ) {
+                throw finalAuthorizationAborted;
+              }
+
+              phase.remoteIssued = true;
+            },
+          );
           return { kind: 'BROKER_RESPONSE', brokerResponse };
         } catch (error: unknown) {
-          return { kind: 'BROKER_REQUEST_STARTED_UNKNOWN', error };
+          if (error === finalAuthorizationAborted) return { kind: 'PRECHECK_SKIPPED' };
+
+          if (!phase.remoteIssued) throw error;
+
+          try {
+            await wrapExternalApiRequest({
+              operation: 'TradeContext.submitOrder.timeoutMarketConversion',
+              request: () => {
+                throw error;
+              },
+              retryConfig: { retries: 0, delayMs: 0 },
+            });
+          } catch (issuedError) {
+            return { kind: 'BROKER_REQUEST_STARTED_UNKNOWN', error: issuedError };
+          }
+
+          throw new Error('[订单监控] rejected issued submit unexpectedly resolved', {
+            cause: error,
+          });
         }
       });
     });
@@ -567,13 +597,14 @@ async function submitTimeoutMarketOrder(
       orderId: newOrderId,
       symbol: order.symbol,
       side: order.side,
+      executionSide: order.executionSide,
       price: null,
       initialSubmittedPrice: null,
       quantity: marketConversionQuantity,
       isLongSymbol: order.isLongSymbol,
       monitorSymbol,
       isProtectiveLiquidation: order.isProtectiveLiquidation,
-      orderType: OrderType.MO,
+      orderType: 'MO',
     });
 
     deps.orderRecorder.submitSellOrder(
@@ -582,6 +613,8 @@ async function submitTimeoutMarketOrder(
       direction,
       marketConversionQuantity,
       relatedBuyOrderIds,
+      order.isProtectiveLiquidation,
+      deps.now().getTime(),
     );
     deps.orderRecorder.markSellCancelled(order.orderId);
   } catch (error: unknown) {
@@ -746,7 +779,7 @@ async function handleSellOrderTimeout(
 }
 
 function shouldHandleTimeout(deps: RouteProcessorDeps, order: OrderMonitorTrackedOrder): boolean {
-  if (order.convertedToMarket || order.orderType === OrderType.MO) {
+  if (order.convertedToMarket || order.orderType === 'MO') {
     return false;
   }
 
@@ -754,8 +787,7 @@ function shouldHandleTimeout(deps: RouteProcessorDeps, order: OrderMonitorTracke
     return false;
   }
 
-  const timeoutConfig =
-    order.side === OrderSide.Buy ? deps.config.buyTimeout : deps.config.sellTimeout;
+  const timeoutConfig = order.side === 'BUY' ? deps.config.buyTimeout : deps.config.sellTimeout;
   if (!timeoutConfig.enabled) {
     return false;
   }
@@ -781,8 +813,8 @@ function canEnterReplaceFlow(deps: RouteProcessorDeps, order: OrderMonitorTracke
   }
 
   if (
-    NON_REPLACEABLE_ORDER_TYPES.has(order.orderType) ||
-    NON_REPLACEABLE_ORDER_STATUSES.has(order.status)
+    NON_REPLACEABLE_READ_TYPES.has(order.orderType) ||
+    NON_REPLACEABLE_READ_STATUSES.has(order.status)
   ) {
     return false;
   }
@@ -807,7 +839,7 @@ function shouldReplaceFromQuote(
     return false;
   }
 
-  if (latestQuote.symbol !== order.symbol || latestQuote.price <= 0) {
+  if (latestQuote.symbol !== order.symbol || exactCompare(latestQuote.price, '0') <= 0) {
     return false;
   }
 
@@ -815,21 +847,22 @@ function shouldReplaceFromQuote(
     throw new Error(`[订单监控] 非市价订单 ${order.orderId} 缺少当前委托价，无法执行改单`);
   }
 
-  const priceDiffDecimal = calculatePriceDiffDecimal(latestQuote.price, order.submittedPrice);
-  if (priceDiffDecimal.comparedTo(deps.thresholdDecimal) < 0) {
+  const priceDifference = calculatePriceDifference(latestQuote.price, order.submittedPrice);
+  if (exactCompare(priceDifference, deps.config.priceDiffThreshold) < 0) {
     return false;
   }
 
-  if (order.side === OrderSide.Buy && !deps.config.allowBuyOrderTrackingAboveInitialPrice) {
+  if (order.side === 'BUY' && !deps.config.allowBuyOrderTrackingAboveInitialPrice) {
     if (order.initialSubmittedPrice === null) {
       throw new Error(`[订单监控] 非市价买单 ${order.orderId} 缺少初始委托价，无法执行改单`);
     }
 
-    const normalizedCurrentPriceNumber = Number(normalizePriceText(latestQuote.price));
-    const normalizedInitialSubmittedPriceNumber = Number(
-      normalizePriceText(order.initialSubmittedPrice),
-    );
-    if (normalizedCurrentPriceNumber > normalizedInitialSubmittedPriceNumber) {
+    if (
+      exactCompare(
+        normalizePriceText(latestQuote.price),
+        normalizePriceText(order.initialSubmittedPrice),
+      ) > 0
+    ) {
       return false;
     }
   }
@@ -955,7 +988,7 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
         continue;
       }
 
-      if (order.side === OrderSide.Buy) {
+      if (order.side === 'BUY') {
         const handled = await handleBuyOrderTimeout(params, deps, order.orderId, order);
         if (handled) {
           return;

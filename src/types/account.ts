@@ -24,7 +24,7 @@ export type Position = {
   readonly currency: string;
 
   /** 成本价 */
-  readonly costPrice: number;
+  readonly costPrice: string;
 };
 
 /**
@@ -38,7 +38,7 @@ export type CashInfo = {
   readonly currency: string;
 
   /** 可用现金 */
-  readonly availableCash: number;
+  readonly availableCash: string;
 };
 
 /**
@@ -52,13 +52,13 @@ export type AccountSnapshot = {
   readonly currency: string;
 
   /** 总现金 */
-  readonly totalCash: number;
+  readonly totalCash: string;
 
   /** 净资产 */
-  readonly netAssets: number;
+  readonly netAssets: string;
 
   /** 持仓市值 */
-  readonly positionValue: number;
+  readonly positionValue: string;
 
   /** 各币种现金详情 */
   readonly cashInfos: ReadonlyArray<CashInfo>;

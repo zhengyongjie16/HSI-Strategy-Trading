@@ -10,28 +10,18 @@ import type {
   AdvancePendingSwitchResult,
   SwitchDriveResult,
 } from '../../../../types/monitorContextPorts.js';
-import type {
-  PeriodicSwitchRouteBaseline,
-  PeriodicSwitchWakeupRuntime,
-} from '../../../periodicSwitchWakeupRuntime/types.js';
+import type { PeriodicSwitchWakeupRuntime } from '../../../periodicSwitchWakeupRuntime/types.js';
 import type { SwitchWakeupRuntime } from '../../../monitorQuoteEventRuntime/types.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
-import type { AutoSymbolTickTaskData, MonitorTaskDataMap, MonitorTaskStatus } from '../types.js';
+import type { MonitorTaskDataMap, MonitorTaskStatus } from '../types.js';
+import type { PeriodicSwitchTaskData } from '../../../../types/periodicSwitch.js';
 import type { MonitorContext } from '../../../../types/state.js';
+import type { AccountPositionSnapshotReader } from '../../../../types/accountPosition.js';
 import { isSeatSnapshotValid } from '../helpers/seatSnapshot.js';
-
-function buildPeriodicBaseline(data: AutoSymbolTickTaskData): PeriodicSwitchRouteBaseline {
-  return {
-    direction: data.direction,
-    symbol: data.symbol,
-    seatVersion: data.seatVersion,
-    lastSeatActivatedAt: data.lastSeatActivatedAt,
-  };
-}
 
 function handoffPeriodicWakeup(params: {
   readonly context: MonitorContext;
-  readonly data: AutoSymbolTickTaskData;
+  readonly data: PeriodicSwitchTaskData;
   readonly canContinue: () => boolean;
   readonly periodicSwitchWakeupRuntime: Pick<
     PeriodicSwitchWakeupRuntime,
@@ -42,7 +32,7 @@ function handoffPeriodicWakeup(params: {
     return false;
   }
 
-  const baseline = buildPeriodicBaseline(params.data);
+  const baseline = params.data;
   const pendingState = params.context.autoSymbolManager.getPeriodicSwitchPendingState(
     params.data.direction,
   );
@@ -84,6 +74,8 @@ export function createAutoSymbolTickHandler({
   switchWakeupRuntime,
   periodicSwitchWakeupRuntime,
   getCanTradeNow,
+  snapshot,
+  canOwnTask,
 }: {
   readonly monitorContext: MonitorContext;
   readonly switchWakeupRuntime: Pick<SwitchWakeupRuntime, 'handoffPendingSwitch'>;
@@ -92,11 +84,14 @@ export function createAutoSymbolTickHandler({
     'markWaitingEmpty' | 'clearWaitingEmpty' | 'replanRouteAfterTask'
   >;
   readonly getCanTradeNow: () => boolean;
+  readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView'>;
+  readonly canOwnTask: () => boolean;
 }): (task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>) => Promise<MonitorTaskStatus> {
   function handoffPendingWakeup(params: {
     readonly context: MonitorContext;
     readonly direction: 'LONG' | 'SHORT';
     readonly result: SwitchDriveResult | AdvancePendingSwitchResult;
+    readonly originalDayEpoch: number;
     readonly canContinue: () => boolean;
   }): void {
     const { result } = params;
@@ -118,6 +113,7 @@ export function createAutoSymbolTickHandler({
         direction: params.direction,
         monitorContext: params.context,
         driveResult: result,
+        originalDayEpoch: params.originalDayEpoch,
       });
       return;
     }
@@ -138,14 +134,20 @@ export function createAutoSymbolTickHandler({
       direction: params.direction,
       monitorContext: params.context,
       driveResult: result.driveResult,
+      originalDayEpoch: params.originalDayEpoch,
     });
   }
 
   async function handleAutoSymbolTick(
     task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
   ): Promise<MonitorTaskStatus> {
-    const data: AutoSymbolTickTaskData = task.data;
+    const data: PeriodicSwitchTaskData = task.data;
     const context = monitorContext;
+    const isOriginOwnerCurrent = (): boolean =>
+      canOwnTask() && snapshot.getView().token.dayEpoch === data.dayEpoch;
+    const canContinue = (): boolean =>
+      isOriginOwnerCurrent() && data.canContinue() && getCanTradeNow();
+    if (!isOriginOwnerCurrent() || !data.isRouteCurrent()) return 'skipped';
 
     const isSnapshotValid = isSeatSnapshotValid(
       data.direction,
@@ -163,31 +165,59 @@ export function createAutoSymbolTickHandler({
       return 'skipped';
     }
 
-    if (!getCanTradeNow()) {
+    if (!canContinue()) {
       return 'blocked';
     }
 
-    const dueResult = await context.autoSymbolManager.evaluatePeriodicSwitchDue({
+    const dueParams = {
       direction: data.direction,
       currentTime: new Date(data.currentTimeMs),
-      canContinue: getCanTradeNow,
-    });
-    if (!getCanTradeNow()) {
-      return 'blocked';
+      dayEpoch: data.dayEpoch,
+      canContinue,
+    };
+    const dueResult = await context.autoSymbolManager.evaluatePeriodicSwitchDue(dueParams);
+
+    // 首次 WAIT 已同步发布 SWITCHING，不能再用已失效的 ACTIVE mutation 票否认它。
+    // keeper 只交接本次真实 pending identity；不替换原 receipt/position/canContinue。
+    if (dueResult.kind === 'WAIT' && dueResult.publishedRoute !== undefined) {
+      const publishedRoute = dueResult.publishedRoute;
+      if (
+        publishedRoute.direction !== data.direction ||
+        publishedRoute.symbol !== data.symbol ||
+        !Number.isSafeInteger(publishedRoute.seatVersion) ||
+        typeof publishedRoute.isCurrent !== 'function'
+      ) {
+        throw new TypeError('周期换标 WAIT 发布见证不匹配原任务来源');
+      }
+
+      const canKeepPublishedRoute = (): boolean =>
+        isOriginOwnerCurrent() && publishedRoute.isCurrent();
+      if (!canKeepPublishedRoute()) return 'skipped';
+
+      handoffPendingWakeup({
+        context,
+        direction: data.direction,
+        result: dueResult,
+        originalDayEpoch: data.dayEpoch,
+        canContinue: canKeepPublishedRoute,
+      });
+      // SWITCHING 后续归真实 switch wakeup owner；不向旧 ACTIVE waiting-empty 写第二份账。
+      return canKeepPublishedRoute() ? 'processed' : 'skipped';
     }
 
     handoffPendingWakeup({
       context,
       direction: data.direction,
       result: dueResult,
-      canContinue: getCanTradeNow,
+      originalDayEpoch: data.dayEpoch,
+      canContinue: () => isOriginOwnerCurrent() && data.isRouteCurrent(),
     });
 
     if (
       !handoffPeriodicWakeup({
         context,
         data,
-        canContinue: getCanTradeNow,
+        canContinue: () => isOriginOwnerCurrent() && data.isRouteCurrent(),
         periodicSwitchWakeupRuntime,
       })
     ) {

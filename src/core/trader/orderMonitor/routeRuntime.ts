@@ -6,7 +6,6 @@
  * - 维护单 route 的 in-flight / dirty collapse 与 timer 投影执行语义
  * - 在 stopAndDrain 时取消订阅、清理 timer 并等待在途 route 执行完成
  */
-import { OrderSide, OrderType } from 'longbridge';
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
 import { scheduleBoundedOneShotAt } from '../../../utils/timer/index.js';
 import type { QuoteUpdatedEvent } from '../../../types/services.js';
@@ -24,7 +23,7 @@ import type {
 } from './types.js';
 
 function resolveTimeoutTimerKind(side: TrackedOrder['side']): OrderMonitorTimerKind {
-  if (side === OrderSide.Buy) {
+  if (side === 'BUY') {
     return 'BUY_TIMEOUT';
   }
 
@@ -35,11 +34,11 @@ function resolveTimeoutSchedule(
   order: OrderMonitorTrackedOrder,
   config: OrderMonitorConfig,
 ): RouteTimerSchedule | null {
-  if (order.convertedToMarket || order.orderType === OrderType.MO) {
+  if (order.convertedToMarket || order.orderType === 'MO') {
     return null;
   }
 
-  const timeoutConfig = order.side === OrderSide.Buy ? config.buyTimeout : config.sellTimeout;
+  const timeoutConfig = order.side === 'BUY' ? config.buyTimeout : config.sellTimeout;
   if (!timeoutConfig.enabled) {
     return null;
   }

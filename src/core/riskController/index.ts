@@ -11,21 +11,17 @@
  * - 单标的市值上限：maxPositionNotional（由监控配置提供）
  * - 保护性清仓触发阈值：maxUnrealizedLossPerSymbol（浮亏低于阈值时触发保护性清仓）
  */
-import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import {
-  decimalLt,
-  decimalMul,
-  decimalSub,
-  decimalToNumberValue,
+  exactCompare,
+  exactMultiply,
+  exactSubtract,
   formatDecimal,
-  toDecimalValue,
-} from '../../utils/numeric/index.js';
+} from '../../utils/numeric/exact.js';
 import type { Position, AccountSnapshot, CashInfo } from '../../types/account.js';
 import type { BuySignal, SignalType } from '../../types/signal.js';
-import type { Quote } from '../../types/quote.js';
+
 import type {
   MarketDataClient,
-  OrderRecorder,
   RiskCheckResult,
   UnrealizedLossMetrics,
   UnrealizedLossCheckResult,
@@ -62,7 +58,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
    */
   function buildUnrealizedLossMetrics(
     symbol: string | null,
-    currentPrice: number | null,
+    currentPrice: string | null,
   ): UnrealizedLossMetrics | null {
     if (!symbol) {
       return null;
@@ -74,32 +70,18 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     }
 
     const { r1, n1 } = lossData;
-    if (!Number.isFinite(r1) || !Number.isFinite(n1)) {
-      return null;
+    if (!Number.isSafeInteger(n1) || n1 < 0 || exactCompare(r1, '0') < 0) {
+      throw new TypeError('[risk] invalid published R1/N1');
     }
 
-    let r2 = toDecimalValue(0);
+    let r2 = '0';
     if (n1 > 0) {
-      if (!isValidPositiveNumber(currentPrice)) {
-        return null;
-      }
+      if (currentPrice === null || exactCompare(currentPrice, '0') <= 0) return null;
 
-      r2 = decimalMul(currentPrice, n1);
+      r2 = exactMultiply(currentPrice, String(n1));
     }
 
-    const unrealizedPnL = decimalSub(r2, r1);
-    const r2Number = decimalToNumberValue(r2);
-    const unrealizedPnLNumber = decimalToNumberValue(unrealizedPnL);
-    if (!Number.isFinite(unrealizedPnLNumber)) {
-      return null;
-    }
-
-    return {
-      r1,
-      n1,
-      r2: r2Number,
-      unrealizedPnL: unrealizedPnLNumber,
-    };
+    return { r1, n1, r2, unrealizedPnL: exactSubtract(r2, r1) };
   }
 
   /** 买入订单前综合风险检查，按顺序执行：账户数据有效性 → 港币可用现金 → 持仓市值限制。 */
@@ -107,7 +89,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     readonly account: AccountSnapshot | null;
     readonly positions: ReadonlyArray<Position> | null;
     readonly signal: BuySignal;
-    readonly orderNotional: number;
+    readonly orderNotional: string;
   }): RiskCheckResult {
     const { account, positions, signal, orderNotional } = params;
 
@@ -120,22 +102,19 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
 
     const { netAssets, totalCash } = account;
 
-    if (!Number.isFinite(netAssets) || !Number.isFinite(totalCash)) {
-      return {
-        allowed: false,
-        reason: `账户数据无效（netAssets=${netAssets}, totalCash=${totalCash}），无法进行风险检查，禁止买入操作`,
-      };
-    }
+    exactCompare(netAssets, netAssets);
+    exactCompare(totalCash, totalCash);
 
     const hkdCashInfo = account.cashInfos.find((c: CashInfo) => c.currency === 'HKD');
-    const availableCash = hkdCashInfo?.availableCash ?? 0;
+    const availableCash = hkdCashInfo?.availableCash ?? '0';
 
-    if (decimalLt(availableCash, orderNotional)) {
+    if (exactCompare(availableCash, orderNotional) < 0) {
       return {
         allowed: false,
-        reason: `港币可用现金 ${formatDecimal(availableCash, 2)} HKD 不足以支付买入金额 ${formatDecimal(
+        reason: `港币可用现金 ${formatDecimal(availableCash, 2, 'unsigned')} HKD 不足以支付买入金额 ${formatDecimal(
           orderNotional,
           2,
+          'unsigned',
         )} HKD`,
       };
     }
@@ -152,7 +131,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
   return {
     setWarrantInfoFromCallPrice(
       symbol: string,
-      callPrice: number,
+      callPrice: string,
       isLongSymbol: boolean,
       symbolName: string | null = null,
     ) {
@@ -183,7 +162,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     checkWarrantRisk(
       symbol: string,
       signalType: SignalType,
-      monitorCurrentPrice: number,
+      monitorCurrentPrice: string,
     ): RiskCheckResult {
       return warrantRiskChecker.checkRisk(symbol, signalType, monitorCurrentPrice);
     },
@@ -191,7 +170,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     checkWarrantDistanceLiquidation(
       symbol: string,
       isLongSymbol: boolean,
-      monitorCurrentPrice: number,
+      monitorCurrentPrice: string,
     ) {
       return warrantRiskChecker.checkWarrantDistanceLiquidation(
         symbol,
@@ -203,7 +182,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
     getWarrantDistanceInfo(
       isLongSymbol: boolean,
       seatSymbol: string,
-      monitorCurrentPrice: number | null,
+      monitorCurrentPrice: string | null,
     ) {
       return warrantRiskChecker.getWarrantDistanceInfo(
         isLongSymbol,
@@ -218,25 +197,15 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
       warrantRiskChecker.clearShortWarrantInfo();
     },
 
-    async refreshUnrealizedLossData(
-      orderRecorder: OrderRecorder,
-      symbol: string,
-      isLongSymbol: boolean,
-      quote?: Quote | null,
-      dailyLossOffset?: number,
-    ): Promise<void> {
-      await unrealizedLossChecker.refresh(
-        orderRecorder,
-        symbol,
-        isLongSymbol,
-        quote,
-        dailyLossOffset,
-      );
+    prepareUnrealizedLossData: (orderRecorder, symbol, isLongSymbol, dailyLossOffset) =>
+      unrealizedLossChecker.prepare(orderRecorder, symbol, isLongSymbol, dailyLossOffset),
+    publishUnrealizedLossData: (prepared) => {
+      unrealizedLossChecker.publish(prepared);
     },
 
     checkUnrealizedLoss(
       symbol: string,
-      currentPrice: number,
+      currentPrice: string,
       isLongSymbol: boolean,
     ): UnrealizedLossCheckResult {
       return unrealizedLossChecker.check(symbol, currentPrice, isLongSymbol);
@@ -244,7 +213,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
 
     getUnrealizedLossMetrics(
       symbol: string,
-      currentPrice: number | null,
+      currentPrice: string | null,
     ): UnrealizedLossMetrics | null {
       return buildUnrealizedLossMetrics(symbol, currentPrice);
     },

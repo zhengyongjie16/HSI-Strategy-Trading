@@ -33,7 +33,7 @@ describe('createSeatDomain', () => {
       lastSwitchAt: 100,
       lastSearchAt: 200,
       lastSeatActivatedAt: 300,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 2,
       frozenTradingDayKey: '2026-02-15',
     };
@@ -43,7 +43,7 @@ describe('createSeatDomain', () => {
       lastSwitchAt: 110,
       lastSearchAt: 210,
       lastSeatActivatedAt: 310,
-      callPrice: 19_000,
+      callPrice: '19000',
       searchFailCountToday: 1,
       frozenTradingDayKey: null,
     };
@@ -142,7 +142,7 @@ describe('createSeatDomain', () => {
       lastSwitchAt: 100,
       lastSearchAt: 200,
       lastSeatActivatedAt: 300,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     };
@@ -223,7 +223,7 @@ describe('createSeatDomain', () => {
       lastSwitchAt: 100,
       lastSearchAt: 200,
       lastSeatActivatedAt: 300,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     };

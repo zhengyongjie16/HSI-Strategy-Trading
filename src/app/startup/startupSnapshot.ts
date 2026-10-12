@@ -1,19 +1,15 @@
 /**
- * app 启动快照分支协同模块
- *
- * 职责：
- * - 执行 startup snapshot load
- * - 在外部 API 失败时切换到 pendingOpenRebuild 恢复分支
- * - 成功时返回权威快照，API retry pending 时不携带空事实
+ * app 启动快照分支协同模块。
+ * 仅 loader 的真实 captured COMMITTED 可以 READY；同日 supersession 由本 owner 本地重新加载。
+ * 原 epoch 失效或停止返回 ABORTED，外部 API 错误仍进入原 pendingOpenRebuild 分支。
  */
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type { LoadStartupSnapshotParams, StartupSnapshotResult } from '../types.js';
 
 /**
- * 执行启动快照加载，并在失败时切换为开盘重建恢复模式。
- *
- * @param params 启动快照加载所需依赖与当前时间
- * @returns startup snapshot 成功或失败后的统一结果
+ * 执行启动快照加载，不把 supersession 计入外部 retry，也不替旧输入换上当前 token。
+ * @param params 原 startup owner 的 H、终止授权与加载依赖
+ * @returns captured READY、原外部 API_RETRY_PENDING 或无事实 ABORTED
  */
 export async function loadStartupSnapshot(
   params: LoadStartupSnapshotParams,
@@ -21,36 +17,83 @@ export async function loadStartupSnapshot(
   const {
     now,
     lastState,
+    termination,
+    snapshot,
     loadTradingDayRuntimeSnapshot,
     applyStartupSnapshotFailureState,
     logger,
     formatError,
   } = params;
+  const originDayEpoch = snapshot.getStatus().token.dayEpoch;
+  const isOriginLive = (): boolean => {
+    const status = snapshot.getStatus();
+    return (
+      !termination.isTerminated() &&
+      status.admission !== 'CLOSED' &&
+      status.token.dayEpoch === originDayEpoch
+    );
+  };
 
-  try {
-    const startupSnapshot = await loadTradingDayRuntimeSnapshot({
-      now,
-      requireTradingDay: false,
-      resetRuntimeSubscriptions: false,
-      hydrateCooldownFromTradeLog: true,
-    });
+  while (isOriginLive()) {
+    try {
+      const startupSnapshot = await loadTradingDayRuntimeSnapshot({
+        now,
+        requireTradingDay: false,
+        resetRuntimeSubscriptions: false,
+        hydrateCooldownFromTradeLog: true,
+        source: 'STARTUP',
+      });
+      if (!isOriginLive()) return { kind: 'ABORTED', now };
 
-    return {
-      kind: 'READY',
-      allOrders: startupSnapshot.allOrders,
-      quotesMap: startupSnapshot.quotesMap,
-      now,
-    };
-  } catch (err) {
-    if (!isExternalApiRequestError(err)) {
-      throw err;
+      switch (startupSnapshot.status) {
+        case 'SUPERSEDED': {
+          continue;
+        }
+
+        case 'ABORTED': {
+          return { kind: 'ABORTED', now };
+        }
+
+        case 'COMMITTED': {
+          if (startupSnapshot.snapshotToken.dayEpoch !== originDayEpoch) {
+            throw new TypeError('[StartupSnapshot] loader returned a foreign dayEpoch token');
+          }
+
+          if (
+            !snapshot.isCurrent(startupSnapshot.snapshotToken, {
+              account: true,
+              positions: true,
+              paired: true,
+            })
+          ) {
+            continue;
+          }
+
+          return {
+            kind: 'READY',
+            snapshotToken: startupSnapshot.snapshotToken,
+            allOrders: startupSnapshot.allOrders,
+            quotesMap: startupSnapshot.quotesMap,
+            now,
+          };
+        }
+
+        default: {
+          throw new TypeError('[StartupSnapshot] loader returned an invalid public result');
+        }
+      }
+    } catch (error) {
+      if (!isExternalApiRequestError(error)) {
+        throw error;
+      }
+
+      if (!isOriginLive()) return { kind: 'ABORTED', now };
+
+      applyStartupSnapshotFailureState(lastState);
+      logger.error('启动快照 API 请求失败：已阻断交易并切换为开盘重建重试模式', formatError(error));
+      return { kind: 'API_RETRY_PENDING', now };
     }
-
-    applyStartupSnapshotFailureState(lastState);
-    logger.error('启动快照 API 请求失败：已阻断交易并切换为开盘重建重试模式', formatError(err));
-    return {
-      kind: 'API_RETRY_PENDING',
-      now,
-    };
   }
+
+  return { kind: 'ABORTED', now };
 }

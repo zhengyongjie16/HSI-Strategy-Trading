@@ -1,3 +1,7 @@
+import {
+  createEmptySnapshotFixture,
+  createSnapshotFixture,
+} from '../fixtures/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
@@ -26,15 +30,13 @@ import { createTradingGateEventRuntime as createProductionTradingGateEventRuntim
 import type { DayLifecycleTickResult } from '../../../src/main/lifecycle/types.js';
 import type { AutoSearchAuthorizationChangedEvent } from '../../../src/main/tradingGateEventRuntime/types.js';
 import {
-  createAccountSnapshotDouble,
   createLoggerDouble,
   createAutoSymbolManagerDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
-  createPositionCacheDouble,
-  createQuoteSubscriptionRuntimeDouble,
+  createAccountSnapshotDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import {
@@ -158,6 +160,7 @@ function createRuntimeHarness(params: {
   const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
   const seatActivationDispatcher = createSeatActivationDispatcher({
     termination,
+    snapshot: createEmptySnapshotFixture(),
     symbolRegistry,
     monitorTaskQueue,
   });
@@ -260,6 +263,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const seatActivationDispatcher = createSeatActivationDispatcher({
       termination,
+      snapshot: createEmptySnapshotFixture(),
       symbolRegistry,
       monitorTaskQueue,
     });
@@ -304,9 +308,6 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
       isTradingEnabled: true,
-      cachedAccount: createAccountSnapshotDouble(100_000),
-      cachedPositions: [],
-      positionCache: createPositionCacheDouble(),
       cachedTradingDayInfo: {
         dateKey: '2026-04-10',
         info: { isTradingDay: true, isHalfDay: false },
@@ -354,7 +355,10 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       tradingConfig,
       monitorContext,
       tradingGateEventRuntime,
-      quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       dayLifecycleManager: {
         tick: async () => {
           lifecycleStarted.resolve(null);

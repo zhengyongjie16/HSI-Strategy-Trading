@@ -13,6 +13,13 @@ import {
   formatWarrantDistanceDisplay,
 } from './utils.js';
 import { LOG_COLORS } from '../../constants/index.js';
+import {
+  exactCompare,
+  exactMultiply,
+  exactSubtract,
+  formatDecimal,
+  formatRatio,
+} from '../../utils/numeric/exact.js';
 import type { Quote } from '../../types/quote.js';
 import type {
   MarketMonitor,
@@ -29,22 +36,17 @@ function formatKlineTimePrefix(timestamp: number | null | undefined): string {
   return '';
 }
 
-function calculateChangePercent(
-  currentPrice: number | null,
-  prevClose: number | null,
-): number | null {
+function calculateChangePercentText(currentPrice: string | null, prevClose: string | null): string {
   if (
     currentPrice === null ||
-    !Number.isFinite(currentPrice) ||
-    currentPrice <= 0 ||
     prevClose === null ||
-    !Number.isFinite(prevClose) ||
-    prevClose <= 0
-  ) {
-    return null;
-  }
+    exactCompare(currentPrice, '0') <= 0 ||
+    exactCompare(prevClose, '0') <= 0
+  )
+    return '-';
 
-  return ((currentPrice - prevClose) / prevClose) * 100;
+  const numerator = exactMultiply(exactSubtract(currentPrice, prevClose), '100');
+  return `${exactCompare(numerator, '0') >= 0 ? '+' : ''}${formatRatio(numerator, prevClose, 2, 'preserve')}%`;
 }
 
 function resolveTradingQuoteLabel(direction: RenderTradingQuoteParams['direction']): string {
@@ -91,14 +93,8 @@ function renderTradingQuote(params: RenderTradingQuoteParams): void {
 function renderMonitorIndicators(params: RenderMonitorIndicatorsParams): void {
   const currentPrice = params.monitorQuote?.price ?? null;
   const prevClose = params.monitorQuote?.prevClose ?? null;
-  const changePercent = calculateChangePercent(currentPrice, prevClose);
-  const priceText =
-    currentPrice !== null && Number.isFinite(currentPrice) ? currentPrice.toFixed(3) : '-';
-  const changeSign = changePercent !== null && changePercent >= 0 ? '+' : '';
-  const changePercentText =
-    changePercent !== null && Number.isFinite(changePercent)
-      ? `${changeSign}${changePercent.toFixed(2)}%`
-      : '-';
+  const changePercentText = calculateChangePercentText(currentPrice, prevClose);
+  const priceText = currentPrice === null ? '-' : formatDecimal(currentPrice, 3, 'preserve');
   const indicators = [
     `价格=${priceText}`,
     `涨跌幅=${changePercentText}`,

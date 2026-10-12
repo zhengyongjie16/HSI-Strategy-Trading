@@ -10,6 +10,7 @@
  * - 限价/增强限价卖单的委托价必须以「执行时行情」为准，不能使用信号生成时的快照价。
  * - 本模块只计算卖出数量；orderExecutor 在提交前重新获取执行时行情。
  */
+import { formatDecimal } from '../../utils/numeric/exact.js';
 import { logger } from '../../utils/logger/index.js';
 import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/index.js';
 import {
@@ -155,14 +156,9 @@ export const processSellSignals = (
       );
     }
 
-    if (
-      position &&
-      quote &&
-      Number.isFinite(position.availableQuantity) &&
-      Number.isFinite(quote.price)
-    ) {
+    if (position && quote) {
       logger.debug(
-        `[卖出信号处理] ${signalName}: 当前价格=${quote.price.toFixed(3)}, 可用数量=${position.availableQuantity}`,
+        `[卖出信号处理] ${signalName}: 当前价格=${formatDecimal(quote.price, 3, 'preserve')}, 可用数量=${position.availableQuantity}`,
       );
     }
 

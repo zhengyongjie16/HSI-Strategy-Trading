@@ -1,18 +1,13 @@
+import type { OrderReadStatus, OrderReadType } from './orderReadMetadata.js';
+import type { MarketWarrantListRequest } from './marketPorts.js';
 import type {
   Candlestick,
-  Decimal,
-  FilterWarrantExpiryDate,
-  FilterWarrantInOutBoundsType,
   Market,
   OrderSide,
   OrderStatus,
   OrderType,
   Period,
-  SortOrderType,
   TradeSessions,
-  WarrantSortBy,
-  WarrantStatus,
-  WarrantType,
 } from 'longbridge';
 import type {
   BuySignal,
@@ -28,26 +23,27 @@ import type {
   DoomsdayCancelOrderOutcome,
   DoomsdayCancelOrderRequest,
   CancelOrderOutcome,
+  TraderCancelOrderRequest,
   DoomsdayClearanceExecutionResult,
   ExecuteSignalsResult,
+  SignalCallerAuthorization,
   OrderClosedReason,
 } from './trader.js';
 import type { NormalizedCandle } from './data.js';
 import type { ExternalApiRetryConfig } from '../utils/apiFailure/types.js';
-import type { DecimalLike } from '../utils/helpers/types.js';
+import type {
+  BrokerOrderExecutionFact,
+  OrderCostBasis,
+  OrderFactBatchCommitResult,
+  OrderFactCommitReceipt,
+  OrderExecutionAdmission,
+  OrderProjectionTarget,
+} from './orderRecorder.js';
 
 /**
- * 可转换为数字的值类型。
- * 类型用途：承接 Longbridge SDK 返回的 Decimal 形态与原始数值，用于当前服务类型中的价格、数量等字段声明。
- * 数据来源：Longbridge API 返回或本地数字。
- * 使用范围：services 类型模块内部字段复用，不作为跨模块公共类型导出。
- */
-type DecimalLikeValue = string | number | null;
-
-/**
- * 已通过 todayOrders 信任边界校验的订单方向。
+ * 已通过 todayOrders 信任边界校验的SDK订单方向。
  * 数据来源：Longbridge SDK OrderSide 中明确可处理的业务成员。
- * 使用范围：PendingOrder 与订单缓存边界；RawOrderFromAPI 仍保留 SDK 原始枚举语义。
+ * 使用范围：SDK边界验证规则常量；公共PendingOrder/RawOrderFromAPI不携带此SDK类型。
  */
 export type ValidatedOrderSide = OrderSide.Buy | OrderSide.Sell;
 
@@ -173,47 +169,30 @@ export type CandlestickUpdatedEvent = {
 /**
  * 轮证报价最小结构。
  * 类型用途：表达当前仓库直接消费的 warrantQuote 字段边界，仅保留 symbol/callPrice/category。
- * 数据来源：quoteClient 透传的 Longbridge warrantQuote 响应。
+ * 数据来源：quoteClient 将 Longbridge warrantQuote 金融原文适配为中立文本。
  * 使用范围：MarketQuoteContext.warrantQuote 返回值内部使用，不作为跨模块公共类型导出。
  */
 type MarketWarrantQuote = Readonly<{
   readonly symbol: string;
-  readonly callPrice?: DecimalLike | DecimalLikeValue;
+  readonly callPrice?: string | null | undefined;
   readonly category?: number | string | null;
 }>;
 
 /**
  * 轮证列表最小结构。
  * 类型用途：表达当前仓库直接消费的 warrantList 字段边界，仅保留自动寻标所需字段。
- * 数据来源：quoteClient 透传的 Longbridge warrantList 响应。
+ * 数据来源：quoteClient 将 Longbridge warrantList 金融原文适配为中立文本。
  * 使用范围：MarketQuoteContext.warrantList 返回值内部使用，不作为跨模块公共类型导出。
  */
 type MarketWarrantListItem = Readonly<{
   readonly symbol: string;
   readonly name?: string | null;
-  readonly lastDone: DecimalLike | DecimalLikeValue | null | undefined;
-  readonly toCallPrice: DecimalLike | DecimalLikeValue | null | undefined;
-  readonly callPrice?: DecimalLike | DecimalLikeValue | null | undefined;
-  readonly turnover: DecimalLike | DecimalLikeValue | null | undefined;
+  readonly lastDone: string | null | undefined;
+  readonly toCallPrice: string | null | undefined;
+  readonly callPrice?: string | null | undefined;
+  readonly turnover: string | null | undefined;
   readonly warrantType: number | string | null | undefined;
-  readonly status: number | string | null | undefined;
-}>;
-
-/**
- * 轮证列表查询参数。
- * 类型用途：收口 warrantList 查询所需参数，避免业务边界暴露过长的位置参数列表。
- * 数据来源：由自动寻标、换标预寻标与席位恢复链路组装。
- * 使用范围：MarketQuoteContext.warrantList 入参内部使用，不作为跨模块公共类型导出。
- */
-type MarketWarrantListRequest = Readonly<{
-  readonly symbol: string;
-  readonly sortBy: WarrantSortBy;
-  readonly sortOrder: SortOrderType;
-  readonly types: ReadonlyArray<WarrantType>;
-  readonly issuerIds?: ReadonlyArray<number> | null;
-  readonly expiryFilters?: ReadonlyArray<FilterWarrantExpiryDate>;
-  readonly inOutBoundsTypes?: ReadonlyArray<FilterWarrantInOutBoundsType>;
-  readonly status?: ReadonlyArray<WarrantStatus>;
+  readonly status: 'NORMAL' | 'NON_NORMAL' | null | undefined;
 }>;
 
 /**
@@ -317,14 +296,14 @@ export interface MarketDataClient {
 export type PendingOrder = {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: ValidatedOrderSide;
+  readonly side: 'BUY' | 'SELL';
 
   /** SDK 对市价单等合法订单可返回 null；不得伪造为零价格。 */
-  readonly submittedPrice: number | null;
+  readonly submittedPrice: string | null;
   readonly quantity: number;
   readonly executedQuantity: number;
-  readonly status: ValidatedOrderStatus;
-  readonly orderType: ValidatedOrderType;
+  readonly status: OrderReadStatus;
+  readonly orderType: OrderReadType;
 };
 
 /**
@@ -337,16 +316,33 @@ export type RawOrderFromAPI = {
   readonly orderId: string;
   readonly symbol: string;
   readonly stockName: string;
-  readonly side: OrderSide;
-  readonly status: OrderStatus;
-  readonly orderType: OrderType;
+
+  /** 由adapter一次映射的中性方向，新的P1事实/归属消费不反向比较SDK枚举。 */
+  readonly executionSide: 'BUY' | 'SELL';
+
+  /** 由SDK adapter权威映射的执行状态；P1金融/归属reader不再自行比较SDK枚举。 */
+  readonly executionStatus: 'NONE' | 'PARTIAL' | 'FILLED';
+
+  /** SDK adapter穷尽验证的生命周期；业务累计事实不再解析SDK status。 */
+  readonly executionPhase: 'OPEN' | 'TERMINAL';
+  readonly status: OrderReadStatus;
+  readonly orderType: OrderReadType;
   readonly remark?: string | null;
-  readonly price: DecimalLikeValue;
-  readonly quantity: DecimalLikeValue;
-  readonly executedPrice: DecimalLikeValue;
-  readonly executedQuantity: DecimalLikeValue;
-  readonly submittedAt?: Date | null;
-  readonly updatedAt?: Date | null;
+  readonly price: string | null;
+  readonly quantity: number;
+  readonly executedPrice: string | null;
+  readonly executedQuantity: number;
+
+  /** SDK 累计成交均价原文 × 累计安全整数数量，非显示均价回乘。 */
+  readonly executedAmount: string;
+
+  /** 真实 execution 流水或匹配 durable 证据；未知时必须显式 null。 */
+  readonly executionTimeMs: number | null;
+
+  /** broker 修订版本，绝不作为 executionTimeMs 的替代值。 */
+  readonly updatedAtMs: number;
+  readonly submittedAt: Date;
+  readonly updatedAt: Date | null;
 };
 
 /**
@@ -362,10 +358,10 @@ export type OrderRecord = {
   /** 标的代码 */
   readonly symbol: string;
 
-  /** 成交价格 */
-  readonly executedPrice: number;
+  /** 权威累计成交金额，成本不得由显示均价乘回重建。 */
+  readonly costAmount: string;
 
-  /** 成交数量 */
+  /** 成交数量（已验证安全整数） */
   readonly executedQuantity: number;
 
   /** 成交时间戳 */
@@ -406,6 +402,9 @@ export type PendingSellInfo = {
   /** 状态 */
   readonly status: 'pending' | 'partial' | 'filled' | 'cancelled';
 
+  /** 原卖单保护性身份；合单不得跨目的扩量。 */
+  readonly isProtectiveLiquidation: boolean;
+
   /** 提交时间 */
   readonly submittedAt: number;
 };
@@ -428,7 +427,7 @@ export type SellableOrderSelectParams = {
   readonly symbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly strategy: SellableOrderStrategy;
-  readonly currentPrice: number;
+  readonly currentPrice: string;
   readonly maxSellQuantity?: number;
   readonly excludeOrderIds?: ReadonlySet<string>;
   readonly timeoutMinutes?: number | null;
@@ -527,8 +526,8 @@ interface OrderRecorderPendingSellAndSellable {
     quantity: number,
   ) => readonly string[];
 
-  /** 获取指定标的的成本均价（实时计算，无缓存） */
-  getCostAveragePrice: (symbol: string, isLongSymbol: boolean) => number | null;
+  /** 获取原始成本金额与安全整数数量；仅输出时求均价，不用均价重建成本。 */
+  getCostBasis: (symbol: string, isLongSymbol: boolean) => OrderCostBasis | null;
 
   /** 按策略筛选可卖订单（统一处理占用过滤、整笔截断与可选额外排除） */
   selectSellableOrders: (params: SellableOrderSelectParams) => SellableOrderResult;
@@ -541,31 +540,31 @@ interface OrderRecorderPendingSellAndSellable {
  * 使用范围：Trader、RiskChecker、信号处理、异步处理器等；全项目可引用。
  */
 export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
-  /** 记录本地买入订单 */
-  recordLocalBuy: (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
+  /** 同一 broker identity 的 API/在线累计事实同步提交，不生成本地替代订单 ID。 */
+  commitExecutionFact: (
+    fact: BrokerOrderExecutionFact,
     isLongSymbol: boolean,
-    executedTimeMs: number,
-  ) => void;
+    relatedBuyOrderIds: ReadonlyArray<string>,
+    beforeCommit: () => OrderExecutionAdmission,
+  ) => OrderFactCommitReceipt;
 
-  /** 记录本地卖出订单 */
-  recordLocalSell: (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
-    isLongSymbol: boolean,
-    executedTimeMs: number,
-    orderId?: string | null,
-    relatedBuyOrderIds?: ReadonlyArray<string> | null,
-  ) => void;
+  /** 唯一事实 owner 的只读累计事实；不是另一份经济账或 survivor 推造事实。 */
+  getExecutionFact: (brokerOrderId: string) => BrokerOrderExecutionFact | null;
+
+  /** 全 API batch 的归属/累计事实/token 预检与列表/实际覆盖同步提交。 */
+  commitRebuildSnapshot: (
+    targets: ReadonlyArray<OrderProjectionTarget>,
+    allOrders: ReadonlyArray<RawOrderFromAPI>,
+    isCurrent: () => boolean,
+    mode: 'ACTIVATION' | 'REBUILD',
+  ) => OrderFactBatchCommitResult;
 
   /** 清空指定标的的买入订单记录 */
   clearBuyOrders: (symbol: string, isLongSymbol: boolean, quote?: Quote | null) => void;
 
-  /** 获取最新买入订单价格 */
-  getLatestBuyOrderPrice: (symbol: string, isLongSymbol: boolean) => number | null;
+  /** 最新订单与全方向列表均以精确成本金额/数量为依据，不返回舍入均价。 */
+  getLatestBuyOrderCost: (symbol: string, isLongSymbol: boolean) => OrderCostBasis | null;
+  getCostBasis: (symbol: string, isLongSymbol: boolean) => OrderCostBasis | null;
 
   /** 按订单 ID 获取卖出成交记录 */
   getSellRecordByOrderId: (orderId: string) => OrderRecord | null;
@@ -579,20 +578,6 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
    */
   validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => void;
 
-  /** 使用全量订单刷新指定标的记录（做多标的） */
-  refreshOrdersFromAllOrdersForLong: (
-    symbol: string,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    quote?: Quote | null,
-  ) => Promise<ReadonlyArray<OrderRecord>>;
-
-  /** 使用全量订单刷新指定标的记录（做空标的） */
-  refreshOrdersFromAllOrdersForShort: (
-    symbol: string,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    quote?: Quote | null,
-  ) => Promise<ReadonlyArray<OrderRecord>>;
-
   /** 获取指定标的的买入订单 */
   getBuyOrdersForSymbol: (symbol: string, isLongSymbol: boolean) => ReadonlyArray<OrderRecord>;
 
@@ -602,24 +587,14 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
     symbol: string,
     direction: 'LONG' | 'SHORT',
     quantity: number,
-    relatedBuyOrderIds: readonly string[],
-    submittedAtMs?: number,
+    relatedBuyOrderIds: ReadonlyArray<string>,
+    isProtectiveLiquidation: boolean,
+    submittedAtMs: number,
   ) => void;
 
   /** 重置全部本地订单记录 */
   resetAll: () => void;
 }
-
-/**
- * 成交后一致性刷新需求。
- * 类型用途：表达一次成交后需要补刷的最小账户/持仓刷新意图。
- * 数据来源：由订单监控成交结算链路在确认终态后组装。
- * 使用范围：orderMonitor、app runtime 与相关测试；全项目可引用。
- */
-export type PostTradeConsistencyRefreshNeed = {
-  readonly refreshAccount: boolean;
-  readonly refreshPositions: boolean;
-};
 
 /**
  * 取消订阅函数。
@@ -644,7 +619,7 @@ export type OrderStateChangedEvent = Readonly<{
   monitorSymbol: string | null;
   isLongSymbol: boolean | null;
   isProtectiveLiquidation: boolean;
-  executedPrice: number | null;
+  executedPrice: string | null;
   executedQuantity: number | null;
   executedTimeMs: number | null;
 }>;
@@ -662,31 +637,6 @@ export type OrderHoldSymbolsChangedEvent = Readonly<{
   /** 保留集合变化方向 */
   action: 'ADDED' | 'REMOVED';
 }>;
-
-/**
- * 成交后一致性运行时最小端口。
- * 类型用途：向下层模块暴露成交后刷新需求记录能力，避免 core 反向依赖 app 层。
- * 数据来源：由 app 层成交后一致性 runtime 实现并注入。
- * 使用范围：trader/orderMonitor 与 app runtime 连接点。
- */
-export interface PostTradeConsistencyRuntimePort {
-  /** 记录一次成交后的最小刷新需求 */
-  recordSettlementRefreshNeed: (need: PostTradeConsistencyRefreshNeed) => void;
-}
-
-/**
- * 成交后一致性 freshness 等待端口。
- * 类型用途：向卖出处理器、监控任务处理器等顶层等待方暴露统一的 freshness 等待能力。
- * 数据来源：由 app 层 PostTradeConsistencyRuntime 实现并注入。
- * 使用范围：asyncProgram 顶层等待链路使用。
- */
-export interface PostTradeConsistencyFreshnessPort {
-  /** 等待当前 freshness 追平 staleVersion；若当前生命周期已终止该等待轮次则立即失败 */
-  waitForFresh: () => Promise<void>;
-
-  /** 订阅 freshness 追平事件 */
-  onFreshReached: (listener: () => void) => Unsubscribe;
-}
 
 /**
  * 交易器接口。
@@ -732,8 +682,8 @@ export interface Trader {
 
   // ========== 订单监控 ==========
 
-  /** 常规撤单；该路径固定使用订单事实授权，不能产生未开始结果。 */
-  cancelOrder: (orderId: string) => Promise<CancelOrderOutcome>;
+  /** 常规撤单；显式保留订单事实或原业务授权，在实际 broker mutation 前复核。 */
+  cancelOrder: (orderId: string, request: TraderCancelOrderRequest) => Promise<CancelOrderOutcome>;
 
   /** 末日保护撤单；必须显式携带 permit 内实时门禁。 */
   cancelDoomsdayOrder: (
@@ -774,11 +724,15 @@ export interface Trader {
   recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<RawOrderFromAPI>) => Promise<void>;
 
   /** 执行交易信号；返回真正新提交或 broker 已确认改单的唯一订单 ID 列表 */
-  executeSignals: (signals: ReadonlyArray<ExecutableSignal>) => Promise<ExecuteSignalsResult>;
+  executeSignals: (
+    signals: ReadonlyArray<ExecutableSignal>,
+    callerAuthorization: SignalCallerAuthorization,
+  ) => Promise<ExecuteSignalsResult>;
 
   /** 执行末日清仓信号；该专用入口在最终订单命令中标记末日清仓目的。 */
   executeDoomsdayClearanceSignals: (
     commands: ReadonlyArray<DoomsdayClearanceCommand>,
+    callerAuthorization: SignalCallerAuthorization,
   ) => Promise<DoomsdayClearanceExecutionResult>;
 }
 
@@ -792,16 +746,19 @@ export type BullBearWarrantType = 'BULL' | 'BEAR';
 
 /**
  * 牛熊证距离回收价信息。
- * 类型用途：表示某标的距离回收价的百分比，用于实时展示与风控判断。
- * 数据来源：RiskChecker 根据行情与回收价计算。
+ * 类型用途：保存未除法、未舍入的距回收价比例基数，用于风控交叉乘比较与终态展示。
+ * 数据来源：RiskChecker 根据权威行情与回收价计算；已知分母严格为正，未知时分子/分母同时为 null。
  * 使用范围：RiskChecker、UI/监控展示；全项目可引用。
  */
 export type WarrantDistanceInfo = {
   /** 牛熊证类型 */
   readonly warrantType: BullBearWarrantType;
 
-  /** 距离回收价百分比（运行时保持 Decimal 精度，展示时再格式化） */
-  readonly distanceToStrikePercent: Decimal | null;
+  /** 距回收价比例的精确十进制分子，尚未乘以百分比单位 100 */
+  readonly distanceNumerator: string | null;
+
+  /** 距回收价比例的精确十进制分母；已知时严格为正 */
+  readonly distanceDenominator: string | null;
 };
 
 /**
@@ -829,8 +786,8 @@ export type WarrantDistanceLiquidationResult = {
   /** 牛熊证类型 */
   readonly warrantType?: BullBearWarrantType;
 
-  /** 距离回收价百分比 */
-  readonly distancePercent?: number | null;
+  /** 清仓结果的终态展示百分比文本，不作为比例风控的状态或判定输入 */
+  readonly distancePercent?: string | null;
 
   /** 判定原因 */
   readonly reason?: string;
@@ -858,7 +815,7 @@ export type RiskCheckResult = {
     readonly warrantType: BullBearWarrantType;
 
     /** 距离回收价百分比 */
-    readonly distanceToStrikePercent: number;
+    readonly distanceToStrikePercent: string;
   };
 };
 
@@ -870,10 +827,16 @@ export type RiskCheckResult = {
  */
 export type UnrealizedLossData = {
   /** r1: 累计买入金额 */
-  readonly r1: number;
+  readonly r1: string;
 
   /** n1: 累计买入数量 */
   readonly n1: number;
+};
+
+/** 异步 owner 准备的未发布风险结果；最终 token 校验通过后才能同步 publish。 */
+export type PreparedUnrealizedLossData = {
+  readonly symbol: string;
+  readonly data: UnrealizedLossData;
 };
 
 /**
@@ -884,16 +847,16 @@ export type UnrealizedLossData = {
  */
 export type UnrealizedLossMetrics = {
   /** r1: 调整后的开仓成本 */
-  readonly r1: number;
+  readonly r1: string;
 
   /** n1: 持仓数量 */
   readonly n1: number;
 
   /** r2: 当前持仓市值 */
-  readonly r2: number;
+  readonly r2: string;
 
   /** 持仓盈亏（r2 - r1） */
-  readonly unrealizedPnL: number;
+  readonly unrealizedPnL: string;
 };
 
 /**
@@ -912,20 +875,6 @@ export type UnrealizedLossCheckResult = {
   /** 平仓数量 */
   readonly quantity?: number;
 };
-
-/**
- * 持仓缓存接口。
- * 类型用途：依赖注入用接口，提供基于标的代码的 O(1) 持仓查找，作为 LastState.positionCache 等类型。
- * 数据来源：由刷新流程根据 getStockPositions 结果调用 update 维护。
- * 使用范围：LastState、RiskChecker、业务事件链路等；全项目可引用。
- */
-export interface PositionCache {
-  /** 更新持仓缓存 */
-  update: (positions: ReadonlyArray<Position>) => void;
-
-  /** 获取指定标的的持仓 */
-  get: (symbol: string) => Position | null;
-}
 
 /**
  * 末日保护买入门禁最小契约。
@@ -998,7 +947,7 @@ export interface RiskChecker {
   /** 从透传的回收价设置牛熊证信息（不调用 API） */
   setWarrantInfoFromCallPrice: (
     symbol: string,
-    callPrice: number,
+    callPrice: string,
     isLongSymbol: boolean,
     symbolName?: string | null,
   ) => WarrantRefreshResult;
@@ -1016,28 +965,28 @@ export interface RiskChecker {
     readonly account: AccountSnapshot | null;
     readonly positions: ReadonlyArray<Position> | null;
     readonly signal: BuySignal;
-    readonly orderNotional: number;
+    readonly orderNotional: string;
   }) => RiskCheckResult;
 
   /** 牛熊证风险检查（距离回收价阈值） */
   checkWarrantRisk: (
     symbol: string,
     signalType: SignalType,
-    monitorCurrentPrice: number,
+    monitorCurrentPrice: string,
   ) => RiskCheckResult;
 
   /** 牛熊证距回收价清仓检查 */
   checkWarrantDistanceLiquidation: (
     symbol: string,
     isLongSymbol: boolean,
-    monitorCurrentPrice: number,
+    monitorCurrentPrice: string,
   ) => WarrantDistanceLiquidationResult;
 
   /** 获取牛熊证距离回收价信息（实时展示用） */
   getWarrantDistanceInfo: (
     isLongSymbol: boolean,
     seatSymbol: string,
-    monitorCurrentPrice: number | null,
+    monitorCurrentPrice: string | null,
   ) => WarrantDistanceInfo | null;
 
   /** 清空做多标的牛熊证信息缓存（换标时调用） */
@@ -1046,26 +995,28 @@ export interface RiskChecker {
   /** 清空做空标的牛熊证信息缓存（换标时调用） */
   clearShortWarrantInfo: () => void;
 
-  /** 刷新浮亏数据 */
-  refreshUnrealizedLossData: (
+  /** 无副作用准备 R1/N1；不得在异步返回后才判断是否已经污染缓存。 */
+  prepareUnrealizedLossData: (
     orderRecorder: OrderRecorder,
     symbol: string,
     isLongSymbol: boolean,
-    quote?: Quote | null,
-    dailyLossOffset?: number,
-  ) => Promise<void>;
+    dailyLossOffset: string,
+  ) => PreparedUnrealizedLossData;
+
+  /** 调用方完成最终 token/身份验证的同一同步段发布。 */
+  publishUnrealizedLossData: (prepared: PreparedUnrealizedLossData) => void;
 
   /** 浮亏检查（是否触发强平） */
   checkUnrealizedLoss: (
     symbol: string,
-    currentPrice: number,
+    currentPrice: string,
     isLongSymbol: boolean,
   ) => UnrealizedLossCheckResult;
 
   /** 获取实时浮亏指标（用于展示持仓市值与持仓盈亏） */
   getUnrealizedLossMetrics: (
     symbol: string,
-    currentPrice: number | null,
+    currentPrice: string | null,
   ) => UnrealizedLossMetrics | null;
 
   /** 清空浮亏缓存（symbol 为空时清空全部） */

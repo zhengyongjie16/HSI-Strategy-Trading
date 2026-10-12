@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { isExternalApiRequestError } from '../../src/utils/apiFailure/index.js';
 import { createStartupRecoveryHarness } from './strategyRecoveryStartup/appHarness.js';
 import { createRecoveryHarness } from './strategyRecoveryStartup/recoveryHarness.js';
+import type { StartupRecoveryHarness } from './strategyRecoveryStartup/types.js';
 
 /** 观察恢复错误原值，避免等待 app 运行结束前产生未处理拒绝。 */
 async function resultOf(promise: Promise<void>): Promise<unknown> {
@@ -14,11 +15,36 @@ async function resultOf(promise: Promise<void>): Promise<unknown> {
   }
 }
 
+/** 里程碑必须同时观察真实 app 提前退出，不能让内部 fatal 被 timeStarted 的未兑现掩盖成超时。 */
+async function waitForStartupTime(
+  app: StartupRecoveryHarness,
+  result: Promise<unknown>,
+): Promise<void> {
+  await Promise.race([
+    app.timeStarted,
+    result.then((error) => {
+      if (error instanceof Error) throw error;
+
+      if (error !== null) throw new Error('app failed before time owner started', { cause: error });
+
+      throw new Error('app exited before time owner started');
+    }),
+  ]);
+}
+
 describe('T28 recovery → startup controlled acceptance', () => {
   for (const scenario of ['accepted', 'conflict'] as const) {
     it(`${scenario}: real recovery stops and app rejects the same internal error without starting owners`, async () => {
-      const recovery = createRecoveryHarness(scenario);
-      const app = createStartupRecoveryHarness({ recover: recovery.recover });
+      let app: StartupRecoveryHarness | null = null;
+      const recovery = await createRecoveryHarness(scenario, () => {
+        if (app === null) throw new Error('App collaborators must be assembled before baseline');
+
+        return app.post;
+      });
+      app = createStartupRecoveryHarness({
+        recover: recovery.recover,
+        executionOwner: recovery.executionOwner,
+      });
       const result = resultOf(app.run());
       await recovery.entered;
       expect(recovery.runtime.runtimeState).toBe('BOOTSTRAPPING');
@@ -29,7 +55,19 @@ describe('T28 recovery → startup controlled acceptance', () => {
       expect(error).toBe(recovery.error());
       expect(error).toBeInstanceOf(Error);
       expect(isExternalApiRequestError(error)).toBe(false);
-      expect(String(error)).toContain(scenario === 'accepted' ? '终态未确认' : '成交事实');
+      if (scenario === 'accepted') {
+        expect(String(error)).toContain('终态未确认');
+      } else {
+        // Native positive q10/amount10 with an empty independent ledger has no trusted T.
+        // The real strict fact guard now rejects before the old late recovery text;
+        // a default q0 terminal regression must not conceal this missing-T boundary.
+        if (!(error instanceof Error)) throw new Error('expected native missing-T Error');
+
+        expect(error.message).toBe(
+          '[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision',
+        );
+      }
+
       expect(app.fatalState()).toEqual({ hasFatalError: true, error });
       expect(recovery.runtime.runtimeState).toBe('STOPPED');
       expect(recovery.runtime.closedOrderIds.size).toBe(0);
@@ -45,15 +83,23 @@ describe('T28 recovery → startup controlled acceptance', () => {
   }
 
   it('trusted zero execution: real settlement closes the order before recovery ACTIVE and ordinary owners start', async () => {
-    const recovery = createRecoveryHarness('zero');
-    const app = createStartupRecoveryHarness({ recover: recovery.recover });
+    let app: StartupRecoveryHarness | null = null;
+    const recovery = await createRecoveryHarness('zero', () => {
+      if (app === null) throw new Error('App collaborators must be assembled before baseline');
+
+      return app.post;
+    });
+    app = createStartupRecoveryHarness({
+      recover: recovery.recover,
+      executionOwner: recovery.executionOwner,
+    });
     const result = resultOf(app.run());
     await recovery.entered;
     expect(app.starts).toEqual([]);
     expect(recovery.runtime.runtimeState).toBe('BOOTSTRAPPING');
     expect(recovery.runtime.closedOrderIds.size).toBe(0);
     recovery.complete();
-    await app.timeStarted;
+    await waitForStartupTime(app, result);
     await Promise.resolve();
     expect(recovery.runtime.runtimeState).toBe('ACTIVE');
     expect(recovery.runtime.closedOrderIds.has('T28-BUY')).toBe(true);
@@ -86,13 +132,25 @@ describe('T28 recovery → startup controlled acceptance', () => {
 
   it('formal external request failure: app preserves error identity, closes trading and starts time owner only; real recovery is reusable', async () => {
     const brokerError = new Error('offline network unavailable');
-    const recovery = createRecoveryHarness('external', brokerError);
-    const app = createStartupRecoveryHarness({ recover: recovery.recover });
+    let app: StartupRecoveryHarness | null = null;
+    const recovery = await createRecoveryHarness(
+      'external',
+      () => {
+        if (app === null) throw new Error('App collaborators must be assembled before baseline');
+
+        return app.post;
+      },
+      brokerError,
+    );
+    app = createStartupRecoveryHarness({
+      recover: recovery.recover,
+      executionOwner: recovery.executionOwner,
+    });
     const result = resultOf(app.run());
     await recovery.entered;
     expect(app.starts).toEqual([]);
     recovery.complete();
-    await app.timeStarted;
+    await waitForStartupTime(app, result);
     expect(recovery.runtime.runtimeState).toBe('STOPPED');
     const externalError = recovery.error();
     expect(externalError).toBeInstanceOf(Error);

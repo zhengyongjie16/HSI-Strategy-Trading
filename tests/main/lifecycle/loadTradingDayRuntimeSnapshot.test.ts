@@ -1,3 +1,5 @@
+import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+
 /**
  * 交易日运行时快照加载单元测试
  *
@@ -8,12 +10,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType, WarrantStatus, WarrantType } from 'longbridge';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createEmptySnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
-import { createQuoteContextMock } from '../../../mock/longbridge/quoteContextMock.js';
-import { toMockDecimal } from '../../../mock/longbridge/decimal.js';
+
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import { TRADING } from '../../../src/constants/index.js';
 import { createSeatActivationDispatcher } from '../../../src/main/seatActivationDispatcher/index.js';
@@ -28,17 +30,20 @@ import type {
 } from '../../../src/main/lifecycle/types.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { LastState } from '../../../src/types/state.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type {
+  RawOrderFromAPI,
+  MarketQuoteContext,
+  BullBearWarrantType,
+} from '../../../src/types/services.js';
+import type { MarketWarrantListRequest } from '../../../src/types/marketPorts.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { MixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/types.js';
-import type { ProtectiveOrderParams } from './types.js';
 import { createTradingConfig as createTradingConfigFactory } from '../../../mock/factories/configFactory.js';
 import {
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
-  createPositionCacheDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteContextDouble,
   createSeatActivationDispatcherDouble,
@@ -63,9 +68,6 @@ function createMinimalLastState(): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set<string>(),
@@ -97,11 +99,32 @@ function createBaseDeps(
   overrides: Partial<LoadTradingDayRuntimeSnapshotDeps> = {},
 ): LoadTradingDayRuntimeSnapshotDeps {
   const tradingConfig = overrides.tradingConfig ?? createTradingConfig();
+  const trader = overrides.trader ?? createTraderDouble();
+  const lastState = overrides.lastState ?? createMinimalLastState();
+  const termination = createTerminationRuntime({
+    closeTradingGate: () => {
+      lastState.isTradingEnabled = false;
+    },
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+  const reportFatalError = overrides.reportFatalError ?? termination.reportFatalError;
+  const snapshot =
+    overrides.snapshot ??
+    createEmptySnapshotFixture({
+      reportFatalError,
+      readPort: {
+        getAccountSnapshot: () => trader.getAccountSnapshot(),
+        getStockPositions: () => trader.getStockPositions(),
+      },
+    });
 
   return {
+    snapshot,
     marketDataClient: overrides.marketDataClient ?? createMarketDataClientDouble(),
-    trader: overrides.trader ?? createTraderDouble(),
-    lastState: overrides.lastState ?? createMinimalLastState(),
+    trader,
+    lastState,
     tradingConfig,
     symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry(tradingConfig.monitor),
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
@@ -116,7 +139,7 @@ function createBaseDeps(
     warrantListCacheConfig: overrides.warrantListCacheConfig ?? createWarrantListCacheConfig(),
     seatActivationDispatcher:
       overrides.seatActivationDispatcher ?? createSeatActivationDispatcherDouble(),
-    reportFatalError: overrides.reportFatalError ?? (() => {}),
+    reportFatalError,
   };
 }
 
@@ -137,7 +160,7 @@ function createReadyTrader(
   overrides: Partial<LoadTradingDayRuntimeSnapshotDeps['trader']> = {},
 ): LoadTradingDayRuntimeSnapshotDeps['trader'] {
   return createTraderDouble({
-    getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+    getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
     getStockPositions: async () => [],
     fetchAllOrdersFromAPI: async () => [],
     ...overrides,
@@ -151,6 +174,7 @@ function createLoadParams(
     requireTradingDay: false,
     resetRuntimeSubscriptions: false,
     hydrateCooldownFromTradeLog: false,
+    source: 'STARTUP',
     ...overrides,
     now: overrides.now ?? new Date(),
   };
@@ -158,7 +182,7 @@ function createLoadParams(
 
 async function expectPromiseToRejectWithMessage(
   promise: Promise<unknown>,
-  messagePattern: RegExp,
+  messagePattern: RegExp | string,
 ): Promise<void> {
   try {
     await promise;
@@ -167,11 +191,15 @@ async function expectPromiseToRejectWithMessage(
       throw error;
     }
 
-    expect(error.message).toMatch(messagePattern);
+    if (typeof messagePattern === 'string') expect(error.message).toBe(messagePattern);
+    else expect(error.message).toMatch(messagePattern);
+
     return;
   }
 
-  throw new Error(`Expected promise to reject with message matching ${messagePattern.source}`);
+  throw new Error(
+    `Expected promise to reject with message matching ${typeof messagePattern === 'string' ? messagePattern : messagePattern.source}`,
+  );
 }
 
 function createProtectiveMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitor'] {
@@ -186,63 +214,102 @@ function createAutoSearchMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingCo
     monitorSymbol: 'HSI.HK',
     autoSearchConfig: {
       autoSearchEnabled: true,
-      autoSearchMinDistancePctBull: 0.35,
-      autoSearchMinDistancePctBear: -0.35,
-      autoSearchMinTurnoverPerMinuteBull: 100_000,
-      autoSearchMinTurnoverPerMinuteBear: 100_000,
+      autoSearchMinDistancePctBull: '0.35',
+      autoSearchMinDistancePctBear: '-0.35',
+      autoSearchMinTurnoverPerMinuteBull: '100000',
+      autoSearchMinTurnoverPerMinuteBear: '100000',
       autoSearchExpiryMinMonths: 3,
       autoSearchOpenDelayMinutes: 5,
       switchIntervalMinutes: 0,
-      switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-      switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+      switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+      switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
     },
   });
 }
 
 function createWarrantInfo(params: {
   readonly symbol: string;
-  readonly warrantType: WarrantType;
-  readonly apiDistanceRatio: number;
-  readonly turnover: number;
-  readonly callPrice: number;
-}): Parameters<ReturnType<typeof createQuoteContextMock>['seedWarrantList']>[1][number] {
-  const warrantType = params.warrantType === WarrantType.Bull ? 'Bull' : 'Bear';
+  readonly warrantType: 'Bull' | 'Bear';
+  readonly apiDistanceRatio: string;
+  readonly turnover: string;
+  readonly callPrice: string;
+}): Awaited<ReturnType<MarketQuoteContext['warrantList']>>[number] {
   return {
     symbol: params.symbol,
     name: params.symbol,
-    lastDone: toMockDecimal(0.1),
-    toCallPrice: toMockDecimal(params.apiDistanceRatio),
-    turnover: toMockDecimal(params.turnover),
-    callPrice: toMockDecimal(params.callPrice),
-    warrantType,
-    status: WarrantStatus.Normal,
+    lastDone: '0.1',
+    toCallPrice: params.apiDistanceRatio,
+    turnover: params.turnover,
+    callPrice: params.callPrice,
+    warrantType: params.warrantType,
+    status: 'NORMAL',
   };
 }
 
-function toApiDistanceRatio(percentValue: number): number {
-  return percentValue / 100;
+function createWarrantQuoteContextHarness() {
+  const lists = new Map<string, Awaited<ReturnType<MarketQuoteContext['warrantList']>>>();
+  const calls: Parameters<MarketQuoteContext['warrantList']>[0][] = [];
+  const port: MarketQuoteContext = createQuoteContextDouble({
+    warrantList: async (request) => {
+      calls.push(request);
+      return (lists.get(request.symbol) ?? []).filter((item) =>
+        request.types.includes(item.warrantType === 'Bull' ? 'BULL' : 'BEAR'),
+      );
+    },
+  });
+  return {
+    port,
+    seedWarrantList: (
+      symbol: string,
+      items: Awaited<ReturnType<MarketQuoteContext['warrantList']>>,
+    ) => {
+      lists.set(symbol, items);
+    },
+    getCalls: (_method: 'warrantList') => calls,
+  };
 }
 
-function createProtectiveOrder(params: ProtectiveOrderParams): RawOrderFromAPI {
-  const updatedAt = params.updatedAtMs === undefined ? null : new Date(params.updatedAtMs);
-  const submittedAt =
-    params.updatedAtMs === undefined ? null : new Date(params.updatedAtMs - 30_000);
+/** 原生 query mapper 生成 phase/累计事实；空流水保留未知 T，由 recovery 匹配真实持久化证据。 */
+async function createProtectiveOrder(
+  params: Pick<
+    RawOrderFromAPI,
+    | 'orderId'
+    | 'executionStatus'
+    | 'price'
+    | 'quantity'
+    | 'executedPrice'
+    | 'executedQuantity'
+    | 'executedAmount'
+    | 'executionTimeMs'
+    | 'updatedAtMs'
+  > &
+    Readonly<{ status: 'New' | 'Filled' | 'PartialFilled' | 'Canceled'; side?: 'BUY' | 'SELL' }>,
+): Promise<RawOrderFromAPI> {
+  if (params.price === null || params.executedPrice === null)
+    throw new Error('Scene must supply exact native price texts');
 
-  return {
+  const ingress = await createBrokerIngressFixture({
     orderId: params.orderId,
+    tradeId: params.orderId + '-trade',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
-    side: OrderSide.Sell,
+    remark: params.side === 'BUY' ? 'AUTO' : 'AUTO|PL',
+    side: params.side ?? 'SELL',
     status: params.status,
-    orderType: OrderType.MO,
-    remark: 'AUTO|PL',
-    price: params.price,
-    quantity: params.quantity,
+    submittedPrice: params.price,
+    quantity: String(params.quantity),
     executedPrice: params.executedPrice,
-    executedQuantity: params.executedQuantity,
-    submittedAt,
-    updatedAt,
-  };
+    executedQuantity: String(params.executedQuantity),
+    submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
+    executionTimeMs: params.executionTimeMs,
+    updatedAtMs: params.updatedAtMs,
+  });
+  expect(ingress.queryObservation.executionTimeMs).toBe(params.executionTimeMs);
+  expect(ingress.queryObservation.updatedAtMs).toBe(params.updatedAtMs);
+  expect(ingress.queryObservation.executedAmount).toBe(params.executedAmount);
+  expect(ingress.queryObservation.executionStatus).toBe(params.executionStatus);
+  expect(ingress.readCounts()).toEqual({ today: 1, history: 0 });
+  return ingress.queryObservation;
 }
 
 function createBoundaryCaptureDailyLossTracker(
@@ -254,8 +321,34 @@ function createBoundaryCaptureDailyLossTracker(
     >,
   ) => void,
 ): LoadTradingDayRuntimeSnapshotDeps['dailyLossTracker'] {
-  return createDailyLossTrackerDouble({
-    recalculateFromAllOrders: (_allOrders, _monitor, _now, protectionBoundaryByDirection) => {
+  const tracker = createDailyLossTracker({
+    ...createDailyLossOrderAnalysisDeps(),
+    resolveOrderOwnership: (order) => {
+      if (order.symbol === 'BULL.HK') return { monitorSymbol: 'HSI.HK', direction: 'LONG' };
+
+      if (order.symbol === 'BEAR.HK') return { monitorSymbol: 'HSI.HK', direction: 'SHORT' };
+
+      return null;
+    },
+    toHongKongTimeIso,
+  });
+  return {
+    ...tracker,
+    recalculateFromAllOrders: (
+      allOrders,
+      monitor,
+      now,
+      protectionBoundaryByDirection,
+      relatedTradingSymbols,
+    ) => {
+      tracker.recalculateFromAllOrders(
+        allOrders,
+        monitor,
+        now,
+        protectionBoundaryByDirection,
+        relatedTradingSymbols,
+      );
+
       if (protectionBoundaryByDirection === undefined) {
         return;
       }
@@ -263,12 +356,14 @@ function createBoundaryCaptureDailyLossTracker(
       onCapture(protectionBoundaryByDirection);
     },
     restoreProtectionBoundary: (prepared) => {
+      tracker.restoreProtectionBoundary(prepared);
       onCapture(new Map([[prepared.direction, prepared.boundaryExecutedTimeMs]]));
     },
     commitProtectionBoundary: (prepared) => {
+      tracker.commitProtectionBoundary(prepared);
       onCapture(new Map([[prepared.direction, prepared.boundaryExecutedTimeMs]]));
     },
-  });
+  };
 }
 
 function createCompletionRecord(params: {
@@ -579,8 +674,10 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(result.error).toBe(internalError);
     expect(reportFatalErrors).toEqual([internalError]);
     // 无半提交：失败时不得写入账户缓存，也不得继续拉取订单。
-    expect(lastState.cachedAccount).toBeNull();
-    expect(lastState.cachedPositions).toEqual([]);
+    expect(deps.snapshot.getView().account).toBeNull();
+    expect(deps.snapshot.getView().positions).toEqual([]);
+    expect(deps.snapshot.getView().accountInitialized).toBe(false);
+    expect(deps.snapshot.getView().positionsInitialized).toBe(false);
     expect(fetchAllOrdersCalled).toBe(false);
   });
 
@@ -619,34 +716,35 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(caught).toBe(externalError);
     expect(reportFatalErrors).toEqual([]);
-    expect(lastState.cachedAccount).toBeNull();
+    expect(deps.snapshot.getView().account).toBeNull();
+    expect(deps.snapshot.getView().accountInitialized).toBe(false);
     expect(fetchAllOrdersCalled).toBe(false);
   });
 
   it('only runs startup auto-search after continuous session and morning delay are both satisfied', async () => {
     const monitor = createAutoSearchMonitor();
     const tradingConfig = createTradingConfig(monitor);
-    const quoteContext = createQuoteContextMock();
+    const quoteContext = createWarrantQuoteContextHarness();
     quoteContext.seedWarrantList('HSI.HK', [
       createWarrantInfo({
         symbol: 'AUTO_BULL.HK',
-        warrantType: WarrantType.Bull,
-        apiDistanceRatio: toApiDistanceRatio(0.55),
-        turnover: 30_000_000,
-        callPrice: 20_500,
+        warrantType: 'Bull',
+        apiDistanceRatio: '0.0055',
+        turnover: '30000000',
+        callPrice: '20500',
       }),
       createWarrantInfo({
         symbol: 'AUTO_BEAR.HK',
-        warrantType: WarrantType.Bear,
-        apiDistanceRatio: toApiDistanceRatio(-0.55),
-        turnover: 30_000_000,
-        callPrice: 19_500,
+        warrantType: 'Bear',
+        apiDistanceRatio: '-0.0055',
+        turnover: '30000000',
+        callPrice: '19500',
       }),
     ]);
 
     let isTradingDayCalls = 0;
     const marketDataClient = createMarketDataClientDouble({
-      getQuoteContext: async () => createQuoteContextDouble(quoteContext),
+      getQuoteContext: async () => quoteContext.port,
       isTradingDay: async () => {
         isTradingDayCalls += 1;
         return { isTradingDay: true, isHalfDay: false };
@@ -697,6 +795,19 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     expect(isTradingDayCalls).toBe(0);
     expect(quoteContext.getCalls('warrantList')).toHaveLength(2);
+    const requestedTypes: ReadonlyArray<BullBearWarrantType> = ['BULL', 'BEAR'];
+    expect(quoteContext.getCalls('warrantList')).toEqual(
+      requestedTypes.map<MarketWarrantListRequest>((type) => ({
+        symbol: 'HSI.HK',
+        sortBy: 'TURNOVER',
+        sortOrder: 'DESCENDING',
+        types: [type],
+        issuerIds: null,
+        expiryFilters: ['MONTHS_3_TO_6', 'MONTHS_6_TO_12', 'OVER_12_MONTHS'],
+        inOutBoundsTypes: ['IN'],
+        status: ['NORMAL'],
+      })),
+    );
     expect(allowedDeps.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
     expect(allowedDeps.symbolRegistry.getSeatState('SHORT').status).toBe('ACTIVATING');
   });
@@ -704,26 +815,26 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
   it('schedules SEAT_REFRESH for ACTIVATING seats restored during recovery', async () => {
     const monitor = createAutoSearchMonitor();
     const tradingConfig = createTradingConfig(monitor);
-    const quoteContext = createQuoteContextMock();
+    const quoteContext = createWarrantQuoteContextHarness();
     quoteContext.seedWarrantList('HSI.HK', [
       createWarrantInfo({
         symbol: 'AUTO_BULL.HK',
-        warrantType: WarrantType.Bull,
-        apiDistanceRatio: toApiDistanceRatio(0.55),
-        turnover: 30_000_000,
-        callPrice: 20_500,
+        warrantType: 'Bull',
+        apiDistanceRatio: '0.0055',
+        turnover: '30000000',
+        callPrice: '20500',
       }),
       createWarrantInfo({
         symbol: 'AUTO_BEAR.HK',
-        warrantType: WarrantType.Bear,
-        apiDistanceRatio: toApiDistanceRatio(-0.55),
-        turnover: 30_000_000,
-        callPrice: 19_500,
+        warrantType: 'Bear',
+        apiDistanceRatio: '-0.0055',
+        turnover: '30000000',
+        callPrice: '19500',
       }),
     ]);
 
     const marketDataClient = createMarketDataClientDouble({
-      getQuoteContext: async () => createQuoteContextDouble(quoteContext),
+      getQuoteContext: async () => quoteContext.port,
     });
     const lastState = createMinimalLastState();
     lastState.cachedTradingDayInfo = {
@@ -732,7 +843,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     };
     const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const snapshot = createEmptySnapshotFixture({ readPort: createReadyTrader() });
     const seatActivationDispatcher = createSeatActivationDispatcher({
+      snapshot,
       termination: {
         isTerminated: () => false,
         reportFatalError: (error) => {
@@ -749,6 +862,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       trader: createReadyTrader(),
       symbolRegistry,
       seatActivationDispatcher,
+      snapshot,
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
@@ -876,7 +990,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       dailyLossTracker: createDailyLossTrackerDouble({
         recalculateFromAllOrders: (receivedOrders, _monitor, _now, receivedSegments) => {
           callOrder.push('recalculate');
-          expect(receivedOrders).toBe(allOrders);
+          expect(receivedOrders).toEqual(allOrders);
           expect(receivedSegments).toBeInstanceOf(Map);
         },
       }),
@@ -905,28 +1019,36 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const protectiveRevisionMs = Date.parse('2026-03-13T02:30:00.000Z');
     const monitor = createProtectiveMonitor();
     const ordinaryOrder: RawOrderFromAPI = {
-      ...createProtectiveOrder({
+      ...(await createProtectiveOrder({
         orderId: 'ordinary-in-day-missing-updated-at',
-        status: OrderStatus.Filled,
-        price: 10,
+        side: 'BUY',
+        status: 'Filled',
+        executionStatus: 'FILLED',
+        price: '10',
         quantity: 10,
-        executedPrice: 10,
+        executedPrice: '10',
         executedQuantity: 10,
         updatedAtMs: protectiveRevisionMs,
-      }),
-      side: OrderSide.Buy,
-      orderType: OrderType.ELO,
+
+        executedAmount: '100',
+        executionTimeMs: null,
+      })),
       remark: 'AUTO',
       updatedAt: null,
+      updatedAtMs: Number.NaN,
     };
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-progress-after-daily-loss-preflight',
-      status: OrderStatus.PartialFilled,
-      price: 9,
+      status: 'PartialFilled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 5,
       updatedAtMs: protectiveRevisionMs,
+
+      executedAmount: '45',
+      executionTimeMs: null,
     });
     const actualDailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
@@ -1066,14 +1188,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       createProtectiveTrackerRecorder();
     let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
 
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-canceled-1',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 10,
       updatedAtMs: executedAtMs,
+
+      executedAmount: '90',
+      executionTimeMs: null,
     });
 
     const deps = createBaseDeps({
@@ -1092,7 +1218,10 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(createLoadParams({ now }));
+    await expectPromiseToRejectWithMessage(
+      load(createLoadParams({ now })),
+      '[DailyLossTracker] 已成交订单缺少可信真实 execution time: protective-canceled-1',
+    );
 
     expect(restoreCompletedCalls).toHaveLength(0);
     expect(restoreInProgressCalls).toHaveLength(0);
@@ -1108,14 +1237,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       createProtectiveTrackerRecorder();
     let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
 
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-partial-1',
-      status: OrderStatus.PartialFilled,
-      price: 9,
+      status: 'PartialFilled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 5,
       updatedAtMs: executedAtMs,
+
+      executedAmount: '45',
+      executionTimeMs: null,
     });
 
     const deps = createBaseDeps({
@@ -1164,7 +1297,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(receivedBoundaryMap?.size).toBe(0);
   });
 
-  it('restores the persisted boundary but blocks an unpersisted pending execution without exact time', async () => {
+  it('prevalidates an unpersisted pending execution before restoring the persisted boundary', async () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const completedBoundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
     const pendingLatestExecutedMs = Date.parse('2026-03-13T02:30:00.000Z');
@@ -1174,23 +1307,31 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       createProtectiveTrackerRecorder();
     let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
 
-    const completedOrder = createProtectiveOrder({
+    const completedOrder = await createProtectiveOrder({
       orderId: 'protective-completed-1',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 10,
       updatedAtMs: completedBoundaryMs,
+
+      executedAmount: '90',
+      executionTimeMs: null,
     });
-    const pendingOrder = createProtectiveOrder({
+    const pendingOrder = await createProtectiveOrder({
       orderId: 'protective-pending-1',
-      status: OrderStatus.PartialFilled,
-      price: 8.8,
+      status: 'PartialFilled',
+      executionStatus: 'PARTIAL',
+      price: '8.8',
       quantity: 10,
-      executedPrice: 8.8,
+      executedPrice: '8.8',
       executedQuantity: 5,
       updatedAtMs: pendingLatestExecutedMs,
+
+      executedAmount: '44',
+      executionTimeMs: null,
     });
 
     const deps = createBaseDeps({
@@ -1228,24 +1369,19 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    expect(
+    await expectPromiseToRejectWithMessage(
       load(
         createLoadParams({
           now,
           hydrateCooldownFromTradeLog: true,
         }),
       ),
-    ).rejects.toThrow(/缺少精确成交时间.*protective-pending-1/);
+      '[DailyLossTracker] 已成交订单缺少可信真实 execution time: protective-pending-1',
+    );
 
-    expect(restoreCompletedCalls).toEqual([
-      {
-        direction: 'LONG',
-        boundaryExecutedTimeMs: completedBoundaryMs,
-      },
-    ]);
-
+    expect(restoreCompletedCalls).toEqual([]);
     expect(restoreInProgressCalls).toEqual([]);
-    expect(receivedBoundaryMap?.get('LONG')).toBe(completedBoundaryMs);
+    expect(receivedBoundaryMap?.get('LONG')).toBeUndefined();
   });
 
   it('fails startup recovery when a completion omits a collapsed cross-boundary ordinary BUY baseline', async () => {
@@ -1254,28 +1390,35 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const finalExecutionMs = boundaryMs + 60_000;
     const monitor = createProtectiveMonitor();
     const ordinaryBuy: RawOrderFromAPI = {
-      ...createProtectiveOrder({
+      ...(await createProtectiveOrder({
         orderId: 'ordinary-buy-crossing-persisted-boundary',
-        status: OrderStatus.Filled,
-        price: 16,
+        side: 'BUY',
+        status: 'Filled',
+        executionStatus: 'FILLED',
+        price: '16',
         quantity: 100,
-        executedPrice: 16,
+        executedPrice: '16',
         executedQuantity: 100,
         updatedAtMs: finalExecutionMs,
-      }),
-      side: OrderSide.Buy,
-      orderType: OrderType.ELO,
+
+        executedAmount: '1600',
+        executionTimeMs: finalExecutionMs,
+      })),
       remark: 'AUTO',
       submittedAt: new Date(boundaryMs - 60_000),
     };
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-sell-at-persisted-boundary',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 40,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 40,
       updatedAtMs: boundaryMs,
+
+      executedAmount: '360',
+      executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
@@ -1325,28 +1468,35 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const finalExecutionMs = boundaryMs + 60_000;
     const monitor = createProtectiveMonitor();
     const ordinaryBuy: RawOrderFromAPI = {
-      ...createProtectiveOrder({
+      ...(await createProtectiveOrder({
         orderId: 'ordinary-buy-crossing-restored-boundary',
-        status: OrderStatus.Filled,
-        price: 16,
+        side: 'BUY',
+        status: 'Filled',
+        executionStatus: 'FILLED',
+        price: '16',
         quantity: 100,
-        executedPrice: 16,
+        executedPrice: '16',
         executedQuantity: 100,
         updatedAtMs: finalExecutionMs,
-      }),
-      side: OrderSide.Buy,
-      orderType: OrderType.ELO,
+
+        executedAmount: '1600',
+        executionTimeMs: finalExecutionMs,
+      })),
       remark: 'AUTO',
       submittedAt: new Date(boundaryMs - 120_000),
     };
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-sell-at-restored-boundary',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 40,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 40,
       updatedAtMs: boundaryMs,
+
+      executedAmount: '360',
+      executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
@@ -1394,8 +1544,15 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
     );
 
-    expect(snapshot.allOrders).toEqual([ordinaryBuy, protectiveOrder]);
-    expect(dailyLossTracker.getLossOffset('LONG')).toBe(0);
+    expect(snapshot.status).toBe('COMMITTED');
+    if (snapshot.status !== 'COMMITTED') throw new Error('Expected committed load receipt');
+
+    expect(snapshot.snapshotToken).toEqual(deps.snapshot.getView().token);
+    expect(snapshot.allOrders).toEqual([
+      ordinaryBuy,
+      { ...protectiveOrder, executionTimeMs: boundaryMs },
+    ]);
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
   });
 
   it('restores hydrated protective boundary from direction-only key', async () => {
@@ -1446,14 +1603,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const appendedRecords: Array<
       Parameters<MixedTradeLogRepository['appendCompletionIdempotent']>[0]
     > = [];
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-foreign-completion-progress',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 5,
       updatedAtMs: orderRevisionMs,
+
+      executedAmount: '45',
+      executionTimeMs: null,
     });
     const deps = createBaseDeps({
       tradingConfig: createTradingConfig(monitor),
@@ -1532,15 +1693,19 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       Parameters<MixedTradeLogRepository['appendCompletionIdempotent']>[0]
     > = [];
     const ordinarySellOrder: RawOrderFromAPI = {
-      ...createProtectiveOrder({
+      ...(await createProtectiveOrder({
         orderId: 'ordinary-sell-forged-progress',
-        status: OrderStatus.Canceled,
-        price: 9,
+        status: 'Canceled',
+        executionStatus: 'PARTIAL',
+        price: '9',
         quantity: 10,
-        executedPrice: 9,
+        executedPrice: '9',
         executedQuantity: 5,
         updatedAtMs: orderRevisionMs,
-      }),
+
+        executedAmount: '45',
+        executionTimeMs: null,
+      })),
       remark: 'AUTO',
     };
     const deps = createBaseDeps({
@@ -1596,16 +1761,21 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const executedAtMs = Date.parse('2026-03-13T02:30:00.000Z');
     const monitor = createProtectiveMonitor();
+    let hydrateCalls = 0;
     const unmatchedProtectiveOrder: RawOrderFromAPI = {
-      ...createProtectiveOrder({
+      ...(await createProtectiveOrder({
         orderId: 'protective-unmatched-1',
-        status: OrderStatus.Canceled,
-        price: 9,
+        status: 'Canceled',
+        executionStatus: 'PARTIAL',
+        price: '9',
         quantity: 10,
-        executedPrice: 9,
+        executedPrice: '9',
         executedQuantity: 10,
         updatedAtMs: executedAtMs,
-      }),
+
+        executedAmount: '90',
+        executionTimeMs: null,
+      })),
       stockName: 'UNMATCHED RC',
     };
     const deps = createBaseDeps({
@@ -1614,7 +1784,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         fetchAllOrdersFromAPI: async () => [unmatchedProtectiveOrder],
       }),
       tradeLogHydrator: {
-        hydrate: () => {},
+        hydrate: () => {
+          hydrateCalls += 1;
+        },
       },
     });
 
@@ -1624,38 +1796,78 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       await load(createLoadParams({ now }));
       throw new Error('expected loadTradingDayRuntimeSnapshot to reject');
     } catch (error) {
-      expect((error as Error).message).toContain('保护性清仓订单无法归属到唯一监控标的');
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw error;
+
+      expect(error.message).toBe(
+        '[DailyLossTracker] 相关成交订单无法归属: monitorSymbol=HSI.HK symbol=BULL.HK orderId=protective-unmatched-1',
+      );
+      expect(hydrateCalls).toBe(0);
     }
   });
 
   it('fails fast when protective order misses updatedAt during recovery', async () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const monitor = createProtectiveMonitor();
-    const protectiveOrder = createProtectiveOrder({
+    let hydrateCalls = 0;
+    const ingress = await createBrokerIngressFixture({
       orderId: 'protective-missing-updated-at-1',
-      status: OrderStatus.Canceled,
-      price: 9,
-      quantity: 10,
-      executedPrice: 9,
-      executedQuantity: 10,
+      tradeId: 'protective-missing-revision-trade',
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC',
+      remark: 'AUTO|PL',
+      side: 'SELL',
+      status: 'Canceled',
+      submittedPrice: '9',
+      quantity: '10',
+      executedPrice: '9',
+      executedQuantity: '10',
+      submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
+      executionTimeMs: null,
+      updatedAtMs: Date.parse('2026-03-13T02:01:00.000Z'),
     });
+    const query = ingress.createQueryOrdersReader();
+    ingress.setQueryUpdatedAtMs(Number.NaN);
+    expect(ingress.nativeReadCounts().detail).toBe(0);
+    let queryFailure: unknown = null;
     const deps = createBaseDeps({
       tradingConfig: createTradingConfig(monitor),
       trader: createReadyTrader({
-        fetchAllOrdersFromAPI: async () => [protectiveOrder],
+        fetchAllOrdersFromAPI: async () => {
+          try {
+            return await query();
+          } catch (error) {
+            queryFailure = error;
+            throw error;
+          }
+        },
       }),
       tradeLogHydrator: {
         hydrate: () => {},
       },
     });
 
-    const load = createLoadTradingDayRuntimeSnapshot(deps);
+    const load = createLoadTradingDayRuntimeSnapshot({
+      ...deps,
+      tradeLogHydrator: {
+        hydrate: () => {
+          hydrateCalls += 1;
+        },
+      },
+    });
 
     try {
       await load(createLoadParams({ now }));
       throw new Error('expected loadTradingDayRuntimeSnapshot to reject');
     } catch (error) {
-      expect((error as Error).message).toContain('保护性清仓订单缺少有效更新时间');
+      expect(error).toBe(queryFailure);
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw error;
+
+      expect(error.message).toBe('[orderMapper] invalid updatedAt');
+      expect(ingress.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+      expect(ingress.nativeMutations()).toEqual([]);
+      expect(hydrateCalls).toBe(0);
     }
   });
 
@@ -1669,14 +1881,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     let receivedBoundaryMap: ReadonlyMap<string, number> | undefined;
     const appendedBoundaryMs: number[] = [];
 
-    const completedOrder = createProtectiveOrder({
+    const completedOrder = await createProtectiveOrder({
       orderId: 'protective-completed-newer-1',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 10,
       updatedAtMs: newerCompletedFillMs,
+
+      executedAmount: '90',
+      executionTimeMs: null,
     });
 
     const deps = createBaseDeps({
@@ -1703,23 +1919,19 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    expect(
+    await expectPromiseToRejectWithMessage(
       load(
         createLoadParams({
           now,
           hydrateCooldownFromTradeLog: true,
         }),
       ),
-    ).rejects.toThrow(/缺少精确成交时间.*protective-completed-newer-1/);
+      '[DailyLossTracker] 已成交订单缺少可信真实 execution time: protective-completed-newer-1',
+    );
 
-    expect(restoreCompletedCalls).toEqual([
-      {
-        direction: 'LONG',
-        boundaryExecutedTimeMs: hydratedBoundaryMs,
-      },
-    ]);
+    expect(restoreCompletedCalls).toEqual([]);
     expect(appendedBoundaryMs).toEqual([]);
-    expect(receivedBoundaryMap?.get('LONG')).toBe(hydratedBoundaryMs);
+    expect(receivedBoundaryMap?.get('LONG')).toBeUndefined();
   });
 
   it('restores an old partial-canceled episode while a zero-fill protective order is still pending', async () => {
@@ -1732,23 +1944,31 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       tradingConfig: createTradingConfig(monitor),
       trader: createReadyTrader({
         fetchAllOrdersFromAPI: async () => [
-          createProtectiveOrder({
+          await createProtectiveOrder({
             orderId: 'protective-old-partial-canceled',
-            status: OrderStatus.Canceled,
-            price: 9,
+            status: 'Canceled',
+            executionStatus: 'PARTIAL',
+            price: '9',
             quantity: 10,
-            executedPrice: 9,
+            executedPrice: '9',
             executedQuantity: 5,
             updatedAtMs: oldPartialUpdatedAtMs,
+
+            executedAmount: '45',
+            executionTimeMs: null,
           }),
-          createProtectiveOrder({
+          await createProtectiveOrder({
             orderId: 'protective-zero-pending',
-            status: OrderStatus.New,
-            price: 8.8,
+            status: 'New',
+            executionStatus: 'NONE',
+            price: '8.8',
             quantity: 10,
-            executedPrice: 0,
+            executedPrice: '0',
             executedQuantity: 0,
             updatedAtMs: pendingUpdatedAtMs,
+
+            executedAmount: '0',
+            executionTimeMs: null,
           }),
         ],
       }),
@@ -1803,14 +2023,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const orderRevisionMs = Date.parse('2026-03-13T02:30:00.000Z');
     const lastExecutionTimeMs = orderRevisionMs - 10_000;
     const monitor = createProtectiveMonitor();
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-crash-gap-exact',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 5,
       updatedAtMs: orderRevisionMs,
+
+      executedAmount: '45',
+      executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
@@ -1874,14 +2098,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const lastExecutionTimeMs = orderRevisionMs - 10_000;
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-trade-log-recovery-'));
     const monitor = createProtectiveMonitor();
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'file-backed-protective-recovery',
-      status: OrderStatus.Canceled,
-      price: 9,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9',
       quantity: 10,
-      executedPrice: 9,
+      executedPrice: '9',
       executedQuantity: 5,
       updatedAtMs: orderRevisionMs,
+
+      executedAmount: '45',
+      executionTimeMs: null,
     });
     const createDailyLossTrackerForRecovery = () =>
       createDailyLossTracker({
@@ -1963,14 +2191,18 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const revisionMs = Date.parse('2026-03-13T02:30:00.000Z');
     const monitor = createProtectiveMonitor();
-    const protectiveOrder = createProtectiveOrder({
+    const protectiveOrder = await createProtectiveOrder({
       orderId: 'protective-same-revision-correction',
-      status: OrderStatus.Canceled,
-      price: 9.4,
+      status: 'Canceled',
+      executionStatus: 'PARTIAL',
+      price: '9.4',
       quantity: 10,
-      executedPrice: 9.4,
+      executedPrice: '9.4',
       executedQuantity: 5,
       updatedAtMs: revisionMs,
+
+      executedAmount: '47',
+      executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),

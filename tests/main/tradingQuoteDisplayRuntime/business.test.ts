@@ -74,7 +74,7 @@ describe('tradingQuoteDisplayRuntime', () => {
             }
           };
         },
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       },
       symbolRegistry,
       monitorContext,
@@ -90,7 +90,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     runtime.start();
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
 
     await waitTick();
@@ -137,7 +137,7 @@ describe('tradingQuoteDisplayRuntime', () => {
             }
           };
         },
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       },
       symbolRegistry,
       monitorContext: createMonitorContextDouble({ symbolRegistry }),
@@ -164,12 +164,12 @@ describe('tradingQuoteDisplayRuntime', () => {
 
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
 
     quoteUpdatedListener?.({
       symbol: 'NEXT_BULL.HK',
-      quote: createQuoteDouble('NEXT_BULL.HK', 1.02),
+      quote: createQuoteDouble('NEXT_BULL.HK', '1.02'),
     });
     await waitTick();
 
@@ -206,7 +206,7 @@ describe('tradingQuoteDisplayRuntime', () => {
       logger: createDisplayLogger(),
       marketDataClient: {
         onQuoteUpdated: () => () => {},
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       },
       symbolRegistry,
       monitorContext: createMonitorContextDouble({
@@ -249,7 +249,7 @@ describe('tradingQuoteDisplayRuntime', () => {
             }
           };
         },
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       },
       symbolRegistry,
       monitorContext: createMonitorContextDouble({ symbolRegistry }),
@@ -282,7 +282,7 @@ describe('tradingQuoteDisplayRuntime', () => {
 
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await waitTick();
 
@@ -311,7 +311,7 @@ describe('tradingQuoteDisplayRuntime', () => {
             }
           };
         },
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       },
       symbolRegistry,
       monitorContext: createMonitorContextDouble({ symbolRegistry }),
@@ -329,7 +329,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     await runtime.stopAndDrain();
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await waitTick();
 
@@ -404,7 +404,7 @@ describe('tradingQuoteDisplayRuntime', () => {
             }
           };
         },
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       },
       symbolRegistry,
       monitorContext: createMonitorContextDouble({ symbolRegistry }),
@@ -420,7 +420,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     runtime.start();
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await waitTick();
 
@@ -472,7 +472,7 @@ describe('tradingQuoteDisplayRuntime', () => {
         },
         getQuotes: async () => {
           await quoteBlocked;
-          return new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]);
+          return new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]);
         },
       },
       symbolRegistry,
@@ -489,7 +489,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     runtime.start();
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
 
     symbolRegistry.updateSeatStateWithVersionBump('LONG', {
@@ -554,7 +554,7 @@ describe('tradingQuoteDisplayRuntime', () => {
             throw quoteError;
           }
 
-          return new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]);
+          return new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]);
         },
       },
       symbolRegistry,
@@ -571,14 +571,14 @@ describe('tradingQuoteDisplayRuntime', () => {
     runtime.start();
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await waitTick();
     await waitTick();
 
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.02),
+      quote: createQuoteDouble('BULL.HK', '1.02'),
     });
     await waitTick();
     await waitTick();
@@ -626,7 +626,7 @@ describe('tradingQuoteDisplayRuntime', () => {
             }
           };
         },
-        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', 20_000)]]),
+        getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       },
       symbolRegistry,
       monitorContext: createMonitorContextDouble({ symbolRegistry }),
@@ -648,7 +648,7 @@ describe('tradingQuoteDisplayRuntime', () => {
     runtime.start();
     quoteUpdatedListener?.({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await waitTick();
     await waitTick();

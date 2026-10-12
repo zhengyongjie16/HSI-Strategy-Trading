@@ -9,6 +9,11 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { OrderSide } from 'longbridge';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createChildEnv } from '../setup/childEnv.js';
 
 type TestOrderParams = Readonly<{
   orderId: string;
@@ -61,20 +66,33 @@ async function importHistoryOrdersModule(label: string): Promise<HistoryOrdersMo
 }
 
 function runIsolatedBunEval(script: string): unknown {
-  const result = Bun.spawnSync({
-    cmd: [process.execPath, '--eval', script],
-    cwd: process.cwd(),
-    stderr: 'pipe',
-    stdout: 'pipe',
-  });
+  const isolationRoot = mkdtempSync(path.join(tmpdir(), 'history-orders-test-'));
+  try {
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        '--no-env-file',
+        '--preload',
+        fileURLToPath(new URL('../setup/testRuntime.ts', import.meta.url)),
+        '--eval',
+        script,
+      ],
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      env: createChildEnv(isolationRoot),
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
 
-  const stdout = result.stdout.toString().trim();
-  const stderr = result.stderr.toString().trim();
+    const stdout = result.stdout.toString().trim();
+    const stderr = result.stderr.toString().trim();
 
-  expect(result.exitCode, stderr).toBe(0);
-  expect(stdout.length, 'isolated script must print JSON result').toBeGreaterThan(0);
+    expect(result.exitCode, stderr).toBe(0);
+    expect(stdout.length, 'isolated script must print JSON result').toBeGreaterThan(0);
 
-  return JSON.parse(stdout) as unknown;
+    return JSON.parse(stdout) as unknown;
+  } finally {
+    rmSync(isolationRoot, { recursive: true, force: true });
+  }
 }
 
 function createOrder(params: TestOrderParams): TestOrder {

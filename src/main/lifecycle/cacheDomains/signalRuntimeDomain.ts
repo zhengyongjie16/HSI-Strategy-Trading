@@ -14,7 +14,7 @@
  * - 再启动普通 K 线业务 owner、交易标的风险 runtime、monitor quote runtime 与 switch wakeup runtime
  * - 再重启买入、卖出、监控任务处理器
  */
-import type { CacheDomain } from '../types.js';
+import type { CacheDomain, CacheDomainOpenRebuildResult } from '../types.js';
 import type { SignalRuntimeDomainDeps } from './types.js';
 
 /**
@@ -106,14 +106,17 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
         `[Lifecycle][signalRuntime] 午夜清理完成: buy=${queueResult.removedBuy}, sell=${queueResult.removedSell}, monitor=${queueResult.removedMonitor}`,
       );
     },
-    async openRebuild(): Promise<void> {
-      if (deps.termination.isTerminated()) return;
+    async openRebuild(ctx): Promise<CacheDomainOpenRebuildResult> {
+      if (!ctx.isCurrent() || deps.termination.isTerminated()) return { status: 'ABORTED' };
+
+      await quoteSubscriptionRuntime.reconcileFromCurrentTruth();
+      if (!ctx.isCurrent() || deps.termination.isTerminated()) return { status: 'ABORTED' };
 
       postTradeConsistencyRuntime.resetAbort();
       postTradeConsistencyRuntime.start();
-      postTradeConsistencyRuntime.completeRebuildBaseline();
-      await quoteSubscriptionRuntime.reconcileFromCurrentTruth();
-      if (deps.termination.isTerminated()) return;
+      const baselineReady = await postTradeConsistencyRuntime.completeRebuildBaseline();
+      if (!baselineReady || !ctx.isCurrent() || deps.termination.isTerminated())
+        return { status: 'ABORTED' };
 
       tradingQuoteDisplayRuntime.start();
       quoteSubscriptionRuntime.start();
@@ -133,6 +136,9 @@ export function createSignalRuntimeDomain(deps: SignalRuntimeDomainDeps): CacheD
       logger.debug(
         '[Lifecycle][signalRuntime] runtime baseline、显示 owner、业务 owner、订阅 owner、处理器与订单监控 runtime 已重启',
       );
+      return ctx.isCurrent() && !deps.termination.isTerminated()
+        ? { status: 'COMMITTED', snapshotToken: ctx.snapshotToken }
+        : { status: 'ABORTED' };
     },
   };
 }

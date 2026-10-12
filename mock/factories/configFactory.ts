@@ -28,9 +28,9 @@ export function createMonitorConfig(overrides: Partial<MonitorConfig> = {}): Mon
     },
 
     orderOwnershipMapping: ['HSI'],
-    targetNotional: 5000,
-    maxPositionNotional: 50000,
-    maxUnrealizedLossPerSymbol: 2000,
+    targetNotional: '5000',
+    maxPositionNotional: '50000',
+    maxUnrealizedLossPerSymbol: '2000',
     buyIntervalSeconds: 60,
     liquidationCooldown: null,
     liquidationTriggerLimit: 1,

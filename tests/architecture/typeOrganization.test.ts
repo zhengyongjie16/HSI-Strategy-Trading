@@ -400,8 +400,6 @@ describe('type organization regressions', () => {
     const productionFiles = await collectTypeScriptFiles('src');
     const privateOrderRecorderFiles = new Set([
       'src/core/orderRecorder/orderApiManager.ts',
-      'src/core/orderRecorder/orderFilteringEngine.ts',
-      'src/core/orderRecorder/orderOwnershipParser.ts',
       'src/core/orderRecorder/orderStorage.ts',
       'src/core/orderRecorder/utils.ts',
     ]);
@@ -423,6 +421,39 @@ describe('type organization regressions', () => {
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it('places shared ownership rules and neutral warrant requests outside private recorder helpers', async () => {
+    for (const migratedModule of [
+      'orderOwnershipParser',
+      'executionFact',
+      'orderFilteringEngine',
+      'sellDeductionPolicy',
+    ]) {
+      expect(await exists(`src/core/orderRecorder/${migratedModule}.ts`)).toBe(false);
+    }
+
+    const ownershipPath = 'src/domain/order/orderOwnership.ts';
+    const ownershipSource = await readProjectFile(ownershipPath);
+    const ownershipExports = collectNamedExports(parseSourceFile(ownershipPath, ownershipSource));
+    expect([...ownershipExports].sort((left, right) => left.localeCompare(right))).toEqual([
+      'getLatestTradedSymbol',
+      'resolveOrderOwnership',
+    ]);
+
+    expect(collectProjectImports(ownershipPath, ownershipSource)).toEqual([
+      'src/constants/orderOwnership.ts',
+      'src/types/orderRecorder.ts',
+    ]);
+
+    const marketPath = 'src/types/marketPorts.ts';
+    const marketSource = await readProjectFile(marketPath);
+    expect(
+      [...collectNamedExports(parseSourceFile(marketPath, marketSource))].sort((left, right) =>
+        left.localeCompare(right),
+      ),
+    ).toEqual(['MarketWarrantExpiryRange', 'MarketWarrantListRequest']);
+    expect(collectProjectImports(marketPath, marketSource)).toEqual([]);
   });
 
   it('keeps orderRecorder factory deps out of shared public types', async () => {

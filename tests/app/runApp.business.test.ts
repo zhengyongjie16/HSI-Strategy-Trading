@@ -1,3 +1,6 @@
+import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { loadStartupSnapshot } from '../../src/app/startup/startupSnapshot.js';
 import type { RuntimeTermination } from '../../src/types/runtime.js';
 
 /**
@@ -32,6 +35,7 @@ import type { BuySignal } from '../../src/types/signal.js';
 import type { LastState } from '../../src/types/state.js';
 import type { BuyRiskCheckContext } from '../../src/types/services.js';
 import {
+  createAccountSnapshotDouble,
   createAutoSearchWakeupRuntimeDouble,
   createDailyLossTrackerDouble,
   createDoomsdayProtectionDouble,
@@ -133,12 +137,6 @@ function createMinimalLastState(): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: {
-      update: () => {},
-      get: () => null,
-    },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set(),
@@ -234,10 +232,15 @@ function createMockPreGateRuntime(): PreGateRuntime {
   };
 }
 
-function createMockPostGateRuntime(
+async function createMockPostGateRuntime(
   lastState: LastState,
   monitorContext: PostGateRuntime['monitorContext'],
-): PostGateRuntime {
+  termination: RuntimeTermination,
+): Promise<PostGateRuntime> {
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [],
+  });
   const signalProcessor: SignalProcessor = {
     processSellSignals: ({
       signals,
@@ -263,10 +266,38 @@ function createMockPostGateRuntime(
     },
   });
 
+  const dailyLossTracker = createDailyLossTrackerDouble();
+  const liquidationCooldownTracker = createLiquidationCooldownTrackerDouble();
+  const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTrackerDouble();
+  const settlement = createPostTradeConsistencyRuntime({
+    termination,
+    getTrader: () => trader,
+    snapshot,
+    onPositionsCommitted: () => quoteSubscriptionRuntime.reconcileFromCurrentTruth(),
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
+  settlement.bindBusinessDeps({
+    monitorContext,
+    dailyLossTracker,
+    liquidationCooldownTracker,
+    protectiveLiquidationEpisodeTracker,
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => {
+        throw new Error('unexpected completion without episode');
+      },
+    },
+  });
+
   return {
-    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-    dailyLossTracker: createDailyLossTrackerDouble(),
-    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    snapshot,
+    liquidationCooldownTracker,
+    dailyLossTracker,
+    protectiveLiquidationEpisodeTracker,
     monitorContext,
     tradingGateEventRuntime: createTradingGateEventRuntimeDouble({
       onGateStateChanged: () => noop,
@@ -304,26 +335,24 @@ function createMockPostGateRuntime(
       handoffPendingSwitch: () => {},
     },
     postTradeConsistencyRuntime: {
-      bindBusinessDeps: noop,
-      recordSettlementRefreshNeed: () => {},
-      getStatus: () => ({ started: false, currentVersion: 0, staleVersion: 0 }),
-      waitForFresh: async () => {},
-      onFreshReached: () => noop,
-      stopScheduling: () => {},
-      abortWaiting: () => {},
-      resetAbort: () => {},
+      ...settlement,
       start: () => {
+        settlement.start();
         recordSteadyRuntimeStart('postTradeConsistencyRuntime.start');
       },
-      completeRebuildBaseline: () => {
+      completeRebuildBaseline: async () => {
         recordSteadyRuntimeStart('postTradeConsistencyRuntime.completeRebuildBaseline');
+        return settlement.completeRebuildBaseline();
       },
-      stopAndDrain: async () => {},
-      midnightClear: () => {},
     },
     lastState,
     trader,
-    loadTradingDayRuntimeSnapshot: async () => ({ allOrders: [], quotesMap: new Map() }),
+    loadTradingDayRuntimeSnapshot: async () => ({
+      status: 'COMMITTED',
+      snapshotToken: snapshot.getView().token,
+      allOrders: [],
+      quotesMap: new Map(),
+    }),
     doomsdayProtection: createDoomsdayProtectionDouble(),
     signalProcessor,
     buyTaskQueue: createTradeTaskQueueDouble(),
@@ -395,7 +424,10 @@ function createRunAppHarnessState(
       });
       return createMockPreGateRuntime();
     },
-    createPostGateRuntime: async ({ cleanup }: CreatePostGateRuntimeParams) => {
+    createPostGateRuntime: async ({
+      cleanup,
+      termination: sharedTermination,
+    }: CreatePostGateRuntimeParams) => {
       cleanup.register({
         phase: 'STOP_ORDER_MONITOR_RUNTIME',
         step: '停止测试订单监控',
@@ -427,13 +459,14 @@ function createRunAppHarnessState(
         });
       }
 
-      const runtime = createMockPostGateRuntime(
+      const runtime = await createMockPostGateRuntime(
         lastState,
         options.postGateMonitorContext ?? createMonitorContextDouble(),
+        sharedTermination,
       );
       return runtime;
     },
-    loadStartupSnapshot: async () => {
+    loadStartupSnapshot: async (params) => {
       const now = new Date('2026-04-29T09:30:00.000+08:00');
       if (currentScenario === 'startupSnapshotFails') {
         throw new TypeError('startup snapshot contract broken');
@@ -443,30 +476,29 @@ function createRunAppHarnessState(
         return { kind: 'API_RETRY_PENDING', now };
       }
 
-      return {
-        kind: 'READY',
-        allOrders: [],
-        quotesMap: new Map(),
-        now,
-      };
+      return loadStartupSnapshot(params);
     },
     collectRuntimeValidationSymbols: () => ({
       runtimeValidationInputs: [],
     }),
-    createRebuildTradingDayState: () => async () => {
-      rebuildCallCount += 1;
-      if (currentScenario === 'initialRebuildApiFails') {
-        throw await createExternalApiRequestError({
-          operation: 'test.initialRebuild',
-          attempts: 1,
-          cause: new Error('initial rebuild api unavailable'),
-        });
-      }
+    createRebuildTradingDayState:
+      () =>
+      async ({ snapshotToken }) => {
+        rebuildCallCount += 1;
+        if (currentScenario === 'initialRebuildApiFails') {
+          throw await createExternalApiRequestError({
+            operation: 'test.initialRebuild',
+            attempts: 1,
+            cause: new Error('initial rebuild api unavailable'),
+          });
+        }
 
-      if (currentScenario === 'initialRebuildFails') {
-        throw new TypeError('initial rebuild contract broken');
-      }
-    },
+        if (currentScenario === 'initialRebuildFails') {
+          throw new TypeError('initial rebuild contract broken');
+        }
+
+        return { status: 'COMMITTED', snapshotToken };
+      },
     displayAccountAndPositions: noopAsync,
     createBusinessEventProgram: () => {
       if (options.wiringError !== undefined) {

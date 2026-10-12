@@ -8,7 +8,7 @@
  * - 通过单方向浮亏执行器触发保护性清仓
  */
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
-import { isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { exactCompare, sumSafeQuantities } from '../../utils/numeric/exact.js';
 import {
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
@@ -17,7 +17,8 @@ import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
 import { isTradingRiskRouteCurrent, resolveTradingRiskRoute } from './routeValidation.js';
 import { buildTradingRiskRoutingIndex } from './routingIndex.js';
-import { executeDirectionalUnrealizedLoss } from './unrealizedLossExecutor.js';
+import type { SettlementReadinessReceipt } from '../../types/settlement.js';
+import type { DirectionalUnrealizedLossMonitorContext } from '../../types/risk.js';
 import type { QuoteUpdatedEvent } from '../../types/services.js';
 import type {
   RouteExecutionState,
@@ -37,6 +38,8 @@ function createRouteExecutionState(): RouteExecutionState {
     dirty: false,
     latestRoute: null,
     latestEvent: null,
+    latestDayEpoch: null,
+    blockedOnFreshness: false,
   };
 }
 
@@ -57,6 +60,7 @@ export function createTradingRiskEventRuntime(
   let running = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
+  let unsubscribeFreshReached: (() => void) | null = null;
   let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
   const routeStates = new Map<'LONG' | 'SHORT', RouteExecutionState>();
   const activeRoutePromises = new Set<Promise<void>>();
@@ -204,6 +208,22 @@ export function createTradingRiskEventRuntime(
     }
   }
 
+  /** 原 readiness 事件唤醒因失效阻塞的当前 route，不轮询、不制造新 settlement stale。 */
+  function handleFreshReached(): void {
+    if (!running || deps.termination.isTerminated()) return;
+
+    for (const [direction, state] of routeStates) {
+      if (!state.blockedOnFreshness) continue;
+
+      state.blockedOnFreshness = false;
+      state.dirty = true;
+      if (state.inFlight) continue;
+
+      state.inFlight = true;
+      launchRouteProcessing(direction);
+    }
+  }
+
   /**
    * 消费单条标准化行情事件。
    *
@@ -214,7 +234,11 @@ export function createTradingRiskEventRuntime(
       return;
     }
 
-    if (!isValidPositiveNumber(event.quote.price)) {
+    try {
+      if (exactCompare(event.quote.price, '0') <= 0) return;
+    } catch (error) {
+      deps.termination.reportFatalError(error);
+      stop();
       return;
     }
 
@@ -231,6 +255,7 @@ export function createTradingRiskEventRuntime(
     const routeState = getRouteState(route.direction);
     routeState.latestRoute = route;
     routeState.latestEvent = event;
+    routeState.latestDayEpoch = deps.snapshot.getView().token.dayEpoch;
     routeState.dirty = true;
 
     if (routeState.inFlight) {
@@ -247,9 +272,9 @@ export function createTradingRiskEventRuntime(
    * 固定顺序：
    * 1. freshness 前 gate / baseline / seat 校验
    * 2. waitForFresh
-   * 3. freshness 后再次校验 gate / baseline / seat
-   * 4. 读取当前 route 收敛后的 latest event quote
-   * 5. 执行单方向浮亏检查
+   * 3. freshness 后复核 receipt、水位、epoch、seat 与 position component
+   * 4. 使用 latest event 与 recorder 原始成本 basis 同步 prepare → 最终 guard → publish
+   * 5. 带同一授权执行单方向浮亏检查；未提交的事实失效由原队列重评，ready 阻塞仍由原事件唤醒
    *
    * @param direction 方向级执行键
    */
@@ -266,10 +291,19 @@ export function createTradingRiskEventRuntime(
           continue;
         }
 
-        if (!isExecutionGateOpen() || !isBaselineReady()) {
+        if (
+          routeState.latestDayEpoch !== deps.snapshot.getView().token.dayEpoch ||
+          !isExecutionGateOpen()
+        )
+          return;
+
+        if (!isBaselineReady()) {
+          routeState.blockedOnFreshness = true;
           return;
         }
 
+        routeState.blockedOnFreshness = false;
+        const eventDayEpoch = routeState.latestDayEpoch;
         const routingIndexBeforeFreshness = getActiveRoutingIndex();
         if (routingIndexBeforeFreshness === null) {
           return;
@@ -279,8 +313,9 @@ export function createTradingRiskEventRuntime(
           return;
         }
 
+        let receipt: SettlementReadinessReceipt;
         try {
-          await deps.postTradeConsistencyRuntime.waitForFresh();
+          receipt = await deps.postTradeConsistencyRuntime.waitForFresh();
         } catch (error) {
           if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) {
             return;
@@ -289,9 +324,8 @@ export function createTradingRiskEventRuntime(
           throw error;
         }
 
-        if (!isExecutionGateOpen() || !isBaselineReady()) {
+        if (!isExecutionGateOpen() || deps.snapshot.getView().token.dayEpoch !== eventDayEpoch)
           return;
-        }
 
         const routingIndexAfterFreshness = getActiveRoutingIndex();
         if (routingIndexAfterFreshness === null) {
@@ -308,16 +342,85 @@ export function createTradingRiskEventRuntime(
           return;
         }
 
-        if (!isValidPositiveNumber(latestEvent.quote.price)) {
+        if (
+          !isTradingRiskRouteCurrent(latestRoute, routingIndexAfterFreshness) ||
+          latestEvent.symbol !== latestRoute.tradingSymbol ||
+          exactCompare(latestEvent.quote.price, '0') <= 0
+        )
           return;
+
+        const isIdentityCurrent = (): boolean => {
+          const index = getActiveRoutingIndex();
+          const seat = deps.symbolRegistry.getSeatState(latestRoute.direction);
+          return (
+            isExecutionGateOpen() &&
+            deps.snapshot.getView().token.dayEpoch === eventDayEpoch &&
+            seat.status === 'ACTIVE' &&
+            seat.symbol === latestRoute.tradingSymbol &&
+            deps.symbolRegistry.getSeatVersion(latestRoute.direction) === latestRoute.seatVersion &&
+            index !== null &&
+            isTradingRiskRouteCurrent(latestRoute, index)
+          );
+        };
+        const view = deps.snapshot.getView();
+        const isCurrent = (): boolean =>
+          isIdentityCurrent() &&
+          isBaselineReady() &&
+          deps.postTradeConsistencyRuntime.isCurrent(receipt) &&
+          deps.snapshot.isCurrent(view.token, { account: false, positions: true });
+        if (!isIdentityCurrent()) return;
+
+        if (!isCurrent()) {
+          routeState.blockedOnFreshness = true;
+          // 完成水位与消费 view 独立复核；由原 owner 追最新事实，不为普通 commit 登记 stale。
+          routeState.dirty = true;
+          continue;
         }
 
-        await executeDirectionalUnrealizedLoss({
-          route: latestRoute,
-          event: latestEvent,
+        const quantity = sumSafeQuantities(
+          view.positions
+            .filter((position) => position.symbol === latestRoute.tradingSymbol)
+            .map((position) => String(position.quantity)),
+        );
+        if (quantity === 0) continue;
+
+        const { riskChecker, orderRecorder, dailyLossTracker, unrealizedLossMonitor } =
+          deps.monitorContext;
+        const prepared = riskChecker.prepareUnrealizedLossData(
+          orderRecorder,
+          latestRoute.tradingSymbol,
+          latestRoute.direction === 'LONG',
+          dailyLossTracker.getLossOffset(latestRoute.direction),
+        );
+        // 同步 prepare 不发布；最终 epoch/水位/seat/position guard 与 publish 之间不得 await。
+        if (!isIdentityCurrent()) return;
+
+        if (!isCurrent()) {
+          routeState.blockedOnFreshness = true;
+          routeState.dirty = true;
+          continue;
+        }
+
+        riskChecker.publishUnrealizedLossData(prepared);
+        routeState.blockedOnFreshness = false;
+        const context: DirectionalUnrealizedLossMonitorContext = {
+          symbol: latestRoute.tradingSymbol,
+          isLong: latestRoute.direction === 'LONG',
+          seatVersion: latestRoute.seatVersion,
+          quote: latestEvent.quote,
+          riskChecker,
+          orderRecorder,
+          dailyLossTracker,
           trader: deps.trader,
-          monitorContext: deps.monitorContext,
-        });
+          isCurrent,
+        };
+        const accepted = await unrealizedLossMonitor.monitorDirectionalUnrealizedLoss(context);
+        if (!isCurrent()) {
+          // 只有未提交的事实失效才由原 owner 追赶；真实 accepted 不因旧票失效而再次提交。
+          if (accepted || !isIdentityCurrent()) return;
+
+          routeState.dirty = true;
+        }
       }
     } finally {
       routeState.inFlight = false;
@@ -346,6 +449,7 @@ export function createTradingRiskEventRuntime(
     refreshRoutingIndex();
     running = true;
     unsubscribeSeatTruthChanged = deps.symbolRegistry.onSeatTruthChanged(handleSeatTruthChanged);
+    unsubscribeFreshReached = deps.postTradeConsistencyRuntime.onFreshReached(handleFreshReached);
 
     unsubscribeQuoteUpdated = deps.marketDataClient.onQuoteUpdated((event) => {
       handleQuoteUpdated(event);
@@ -361,6 +465,8 @@ export function createTradingRiskEventRuntime(
     unsubscribeQuoteUpdated = null;
     unsubscribeSeatTruthChanged?.();
     unsubscribeSeatTruthChanged = null;
+    unsubscribeFreshReached?.();
+    unsubscribeFreshReached = null;
   }
 
   async function stopAndDrain(): Promise<void> {

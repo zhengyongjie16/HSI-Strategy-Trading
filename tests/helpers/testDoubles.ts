@@ -5,6 +5,7 @@
  * - 提供测试替身与工厂方法，供其他测试模块使用
  */
 import type { Position, AccountSnapshot } from '../../src/types/account.js';
+import type { AccountPositionSnapshotReader } from '../../src/types/accountPosition.js';
 import type { MonitorConfig } from '../../src/types/config.js';
 import type { CandleData, NormalizedCandle } from '../../src/types/data.js';
 import type { Quote } from '../../src/types/quote.js';
@@ -15,7 +16,6 @@ import type {
   MarketDataClient,
   MarketQuoteContext,
   PendingOrder,
-  PositionCache,
   RateLimiter,
   RiskChecker,
   RiskCheckResult,
@@ -39,6 +39,8 @@ import type {
   CancelPendingBuyOrdersResult,
 } from '../../src/core/doomsdayProtection/types.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
+import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createMonitorConfig } from '../../mock/factories/configFactory.js';
 import type {
   GetRemainingMsParams,
@@ -58,11 +60,13 @@ import type { AutoSearchWakeupRuntime } from '../../src/main/autoSearchWakeupRun
 import type { PeriodicSwitchWakeupRuntime } from '../../src/main/periodicSwitchWakeupRuntime/types.js';
 import type { SeatActivationDispatcher } from '../../src/main/seatActivationDispatcher/types.js';
 import type { SeatRuntimeCleanupDispatcher } from '../../src/main/seatRuntimeCleanupDispatcher/types.js';
-import { toMockDecimal } from '../../mock/longbridge/decimal.js';
-import { createQuoteContextMock } from '../../mock/longbridge/quoteContextMock.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import { TIME } from '../../src/constants/index.js';
-import { getHKDateKey, resolveHKDayStartUtcMs } from '../../src/utils/time/index.js';
+import {
+  getHKDateKey,
+  resolveHKDayStartUtcMs,
+  toHongKongTimeIso,
+} from '../../src/utils/time/index.js';
 
 type TestSeatTruthChangedEvent = Parameters<Parameters<SymbolRegistry['onSeatTruthChanged']>[0]>[0];
 
@@ -239,26 +243,30 @@ export function createSdkConfigDouble(): Config {
 }
 
 /**
- * 创建 PositionCache 测试替身。
- *
- * 用于在测试中可控地读写持仓快照，避免依赖真实缓存实现。
+ * 创建 H 只读端口测试替身；输入 view 与 current 校验由用例显式提供，无 cache/update 或默认授权。
+ * @param reader 用例提供的不可变事实读取与授权函数
+ * @returns 无刷新/写入能力的只读端口；不代表真实 owner commit 或业务 ready
  */
-export function createPositionCacheDouble(initial: ReadonlyArray<Position> = []): PositionCache {
-  const map = new Map<string, Position>();
-  for (const position of initial) {
-    map.set(position.symbol, position);
-  }
-
+export function createAccountPositionSnapshotReaderDouble(
+  reader: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>,
+): AccountPositionSnapshotReader {
   return {
-    update(positions: ReadonlyArray<Position>): void {
-      map.clear();
-      for (const position of positions) {
-        map.set(position.symbol, position);
-      }
+    getView: reader.getView,
+    isCurrent: reader.isCurrent,
+    getAvailablePosition: (symbol) => {
+      const view = reader.getView();
+      return view.positionsValid
+        ? (view.positions.find(
+            (position) => position.symbol === symbol && position.availableQuantity > 0,
+          ) ?? null)
+        : null;
     },
-    get(symbol: string): Position | null {
-      return map.get(symbol) ?? null;
-    },
+    getStatus: () => ({
+      admission: 'CLOSED',
+      inFlight: false,
+      pending: false,
+      token: reader.getView().token,
+    }),
   };
 }
 
@@ -269,15 +277,23 @@ export function createPositionCacheDouble(initial: ReadonlyArray<Position> = [])
  */
 export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}): OrderRecorder {
   const base: OrderRecorder = {
-    recordLocalBuy: () => {},
-    recordLocalSell: () => {},
+    commitExecutionFact: (fact, _isLong, _related, beforeCommit) => {
+      beforeCommit();
+      return {
+        brokerOrderId: fact.brokerOrderId,
+        authoritativeFactChanged: false,
+        executionAdvanced: false,
+        economicProjectionChanged: false,
+      };
+    },
+    getExecutionFact: () => null,
+    commitRebuildSnapshot: (_targets, _orders, isCurrent) =>
+      isCurrent() ? { status: 'COMMITTED', receipts: [] } : { status: 'ABORTED' },
     clearBuyOrders: () => {},
-    getLatestBuyOrderPrice: () => null,
+    getLatestBuyOrderCost: () => null,
     getSellRecordByOrderId: () => null,
     fetchAllOrdersFromAPI: async () => [],
     validateRebuildSnapshot: () => {},
-    refreshOrdersFromAllOrdersForLong: async () => [],
-    refreshOrdersFromAllOrdersForShort: async () => [],
     getBuyOrdersForSymbol: () => [],
     submitSellOrder: () => {},
     updatePendingSell: () => null,
@@ -286,7 +302,7 @@ export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}
     markSellCancelled: () => null,
     getPendingSellSnapshot: () => [],
     allocateRelatedBuyOrderIdsForRecovery: () => [],
-    getCostAveragePrice: () => null,
+    getCostBasis: () => null,
     selectSellableOrders: () => ({
       orders: [],
       totalQuantity: 0,
@@ -310,7 +326,7 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
 
   const base: Trader = {
     orderRecorder: baseOrderRecorder,
-    getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+    getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
     getStockPositions: async () => [],
     getPendingOrders: async (): Promise<PendingOrder[]> => [],
     seedOrderHoldSymbols: () => {},
@@ -482,7 +498,8 @@ export function createRiskCheckerDouble(overrides: Partial<RiskChecker> = {}): R
     getWarrantDistanceInfo: (): WarrantDistanceInfo | null => null,
     clearLongWarrantInfo: () => {},
     clearShortWarrantInfo: () => {},
-    refreshUnrealizedLossData: async () => {},
+    prepareUnrealizedLossData: (_recorder, symbol) => ({ symbol, data: { r1: '0', n1: 0 } }),
+    publishUnrealizedLossData: () => {},
     checkUnrealizedLoss: () => ({ shouldLiquidate: false }),
     getUnrealizedLossMetrics: () => null,
     clearUnrealizedLossData: () => {},
@@ -495,26 +512,19 @@ export function createRiskCheckerDouble(overrides: Partial<RiskChecker> = {}): R
 }
 
 /**
- * 创建 DailyLossTracker 测试替身。
+ * 创建 DailyLossTracker 单元测试工厂。
  *
- * 默认提供无副作用实现，适用于 app 组装层与监控上下文测试。
+ * 默认使用真实内存 owner 与分析依赖，不构造 SDK context、不发 IO，也不自动初始化交易日。
+ * 5参 prepare/publish、归属校验、候选身份与状态失效均遵循真实契约；未初始化成交不会默认准入。
+ * overrides 仅供单元 spy/隔离，不代表自然成交、durable、H/S readiness 或跨 owner 原子协议证明。
  */
 export function createDailyLossTrackerDouble(
   overrides: Partial<DailyLossTracker> = {},
 ): DailyLossTracker {
-  const base: DailyLossTracker = {
-    resetAll: () => {},
-    recalculateFromAllOrders: () => {},
-    recordCumulativeExecution: () => ({
-      authoritativeFactChanged: false,
-      executionAdvanced: false,
-    }),
-    restoreExecutionSnapshot: () => {},
-    getLossOffset: () => 0,
-    prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
-    commitProtectionBoundary: () => {},
-    restoreProtectionBoundary: () => {},
-  };
+  const base = createDailyLossTracker({
+    ...createDailyLossOrderAnalysisDeps(),
+    toHongKongTimeIso,
+  });
 
   return {
     ...base,
@@ -554,7 +564,7 @@ export function createUnrealizedLossMonitorDouble(
   overrides: Partial<UnrealizedLossMonitor> = {},
 ): UnrealizedLossMonitor {
   const base: UnrealizedLossMonitor = {
-    monitorDirectionalUnrealizedLoss: async () => {},
+    monitorDirectionalUnrealizedLoss: async () => false,
   };
 
   return {
@@ -732,30 +742,16 @@ export function createSeatRuntimeCleanupDispatcherDouble(
 }
 
 /**
- * 将 QuoteContext mock 收口为测试可用的 MarketQuoteContext。
- *
- * 当前业务只直接依赖 warrantQuote / warrantList 两类轮证查询能力；
- * 这里统一返回仓库内的最小真实契约，避免在测试中散落更宽的 SDK 类型断言。
- *
- * @param quoteContextMock 行情上下文 mock；未传时自动创建
- * @returns 可供依赖注入边界消费的 MarketQuoteContext
+ * 创建窄中立 warrant 查询端口测试替身；用例直接提供金融文本与真实 null/undefined，不在 domain fixture 内适配 SDK。
+ * @param overrides 明确采用对象请求与文本返回值的中立查询能力；未传时返回无事实的空列表
+ * @returns 不包含 SDK Decimal 或 SDK 位置参数桥的 MarketQuoteContext
  */
 export function createQuoteContextDouble(
-  quoteContextMock: ReturnType<typeof createQuoteContextMock> = createQuoteContextMock(),
+  overrides: Partial<MarketQuoteContext> = {},
 ): MarketQuoteContext {
   return {
-    warrantQuote: (symbols) => quoteContextMock.warrantQuote([...symbols]),
-    warrantList: async (request) =>
-      quoteContextMock.warrantList(
-        request.symbol,
-        request.sortBy,
-        request.sortOrder,
-        [...request.types],
-        request.issuerIds ? [...request.issuerIds] : request.issuerIds,
-        request.expiryFilters ? [...request.expiryFilters] : request.expiryFilters,
-        request.inOutBoundsTypes ? [...request.inOutBoundsTypes] : request.inOutBoundsTypes,
-        request.status ? [...request.status] : request.status,
-      ),
+    warrantQuote: overrides.warrantQuote ?? (async () => []),
+    warrantList: overrides.warrantList ?? (async () => []),
   };
 }
 
@@ -782,7 +778,10 @@ export function createTradeContextDouble(
 export function createMarketDataClientDouble(
   overrides: Partial<MarketDataClient> = {},
 ): MarketDataClient {
-  const quoteContext = createQuoteContextDouble();
+  const quoteContext: MarketQuoteContext = {
+    warrantQuote: async () => [],
+    warrantList: async () => [],
+  };
   const candlestickCache = new Map<string, ReadonlyArray<NormalizedCandle>>();
   const candlestickVersions = new Map<string, number>();
   const baseOnQuoteUpdated: NonNullable<MarketDataClient['onQuoteUpdated']> = () => () => {};
@@ -867,24 +866,12 @@ export function createMarketDataClientDouble(
 }
 
 /**
- * 创建距回收价信息测试数据。
- *
- * 运行时使用 Decimal 保持判定精度，测试侧允许直接传入 number 以简化用例编写。
- *
- * @param params 牛熊证类型与距回收价百分比
- * @returns 符合 WarrantDistanceInfo 的测试对象
+ * 创建距回收价中立比例基数测试数据；不提前除法/舍入，也不经 number 或 SDK Decimal 转换。
+ * @param params 牛熊证类型与精确分子/分母；未知时两者同时为 null
+ * @returns 独立的中立比例基数对象
  */
-export function createWarrantDistanceInfoDouble(params: {
-  readonly warrantType: WarrantDistanceInfo['warrantType'];
-  readonly distanceToStrikePercent: number | null;
-}): WarrantDistanceInfo {
-  return {
-    warrantType: params.warrantType,
-    distanceToStrikePercent:
-      params.distanceToStrikePercent === null
-        ? null
-        : toMockDecimal(params.distanceToStrikePercent),
-  };
+export function createWarrantDistanceInfoDouble(params: WarrantDistanceInfo): WarrantDistanceInfo {
+  return { ...params };
 }
 
 /**
@@ -1048,7 +1035,7 @@ export function createSymbolRegistryDouble(params?: {
     lastSwitchAt: number | null;
     lastSearchAt: number | null;
     lastSeatActivatedAt: number | null;
-    callPrice?: number | null;
+    callPrice?: string | null;
     searchFailCountToday: number;
     frozenTradingDayKey: string | null;
   }>;
@@ -1254,12 +1241,12 @@ export function createSymbolRegistryDouble(params?: {
  *
  * 使用单币种最小结构覆盖买力与现金相关逻辑。
  */
-export function createAccountSnapshotDouble(availableCash: number): AccountSnapshot {
+export function createAccountSnapshotDouble(availableCash: string): AccountSnapshot {
   return {
     currency: 'HKD',
     totalCash: availableCash,
     netAssets: availableCash,
-    positionValue: 0,
+    positionValue: '0',
     cashInfos: [
       {
         currency: 'HKD',
@@ -1278,7 +1265,18 @@ export function createPositionDouble(params: {
   readonly symbol: string;
   readonly quantity: number;
   readonly availableQuantity: number;
+  readonly costPrice?: string;
 }): Position {
+  if (
+    !Number.isSafeInteger(params.quantity) ||
+    params.quantity < 0 ||
+    !Number.isSafeInteger(params.availableQuantity) ||
+    params.availableQuantity < 0 ||
+    params.availableQuantity > params.quantity
+  ) {
+    throw new Error('[test double] 持仓数量必须是安全非负整数且可卖数量不得超过总量');
+  }
+
   return {
     accountChannel: 'lb_papertrading',
     symbol: params.symbol,
@@ -1286,7 +1284,7 @@ export function createPositionDouble(params: {
     quantity: params.quantity,
     availableQuantity: params.availableQuantity,
     currency: 'HKD',
-    costPrice: 1,
+    costPrice: params.costPrice ?? '1',
   };
 }
 
@@ -1295,7 +1293,7 @@ export function createPositionDouble(params: {
  *
  * 默认前收与现价一致，减少无关价格波动影响。
  */
-export function createQuoteDouble(symbol: string, price: number, lotSize: number = 100): Quote {
+export function createQuoteDouble(symbol: string, price: string, lotSize: number = 100): Quote {
   return {
     symbol,
     name: symbol,

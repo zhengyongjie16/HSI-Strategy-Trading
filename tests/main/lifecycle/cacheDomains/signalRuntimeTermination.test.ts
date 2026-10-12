@@ -1,5 +1,6 @@
 /** 跨日排空与终态防重开回归，直接调用真实 signal runtime cache domain。 */
 import { describe, expect, it } from 'bun:test';
+import { createOpenRebuildContextFixture } from '../../fixtures/openRebuildContext.js';
 import { createSignalRuntimeDomain } from '../../../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
 import type { SignalRuntimeDomainDeps } from '../../../../src/main/lifecycle/cacheDomains/types.js';
@@ -72,7 +73,7 @@ function harness() {
       abortWaiting: () => {},
       resetAbort: () => {},
       start: () => {},
-      completeRebuildBaseline: () => {},
+      completeRebuildBaseline: async () => true,
       stopAndDrain: async () => {
         calls.push('postTrade.drain');
       },
@@ -166,7 +167,10 @@ describe('signal runtime cross-day safety', () => {
         },
       },
     });
-    await domain.openRebuild(h.context);
+    const ctx = await createOpenRebuildContextFixture({ ...h.context, termination: h.termination });
+    const result = await domain.openRebuild(ctx);
+    expect(result).toEqual({ status: 'ABORTED' });
+    expect(ctx.isCurrent()).toBe(false);
     expect(h.calls).toEqual([]);
   });
 });

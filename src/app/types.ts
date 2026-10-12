@@ -1,4 +1,9 @@
+import type { AccountPositionSnapshot, SnapshotToken } from '../types/accountPosition.js';
 import type { PreparedStrategySelection } from './startup/types.js';
+import type {
+  SettlementFreshnessReader,
+  SettlementRefreshNeedRecorder,
+} from '../types/settlement.js';
 import type { Config } from 'longbridge';
 import type {
   RuntimeSymbolValidationInput,
@@ -13,7 +18,6 @@ import type { RuntimeClock, RuntimeScheduler, RuntimeTermination } from '../type
 import type {
   MarketDataClient,
   OrderRecorder,
-  PostTradeConsistencyRefreshNeed,
   RawOrderFromAPI,
   RiskChecker,
   Trader,
@@ -62,6 +66,7 @@ import type {
   LoadTradingDayRuntimeSnapshotResult,
   RebuildTradingDayStateDeps,
   RebuildTradingDayStateParams,
+  RebuildTradingDayStateResult,
   CacheDomain,
   DayLifecycleManager,
   DayLifecycleManagerDeps,
@@ -103,7 +108,7 @@ export type RunAppDeps = Readonly<{
   ) => RuntimeValidationCollector;
   createRebuildTradingDayState: (
     deps: RebuildTradingDayStateDeps,
-  ) => (params: RebuildTradingDayStateParams) => Promise<void>;
+  ) => (params: RebuildTradingDayStateParams) => Promise<RebuildTradingDayStateResult>;
   displayAccountAndPositions: (params: DisplayAccountAndPositionsParams) => void;
   createBusinessEventProgram: (deps: BusinessEventProgramDeps) => BusinessEventProgram;
   createAsyncRuntime: (params: AsyncRuntimeFactoryDeps) => AsyncRuntime | null;
@@ -237,11 +242,33 @@ export type PushRuntimeValidationSymbolParams = Readonly<{
  */
 export type RunTradingDayOpenRebuildParams = Readonly<{
   now: Date;
+  termination: Pick<RuntimeTermination, 'isTerminated'>;
+  snapshot: Pick<AccountPositionSnapshot, 'getStatus' | 'isCurrent'>;
   loadTradingDayRuntimeSnapshot: (
     params: LoadTradingDayRuntimeSnapshotParams,
   ) => Promise<LoadTradingDayRuntimeSnapshotResult>;
-  rebuildTradingDayState: (params: RebuildTradingDayStateParams) => Promise<void>;
+  rebuildTradingDayState: (
+    params: RebuildTradingDayStateParams,
+  ) => Promise<RebuildTradingDayStateResult>;
+  postTradeConsistencyRuntime: Pick<
+    PostTradeConsistencyRuntime,
+    | 'resetAbort'
+    | 'start'
+    | 'stopScheduling'
+    | 'completeRebuildBaseline'
+    | 'waitForFresh'
+    | 'isCurrent'
+  >;
+  quoteSubscriptionRuntime: Pick<QuoteSubscriptionRuntime, 'reconcileFromCurrentTruth'>;
 }>;
+
+/**
+ * 开盘整轮 owner 结果；同日 SUPERSEDED 已在 helper 本地重新 load→prepare/rebuild。
+ * COMMITTED 同时证明原 captured 输入仍有效、S fresh 与订阅对账完成；不自行开放预算。
+ * ABORTED 不携带事实或成功 token，必须由 lifecycle consumer 保持门禁关闭。
+ */
+export type TradingDayOpenRebuildResult =
+  Readonly<{ status: 'COMMITTED'; snapshotToken: SnapshotToken }> | Readonly<{ status: 'ABORTED' }>;
 
 /**
  * 监控上下文工厂依赖注入参数。
@@ -300,6 +327,7 @@ export type CleanupPhase =
   | 'TEARDOWN_TRADER'
   | 'STOP_QUOTE_SUBSCRIPTION_RUNTIME'
   | 'STOP_POST_TRADE_CONSISTENCY_RUNTIME'
+  | 'STOP_ACCOUNT_POSITION_SNAPSHOT'
   | 'DESTROY_STRATEGY'
   | 'UNSUBSCRIBE_SHUTDOWN_SIGNAL'
   | 'RESET_MARKET_DATA_RUNTIME';
@@ -340,19 +368,24 @@ export type CleanupFailure = Readonly<{
 
 /**
  * 启动快照加载结果。
- * 类型用途：表达 startup snapshot load 成功或失败后的统一结果。
+ * 类型用途：仅真实 captured COMMITTED 可 READY；原 owner 失效返回 ABORTED，不洗成成功或外部重试。
  * 数据来源：由 loadStartupSnapshot 返回。
  * 使用范围：仅 app 顶层装配与测试使用。
  */
 export type StartupSnapshotResult =
   | Readonly<{
       kind: 'READY';
+      snapshotToken: SnapshotToken;
       allOrders: ReadonlyArray<RawOrderFromAPI>;
       quotesMap: ReadonlyMap<string, Quote | null>;
       now: Date;
     }>
   | Readonly<{
       kind: 'API_RETRY_PENDING';
+      now: Date;
+    }>
+  | Readonly<{
+      kind: 'ABORTED';
       now: Date;
     }>;
 
@@ -365,6 +398,8 @@ export type StartupSnapshotResult =
 export type LoadStartupSnapshotParams = Readonly<{
   now: Date;
   lastState: LastState;
+  termination: Pick<RuntimeTermination, 'isTerminated'>;
+  snapshot: Pick<AccountPositionSnapshot, 'getStatus' | 'isCurrent'>;
   loadTradingDayRuntimeSnapshot: (
     params: LoadTradingDayRuntimeSnapshotParams,
   ) => Promise<LoadTradingDayRuntimeSnapshotResult>;
@@ -444,6 +479,7 @@ export type PostGateRuntime = Readonly<{
   tradingQuoteDisplayRuntime: TradingQuoteDisplayRuntime;
   switchWakeupRuntime: SwitchWakeupRuntime;
   postTradeConsistencyRuntime: PostTradeConsistencyRuntime;
+  snapshot: AccountPositionSnapshot;
   lastState: LastState;
   trader: Trader;
   loadTradingDayRuntimeSnapshot: (
@@ -520,8 +556,8 @@ export type PostTradeConsistencyRuntimeStatus = Readonly<{
 export type PostTradeConsistencyRuntimeDeps = Readonly<{
   termination: RuntimeTermination;
   getTrader: () => Trader;
-  lastState: LastState;
-  onPositionsCommitted: () => Promise<void>;
+  snapshot: AccountPositionSnapshot;
+  onPositionsCommitted: (token: SnapshotToken) => Promise<void>;
   scheduler: RuntimeScheduler;
 }>;
 
@@ -545,20 +581,18 @@ export type PostTradeConsistencyRuntimeBusinessDeps = Readonly<{
  * 数据来源：由 createPostTradeConsistencyRuntime 创建。
  * 使用范围：仅 app 装配层与后续接线模块使用。
  */
-export interface PostTradeConsistencyRuntime {
+export interface PostTradeConsistencyRuntime
+  extends SettlementFreshnessReader, SettlementRefreshNeedRecorder {
   /** 绑定成交后业务依赖；同一运行时只允许绑定一次，重复绑定必须暴露为装配错误。 */
   readonly bindBusinessDeps: (deps: PostTradeConsistencyRuntimeBusinessDeps) => void;
-  readonly recordSettlementRefreshNeed: (need: PostTradeConsistencyRefreshNeed) => void;
   readonly getStatus: () => PostTradeConsistencyRuntimeStatus;
-  readonly waitForFresh: () => Promise<void>;
-  readonly onFreshReached: (listener: () => void) => Unsubscribe;
   readonly abortWaiting: () => void;
   readonly resetAbort: () => void;
   readonly start: () => void;
   readonly stopScheduling: () => void;
   readonly stopAndDrain: () => Promise<void>;
   readonly midnightClear: () => void;
-  readonly completeRebuildBaseline: () => void;
+  readonly completeRebuildBaseline: () => Promise<boolean>;
 }
 
 /**
@@ -574,7 +608,9 @@ export type LifecycleRuntimeFactoryDeps = Readonly<{
   postGateRuntime: PostGateRuntime;
   asyncRuntime: AsyncRuntime;
   businessEventProgram: BusinessEventProgram;
-  rebuildTradingDayState: (params: RebuildTradingDayStateParams) => Promise<void>;
+  rebuildTradingDayState: (
+    params: RebuildTradingDayStateParams,
+  ) => Promise<RebuildTradingDayStateResult>;
 }>;
 
 /**
@@ -590,7 +626,9 @@ export type LifecycleRuntimeFactories = Readonly<{
   createOrderDomain: (deps: OrderDomainDeps) => CacheDomain;
   createRiskDomain: (deps: RiskDomainDeps) => CacheDomain;
   createGlobalStateDomain: (deps: GlobalStateDomainDeps) => CacheDomain;
-  executeTradingDayOpenRebuild: (params: RunTradingDayOpenRebuildParams) => Promise<void>;
+  executeTradingDayOpenRebuild: (
+    params: RunTradingDayOpenRebuildParams,
+  ) => Promise<TradingDayOpenRebuildResult>;
   createDayLifecycleManager: (deps: DayLifecycleManagerDeps) => DayLifecycleManager;
 }>;
 
@@ -599,6 +637,8 @@ export type LifecycleRuntimeFactories = Readonly<{
  * 不注册动态停机回调，资源释放仍由唯一 CleanupController 登记和执行。
  */
 export type RuntimeAssemblyResources = {
+  snapshot?: AccountPositionSnapshot;
+  closeSnapshotAdmission?: () => void;
   lastState?: LastState;
   strategy?: TradingSignalStrategy;
   buyTaskQueue?: TaskQueue<BuyTaskType>;

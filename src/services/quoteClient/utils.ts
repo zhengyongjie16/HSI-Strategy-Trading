@@ -85,7 +85,7 @@ export function extractLotSize(staticInfo: unknown): number | undefined {
   }
 
   const parsed = lotSizeValue;
-  if (isValidPositiveNumber(parsed)) {
+  if (isValidPositiveNumber(parsed) && Number.isSafeInteger(parsed)) {
     return parsed;
   }
 

@@ -6,7 +6,7 @@
  * - 名义金额换算下单数量
  * - 构造订单信号
  */
-import { calculateLotQuantityByNotional, decimalToNumberValue } from '../../utils/numeric/index.js';
+import { exactCompare, safeQuantityNumber, wholeLotQuantity } from '../../utils/numeric/exact.js';
 import type { RuntimeClock } from '../../types/runtime.js';
 import type { BuildOrderSignalParams, OrderSignal, OrderSignalBuilder } from './types.js';
 
@@ -34,20 +34,17 @@ export function resolveDirectionSymbols(direction: 'LONG' | 'SHORT'): {
  * @returns 手数（整数），不满足最小手数时 null
  */
 export function calculateBuyQuantityByNotional(
-  notional: number,
-  price: number,
+  notional: string,
+  price: string,
   lotSize: number,
 ): number | null {
-  const quantity = calculateLotQuantityByNotional({
-    notional,
-    price,
-    lotSize,
-  });
-  if (!quantity) {
-    return null;
-  }
+  if (!Number.isSafeInteger(lotSize) || lotSize <= 0)
+    throw new RangeError('Lot size must be a positive safe integer');
 
-  return decimalToNumberValue(quantity);
+  if (exactCompare(notional, '0') <= 0 || exactCompare(price, '0') <= 0) return null;
+
+  const quantity = safeQuantityNumber(wholeLotQuantity(notional, price, String(lotSize)));
+  return quantity === 0 ? null : quantity;
 }
 
 /**

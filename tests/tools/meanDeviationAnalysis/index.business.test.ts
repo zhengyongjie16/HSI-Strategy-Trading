@@ -5,7 +5,21 @@
  * - 校验入口读取命令行参数、完成 OAuth 提示并抓取最近 N 个交易日
  * - 校验入口层输出终端表格而不是提前终止
  */
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createSdkModuleMock } from '../../infrastructure/longbridge/trade/sdkModuleMock.js';
+
+/** 在本文件首次 hook 前复制稳定 export 值；Bun module namespace 是 live binding，不作为还原来源。 */
+const originalDotenvExports = Object.freeze({ ...(await import('dotenv')) });
+const sdkModuleMock = createSdkModuleMock();
+const originalAuthExports = Object.freeze({
+  ...(await import('../../../src/config/auth/index.js')),
+});
+
+function reinstallOriginalModules(): void {
+  void mock.module('dotenv', () => ({ ...originalDotenvExports }));
+  sdkModuleMock.restore();
+  void mock.module('../../../src/config/auth/index.js', () => ({ ...originalAuthExports }));
+}
 
 const dotenvConfigCalls: unknown[] = [];
 const authCalls: Array<{
@@ -37,7 +51,6 @@ function registerDotenvMock(): void {
 async function registerLongbridgeMock(params?: {
   readonly dailyCandles?: ReadonlyArray<{ readonly timestamp: Date }>;
 }): Promise<void> {
-  const actualLongbridge = await import('longbridge');
   const quoteContext = {
     candlesticks: async (...args: ReadonlyArray<unknown>) => {
       candlestickCalls.push(args);
@@ -54,12 +67,12 @@ async function registerLongbridgeMock(params?: {
       if (startDate === '2026-06-22') {
         return [
           {
-            close: { toNumber: () => 10 },
+            close: { toString: () => '10' },
             volume: 100,
             timestamp: new Date('2026-06-22T01:30:00.000Z'),
           },
           {
-            close: { toNumber: () => 11 },
+            close: { toString: () => '11' },
             volume: 200,
             timestamp: new Date('2026-06-22T01:31:00.000Z'),
           },
@@ -68,12 +81,12 @@ async function registerLongbridgeMock(params?: {
 
       return [
         {
-          close: { toNumber: () => 10 },
+          close: { toString: () => '10' },
           volume: 100,
           timestamp: new Date('2026-06-23T01:30:00.000Z'),
         },
         {
-          close: { toNumber: () => 9 },
+          close: { toString: () => '9' },
           volume: 200,
           timestamp: new Date('2026-06-23T01:31:00.000Z'),
         },
@@ -81,8 +94,7 @@ async function registerLongbridgeMock(params?: {
     },
   };
 
-  void mock.module('longbridge', () => ({
-    ...actualLongbridge,
+  sdkModuleMock.install({
     AdjustType: {
       NoAdjust: 'NoAdjust',
     },
@@ -99,7 +111,7 @@ async function registerLongbridgeMock(params?: {
     TradeSessions: {
       Intraday: 'Intraday',
     },
-  }));
+  });
 }
 
 function registerAuthMock(): void {
@@ -150,9 +162,31 @@ afterEach(() => {
   console.error = originalConsoleError;
   process.exit = originalProcessExit;
   process.argv = [...originalArgv];
-  if (typeof mock.restore === 'function') {
-    mock.restore();
-  }
+  reinstallOriginalModules();
+});
+
+/** SDK identity 在基础设施 helper 内检查；整个恢复过程不调用 factory、auth 或 dotenv。 */
+afterAll(async () => {
+  const beforeCalls = {
+    auth: authCalls.length,
+    quote: quoteContextNewCalls.length,
+    dotenv: dotenvConfigCalls.length,
+  };
+  reinstallOriginalModules();
+  await sdkModuleMock.assertRestored();
+  const restoredDotenv = await import('dotenv');
+  const restoredAuth = await import('../../../src/config/auth/index.js');
+  expect(restoredDotenv.default.config).toBe(originalDotenvExports.default.config);
+  expect(restoredAuth.createSdkConfigFromAuth).toBe(originalAuthExports.createSdkConfigFromAuth);
+  expect({
+    auth: authCalls.length,
+    quote: quoteContextNewCalls.length,
+    dotenv: dotenvConfigCalls.length,
+  }).toEqual(beforeCalls);
+
+  originalConsoleLog(
+    '[module-restore-proof] meanDeviationAnalysis: prehook stable exports -> reinstall dotenv/longbridge/auth; fresh identity verified; factory/auth/dotenv invocation delta=0',
+  );
 });
 
 describe('meanDeviationAnalysis index entry flow', () => {

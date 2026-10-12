@@ -23,16 +23,11 @@ import type {
   SellableOrderSelectParams,
 } from '../../types/services.js';
 import type { OrderStorage } from './types.js';
-import {
-  assertCompleteExecutionFact,
-  calculateOrderStatistics,
-  calculateTotalQuantity,
-  isOrderTimedOut,
-} from './utils.js';
-import {
-  compareBuyOrdersBySellPriority,
-  deductSellQuantityFromBuyOrders,
-} from './sellDeductionPolicy.js';
+import type { OrderCostBasis } from '../../types/orderRecorder.js';
+import { compareRatios } from '../../utils/numeric/exact.js';
+import { calculateOrderStatistics, isOrderTimedOut } from './utils.js';
+import { calculateTotalQuantity } from '../../domain/order/orderQuantity.js';
+import { compareBuyOrdersBySellPriority } from '../../domain/order/sellDeductionPolicy.js';
 
 function resolvePendingSellStatus(
   filledQuantity: number,
@@ -62,12 +57,6 @@ export const createOrderStorage = (): OrderStorage => {
 
   // 待成交卖出订单追踪
   const pendingSells = new Map<string, PendingSellInfo>();
-  let nextLocalOrderSequence = 0;
-
-  function createLocalOrderId(prefix: 'LOCAL' | 'LOCAL_SELL', executedTime: number): string {
-    nextLocalOrderSequence += 1;
-    return `${prefix}_${executedTime}_${nextLocalOrderSequence}`;
-  }
 
   /**
    * 获取指定标的的买入订单列表
@@ -116,115 +105,10 @@ export const createOrderStorage = (): OrderStorage => {
     return sellRecordsByOrderId.get(orderId) ?? null;
   };
 
-  /**
-   * 添加单笔买入订单到本地存储
-   * @param symbol 标的代码
-   * @param executedPrice 成交价格
-   * @param executedQuantity 成交数量
-   * @param isLongSymbol 是否为做多标的
-   * @param executedTimeMs 成交时间戳（毫秒）
-   */
-  const addBuyOrder = (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
-    isLongSymbol: boolean,
-    executedTimeMs: number,
-  ): void => {
-    assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
-    const nextRecord: OrderRecord = {
-      orderId: createLocalOrderId('LOCAL', executedTimeMs),
-      symbol,
-      executedPrice,
-      executedQuantity,
-      executedTime: executedTimeMs,
-      submittedAt: undefined,
-      updatedAt: undefined,
-    };
-    const list = getBuyOrdersList(symbol, isLongSymbol);
-    setBuyOrdersList(symbol, [...list, nextRecord], isLongSymbol);
-
-    const positionType = isLongSymbol ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;
-    logger.info(
-      `[现存订单记录] 本地新增买入记录：${positionType} ${symbol} 价格=${executedPrice.toFixed(3)} 数量=${executedQuantity}`,
-    );
-  };
-
-  /**
-   * 卖出后更新订单列表。
-   * - 卖出数量 >= 总数量：清空记录
-   * - 若传入 relatedBuyOrderIds：按关联买单精确扣减
-   * - 否则回退为低价优先整笔消除策略扣减
-   *
-   * @param symbol 标的代码
-   * @param executedPrice 成交价格
-   * @param executedQuantity 成交数量
-   * @param isLongSymbol 是否为做多标的
-   * @param executedTimeMs 成交时间戳（毫秒）
-   * @param orderId 订单 ID（可选）
-   */
-  const updateAfterSell = (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
-    isLongSymbol: boolean,
-    executedTimeMs: number,
-    orderId?: string | null,
-    relatedBuyOrderIds?: ReadonlyArray<string> | null,
-  ): void => {
-    assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
-    const list = getBuyOrdersList(symbol, isLongSymbol);
-
-    const sellRecord: OrderRecord = {
-      orderId: orderId ?? createLocalOrderId('LOCAL_SELL', executedTimeMs),
-      symbol,
-      executedPrice,
-      executedQuantity,
-      executedTime: executedTimeMs,
-      submittedAt: undefined,
-      updatedAt: undefined,
-    };
-    sellRecordsByOrderId.set(sellRecord.orderId, sellRecord);
-
-    if (list.length === 0) {
-      return;
-    }
-
-    const totalQuantity = calculateTotalQuantity(list);
-    const positionType = isLongSymbol ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;
-
-    // 如果卖出数量大于等于当前记录的总数量，视为全部卖出，清空记录
-    if (executedQuantity >= totalQuantity) {
-      setBuyOrdersList(symbol, [], isLongSymbol);
-      logger.info(
-        `[现存订单记录] 本地卖出更新：${positionType} ${symbol} 卖出数量=${executedQuantity} >= 当前记录总数量=${totalQuantity}，清空所有买入记录`,
-      );
-      return;
-    }
-
-    const relatedBuyOrderIdSet = new Set(relatedBuyOrderIds);
-    if (relatedBuyOrderIdSet.size > 0) {
-      const filtered = list.filter((order) => !relatedBuyOrderIdSet.has(order.orderId));
-      setBuyOrdersList(symbol, filtered, isLongSymbol);
-
-      const deductedQuantity = calculateTotalQuantity(list) - calculateTotalQuantity(filtered);
-      logger.info(
-        `[现存订单记录] 本地卖出更新:${positionType} ${symbol} 卖出数量=${executedQuantity},` +
-          `按关联买单精确扣减 ${relatedBuyOrderIdSet.size} 笔后剩余买入记录 ${filtered.length} 笔(消除数量=${deductedQuantity})`,
-      );
-      return;
-    }
-
-    // 否则，回退为低价优先整笔消除策略扣减卖出数量
-    const filtered = deductSellQuantityFromBuyOrders(list, executedQuantity);
-    setBuyOrdersList(symbol, filtered, isLongSymbol);
-
-    const deductedQuantity = calculateTotalQuantity(list) - calculateTotalQuantity(filtered);
-    logger.info(
-      `[现存订单记录] 本地卖出更新:${positionType} ${symbol} 卖出数量=${executedQuantity},` +
-        `低价优先整笔消除后剩余买入记录 ${filtered.length} 笔(消除数量=${deductedQuantity})`,
-    );
-  };
+  /** 发布已预检的 broker 卖出记录；identity 不生成本地替代 ID。 */
+  function setSellRecord(record: OrderRecord): void {
+    sellRecordsByOrderId.set(record.orderId, record);
+  }
 
   /** 清空指定标的的买入订单记录（用于保护性清仓） */
   const clearBuyOrders = (symbol: string, isLongSymbol: boolean, quote?: Quote | null): void => {
@@ -238,12 +122,12 @@ export const createOrderStorage = (): OrderStorage => {
   };
 
   /**
-   * 获取最新买入订单的成交价（用于买入价格限制检查）
+   * 获取最新买入订单的成本依据（用于精确买入价格限制检查）
    * @param symbol 标的代码
    * @param isLongSymbol 是否为做多标的
    * @returns 最新成交价，无记录时返回 null
    */
-  const getLatestBuyOrderPrice = (symbol: string, isLongSymbol: boolean): number | null => {
+  const getLatestBuyOrderCost = (symbol: string, isLongSymbol: boolean): OrderCostBasis | null => {
     const list = getBuyOrdersList(symbol, isLongSymbol);
     if (list.length === 0) {
       return null;
@@ -256,7 +140,9 @@ export const createOrderStorage = (): OrderStorage => {
       }
     }
 
-    return latestOrder ? latestOrder.executedPrice : null;
+    return latestOrder
+      ? { costAmount: latestOrder.costAmount, quantity: latestOrder.executedQuantity }
+      : null;
   };
 
   /**
@@ -275,14 +161,11 @@ export const createOrderStorage = (): OrderStorage => {
    */
   function selectProfitOrders(
     allOrders: ReadonlyArray<OrderRecord>,
-    currentPrice: number,
+    currentPrice: string,
   ): ReadonlyArray<OrderRecord> {
-    if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
-      return [];
-    }
-
     return allOrders.filter(
-      (order) => Number.isFinite(order.executedPrice) && order.executedPrice < currentPrice,
+      (order) =>
+        compareRatios(order.costAmount, String(order.executedQuantity), currentPrice, '1') < 0,
     );
   }
 
@@ -318,15 +201,17 @@ export const createOrderStorage = (): OrderStorage => {
     );
   }
 
-  /** 获取指定标的的成本均价（实时计算，无缓存） */
-  const getCostAveragePrice = (symbol: string, isLongSymbol: boolean): number | null => {
+  /** 获取指定标的的精确成本金额/数量（实时计算，无第二缓存）。 */
+  const getCostBasis = (symbol: string, isLongSymbol: boolean): OrderCostBasis | null => {
     const orders = getBuyOrdersList(symbol, isLongSymbol);
     if (orders.length === 0) {
       return null;
     }
 
     const stats = calculateOrderStatistics(orders);
-    return stats.totalQuantity > 0 ? stats.averagePrice : null;
+    return stats.totalQuantity > 0
+      ? { costAmount: stats.costAmount, quantity: stats.totalQuantity }
+      : null;
   };
 
   // ========== 待成交卖出订单追踪实现 ==========
@@ -618,10 +503,9 @@ export const createOrderStorage = (): OrderStorage => {
     getBuyOrdersList,
     setBuyOrdersListForLong,
     setBuyOrdersListForShort,
-    addBuyOrder,
-    updateAfterSell,
+    setSellRecord,
     clearBuyOrders,
-    getLatestBuyOrderPrice,
+    getLatestBuyOrderCost,
     getSellRecordByOrderId,
 
     // 待成交卖出订单追踪
@@ -632,7 +516,7 @@ export const createOrderStorage = (): OrderStorage => {
     markSellCancelled,
     getPendingSellSnapshot,
     allocateRelatedBuyOrderIdsForRecovery,
-    getCostAveragePrice,
+    getCostBasis,
     selectSellableOrders,
     clearAll,
   };

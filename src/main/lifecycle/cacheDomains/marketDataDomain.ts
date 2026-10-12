@@ -9,7 +9,7 @@
  * 开盘重建：
  * - 行情订阅在统一开盘重建流水线（loadTradingDayRuntimeSnapshot）中重建，此处为空操作
  */
-import type { CacheDomain } from '../types.js';
+import type { CacheDomain, CacheDomainOpenRebuildResult } from '../types.js';
 import type { MarketDataDomainDeps } from './types.js';
 
 /**
@@ -26,8 +26,11 @@ export function createMarketDataDomain(deps: MarketDataDomainDeps): CacheDomain 
       await marketDataClient.resetRuntimeSubscriptionsAndCaches();
       logger.debug('[Lifecycle][marketData] 午夜清理完成');
     },
-    openRebuild(): void {
-      // 行情订阅在统一开盘重建流水线中重建
+    openRebuild(ctx): CacheDomainOpenRebuildResult {
+      // 行情订阅已由统一流水线重建，只确认本轮原授权。
+      return ctx.isCurrent()
+        ? { status: 'COMMITTED', snapshotToken: ctx.snapshotToken }
+        : { status: 'ABORTED' };
     },
   };
 }

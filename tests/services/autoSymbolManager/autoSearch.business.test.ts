@@ -18,6 +18,7 @@ import {
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
 import {
+  captureSearchSeatAuthorization,
   createDirectionalAutoSearchPolicy,
   createFindBestWarrantInputDouble,
   createLoggerStub,
@@ -83,7 +84,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: now,
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
     });
 
     expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
@@ -140,7 +141,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
       await autoSearch.maybeSearchOnEvent({
         direction: 'LONG',
         currentTime: now,
-        canContinue: () => true,
+        canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
       });
     } catch (error) {
       caught = error;
@@ -194,7 +195,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
         findCalls += 1;
         return {
           ...createWarrantCandidate('NEW_BULL.HK'),
-          callPrice: 20_500,
+          callPrice: '20500',
         };
       },
       isWithinMorningAutoSearchOpenDelay: () => false,
@@ -206,13 +207,13 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
     });
     const seat = symbolRegistry.getSeatState('LONG');
     expect(findCalls).toBe(1);
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BULL.HK');
-    expect(seat.callPrice).toBe(20_500);
+    expect(seat.callPrice).toBe('20500');
     expect(seat.searchFailCountToday).toBe(0);
     expect(seat.frozenTradingDayKey).toBeNull();
     expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
@@ -264,7 +265,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
     });
     const seat = symbolRegistry.getSeatState('LONG');
     expect(findCalls).toBe(1);
@@ -321,7 +322,7 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: now,
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
     });
     expect(findCalls).toBe(0);
   });
@@ -363,10 +364,10 @@ describe('autoSymbolManager autoSearch business flow', () => {
       findBestWarrant: async () => {
         findCalls += 1;
         return createWarrantCandidateWithOverrides('NEW_BEAR.HK', {
-          callPrice: 19_500,
-          distancePct: -0.3499,
+          callPrice: '19500',
+          distancePct: '-0.3499',
           selectionStage: 'DEGRADED',
-          distanceDeltaToThreshold: 0.0001,
+          distanceDeltaToThreshold: '0.0001',
         });
       },
       isWithinMorningAutoSearchOpenDelay: () => false,
@@ -378,13 +379,13 @@ describe('autoSymbolManager autoSearch business flow', () => {
     await autoSearch.maybeSearchOnEvent({
       direction: 'SHORT',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'SHORT'),
     });
     const seat = symbolRegistry.getSeatState('SHORT');
     expect(findCalls).toBe(1);
     expect(seat.status).toBe('ACTIVATING');
     expect(seat.symbol).toBe('NEW_BEAR.HK');
-    expect(seat.callPrice).toBe(19_500);
+    expect(seat.callPrice).toBe('19500');
     expect(seat.searchFailCountToday).toBe(0);
     expect(seat.frozenTradingDayKey).toBeNull();
     expect(symbolRegistry.getSeatVersion('SHORT')).toBe(2);

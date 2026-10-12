@@ -1,3 +1,4 @@
+import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
@@ -8,8 +9,10 @@ import type {
   PostTradeConsistencyRuntimeDeps,
   PostTradeConsistencyRuntime,
 } from '../../../src/app/types.js';
+import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
+import type { RiskChecker, PreparedUnrealizedLossData } from '../../../src/types/services.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -18,7 +21,6 @@ import {
   createMonitorContextDouble,
   createMonitorConfigDouble,
   createOrderRecorderDouble,
-  createPositionCacheDouble,
   createPositionDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createRiskCheckerDouble,
@@ -64,7 +66,7 @@ type ManualScheduler = Readonly<{
 }>;
 
 async function flushMicrotasks(): Promise<void> {
-  for (let index = 0; index < 10; index += 1) {
+  for (let index = 0; index < 40; index += 1) {
     await Promise.resolve();
   }
 }
@@ -127,13 +129,49 @@ beforeEach(() => {
   });
 });
 
-function createPostTradeConsistencyRuntime(
-  deps: Omit<PostTradeConsistencyRuntimeDeps, 'scheduler' | 'termination'>,
-): PostTradeConsistencyRuntime {
-  return buildPostTradeConsistencyRuntime({
-    ...deps,
-    scheduler: manualScheduler.runtime,
-    termination,
+function createPostTradeHarness(
+  deps: Pick<PostTradeConsistencyRuntimeDeps, 'getTrader' | 'onPositionsCommitted'>,
+): { readonly runtime: PostTradeConsistencyRuntime; readonly snapshot: AccountPositionSnapshot } {
+  const snapshot = createAccountPositionSnapshot({
+    readPort: {
+      getAccountSnapshot: () => deps.getTrader().getAccountSnapshot(),
+      getStockPositions: () => deps.getTrader().getStockPositions(),
+    },
+    scheduler: { schedule: queueMicrotask },
+    reportFatalError: termination.reportFatalError,
+    dayEpoch: 0,
+  });
+  return {
+    snapshot,
+    runtime: buildPostTradeConsistencyRuntime({
+      ...deps,
+      snapshot,
+      scheduler: manualScheduler.runtime,
+      termination,
+    }),
+  };
+}
+
+/** 发布阶段才触发业务观察，避免把 prepare 的调用误当作浮亏缓存已发布。 */
+function createObservedRiskChecker(
+  onPublish: (...params: Parameters<RiskChecker['prepareUnrealizedLossData']>) => void,
+): RiskChecker {
+  const preparedParams = new WeakMap<
+    PreparedUnrealizedLossData,
+    Parameters<RiskChecker['prepareUnrealizedLossData']>
+  >();
+  return createRiskCheckerDouble({
+    prepareUnrealizedLossData: (...params) => {
+      const prepared = { symbol: params[1], data: { r1: '0', n1: 0 } };
+      preparedParams.set(prepared, params);
+      return prepared;
+    },
+    publishUnrealizedLossData: (prepared) => {
+      const params = preparedParams.get(prepared);
+      if (params === undefined) throw new Error('未准备的浮亏投影');
+
+      onPublish(...params);
+    },
   });
 }
 
@@ -146,9 +184,6 @@ function createLastState(): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set(),
@@ -160,9 +195,7 @@ function createLastState(): LastState {
  *
  * @param runtime 待绑定的成交后一致性运行时
  */
-function bindMinimalBusinessDeps(
-  runtime: ReturnType<typeof createPostTradeConsistencyRuntime>,
-): void {
+function bindMinimalBusinessDeps(runtime: PostTradeConsistencyRuntime): void {
   runtime.bindBusinessDeps({
     monitorContext: createMonitorContextDouble({
       config: createMonitorConfigDouble({
@@ -199,18 +232,135 @@ function bindMinimalBusinessDeps(
 }
 
 describe('createPostTradeConsistencyRuntime', () => {
+  it('paired external snapshot failure keeps S stale and on its original retry owner, not fatal', async () => {
+    const accountError = await createExternalApiRequestError({
+      operation: 'TradeContext.accountBalance',
+      attempts: 1,
+      cause: new Error('account unavailable'),
+    });
+    const positionsError = await createExternalApiRequestError({
+      operation: 'TradeContext.stockPositions',
+      attempts: 1,
+      cause: new Error('positions unavailable'),
+    });
+    let failing = true;
+    const trader = createTraderDouble({
+      getAccountSnapshot: async () => {
+        if (failing) throw accountError;
+
+        return createAccountSnapshotDouble('100000');
+      },
+      getStockPositions: async () => {
+        if (failing) throw positionsError;
+
+        return [];
+      },
+    });
+    const { runtime } = createPostTradeHarness({
+      getTrader: () => trader,
+      onPositionsCommitted: async () => {},
+    });
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
+    runtime.start();
+    const waiting = runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    expect(runtime.getStatus()).toMatchObject({ currentVersion: 0, staleVersion: 1 });
+    expect(manualScheduler.pendingDelays()).toEqual([300]);
+    expect(termination.getFatalState()).toEqual({ hasFatalError: false });
+    failing = false;
+    await manualScheduler.runNext(300);
+    await manualScheduler.runNext(0);
+    const readiness = await waiting;
+    expect(readiness.settlementVersion).toBe(1);
+    expect(runtime.getStatus()).toMatchObject({ currentVersion: 1, staleVersion: 1 });
+    await runtime.stopAndDrain();
+  });
+
+  it('in-flight baseline waiters do not create a second dirty refresh or duplicate ready event', async () => {
+    const entered = createDeferred<null>();
+    const release = createDeferred<null>();
+    let callbacks = 0;
+    let events = 0;
+    const { runtime, snapshot } = createPostTradeHarness({
+      getTrader: () => createTraderDouble(),
+      onPositionsCommitted: async () => {
+        callbacks += 1;
+        entered.resolve(null);
+        await release.promise;
+      },
+    });
+    bindMinimalBusinessDeps(runtime);
+    await snapshot.requestRefresh({
+      source: 'LIFECYCLE_REBUILD',
+      dayEpoch: 0,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+
+    runtime.onFreshReached(() => {
+      events += 1;
+    });
+    runtime.start();
+    const completing = runtime.completeRebuildBaseline();
+    await entered.promise;
+    const first = runtime.waitForFresh();
+    const second = runtime.waitForFresh();
+    expect(events).toBe(0);
+    release.resolve(null);
+    expect(await completing).toBe(true);
+    expect(await first).toBe(await second);
+    expect(callbacks).toBe(1);
+    expect(events).toBe(1);
+    expect(manualScheduler.pendingDelays()).toEqual([]);
+    await runtime.stopAndDrain();
+  });
+
+  it('signs a readiness receipt for the paired canonical token and invalidates it on newer settlement demand', async () => {
+    const { runtime, snapshot } = createPostTradeHarness({
+      getTrader: () => createTraderDouble(),
+      onPositionsCommitted: async () => {},
+    });
+    bindMinimalBusinessDeps(runtime);
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
+    runtime.start();
+    const firstWait = runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    const first = await firstWait;
+
+    expect(first.ready).toBe(true);
+    expect(first.snapshotToken).toEqual(snapshot.getView().token);
+    expect(first.settlementVersion).toBe(1);
+    expect(runtime.isCurrent(first)).toBe(true);
+    expect(
+      snapshot.isCurrent(first.snapshotToken, { account: true, positions: true, paired: true }),
+    ).toBe(true);
+
+    runtime.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
+    expect(runtime.isCurrent(first)).toBe(false);
+    const secondWait = runtime.waitForFresh();
+    await manualScheduler.runNext(0);
+    const second = await secondWait;
+    expect(second.settlementVersion).toBe(2);
+    expect(second.snapshotToken.snapshotGeneration).toBeGreaterThan(
+      first.snapshotToken.snapshotGeneration,
+    );
+    expect(runtime.isCurrent(second)).toBe(true);
+    expect(runtime.isCurrent(first)).toBe(false);
+    await runtime.stopAndDrain();
+  });
+
   it('marks stale before start and consumes the backlog after start while emitting fresh reached event', async () => {
-    const lastState = createLastState();
     let accountRefreshCalls = 0;
     let positionRefreshCalls = 0;
     let freshEventCount = 0;
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime, snapshot } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
             accountRefreshCalls += 1;
-            return createAccountSnapshotDouble(88_000);
+            return createAccountSnapshotDouble('88000');
           },
           getStockPositions: async () => {
             positionRefreshCalls += 1;
@@ -223,7 +373,6 @@ describe('createPostTradeConsistencyRuntime', () => {
             ];
           },
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
 
@@ -255,8 +404,8 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     expect(accountRefreshCalls).toBe(1);
     expect(positionRefreshCalls).toBe(1);
-    expect(lastState.cachedPositions).toHaveLength(1);
-    expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(300);
+    expect(snapshot.getView().positions).toHaveLength(1);
+    expect(snapshot.getAvailablePosition('BULL.HK')?.quantity).toBe(300);
     expect(freshEventCount).toBe(1);
 
     expect(runtime.getStatus()).toEqual({
@@ -267,15 +416,14 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('awaits positions committed hook after writing latest positions', async () => {
-    const lastState = createLastState();
     const committedSnapshots: Array<{
       readonly cachedPositionCount: number;
       readonly cacheQuantity: number | null;
     }> = [];
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime, snapshot } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(88_000),
+          getAccountSnapshot: async () => createAccountSnapshotDouble('88000'),
           getStockPositions: async () => [
             createPositionDouble({
               symbol: 'BULL.HK',
@@ -284,12 +432,11 @@ describe('createPostTradeConsistencyRuntime', () => {
             }),
           ],
         }),
-      lastState,
       onPositionsCommitted: async () => {
         await Promise.resolve();
         committedSnapshots.push({
-          cachedPositionCount: lastState.cachedPositions.length,
-          cacheQuantity: lastState.positionCache.get('BULL.HK')?.quantity ?? null,
+          cachedPositionCount: snapshot.getView().positions.length,
+          cacheQuantity: snapshot.getAvailablePosition('BULL.HK')?.quantity ?? null,
         });
       },
     });
@@ -321,14 +468,13 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('retries to the latest stale version after an in-flight failure receives a newer settlement need', async () => {
-    const lastState = createLastState();
     const firstAccountRefresh = createDeferred<ReturnType<typeof createAccountSnapshotDouble>>();
     const firstPositionRefresh =
       createDeferred<ReadonlyArray<ReturnType<typeof createPositionDouble>>>();
     let accountRefreshCalls = 0;
     let positionRefreshCalls = 0;
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime, snapshot } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -337,7 +483,7 @@ describe('createPostTradeConsistencyRuntime', () => {
               return firstAccountRefresh.promise;
             }
 
-            return createAccountSnapshotDouble(99_000);
+            return createAccountSnapshotDouble('99000');
           },
           getStockPositions: async () => {
             positionRefreshCalls += 1;
@@ -354,7 +500,6 @@ describe('createPostTradeConsistencyRuntime', () => {
             ];
           },
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
 
@@ -402,8 +547,8 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     expect(accountRefreshCalls).toBe(2);
     expect(positionRefreshCalls).toBe(2);
-    expect(lastState.cachedPositions).toHaveLength(1);
-    expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(500);
+    expect(snapshot.getView().positions).toHaveLength(1);
+    expect(snapshot.getAvailablePosition('BULL.HK')?.quantity).toBe(500);
     expect(runtime.getStatus()).toEqual({
       started: true,
       currentVersion: 2,
@@ -414,14 +559,13 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('retries failed refresh and still refreshes all currently attributed seat symbols after recovery', async () => {
-    const lastState = createLastState();
     let accountCallCount = 0;
     const refreshedSymbols: string[] = [];
 
     const monitorContext = createMonitorContextDouble({
       config: createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
-        maxUnrealizedLossPerSymbol: 2_000,
+        maxUnrealizedLossPerSymbol: '2000',
       }),
       symbolRegistry: createSymbolRegistryDouble({
         longSeat: {
@@ -445,16 +589,14 @@ describe('createPostTradeConsistencyRuntime', () => {
       }),
       orderRecorder: createOrderRecorderDouble(),
       dailyLossTracker: createDailyLossTrackerDouble({
-        getLossOffset: () => 0,
+        getLossOffset: () => '0',
       }),
-      riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async (_orderRecorder, symbol) => {
-          refreshedSymbols.push(symbol);
-        },
+      riskChecker: createObservedRiskChecker((_orderRecorder, symbol) => {
+        refreshedSymbols.push(symbol);
       }),
     });
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -467,7 +609,7 @@ describe('createPostTradeConsistencyRuntime', () => {
               });
             }
 
-            return createAccountSnapshotDouble(66_000);
+            return createAccountSnapshotDouble('66000');
           },
           getStockPositions: async () => [
             createPositionDouble({
@@ -477,7 +619,6 @@ describe('createPostTradeConsistencyRuntime', () => {
             }),
           ],
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
@@ -513,9 +654,8 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('lets a new settlement need preempt the 300ms retry and clears the superseded timer', async () => {
-    const lastState = createLastState();
     let accountRefreshCalls = 0;
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -528,10 +668,9 @@ describe('createPostTradeConsistencyRuntime', () => {
               });
             }
 
-            return createAccountSnapshotDouble(88_000);
+            return createAccountSnapshotDouble('88000');
           },
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
 
@@ -559,15 +698,14 @@ describe('createPostTradeConsistencyRuntime', () => {
 
   it('clears a queued 0ms run on stop but preserves its need for the next start', async () => {
     let accountRefreshCalls = 0;
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
             accountRefreshCalls += 1;
-            return createAccountSnapshotDouble(88_000);
+            return createAccountSnapshotDouble('88000');
           },
         }),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
 
@@ -580,6 +718,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     expect(manualScheduler.pendingDelays()).toEqual([]);
     expect(accountRefreshCalls).toBe(0);
 
+    runtime.resetAbort();
     const fresh = runtime.waitForFresh();
     runtime.start();
     expect(manualScheduler.pendingDelays()).toEqual([0]);
@@ -591,7 +730,7 @@ describe('createPostTradeConsistencyRuntime', () => {
 
   it('clears a queued 300ms retry and discards its need during midnight cleanup', async () => {
     let accountRefreshCalls = 0;
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -603,7 +742,6 @@ describe('createPostTradeConsistencyRuntime', () => {
             });
           },
         }),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
 
@@ -622,11 +760,10 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('keeps the attributed direction snapshot stable while refreshing seat symbols', async () => {
-    const lastState = createLastState();
     const riskRefreshCalls: Array<{
       readonly symbol: string;
       readonly isLongSymbol: boolean;
-      readonly dailyLossOffset: number | undefined;
+      readonly dailyLossOffset: string | undefined;
     }> = [];
     const symbolRegistry = createSymbolRegistryDouble({
       longSeat: {
@@ -654,16 +791,10 @@ describe('createPostTradeConsistencyRuntime', () => {
       }),
       symbolRegistry,
       dailyLossTracker: createDailyLossTrackerDouble({
-        getLossOffset: (direction) => (direction === 'LONG' ? 11 : 22),
+        getLossOffset: (direction) => (direction === 'LONG' ? '11' : '22'),
       }),
-      riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async (
-          _orderRecorder,
-          symbol,
-          isLongSymbol,
-          _quote,
-          dailyLossOffset,
-        ) => {
+      riskChecker: createObservedRiskChecker(
+        (_orderRecorder, symbol, isLongSymbol, dailyLossOffset) => {
           riskRefreshCalls.push({ symbol, isLongSymbol, dailyLossOffset });
           if (symbol === 'BULL.HK') {
             symbolRegistry.updateSeatState('LONG', {
@@ -677,15 +808,14 @@ describe('createPostTradeConsistencyRuntime', () => {
             });
           }
         },
-      }),
+      ),
     });
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(66_000),
+          getAccountSnapshot: async () => createAccountSnapshotDouble('66000'),
           getStockPositions: async () => [],
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
@@ -712,20 +842,19 @@ describe('createPostTradeConsistencyRuntime', () => {
       {
         symbol: 'BULL.HK',
         isLongSymbol: true,
-        dailyLossOffset: 11,
+        dailyLossOffset: '11',
       },
       {
         symbol: 'BEAR.HK',
         isLongSymbol: false,
-        dailyLossOffset: 22,
+        dailyLossOffset: '22',
       },
     ]);
   });
 
   it('fails fast when account refresh hits TypeError and exposes the fatal channel immediately', async () => {
-    const lastState = createLastState();
     let accountCallCount = 0;
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -734,7 +863,6 @@ describe('createPostTradeConsistencyRuntime', () => {
           },
           getStockPositions: async () => [],
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
 
@@ -794,12 +922,11 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('fails fast when positions committed hook throws ordinary Error', async () => {
-    const lastState = createLastState();
     const internalError = new Error('position commit failed');
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(100),
+          getAccountSnapshot: async () => createAccountSnapshotDouble('100'),
           getStockPositions: async () => [
             createPositionDouble({
               symbol: 'BULL.HK',
@@ -808,7 +935,6 @@ describe('createPostTradeConsistencyRuntime', () => {
             }),
           ],
         }),
-      lastState,
       onPositionsCommitted: async () => {
         throw internalError;
       },
@@ -853,7 +979,6 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('fails fast when unrealized loss refresh hits TypeError and does not schedule retry', async () => {
-    const lastState = createLastState();
     let accountCallCount = 0;
     let riskRefreshCallCount = 0;
 
@@ -881,20 +1006,18 @@ describe('createPostTradeConsistencyRuntime', () => {
           frozenTradingDayKey: null,
         },
       }),
-      riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
-          riskRefreshCallCount += 1;
-          throw new TypeError('refresh unrealized loss contract violated');
-        },
+      riskChecker: createObservedRiskChecker(() => {
+        riskRefreshCallCount += 1;
+        throw new TypeError('refresh unrealized loss contract violated');
       }),
     });
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
             accountCallCount += 1;
-            return createAccountSnapshotDouble(77_000);
+            return createAccountSnapshotDouble('77000');
           },
           getStockPositions: async () => [
             createPositionDouble({
@@ -904,7 +1027,6 @@ describe('createPostTradeConsistencyRuntime', () => {
             }),
           ],
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
 
@@ -955,7 +1077,6 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('completes protective liquidation episodes and advances daily loss plus cooldown after positions refresh', async () => {
-    const lastState = createLastState();
     const committedProtectionBoundaryCalls: Array<{
       direction: 'LONG' | 'SHORT';
       boundaryExecutedTimeMs: number;
@@ -969,7 +1090,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     const riskRefreshCalls: Array<{
       symbol: string;
       isLongSymbol: boolean;
-      dailyLossOffset: number | undefined;
+      dailyLossOffset: string | undefined;
     }> = [];
     const protectiveBoundaryMs = 1_712_222_333_000;
 
@@ -1000,32 +1121,25 @@ describe('createPostTradeConsistencyRuntime', () => {
       }),
       orderRecorder: createOrderRecorderDouble(),
       dailyLossTracker: createDailyLossTrackerDouble({
-        getLossOffset: () => 88,
+        getLossOffset: () => '88',
       }),
-      riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async (
-          _orderRecorder,
-          symbol,
-          isLongSymbol,
-          _quote,
-          dailyLossOffset,
-        ) => {
+      riskChecker: createObservedRiskChecker(
+        (_orderRecorder, symbol, isLongSymbol, dailyLossOffset) => {
           riskRefreshCalls.push({ symbol, isLongSymbol, dailyLossOffset });
         },
-      }),
+      ),
     });
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime, snapshot } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(77_000),
+          getAccountSnapshot: async () => createAccountSnapshotDouble('77000'),
           getStockPositions: async () => [],
           hasPendingProtectiveLiquidationOrders: (direction) => {
             pendingProtectiveDirections.push(direction);
             return false;
           },
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
@@ -1076,7 +1190,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     await manualScheduler.runNext(0);
     await fresh;
     await runtime.stopAndDrain();
-    expect(lastState.cachedPositions).toEqual([]);
+    expect(snapshot.getView().positions).toEqual([]);
     expect(pendingProtectiveDirections).toEqual(['LONG']);
     expect(committedProtectionBoundaryCalls).toEqual([
       {
@@ -1097,7 +1211,7 @@ describe('createPostTradeConsistencyRuntime', () => {
       {
         symbol: 'BULL.HK',
         isLongSymbol: true,
-        dailyLossOffset: 88,
+        dailyLossOffset: '88',
       },
     ]);
   });
@@ -1105,14 +1219,13 @@ describe('createPostTradeConsistencyRuntime', () => {
   it('keeps daily loss, cooldown, and episode uncommitted when completion persistence fails', async () => {
     const boundaryExecutedTimeMs = Date.parse('2026-07-11T03:00:00.000Z');
     const commits: string[] = [];
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(10_000),
+          getAccountSnapshot: async () => createAccountSnapshotDouble('10000'),
           getStockPositions: async () => [],
           hasPendingProtectiveLiquidationOrders: () => false,
         }),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
@@ -1161,9 +1274,8 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('fails fast when start is called before bindBusinessDeps', () => {
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () => createTraderDouble(),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1173,9 +1285,8 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('fails fast when bindBusinessDeps is called more than once', () => {
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () => createTraderDouble(),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1187,7 +1298,6 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('fails fast and stops retrying when attributed seat symbols are duplicated', async () => {
-    const lastState = createLastState();
     const symbolRegistry = createSymbolRegistryDouble({
       longSeat: {
         symbol: 'BULL.HK',
@@ -1212,13 +1322,12 @@ describe('createPostTradeConsistencyRuntime', () => {
       config: createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
       symbolRegistry,
     });
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(10_000),
+          getAccountSnapshot: async () => createAccountSnapshotDouble('10000'),
           getStockPositions: async () => [],
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
     expect(() => {
@@ -1234,11 +1343,10 @@ describe('createPostTradeConsistencyRuntime', () => {
     }).toThrow('重复归属');
   });
 
-  it('completeRebuildBaseline advances freshness only after pending work is cleared and emits rebuild baseline event', () => {
+  it('invalid baseline stops ordinary timers without clearing pending work; explicit rebuild consumes it before fresh', async () => {
     let freshEventCount = 0;
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime, snapshot } = createPostTradeHarness({
       getTrader: () => createTraderDouble(),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1246,11 +1354,13 @@ describe('createPostTradeConsistencyRuntime', () => {
       freshEventCount += 1;
     });
 
+    bindMinimalBusinessDeps(runtime);
+    runtime.start();
     runtime.recordSettlementRefreshNeed({
       refreshAccount: true,
       refreshPositions: false,
     });
-    runtime.completeRebuildBaseline();
+    await runtime.completeRebuildBaseline();
 
     expect(runtime.getStatus()).toEqual({
       started: false,
@@ -1258,23 +1368,32 @@ describe('createPostTradeConsistencyRuntime', () => {
       staleVersion: 1,
     });
     expect(freshEventCount).toBe(0);
+    expect(manualScheduler.pendingDelays()).toEqual([]);
 
-    runtime.midnightClear();
-    runtime.completeRebuildBaseline();
+    snapshot.beginRebuild();
+    const baseline = await snapshot.requestRefresh({
+      source: 'LIFECYCLE_REBUILD',
+      dayEpoch: snapshot.getView().token.dayEpoch,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    expect(baseline.status).toBe('COMMITTED');
+    runtime.start();
+    expect(await runtime.completeRebuildBaseline()).toBe(true);
 
     expect(freshEventCount).toBe(1);
 
     expect(runtime.getStatus()).toEqual({
-      started: false,
+      started: true,
       currentVersion: 1,
       staleVersion: 1,
     });
+    await runtime.stopAndDrain();
   });
 
   it('aborts waiters without marking fresh during shutdown', async () => {
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () => createTraderDouble(),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1299,12 +1418,11 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('does not report fatal when shutdown aborts waiters during a successful in-flight refresh', async () => {
-    const lastState = createLastState();
     const accountRefresh = createDeferred<ReturnType<typeof createAccountSnapshotDouble>>();
     let accountRefreshCalls = 0;
     let freshEventCount = 0;
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -1313,7 +1431,6 @@ describe('createPostTradeConsistencyRuntime', () => {
           },
           getStockPositions: async () => [],
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
 
@@ -1330,7 +1447,7 @@ describe('createPostTradeConsistencyRuntime', () => {
     await manualScheduler.runNext(0);
     expect(accountRefreshCalls).toBe(1);
     runtime.abortWaiting();
-    accountRefresh.resolve(createAccountSnapshotDouble(66_000));
+    accountRefresh.resolve(createAccountSnapshotDouble('66000'));
 
     await runtime.stopAndDrain();
 
@@ -1343,12 +1460,11 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('continues consuming late settlement refresh after shutdown aborts waiters', async () => {
-    const lastState = createLastState();
     const accountRefresh = createDeferred<ReturnType<typeof createAccountSnapshotDouble>>();
     let accountRefreshCalls = 0;
     let freshEventCount = 0;
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -1357,7 +1473,6 @@ describe('createPostTradeConsistencyRuntime', () => {
           },
           getStockPositions: async () => [],
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
 
@@ -1378,7 +1493,7 @@ describe('createPostTradeConsistencyRuntime', () => {
 
     await manualScheduler.runNext(0);
     expect(accountRefreshCalls).toBe(1);
-    accountRefresh.resolve(createAccountSnapshotDouble(55_000));
+    accountRefresh.resolve(createAccountSnapshotDouble('55000'));
 
     await runtime.stopAndDrain();
 
@@ -1391,7 +1506,6 @@ describe('createPostTradeConsistencyRuntime', () => {
   });
 
   it('does not complete protective liquidation when original liquidation symbol still has position after seat switch', async () => {
-    const lastState = createLastState();
     const committedProtectionBoundaryCalls: Array<{
       direction: 'LONG' | 'SHORT';
       boundaryExecutedTimeMs: number;
@@ -1429,17 +1543,15 @@ describe('createPostTradeConsistencyRuntime', () => {
       }),
       orderRecorder: createOrderRecorderDouble(),
       dailyLossTracker: createDailyLossTrackerDouble({
-        getLossOffset: () => 0,
+        getLossOffset: () => '0',
       }),
-      riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {},
-      }),
+      riskChecker: createObservedRiskChecker(() => {}),
     });
 
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble(77_000),
+          getAccountSnapshot: async () => createAccountSnapshotDouble('77000'),
           getStockPositions: async () => [
             createPositionDouble({
               symbol: 'BULL.OLD.HK',
@@ -1449,7 +1561,6 @@ describe('createPostTradeConsistencyRuntime', () => {
           ],
           hasPendingProtectiveLiquidationOrders: () => false,
         }),
-      lastState,
       onPositionsCommitted: async () => {},
     });
     runtime.bindBusinessDeps({
@@ -1515,7 +1626,7 @@ describe('PostTrade drain dependency', () => {
       cause: new Error('retry'),
     });
     let accountCalls = 0;
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -1523,7 +1634,6 @@ describe('PostTrade drain dependency', () => {
             throw failure;
           },
         }),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
     bindMinimalBusinessDeps(runtime);
@@ -1556,7 +1666,7 @@ describe('PostTrade drain dependency', () => {
       const committed = createDeferred<null>();
       const events: Array<string> = [];
       let positionCalls = 0;
-      const runtime = createPostTradeConsistencyRuntime({
+      const { runtime } = createPostTradeHarness({
         getTrader: () =>
           createTraderDouble({
             getStockPositions: () => {
@@ -1564,7 +1674,6 @@ describe('PostTrade drain dependency', () => {
               return positions.promise;
             },
           }),
-        lastState: createLastState(),
         onPositionsCommitted: async () => {
           events.push('callback-start');
           await committed.promise;
@@ -1591,14 +1700,17 @@ describe('PostTrade drain dependency', () => {
 
       await manualScheduler.runNext(0);
       oldCallback();
-      const drain = runtime.stopAndDrain();
-      expect(drain).not.toBe(oldDrain);
-      expect(runtime.stopAndDrain()).toBe(drain);
-      void drain.then(() => events.push('drained'));
       await flushMicrotasks();
       expect(events).toEqual([]);
       expect(positionCalls).toBe(1);
       positions.resolve([]);
+      await flushMicrotasks();
+      expect(events).toEqual(['callback-start']);
+      // consumer callback 已实际 issued，再关闭调度并等待它结束，不要求取消后发出新 callback。
+      const drain = runtime.stopAndDrain();
+      expect(drain).not.toBe(oldDrain);
+      expect(runtime.stopAndDrain()).toBe(drain);
+      void drain.then(() => events.push('drained'));
       await flushMicrotasks();
       expect(events).toEqual(['callback-start']);
       committed.resolve(null);
@@ -1612,9 +1724,8 @@ describe('PostTrade drain dependency', () => {
     const positions = createDeferred<ReadonlyArray<never>>();
     const committed = createDeferred<null>();
     const events: string[] = [];
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () => createTraderDouble({ getStockPositions: () => positions.promise }),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {
         events.push('callback-start');
         await committed.promise;
@@ -1625,6 +1736,11 @@ describe('PostTrade drain dependency', () => {
     runtime.recordSettlementRefreshNeed({ refreshAccount: false, refreshPositions: true });
     runtime.start();
     await manualScheduler.runNext(0);
+    await flushMicrotasks();
+    expect(events).toEqual([]);
+    positions.resolve([]);
+    await flushMicrotasks();
+    expect(events).toEqual(['callback-start']);
     runtime.stopScheduling();
     const first = runtime.stopAndDrain();
     const second = runtime.stopAndDrain();
@@ -1632,9 +1748,6 @@ describe('PostTrade drain dependency', () => {
     void first.then(() => {
       events.push('drained');
     });
-    await flushMicrotasks();
-    expect(events).toEqual([]);
-    positions.resolve([]);
     await flushMicrotasks();
     expect(events).toEqual(['callback-start']);
     committed.resolve(null);
@@ -1650,14 +1763,25 @@ describe('PostTrade drain dependency', () => {
 });
 
 describe('PostTrade → Quote shutdown dependency', () => {
-  it('正常终止中的晚到持仓完成订阅提交，两个 owner 排空后不再 mutation', async () => {
+  it('正常终止等待已发出的持仓订阅提交，两个 owner 排空后不再 mutation', async () => {
     const pendingPositions =
       createDeferred<ReadonlyArray<ReturnType<typeof createPositionDouble>>>();
     const subscription = createDeferred<null>();
     const lastState = createLastState();
     const events: string[] = [];
     const trader = createTraderDouble({ getStockPositions: () => pendingPositions.promise });
+    let quoteOwner: ReturnType<typeof createQuoteSubscriptionRuntime> | null = null;
+    const { runtime, snapshot } = createPostTradeHarness({
+      getTrader: () => trader,
+      onPositionsCommitted: async (capturedToken) => {
+        if (quoteOwner === null) throw new Error('quote owner has not been bound');
+
+        await quoteOwner.reconcilePositionHoldFromCurrentTruth(capturedToken);
+        events.push('committed');
+      },
+    });
     const quote = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
@@ -1675,24 +1799,19 @@ describe('PostTrade → Quote shutdown dependency', () => {
         },
       },
     });
-    const runtime = createPostTradeConsistencyRuntime({
-      getTrader: () => trader,
-      lastState,
-      onPositionsCommitted: async () => {
-        await quote.reconcilePositionHoldFromCurrentTruth();
-        events.push('committed');
-      },
-    });
+    quoteOwner = quote;
     bindMinimalBusinessDeps(runtime);
     runtime.recordSettlementRefreshNeed({ refreshAccount: false, refreshPositions: true });
     runtime.start();
     await manualScheduler.runNext(0);
-    termination.requestShutdown();
-    runtime.stopScheduling();
-    const drain = runtime.stopAndDrain();
     pendingPositions.resolve([
       createPositionDouble({ symbol: 'LATE.HK', quantity: 100, availableQuantity: 100 }),
     ]);
+    await flushMicrotasks();
+    expect(events).toEqual(['subscribe-start']);
+    termination.requestShutdown();
+    runtime.stopScheduling();
+    const drain = runtime.stopAndDrain();
     await flushMicrotasks();
     expect(events).toEqual(['subscribe-start']);
     subscription.resolve(null);
@@ -1708,7 +1827,7 @@ describe('PostTrade → Quote shutdown dependency', () => {
       'unsubscribe',
       'quote-drained',
     ]);
-    await quote.reconcilePositionHoldFromCurrentTruth();
+    await quote.reconcilePositionHoldFromCurrentTruth(snapshot.getView().token);
     await quote.retainSymbols({
       reason: 'SEAT_REFRESH_WAIT',
       ownerKey: 'late',
@@ -1724,7 +1843,7 @@ describe('PostTrade rejected request drain', () => {
     const positions = createDeferred<ReadonlyArray<ReturnType<typeof createPositionDouble>>>();
     const failure = new TypeError('account invariant');
     let drained = false;
-    const runtime = createPostTradeConsistencyRuntime({
+    const { runtime } = createPostTradeHarness({
       getTrader: () =>
         createTraderDouble({
           getAccountSnapshot: async () => {
@@ -1732,7 +1851,6 @@ describe('PostTrade rejected request drain', () => {
           },
           getStockPositions: () => positions.promise,
         }),
-      lastState: createLastState(),
       onPositionsCommitted: async () => {},
     });
     bindMinimalBusinessDeps(runtime);

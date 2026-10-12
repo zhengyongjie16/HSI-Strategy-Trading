@@ -7,6 +7,8 @@
  * - 固定 lastState、trader、快照加载器与异步基础设施的唯一创建点
  * - 保持 post-gate 对象所有权清单集中
  */
+import { createBrokerAccessFactory } from '../../infrastructure/longbridge/trade/brokerAccessAdapter.js';
+import { orderEconomics } from '../../domain/order/orderEconomics.js';
 import { TIME } from '../../constants/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
@@ -40,8 +42,8 @@ import { buildPriceDisplayInfo } from '../../services/marketMonitor/priceDisplay
 import { createLiquidationCooldownTracker } from '../../services/liquidationCooldown/index.js';
 import { createTradeLogHydrator } from '../../services/liquidationCooldown/tradeLogHydrator.js';
 import type { MixedTradeLogRepository } from '../../services/mixedTradeLogRepository/types.js';
-import { createPositionCache } from '../../utils/positionCache/index.js';
-import { isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { createAccountPositionSnapshot } from '../../application/accountPositionSnapshot/index.js';
+import { exactCompare } from '../../utils/numeric/exact.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
 import {
   calculateTradingDurationDueAtMs,
@@ -93,7 +95,7 @@ function hasPersistableTradeExecutionContext(
   readonly symbol: string;
   readonly side: 'BUY' | 'SELL';
   readonly isLongSymbol: boolean;
-  readonly executedPrice: number;
+  readonly executedPrice: string;
   readonly executedQuantity: number;
   readonly executedTimeMs: number;
 } {
@@ -101,9 +103,14 @@ function hasPersistableTradeExecutionContext(
     event.symbol !== null &&
     event.side !== null &&
     event.isLongSymbol !== null &&
-    isValidPositiveNumber(event.executedPrice) &&
-    isValidPositiveNumber(event.executedQuantity) &&
-    isValidPositiveNumber(event.executedTimeMs)
+    event.executedPrice !== null &&
+    exactCompare(event.executedPrice, '0') > 0 &&
+    event.executedQuantity !== null &&
+    Number.isSafeInteger(event.executedQuantity) &&
+    event.executedQuantity > 0 &&
+    event.executedTimeMs !== null &&
+    Number.isSafeInteger(event.executedTimeMs) &&
+    event.executedTimeMs > 0
   );
 }
 
@@ -160,7 +167,7 @@ function resolveTradeRecordFromOrderStateChangedEvent(
     }),
     side: event.side,
     quantity: String(event.executedQuantity),
-    price: String(event.executedPrice),
+    price: event.executedPrice,
     orderType: null,
     status: 'FILLED',
     error: null,
@@ -273,9 +280,6 @@ function createPostGateRuntimeFactory(
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
       isTradingEnabled: true,
-      cachedAccount: null,
-      cachedPositions: [],
-      positionCache: createPositionCache(),
       cachedTradingDayInfo:
         initialTradingDayInfo === null
           ? null
@@ -307,12 +311,51 @@ function createPostGateRuntimeFactory(
     const quoteSubscriptionRuntimeBinding = createSingleAssignmentBinding<QuoteSubscriptionRuntime>(
       'QuoteSubscriptionRuntime',
     );
+    const snapshot = createAccountPositionSnapshot({
+      dayEpoch: 0,
+      scheduler: {
+        schedule: (callback) => {
+          scheduler.scheduleTimer(callback, 0);
+        },
+      },
+      readPort: {
+        getAccountSnapshot: () => traderBinding.get().getAccountSnapshot(),
+        getStockPositions: () => traderBinding.get().getStockPositions(),
+      },
+      reportFatalError: termination.reportFatalError,
+    });
+    resources.snapshot = snapshot;
+    let snapshotDrain: Promise<void> | null = null;
+    const closeSnapshotAdmission = (): void => {
+      if (snapshotDrain !== null) return;
+
+      snapshotDrain = snapshot.requestClear({
+        reason: 'STOP',
+        dayEpoch: snapshot.getView().token.dayEpoch,
+      });
+      void snapshotDrain.catch(termination.reportFatalError);
+    };
+    resources.closeSnapshotAdmission = closeSnapshotAdmission;
+    cleanup.register({
+      phase: 'CLOSE_TRADING_GATE',
+      step: '关闭 Snapshot 准入并取消旧等待',
+      handler: closeSnapshotAdmission,
+    });
+
+    cleanup.register({
+      phase: 'STOP_ACCOUNT_POSITION_SNAPSHOT',
+      step: '排空 Snapshot 券商读取',
+      handler: async () => {
+        if (snapshotDrain !== null) await snapshotDrain;
+      },
+    });
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
       termination,
       getTrader: traderBinding.get,
-      lastState,
-      onPositionsCommitted: async () => {
-        await quoteSubscriptionRuntimeBinding.get().reconcilePositionHoldFromCurrentTruth();
+      snapshot,
+      onPositionsCommitted: async (token) => {
+        await quoteSubscriptionRuntimeBinding.get().reconcilePositionHoldFromCurrentTruth(token);
+        // S owner 在此 awaited ack 后按原 token/席位/水位复核；对账不签发 ready。
       },
       scheduler,
     });
@@ -336,7 +379,7 @@ function createPostGateRuntimeFactory(
     if (termination.isTerminated()) return null;
 
     const trader = await buildTrader({
-      config,
+      brokerAccess: createBrokerAccessFactory(config, orderEconomics),
       tradingConfig,
       marketDataClient,
       unrealizedLossBuyGate: riskChecker,
@@ -390,6 +433,7 @@ function createPostGateRuntimeFactory(
     const seatActivationDispatcher = createSeatActivationDispatcher({
       termination,
       symbolRegistry,
+      snapshot,
       monitorTaskQueue,
     });
     resources.seatActivationDispatcher = seatActivationDispatcher;
@@ -407,6 +451,7 @@ function createPostGateRuntimeFactory(
       marketDataClient,
       trader,
       lastState,
+      snapshot,
       tradingConfig,
       symbolRegistry,
       dailyLossTracker,
@@ -429,6 +474,7 @@ function createPostGateRuntimeFactory(
       marketDataClient,
       trader,
       lastState,
+      snapshot,
       termination,
     });
     quoteSubscriptionRuntimeBinding.bind(quoteSubscriptionRuntime);
@@ -487,6 +533,7 @@ function createPostGateRuntimeFactory(
       symbolRegistry,
       monitorContext,
       lastState,
+      snapshot,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
       now: clock.now,
@@ -508,6 +555,7 @@ function createPostGateRuntimeFactory(
       symbolRegistry,
       monitorContext,
       lastState,
+      snapshot,
       postTradeConsistencyRuntime,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled,
@@ -532,6 +580,7 @@ function createPostGateRuntimeFactory(
       monitorContext,
       trader,
       lastState,
+      snapshot,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
       quoteSubscriptionRuntime,
@@ -643,6 +692,9 @@ function createPostGateRuntimeFactory(
 
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
       termination,
+      snapshot,
+      getCanTradeNow: () =>
+        !termination.isTerminated() && lastState.isTradingEnabled && lastState.canTrade === true,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue,
@@ -685,6 +737,7 @@ function createPostGateRuntimeFactory(
       tradingQuoteDisplayRuntime,
       switchWakeupRuntime,
       postTradeConsistencyRuntime,
+      snapshot,
       lastState,
       trader,
       loadTradingDayRuntimeSnapshot,

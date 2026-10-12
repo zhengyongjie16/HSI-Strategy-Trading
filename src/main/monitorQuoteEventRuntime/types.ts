@@ -1,12 +1,9 @@
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
+import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
+import type { SettlementFreshnessReader } from '../../types/settlement.js';
 import type { SellSignal } from '../../types/signal.js';
-import type {
-  MarketDataClient,
-  PostTradeConsistencyFreshnessPort,
-  QuoteUpdatedEvent,
-  Trader,
-} from '../../types/services.js';
+import type { MarketDataClient, QuoteUpdatedEvent, Trader } from '../../types/services.js';
 import type {
   StartSwitchOnDistanceResult,
   SwitchDriveResult,
@@ -40,13 +37,10 @@ type MonitorQuoteFreshnessStatus = Readonly<{
  * 数据来源：由 app 层 postTradeConsistencyRuntime 实现并注入。
  * 使用范围：monitorQuoteEventRuntime 模块内部依赖与相关测试使用。
  */
-type MonitorQuoteFreshnessDeps = Readonly<{
-  /** 等待 freshness 追平 */
-  waitForFresh: PostTradeConsistencyFreshnessPort['waitForFresh'];
-
-  /** 读取 freshness 状态快照 */
+interface MonitorQuoteFreshnessDeps extends SettlementFreshnessReader {
+  /** 读取 freshness 状态快照。 */
   getStatus: () => MonitorQuoteFreshnessStatus;
-}>;
+}
 
 /**
  * Monitor quote 事件执行器。
@@ -73,6 +67,7 @@ export type StartDistanceSwitchExecutor = (params: {
   readonly monitorContext: MonitorContext;
   readonly event: QuoteUpdatedEvent;
   readonly canContinue: () => boolean;
+  readonly isDirectionCurrent: (direction: 'LONG' | 'SHORT') => boolean;
 }) => Promise<ReadonlyArray<StartSwitchOnDistanceResult>>;
 
 /**
@@ -92,7 +87,8 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
     'handoffPendingSwitch'
   >['handoffPendingSwitch'];
   readonly lastState?: Pick<LastState, 'isTradingEnabled' | 'canTrade' | 'isHalfDay'>;
-  readonly postTradeConsistencyRuntime?: MonitorQuoteFreshnessDeps;
+  readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
+  readonly postTradeConsistencyRuntime: MonitorQuoteFreshnessDeps;
   readonly doomsdayProtectionEnabled?: boolean;
   readonly now: () => Date;
   readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -117,9 +113,10 @@ export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
   readonly monitorContext: MonitorContext;
   readonly trader: Pick<Trader, 'executeSignals'>;
-  readonly lastState: Pick<
-    LastState,
-    'positionCache' | 'cachedPositions' | 'isTradingEnabled' | 'canTrade' | 'isHalfDay'
+  readonly lastState: Pick<LastState, 'isTradingEnabled' | 'canTrade' | 'isHalfDay'>;
+  readonly snapshot: Pick<
+    AccountPositionSnapshotReader,
+    'getView' | 'getAvailablePosition' | 'isCurrent'
   >;
   readonly postTradeConsistencyRuntime: MonitorQuoteFreshnessDeps;
   readonly doomsdayProtectionEnabled: boolean;
@@ -183,6 +180,8 @@ export type MonitorQuoteRouteState = {
   generation: number;
   monitorQuoteGeneration: number;
   latestEvent: QuoteUpdatedEvent | null;
+  latestDayEpoch: number | null;
+  blockedOnFreshness: boolean;
   wakeupSymbols: ReadonlySet<string>;
   retainedQuoteSymbols: ReadonlySet<string>;
   retainNeedsRetry: boolean;
@@ -204,13 +203,16 @@ export type MonitorQuoteRouteState = {
  */
 type SwitchWakeupFreshnessDeps = Readonly<{
   /** 等待 freshness 追平 */
-  waitForFresh: PostTradeConsistencyFreshnessPort['waitForFresh'];
+  waitForFresh: SettlementFreshnessReader['waitForFresh'];
 
   /** 读取 freshness 状态快照 */
   getStatus: () => MonitorQuoteFreshnessStatus;
 
+  /** 最终复核本次业务授权水位及其snapshot token。 */
+  isCurrent: SettlementFreshnessReader['isCurrent'];
+
   /** 订阅 freshness 追平事件 */
-  onFreshReached: PostTradeConsistencyFreshnessPort['onFreshReached'];
+  onFreshReached: SettlementFreshnessReader['onFreshReached'];
 }>;
 
 /**
@@ -236,6 +238,9 @@ export type SwitchWakeupRoute = Readonly<{
 
   /** 席位版本 */
   seatVersion: number;
+
+  /** route创建时所属交易日，迟到回调不能换成当前epoch重新授权。 */
+  dayEpoch: number;
 }>;
 
 /**
@@ -253,6 +258,9 @@ export type SwitchWakeupRouteState = {
 
   /** 是否在在途期间又收到新的 wakeup */
   dirty: boolean;
+
+  /** 当前需求因业务就绪阻塞，原fresh事件负责重驱，不轮询。 */
+  blockedOnFreshness: boolean;
 
   /** 当前 route 生效中的显式 wakeups */
   wakeups: ReadonlyArray<Extract<SwitchDriveResult, { kind: 'WAIT' }>['wakeups'][number]>;
@@ -282,6 +290,9 @@ export type SwitchWakeupHandoffParams = Readonly<{
 
   /** 本轮单步推进结果 */
   driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>;
+
+  /** 周期任务原始dayEpoch；handoff只能保留原epoch，不能按当前日补票。 */
+  originalDayEpoch?: number;
 }>;
 
 /**
@@ -307,7 +318,8 @@ export type SwitchWakeupRuntimeDeps = Readonly<{
   monitorContext: MonitorContext;
 
   /** 全局运行时状态 */
-  lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay' | 'cachedPositions'>;
+  lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
+  snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
 
   /** 成交后一致性 freshness 端口 */
   postTradeConsistencyRuntime: SwitchWakeupFreshnessDeps;
@@ -345,6 +357,10 @@ export type StaticLiquidationRuntimeResult =
       kind: 'NOOP';
     }>
   | Readonly<{
+      /** 本地事实已被更新，原 route owner 重评估，不新增行情 retry/timer。 */
+      kind: 'RE_EVALUATE';
+    }>
+  | Readonly<{
       kind: 'COMPLETED';
     }>
   | Readonly<{
@@ -362,7 +378,14 @@ export type StaticLiquidationRuntimeResult =
 export type CreateStaticLiquidationExecutorDeps = Readonly<{
   readonly trader: Pick<Trader, 'executeSignals'>;
   readonly marketDataClient: Pick<MarketDataClient, 'getQuotes'>;
-  readonly lastState: Pick<LastState, 'positionCache'>;
+  readonly snapshot: Pick<
+    AccountPositionSnapshotReader,
+    'getView' | 'getAvailablePosition' | 'isCurrent'
+  >;
+  readonly postTradeConsistencyRuntime: Pick<
+    SettlementFreshnessReader,
+    'waitForFresh' | 'isCurrent'
+  >;
   readonly now: () => Date;
 }>;
 

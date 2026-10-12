@@ -167,7 +167,7 @@ describe('quoteClient business flow', () => {
     const quote = quotes.get('BULL.HK');
     expect(quote?.name).toBe('测试牛证');
     expect(quote?.lotSize).toBe(500);
-    expect(quote?.price).toBeCloseTo(1.23);
+    expect(quote?.price).toBe('1.23');
 
     expect(quoteMock.getCalls('staticInfo')).toHaveLength(1);
     expect(quoteMock.getCalls('quote')).toHaveLength(1);
@@ -310,9 +310,9 @@ describe('quoteClient business flow', () => {
 
     const received: Array<{
       readonly symbol: string;
-      readonly price: number;
+      readonly price: string;
       readonly name: string | null;
-      readonly prevClose: number;
+      readonly prevClose: string;
       readonly lotSize: number | undefined;
     }> = [];
     const dispose = client.onQuoteUpdated((event) => {
@@ -331,9 +331,9 @@ describe('quoteClient business flow', () => {
     expect(received).toHaveLength(1);
     expect(received[0]).toEqual({
       symbol: 'BULL.HK',
-      price: 1.31,
+      price: '1.31',
       name: '测试牛证',
-      prevClose: 1.2,
+      prevClose: '1.2',
       lotSize: 500,
     });
 
@@ -541,11 +541,11 @@ describe('quoteClient business flow', () => {
     const warrantQuotes = await quoteContext.warrantQuote(['BULL-CALL.HK']);
     const warrantList = await quoteContext.warrantList({
       symbol: 'HSI.HK',
-      sortBy: WarrantSortBy.Turnover,
-      sortOrder: SortOrderType.Descending,
-      types: [WarrantType.Bull],
+      sortBy: 'TURNOVER',
+      sortOrder: 'DESCENDING',
+      types: ['BULL'],
       issuerIds: [1, 2],
-      status: [WarrantStatus.Normal],
+      status: ['NORMAL'],
     });
 
     expect(warrantQuotes).toHaveLength(1);
@@ -591,9 +591,9 @@ describe('quoteClient business flow', () => {
     const warrantQuotes = await quoteContext.warrantQuote(['BULL-CALL.HK']);
     const warrantList = await quoteContext.warrantList({
       symbol: 'HSI.HK',
-      sortBy: WarrantSortBy.Turnover,
-      sortOrder: SortOrderType.Descending,
-      types: [WarrantType.Bull],
+      sortBy: 'TURNOVER',
+      sortOrder: 'DESCENDING',
+      types: ['BULL'],
     });
 
     expect(warrantQuotes).toHaveLength(1);
@@ -1084,7 +1084,7 @@ describe('quoteClient business flow', () => {
 
     expect(quote?.name).toBe('测试牛证');
     expect(quote?.lotSize).toBe(500);
-    expect(quote?.prevClose).toBeCloseTo(1.2);
+    expect(quote?.prevClose).toBe('1.2');
   });
 
   it('keeps external API classification for pure unsubscribe failures during reset', async () => {

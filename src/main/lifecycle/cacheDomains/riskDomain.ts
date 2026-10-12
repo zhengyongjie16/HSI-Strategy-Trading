@@ -12,7 +12,7 @@
  * - 风控数据在统一 rebuildTradingDayState 中按当日数据重建，此处为空操作
  */
 import type { MonitorContext } from '../../../types/state.js';
-import type { CacheDomain, LifecycleContext } from '../types.js';
+import type { CacheDomain, CacheDomainOpenRebuildResult, LifecycleContext } from '../types.js';
 import type { RiskDomainDeps } from './types.js';
 
 /**
@@ -84,8 +84,11 @@ export function createRiskDomain(deps: RiskDomainDeps): CacheDomain {
     midnightClear(ctx): void {
       runMidnightRiskClear(deps, ctx);
     },
-    openRebuild(): void {
-      // 风控数据在统一 rebuildTradingDayState 中按当日数据重建
+    openRebuild(ctx): CacheDomainOpenRebuildResult {
+      // 风控数据已由统一流水线重建，只确认本轮原授权。
+      return ctx.isCurrent()
+        ? { status: 'COMMITTED', snapshotToken: ctx.snapshotToken }
+        : { status: 'ABORTED' };
     },
   };
 }

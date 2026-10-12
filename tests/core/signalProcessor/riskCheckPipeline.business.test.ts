@@ -23,7 +23,6 @@ import {
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createBuyThrottle } from '../../../src/core/trader/orderExecutor/buyThrottle.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import type { BuySignal } from '../../../src/types/signal.js';
 
 function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
   const originalNow = Date.now;
@@ -46,9 +45,9 @@ function createContext(params: {
     trader: params.trader,
     riskChecker: params.riskChecker,
     orderRecorder: params.orderRecorder,
-    longQuote: createQuoteDouble('BULL.HK', 10),
-    shortQuote: createQuoteDouble('BEAR.HK', 10),
-    monitorQuote: createQuoteDouble('HSI.HK', 20000),
+    longQuote: createQuoteDouble('BULL.HK', '10'),
+    shortQuote: createQuoteDouble('BEAR.HK', '10'),
+    monitorQuote: createQuoteDouble('HSI.HK', '20000'),
     longSymbol: 'BULL.HK',
     shortSymbol: 'BEAR.HK',
     longSymbolName: 'BULL.HK',
@@ -70,7 +69,7 @@ describe('riskCheckPipeline business flow', () => {
     lastRiskCheckTime = new Map();
   });
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+  it.each(['0', '-1', 'NaN', 'Infinity', '-Infinity'])(
     'rejects invalid internal monitor price %s before cooldown or risk side effects',
     async (price) => {
       let tradeChecks = 0;
@@ -97,7 +96,9 @@ describe('riskCheckPipeline business flow', () => {
           ...context,
           monitorQuote: createQuoteDouble('HSI.HK', price),
         }),
-        /买入风控内部契约错误/,
+        price === '0' || price === '-1'
+          ? /买入风控内部契约错误/
+          : { name: 'TypeError', message: 'Financial input must be plain decimal text' },
       );
       expect(lastRiskCheckTime.size).toBe(0);
       expect(tradeChecks).toBe(0);
@@ -120,7 +121,7 @@ describe('riskCheckPipeline business flow', () => {
       },
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -159,7 +160,7 @@ describe('riskCheckPipeline business flow', () => {
             },
           }),
           orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
+            getLatestBuyOrderCost: () => {
               latestBuyOrderPriceCount += 1;
               return null;
             },
@@ -197,7 +198,7 @@ describe('riskCheckPipeline business flow', () => {
       },
       getAccountSnapshot: async () => {
         steps.push('getAccountSnapshot');
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         steps.push('getStockPositions');
@@ -206,8 +207,8 @@ describe('riskCheckPipeline business flow', () => {
     });
 
     const orderRecorder = createOrderRecorderDouble({
-      getLatestBuyOrderPrice: () => {
-        steps.push('getLatestBuyOrderPrice');
+      getLatestBuyOrderCost: () => {
+        steps.push('getLatestBuyOrderCost');
         return null;
       },
     });
@@ -258,7 +259,7 @@ describe('riskCheckPipeline business flow', () => {
 
     const tradeFrequencyIndex = steps.indexOf('canTradeNow');
     const liquidationCooldownIndex = steps.indexOf('getRemainingMs');
-    const priceLimitIndex = steps.indexOf('getLatestBuyOrderPrice');
+    const priceLimitIndex = steps.indexOf('getLatestBuyOrderCost');
     const doomsdayIndex = steps.indexOf('isBuyCutoffWindowActive');
     const warrantRiskIndex = steps.indexOf('checkWarrantRisk');
     const accountFetchIndex = steps.indexOf('getAccountSnapshot');
@@ -285,7 +286,7 @@ describe('riskCheckPipeline business flow', () => {
       canTradeNow: () => ({ canTrade: true }),
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100_000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -297,7 +298,7 @@ describe('riskCheckPipeline business flow', () => {
       checkUnrealizedLoss: (symbol, currentPrice, isLongSymbol) => {
         unrealizedLossCheckCount += 1;
         expect(symbol).toBe('BULL.HK');
-        expect(currentPrice).toBe(10);
+        expect(currentPrice).toBe('10');
         expect(isLongSymbol).toBeTrue();
         return {
           shouldLiquidate: true,
@@ -346,7 +347,7 @@ describe('riskCheckPipeline business flow', () => {
       canTradeNow: () => ({ canTrade: true }),
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100_000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -358,7 +359,7 @@ describe('riskCheckPipeline business flow', () => {
       checkUnrealizedLoss: (symbol, currentPrice, isLongSymbol) => {
         unrealizedLossCheckCount += 1;
         expect(symbol).toBe('BULL.HK');
-        expect(currentPrice).toBe(10);
+        expect(currentPrice).toBe('10');
         expect(isLongSymbol).toBeTrue();
         return { shouldLiquidate };
       },
@@ -395,7 +396,7 @@ describe('riskCheckPipeline business flow', () => {
     });
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
-      getAccountSnapshot: async () => createAccountSnapshotDouble(100000),
+      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
       getStockPositions: async () => [],
     });
 
@@ -444,7 +445,7 @@ describe('riskCheckPipeline business flow', () => {
   });
 
   it('uses realtime account and positions for buy base risk check', async () => {
-    const realtimeAccount = createAccountSnapshotDouble(90_000);
+    const realtimeAccount = createAccountSnapshotDouble('90000');
     const realtimePositions = [
       createPositionDouble({
         symbol: 'BULL.HK',
@@ -591,7 +592,7 @@ describe('riskCheckPipeline business flow', () => {
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
     const trader = createTraderDouble({
       canTradeNow: buyThrottle.canTradeNow,
-      getAccountSnapshot: async () => createAccountSnapshotDouble(100000),
+      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
       getStockPositions: async () => [],
     });
 
@@ -640,7 +641,7 @@ describe('riskCheckPipeline business flow', () => {
       canTradeNow: () => ({ canTrade: false, waitSeconds: 30 }),
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -677,7 +678,7 @@ describe('riskCheckPipeline business flow', () => {
             },
           }),
           orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
+            getLatestBuyOrderCost: () => {
               latestBuyOrderPriceCount += 1;
               return null;
             },
@@ -714,7 +715,7 @@ describe('riskCheckPipeline business flow', () => {
       canTradeNow: () => ({ canTrade: true }),
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -754,7 +755,7 @@ describe('riskCheckPipeline business flow', () => {
             },
           }),
           orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
+            getLatestBuyOrderCost: () => {
               latestBuyOrderPriceCount += 1;
               return null;
             },
@@ -789,7 +790,7 @@ describe('riskCheckPipeline business flow', () => {
       canTradeNow: () => ({ canTrade: true }),
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -821,7 +822,7 @@ describe('riskCheckPipeline business flow', () => {
             },
           }),
           orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => 10,
+            getLatestBuyOrderCost: () => ({ costAmount: '10', quantity: 1 }),
           }),
           doomsdayProtection: createDoomsdayProtectionDouble({
             isBuyCutoffWindowActive: () => {
@@ -851,7 +852,7 @@ describe('riskCheckPipeline business flow', () => {
       canTradeNow: () => ({ canTrade: true }),
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -906,7 +907,7 @@ describe('riskCheckPipeline business flow', () => {
       canTradeNow: () => ({ canTrade: true }),
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -1009,8 +1010,8 @@ describe('riskCheckPipeline business flow', () => {
               },
             }),
             orderRecorder: createOrderRecorderDouble({
-              getLatestBuyOrderPrice: () => {
-                steps.push('getLatestBuyOrderPrice');
+              getLatestBuyOrderCost: () => {
+                steps.push('getLatestBuyOrderCost');
                 return null;
               },
             }),
@@ -1040,7 +1041,7 @@ describe('riskCheckPipeline business flow', () => {
 
     const tradeFrequencyIndex = steps.indexOf('canTradeNow');
     const liquidationCooldownIndex = steps.indexOf('getRemainingMs');
-    const priceLimitIndex = steps.indexOf('getLatestBuyOrderPrice');
+    const priceLimitIndex = steps.indexOf('getLatestBuyOrderCost');
     const doomsdayIndex = steps.indexOf('isBuyCutoffWindowActive');
     const warrantRiskIndex = steps.indexOf('checkWarrantRisk');
     const accountFetchIndex = steps.indexOf('getAccountSnapshot');
@@ -1071,7 +1072,7 @@ describe('riskCheckPipeline business flow', () => {
         accountCallCount += 1;
         steps.push('getAccountSnapshot');
         expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async (params) => {
         positionCallCount += 1;
@@ -1115,8 +1116,8 @@ describe('riskCheckPipeline business flow', () => {
               },
             }),
             orderRecorder: createOrderRecorderDouble({
-              getLatestBuyOrderPrice: () => {
-                steps.push('getLatestBuyOrderPrice');
+              getLatestBuyOrderCost: () => {
+                steps.push('getLatestBuyOrderCost');
                 return null;
               },
             }),
@@ -1170,7 +1171,7 @@ describe('riskCheckPipeline business flow', () => {
       },
       getAccountSnapshot: async () => {
         accountCallCount += 1;
-        return createAccountSnapshotDouble(100000);
+        return createAccountSnapshotDouble('100000');
       },
       getStockPositions: async () => {
         positionCallCount += 1;
@@ -1189,8 +1190,9 @@ describe('riskCheckPipeline business flow', () => {
       lastRiskCheckTime,
       reportFatalError: () => {},
     });
-    // 仅此负向测试故意绕过 TypeScript 静态边界，模拟恶意 JS 调用；不代表 SELL 可进入买入风控。
-    const forcedSellSignal = createSignalDouble('SELLCALL', 'BULL.HK') as unknown as BuySignal;
+    // 真实对象的JS调用方非法改写action；不用类型双重断言伪造合法BuySignal。
+    const forcedSellSignal = createSignalDouble('BUYCALL', 'BULL.HK');
+    Object.defineProperty(forcedSellSignal, 'action', { value: 'SELLCALL' });
     let caught: unknown = null;
     try {
       await pipeline(
@@ -1208,7 +1210,7 @@ describe('riskCheckPipeline business flow', () => {
             },
           }),
           orderRecorder: createOrderRecorderDouble({
-            getLatestBuyOrderPrice: () => {
+            getLatestBuyOrderCost: () => {
               latestBuyOrderPriceCount += 1;
               return null;
             },

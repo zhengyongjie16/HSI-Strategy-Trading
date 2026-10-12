@@ -5,7 +5,10 @@
  * 职责：支持「距离换标 + 周期换标」统一状态机推进，并处理撤单/卖出/买入完整链路。
  * 执行流程：AutoSearchWakeupRuntime 调用 maybeSearchOnEvent；AUTO_SYMBOL_TICK 只调用 evaluatePeriodicSwitchDue；事件驱动 runtime 调用 startSwitchOnDistance / advancePendingSwitch 推进距离换标状态机。
  */
-import { OrderSide } from 'longbridge';
+import {
+  ORDER_READ_STATUS_VALUES,
+  isOpenOrderReadStatus,
+} from '../../constants/orderReadMetadata.js';
 import { findBestWarrant } from '../autoSymbolFinder/index.js';
 import {
   calculateTradingDurationMsBetween,
@@ -17,7 +20,6 @@ import { logger } from '../../utils/logger/index.js';
 import {
   AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY,
   AUTO_SYMBOL_SEARCH_COOLDOWN_MS,
-  PENDING_ORDER_STATUSES,
 } from '../../constants/index.js';
 import type { AutoSymbolManagerPort } from '../../types/monitorContextPorts.js';
 import type {
@@ -117,8 +119,8 @@ export function createAutoSymbolManager(deps: AutoSymbolManagerDeps): AutoSymbol
     resolveDirectionSymbols,
     calculateBuyQuantityByNotional,
     buildOrderSignal: signalBuilder.buildOrderSignal,
-    pendingOrderStatuses: PENDING_ORDER_STATUSES,
-    buySide: OrderSide.Buy,
+    pendingOrderStatuses: new Set([...ORDER_READ_STATUS_VALUES].filter(isOpenOrderReadStatus)),
+    buySide: 'BUY',
     logger,
     maxSearchFailuresPerDay: AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY,
     getHKDateKey,

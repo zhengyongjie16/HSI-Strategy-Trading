@@ -1,29 +1,21 @@
-/**
- * protective-liquidation 集成测试
- *
- * 功能：
- * - 验证保护性清仓端到端场景与业务期望。
- */
+/** 保护性清仓：真实 native push/ledger 经同 O/Daily/S owner 收口，原一次性进度与终态经济断言不变。 */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType, TopicType, type TradeContext } from 'longbridge';
-import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
-import type { OrderMonitorDeps } from '../../src/core/trader/types.js';
-import type { DailyLossCumulativeExecutionInput } from '../../src/types/risk.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
-import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
+import { waitUntil } from '../main/asyncProgram/utils.js';
+import type { DailyLossCumulativeExecutionInput } from '../../src/types/risk.js';
+import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import {
-  createTerminationDouble,
   createMarketDataClientDouble,
-  createOrderRecorderDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
   createRateLimiterDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
 
+const EXECUTION_MS = Date.parse('2026-03-13T02:00:01.000Z');
+
 describe('protective-liquidation integration', () => {
   it('records protective episode progress + local sell update after protective liquidation fill event', async () => {
-    let recordLocalSellCount = 0;
+    let commitSellCount = 0;
     let markSellFilledCount = 0;
     const terminalExecutionFacts: Array<
       Pick<
@@ -46,141 +38,196 @@ describe('protective-liquidation integration', () => {
       readonly refreshAccount: boolean;
       readonly refreshPositions: boolean;
     }> = [];
-
-    const tradeCtx = createTradeContextMock();
-    const deps: OrderMonitorDeps = {
-      now: () => new Date(),
-      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-      clearTimer: (handle) => {
-        clearTimeout(handle);
+    const native = await createBrokerIngressFixture({
+      orderId: 'PL-001',
+      tradeId: 'PL-001-trade',
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC',
+      remark: '',
+      side: 'SELL',
+      status: 'New',
+      orderType: 'MO',
+      quantity: '200',
+      executedQuantity: '0',
+      submittedPrice: '1',
+      executedPrice: '0',
+      submittedAtMs: EXECUTION_MS - 1000,
+      executionTimeMs: null,
+      updatedAtMs: EXECUTION_MS - 1000,
+    });
+    native.setAccountBalance({
+      currency: 'HKD',
+      totalCash: '0',
+      netAssets: '0',
+      availableCash: '0',
+    });
+    native.setStockPositions([]);
+    const f = createExecutionFixture({
+      nowMs: EXECUTION_MS,
+      readPort: native.createAccountService({ rateLimiter: createRateLimiterDouble() }),
+      createRecorder: native.createRecorder,
+      observeRefresh: (need) => {
+        refreshNeeds.push(need);
       },
-      ctx: tradeCtx as unknown as TradeContext,
+      observeDaily: (daily) => {
+        const record = daily.recordCumulativeExecution;
+        return {
+          ...daily,
+          recordCumulativeExecution: (input, beforeCommit) => {
+            terminalExecutionFacts.push({
+              factStage: input.factStage,
+              orderId: input.orderId,
+              direction: input.direction,
+              symbol: input.symbol,
+              side: input.side,
+              executedPrice: input.executedPrice,
+              executedQuantity: input.executedQuantity,
+            });
+            return record(input, beforeCommit);
+          },
+        };
+      },
+      observeRecorder: (recorder) => {
+        const commit = recorder.commitExecutionFact;
+        const mark = recorder.markSellFilled;
+        return {
+          ...recorder,
+          commitExecutionFact: (...args) => {
+            const receipt = commit(...args);
+            if (args[0].side === 'SELL' && receipt.authoritativeFactChanged) commitSellCount++;
+
+            return receipt;
+          },
+          markSellFilled: (...args) => {
+            markSellFilledCount++;
+            return mark(...args);
+          },
+        };
+      },
+    });
+    const recordProgress = f.episode.recordProtectiveFillProgress;
+    f.episode.recordProtectiveFillProgress = (params) => {
+      recordProgress(params);
+      episodeProgressPayloads.push(params);
+    };
+    const paired = await f.snapshot.requestRefresh({
+      source: 'PROTECTIVE_MONITOR_H',
+      dayEpoch: 1,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    if (paired.status !== 'COMMITTED') throw new Error('Protective paired H refresh aborted');
+
+    const monitor = native.createMonitor({
+      now: () => new Date(EXECUTION_MS),
+      scheduleTimer: setTimeout,
+      clearTimer: clearTimeout,
       rateLimiter: createRateLimiterDouble(),
-      cacheManager: {
-        clearCache: () => {},
-        getPendingOrders: async () => [],
-      },
+      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
       marketDataClient: createMarketDataClientDouble(),
-      orderRecorder: createOrderRecorderDouble({
-        recordLocalSell: () => {
-          recordLocalSellCount += 1;
-        },
-        markSellFilled: () => {
-          markSellFilledCount += 1;
-          return null;
-        },
-      }),
-      dailyLossTracker: {
-        resetAll: () => {},
-        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
-        commitProtectionBoundary: () => {},
-        restoreExecutionSnapshot: () => {},
-        restoreProtectionBoundary: () => {},
-        recalculateFromAllOrders: () => {},
-        recordCumulativeExecution: (input) => {
-          terminalExecutionFacts.push({
-            factStage: input.factStage,
-            orderId: input.orderId,
-            direction: input.direction,
-            symbol: input.symbol,
-            side: input.side,
-            executedPrice: input.executedPrice,
-            executedQuantity: input.executedQuantity,
-          });
-
-          return { authoritativeFactChanged: true, executionAdvanced: true };
-        },
-        getLossOffset: () => 0,
-      },
-      orderHoldRegistry: {
-        trackOrder: () => {},
-        markOrderClosed: () => {},
-        seedFromOrders: () => {},
-        getHoldSymbols: () => new Set<string>(),
-        onOrderHoldSymbolsChanged: () => () => {},
-        clear: () => {},
-      },
+      orderRecorder: f.recorder,
+      dailyLossTracker: f.daily,
+      orderHoldRegistry: f.holds,
       persistProtectiveLiquidationExecutionProgress: () => {},
-      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
-        recordProtectiveFillProgress: (params) => {
-          episodeProgressPayloads.push(params);
-        },
-      }),
-      postTradeConsistencyRuntime: {
-        recordSettlementRefreshNeed: (need) => {
-          refreshNeeds.push(need);
-        },
-      },
+      protectiveLiquidationEpisodeTracker: f.episode,
+      postTradeConsistencyRuntime: f.sink,
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
-      isContinuousTradingAllowed: () => true,
-      termination: createTerminationDouble({
-        reportFatalError: (error) => {
-          throw error;
-        },
-      }),
-    };
-
-    const monitor = createOrderMonitor(deps);
-    await monitor.initialize();
-    await monitor.recoverOrderTrackingFromSnapshot([]);
-
-    monitor.trackOrder({
-      orderId: 'PL-001',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
-      quantity: 200,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: true,
-      orderType: OrderType.MO,
+      isContinuousTradingAllowed: () => false,
+      termination: f.termination,
     });
-
-    expect(tradeCtx.getSubscribedTopics().has(TopicType.Private)).toBe(true);
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
+    try {
+      await monitor.initialize();
+      await monitor.recoverOrderTrackingFromSnapshot([]);
+      expect(native.subscriptionMembership()).toEqual(['PRIVATE']);
+      f.recorder.submitSellOrder('PL-001', 'BULL.HK', 'LONG', 200, [], true, EXECUTION_MS - 1000);
+      monitor.trackOrder({
         orderId: 'PL-001',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
-        orderType: OrderType.MO,
-        submittedQuantity: 200,
-        executedQuantity: 200,
-        submittedPrice: 1,
-        executedPrice: 1,
-      }),
-    );
-    tradeCtx.flushAllEvents();
+        side: 'SELL',
+        executionSide: 'SELL',
+        initialExecutionPhase: 'OPEN',
+        price: '1',
+        initialSubmittedPrice: '1',
+        quantity: 200,
+        isLongSymbol: true,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: true,
+        orderType: 'MO',
+      });
 
-    expect(recordLocalSellCount).toBe(1);
-    expect(markSellFilledCount).toBe(1);
-    expect(terminalExecutionFacts).toEqual([
-      {
-        factStage: 'TERMINAL',
+      native.setExecutionReplies([
+        {
+          orderId: 'PL-001',
+          tradeId: 'PL-001-trade',
+          symbol: 'BULL.HK',
+          quantity: '200',
+          price: '1',
+          tradeDoneAtMs: EXECUTION_MS,
+        },
+      ]);
+
+      native.emitOrderChangedFrame({
         orderId: 'PL-001',
-        direction: 'LONG',
+        tradeId: 'PL-001-trade',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        executedPrice: 1,
+        stockName: 'HSI RC',
+        remark: '',
+        side: 'SELL',
+        status: 'Filled',
+        orderType: 'MO',
+        quantity: '200',
+        executedQuantity: '200',
+        submittedPrice: '1',
+        executedPrice: '1',
+        submittedAtMs: EXECUTION_MS - 1000,
+        executionTimeMs: EXECUTION_MS,
+        updatedAtMs: EXECUTION_MS + 30_000,
+      });
+      await waitUntil(() => f.recorder.getExecutionFact('PL-001')?.phase === 'TERMINAL');
+      expect(commitSellCount).toBe(1);
+      expect(markSellFilledCount).toBe(1);
+      expect(terminalExecutionFacts).toEqual([
+        {
+          factStage: 'TERMINAL',
+          orderId: 'PL-001',
+          direction: 'LONG',
+          symbol: 'BULL.HK',
+          side: 'SELL',
+          executedPrice: '1',
+          executedQuantity: 200,
+        },
+      ]);
+
+      expect(episodeProgressPayloads).toEqual([
+        { direction: 'LONG', symbol: 'BULL.HK', executedTimeMs: EXECUTION_MS },
+      ]);
+      expect(refreshNeeds).toEqual([{ refreshAccount: true, refreshPositions: true }]);
+      expect(f.recorder.getExecutionFact('PL-001')).toMatchObject({
+        cumulativeQuantity: 200,
+        cumulativeAmount: '200',
+        executionTimeMs: EXECUTION_MS,
+        updatedAtMs: EXECUTION_MS + 30_000,
+        phase: 'TERMINAL',
+      });
+
+      expect(
+        f.snapshot.isCurrent(paired.snapshotToken, {
+          account: true,
+          positions: true,
+          paired: true,
+        }),
+      ).toBeFalse();
+      expect(f.sink.getStatus().staleVersion).toBe(1);
+      expect(f.recorder.getPendingSellSnapshot()).toEqual([]);
+      expect(f.recorder.getSellRecordByOrderId('PL-001')).toMatchObject({
+        orderId: 'PL-001',
+        costAmount: '200',
         executedQuantity: 200,
-      },
-    ]);
-
-    expect(episodeProgressPayloads).toEqual([
-      {
-        direction: 'LONG',
-        symbol: 'BULL.HK',
-        executedTimeMs: expect.any(Number),
-      },
-    ]);
-
-    expect(refreshNeeds).toEqual([
-      {
-        refreshAccount: true,
-        refreshPositions: true,
-      },
-    ]);
+        executedTime: EXECUTION_MS,
+      });
+    } finally {
+      await monitor.stopRuntimeAndDrain();
+    }
   });
 });

@@ -1,8 +1,7 @@
-import type { Decimal, FilterWarrantExpiryDate, WarrantStatus, WarrantType } from 'longbridge';
-import type { AutoSearchConfig, NumberRange } from '../../types/config.js';
-import type { MarketQuoteContext } from '../../types/services.js';
+import type { BullBearWarrantType, MarketQuoteContext } from '../../types/services.js';
+import type { MarketWarrantExpiryRange } from '../../types/marketPorts.js';
+import type { AutoSearchConfig, DecimalRange } from '../../types/config.js';
 import type { Logger } from '../../utils/logger/types.js';
-import type { DecimalLike } from '../../utils/helpers/types.js';
 
 /**
  * 方向化自动寻标策略。
@@ -15,16 +14,16 @@ export type DirectionalAutoSearchPolicy = {
   readonly direction: 'LONG' | 'SHORT';
 
   /** 主条件阈值（内部百分比值，0.35 表示 0.35%） */
-  readonly primaryThreshold: number;
+  readonly primaryThreshold: string;
 
   /** 分均成交额阈值 */
-  readonly minTurnoverPerMinute: number;
+  readonly minTurnoverPerMinute: string;
 
   /** 主条件失败后允许尝试的降级区间（内部百分比值，开区间，比较时不含边界） */
-  readonly degradedRange: NumberRange;
+  readonly degradedRange: DecimalRange;
 
   /** 距回收价触发换标的完整区间（内部百分比值，含边界触发） */
-  readonly switchDistanceRange: NumberRange;
+  readonly switchDistanceRange: DecimalRange;
 };
 
 /**
@@ -85,10 +84,12 @@ export type WarrantListItem = {
   readonly name?: string | null;
 
   /** Longbridge warrantList 原始小数比值；0.0036 表示 0.36% */
-  readonly toCallPrice?: DecimalLike | number | string | null | undefined;
-  readonly callPrice?: DecimalLike | number | string | null | undefined;
-  readonly turnover?: DecimalLike | number | string | null | undefined;
-  readonly status?: WarrantStatus | number | string | null | undefined;
+  readonly toCallPrice?: string | null;
+  readonly callPrice?: string | null;
+  readonly turnover?: string | null;
+
+  /** SDK adapter按原正常状态过滤语义映射，筛选规则不消费厂商枚举。 */
+  readonly status?: 'NORMAL' | 'NON_NORMAL' | null | undefined;
 };
 
 /**
@@ -151,38 +152,34 @@ export type WarrantSelectionStage = 'PRIMARY' | 'DEGRADED';
 
 /**
  * 通过基础校验后的候选快照（内部高精度结构）。
- * 类型用途：缓存 Decimal 形式的回收价距离、成交额与分均成交额，供排序与比较阶段复用。
+ * 类型用途：缓存精确文本回收价、距离、成交额及原始分钟数；不缓存近似除法结果。
  * 数据来源：由 autoSymbolFinder/utils.ts 在筛选前解析 warrantList 返回值后生成。
  * 使用范围：仅 autoSymbolFinder 模块内部使用。
  */
 export type EvaluatedWarrantCandidate = {
   readonly symbol: string;
   readonly name: string | null;
-  readonly callPrice: Decimal;
-
-  /** 内部百分比值，0.36 表示 0.36% */
-  readonly distancePct: Decimal;
-  readonly turnover: Decimal;
-  readonly turnoverPerMinute: Decimal;
+  readonly callPrice: string;
+  readonly distancePct: string;
+  readonly turnover: string;
+  readonly tradingMinutes: string;
 };
 
 /**
  * 已归类到候选带的候选快照（内部高精度结构）。
- * 类型用途：在保留 Decimal 比较精度的同时记录命中阶段与距阈值差值，供主层/降级层选优。
+ * 类型用途：保留原始精确文本及命中阶段，按阈值差值和成交额比率选优。
  * 数据来源：由 selectBestWarrant 在候选通过区间判定后生成。
  * 使用范围：仅 autoSymbolFinder 模块内部使用。
  */
 export type RankedWarrantCandidate = {
   readonly symbol: string;
   readonly name: string | null;
-  readonly callPrice: Decimal;
-
-  /** 内部百分比值，0.36 表示 0.36% */
-  readonly distancePct: Decimal;
-  readonly turnover: Decimal;
-  readonly turnoverPerMinute: Decimal;
+  readonly callPrice: string;
+  readonly distancePct: string;
+  readonly turnover: string;
+  readonly tradingMinutes: string;
   readonly selectionStage: WarrantSelectionStage;
-  readonly distanceDeltaToThreshold: Decimal;
+  readonly distanceDeltaToThreshold: string;
 };
 
 /**
@@ -194,14 +191,16 @@ export type RankedWarrantCandidate = {
 export type WarrantCandidate = {
   readonly symbol: string;
   readonly name: string | null;
-  readonly callPrice: number;
+  readonly callPrice: string;
 
-  /** 内部百分比值，0.36 表示 0.36% */
-  readonly distancePct: number;
-  readonly turnover: number;
-  readonly turnoverPerMinute: number;
+  /** 精确百分比文本，0.36 表示 0.36%；排序不得消费显示舍入。 */
+  readonly distancePct: string;
+  readonly turnover: string;
+
+  /** 分均成交额的整数展示投影；筛选/排序使用原始成交额与分钟数 cross-product。 */
+  readonly turnoverPerMinute: string;
   readonly selectionStage: WarrantSelectionStage;
-  readonly distanceDeltaToThreshold: number;
+  readonly distanceDeltaToThreshold: string;
 };
 
 /**
@@ -225,20 +224,20 @@ export type WarrantSelectionResult = {
 export type WarrantListFetchParams = {
   readonly ctx: FindBestWarrantInput['ctx'];
   readonly monitorSymbol: string;
-  readonly warrantType: WarrantType;
-  readonly expiryFilters: ReadonlyArray<FilterWarrantExpiryDate>;
+  readonly warrantType: BullBearWarrantType;
+  readonly expiryFilters: ReadonlyArray<MarketWarrantExpiryRange>;
   readonly cacheConfig: WarrantListCacheConfig;
 };
 
 /**
  * 请求牛熊证列表的入参（无缓存）。
- * 类型用途：直接调用 Longbridge warrantList API 时的入参。
+ * 类型用途：调用中性 MarketQuoteContext.warrantList 时的入参；SDK枚举映射只属于infra adapter。
  * 数据来源：由 fetchWarrantsWithCache 或调用方组装。
  * 使用范围：仅 autoSymbolFinder 模块内部使用。
  */
 export type WarrantListRequestParams = {
   readonly ctx: FindBestWarrantInput['ctx'];
   readonly monitorSymbol: string;
-  readonly warrantType: WarrantType;
-  readonly expiryFilters: ReadonlyArray<FilterWarrantExpiryDate>;
+  readonly warrantType: BullBearWarrantType;
+  readonly expiryFilters: ReadonlyArray<MarketWarrantExpiryRange>;
 };

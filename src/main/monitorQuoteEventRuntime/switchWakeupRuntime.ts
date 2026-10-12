@@ -11,6 +11,7 @@
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
 import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
   AdvancePendingSwitchResult,
@@ -170,29 +171,30 @@ function isBaselineReady(deps: SwitchWakeupRuntimeDeps): boolean {
 
 /**
  * 判断当前 pending switch route 是否必须终止。
- * 午休只暂停推进并保留 owner；仅生命周期关闭或末日清仓接管会终止 route。
+ * 仅终止或生命周期关闭收口事实owner；末日接管禁止普通换标推进，但不抹掉已发布WAIT。
+ * 原epoch/席位失效仍由route复核清理，stop/日切仍按既有协议释放全部资源。
  *
  * @param deps runtime 依赖
  * @returns 当前 pending switch route 必须终止时返回 true
  */
 function shouldTerminatePendingSwitchRoute(deps: SwitchWakeupRuntimeDeps): boolean {
-  if (deps.termination.isTerminated() || !deps.lastState.isTradingEnabled) {
-    return true;
-  }
-
-  return (
-    deps.doomsdayProtectionEnabled &&
-    isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false)
-  );
+  return deps.termination.isTerminated() || !deps.lastState.isTradingEnabled;
 }
 
 /**
  * 判断当前连续交易门禁是否允许推进 pending switch route。
  * @param deps runtime 依赖
- * @returns 连续交易时段且 route 未被终止时返回 true
+ * @returns 连续交易时段、非末日接管且route未终止时返回true；keeper不是此mutation票
  */
 function isExecutionGateOpen(deps: SwitchWakeupRuntimeDeps): boolean {
-  return !shouldTerminatePendingSwitchRoute(deps) && deps.lastState.canTrade === true;
+  return (
+    !shouldTerminatePendingSwitchRoute(deps) &&
+    deps.lastState.canTrade === true &&
+    !(
+      deps.doomsdayProtectionEnabled &&
+      isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false)
+    )
+  );
 }
 
 /**
@@ -206,6 +208,7 @@ function createRouteState(route: SwitchWakeupRoute): SwitchWakeupRouteState {
     route,
     inFlight: false,
     dirty: false,
+    blockedOnFreshness: false,
     wakeups: [],
     retryTimerHandle: null,
     retainedQuoteSymbols: new Set<string>(),
@@ -519,6 +522,8 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * @returns 当前仍有效时返回 true
    */
   function isRouteCurrent(route: SwitchWakeupRoute): boolean {
+    if (deps.snapshot.getView().token.dayEpoch !== route.dayEpoch) return false;
+
     const monitorContext = deps.monitorContext;
     const seatVersion = deps.symbolRegistry.getSeatVersion(route.direction);
     if (seatVersion !== route.seatVersion) {
@@ -537,10 +542,33 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
    * runtime 停止、连续交易门禁关闭或席位身份变化后，manager 不得继续写入本地状态机。
    *
    * @param route 本轮推进开始时确认的权威 route
+   * @param receipt 本轮业务就绪凭据，跨 await 不得换票
    * @returns 仍可继续本地推进时返回 true 的判断函数
    */
-  function createPendingSwitchCanContinue(route: SwitchWakeupRoute): () => boolean {
-    return () => running && isExecutionGateOpen(deps) && isRouteCurrent(route);
+  function createPendingSwitchCanContinue(
+    route: SwitchWakeupRoute,
+    receipt: SettlementReadinessReceipt,
+  ): () => boolean {
+    const selectedView = deps.snapshot.getView();
+    return () =>
+      running &&
+      isExecutionGateOpen(deps) &&
+      isRouteCurrent(route) &&
+      deps.postTradeConsistencyRuntime.isCurrent(receipt) &&
+      deps.snapshot.isCurrent(selectedView.token, { account: false, positions: true });
+  }
+
+  /**
+   * 保留当前需求；已有有效组件时立即走 latest-only，否则只由真实 fresh 事件重驱。
+   * 失效组件不能通过反复等待同一个 ready 水位形成本地轮询。
+   * @param routeState 本轮仍由 runtime 持有的 route
+   */
+  function markFreshnessBlocked(routeState: SwitchWakeupRouteState): void {
+    routeState.blockedOnFreshness = true;
+    const view = deps.snapshot.getView();
+    routeState.dirty =
+      isBaselineReady(deps) &&
+      deps.snapshot.isCurrent(view.token, { account: false, positions: true });
   }
 
   /**
@@ -559,11 +587,9 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       return null;
     }
 
-    return {
-      routeKey: routeState.route.routeKey,
-      direction: routeState.route.direction,
-      seatVersion: routeState.route.seatVersion,
-    };
+    if (deps.snapshot.getView().token.dayEpoch !== routeState.route.dayEpoch) return null;
+
+    return { ...routeState.route };
   }
 
   /**
@@ -680,7 +706,10 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           return;
         }
 
-        if (!isExecutionGateOpen(deps) || !isBaselineReady(deps)) {
+        if (!isExecutionGateOpen(deps)) return;
+
+        if (!isBaselineReady(deps)) {
+          routeState.blockedOnFreshness = true;
           return;
         }
 
@@ -689,8 +718,10 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           return;
         }
 
+        routeState.blockedOnFreshness = false;
+        let receipt: SettlementReadinessReceipt;
         try {
-          await deps.postTradeConsistencyRuntime.waitForFresh();
+          receipt = await deps.postTradeConsistencyRuntime.waitForFresh();
         } catch (error) {
           if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) {
             return;
@@ -704,9 +735,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           return;
         }
 
-        if (!isExecutionGateOpen(deps) || !isBaselineReady(deps)) {
-          return;
-        }
+        if (!isExecutionGateOpen(deps)) return;
 
         if (routeStates.get(routeKey) !== routeState) return;
 
@@ -726,11 +755,18 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         }
 
         routeState.route = authoritativeRoute;
+        const canContinue = createPendingSwitchCanContinue(authoritativeRoute, receipt);
+        if (!canContinue()) {
+          // 当前route仍有效而receipt被取代：交原freshness owner追同水位，不mark stale/新增timer。
+          markFreshnessBlocked(routeState);
+          continue;
+        }
 
+        const view = deps.snapshot.getView();
         const result = await deps.monitorContext.autoSymbolManager.advancePendingSwitch({
           direction: authoritativeRoute.direction,
-          positions: deps.lastState.cachedPositions,
-          canContinue: createPendingSwitchCanContinue(authoritativeRoute),
+          positions: view.positions,
+          canContinue,
         });
         assertValidAdvanceResult(result, authoritativeRoute.direction);
         if (routeStates.get(routeKey) !== routeState) return;
@@ -743,6 +779,12 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         if (!result.advanced) {
           if (!isRouteCurrent(routeState.route)) {
             deleteRoute(routeKey);
+            return;
+          }
+
+          if (isExecutionGateOpen(deps) && !canContinue()) {
+            markFreshnessBlocked(routeState);
+            continue;
           }
 
           return;
@@ -760,11 +802,11 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
           return;
         }
 
-        if (!isExecutionGateOpen(deps)) {
-          return;
-        }
-
+        // 已产生的真实WAIT先交回原route owner；连续时段关门只暂停，不能丢新订单/行情唤醒。
         updateWakeups(routeKey, result.driveResult);
+        if (!isExecutionGateOpen(deps)) return;
+
+        if (!canContinue()) markFreshnessBlocked(routeState);
       }
     } finally {
       const nextState = routeStates.get(routeKey);
@@ -788,7 +830,8 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   function handleFreshReached(): void {
     for (const [routeKey, routeState] of routeStates) {
       const matchesFreshness = routeState.wakeups.some((wakeup) => wakeup.kind === 'FRESHNESS');
-      if (matchesFreshness) {
+      if (matchesFreshness || routeState.blockedOnFreshness) {
+        routeState.blockedOnFreshness = false;
         triggerRoute(routeKey, 'FRESHNESS');
       }
     }
@@ -836,7 +879,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
 
   /**
    * 连续交易门禁恢复时重驱仍由本 runtime 持有的 pending switch route。
-   * 午休只暂停推进；生命周期关闭或末日接管才终止 owner。
+   * 午休/末日接管只暂停普通换标推进；生命周期关闭才终止owner，日切由stop释放。
    */
   function handleGateStateChanged(event: TradingGateStateChangedEvent): void {
     if (shouldTerminatePendingSwitchRoute(deps)) {
@@ -956,11 +999,23 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
 
     assertNonEmptyWaitResult(params.driveResult);
 
+    const originalDayEpoch = params.originalDayEpoch ?? deps.snapshot.getView().token.dayEpoch;
+    if (deps.snapshot.getView().token.dayEpoch !== originalDayEpoch) return;
+
+    const publishedRoute = params.driveResult.publishedRoute;
+    if (
+      publishedRoute !== undefined &&
+      (publishedRoute.direction !== params.direction || !publishedRoute.isCurrent())
+    )
+      return;
+
     if (deps.monitorContext !== params.monitorContext) {
       throw new Error('[SwitchWakeupRuntime] handoff monitorContext identity mismatch');
     }
 
     const seatVersion = params.monitorContext.symbolRegistry.getSeatVersion(params.direction);
+    if (publishedRoute !== undefined && publishedRoute.seatVersion !== seatVersion) return;
+
     const route: SwitchWakeupRoute = {
       routeKey: buildRouteKey({
         direction: params.direction,
@@ -968,6 +1023,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       }),
       direction: params.direction,
       seatVersion,
+      dayEpoch: originalDayEpoch,
     };
 
     pruneOlderSeatVersions(route);

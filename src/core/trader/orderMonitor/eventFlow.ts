@@ -1,3 +1,5 @@
+import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
+
 /**
  * orderMonitor 事件流模块
  *
@@ -6,9 +8,9 @@
  * - 将已确认终态订单统一交给 settlementFlow 结算
  * - 在部分成交时维护 pendingSell 部分成交状态
  */
-import { OrderSide, OrderStatus, type PushOrderChanged } from 'longbridge';
+
 import { logger } from '../../../utils/logger/index.js';
-import { decimalToNumber } from '../../../utils/helpers/index.js';
+import type { RawOrderFromAPI } from '../../../types/services.js';
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
 import type { EventFlow, EventFlowDeps, OrderCumulativeExecutionParams } from './types.js';
 import {
@@ -18,17 +20,19 @@ import {
   peekQueriedTerminalState,
   resumeOrderReplaceFromWsProgress,
 } from './orderOps.js';
-import { isClosedStatus, resolveOrderClosedReasonFromStatus, resolveUpdatedAtMs } from './utils.js';
+import { isClosedStatus, resolveOrderClosedReasonFromStatus } from './utils.js';
 import {
   assertProtectiveSellRawObservationFactsReady,
   mergeMonotonicOrderFact,
 } from './orderFactMerge.js';
-import { classifyOrderStatusLifecycle } from '../../orderStatusLifecycle/index.js';
+import { exactCompare, exactMultiply } from '../../../utils/numeric/exact.js';
 import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js';
+import { resolveOrderOwnership } from '../../../domain/order/orderOwnership.js';
+import { hasProtectiveLiquidationRemark } from '../utils.js';
 
 /** 仅当状态已离开撤单中阶段时，才恢复下一次撤单重试机会。 */
-function shouldResumeCancelRetryFromWsStatus(status: OrderStatus): boolean {
-  return status !== OrderStatus.WaitToCancel && status !== OrderStatus.PendingCancel;
+function shouldResumeCancelRetryFromWsStatus(status: OrderReadStatus): boolean {
+  return status !== 'CANCELLATION_REQUESTED' && status !== 'CANCELLATION_PENDING';
 }
 
 /**
@@ -39,7 +43,7 @@ function shouldResumeCancelRetryFromWsStatus(status: OrderStatus): boolean {
 function acknowledgeTerminalEvidenceAfterWsSettlement(
   runtime: EventFlowDeps['runtime'],
   orderId: string,
-  status: OrderStatus,
+  status: OrderReadStatus,
   orderUpdatedAtMs: number | null,
 ): void {
   const replaceTerminal = peekLatestReplaceTerminal(runtime, orderId);
@@ -60,12 +64,6 @@ function acknowledgeTerminalEvidenceAfterWsSettlement(
   ) {
     acknowledgeQueriedTerminalState(runtime, orderId, rawTerminalState);
   }
-}
-
-/** 将 SDK Decimal/unknown 价格数量统一收敛为 number | null。 */
-function resolveNullableDecimalNumber(value: Parameters<typeof decimalToNumber>[0]): number | null {
-  const resolved = decimalToNumber(value);
-  return Number.isFinite(resolved) ? resolved : null;
 }
 
 /**
@@ -91,14 +89,47 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
    * @param event 订单变更事件
    * @returns 无返回值
    */
-  function handleOrderChangedWhenActive(event: PushOrderChanged): void {
+  function handleOrderChangedWhenActive(event: RawOrderFromAPI): void {
     const orderId = event.orderId;
     const trackedOrder = runtime.trackedOrders.get(orderId);
     if (!trackedOrder) {
+      const existing = orderRecorder.getExecutionFact(orderId);
+      if (existing !== null) {
+        const ownership = resolveOrderOwnership(event, deps.monitorConfig);
+        if (ownership?.monitorSymbol !== deps.monitorConfig.monitorSymbol)
+          throw new Error('[订单监控] 已有 broker 事实的新观察缺少唯一归属');
+
+        if (
+          event.executedQuantity > 0 &&
+          (event.executedPrice === null ||
+            exactCompare(event.executedPrice, '0') <= 0 ||
+            exactCompare(
+              exactMultiply(event.executedPrice, String(event.executedQuantity)),
+              event.executedAmount,
+            ) !== 0)
+        )
+          throw new Error('[订单监控] 已有broker事实的新观察缺少完整价格依据');
+
+        // tracking 已关闭不关闭事实准入；revision-only 也交给同一 owner 保存水位。
+        recordCumulativeExecution({
+          orderId,
+          symbol: event.symbol,
+          side: event.executionSide,
+          monitorSymbol: ownership.monitorSymbol,
+          isLongSymbol: ownership.direction === 'LONG',
+          isProtectiveLiquidation: hasProtectiveLiquidationRemark(event.remark),
+          factStage: event.executionPhase,
+          executedPrice: event.executedPrice,
+          executedQuantity: event.executedQuantity,
+          executedAmount: event.executedAmount,
+          executedTimeMs: event.executionTimeMs,
+          orderUpdatedAtMs: event.updatedAtMs,
+        });
+        return;
+      }
+
       if (isClosedStatus(event.status)) {
-        logger.warn(
-          `[订单监控] 收到未追踪订单 ${orderId} 的终态事件 ${String(event.status)}，已忽略`,
-        );
+        logger.warn(`[订单监控] 收到未追踪订单 ${orderId} 的终态事件 ${event.status}，已忽略`);
       }
 
       return;
@@ -106,10 +137,13 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
 
     const observedFact = {
       status: event.status,
-      executedQuantity: decimalToNumber(event.executedQuantity),
-      executedPrice: resolveNullableDecimalNumber(event.executedPrice),
-      executedTimeMs: resolveUpdatedAtMs(event.updatedAt),
-      updatedAtMs: resolveUpdatedAtMs(event.updatedAt),
+      executionPhase: event.executionPhase,
+      executionStatus: event.executionStatus,
+      executedQuantity: event.executedQuantity,
+      executedAmount: event.executedAmount,
+      executedPrice: event.executedPrice,
+      executedTimeMs: event.executionTimeMs,
+      updatedAtMs: event.updatedAtMs,
     };
     assertProtectiveSellRawObservationFactsReady(trackedOrder, observedFact);
     const mergedFact = mergeMonotonicOrderFact(trackedOrder, observedFact);
@@ -120,7 +154,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     const closedReason = resolveOrderClosedReasonFromStatus(mergedFact.status);
     const requiresDurableProtectiveSettlementBeforeTrackedFact =
       closedReason !== null &&
-      trackedOrder.side === OrderSide.Sell &&
+      trackedOrder.side === 'SELL' &&
       trackedOrder.isProtectiveLiquidation &&
       mergedFact.executedQuantity > 0 &&
       !trackedOrder.timeoutMarketConversionPending;
@@ -130,13 +164,14 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         closedReason,
         source: 'WS',
         executedPrice: mergedFact.executedPrice,
+        executedAmount: mergedFact.executedAmount,
         executedQuantity: mergedFact.executedQuantity,
         executedTimeMs: mergedFact.executedTimeMs,
         orderUpdatedAtMs: mergedFact.updatedAtMs,
       });
       if (!result.handled) {
         logger.warn(
-          `[订单监控] 保护性订单 ${orderId} 终态=${String(mergedFact.status)} 已到达，但结算未执行`,
+          `[订单监控] 保护性订单 ${orderId} 终态=${mergedFact.status} 已到达，但结算未执行`,
         );
         return;
       }
@@ -159,7 +194,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     let preparedProtectiveTerminalExecution: DailyLossCumulativeExecutionResult | undefined;
     if (
       closedReason !== null &&
-      trackedOrder.side === OrderSide.Sell &&
+      trackedOrder.side === 'SELL' &&
       trackedOrder.isProtectiveLiquidation &&
       trackedOrder.timeoutMarketConversionPending &&
       mergedFact.executedQuantity > 0
@@ -169,6 +204,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         closedReason,
         source: 'WS',
         executedPrice: mergedFact.executedPrice,
+        executedAmount: mergedFact.executedAmount,
         executedQuantity: mergedFact.executedQuantity,
         executedTimeMs: mergedFact.executedTimeMs,
         orderUpdatedAtMs: mergedFact.updatedAtMs,
@@ -183,21 +219,21 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     const openCumulativeExecutionParams: OrderCumulativeExecutionParams | null =
       closedReason === null && mergedFact.executedQuantity > 0
         ? {
-            factStage: classifyOrderStatusLifecycle(mergedFact.status),
+            factStage: mergedFact.executionPhase,
             orderId,
-            side: trackedOrder.side === OrderSide.Buy ? 'BUY' : 'SELL',
+            side: trackedOrder.side === 'BUY' ? 'BUY' : 'SELL',
             monitorSymbol: trackedOrder.monitorSymbol,
             symbol: trackedOrder.symbol,
             isLongSymbol: trackedOrder.isLongSymbol,
             isProtectiveLiquidation: trackedOrder.isProtectiveLiquidation,
             executedPrice: mergedFact.executedPrice,
+            executedAmount: mergedFact.executedAmount,
             executedQuantity: mergedFact.executedQuantity,
             executedTimeMs: mergedFact.executedTimeMs,
             orderUpdatedAtMs: mergedFact.updatedAtMs,
           }
         : null;
-    const isProtectiveSell =
-      trackedOrder.isProtectiveLiquidation && trackedOrder.side === OrderSide.Sell;
+    const isProtectiveSell = trackedOrder.isProtectiveLiquidation && trackedOrder.side === 'SELL';
     if (openCumulativeExecutionParams !== null && isProtectiveSell) {
       recordCumulativeExecution(openCumulativeExecutionParams);
     }
@@ -205,8 +241,10 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     const previousStatus = trackedOrder.status;
     const previousExecutedQuantity = trackedOrder.executedQuantity;
     trackedOrder.status = mergedFact.status;
+    trackedOrder.executionPhase = mergedFact.executionPhase;
     trackedOrder.executedQuantity = mergedFact.executedQuantity;
     trackedOrder.executedPrice = mergedFact.executedPrice;
+    trackedOrder.executedAmount = mergedFact.executedAmount;
     trackedOrder.lastOrderUpdateAtMs = mergedFact.updatedAtMs;
     trackedOrder.lastExecutedTimeMs = mergedFact.executedTimeMs;
 
@@ -228,7 +266,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
 
     if (
       closedReason === null &&
-      trackedOrder.side === OrderSide.Sell &&
+      trackedOrder.side === 'SELL' &&
       mergedFact.executedQuantity > previousExecutedQuantity
     ) {
       orderRecorder.markSellPartialFilled(orderId, trackedOrder.executedQuantity);
@@ -244,11 +282,12 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
       return;
     }
 
-    if (trackedOrder.side === OrderSide.Sell && trackedOrder.timeoutMarketConversionPending) {
+    if (trackedOrder.side === 'SELL' && trackedOrder.timeoutMarketConversionPending) {
       trackedOrder.timeoutMarketConversionTerminalState = {
         closedReason,
         source: 'WS',
         executedPrice: mergedFact.executedPrice,
+        executedAmount: mergedFact.executedAmount,
         executedQuantity: mergedFact.executedQuantity,
         executedTimeMs: trackedOrder.lastExecutedTimeMs,
         orderUpdatedAtMs: mergedFact.updatedAtMs,
@@ -259,7 +298,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
 
       triggerRoute(trackedOrder.symbol, 'ORDER_EVENT');
       logger.info(
-        `[订单监控] 卖出订单 ${orderId} 超时撤单后收到终态=${String(mergedFact.status)}，已写入终态快照并显式唤醒 route`,
+        `[订单监控] 卖出订单 ${orderId} 超时撤单后收到终态=${mergedFact.status}，已写入终态快照并显式唤醒 route`,
       );
       return;
     }
@@ -269,14 +308,13 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
       closedReason,
       source: 'WS',
       executedPrice: mergedFact.executedPrice,
+      executedAmount: mergedFact.executedAmount,
       executedQuantity: mergedFact.executedQuantity,
       executedTimeMs: trackedOrder.lastExecutedTimeMs,
       orderUpdatedAtMs: mergedFact.updatedAtMs,
     });
     if (!result.handled) {
-      logger.warn(
-        `[订单监控] 订单 ${orderId} 终态=${String(mergedFact.status)} 已到达，但结算未执行`,
-      );
+      logger.warn(`[订单监控] 订单 ${orderId} 终态=${mergedFact.status} 已到达，但结算未执行`);
       return;
     }
 
@@ -299,7 +337,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
    * @param event 订单推送事件
    * @returns 无返回值
    */
-  function handleOrderChanged(event: PushOrderChanged): void {
+  function handleOrderChanged(event: RawOrderFromAPI): void {
     switch (runtime.runtimeState) {
       case 'STOPPED': {
         return;

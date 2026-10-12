@@ -1,11 +1,5 @@
-/**
- * 自动寻标策略构造模块
- *
- * 功能：将监控配置解析为方向化自动寻标策略对象，并基于共享策略统一构造 findBestWarrant 输入。
- * 职责：在策略构造边界校验主阈值、降级区间与换标区间不变量，避免启动/运行时/换标预寻标重复拼装。
- * 执行流程：resolveDirectionalAutoSearchPolicy 校验配置 → 构造策略对象 → buildFindBestWarrantInputFromPolicy 组装 Finder 输入。
- */
-import { formatDecimal } from '../../utils/numeric/index.js';
+/** 自动寻标策略构造：阈值文本先验证再精确比较；内部金融契约错误不降级为无候选。 */
+import { canonicalDecimal, exactCompare, formatDecimal } from '../../utils/numeric/exact.js';
 import type {
   BuildFindBestWarrantInputFromPolicyParams,
   DirectionalAutoSearchPolicy,
@@ -13,237 +7,74 @@ import type {
   ResolveDirectionalAutoSearchPolicyInput,
 } from './types.js';
 
-/**
- * 判断方向是否为做多（牛证）方向。
- *
- * @param direction 寻标方向
- * @returns LONG 时返回 true，否则返回 false
- */
-function isLongDirection(direction: DirectionalAutoSearchPolicy['direction']): boolean {
-  return direction === 'LONG';
-}
+/** 主阈值必须严格落在安全区间；合法但不满足业务区间的配置返回原有显式失败。 */
+function validatePolicyInvariants(policy: DirectionalAutoSearchPolicy): string | null {
+  const range = policy.switchDistanceRange;
+  const degraded = policy.degradedRange;
+  if (exactCompare(policy.minTurnoverPerMinute, '0') < 0) return '分均成交额阈值不能小于 0';
 
-/**
- * 构造策略失败日志。
- *
- * @param params 日志所需上下文
- * @returns 统一格式的错误文案
- */
-function buildPolicyErrorMessage(params: {
-  readonly logPrefix: string;
-  readonly monitorSymbol: string;
-  readonly direction: DirectionalAutoSearchPolicy['direction'];
-  readonly message: string;
-}): string {
-  return `${params.logPrefix}: ${params.monitorSymbol} ${params.direction} ${params.message}`;
-}
+  if (exactCompare(degraded.min, degraded.max) >= 0)
+    return `降级区间无效，要求 min < max，当前值为 ${formatDecimal(degraded.min, 4, 'unsigned')},${formatDecimal(degraded.max, 4, 'unsigned')}`;
 
-/**
- * 从配置中提取某一方向的主阈值、成交额阈值与换标区间。
- *
- * @param input 策略构造入参
- * @returns 方向对应的阈值快照
- */
-function resolveDirectionalThresholdSnapshot(input: ResolveDirectionalAutoSearchPolicyInput): {
-  readonly primaryThreshold: number | null;
-  readonly minTurnoverPerMinute: number | null;
-  readonly switchDistanceRange: DirectionalAutoSearchPolicy['switchDistanceRange'] | null;
-} {
-  const isLong = isLongDirection(input.direction);
-  return {
-    primaryThreshold: isLong
-      ? input.autoSearchConfig.autoSearchMinDistancePctBull
-      : input.autoSearchConfig.autoSearchMinDistancePctBear,
-    minTurnoverPerMinute: isLong
-      ? input.autoSearchConfig.autoSearchMinTurnoverPerMinuteBull
-      : input.autoSearchConfig.autoSearchMinTurnoverPerMinuteBear,
-    switchDistanceRange: isLong
-      ? input.autoSearchConfig.switchDistanceRangeBull
-      : input.autoSearchConfig.switchDistanceRangeBear,
-  };
-}
-
-/**
- * 校验阈值快照是否都是有限数。
- *
- * @param snapshot 方向化阈值快照
- * @returns 合法时返回 null，否则返回错误原因
- */
-function validateFiniteThresholdSnapshot(snapshot: {
-  readonly primaryThreshold: number;
-  readonly minTurnoverPerMinute: number;
-  readonly switchDistanceRange: DirectionalAutoSearchPolicy['switchDistanceRange'];
-}): string | null {
-  if (!Number.isFinite(snapshot.primaryThreshold)) {
-    return '主阈值不是有限数';
-  }
-
-  if (!Number.isFinite(snapshot.minTurnoverPerMinute)) {
-    return '分均成交额阈值不是有限数';
-  }
-
-  if (snapshot.minTurnoverPerMinute < 0) {
-    return '分均成交额阈值不能小于 0';
-  }
+  if (exactCompare(range.min, range.max) > 0)
+    return `换标区间无效，要求 min <= max，当前值为 ${formatDecimal(range.min, 4, 'unsigned')},${formatDecimal(range.max, 4, 'unsigned')}`;
 
   if (
-    !Number.isFinite(snapshot.switchDistanceRange.min) ||
-    !Number.isFinite(snapshot.switchDistanceRange.max)
-  ) {
-    return '换标区间边界不是有限数';
-  }
+    exactCompare(range.min, policy.primaryThreshold) >= 0 ||
+    exactCompare(policy.primaryThreshold, range.max) >= 0
+  )
+    return '主阈值未严格落在换标安全区间内部，要求 switchDistanceRange.min < primaryThreshold < switchDistanceRange.max';
 
   return null;
 }
 
-/**
- * 校验方向化策略的降级区间不变量。
- *
- * @param policy 待校验的方向化策略
- * @returns 合法时返回 null，否则返回错误原因
- */
-function validatePolicyInvariants(policy: DirectionalAutoSearchPolicy): string | null {
-  const isLong = isLongDirection(policy.direction);
-
-  if (!Number.isFinite(policy.degradedRange.min) || !Number.isFinite(policy.degradedRange.max)) {
-    return '降级区间边界不是有限数';
-  }
-
-  if (policy.degradedRange.min >= policy.degradedRange.max) {
-    return `降级区间无效，要求 min < max，当前值为 ${formatDecimal(
-      policy.degradedRange.min,
-      4,
-    )},${formatDecimal(policy.degradedRange.max, 4)}`;
-  }
-
-  // 校验降级区间与主阈值的关系
-  const degradedRangeInvalid = isLong
-    ? policy.degradedRange.min >= policy.primaryThreshold
-    : policy.primaryThreshold >= policy.degradedRange.max;
-
-  if (degradedRangeInvalid) {
-    const constraint = isLong ? 'lowerBound < primaryThreshold' : 'primaryThreshold < upperBound';
-    const actualValue = isLong
-      ? `${formatDecimal(policy.degradedRange.min, 4)} >= ${formatDecimal(policy.primaryThreshold, 4)}`
-      : `${formatDecimal(policy.primaryThreshold, 4)} >= ${formatDecimal(policy.degradedRange.max, 4)}`;
-    return `降级区间无效，要求 ${constraint}，当前值为 ${actualValue}`;
-  }
-
-  // 校验换标区间
-  if (policy.switchDistanceRange.min > policy.switchDistanceRange.max) {
-    return `换标区间无效，要求 min <= max，当前值为 ${formatDecimal(
-      policy.switchDistanceRange.min,
-      4,
-    )},${formatDecimal(policy.switchDistanceRange.max, 4)}`;
-  }
-
-  if (policy.switchDistanceRange.min >= policy.primaryThreshold) {
-    return (
-      '主阈值未严格落在换标安全区间内部，要求 ' +
-      `switchDistanceRange.min < primaryThreshold，当前值为 ${formatDecimal(
-        policy.switchDistanceRange.min,
-        4,
-      )} >= ${formatDecimal(policy.primaryThreshold, 4)}`
-    );
-  }
-
-  if (policy.primaryThreshold >= policy.switchDistanceRange.max) {
-    return (
-      '主阈值未严格落在换标安全区间内部，要求 ' +
-      `primaryThreshold < switchDistanceRange.max，当前值为 ${formatDecimal(
-        policy.primaryThreshold,
-        4,
-      )} >= ${formatDecimal(policy.switchDistanceRange.max, 4)}`
-    );
-  }
-
-  return null;
-}
-
-/**
- * 基于自动寻标配置构造方向化共享策略。
- * 构造失败时记录日志并返回 null，调用方不得自行猜测区间关系。
- *
- * @param input 策略构造入参
- * @returns 成功时返回共享策略，失败时返回 null
- */
+/** 缺少/业务无效配置明确拒绝；非法文本由纯金融层抛出，不吞内部损坏。 */
 export function resolveDirectionalAutoSearchPolicy(
   input: ResolveDirectionalAutoSearchPolicyInput,
 ): DirectionalAutoSearchPolicy | null {
-  const thresholdSnapshot = resolveDirectionalThresholdSnapshot(input);
-  if (
-    thresholdSnapshot.primaryThreshold === null ||
-    thresholdSnapshot.minTurnoverPerMinute === null ||
-    thresholdSnapshot.switchDistanceRange === null
-  ) {
+  const long = input.direction === 'LONG';
+  const threshold = long
+    ? input.autoSearchConfig.autoSearchMinDistancePctBull
+    : input.autoSearchConfig.autoSearchMinDistancePctBear;
+  const turnover = long
+    ? input.autoSearchConfig.autoSearchMinTurnoverPerMinuteBull
+    : input.autoSearchConfig.autoSearchMinTurnoverPerMinuteBear;
+  const range = long
+    ? input.autoSearchConfig.switchDistanceRangeBull
+    : input.autoSearchConfig.switchDistanceRangeBear;
+  if (threshold === null || turnover === null || range === null) {
     input.logger.error(
-      buildPolicyErrorMessage({
-        logPrefix: input.logPrefix,
-        monitorSymbol: input.monitorSymbol,
-        direction: input.direction,
-        message: '缺少自动寻标阈值或换标区间配置',
-      }),
+      `${input.logPrefix}: ${input.monitorSymbol} ${input.direction} 缺少自动寻标阈值或换标区间配置`,
     );
     return null;
   }
 
-  const finiteSnapshotError = validateFiniteThresholdSnapshot({
-    primaryThreshold: thresholdSnapshot.primaryThreshold,
-    minTurnoverPerMinute: thresholdSnapshot.minTurnoverPerMinute,
-    switchDistanceRange: thresholdSnapshot.switchDistanceRange,
+  const primaryThreshold = canonicalDecimal(threshold);
+  const switchDistanceRange = Object.freeze({
+    min: canonicalDecimal(range.min),
+    max: canonicalDecimal(range.max),
   });
-  if (finiteSnapshotError !== null) {
-    input.logger.error(
-      buildPolicyErrorMessage({
-        logPrefix: input.logPrefix,
-        monitorSymbol: input.monitorSymbol,
-        direction: input.direction,
-        message: finiteSnapshotError,
-      }),
-    );
-    return null;
-  }
-
-  const degradedRange = isLongDirection(input.direction)
-    ? {
-        min: thresholdSnapshot.switchDistanceRange.min,
-        max: thresholdSnapshot.primaryThreshold,
-      }
-    : {
-        min: thresholdSnapshot.primaryThreshold,
-        max: thresholdSnapshot.switchDistanceRange.max,
-      };
-
-  const policy: DirectionalAutoSearchPolicy = {
+  const policy: DirectionalAutoSearchPolicy = Object.freeze({
     direction: input.direction,
-    primaryThreshold: thresholdSnapshot.primaryThreshold,
-    minTurnoverPerMinute: thresholdSnapshot.minTurnoverPerMinute,
-    degradedRange,
-    switchDistanceRange: thresholdSnapshot.switchDistanceRange,
-  };
-
-  const invariantError = validatePolicyInvariants(policy);
-  if (invariantError !== null) {
-    input.logger.error(
-      buildPolicyErrorMessage({
-        logPrefix: input.logPrefix,
-        monitorSymbol: input.monitorSymbol,
-        direction: input.direction,
-        message: invariantError,
-      }),
-    );
+    primaryThreshold,
+    minTurnoverPerMinute: canonicalDecimal(turnover),
+    switchDistanceRange,
+    degradedRange: Object.freeze(
+      long
+        ? { min: switchDistanceRange.min, max: primaryThreshold }
+        : { min: primaryThreshold, max: switchDistanceRange.max },
+    ),
+  });
+  const error = validatePolicyInvariants(policy);
+  if (error !== null) {
+    input.logger.error(`${input.logPrefix}: ${input.monitorSymbol} ${input.direction} ${error}`);
     return null;
   }
 
   return policy;
 }
 
-/**
- * 基于共享策略构造 findBestWarrant 入参。
- *
- * @param params 构造输入
- * @returns 统一的自动寻标 finder 入参
- */
+/** 只装配中性 query 与技术分钟数，不请求或缓存账户/持仓。 */
 export function buildFindBestWarrantInputFromPolicy(
   params: BuildFindBestWarrantInputFromPolicyParams,
 ): FindBestWarrantInput {

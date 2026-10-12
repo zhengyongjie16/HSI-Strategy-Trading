@@ -63,6 +63,7 @@ function createLifecycleCacheDomains(
     seatActivationDispatcher,
     seatRuntimeCleanupDispatcher,
     postTradeConsistencyRuntime,
+    snapshot,
     trader,
     lastState,
     signalProcessor,
@@ -132,13 +133,17 @@ function createLifecycleCacheDomains(
     buildGlobalStateDomain({
       logger,
       lastState,
-      runTradingDayOpenRebuild: async (now) => {
-        await runTradingDayOpenRebuild({
+      snapshot,
+      runTradingDayOpenRebuild: (now) =>
+        runTradingDayOpenRebuild({
           now,
+          termination: params.termination,
+          snapshot,
           loadTradingDayRuntimeSnapshot,
           rebuildTradingDayState,
-        });
-      },
+          postTradeConsistencyRuntime,
+          quoteSubscriptionRuntime,
+        }),
     }),
   ];
 }
@@ -159,6 +164,7 @@ export function createLifecycleRuntime(
 
   return factories.createDayLifecycleManager({
     mutableState: postGateRuntime.lastState,
+    snapshot: postGateRuntime.snapshot,
     cacheDomains,
     logger,
     termination: params.termination,

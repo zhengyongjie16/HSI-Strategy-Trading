@@ -26,10 +26,10 @@ describe('ordinary sell reason authority', () => {
           availableQuantity: 1000,
         }),
         shortPosition: null,
-        longQuote: createQuoteDouble('BULL.HK', 1),
+        longQuote: createQuoteDouble('BULL.HK', '1'),
         shortQuote: null,
         orderRecorder: createOrderRecorderDouble({
-          getCostAveragePrice: () => 2,
+          getCostBasis: () => ({ costAmount: '2', quantity: 1 }),
           selectSellableOrders: () => ({ orders: [], totalQuantity: 0 }),
         }),
         smartCloseEnabled: true,

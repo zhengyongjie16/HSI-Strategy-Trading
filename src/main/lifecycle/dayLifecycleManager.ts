@@ -18,11 +18,14 @@
  * - 失败自动重试：指数退避策略，不吞错
  */
 import type { RuntimeTermination } from '../../types/runtime.js';
+import type { SnapshotToken } from '../../types/accountPosition.js';
 import { LIFECYCLE } from '../../constants/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type {
   CacheDomain,
+  CacheDomainOpenRebuildResult,
+  OpenRebuildContext,
   DayLifecycleManager,
   DayLifecycleManagerDeps,
   DayLifecycleTickResult,
@@ -69,22 +72,71 @@ async function runMidnightClearForDomains(
   }
 }
 
-/** 按逆序依次执行各 CacheDomain 的开盘重建，任一失败即抛出 */
+/** 按逆序执行实际开盘工作；取消阻断后续域，旧 void/非法结果与异常绝不当成功。 */
 async function runOpenRebuildForDomains(
   domains: ReadonlyArray<CacheDomain>,
-  ctx: LifecycleContext,
-  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
-): Promise<void> {
+  ctx: OpenRebuildContext,
+  isCapturedCurrent: (token: SnapshotToken) => boolean,
+): Promise<CacheDomainOpenRebuildResult> {
+  let committedToken: SnapshotToken | null = null;
   for (let idx = domains.length - 1; idx >= 0; idx -= 1) {
     const domain = domains[idx];
     if (!domain) {
       continue;
     }
 
-    if (termination.isTerminated()) return;
+    if (!ctx.isCurrent()) return { status: 'ABORTED' };
 
-    await domain.openRebuild(ctx);
+    const result = await domain.openRebuild({
+      ...ctx,
+      snapshotToken: committedToken ?? ctx.snapshotToken,
+    });
+    const resultInput: unknown = result;
+    if (typeof resultInput !== 'object' || resultInput === null || !('status' in resultInput)) {
+      throw new TypeError('[Lifecycle] 开盘域必须返回 COMMITTED 或 ABORTED');
+    }
+
+    if (resultInput.status !== 'COMMITTED' && resultInput.status !== 'ABORTED') {
+      throw new TypeError('[Lifecycle] 开盘域必须返回 COMMITTED 或 ABORTED');
+    }
+
+    if (result.status === 'ABORTED') return result;
+
+    const tokenInput: unknown = result.snapshotToken;
+    if (typeof tokenInput !== 'object' || tokenInput === null) {
+      throw new TypeError('[Lifecycle] COMMITTED 开盘域必须携带原 captured snapshotToken');
+    }
+
+    for (const component of [
+      'dayEpoch',
+      'snapshotGeneration',
+      'commitRevision',
+      'accountRevision',
+      'positionRevision',
+      'pairedRevision',
+    ] as const) {
+      const revision = result.snapshotToken[component];
+      if (!Number.isSafeInteger(revision) || revision < 0) {
+        throw new TypeError(`[Lifecycle] 开盘域 captured token.${component} 必须是非负安全整数`);
+      }
+
+      if (committedToken !== null && committedToken[component] !== revision) {
+        throw new TypeError('[Lifecycle] 下游开盘域不得替换原 captured snapshotToken');
+      }
+    }
+
+    if (result.snapshotToken.dayEpoch !== ctx.dayEpoch) {
+      throw new TypeError('[Lifecycle] 开盘域返回外来 dayEpoch token');
+    }
+
+    if (!ctx.isCurrent() || !isCapturedCurrent(result.snapshotToken)) return { status: 'ABORTED' };
+
+    committedToken = result.snapshotToken;
   }
+
+  return committedToken !== null && ctx.isCurrent() && isCapturedCurrent(committedToken)
+    ? { status: 'COMMITTED', snapshotToken: committedToken }
+    : { status: 'ABORTED' };
 }
 
 /** 计算指数退避重试延迟，失败次数越多延迟越长，上限由 MAX_RETRY_BACKOFF_FACTOR 控制 */
@@ -109,6 +161,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
     mutableState,
     termination,
     cacheDomains,
+    snapshot,
     logger,
     rebuildRetryDelayMs = LIFECYCLE.DEFAULT_REBUILD_RETRY_DELAY_MS,
   } = deps;
@@ -117,6 +170,9 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
   let midnightClearFailureCount = 0;
   let nextMidnightRetryAtMs: number | null = null;
   let invalidateSeatActivationCarryoverOnMidnightClear = false;
+  let invalidatedDayKey: string | null = null;
+  let dayCutDrain: Promise<void> | null = null;
+  let openOwner: object | null = null;
 
   function buildTickResult(): DayLifecycleTickResult {
     return {
@@ -132,16 +188,36 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
    */
   async function tick(now: Date, runtime: LifecycleRuntimeFlags): Promise<DayLifecycleTickResult> {
     if (termination.isTerminated()) {
+      openOwner = null;
       mutableState.isTradingEnabled = false;
       return buildTickResult();
     }
 
     if (shouldRunMidnightClear(runtime, mutableState)) {
+      openOwner = null;
       invalidateSeatActivationCarryoverOnMidnightClear =
         invalidateSeatActivationCarryoverOnMidnightClear ||
         mutableState.lifecycleState === 'OPEN_REBUILD_FAILED';
       mutableState.isTradingEnabled = false;
       mutableState.lifecycleState = 'MIDNIGHT_CLEANING';
+      // 先同步关闭 snapshot admission、失效旧 epoch 并取消 waiter，随后才 drain 消费者。
+      // 同一次日切外部失败重试不能再次推进 epoch。
+      if (invalidatedDayKey !== runtime.dayKey) {
+        const dayEpoch = snapshot.getStatus().token.dayEpoch + 1;
+        if (!Number.isSafeInteger(dayEpoch)) {
+          const error = new RangeError('[Lifecycle] dayEpoch 超出安全整数范围');
+          termination.reportFatalError(error);
+          throw error;
+        }
+
+        invalidatedDayKey = runtime.dayKey;
+        dayCutDrain = snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch });
+        // 清理继续按原域顺序推进；立即观察拒绝，防止未处理 rejection 或延迟 fatal。
+        void dayCutDrain.catch((error: unknown) => {
+          if (!isExternalApiRequestError(error)) termination.reportFatalError(error);
+        });
+      }
+
       const nowMs = now.getTime();
       if (nextMidnightRetryAtMs !== null && nowMs < nextMidnightRetryAtMs) {
         return buildTickResult();
@@ -158,6 +234,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
       );
       try {
         await runMidnightClearForDomains(cacheDomains, midnightContext, termination);
+        await dayCutDrain;
         if (termination.isTerminated()) return buildTickResult();
 
         mutableState.currentDayKey = runtime.dayKey ?? mutableState.currentDayKey;
@@ -203,18 +280,57 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
       return buildTickResult();
     }
 
+    const owner = {};
+    openOwner = owner;
+    const dayEpoch = snapshot.getStatus().token.dayEpoch;
+    const dayKey = mutableState.currentDayKey;
+    const isOpenOwnerCurrent = (): boolean =>
+      openOwner === owner &&
+      !termination.isTerminated() &&
+      snapshot.getStatus().token.dayEpoch === dayEpoch &&
+      snapshot.getStatus().admission !== 'CLOSED' &&
+      mutableState.currentDayKey === dayKey &&
+      mutableState.lifecycleState === 'OPEN_REBUILDING' &&
+      mutableState.pendingOpenRebuild;
     mutableState.lifecycleState = 'OPEN_REBUILDING';
-    logger.info('[Lifecycle] 开始执行开盘重建');
-    const rebuildContext = buildLifecycleContext(now, runtime);
+    const isCapturedCurrent = (token: SnapshotToken): boolean =>
+      isOpenOwnerCurrent() &&
+      snapshot.isCurrent(token, { account: true, positions: true, paired: true });
     try {
-      await runOpenRebuildForDomains(cacheDomains, rebuildContext, termination);
-      if (termination.isTerminated()) return buildTickResult();
+      // 仅开启生命周期重建读取；普通交易预算继续关闭，最终 current COMMITTED 才放行。
+      snapshot.beginRebuild();
+      logger.info('[Lifecycle] 开始执行开盘重建');
+      const rebuildContext: OpenRebuildContext = {
+        ...buildLifecycleContext(now, runtime),
+        dayEpoch,
+        snapshotToken: snapshot.getStatus().token,
+        isCurrent: isOpenOwnerCurrent,
+      };
+      const result = await runOpenRebuildForDomains(
+        cacheDomains,
+        rebuildContext,
+        isCapturedCurrent,
+      );
+      if (result.status === 'ABORTED' || !isCapturedCurrent(result.snapshotToken)) {
+        // 取消不是成功或外部失败，不计重试、不新增 timer；新日由原 tick 流程接管。
+        if (openOwner === owner) {
+          mutableState.isTradingEnabled = false;
+          mutableState.pendingOpenRebuild = true;
+          mutableState.lifecycleState = 'MIDNIGHT_CLEANED';
+          nextRetryAtMs = null;
+          openOwner = null;
+        }
 
+        return buildTickResult();
+      }
+
+      snapshot.openAdmission();
       mutableState.pendingOpenRebuild = false;
       mutableState.lifecycleState = 'ACTIVE';
       mutableState.isTradingEnabled = true;
       rebuildFailureCount = 0;
       nextRetryAtMs = null;
+      openOwner = null;
       logger.info('[Lifecycle] 开盘重建完成，交易门禁已恢复');
     } catch (err) {
       if (!isExternalApiRequestError(err)) {
@@ -222,6 +338,9 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
         throw err;
       }
 
+      if (!isOpenOwnerCurrent()) throw err;
+
+      openOwner = null;
       rebuildFailureCount += 1;
       mutableState.lifecycleState = 'OPEN_REBUILD_FAILED';
       mutableState.isTradingEnabled = false;

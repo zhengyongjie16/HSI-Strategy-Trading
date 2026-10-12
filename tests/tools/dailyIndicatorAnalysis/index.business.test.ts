@@ -5,7 +5,21 @@
  * - 校验工具使用命令行标的、完成 OAuth 打开提示并请求分钟 K 线
  * - 校验当外部行情边界返回空结果时入口层按预期终止输出
  */
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createSdkModuleMock } from '../../infrastructure/longbridge/trade/sdkModuleMock.js';
+
+/** 在本文件首次 hook 前复制稳定 export 值；Bun module namespace 是 live binding，不作为还原来源。 */
+const originalDotenvExports = Object.freeze({ ...(await import('dotenv')) });
+const sdkModuleMock = createSdkModuleMock();
+const originalAuthExports = Object.freeze({
+  ...(await import('../../../src/config/auth/index.js')),
+});
+
+function reinstallOriginalModules(): void {
+  void mock.module('dotenv', () => ({ ...originalDotenvExports }));
+  sdkModuleMock.restore();
+  void mock.module('../../../src/config/auth/index.js', () => ({ ...originalAuthExports }));
+}
 
 const dotenvConfigCalls: unknown[] = [];
 const authCalls: Array<{
@@ -32,7 +46,6 @@ function registerDotenvMock(): void {
 }
 
 async function registerLongbridgeMock(): Promise<void> {
-  const actualLongbridge = await import('longbridge');
   const quoteContext = {
     candlesticks: async (...args: ReadonlyArray<unknown>) => {
       candlestickCalls.push(args);
@@ -40,8 +53,7 @@ async function registerLongbridgeMock(): Promise<void> {
     },
   };
 
-  void mock.module('longbridge', () => ({
-    ...actualLongbridge,
+  sdkModuleMock.install({
     AdjustType: {
       NoAdjust: 'NoAdjust',
     },
@@ -57,7 +69,7 @@ async function registerLongbridgeMock(): Promise<void> {
     TradeSessions: {
       Intraday: 'Intraday',
     },
-  }));
+  });
 }
 
 function registerAuthMock(): void {
@@ -100,9 +112,31 @@ afterEach(() => {
   console.log = originalConsoleLog;
   console.error = originalConsoleError;
   process.argv = [...originalArgv];
-  if (typeof mock.restore === 'function') {
-    mock.restore();
-  }
+  reinstallOriginalModules();
+});
+
+/** SDK identity 在基础设施 helper 内检查；整个恢复过程不调用 factory、auth 或 dotenv。 */
+afterAll(async () => {
+  const beforeCalls = {
+    auth: authCalls.length,
+    quote: quoteContextNewCalls.length,
+    dotenv: dotenvConfigCalls.length,
+  };
+  reinstallOriginalModules();
+  await sdkModuleMock.assertRestored();
+  const restoredDotenv = await import('dotenv');
+  const restoredAuth = await import('../../../src/config/auth/index.js');
+  expect(restoredDotenv.default.config).toBe(originalDotenvExports.default.config);
+  expect(restoredAuth.createSdkConfigFromAuth).toBe(originalAuthExports.createSdkConfigFromAuth);
+  expect({
+    auth: authCalls.length,
+    quote: quoteContextNewCalls.length,
+    dotenv: dotenvConfigCalls.length,
+  }).toEqual(beforeCalls);
+
+  originalConsoleLog(
+    '[module-restore-proof] dailyIndicatorAnalysis: prehook stable exports -> reinstall dotenv/longbridge/auth; fresh identity verified; factory/auth/dotenv invocation delta=0',
+  );
 });
 
 describe('dailyIndicatorAnalysis index entry flow', () => {

@@ -14,6 +14,7 @@ import type {
   SymbolRegistry,
 } from '../../types/seat.js';
 import { isSeatActive, isSeatVersionMatch } from '../../utils/seat/guards.js';
+import { exactCompare } from '../../utils/numeric/exact.js';
 import type {
   SeatEntry,
   SeatStateCandidate,
@@ -268,6 +269,10 @@ function assertSeatStateInvariant(
   seatState: SeatStateCandidate,
   allowStaticBootstrap: boolean,
 ): void {
+  // shared SeatState 已是金融文本；校验原文而不归一化或给未知回收价填0。
+  if (seatState.callPrice !== null && seatState.callPrice !== undefined)
+    exactCompare(seatState.callPrice, '0');
+
   if (seatState.status === 'EMPTY' || seatState.status === 'SEARCHING') {
     if (seatState.symbol !== null) {
       throw new Error(`SymbolRegistry 席位状态无效：${seatState.status} 不得绑定标的`);

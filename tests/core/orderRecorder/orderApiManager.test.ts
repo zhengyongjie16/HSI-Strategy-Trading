@@ -1,233 +1,219 @@
 /**
- * orderApiManager 单元测试
- *
- * 功能：
- * - 验证 history/today 去重时的快照优先级（today 优先、同源按 updatedAt 更晚优先）
- * - 验证每次获取都会重新拉取 history/today，不复用旧快照
+ * orderApiManager 单元测试：真实私有SDK快照端口，保history/today优先级与独立T/revision。
+ * 非法SDK响应仅在实际native返回阶段发生，domain不持有SDK DTO或枚举。
  */
 import { describe, expect, it } from 'bun:test';
-import {
-  Decimal,
-  OrderSide,
-  OrderStatus,
-  OrderType,
-  type Order,
-  type TradeContext,
-} from 'longbridge';
-import { createOrderAPIManager } from '../../../src/core/orderRecorder/orderApiManager.js';
-import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
-import { createRateLimiterDouble, createTradeContextDouble } from '../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { BrokerIngressInput } from '../../infrastructure/longbridge/trade/brokerIngressFixture.js';
+import { createRateLimiterDouble } from '../../helpers/testDoubles.js';
 
-function createSdkOrder(params: {
+function createSnapshotInput(params: {
   readonly orderId: string;
   readonly symbol: string;
   readonly stockName?: string;
   readonly remark?: string;
-  readonly side: OrderSide;
-  readonly status: OrderStatus;
-  readonly orderType?: OrderType;
+  readonly side: BrokerIngressInput['side'];
+  readonly status: BrokerIngressInput['status'];
   readonly submittedAt?: Date;
   readonly updatedAt?: Date | null;
-}): Order {
+}): BrokerIngressInput {
   return {
     orderId: params.orderId,
+    tradeId: params.orderId + '-T',
     symbol: params.symbol,
     stockName: params.stockName ?? 'HSI RC SAMPLE',
+    remark: params.remark ?? '',
     side: params.side,
     status: params.status,
-    orderType: params.orderType ?? OrderType.ELO,
-    remark: params.remark ?? '',
-    price: new Decimal('1'),
-    quantity: new Decimal('100'),
-    executedPrice: new Decimal('1'),
-    executedQuantity: new Decimal('100'),
-    submittedAt: params.submittedAt ?? new Date('2026-02-25T03:00:00.000Z'),
-    ...(params.updatedAt === undefined ? {} : { updatedAt: params.updatedAt }),
-  } as unknown as Order;
+    orderType: 'ELO',
+    quantity: '100',
+    executedQuantity: '100',
+    submittedPrice: '1',
+    executedPrice: '1',
+    submittedAtMs: (params.submittedAt ?? new Date('2026-02-25T03:00:00.000Z')).getTime(),
+    executionTimeMs: Date.parse('2026-02-25T03:00:30.000Z'),
+    updatedAtMs: (params.updatedAt ?? new Date('2026-02-25T03:05:00.000Z')).getTime(),
+  };
 }
 
 const invalidSdkDateCases = [
-  {
-    label: 'Invalid Date',
-    createDate: () => new Date(Number.NaN),
-  },
-  {
-    label: 'epoch timestamp',
-    createDate: () => new Date(0),
-  },
-  {
-    label: 'negative timestamp',
-    createDate: () => new Date(-1),
-  },
+  { label: 'Invalid Date', createDate: () => new Date(Number.NaN) },
+  { label: 'epoch timestamp', createDate: () => new Date(0) },
+  { label: 'negative timestamp', createDate: () => new Date(-1) },
 ] as const;
-
 const optionalUpdatedAtCases = [
-  { label: 'null', orderFields: { updatedAt: null } },
-  { label: 'omitted', orderFields: {} },
+  { label: 'null', mode: 'NULL' },
+  { label: 'omitted', mode: 'OMITTED' },
 ] as const;
 
-function createApiManagerWithSdkOrder(source: 'history' | 'today', order: Order) {
-  const tradeCtx = createTradeContextMock();
-  if (source === 'history') {
-    tradeCtx.seedHistoryOrders([order]);
-  } else {
-    tradeCtx.seedTodayOrders([order]);
-  }
+async function createApiManagerHarness(
+  history: ReadonlyArray<BrokerIngressInput>,
+  today: ReadonlyArray<BrokerIngressInput>,
+  includeExecutionEvidence = true,
+) {
+  const fixture = await createBrokerIngressFixture(
+    createSnapshotInput({
+      orderId: 'NATIVE-BASE',
+      symbol: 'BULL.HK',
+      side: 'BUY',
+      status: 'Filled',
+    }),
+  );
+  fixture.setOrderSnapshotReplies(history, today);
+  // 同orderId跨snapshot只是一份累计观察，不复制实际execution；T不由revision代替。
+  const uniqueOrders = new Map([...history, ...today].map((order) => [order.orderId, order]));
+  if (!includeExecutionEvidence) fixture.setExecutionReplies([]);
+  else if (uniqueOrders.size > 0)
+    fixture.setExecutionReplies(
+      [...uniqueOrders.values()].map((order) => ({
+        orderId: order.orderId,
+        tradeId: order.tradeId,
+        symbol: order.symbol,
+        quantity: '100',
+        price: '1',
+        tradeDoneAtMs: Date.parse('2026-02-25T03:00:30.000Z'),
+      })),
+    );
 
-  return createOrderAPIManager({
-    ctx: createTradeContextDouble(tradeCtx),
-    rateLimiter: createRateLimiterDouble(),
+  let throttles = 0;
+  const apiManager = fixture.createApiManager({
+    rateLimiter: createRateLimiterDouble({
+      onThrottle: async () => {
+        throttles++;
+      },
+    }),
   });
+  return { fixture, apiManager, throttleCount: () => throttles };
+}
+
+async function createApiManagerWithOrder(source: 'history' | 'today', order: BrokerIngressInput) {
+  return createApiManagerHarness(
+    source === 'history' ? [order] : [],
+    source === 'today' ? [order] : [],
+  );
 }
 
 function getOrderSnapshotOperation(source: 'history' | 'today'): string {
-  if (source === 'history') {
-    return 'TradeContext.historyOrders';
-  }
-
-  return 'TradeContext.todayOrders';
+  return source === 'history' ? 'TradeContext.historyOrders' : 'TradeContext.todayOrders';
 }
 
 async function assertSdkOrderSnapshotFails(
-  apiManager: ReturnType<typeof createOrderAPIManager>,
+  actors: Awaited<ReturnType<typeof createApiManagerHarness>>,
   source: 'history' | 'today',
 ): Promise<void> {
-  let caught: unknown = null;
-  try {
-    await apiManager.fetchAllOrdersFromAPI();
-  } catch (error) {
-    caught = error;
-  }
-
+  const ledgerBefore = actors.fixture.readCounts();
+  const caught = await actors.apiManager.fetchAllOrdersFromAPI().catch((error: unknown) => error);
   expect(caught).toBeInstanceOf(TypeError);
-  if (!(caught instanceof Error)) {
-    throw new Error('expected SDK order boundary failure');
-  }
+  expect(caught).toHaveProperty(
+    'message',
+    '[订单记录] ' + getOrderSnapshotOperation(source) + ' 订单数据结构无效',
+  );
 
-  expect(caught.message).toContain(`${getOrderSnapshotOperation(source)} 订单数据结构无效`);
+  expect(actors.fixture.orderSnapshotReadCounts()).toEqual({
+    history: 1,
+    today: source === 'today' ? 1 : 0,
+  });
+  expect(actors.fixture.readCounts()).toEqual(ledgerBefore);
+  expect(actors.fixture.nativeMutations()).toEqual([]);
 }
 
 describe('createOrderAPIManager', () => {
   it('fetches fresh history and today snapshots on every call', async () => {
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedHistoryOrders([]);
-    tradeCtx.seedTodayOrders([
-      createSdkOrder({
-        orderId: 'ORDER-FRESH-SNAPSHOT',
-        symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        status: OrderStatus.New,
-        updatedAt: new Date('2026-02-25T03:01:00.000Z'),
-      }),
-    ]);
-    const apiManager = createOrderAPIManager({
-      ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: createRateLimiterDouble(),
+    const first = createSnapshotInput({
+      orderId: 'ORDER-FRESH-SNAPSHOT',
+      symbol: 'BULL.HK',
+      side: 'BUY',
+      status: 'New',
+      updatedAt: new Date('2026-02-25T03:01:00.000Z'),
+    });
+    const { fixture, apiManager, throttleCount } = await createApiManagerHarness([], [first]);
+    const ledgerBefore = fixture.readCounts();
+    const firstSnapshot = await apiManager.fetchAllOrdersFromAPI();
+    fixture.setOrderSnapshotReplies(
+      [],
+      [{ ...first, status: 'Filled', updatedAtMs: Date.parse('2026-02-25T03:05:00.000Z') }],
+    );
+    const secondSnapshot = await apiManager.fetchAllOrdersFromAPI();
+    expect(firstSnapshot[0]?.status).toBe('WORKING');
+    expect(secondSnapshot[0]?.status).toBe('FILLED');
+    expect(fixture.orderSnapshotReadCounts().history).toBe(2);
+    expect(fixture.orderSnapshotReadCounts().today).toBe(2);
+    expect(throttleCount()).toBe(8);
+    expect(secondSnapshot[0]).toMatchObject({
+      executionSide: 'BUY',
+      executionPhase: 'TERMINAL',
+      executedAmount: '100',
+      executedQuantity: 100,
+      executionTimeMs: Date.parse('2026-02-25T03:00:30.000Z'),
+      updatedAtMs: Date.parse('2026-02-25T03:05:00.000Z'),
     });
 
-    const firstSnapshot = await apiManager.fetchAllOrdersFromAPI();
-
-    tradeCtx.seedTodayOrders([
-      createSdkOrder({
-        orderId: 'ORDER-FRESH-SNAPSHOT',
-        symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        status: OrderStatus.Filled,
-        updatedAt: new Date('2026-02-25T03:05:00.000Z'),
-      }),
-    ]);
-    const secondSnapshot = await apiManager.fetchAllOrdersFromAPI();
-
-    expect(firstSnapshot[0]?.status).toBe(OrderStatus.New);
-    expect(secondSnapshot[0]?.status).toBe(OrderStatus.Filled);
-    expect(tradeCtx.getCalls('historyOrders')).toHaveLength(2);
-    expect(tradeCtx.getCalls('todayOrders')).toHaveLength(2);
+    expect(fixture.readCounts()).toEqual({
+      history: ledgerBefore.history + 2,
+      today: ledgerBefore.today + 2,
+    });
+    expect(fixture.nativeMutations()).toEqual([]);
   });
 
   it('prefers today snapshot when history and today share the same orderId', async () => {
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedHistoryOrders([
-      createSdkOrder({
-        orderId: 'ORDER-1',
-        symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        status: OrderStatus.Filled,
-        updatedAt: new Date('2026-02-25T03:10:00.000Z'),
-      }),
-    ]);
-
-    tradeCtx.seedTodayOrders([
-      createSdkOrder({
-        orderId: 'ORDER-1',
-        symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        status: OrderStatus.New,
-        updatedAt: new Date('2026-02-25T03:01:00.000Z'),
-      }),
-    ]);
-
-    const apiManager = createOrderAPIManager({
-      ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: createRateLimiterDouble(),
+    const history = createSnapshotInput({
+      orderId: 'ORDER-1',
+      symbol: 'BULL.HK',
+      side: 'BUY',
+      status: 'Filled',
+      updatedAt: new Date('2026-02-25T03:10:00.000Z'),
     });
-
+    const today = createSnapshotInput({
+      orderId: 'ORDER-1',
+      symbol: 'BULL.HK',
+      side: 'BUY',
+      status: 'New',
+      updatedAt: new Date('2026-02-25T03:01:00.000Z'),
+    });
+    const { apiManager } = await createApiManagerHarness([history], [today]);
     const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders).toHaveLength(1);
-    expect(allOrders[0]?.status).toBe(OrderStatus.New);
+    expect(allOrders[0]?.status).toBe('WORKING');
     expect(allOrders[0]?.updatedAt?.toISOString()).toBe('2026-02-25T03:01:00.000Z');
   });
 
   it('uses newer updatedAt when duplicates come from the same snapshot source', async () => {
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedHistoryOrders([]);
-    tradeCtx.seedTodayOrders([
-      createSdkOrder({
-        orderId: 'ORDER-2',
-        symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.New,
-        updatedAt: new Date('2026-02-25T03:01:00.000Z'),
-      }),
-      createSdkOrder({
-        orderId: 'ORDER-2',
-        symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialFilled,
-        updatedAt: new Date('2026-02-25T03:05:00.000Z'),
-      }),
-    ]);
-
-    const apiManager = createOrderAPIManager({
-      ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: createRateLimiterDouble(),
+    const old = createSnapshotInput({
+      orderId: 'ORDER-2',
+      symbol: 'BULL.HK',
+      side: 'SELL',
+      status: 'New',
+      updatedAt: new Date('2026-02-25T03:01:00.000Z'),
     });
-
+    const newer = createSnapshotInput({
+      orderId: 'ORDER-2',
+      symbol: 'BULL.HK',
+      side: 'SELL',
+      status: 'PartialFilled',
+      updatedAt: new Date('2026-02-25T03:05:00.000Z'),
+    });
+    const { apiManager } = await createApiManagerHarness([], [old, newer]);
     const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders).toHaveLength(1);
-    expect(allOrders[0]?.status).toBe(OrderStatus.PartialFilled);
+    expect(allOrders[0]?.status).toBe('PARTIALLY_FILLED');
     expect(allOrders[0]?.updatedAt?.toISOString()).toBe('2026-02-25T03:05:00.000Z');
   });
 
   it('preserves SDK submittedAt in the RawOrder snapshot used by recovery gates', async () => {
-    const tradeCtx = createTradeContextMock();
     const submittedAt = new Date('2026-02-25T03:00:00.000Z');
-    tradeCtx.seedHistoryOrders([]);
-    tradeCtx.seedTodayOrders([
-      createSdkOrder({
-        orderId: 'ORDER-SUBMITTED-AT',
-        symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        status: OrderStatus.Filled,
-        submittedAt,
-        updatedAt: new Date('2026-02-25T03:05:00.000Z'),
-      }),
-    ]);
-
-    const apiManager = createOrderAPIManager({
-      ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: createRateLimiterDouble(),
-    });
-
+    const { apiManager } = await createApiManagerHarness(
+      [],
+      [
+        createSnapshotInput({
+          orderId: 'ORDER-SUBMITTED-AT',
+          symbol: 'BULL.HK',
+          side: 'BUY',
+          status: 'Filled',
+          submittedAt,
+          updatedAt: new Date('2026-02-25T03:05:00.000Z'),
+        }),
+      ],
+    );
     const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders).toHaveLength(1);
     expect(allOrders[0]?.submittedAt).toEqual(submittedAt);
@@ -235,44 +221,73 @@ describe('createOrderAPIManager', () => {
 
   for (const updatedAtCase of optionalUpdatedAtCases) {
     it(`accepts SDK updatedAt ${updatedAtCase.label} and normalizes the RawOrder value to null`, async () => {
-      const tradeCtx = createTradeContextMock();
-      const sdkOrder = createSdkOrder({
-        orderId: `ORDER-OPTIONAL-UPDATED-AT-${updatedAtCase.label}`,
-        symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.New,
-        ...updatedAtCase.orderFields,
-      });
-      tradeCtx.seedHistoryOrders([]);
-      // mock 的深拷贝要求 updatedAt 为 Date；此处直通 SDK 合法的 nullable 原始字段。
-      tradeCtx.todayOrders = async () => [sdkOrder];
-      const apiManager = createOrderAPIManager({
-        ctx: createTradeContextDouble(tradeCtx),
-        rateLimiter: createRateLimiterDouble(),
-      });
-
+      // HEAD该case只断言updatedAt规范化，正执行100来自未被断言的默认frame。
+      // 此处显式真实零执行/空ledger；无revision不补执行T，不变更原null字段期望。
+      const input = {
+        ...createSnapshotInput({
+          orderId: 'ORDER-OPTIONAL-UPDATED-AT-' + updatedAtCase.label,
+          symbol: 'BULL.HK',
+          side: 'SELL',
+          status: 'New',
+        }),
+        executedQuantity: '0',
+        executedPrice: '0',
+        executionTimeMs: null,
+      };
+      const { fixture, apiManager } = await createApiManagerHarness([], [input], false);
+      fixture.setOrderSnapshotUpdatedAtAbsent('today', updatedAtCase.mode);
       const allOrders = await apiManager.fetchAllOrdersFromAPI();
       expect(allOrders).toHaveLength(1);
       expect(allOrders[0]?.updatedAt).toBeNull();
+      expect(allOrders[0]).toMatchObject({
+        executedQuantity: 0,
+        executedAmount: '0',
+        executionTimeMs: null,
+        executionPhase: 'OPEN',
+      });
+    });
+  }
+
+  for (const updatedAtCase of optionalUpdatedAtCases) {
+    it(`rejects positive execution with SDK updatedAt ${updatedAtCase.label} without deriving revision from T`, async () => {
+      const { fixture, apiManager } = await createApiManagerHarness(
+        [],
+        [
+          createSnapshotInput({
+            orderId: 'ORDER-EXECUTED-MISSING-REV-' + updatedAtCase.label,
+            symbol: 'BULL.HK',
+            side: 'SELL',
+            status: 'Filled',
+          }),
+        ],
+      );
+      fixture.setOrderSnapshotUpdatedAtAbsent('today', updatedAtCase.mode);
+      const caught = await apiManager.fetchAllOrdersFromAPI().catch((error: unknown) => error);
+      expect(caught).toBeInstanceOf(TypeError);
+      expect(caught).toHaveProperty(
+        'message',
+        '[orderMapper] executed order lacks independent broker revision',
+      );
+      expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
+      expect(fixture.nativeMutations()).toEqual([]);
     });
   }
 
   for (const source of ['history', 'today'] as const) {
     for (const invalidDateCase of invalidSdkDateCases) {
       it(`fails fast when ${source} order submittedAt is ${invalidDateCase.label}`, async () => {
-        const apiManager = createApiManagerWithSdkOrder(
+        const actors = await createApiManagerWithOrder(
           source,
-          createSdkOrder({
-            orderId: `ORDER-BAD-SUBMITTED-AT-${source}-${invalidDateCase.label}`,
+          createSnapshotInput({
+            orderId: 'ORDER-BAD-SUBMITTED-AT-' + source + '-' + invalidDateCase.label,
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
+            side: 'SELL',
+            status: 'New',
             submittedAt: invalidDateCase.createDate(),
             updatedAt: new Date('2026-02-25T03:05:00.000Z'),
           }),
         );
-
-        await assertSdkOrderSnapshotFails(apiManager, source);
+        await assertSdkOrderSnapshotFails(actors, source);
       });
     }
   }
@@ -280,263 +295,151 @@ describe('createOrderAPIManager', () => {
   for (const source of ['history', 'today'] as const) {
     for (const invalidDateCase of invalidSdkDateCases) {
       it(`fails fast when ${source} order updatedAt is ${invalidDateCase.label}`, async () => {
-        const apiManager = createApiManagerWithSdkOrder(
+        const actors = await createApiManagerWithOrder(
           source,
-          createSdkOrder({
-            orderId: `ORDER-BAD-UPDATED-AT-${source}-${invalidDateCase.label}`,
+          createSnapshotInput({
+            orderId: 'ORDER-BAD-UPDATED-AT-' + source + '-' + invalidDateCase.label,
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
+            side: 'SELL',
+            status: 'New',
             updatedAt: invalidDateCase.createDate(),
           }),
         );
-
-        await assertSdkOrderSnapshotFails(apiManager, source);
+        await assertSdkOrderSnapshotFails(actors, source);
       });
     }
   }
 
   for (const source of ['history', 'today'] as const) {
     it(`fails fast when ${source} orderType is Unknown`, async () => {
-      const apiManager = createApiManagerWithSdkOrder(
+      const actors = await createApiManagerWithOrder(
         source,
-        createSdkOrder({
-          orderId: `ORDER-UNKNOWN-TYPE-${source}`,
+        createSnapshotInput({
+          orderId: 'ORDER-UNKNOWN-TYPE-' + source,
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          status: OrderStatus.New,
-          orderType: OrderType.Unknown,
+          side: 'SELL',
+          status: 'New',
         }),
       );
-
-      await assertSdkOrderSnapshotFails(apiManager, source);
+      actors.fixture.setOrderSnapshotOrderTypeUnknown(source);
+      await assertSdkOrderSnapshotFails(actors, source);
     });
   }
 
   it('fails fast when historyOrders returns non-array value', async () => {
-    const apiManager = createOrderAPIManager({
-      ctx: {
-        historyOrders: async () => ({ [Symbol.iterator]: function* () {} }),
-        todayOrders: async () => [],
-      } as unknown as TradeContext,
-      rateLimiter: createRateLimiterDouble(),
-    });
-
-    let caught: unknown = null;
-    try {
-      await apiManager.fetchAllOrdersFromAPI();
-    } catch (error) {
-      caught = error;
-    }
-
+    const { fixture, apiManager } = await createApiManagerHarness([], []);
+    fixture.setOrderSnapshotNonArray('history');
+    const ledgerBefore = fixture.readCounts();
+    const caught = await apiManager.fetchAllOrdersFromAPI().catch((error: unknown) => error);
     expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as Error).message).toContain('TradeContext.historyOrders 返回值不是数组');
+    expect(caught).toHaveProperty(
+      'message',
+      '[订单记录] TradeContext.historyOrders 返回值不是数组',
+    );
+    expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 1, today: 0 });
+    expect(fixture.readCounts()).toEqual(ledgerBefore);
   });
 
   it('fails fast when todayOrders returns non-array value', async () => {
-    const apiManager = createOrderAPIManager({
-      ctx: {
-        historyOrders: async () => [],
-        todayOrders: async () => ({ [Symbol.iterator]: function* () {} }),
-      } as unknown as TradeContext,
-      rateLimiter: createRateLimiterDouble(),
-    });
-
-    let caught: unknown = null;
-    try {
-      await apiManager.fetchAllOrdersFromAPI();
-    } catch (error) {
-      caught = error;
-    }
-
+    const { fixture, apiManager } = await createApiManagerHarness([], []);
+    fixture.setOrderSnapshotNonArray('today');
+    const ledgerBefore = fixture.readCounts();
+    const caught = await apiManager.fetchAllOrdersFromAPI().catch((error: unknown) => error);
     expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as Error).message).toContain('TradeContext.todayOrders 返回值不是数组');
+    expect(caught).toHaveProperty('message', '[订单记录] TradeContext.todayOrders 返回值不是数组');
+    expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
+    expect(fixture.readCounts()).toEqual(ledgerBefore);
   });
 
   it('fails fast when API order misses required fields', async () => {
-    const apiManager = createOrderAPIManager({
-      ctx: {
-        historyOrders: async () => [
-          {
-            orderId: undefined,
-            symbol: 'BULL.HK',
-            stockName: 'BULL',
-            side: OrderSide.Buy,
-            status: OrderStatus.Filled,
-            orderType: OrderType.ELO,
-            submittedAt: new Date('2026-02-25T03:00:00.000Z'),
-          },
-        ],
-        todayOrders: async () => [],
-      } as unknown as TradeContext,
-      rateLimiter: createRateLimiterDouble(),
-    });
-
-    let caught: unknown = null;
-    try {
-      await apiManager.fetchAllOrdersFromAPI();
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as Error).message).toContain('TradeContext.historyOrders 订单数据结构无效');
+    const actors = await createApiManagerWithOrder(
+      'history',
+      createSnapshotInput({
+        orderId: 'ORDER-MISSING-ID',
+        symbol: 'BULL.HK',
+        stockName: 'BULL',
+        side: 'BUY',
+        status: 'Filled',
+      }),
+    );
+    actors.fixture.setOrderSnapshotOrderIdMissing('history');
+    await assertSdkOrderSnapshotFails(actors, 'history');
   });
 
   it('fails fast when today API order misses required fields', async () => {
-    const apiManager = createOrderAPIManager({
-      ctx: {
-        historyOrders: async () => [],
-        todayOrders: async () => [
-          {
-            orderId: 'ORDER-TODAY-MISSING',
-            symbol: '',
-            stockName: 'BULL',
-            side: OrderSide.Buy,
-            status: OrderStatus.Filled,
-            orderType: OrderType.ELO,
-            price: new Decimal('1'),
-            quantity: new Decimal('100'),
-            executedPrice: new Decimal('1'),
-            executedQuantity: new Decimal('100'),
-            submittedAt: new Date('2026-02-25T03:00:00.000Z'),
-          },
-        ],
-      } as unknown as TradeContext,
-      rateLimiter: createRateLimiterDouble(),
-    });
-
-    let caught: unknown = null;
-    try {
-      await apiManager.fetchAllOrdersFromAPI();
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as Error).message).toContain('TradeContext.todayOrders 订单数据结构无效');
+    const actors = await createApiManagerWithOrder(
+      'today',
+      createSnapshotInput({
+        orderId: 'ORDER-TODAY-MISSING',
+        symbol: 'BULL.HK',
+        stockName: 'BULL',
+        side: 'BUY',
+        status: 'Filled',
+      }),
+    );
+    actors.fixture.setOrderSnapshotSymbolEmpty('today');
+    await assertSdkOrderSnapshotFails(actors, 'today');
   });
 
   it('fails fast when API order contains invalid enum facts', async () => {
-    const apiManager = createOrderAPIManager({
-      ctx: {
-        historyOrders: async () => [
-          {
-            orderId: 'ORDER-BAD-ENUM',
-            symbol: 'BULL.HK',
-            stockName: 'BULL',
-            side: 999,
-            status: OrderStatus.Filled,
-            orderType: OrderType.ELO,
-            price: new Decimal('1'),
-            quantity: new Decimal('100'),
-            executedPrice: new Decimal('1'),
-            executedQuantity: new Decimal('100'),
-            submittedAt: new Date('2026-02-25T03:00:00.000Z'),
-          },
-        ],
-        todayOrders: async () => [],
-      } as unknown as TradeContext,
-      rateLimiter: createRateLimiterDouble(),
-    });
-
-    let caught: unknown = null;
-    try {
-      await apiManager.fetchAllOrdersFromAPI();
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as Error).message).toContain('TradeContext.historyOrders 订单数据结构无效');
+    const actors = await createApiManagerWithOrder(
+      'history',
+      createSnapshotInput({
+        orderId: 'ORDER-BAD-ENUM',
+        symbol: 'BULL.HK',
+        stockName: 'BULL',
+        side: 'BUY',
+        status: 'Filled',
+      }),
+    );
+    actors.fixture.setOrderSnapshotSideInvalid('history');
+    await assertSdkOrderSnapshotFails(actors, 'history');
   });
 
   it('fails fast when API order misses quantity fields', async () => {
-    const apiManager = createOrderAPIManager({
-      ctx: {
-        historyOrders: async () => [
-          {
-            orderId: 'ORDER-MISSING-QUANTITY',
-            symbol: 'BULL.HK',
-            stockName: 'BULL',
-            side: OrderSide.Buy,
-            status: OrderStatus.Filled,
-            orderType: OrderType.ELO,
-            price: new Decimal('1'),
-            executedPrice: new Decimal('1'),
-            submittedAt: new Date('2026-02-25T03:00:00.000Z'),
-          },
-        ],
-        todayOrders: async () => [],
-      } as unknown as TradeContext,
-      rateLimiter: createRateLimiterDouble(),
-    });
-
-    let caught: unknown = null;
-    try {
-      await apiManager.fetchAllOrdersFromAPI();
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as Error).message).toContain('TradeContext.historyOrders 订单数据结构无效');
+    const actors = await createApiManagerWithOrder(
+      'history',
+      createSnapshotInput({
+        orderId: 'ORDER-MISSING-QUANTITY',
+        symbol: 'BULL.HK',
+        stockName: 'BULL',
+        side: 'BUY',
+        status: 'Filled',
+      }),
+    );
+    actors.fixture.setOrderSnapshotQuantitiesMissing('history');
+    await assertSdkOrderSnapshotFails(actors, 'history');
   });
 
   it('fails fast when API order has invalid updatedAt field', async () => {
-    const apiManager = createOrderAPIManager({
-      ctx: {
-        historyOrders: async () => [
-          {
-            orderId: 'ORDER-BAD-UPDATED',
-            symbol: 'BULL.HK',
-            stockName: 'BULL',
-            side: OrderSide.Buy,
-            status: OrderStatus.Filled,
-            orderType: OrderType.ELO,
-            price: new Decimal('1'),
-            quantity: new Decimal('100'),
-            executedPrice: new Decimal('1'),
-            executedQuantity: new Decimal('100'),
-            submittedAt: new Date('2026-02-25T03:00:00.000Z'),
-            updatedAt: 'not-a-date',
-          },
-        ],
-        todayOrders: async () => [],
-      } as unknown as TradeContext,
-      rateLimiter: createRateLimiterDouble(),
-    });
-
-    let caught: unknown = null;
-    try {
-      await apiManager.fetchAllOrdersFromAPI();
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as Error).message).toContain('TradeContext.historyOrders 订单数据结构无效');
+    const actors = await createApiManagerWithOrder(
+      'history',
+      createSnapshotInput({
+        orderId: 'ORDER-BAD-UPDATED',
+        symbol: 'BULL.HK',
+        stockName: 'BULL',
+        side: 'BUY',
+        status: 'Filled',
+      }),
+    );
+    actors.fixture.setOrderSnapshotUpdatedAtInvalid('history');
+    await assertSdkOrderSnapshotFails(actors, 'history');
   });
 
   it('maps sdk order remark into raw order snapshot', async () => {
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedHistoryOrders([]);
-    tradeCtx.seedTodayOrders([
-      createSdkOrder({
-        orderId: 'ORDER-REMARK',
-        symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.New,
-        updatedAt: new Date('2026-02-25T03:01:00.000Z'),
-        remark: 'QuantDemo|PL',
-      }),
-    ]);
-
-    const apiManager = createOrderAPIManager({
-      ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter: createRateLimiterDouble(),
-    });
-
+    const { apiManager } = await createApiManagerHarness(
+      [],
+      [
+        createSnapshotInput({
+          orderId: 'ORDER-REMARK',
+          symbol: 'BULL.HK',
+          side: 'SELL',
+          status: 'New',
+          updatedAt: new Date('2026-02-25T03:01:00.000Z'),
+          remark: 'QuantDemo|PL',
+        }),
+      ],
+    );
     const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders[0]?.remark).toBe('QuantDemo|PL');
   });

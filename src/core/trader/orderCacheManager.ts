@@ -10,75 +10,51 @@
  * - 订单状态变化后自动失效
  */
 import { logger } from '../../utils/logger/index.js';
-import { decimalToNumber, isRecord } from '../../utils/helpers/index.js';
+import { isRecord } from '../../utils/helpers/index.js';
+import { canonicalDecimal } from '../../utils/numeric/exact.js';
+import { API } from '../../constants/index.js';
 import {
-  API,
-  VALID_ORDER_SIDE_VALUES,
-  VALID_ORDER_STATUS_VALUES,
-  VALID_ORDER_TYPE_VALUES,
-} from '../../constants/index.js';
-import { isOpenOrderStatus } from '../orderStatusLifecycle/utils.js';
+  ORDER_READ_STATUS_VALUES,
+  ORDER_READ_TYPE_VALUES,
+} from '../../constants/orderReadMetadata.js';
+import { isOpenOrderReadStatus } from './orderMonitor/orderReadLifecycle.js';
 import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
-import type {
-  PendingOrder,
-  ValidatedOrderSide,
-  ValidatedOrderStatus,
-  ValidatedOrderType,
-} from '../../types/services.js';
+import type { PendingOrder } from '../../types/services.js';
+import type { OrderReadStatus, OrderReadType } from '../../types/orderReadMetadata.js';
 import type {
   OrderCacheManager,
   OrderCacheManagerDeps,
   TodayOrderForPendingCache,
 } from './types.js';
 
-/**
- * 将订单原始数值字段安全转换为 number。
- *
- * @param value 原始订单字段值
- * @returns 数字结果；不支持的类型返回 NaN
- */
-function toOrderNumber(value: unknown): number {
-  if (
-    value === null ||
-    value === undefined ||
-    typeof value === 'number' ||
-    typeof value === 'string'
-  ) {
-    return decimalToNumber(value);
-  }
-
-  if (isRecord(value) && typeof value['toNumber'] === 'function') {
-    const toNumberFn = value['toNumber'];
-    if (typeof toNumberFn === 'function') {
-      return decimalToNumber({ toNumber: () => Number(toNumberFn.call(value)) });
-    }
-  }
-
-  return Number.NaN;
+/** 校验adapter已证明的结构整数；不接受文本/SDK对象或非法数量的隐式number桥。 */
+function isSafeOrderQuantity(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
-function canConvertToFiniteOrderNumber(value: unknown): boolean {
-  return Number.isFinite(toOrderNumber(value));
-}
-
-function numericSetHas(set: ReadonlySet<number>, value: number): boolean {
+function textSetHas(set: ReadonlySet<string>, value: string): boolean {
   return set.has(value);
 }
 
-function isValidOrderSide(value: unknown): value is ValidatedOrderSide {
-  return typeof value === 'number' && numericSetHas(VALID_ORDER_SIDE_VALUES, value);
+function isValidOrderSide(value: unknown): value is PendingOrder['side'] {
+  return value === 'BUY' || value === 'SELL';
 }
 
-function isValidOrderStatus(value: unknown): value is ValidatedOrderStatus {
-  return typeof value === 'number' && numericSetHas(VALID_ORDER_STATUS_VALUES, value);
+function isValidOrderStatus(value: unknown): value is OrderReadStatus {
+  return typeof value === 'string' && textSetHas(ORDER_READ_STATUS_VALUES, value);
 }
 
-function isValidOrderType(value: unknown): value is ValidatedOrderType {
-  return typeof value === 'number' && numericSetHas(VALID_ORDER_TYPE_VALUES, value);
+function isValidOrderType(value: unknown): value is OrderReadType {
+  return typeof value === 'string' && textSetHas(ORDER_READ_TYPE_VALUES, value);
 }
 
 function isValidNullableOrderPrice(value: unknown): boolean {
-  return value === null || canConvertToFiniteOrderNumber(value);
+  if (value === null) return true;
+
+  if (typeof value !== 'string') return false;
+
+  canonicalDecimal(value);
+  return true;
 }
 
 function isValidTodayOrder(order: unknown): order is TodayOrderForPendingCache {
@@ -92,9 +68,9 @@ function isValidTodayOrder(order: unknown): order is TodayOrderForPendingCache {
     isValidOrderSide(order['side']) &&
     isValidOrderStatus(order['status']) &&
     isValidOrderType(order['orderType']) &&
-    isValidNullableOrderPrice(order['price']) &&
-    canConvertToFiniteOrderNumber(order['quantity']) &&
-    canConvertToFiniteOrderNumber(order['executedQuantity'])
+    isValidNullableOrderPrice(order['submittedPrice']) &&
+    isSafeOrderQuantity(order['quantity']) &&
+    isSafeOrderQuantity(order['executedQuantity'])
   );
 }
 
@@ -173,7 +149,7 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
     const result: PendingOrder[] = [];
     for (const order of allOrders) {
       // 先过滤状态
-      if (!isOpenOrderStatus(order.status)) {
+      if (!isOpenOrderReadStatus(order.status)) {
         continue;
       }
 
@@ -186,9 +162,9 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
         orderId: order.orderId,
         symbol: order.symbol,
         side: order.side,
-        submittedPrice: order.price === null ? null : toOrderNumber(order.price),
-        quantity: toOrderNumber(order.quantity),
-        executedQuantity: toOrderNumber(order.executedQuantity),
+        submittedPrice: order.submittedPrice,
+        quantity: order.quantity,
+        executedQuantity: order.executedQuantity,
         status: order.status,
         orderType: order.orderType,
       });

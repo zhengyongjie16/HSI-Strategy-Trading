@@ -1,95 +1,130 @@
-import { OrderSide } from 'longbridge';
 import { TIME } from '../../constants/index.js';
-import { classifyOrderStatusLifecycle } from '../orderStatusLifecycle/index.js';
-import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { calculateTradingDurationMsBetween } from '../../utils/time/index.js';
 import {
-  decimalAdd,
-  decimalDiv,
-  decimalGt,
-  decimalMul,
-  decimalToNumberValue,
-  toDecimalValue,
-} from '../../utils/numeric/index.js';
-import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
+  canonicalDecimal,
+  exactAdd,
+  exactCompare,
+  exactMultiply,
+  exactSubtract,
+  integerQuotient,
+} from '../../utils/numeric/exact.js';
+import type { OrderRecord } from '../../types/services.js';
+import type { OrderExecutionRecordObservation } from '../../types/orderRecorder.js';
 import type { OrderTimeoutCheckParams } from '../../types/tradingCalendar.js';
 import type { OrderRebuildClassification, OrderStatistics } from './types.js';
 
 /**
- * 断言写入本地订单记录所需的 broker 执行事实完整有效。
- *
- * @param executedPrice 权威成交价格
- * @param executedQuantity 权威成交数量
- * @param executedTimeMs 权威成交时间戳（毫秒）
- * @returns 无返回值；任一事实缺失、非有限或非正时抛错
+ * 校验精确金额、安全整数数量与独立可信执行时间。
+ * @param costAmount 权威累计成交金额文本
+ * @param executedQuantity 经证明的安全整数数量
+ * @param executedTimeMs 可信执行时间
+ * @returns 无返回值；非法事实立即失败
  */
 export function assertCompleteExecutionFact(
-  executedPrice: number,
+  costAmount: string,
   executedQuantity: number,
   executedTimeMs: number,
 ): void {
   if (
-    !isValidPositiveNumber(executedPrice) ||
-    !isValidPositiveNumber(executedQuantity) ||
-    !isValidPositiveNumber(executedTimeMs)
+    exactCompare(costAmount, '0') <= 0 ||
+    !Number.isSafeInteger(executedQuantity) ||
+    executedQuantity <= 0 ||
+    !Number.isSafeInteger(executedTimeMs) ||
+    executedTimeMs <= 0
   ) {
-    throw new Error(
-      `[订单记录] 执行事实不完整或无效: price=${executedPrice}, ` +
-        `quantity=${executedQuantity}, executedTimeMs=${executedTimeMs}`,
-    );
+    throw new Error('[订单记录] 金额、数量或执行时间无效');
   }
 }
 
 /**
- * 计算订单列表的统计信息（用于调试输出与成本均价计算）。
- * 默认行为：价格或数量无效的订单按 0 参与累加；无订单时均价为 0。
- *
- * @param orders 订单记录列表
- * @returns 包含总数量与均价的统计对象
+ * 精确汇总成本依据，均价只允许在显示边界计算。
+ * @param orders 已校验订单记录
+ * @returns 总成本金额与安全整数总数量
  */
 export function calculateOrderStatistics(orders: ReadonlyArray<OrderRecord>): OrderStatistics {
-  let totalQuantity = toDecimalValue(0);
-  let totalValue = toDecimalValue(0);
-
+  let totalQuantity = 0;
+  let costAmount = '0';
   for (const order of orders) {
-    const quantity = Number.isFinite(order.executedQuantity) ? order.executedQuantity : 0;
-    const price = Number.isFinite(order.executedPrice) ? order.executedPrice : 0;
-    totalQuantity = decimalAdd(totalQuantity, quantity);
-    totalValue = decimalAdd(totalValue, decimalMul(price, quantity));
+    assertCompleteExecutionFact(order.costAmount, order.executedQuantity, order.executedTime);
+    totalQuantity += order.executedQuantity;
+    if (!Number.isSafeInteger(totalQuantity)) {
+      throw new RangeError('[订单记录] 汇总数量超出安全整数范围');
+    }
+
+    costAmount = exactAdd(costAmount, order.costAmount);
   }
 
-  const averagePrice = decimalGt(totalQuantity, 0)
-    ? decimalToNumberValue(decimalDiv(totalValue, totalQuantity))
-    : 0;
-  return {
-    totalQuantity: decimalToNumberValue(totalQuantity),
-    averagePrice,
-  };
+  return { totalQuantity, costAmount };
 }
 
 /**
- * 计算订单列表的总成交数量。
- * 默认行为：单笔订单的 executedQuantity 非有限数时视为 0 参与累加。
- *
- * @param orders 订单记录列表
- * @returns 所有订单的成交数量之和，无效数量视为 0
+ * 按原累计金额/数量依据精确分配仍有效的经济范围，不计算或舍入均价。
+ * SDK 的累计金额由有限十进制均价原文×累计量形成，故此比例必须能精确有限表示；不造近似成本。
+ * @param cumulativeAmount 权威累计金额文本
+ * @param quantity 当前范围的安全整数数量
+ * @param basisQuantity 权威累计安全整数数量
+ * @returns 精确成本金额；无有效有限比例时内部契约立即失败
  */
-export function calculateTotalQuantity(orders: ReadonlyArray<OrderRecord>): number {
-  let total = toDecimalValue(0);
-  for (const order of orders) {
-    const quantity = Number.isFinite(order.executedQuantity) ? order.executedQuantity : 0;
-    total = decimalAdd(total, quantity);
+export function proportionExecutionCost(
+  cumulativeAmount: string,
+  quantity: number,
+  basisQuantity: number,
+): string {
+  if (
+    !Number.isSafeInteger(quantity) ||
+    quantity < 0 ||
+    !Number.isSafeInteger(basisQuantity) ||
+    basisQuantity <= 0 ||
+    quantity > basisQuantity ||
+    exactCompare(cumulativeAmount, '0') <= 0
+  ) {
+    throw new RangeError('[订单记录] 无效成本范围或累计依据');
   }
 
-  return decimalToNumberValue(total);
+  if (quantity === 0) return '0';
+
+  if (quantity === basisQuantity) return canonicalDecimal(cumulativeAmount);
+
+  const numerator = canonicalDecimal(exactMultiply(cumulativeAmount, String(quantity)));
+  const [whole = '0', fraction = ''] = numerator.split('.');
+  const coefficient = (whole + fraction).replace(/^0+(?=\d)/, '');
+  let a = BigInt(coefficient);
+  let b = BigInt(basisQuantity);
+  while (b !== 0n) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+
+  let denominator = BigInt(basisQuantity) / a;
+  while (denominator % 2n === 0n) denominator /= 2n;
+
+  while (denominator % 5n === 0n) denominator /= 5n;
+
+  if (denominator !== 1n) throw new RangeError('[订单记录] 成本范围不能精确表示为有限十进制');
+
+  const divisor = String(basisQuantity);
+  let digits = integerQuotient(coefficient, divisor);
+  let remainder = exactSubtract(coefficient, exactMultiply(digits, divisor));
+  let places = fraction.length;
+  while (exactCompare(remainder, '0') !== 0) {
+    const shifted = exactMultiply(remainder, '10');
+    const digit = integerQuotient(shifted, divisor);
+    digits += digit;
+    places += 1;
+    remainder = exactSubtract(shifted, exactMultiply(digit, divisor));
+  }
+
+  const padded = digits.padStart(places + 1, '0');
+  return canonicalDecimal(
+    places === 0 ? padded : `${padded.slice(0, -places)}.${padded.slice(-places)}`,
+  );
 }
 
 /**
- * 按严格交易时段累计口径判定订单是否超时。
- * 触发条件：heldTradingMs > timeoutMinutes * 60_000（严格大于）。
- *
- * @param params 订单成交时间、当前时间、超时分钟与交易日历快照
- * @returns true 表示超时；false 表示未超时或参数无效
+ * 按原严格交易时长口径判定超时。
+ * @param params 成交时间、当前时间、超时分钟及交易日历
+ * @returns heldTradingMs 严格大于阈值时为 true
  */
 export function isOrderTimedOut(params: OrderTimeoutCheckParams): boolean {
   const { orderExecutedTimeMs, nowMs, timeoutMinutes, calendarSnapshot } = params;
@@ -97,172 +132,108 @@ export function isOrderTimedOut(params: OrderTimeoutCheckParams): boolean {
     return false;
   }
 
-  const timeoutMs = timeoutMinutes * TIME.MILLISECONDS_PER_MINUTE;
-  const heldTradingMs = calculateTradingDurationMsBetween({
-    startMs: orderExecutedTimeMs,
-    endMs: nowMs,
-    calendarSnapshot,
-  });
-  return heldTradingMs > timeoutMs;
+  return (
+    calculateTradingDurationMsBetween({
+      startMs: orderExecutedTimeMs,
+      endMs: nowMs,
+      calendarSnapshot,
+    }) >
+    timeoutMinutes * TIME.MILLISECONDS_PER_MINUTE
+  );
 }
 
 /**
- * 将原始 API 订单转换为内部 OrderRecord 格式（内部辅助函数）
- *
- * 转换逻辑：
- * - 提取成交价格、成交数量和成交时间
- * - 买入订单保留 submittedAt 和 updatedAt 字段（用于成本计算）
- * - 卖出订单不保留时间字段（仅需成交信息）
- * - 价格/数量/时间任一无效时返回 null
- *
- * @param order 原始 API 订单数据
- * @param isBuyOrder 是否为买入订单（影响 submittedAt/updatedAt 是否保留）
- * @returns 转换后的订单记录，价格/数量/时间无效时返回 null
+ * 从已映射 API 事实提取完整成本依据，不从均价往返成本。
+ * @param order 中立金融字段 API 订单
+ * @param isBuyOrder 是否保留提交时间
+ * @returns 正成交记录或零成交的 null
  */
-function convertOrderToRecord(order: RawOrderFromAPI, isBuyOrder: boolean): OrderRecord | null {
-  const executedPrice = decimalToNumber(order.executedPrice);
-  const executedQuantity = decimalToNumber(order.executedQuantity);
-  const executedTime = order.updatedAt ? order.updatedAt.getTime() : 0;
+function convertOrderToRecord(
+  order: OrderExecutionRecordObservation,
+  isBuyOrder: boolean,
+): OrderRecord | null {
+  if (order.executedQuantity === 0) {
+    if (exactCompare(order.executedAmount, '0') !== 0) {
+      throw new Error('[订单记录] 零数量的累计金额冲突');
+    }
 
-  if (
-    !Number.isFinite(executedPrice) ||
-    executedPrice <= 0 ||
-    !Number.isFinite(executedQuantity) ||
-    executedQuantity <= 0 ||
-    executedTime === 0
-  ) {
     return null;
   }
 
+  if (order.executionTimeMs === null) {
+    throw new Error('[订单记录] 非零成交缺少可信执行时间');
+  }
+
+  assertCompleteExecutionFact(order.executedAmount, order.executedQuantity, order.executionTimeMs);
   return {
     orderId: order.orderId,
     symbol: order.symbol,
-    executedPrice,
-    executedQuantity,
-    executedTime,
-    submittedAt: isBuyOrder ? (order.submittedAt ?? undefined) : undefined,
-    updatedAt: isBuyOrder ? (order.updatedAt ?? undefined) : undefined,
+    costAmount: order.executedAmount,
+    executedQuantity: order.executedQuantity,
+    executedTime: order.executionTimeMs,
+    submittedAt: isBuyOrder ? order.submittedAt : undefined,
+    updatedAt: new Date(order.updatedAtMs),
   };
 }
 
 /**
- * 在重建分类前校验非零累计成交所对应的完整 broker 执行事实。
- * 零累计成交不代表执行事实：OPEN 订单仍需进入 pending，终态订单则直接忽略。
- *
- * @param order 原始 API 订单数据
- * @returns 无返回值；非零累计成交的价格、数量或更新时间无效时抛错
+ * 将完整累计成交分类，包含 OPEN 成交供 DailyLoss 核算。
+ * @param orders 已映射全量订单
+ * @returns 买卖两类成本记录
  */
-function assertNonZeroRebuildExecutionFact(order: RawOrderFromAPI): void {
-  const executedQuantity = decimalToNumber(order.executedQuantity);
-  if (executedQuantity === 0) {
-    return;
-  }
-
-  const executedPrice = decimalToNumber(order.executedPrice);
-  const executedTimeMs = order.updatedAt?.getTime() ?? Number.NaN;
-  assertCompleteExecutionFact(executedPrice, executedQuantity, executedTimeMs);
-}
-
-/**
- * 将原始 API 订单列表按买卖方向分类并转换为内部 OrderRecord 格式。
- * 默认行为：处理所有存在有效成交事实的订单（不限终态），价格/数量/时间无效的订单被跳过。
- *
- * @param orders 原始 API 订单列表
- * @returns 分类后的买入订单列表与卖出订单列表（仅包含有有效成交且转换成功的订单）
- */
-export function classifyAndConvertOrders(orders: ReadonlyArray<RawOrderFromAPI>): {
+export function classifyAndConvertOrders(orders: ReadonlyArray<OrderExecutionRecordObservation>): {
   buyOrders: ReadonlyArray<OrderRecord>;
   sellOrders: ReadonlyArray<OrderRecord>;
 } {
   const buyOrders: OrderRecord[] = [];
   const sellOrders: OrderRecord[] = [];
-
   for (const order of orders) {
-    const isBuyOrder = order.side === OrderSide.Buy;
-    const isSellOrder = order.side === OrderSide.Sell;
-
-    if (!isBuyOrder && !isSellOrder) {
+    const record = convertOrderToRecord(order, order.executionSide === 'BUY');
+    if (record === null) {
       continue;
     }
 
-    const converted = convertOrderToRecord(order, isBuyOrder);
-    if (!converted) {
-      continue;
-    }
+    if (!['BUY', 'SELL'].includes(order.executionSide))
+      throw new Error('[订单记录] 正成交方向不可归属');
 
-    if (isBuyOrder) {
-      buyOrders.push(converted);
-    } else {
-      sellOrders.push(converted);
-    }
+    if (order.executionSide === 'BUY') buyOrders.push(record);
+    else sellOrders.push(record);
   }
 
   return { buyOrders, sellOrders };
 }
 
 /**
- * 启动/重建阶段对单标的全量订单做统一分类与分流。
- * 默认行为：
- * - 非零累计成交必须先具备完整有效的 broker 执行事实，否则阻断重建
- * - 无法归属 Buy/Sell 的非零执行或 OPEN 订单直接阻断，避免丢失执行事实或无法恢复挂单
- * - Buy/Sell 的 OPEN 订单保留原始结构进入 pending，交由恢复阶段继续跟踪或撤单
- * - 零累计成交的无法归属 TERMINAL 订单不代表执行事实，可直接忽略
- *
- * @param orders 单标的全量订单
- * @returns Execution/Pending 按买卖方向分流后的分类结果
+ * 预检完整重建事实，OPEN 的 partial 保留 pending、不提前做经济终态投影。
+ * @param orders 单标的全量 API 事实
+ * @returns terminal 执行记录与 OPEN pending 分流
  */
-export function classifyOrdersForRebuild(
-  orders: ReadonlyArray<RawOrderFromAPI>,
-): OrderRebuildClassification {
+export function classifyOrdersForRebuild<T extends OrderExecutionRecordObservation>(
+  orders: ReadonlyArray<T>,
+): OrderRebuildClassification<T> {
   const executedBuyOrders: OrderRecord[] = [];
   const executedSellOrders: OrderRecord[] = [];
-  const pendingBuyOrders: RawOrderFromAPI[] = [];
-  const pendingSellOrders: RawOrderFromAPI[] = [];
-
+  const pendingBuyOrders: T[] = [];
+  const pendingSellOrders: T[] = [];
   for (const order of orders) {
-    const lifecycle = classifyOrderStatusLifecycle(order.status);
-    assertNonZeroRebuildExecutionFact(order);
-
-    const isBuyOrder = order.side === OrderSide.Buy;
-    const isSellOrder = order.side === OrderSide.Sell;
+    const lifecycle = order.executionPhase;
+    const isBuyOrder = order.executionSide === 'BUY';
+    const isSellOrder = order.executionSide === 'SELL';
+    const record = convertOrderToRecord(order, isBuyOrder);
     if (!isBuyOrder && !isSellOrder) {
-      const executedQuantity = decimalToNumber(order.executedQuantity);
-      if (executedQuantity !== 0 || lifecycle === 'OPEN') {
-        throw new Error(
-          `[订单记录] 订单方向不可归属: side=${order.side}, ` +
-            `lifecycle=${lifecycle}, executedQuantity=${executedQuantity}`,
-        );
+      if (record !== null || lifecycle === 'OPEN') {
+        throw new Error('[订单记录] 订单方向不可归属');
       }
 
       continue;
     }
 
     if (lifecycle === 'OPEN') {
-      if (isBuyOrder) {
-        pendingBuyOrders.push(order);
-      } else {
-        pendingSellOrders.push(order);
-      }
-
-      continue;
-    }
-
-    const converted = convertOrderToRecord(order, isBuyOrder);
-    if (!converted) {
-      continue;
-    }
-
-    if (isBuyOrder) {
-      executedBuyOrders.push(converted);
-    } else {
-      executedSellOrders.push(converted);
+      (isBuyOrder ? pendingBuyOrders : pendingSellOrders).push(order);
+    } else if (record !== null) {
+      (isBuyOrder ? executedBuyOrders : executedSellOrders).push(record);
     }
   }
 
-  return {
-    executedBuyOrders,
-    executedSellOrders,
-    pendingBuyOrders,
-    pendingSellOrders,
-  };
+  return { executedBuyOrders, executedSellOrders, pendingBuyOrders, pendingSellOrders };
 }

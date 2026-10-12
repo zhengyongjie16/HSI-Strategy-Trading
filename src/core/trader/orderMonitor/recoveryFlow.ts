@@ -6,12 +6,12 @@
  * - 执行快照恢复、席位一致性校验与失败回滚
  * - 消费权威终态快照并保持 trackedOrders 与 pendingSell 一致
  */
-import { OrderSide, OrderType, type PushOrderChanged } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
-import { decimalToNumber, isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import { isOpenOrderStatus } from '../../orderStatusLifecycle/utils.js';
+import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
+import { exactCompare } from '../../../utils/numeric/exact.js';
+import { isOpenOrderReadStatus } from './orderReadLifecycle.js';
 import type { RawOrderFromAPI } from '../../../types/services.js';
-import { resolveOrderOwnership } from '../../orderRecorder/index.js';
+import { resolveOrderOwnership } from '../../../domain/order/orderOwnership.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
 import type {
   OrderSeatOwnership,
@@ -129,7 +129,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
    * @param event 订单推送事件
    * @returns 无返回值
    */
-  function cacheBootstrappingEvent(event: PushOrderChanged): void {
+  function cacheBootstrappingEvent(event: RawOrderFromAPI): void {
     const current = runtime.bootstrappingOrderEvents.get(event.orderId);
     if (!current) {
       runtime.bootstrappingOrderEvents.set(event.orderId, event);
@@ -193,11 +193,11 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
 
     const trackedSellOrderIds = new Set<string>();
     for (const trackedOrder of runtime.trackedOrders.values()) {
-      if (trackedOrder.side !== OrderSide.Sell) {
+      if (trackedOrder.side !== 'SELL') {
         continue;
       }
 
-      if (!isOpenOrderStatus(trackedOrder.status)) {
+      if (!isOpenOrderReadStatus(trackedOrder.status)) {
         continue;
       }
 
@@ -235,7 +235,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const nonPendingTrackedOrderIds: string[] = [];
     for (const trackedOrder of runtime.trackedOrders.values()) {
       trackedOrderIds.add(trackedOrder.orderId);
-      if (!isOpenOrderStatus(trackedOrder.status)) {
+      if (!isOpenOrderReadStatus(trackedOrder.status)) {
         nonPendingTrackedOrderIds.push(trackedOrder.orderId);
       }
     }
@@ -248,7 +248,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
 
     const snapshotPendingOrderIds = new Set<string>();
     for (const order of allOrders) {
-      if (isOpenOrderStatus(order.status)) {
+      if (isOpenOrderReadStatus(order.status)) {
         snapshotPendingOrderIds.add(order.orderId);
       }
     }
@@ -294,23 +294,25 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     order: RawOrderFromAPI,
     ownership: OrderSeatOwnership,
   ): void {
-    const submittedQuantity = decimalToNumber(order.quantity);
+    const submittedQuantity = order.quantity;
     if (!isValidPositiveNumber(submittedQuantity)) {
       throw new Error(`[订单监控] 订单 ${order.orderId} 委托数量无效，无法恢复追踪`);
     }
 
-    const trackedPrice = order.price === null ? null : decimalToNumber(order.price);
-    if (trackedPrice !== null && !isValidPositiveNumber(trackedPrice)) {
+    const trackedPrice = order.price;
+    if (trackedPrice !== null && exactCompare(trackedPrice, '0') <= 0) {
       throw new Error(`[订单监控] 订单 ${order.orderId} 委托价格无效，无法恢复追踪`);
     }
 
     const orderType = order.orderType;
-    if (orderType !== OrderType.MO && trackedPrice === null) {
+    if (orderType !== 'MO' && trackedPrice === null) {
       throw new Error(`[订单监控] 非市价订单 ${order.orderId} 缺少委托价格，无法恢复追踪`);
     }
 
     const submittedAtMs = resolveSubmittedAtMs(order.submittedAt);
-    const executedQuantity = decimalToNumber(order.executedQuantity);
+    if (submittedAtMs === null) throw new Error('[订单监控] 恢复订单缺少真实提交时间');
+
+    const executedQuantity = order.executedQuantity;
     assertExecutionQuantityWithinSubmittedQuantity(
       order.orderId,
       submittedQuantity,
@@ -320,11 +322,13 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const trackOrderParams: TrackOrderParams = {
       orderId: order.orderId,
       symbol: order.symbol,
-      side: order.side,
+      side: order.executionSide,
+      executionSide: order.executionSide,
+      initialExecutionPhase: order.executionPhase,
       price: trackedPrice,
       initialSubmittedPrice: trackedPrice,
       quantity: submittedQuantity,
-      ...(submittedAtMs === null ? {} : { submittedAtMs }),
+      submittedAtMs,
       initialStatus: order.status,
       isLongSymbol: ownership.isLongSymbol,
       monitorSymbol: ownership.monitorSymbol,
@@ -334,17 +338,18 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     trackOrder(trackOrderParams);
     const trackedOrder = runtime.trackedOrders.get(order.orderId);
     if (trackedOrder) {
-      trackedOrder.lastOrderUpdateAtMs = resolveUpdatedAtMs(order.updatedAt);
+      trackedOrder.lastOrderUpdateAtMs = order.updatedAtMs;
     }
 
     if (trackedOrder && executedQuantity > 0) {
       trackedOrder.executedQuantity = executedQuantity;
-      trackedOrder.executedPrice = decimalToNumber(order.executedPrice);
-      trackedOrder.lastExecutedTimeMs = resolveUpdatedAtMs(order.updatedAt);
+      trackedOrder.executedPrice = order.executedPrice;
+      trackedOrder.executedAmount = order.executedAmount;
+      trackedOrder.lastExecutedTimeMs = order.executionTimeMs;
       logger.debug(`[订单监控] 恢复部分成交订单 ${order.orderId}，已成交数量=${executedQuantity}`);
     }
 
-    if (order.side === OrderSide.Sell) {
+    if (order.executionSide === 'SELL') {
       const relatedBuyOrderIds = orderRecorder.allocateRelatedBuyOrderIdsForRecovery(
         order.symbol,
         ownership.direction,
@@ -356,7 +361,8 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
         ownership.direction,
         submittedQuantity,
         relatedBuyOrderIds,
-        submittedAtMs ?? undefined,
+        isProtectiveLiquidation,
+        submittedAtMs,
       );
 
       if (executedQuantity > 0) {
@@ -382,13 +388,17 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     const closedMismatchedBuyOrderIds = new Set<string>();
     try {
       for (const order of allOrders) {
-        if (!isOpenOrderStatus(order.status)) {
+        if (!['BUY', 'SELL'].includes(order.executionSide)) {
+          throw new Error(`[订单监控] 订单 ${order.orderId} 缺少已验证的中性方向，阻断恢复`);
+        }
+
+        if (!isOpenOrderReadStatus(order.status)) {
           continue;
         }
 
         const ownership = resolveOrderSeatOwnership(order);
         const isMatched = ownership ? isSeatMatchedForOrder(order, ownership) : false;
-        if (order.side === OrderSide.Sell) {
+        if (order.executionSide === 'SELL') {
           if (!ownership) {
             throw new Error(`[订单监控] 卖单 ${order.orderId} 无法解析归属，阻断恢复`);
           }
@@ -402,7 +412,8 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
           continue;
         }
 
-        if (order.side === OrderSide.Buy) {
+        // SELL 已在上方按实际映射方向处理并 continue；这里仅是已验证 BUY。
+        {
           if (!ownership || !isMatched) {
             const cancelOutcome = await cancelOrder(order.orderId);
             if (deps.termination.isTerminated()) {
@@ -430,10 +441,9 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               throw new Error(`[订单监控] 买单 ${order.orderId} 缺少权威终态查询结果，阻断恢复`);
             }
 
-            const snapshotExecutedQuantity = decimalToNumber(order.executedQuantity);
-            const snapshotExecutedPrice = decimalToNumber(order.executedPrice);
-            const snapshotUpdatedAtMs = resolveUpdatedAtMs(order.updatedAt);
-            const snapshotSubmittedQuantity = decimalToNumber(order.quantity);
+            const snapshotExecutedQuantity = order.executedQuantity;
+            const snapshotUpdatedAtMs = order.updatedAtMs;
+            const snapshotSubmittedQuantity = order.quantity;
             if (!isValidPositiveNumber(snapshotSubmittedQuantity)) {
               throw new Error(`[订单监控] 买单 ${order.orderId} 委托数量无效，阻断恢复`);
             }
@@ -446,15 +456,16 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
             const normalizedTerminalState = normalizeTerminalStateSnapshot(
               {
                 orderId: order.orderId,
+                symbol: order.symbol,
+                side: order.executionSide,
+                executionSide: order.executionSide,
+                executionPhase: order.executionPhase,
                 submittedQuantity: snapshotSubmittedQuantity,
                 status: order.status,
-                executedQuantity: Number.isFinite(snapshotExecutedQuantity)
-                  ? snapshotExecutedQuantity
-                  : 0,
-                executedPrice: isValidPositiveNumber(snapshotExecutedPrice)
-                  ? snapshotExecutedPrice
-                  : null,
-                lastExecutedTimeMs: snapshotExecutedQuantity > 0 ? snapshotUpdatedAtMs : null,
+                executedQuantity: snapshotExecutedQuantity,
+                executedPrice: order.executedPrice,
+                executedAmount: order.executedAmount,
+                lastExecutedTimeMs: order.executionTimeMs,
                 lastOrderUpdateAtMs: snapshotUpdatedAtMs,
               },
               queriedTerminalState,
@@ -470,6 +481,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               closedReason: normalizedTerminalState.closedReason,
               source: 'RECOVERY',
               executedPrice: normalizedTerminalState.executedPrice,
+              executedAmount: normalizedTerminalState.executedAmount,
               executedQuantity: normalizedTerminalState.executedQuantity,
               executedTimeMs: null,
               orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,

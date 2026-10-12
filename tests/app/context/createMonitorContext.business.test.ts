@@ -16,7 +16,6 @@ import {
   createMonitorContextDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
-  createPositionCacheDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
   createSdkConfigDouble,
@@ -106,9 +105,6 @@ function createRuntime(
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
       isTradingEnabled: true,
-      cachedAccount: null,
-      cachedPositions: [],
-      positionCache: createPositionCacheDouble(),
       cachedTradingDayInfo: {
         dateKey: '2026-03-23',
         info: {
@@ -172,8 +168,8 @@ describe('createMonitorContext host assembly', () => {
     const context = createMonitorContext({
       ...runtime,
       quotesMap: new Map([
-        ['LONG.HK', { ...createQuoteDouble('LONG.HK', 1), name: 'LongName' }],
-        ['HSI.HK', { ...createQuoteDouble('HSI.HK', 20_000), name: 'HangSeng' }],
+        ['LONG.HK', { ...createQuoteDouble('LONG.HK', '1'), name: 'LongName' }],
+        ['HSI.HK', { ...createQuoteDouble('HSI.HK', '20000'), name: 'HangSeng' }],
       ]),
     });
     expect(context.longSymbolName).toBe('LongName');

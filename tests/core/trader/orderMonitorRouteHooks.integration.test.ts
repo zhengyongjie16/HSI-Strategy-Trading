@@ -7,10 +7,8 @@
  */
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType, TopicType, type TradeContext } from 'longbridge';
+import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import { createPushOrderChanged } from '../../../mock/factories/tradeFactory.js';
-import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
 import {
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
@@ -19,7 +17,11 @@ import {
   createQuoteDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
-import type { OrderMonitor, OrderMonitorDeps } from '../../../src/core/trader/types.js';
+import type {
+  OrderMonitor,
+  OrderMonitorDeps,
+  TrackOrderParams,
+} from '../../../src/core/trader/types.js';
 import type {
   OrderMonitorWakeupKind,
   RouteRuntime,
@@ -88,44 +90,112 @@ async function loadActualCreateOrderMonitor(
   return loadedOrderMonitorModule.createOrderMonitor;
 }
 
-function createPendingRecoveryOrder(params: {
+async function createPendingRecoveryOrder(params: {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: OrderSide;
+  readonly side: 'BUY' | 'SELL';
   readonly stockName?: string;
-}): RawOrderFromAPI {
-  return {
+}): Promise<RawOrderFromAPI> {
+  const native = await createBrokerIngressFixture({
     orderId: params.orderId,
+    tradeId: 'RECOVERY-' + params.orderId,
     symbol: params.symbol,
     stockName: params.stockName ?? 'HSI RC ROUTE',
-    side: params.side,
-    status: OrderStatus.New,
-    orderType: OrderType.ELO,
     remark: '',
-    price: '1.01',
+    side: params.side,
+    orderType: 'ELO',
+    status: 'New',
     quantity: '100',
-    executedPrice: '0',
     executedQuantity: '0',
-    submittedAt: new Date('2026-04-08T09:00:00.000Z'),
-    updatedAt: new Date('2026-04-08T09:00:00.000Z'),
+    submittedPrice: '1.01',
+    executedPrice: '0',
+    submittedAtMs: Date.parse('2026-04-08T09:00:00.000Z'),
+    executionTimeMs: null,
+    updatedAtMs: Date.parse('2026-04-08T09:00:00.000Z'),
+  });
+  return native.queryObservation;
+}
+
+async function createTrackParams(
+  params: Readonly<{
+    orderId: string;
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    submittedPrice: string;
+    isLongSymbol: boolean;
+    monitorSymbol: string;
+    isProtectiveLiquidation: boolean;
+  }>,
+): Promise<TrackOrderParams> {
+  const native = await createBrokerIngressFixture({
+    orderId: params.orderId,
+    tradeId: 'TRACKED-' + params.orderId,
+    symbol: params.symbol,
+    stockName: params.symbol,
+    remark: '',
+    side: params.side,
+    orderType: 'ELO',
+    status: 'New',
+    quantity: '100',
+    executedQuantity: '0',
+    submittedPrice: params.submittedPrice,
+    executedPrice: '0',
+    submittedAtMs: Date.now(),
+    executionTimeMs: null,
+    updatedAtMs: Date.now(),
+  });
+  const fact = native.queryObservation;
+  return {
+    orderId: fact.orderId,
+    symbol: fact.symbol,
+    side: fact.executionSide,
+    executionSide: fact.executionSide,
+    initialExecutionPhase: fact.executionPhase,
+    price: fact.price,
+    initialSubmittedPrice: fact.price,
+    quantity: fact.quantity,
+    initialStatus: fact.status,
+    orderType: fact.orderType,
+    isLongSymbol: params.isLongSymbol,
+    monitorSymbol: params.monitorSymbol,
+    isProtectiveLiquidation: params.isProtectiveLiquidation,
   };
 }
 
-function createDeps(): {
-  readonly deps: OrderMonitorDeps;
-  readonly tradeCtx: ReturnType<typeof createTradeContextMock>;
-} {
-  const tradeCtx = createTradeContextMock();
+type NativeMonitorDeps = Parameters<
+  Awaited<ReturnType<typeof createBrokerIngressFixture>>['createMonitor']
+>[0];
+
+async function createDeps(): Promise<{
+  readonly deps: NativeMonitorDeps;
+  readonly native: Awaited<ReturnType<typeof createBrokerIngressFixture>>;
+}> {
+  const native = await createBrokerIngressFixture({
+    orderId: 'HOOK-NATIVE',
+    tradeId: 'HOOK-NO-EXECUTION',
+    symbol: 'BULL.HK',
+    stockName: 'HSI RC ROUTE',
+    remark: '',
+    side: 'BUY',
+    orderType: 'ELO',
+    status: 'New',
+    quantity: '100',
+    executedQuantity: '0',
+    submittedPrice: '1.01',
+    executedPrice: '0',
+    submittedAtMs: Date.now(),
+    executionTimeMs: null,
+    updatedAtMs: Date.now(),
+  });
   const baseConfig = createTradingConfig();
   const baseMonitor = baseConfig.monitor;
 
-  const deps: OrderMonitorDeps = {
+  const deps: NativeMonitorDeps = {
     now: () => new Date(),
     scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (handle) => {
       clearTimeout(handle);
     },
-    ctx: tradeCtx as unknown as TradeContext,
     rateLimiter: {
       throttle: async () => {},
       withTradeMutation: async <T>(
@@ -184,7 +254,7 @@ function createDeps(): {
     },
   };
 
-  return { deps, tradeCtx };
+  return { deps, native };
 }
 
 afterEach(() => {
@@ -195,38 +265,33 @@ afterEach(() => {
 
 describe('createOrderMonitor route hooks integration', () => {
   it('真实装配路径不再依赖旧 quoteFlow 模块文件', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('no-quote-flow-module');
-    const { deps } = createDeps();
+    await loadActualCreateOrderMonitor('no-quote-flow-module');
+    const { deps, native } = await createDeps();
 
-    expect(() => createOrderMonitor(deps)).not.toThrow();
+    expect(() => native.createMonitor(deps)).not.toThrow();
   });
 
   it('真实装配路径在恢复完成后触发 TRACKED wakeup', async () => {
     const capturedWakeups: CapturedRouteWakeup[] = [];
-    const createOrderMonitor = await loadCreateOrderMonitorWithCapturedRouteWakeups(
-      'tracked',
-      capturedWakeups,
-    );
-    const { deps } = createDeps();
-    const monitor = createOrderMonitor(deps);
+    await loadCreateOrderMonitorWithCapturedRouteWakeups('tracked', capturedWakeups);
+    const { deps, native } = await createDeps();
+    const monitor = native.createMonitor(deps);
 
     await monitor.initialize();
     await monitor.recoverOrderTrackingFromSnapshot([]);
     monitor.startRuntime();
 
-    monitor.trackOrder({
-      orderId: 'ORDER-TRACKED-INTEGRATION-1',
-      symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
-      quantity: 100,
-      initialStatus: OrderStatus.New,
-      monitorSymbol: 'HSI.HK',
-      isLongSymbol: true,
-      isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
-    });
+    monitor.trackOrder(
+      await createTrackParams({
+        orderId: 'ORDER-TRACKED-INTEGRATION-1',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        submittedPrice: '1.01',
+        isLongSymbol: true,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: false,
+      }),
+    );
     await flushMicrotasks();
 
     expect(capturedWakeups).toEqual([
@@ -239,42 +304,45 @@ describe('createOrderMonitor route hooks integration', () => {
 
   it('真实装配路径在 tracked order 收到 WS 推进后触发 ORDER_EVENT wakeup', async () => {
     const capturedWakeups: CapturedRouteWakeup[] = [];
-    const createOrderMonitor = await loadCreateOrderMonitorWithCapturedRouteWakeups(
-      'order-event',
-      capturedWakeups,
-    );
-    const { deps, tradeCtx } = createDeps();
-    const monitor = createOrderMonitor(deps);
+    await loadCreateOrderMonitorWithCapturedRouteWakeups('order-event', capturedWakeups);
+    const { deps, native } = await createDeps();
+    const monitor = native.createMonitor(deps);
 
     await monitor.initialize();
     await monitor.recoverOrderTrackingFromSnapshot([]);
     monitor.startRuntime();
-    monitor.trackOrder({
-      orderId: 'ORDER-EVENT-INTEGRATION-1',
-      symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
-      quantity: 100,
-      initialStatus: OrderStatus.New,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
-    });
+    monitor.trackOrder(
+      await createTrackParams({
+        orderId: 'ORDER-EVENT-INTEGRATION-1',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        submittedPrice: '1.01',
+        isLongSymbol: true,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: false,
+      }),
+    );
     await flushMicrotasks();
     capturedWakeups.length = 0;
 
-    expect(tradeCtx.getSubscribedTopics().has(TopicType.Private)).toBe(true);
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
-        orderId: 'ORDER-EVENT-INTEGRATION-1',
-        symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        status: OrderStatus.PendingCancel,
-      }),
-    );
-    tradeCtx.flushAllEvents();
+    expect(native.subscriptionMembership().includes('PRIVATE')).toBe(true);
+    native.emitOrderChangedFrame({
+      orderId: 'ORDER-EVENT-INTEGRATION-1',
+      tradeId: 'NO-EXECUTION',
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC ROUTE',
+      remark: '',
+      side: 'BUY',
+      orderType: 'ELO',
+      status: 'PendingCancel',
+      quantity: '100',
+      executedQuantity: '0',
+      submittedPrice: '1.01',
+      executedPrice: '0',
+      submittedAtMs: Date.now(),
+      executionTimeMs: null,
+      updatedAtMs: Date.now(),
+    });
     await flushMicrotasks();
 
     expect(capturedWakeups).toEqual([
@@ -287,20 +355,17 @@ describe('createOrderMonitor route hooks integration', () => {
 
   it('真实装配路径在 recovery restore 期间抑制 TRACKED，并在成功后触发 RECOVERED wakeup', async () => {
     const capturedWakeups: CapturedRouteWakeup[] = [];
-    const createOrderMonitor = await loadCreateOrderMonitorWithCapturedRouteWakeups(
-      'recovered',
-      capturedWakeups,
-    );
-    const { deps } = createDeps();
-    const monitor = createOrderMonitor(deps);
+    await loadCreateOrderMonitorWithCapturedRouteWakeups('recovered', capturedWakeups);
+    const { deps, native } = await createDeps();
+    const monitor = native.createMonitor(deps);
 
     await monitor.initialize();
     monitor.startRuntime();
     await monitor.recoverOrderTrackingFromSnapshot([
-      createPendingRecoveryOrder({
+      await createPendingRecoveryOrder({
         orderId: 'ORDER-RECOVERED-INTEGRATION-1',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
       }),
     ]);
     await flushMicrotasks();
@@ -315,19 +380,16 @@ describe('createOrderMonitor route hooks integration', () => {
 
   it('真实装配路径先 recovery 后 startRuntime 时也会补发 RECOVERED wakeup', async () => {
     const capturedWakeups: CapturedRouteWakeup[] = [];
-    const createOrderMonitor = await loadCreateOrderMonitorWithCapturedRouteWakeups(
-      'recovered-after-start',
-      capturedWakeups,
-    );
-    const { deps } = createDeps();
-    const monitor = createOrderMonitor(deps);
+    await loadCreateOrderMonitorWithCapturedRouteWakeups('recovered-after-start', capturedWakeups);
+    const { deps, native } = await createDeps();
+    const monitor = native.createMonitor(deps);
 
     await monitor.initialize();
     await monitor.recoverOrderTrackingFromSnapshot([
-      createPendingRecoveryOrder({
+      await createPendingRecoveryOrder({
         orderId: 'ORDER-RECOVERED-AFTER-START-1',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
       }),
     ]);
     monitor.startRuntime();
@@ -342,21 +404,19 @@ describe('createOrderMonitor route hooks integration', () => {
   });
 
   it('真实装配路径不再暴露旧的 processWithLatestQuotes 轮询入口', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('no-poll-hook');
-    const { deps } = createDeps();
-    const monitor = createOrderMonitor(deps);
+    await loadActualCreateOrderMonitor('no-poll-hook');
+    const { deps, native } = await createDeps();
+    const monitor = native.createMonitor(deps);
 
     expect('processWithLatestQuotes' in monitor).toBe(false);
   });
 
   it('真实装配路径在 QUOTE 唤醒后会执行 routeProcessor 的改单动作', async () => {
     const quoteUpdatedListeners: Array<(event: QuoteUpdatedEvent) => void> = [];
-    const createOrderMonitor = await loadActualCreateOrderMonitor('quote');
-    const { deps } = createDeps();
-    const tradeCtx = createTradeContextMock();
-    const monitor = createOrderMonitor({
+    await loadActualCreateOrderMonitor('quote');
+    const { deps, native } = await createDeps();
+    const monitor = native.createMonitor({
       ...deps,
-      ctx: tradeCtx as unknown as TradeContext,
       marketDataClient: createMarketDataClientDouble({
         onQuoteUpdated: (listener) => {
           quoteUpdatedListeners.push(listener);
@@ -373,19 +433,17 @@ describe('createOrderMonitor route hooks integration', () => {
     await monitor.initialize();
     await monitor.recoverOrderTrackingFromSnapshot([]);
     monitor.startRuntime();
-    monitor.trackOrder({
-      orderId: 'ORDER-QUOTE-INTEGRATION-1',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
-      quantity: 100,
-      initialStatus: OrderStatus.New,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
-    });
+    monitor.trackOrder(
+      await createTrackParams({
+        orderId: 'ORDER-QUOTE-INTEGRATION-1',
+        symbol: 'BULL.HK',
+        side: 'SELL',
+        submittedPrice: '1',
+        isLongSymbol: true,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: false,
+      }),
+    );
     await flushMicrotasks();
 
     const quoteUpdatedListener = quoteUpdatedListeners[0];
@@ -395,20 +453,22 @@ describe('createOrderMonitor route hooks integration', () => {
 
     quoteUpdatedListener({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.02),
+      quote: createQuoteDouble('BULL.HK', '1.02'),
     });
     await flushMicrotasks();
     await flushMicrotasks();
 
-    expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(1);
+    expect(native.nativeMutations().filter((mutation) => mutation.kind === 'REPLACE')).toHaveLength(
+      1,
+    );
   });
 });
 
 describe('orderMonitor terminal subscription ownership', () => {
   it('跨日 stop/start 保留 Private，最终退订一次并拒绝重新初始化', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-normal');
-    const { deps, tradeCtx } = createDeps();
-    const monitor = createOrderMonitor(deps);
+    await loadActualCreateOrderMonitor('terminal-normal');
+    const { deps, native } = await createDeps();
+    const monitor = native.createMonitor(deps);
     await Promise.all([monitor.initialize(), monitor.initialize()]);
     await monitor.recoverOrderTrackingFromSnapshot([]);
     monitor.startRuntime();
@@ -416,29 +476,27 @@ describe('orderMonitor terminal subscription ownership', () => {
     await monitor.initialize();
     await monitor.recoverOrderTrackingFromSnapshot([]);
     monitor.startRuntime();
-    expect(tradeCtx.getCalls('tradeSubscribe')).toHaveLength(1);
-    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+    expect(native.subscribeObservations()).toHaveLength(1);
+    expect(native.unsubscribeObservations()).toHaveLength(0);
     await monitor.stopRuntimeAndDrain();
     const final = monitor.teardown();
     expect(monitor.teardown()).toBe(final);
     await final;
     await monitor.initialize();
     monitor.startRuntime();
-    expect(tradeCtx.getCalls('tradeSubscribe')).toHaveLength(1);
-    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(1);
-    expect(tradeCtx.getSubscribedTopics().has(TopicType.Private)).toBe(false);
+    expect(native.subscribeObservations()).toHaveLength(1);
+    expect(native.unsubscribeObservations()).toHaveLength(1);
+    expect(native.subscriptionMembership().includes('PRIVATE')).toBe(false);
   });
 
   it('初始化晚到成功仍由 final owner 等待并退订，不伪造挂起已释放', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-late');
-    const { deps, tradeCtx } = createDeps();
+    await loadActualCreateOrderMonitor('terminal-late');
+    const { deps, native } = await createDeps();
     const gate = Promise.withResolvers<undefined>();
-    const originalSubscribe = tradeCtx.subscribe;
-    tradeCtx.subscribe = async (topics) => {
+    native.setSubscribeBehavior(async () => {
       await gate.promise;
-      await originalSubscribe(topics);
-    };
-    const monitor = createOrderMonitor(deps);
+    });
+    const monitor = native.createMonitor(deps);
     const initialization = monitor.initialize();
     const final = monitor.teardown();
     let completed = false;
@@ -447,52 +505,52 @@ describe('orderMonitor terminal subscription ownership', () => {
     });
     await flushMicrotasks();
     expect(completed).toBe(false);
-    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+    expect(native.unsubscribeObservations()).toHaveLength(0);
     gate.resolve();
     await initialization;
     await final;
-    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(1);
+    expect(native.unsubscribeObservations()).toHaveLength(1);
   });
 
   it('subscribe 失败不伪造订阅成功或调用 unsubscribe', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-subscribe-fail');
-    const { deps, tradeCtx } = createDeps();
-    tradeCtx.subscribe = () => Promise.reject(new Error('subscribe failed'));
-    const monitor = createOrderMonitor(deps);
+    await loadActualCreateOrderMonitor('terminal-subscribe-fail');
+    const { deps, native } = await createDeps();
+    native.setSubscribeBehavior(() => Promise.reject(new Error('subscribe failed')));
+    const monitor = native.createMonitor(deps);
     expect(monitor.initialize()).rejects.toThrow();
     await monitor.teardown();
-    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+    expect(native.unsubscribeObservations()).toHaveLength(0);
   });
 
   it('在途 subscribe 晚到失败由 final 汇总，不尝试无成功事实的退订', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-late-fail');
-    const { deps, tradeCtx } = createDeps();
+    await loadActualCreateOrderMonitor('terminal-late-fail');
+    const { deps, native } = await createDeps();
     const gate = Promise.withResolvers<undefined>();
-    tradeCtx.subscribe = () => gate.promise;
-    const monitor = createOrderMonitor(deps);
+    native.setSubscribeBehavior(() => gate.promise);
+    const monitor = native.createMonitor(deps);
     const initialization = monitor.initialize();
     const final = monitor.teardown();
     const outcomes = Promise.allSettled([initialization, final]);
     gate.reject(new Error('late subscribe failure'));
     const settled = await outcomes;
     expect(settled.map((result) => result.status)).toEqual(['rejected', 'rejected']);
-    expect(tradeCtx.getCalls('tradeUnsubscribe')).toHaveLength(0);
+    expect(native.unsubscribeObservations()).toHaveLength(0);
     expect(monitor.teardown()).toBe(final);
     await monitor.initialize();
-    expect(tradeCtx.getSubscribedTopics().size).toBe(0);
+    expect(native.subscriptionMembership()).toHaveLength(0);
   });
 
   it('unsubscribe 失败保留单次结果且 cleanup 继续 PostTrade 和后续资源', async () => {
-    const createOrderMonitor = await loadActualCreateOrderMonitor('terminal-unsubscribe-fail');
-    const { deps, tradeCtx } = createDeps();
+    await loadActualCreateOrderMonitor('terminal-unsubscribe-fail');
+    const { deps, native } = await createDeps();
     let attempts = 0;
     const trace: string[] = [];
-    tradeCtx.unsubscribe = () => {
+    native.setUnsubscribeBehavior(() => {
       attempts += 1;
       trace.push('unsubscribe');
       return Promise.reject(new Error('unsubscribe failed'));
-    };
-    const monitor = createOrderMonitor(deps);
+    });
+    const monitor = native.createMonitor(deps);
     await monitor.initialize();
     const cleanup = createCleanup();
     cleanup.register({

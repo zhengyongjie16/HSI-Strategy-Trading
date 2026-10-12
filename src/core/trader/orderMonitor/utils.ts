@@ -1,4 +1,4 @@
-import { OrderStatus, type Decimal } from 'longbridge';
+import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
 import type { GlobalConfig } from '../../../types/config.js';
 import type { OrderClosedReason } from '../../../types/trader.js';
 import type { OrderMonitorConfig, TrackedOrder } from '../types.js';
@@ -18,9 +18,9 @@ import type {
   ReplaceUnsupportedByTypeErrorCode,
 } from './types.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import { toDecimal } from '../utils.js';
+import { exactCompare, exactSubtract, formatDecimal } from '../../../utils/numeric/exact.js';
 import { logger } from '../../../utils/logger/index.js';
-import { isOpenOrderStatus, isTerminalOrderStatus } from '../../orderStatusLifecycle/utils.js';
+import { isOpenOrderReadStatus, isTerminalOrderReadStatus } from './orderReadLifecycle.js';
 
 /**
  * 构建订单监控配置（秒转毫秒）。
@@ -85,8 +85,8 @@ export function resolveSubmittedAtMs(submittedAt: Date | null | undefined): numb
  * @param status 订单状态
  * @returns true 表示订单处于关闭态（成交/撤销/拒绝/过期/部分撤单）
  */
-export function isClosedStatus(status: OrderStatus): boolean {
-  return isTerminalOrderStatus(status);
+export function isClosedStatus(status: OrderReadStatus): boolean {
+  return isTerminalOrderReadStatus(status);
 }
 
 /**
@@ -95,20 +95,18 @@ export function isClosedStatus(status: OrderStatus): boolean {
  * @param status 订单状态
  * @returns 对应的关闭原因；非关闭态返回 null
  */
-export function resolveOrderClosedReasonFromStatus(status: OrderStatus): OrderClosedReason | null {
-  if (status === OrderStatus.Filled) {
+export function resolveOrderClosedReasonFromStatus(
+  status: OrderReadStatus,
+): OrderClosedReason | null {
+  if (status === 'FILLED') {
     return 'FILLED';
   }
 
-  if (
-    status === OrderStatus.Canceled ||
-    status === OrderStatus.Expired ||
-    status === OrderStatus.PartialWithdrawal
-  ) {
+  if (status === 'CANCELED' || status === 'EXPIRED' || status === 'PARTIALLY_CANCELED') {
     return 'CANCELED';
   }
 
-  if (status === OrderStatus.Rejected) {
+  if (status === 'REJECTED') {
     return 'REJECTED';
   }
 
@@ -137,13 +135,13 @@ export function isWaitWsOnlyReplaceMode(
  * @param initialStatus 可选初始状态
  * @returns 追踪状态
  */
-export function resolveInitialTrackedStatus(initialStatus?: OrderStatus): OrderStatus {
+export function resolveInitialTrackedStatus(initialStatus?: OrderReadStatus): OrderReadStatus {
   if (initialStatus === undefined) {
-    return OrderStatus.New;
+    return 'WORKING';
   }
 
-  if (!isOpenOrderStatus(initialStatus)) {
-    throw new Error(`[订单监控] 初始追踪状态必须为 OPEN: ${String(initialStatus)}`);
+  if (!isOpenOrderReadStatus(initialStatus)) {
+    throw new Error(`[订单监控] 初始追踪状态必须为 OPEN: ${initialStatus}`);
   }
 
   return initialStatus;
@@ -155,8 +153,8 @@ export function resolveInitialTrackedStatus(initialStatus?: OrderStatus): OrderS
  * @param price 原始价格
  * @returns 固定小数位文本
  */
-export function normalizePriceText(price: number): string {
-  return price.toFixed(DEFAULT_PRICE_DECIMALS);
+export function normalizePriceText(price: string): string {
+  return formatDecimal(price, DEFAULT_PRICE_DECIMALS, 'preserve');
 }
 
 /**
@@ -166,10 +164,9 @@ export function normalizePriceText(price: number): string {
  * @param submittedPrice 委托价格
  * @returns 绝对价差 Decimal
  */
-export function calculatePriceDiffDecimal(currentPrice: number, submittedPrice: number): Decimal {
-  const currentPriceDecimal = toDecimal(currentPrice);
-  const submittedPriceDecimal = toDecimal(submittedPrice);
-  return currentPriceDecimal.sub(submittedPriceDecimal).abs();
+export function calculatePriceDifference(currentPrice: string, submittedPrice: string): string {
+  const difference = exactSubtract(currentPrice, submittedPrice);
+  return exactCompare(difference, '0') < 0 ? exactSubtract('0', difference) : difference;
 }
 
 /**

@@ -1,10 +1,10 @@
-/**
- * orderMonitor 订单事实单调合并模块
- *
- * 职责：将 WS 与权威 state-check 的订单观察值按时间、累计成交量和状态阶段合并为单调事实。
- */
-import { OrderSide, OrderStatus } from 'longbridge';
-import { classifyOrderStatusLifecycle } from '../../orderStatusLifecycle/index.js';
+import { orderReadStatusPriority } from './orderReadLifecycle.js';
+import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
+
+/** 订单运行态合并：复用唯一累计事实裁决，执行 T 来自 ledger/durable，绝不由 revision 派生。 */
+import { mergeBrokerOrderExecutionFact } from '../../../domain/order/executionFact.js';
+import { exactCompare } from '../../../utils/numeric/exact.js';
+import type { BrokerOrderExecutionFact } from '../../../types/orderRecorder.js';
 import type { OrderStateCheckResult } from '../../../types/trader.js';
 import type {
   KnownOrderFact,
@@ -15,263 +15,236 @@ import type {
   TerminalStateSnapshot,
 } from './types.js';
 
-/** 判断值是否是可用于订单累计成交事实的有限正数。 */
-function isValidPositiveFactNumber(value: number | null): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0;
-}
-
-/**
- * 校验累计成交量落在当前有效委托量的闭区间内。
- *
- * 改单成功后 tracked 的 submittedQuantity 会更新为“已成交量 + 新剩余量”，
- * 因此它是后续 WS、state-check 与终态结算必须共同遵守的数量上界。
- */
+/** 原始数量边界在一切运行态和经济写入之前检查。 */
 export function assertExecutionQuantityWithinSubmittedQuantity(
   orderId: string,
   submittedQuantity: number,
   executedQuantity: number,
 ): void {
-  if (!Number.isFinite(executedQuantity) || executedQuantity < 0) {
+  if (
+    !Number.isSafeInteger(submittedQuantity) ||
+    submittedQuantity < 0 ||
+    !Number.isSafeInteger(executedQuantity) ||
+    executedQuantity < 0
+  )
     throw new Error(`[订单监控] 订单 ${orderId} 收到无效累计成交数量`);
-  }
 
-  if (executedQuantity <= submittedQuantity) {
+  if (executedQuantity > submittedQuantity)
+    throw new Error(`[订单监控] 订单 ${orderId} 累计成交量超过有效委托数量`);
+}
+
+/** 正成交观察必须完整；未知 T 显式拒绝，不从 tracked 或本地时钟补造新增成交。 */
+function assertRawExecution(
+  known: Pick<OrderMonitorTrackedOrder, 'orderId' | 'executedQuantity' | 'lastOrderUpdateAtMs'>,
+  observed: Omit<OrderObservedFact, 'executionPhase'>,
+): asserts observed is Omit<OrderObservedFact, 'executionPhase'> &
+  Readonly<{ executedQuantity: number }> {
+  const quantity = observed.executedQuantity;
+  if (quantity === null || !Number.isSafeInteger(quantity) || quantity < 0)
+    throw new Error('[订单监控] 无效累计成交数量');
+
+  if (quantity === 0) {
+    if (exactCompare(observed.executedAmount, '0') !== 0 || observed.executedTimeMs !== null)
+      throw new Error('[订单监控] 零成交存在金额或执行时间');
+
     return;
   }
 
-  throw new Error(
-    `[订单监控] 订单 ${orderId} 累计成交量超过有效委托数量: ` +
-      `submittedQuantity=${submittedQuantity} executedQuantity=${executedQuantity}`,
-  );
-}
+  if (
+    observed.executedPrice === null ||
+    exactCompare(observed.executedPrice, '0') <= 0 ||
+    exactCompare(observed.executedAmount, '0') <= 0 ||
+    observed.executedTimeMs === null ||
+    !Number.isSafeInteger(observed.executedTimeMs) ||
+    observed.executedTimeMs <= 0 ||
+    observed.updatedAtMs === null ||
+    !Number.isSafeInteger(observed.updatedAtMs) ||
+    observed.updatedAtMs <= 0
+  )
+    throw new Error('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
 
-/**
- * 判断本次原始观察是否会声明或收口保护性 SELL 的累计成交。
- *
- * CANCELED/REJECTED 在已有部分成交时同样必须携带完整原始累计事实，
- * 否则不能借用 tracked 值完成终态收口。
- */
-function requiresProtectiveSellRawExecutionFact(
-  trackedOrder: Pick<OrderMonitorTrackedOrder, 'executedQuantity'>,
-  observedFact: OrderObservedFact,
-): boolean {
-  if (isValidPositiveFactNumber(trackedOrder.executedQuantity)) {
-    return true;
-  }
-
-  if (isValidPositiveFactNumber(observedFact.executedQuantity)) {
-    return true;
-  }
+  if (observed.executedTimeMs > observed.updatedAtMs)
+    throw new Error('[订单监控] 原始执行时间晚于 order revision');
 
   if (
-    observedFact.status === OrderStatus.PartialFilled ||
-    observedFact.status === OrderStatus.Filled
-  ) {
-    return true;
-  }
-
-  return false;
+    quantity > known.executedQuantity &&
+    known.lastOrderUpdateAtMs !== null &&
+    observed.updatedAtMs < known.lastOrderUpdateAtMs
+  )
+    throw new Error('[订单监控] 累计成交推进但 broker revision 倒退');
 }
 
-/**
- * 在通用单调合并前校验保护性 SELL 的本次原始成交观察。
- *
- * state-check 的 `orderUpdatedAtMs` 是 SDK `Last updated` 给出的经纪商观察/revision 时间；
- * 只有累计成交量增加时，才把它派生为本地执行账务时间，绝不把它解释为交易所成交时间，
- * 也不得由旧 tracked、0 或当前时钟补造。
- */
+/** 保护性 SELL 在 durable progress 之前要求当前原始观察完整。 */
 export function assertProtectiveSellRawObservationFactsReady(
-  trackedOrder: Pick<
+  known: Pick<
     OrderMonitorTrackedOrder,
-    'orderId' | 'side' | 'isProtectiveLiquidation' | 'executedQuantity' | 'lastOrderUpdateAtMs'
+    | 'orderId'
+    | 'executionSide'
+    | 'isProtectiveLiquidation'
+    | 'executedQuantity'
+    | 'lastOrderUpdateAtMs'
   >,
-  observedFact: OrderObservedFact,
+  observed: OrderObservedFact & Readonly<{ executionStatus: 'NONE' | 'PARTIAL' | 'FILLED' }>,
 ): void {
-  if (
-    trackedOrder.side !== OrderSide.Sell ||
-    !trackedOrder.isProtectiveLiquidation ||
-    !requiresProtectiveSellRawExecutionFact(trackedOrder, observedFact)
-  ) {
-    return;
-  }
+  if (known.executionSide !== 'SELL' || !known.isProtectiveLiquidation) return;
 
-  if (
-    isValidPositiveFactNumber(observedFact.executedQuantity) &&
-    observedFact.executedQuantity > trackedOrder.executedQuantity &&
-    !isValidPositiveFactNumber(observedFact.executedPrice)
-  ) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 保护性 SELL 累计成交数量推进但缺少有效成交价`,
-    );
-  }
+  const executionStatus: unknown = observed.executionStatus;
+  if (executionStatus !== 'NONE' && executionStatus !== 'PARTIAL' && executionStatus !== 'FILLED')
+    throw new TypeError('[订单监控] 观察缺少已验证中性executionStatus');
 
+  assertRawExecution(known, observed);
   if (
-    !isValidPositiveFactNumber(observedFact.executedQuantity) ||
-    !isValidPositiveFactNumber(observedFact.executedPrice) ||
-    !isValidPositiveFactNumber(observedFact.executedTimeMs) ||
-    !isValidPositiveFactNumber(observedFact.updatedAtMs)
-  ) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 保护性 SELL 存在正累计成交但执行事实不完整，` +
-        '拒绝用历史事实补齐原始观察',
-    );
-  }
-
-  if (observedFact.executedTimeMs > observedFact.updatedAtMs) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 保护性 SELL 原始执行时间晚于 order revision，阻断状态推进`,
-    );
-  }
-
-  if (
-    observedFact.executedQuantity > trackedOrder.executedQuantity &&
-    trackedOrder.lastOrderUpdateAtMs !== null &&
-    observedFact.updatedAtMs < trackedOrder.lastOrderUpdateAtMs
-  ) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 保护性 SELL 累计成交推进但 broker revision 倒退，阻断状态推进`,
-    );
-  }
+    (known.executedQuantity > 0 || executionStatus === 'FILLED' || executionStatus === 'PARTIAL') &&
+    observed.executedQuantity === 0
+  )
+    throw new Error('[订单监控] 保护性 SELL 存在正累计成交但原始观察否认执行事实');
 }
 
-/**
- * 在 state-check TERMINAL 快照进入通用归一化前校验保护性 SELL 原始事实。
- *
- * 当前经纪商 state-check 契约只提供本次权威 `orderUpdatedAtMs`；
- * 该值是本次观察的原始时间来源，而非对缺失字段的默认回填。
- */
+/** 非成交终态只关闭资源：等量、等金额且无新增执行证据时保留已有可信经济事实。 */
+function isResourceOnlyTerminal(known: KnownOrderFact, terminal: TerminalStateSnapshot): boolean {
+  if (terminal.closedReason === 'FILLED' || terminal.executedQuantity !== known.executedQuantity)
+    return false;
+
+  const missingEconomicEvidence =
+    terminal.executedPrice === null && terminal.orderUpdatedAtMs === null;
+  const amountMatches = exactCompare(terminal.executedAmount, known.executedAmount) === 0;
+  if (
+    !amountMatches &&
+    !(missingEconomicEvidence && exactCompare(terminal.executedAmount, '0') === 0)
+  )
+    return false;
+
+  if (
+    terminal.executedPrice !== null &&
+    known.executedPrice !== null &&
+    exactCompare(terminal.executedPrice, known.executedPrice) !== 0
+  )
+    return false;
+
+  if (
+    terminal.executionTimeMs !== null &&
+    (!Number.isSafeInteger(terminal.executionTimeMs) ||
+      terminal.executionTimeMs <= 0 ||
+      known.lastExecutedTimeMs === null ||
+      terminal.executionTimeMs > known.lastExecutedTimeMs)
+  )
+    return false;
+
+  if (
+    terminal.orderUpdatedAtMs !== null &&
+    known.lastOrderUpdateAtMs !== null &&
+    terminal.orderUpdatedAtMs < known.lastOrderUpdateAtMs
+  )
+    return false;
+
+  if (
+    terminal.executedPrice !== null &&
+    terminal.executionTimeMs !== null &&
+    terminal.orderUpdatedAtMs !== null
+  )
+    return false;
+
+  assertRawExecution(known, {
+    status: known.status,
+    executedQuantity: known.executedQuantity,
+    executedAmount: known.executedAmount,
+    executedPrice: known.executedPrice,
+    executedTimeMs: known.lastExecutedTimeMs,
+    updatedAtMs: known.lastOrderUpdateAtMs,
+  });
+  return true;
+}
+
+/** query 与 push 使用同一原始 amount/T 准入，terminal 不拿 updatedAt 洗白 T。 */
 export function assertProtectiveSellRawTerminalStateFactsReady(
-  trackedOrder: Pick<
-    OrderMonitorTrackedOrder,
-    'orderId' | 'side' | 'isProtectiveLiquidation' | 'executedQuantity' | 'lastOrderUpdateAtMs'
-  >,
-  terminalState: TerminalStateSnapshot,
+  known: KnownOrderFact & Pick<OrderMonitorTrackedOrder, 'isProtectiveLiquidation'>,
+  terminal: TerminalStateSnapshot,
 ): void {
-  const rawExecutedQuantity = terminalState.executedQuantity;
-  if (typeof rawExecutedQuantity !== 'number' || !Number.isFinite(rawExecutedQuantity)) {
-    assertProtectiveSellRawObservationFactsReady(trackedOrder, {
-      status: terminalState.status,
-      executedQuantity: terminalState.executedQuantity,
-      executedPrice: terminalState.executedPrice,
-      executedTimeMs: terminalState.orderUpdatedAtMs,
-      updatedAtMs: terminalState.orderUpdatedAtMs,
-    });
-    return;
-  }
+  if (isResourceOnlyTerminal(known, terminal)) return;
 
-  const hasRawExecutionAdvance = rawExecutedQuantity > trackedOrder.executedQuantity;
-  if (!hasRawExecutionAdvance) {
-    return;
-  }
-
-  assertProtectiveSellRawObservationFactsReady(trackedOrder, {
-    status: terminalState.status,
-    executedQuantity: terminalState.executedQuantity,
-    executedPrice: terminalState.executedPrice,
-    executedTimeMs: terminalState.orderUpdatedAtMs,
-    updatedAtMs: terminalState.orderUpdatedAtMs,
+  assertProtectiveSellRawObservationFactsReady(known, {
+    executionStatus: terminal.executionStatus,
+    executionPhase: terminal.kind,
+    status: terminal.status,
+    executedQuantity: terminal.executedQuantity,
+    executedPrice: terminal.executedPrice,
+    executedAmount: terminal.executedAmount,
+    executedTimeMs: terminal.executionTimeMs,
+    updatedAtMs: terminal.orderUpdatedAtMs,
   });
 }
 
-/**
- * 在 state-check 结果进入任意本地状态、缓存或经济副作用前校验原始成交事实。
- *
- * SDK 仅提供 `updatedAt`（Last updated）：它是经纪商观察/revision 时间。累计成交量增加时，
- * 才可将该时间派生为本地执行账务时间；它不是交易所成交时间，也不能由 tracked 或当前时钟补造。
- */
+/** state-check 到达后、任何 cache/运行态写入前验证原始事实。 */
 export function assertStateCheckRawExecutionFactsReady(
-  trackedOrder: OrderMonitorTrackedOrder | null | undefined,
-  stateCheckResult: Exclude<OrderStateCheckResult, { kind: 'QUERY_FAILED' }>,
+  known: OrderMonitorTrackedOrder | null | undefined,
+  result: Exclude<OrderStateCheckResult, { kind: 'QUERY_FAILED' }>,
 ): void {
-  const rawExecutedQuantity = stateCheckResult.executedQuantity;
   if (
-    typeof rawExecutedQuantity !== 'number' ||
-    !Number.isFinite(rawExecutedQuantity) ||
-    rawExecutedQuantity < 0
-  ) {
-    throw new Error('[订单监控] state-check 收到无效累计成交数量，拒绝推进订单状态');
-  }
+    known !== null &&
+    known !== undefined &&
+    result.kind === 'TERMINAL' &&
+    isResourceOnlyTerminal(known, result)
+  )
+    return;
 
-  if (trackedOrder !== null && trackedOrder !== undefined) {
+  const observation: OrderObservedFact &
+    Readonly<{ executionStatus: 'NONE' | 'PARTIAL' | 'FILLED' }> = {
+    executionPhase: result.kind,
+    executionStatus: result.executionStatus,
+    status: result.status,
+    executedQuantity: result.executedQuantity,
+    executedPrice: result.executedPrice,
+    executedAmount: result.executedAmount,
+    executedTimeMs: result.executionTimeMs,
+    updatedAtMs: result.kind === 'OPEN' ? result.updatedAtMs : result.orderUpdatedAtMs,
+  };
+  assertRawExecution(
+    known ?? { orderId: 'state-check', executedQuantity: 0, lastOrderUpdateAtMs: null },
+    observation,
+  );
+
+  if (known !== null && known !== undefined) {
     assertExecutionQuantityWithinSubmittedQuantity(
-      trackedOrder.orderId,
-      trackedOrder.submittedQuantity,
-      rawExecutedQuantity,
+      known.orderId,
+      known.submittedQuantity,
+      observation.executedQuantity,
     );
+    assertProtectiveSellRawObservationFactsReady(known, observation);
   }
-
-  const knownExecutedQuantity =
-    trackedOrder === null || trackedOrder === undefined ? 0 : trackedOrder.executedQuantity;
-  if (rawExecutedQuantity > knownExecutedQuantity) {
-    if (!isValidPositiveFactNumber(stateCheckResult.executedPrice)) {
-      throw new Error('[订单监控] state-check 累计成交数量推进但缺少有效成交价');
-    }
-
-    const rawUpdatedAtMs =
-      stateCheckResult.kind === 'OPEN'
-        ? stateCheckResult.updatedAtMs
-        : stateCheckResult.orderUpdatedAtMs;
-    if (!isValidPositiveFactNumber(rawUpdatedAtMs)) {
-      throw new Error('[订单监控] state-check 累计成交数量推进但缺少有效 broker revision');
-    }
-
-    const knownUpdatedAtMs = trackedOrder?.lastOrderUpdateAtMs;
-    if (
-      knownUpdatedAtMs !== undefined &&
-      knownUpdatedAtMs !== null &&
-      rawUpdatedAtMs < knownUpdatedAtMs
-    ) {
-      throw new Error('[订单监控] state-check 累计成交数量推进但 broker revision 倒退');
-    }
-  }
-
-  if (trackedOrder === null || trackedOrder === undefined) {
-    return;
-  }
-
-  if (stateCheckResult.kind === 'OPEN') {
-    assertProtectiveSellRawObservationFactsReady(trackedOrder, {
-      status: stateCheckResult.status,
-      executedQuantity: stateCheckResult.executedQuantity,
-      executedPrice: stateCheckResult.executedPrice,
-      executedTimeMs: stateCheckResult.updatedAtMs,
-      updatedAtMs: stateCheckResult.updatedAtMs,
-    });
-    return;
-  }
-
-  assertProtectiveSellRawTerminalStateFactsReady(trackedOrder, stateCheckResult);
 }
 
 /** 按订单操作语义解析同 timestamp OPEN 状态的事实阶段。 */
-function resolveOpenStatusFactPhase(status: OrderStatus): number {
-  if (status === OrderStatus.PendingCancel) return 6;
+function resolveOpenStatusFactPhase(status: OrderReadStatus): number {
+  if (status === 'CANCELLATION_PENDING') return 6;
 
-  if (status === OrderStatus.WaitToCancel) return 5;
+  if (status === 'CANCELLATION_REQUESTED') return 5;
 
-  if (status === OrderStatus.PartialFilled) return 4;
+  if (status === 'PARTIALLY_FILLED') return 4;
 
-  if (status === OrderStatus.New || status === OrderStatus.Replaced) return 3;
+  if (status === 'WORKING' || status === 'REPLACED') return 3;
 
-  if (status === OrderStatus.PendingReplace) return 2;
+  if (status === 'REPLACEMENT_PENDING') return 2;
 
-  if (status === OrderStatus.WaitToReplace) return 1;
+  if (status === 'REPLACEMENT_REQUESTED') return 1;
 
   if (
-    status === OrderStatus.WaitToNew ||
-    status === OrderStatus.NotReported ||
-    status === OrderStatus.ReplacedNotReported ||
-    status === OrderStatus.ProtectedNotReported ||
-    status === OrderStatus.VarietiesNotReported
+    status === 'SUBMISSION_PENDING' ||
+    status === 'UNREPORTED' ||
+    status === 'REPLACEMENT_UNREPORTED' ||
+    status === 'PROTECTION_UNREPORTED' ||
+    status === 'CONDITIONAL_UNREPORTED'
   ) {
     return 0;
   }
 
-  throw new Error(`[订单监控] 非 OPEN 状态不能参与 OPEN 事实阶段裁决: ${String(status)}`);
+  throw new Error(`[订单监控] 非 OPEN 状态不能参与 OPEN 事实阶段裁决: ${status}`);
 }
 
 /** 同 timestamp 无法依赖先后顺序时，按业务事实阶段选择结果。 */
-function resolveSameTimestampOpenStatus(left: OrderStatus, right: OrderStatus): OrderStatus {
+function resolveSameTimestampOpenStatus(
+  left: OrderReadStatus,
+  right: OrderReadStatus,
+): OrderReadStatus {
   const leftPhase = resolveOpenStatusFactPhase(left);
   const rightPhase = resolveOpenStatusFactPhase(right);
   if (leftPhase !== rightPhase) {
@@ -282,309 +255,267 @@ function resolveSameTimestampOpenStatus(left: OrderStatus, right: OrderStatus): 
     return left;
   }
 
-  if (left === OrderStatus.New || right === OrderStatus.New) {
-    return OrderStatus.New;
+  if (left === 'WORKING' || right === 'WORKING') {
+    return 'WORKING';
   }
 
-  return left > right ? left : right;
+  return orderReadStatusPriority(left) > orderReadStatusPriority(right) ? left : right;
 }
 
 /** 判断较新 OPEN 状态是否属于合法生命周期推进。 */
-function canAdvanceOpenStatus(current: OrderStatus, next: OrderStatus): boolean {
+function canAdvanceOpenStatus(current: OrderReadStatus, next: OrderReadStatus): boolean {
   if (current === next) return true;
 
   if (
-    current === OrderStatus.NotReported ||
-    current === OrderStatus.ReplacedNotReported ||
-    current === OrderStatus.ProtectedNotReported ||
-    current === OrderStatus.VarietiesNotReported ||
-    current === OrderStatus.WaitToNew
+    current === 'UNREPORTED' ||
+    current === 'REPLACEMENT_UNREPORTED' ||
+    current === 'PROTECTION_UNREPORTED' ||
+    current === 'CONDITIONAL_UNREPORTED' ||
+    current === 'SUBMISSION_PENDING'
   ) {
     return true;
   }
 
-  if (current === OrderStatus.New || current === OrderStatus.Replaced) {
+  if (current === 'WORKING' || current === 'REPLACED') {
     return (
-      next === OrderStatus.New ||
-      next === OrderStatus.WaitToReplace ||
-      next === OrderStatus.PendingReplace ||
-      next === OrderStatus.Replaced ||
-      next === OrderStatus.PartialFilled ||
-      next === OrderStatus.WaitToCancel ||
-      next === OrderStatus.PendingCancel
+      next === 'WORKING' ||
+      next === 'REPLACEMENT_REQUESTED' ||
+      next === 'REPLACEMENT_PENDING' ||
+      next === 'REPLACED' ||
+      next === 'PARTIALLY_FILLED' ||
+      next === 'CANCELLATION_REQUESTED' ||
+      next === 'CANCELLATION_PENDING'
     );
   }
 
-  if (current === OrderStatus.WaitToReplace || current === OrderStatus.PendingReplace) {
+  if (current === 'REPLACEMENT_REQUESTED' || current === 'REPLACEMENT_PENDING') {
     return (
-      next === OrderStatus.New ||
-      next === OrderStatus.WaitToReplace ||
-      next === OrderStatus.PendingReplace ||
-      next === OrderStatus.Replaced ||
-      next === OrderStatus.PartialFilled ||
-      next === OrderStatus.WaitToCancel ||
-      next === OrderStatus.PendingCancel
+      next === 'WORKING' ||
+      next === 'REPLACEMENT_REQUESTED' ||
+      next === 'REPLACEMENT_PENDING' ||
+      next === 'REPLACED' ||
+      next === 'PARTIALLY_FILLED' ||
+      next === 'CANCELLATION_REQUESTED' ||
+      next === 'CANCELLATION_PENDING'
     );
   }
 
-  if (current === OrderStatus.PartialFilled) {
+  if (current === 'PARTIALLY_FILLED') {
     return (
-      next === OrderStatus.PartialFilled ||
-      next === OrderStatus.WaitToReplace ||
-      next === OrderStatus.PendingReplace ||
-      next === OrderStatus.Replaced ||
-      next === OrderStatus.WaitToCancel ||
-      next === OrderStatus.PendingCancel
+      next === 'PARTIALLY_FILLED' ||
+      next === 'REPLACEMENT_REQUESTED' ||
+      next === 'REPLACEMENT_PENDING' ||
+      next === 'REPLACED' ||
+      next === 'CANCELLATION_REQUESTED' ||
+      next === 'CANCELLATION_PENDING'
     );
   }
 
-  if (current === OrderStatus.WaitToCancel) {
+  if (current === 'CANCELLATION_REQUESTED') {
     return (
-      next === OrderStatus.WaitToCancel ||
-      next === OrderStatus.PendingCancel ||
-      next === OrderStatus.New ||
-      next === OrderStatus.Replaced ||
-      next === OrderStatus.PartialFilled ||
-      next === OrderStatus.WaitToReplace ||
-      next === OrderStatus.PendingReplace
+      next === 'CANCELLATION_REQUESTED' ||
+      next === 'CANCELLATION_PENDING' ||
+      next === 'WORKING' ||
+      next === 'REPLACED' ||
+      next === 'PARTIALLY_FILLED' ||
+      next === 'REPLACEMENT_REQUESTED' ||
+      next === 'REPLACEMENT_PENDING'
     );
   }
 
-  if (current === OrderStatus.PendingCancel) {
+  if (current === 'CANCELLATION_PENDING') {
     return (
-      next === OrderStatus.PendingCancel ||
-      next === OrderStatus.New ||
-      next === OrderStatus.Replaced ||
-      next === OrderStatus.PartialFilled ||
-      next === OrderStatus.WaitToReplace ||
-      next === OrderStatus.PendingReplace
+      next === 'CANCELLATION_PENDING' ||
+      next === 'WORKING' ||
+      next === 'REPLACED' ||
+      next === 'PARTIALLY_FILLED' ||
+      next === 'REPLACEMENT_REQUESTED' ||
+      next === 'REPLACEMENT_PENDING'
     );
   }
 
-  throw new Error(`[订单监控] 未识别的 OPEN 状态推进起点: ${String(current)}`);
+  throw new Error(`[订单监控] 未识别的 OPEN 状态推进起点: ${current}`);
 }
 
-/** 合并可空时间戳，保证已知时间不因其他维度的事实推进而回退。 */
-function resolveMonotonicTimestamp(current: number | null, incoming: number | null): number | null {
-  if (incoming === null) {
-    return current;
-  }
+/** 明确broker观察才有阶段；V1/未有事实的未知phase不能补票参与累计经济裁决。 */
+function requireExecutionPhase(value: unknown): 'OPEN' | 'TERMINAL' {
+  if (value === 'OPEN' || value === 'TERMINAL') return value;
 
-  if (current === null || incoming >= current) {
-    return incoming;
-  }
-
-  return current;
+  throw new TypeError('[订单监控] broker事实缺少已验证中性executionPhase');
 }
 
-/**
- * 校验累计成交增加时本次 broker observation 必须完整且不可否认既有事实。
- *
- * 新增成交会进入订单记录、待成交卖出占用与 DailyLoss；因此时间和 revision 不能由 tracked
- * 值、当前时钟或其他 observation 补造。
- */
-function assertRawExecutionAdvanceFactsReady(
-  trackedOrder: KnownOrderFact,
-  observedFact: OrderObservedFact,
-): void {
-  if (!isValidPositiveFactNumber(observedFact.executedQuantity)) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 累计成交数量推进但原始累计成交数量无效`,
-    );
-  }
-
-  if (!isValidPositiveFactNumber(observedFact.executedPrice)) {
-    throw new Error(`[订单监控] 订单 ${trackedOrder.orderId} 累计成交数量推进但缺少有效成交价`);
-  }
-
-  if (
-    !isValidPositiveFactNumber(observedFact.executedTimeMs) ||
-    !isValidPositiveFactNumber(observedFact.updatedAtMs)
-  ) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 累计成交数量推进但原始执行时间或 broker revision 无效`,
-    );
-  }
-
-  if (
-    trackedOrder.lastExecutedTimeMs !== null &&
-    observedFact.executedTimeMs < trackedOrder.lastExecutedTimeMs
-  ) {
-    throw new Error(`[订单监控] 订单 ${trackedOrder.orderId} 累计成交数量推进但原始执行时间倒退`);
-  }
-
-  if (
-    trackedOrder.lastOrderUpdateAtMs !== null &&
-    observedFact.updatedAtMs < trackedOrder.lastOrderUpdateAtMs
-  ) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 累计成交数量推进但 broker revision 倒退`,
-    );
-  }
-
-  if (observedFact.executedTimeMs > observedFact.updatedAtMs) {
-    throw new Error(
-      `[订单监控] 订单 ${trackedOrder.orderId} 累计成交数量推进但原始执行时间晚于 broker revision`,
-    );
-  }
-}
-
-/**
- * 将订单观察值合并为单调事实：旧 revision 拒绝、累计成交量取最大、终态不可回 OPEN。
- */
+/** shared 判定累计事实，具体 OPEN 生命周期推进仍使用原业务状态规则。 */
 export function mergeMonotonicOrderFact(
-  trackedOrder: KnownOrderFact,
-  observedFact: OrderObservedFact,
+  known: KnownOrderFact,
+  observed: OrderObservedFact,
 ): MonotonicOrderFact | null {
-  const currentLifecycle = classifyOrderStatusLifecycle(trackedOrder.status);
-  const nextLifecycle = classifyOrderStatusLifecycle(observedFact.status);
-  if (currentLifecycle === 'TERMINAL') {
-    return null;
-  }
+  const observedPhase = requireExecutionPhase(observed.executionPhase);
+  const knownPhase =
+    known.lastOrderUpdateAtMs === null ? null : requireExecutionPhase(known.executionPhase);
 
-  const nextUpdatedAtMs = observedFact.updatedAtMs;
-  const currentUpdatedAtMs = trackedOrder.lastOrderUpdateAtMs;
-  const nextExecutedQuantity = observedFact.executedQuantity;
-  if (
-    typeof nextExecutedQuantity !== 'number' ||
-    !Number.isFinite(nextExecutedQuantity) ||
-    nextExecutedQuantity < 0
-  ) {
-    throw new Error(`[订单监控] 订单 ${trackedOrder.orderId} 收到无效累计成交数量`);
-  }
-
+  assertRawExecution(known, observed);
   assertExecutionQuantityWithinSubmittedQuantity(
-    trackedOrder.orderId,
-    trackedOrder.submittedQuantity,
-    nextExecutedQuantity,
+    known.orderId,
+    known.submittedQuantity,
+    observed.executedQuantity,
   );
 
-  const executionQuantityAdvanced = nextExecutedQuantity > trackedOrder.executedQuantity;
-  if (executionQuantityAdvanced) {
-    assertRawExecutionAdvanceFactsReady(trackedOrder, observedFact);
-  }
+  if (observed.updatedAtMs === null) throw new Error('[订单监控] 订单观察缺少 broker revision');
+
+  const doesNotAdvanceTime =
+    observed.executedTimeMs === null
+      ? true
+      : known.lastExecutedTimeMs !== null && observed.executedTimeMs <= known.lastExecutedTimeMs;
+  // 同broker已验证的迟到弱观察在入站单调层丢弃；经济commit本身仍严格禁止数量/phase倒退。
+  if (
+    knownPhase === 'OPEN' &&
+    observedPhase === 'OPEN' &&
+    known.lastOrderUpdateAtMs !== null &&
+    observed.updatedAtMs === known.lastOrderUpdateAtMs &&
+    observed.executedQuantity < known.executedQuantity &&
+    exactCompare(observed.executedAmount, known.executedAmount) <= 0 &&
+    doesNotAdvanceTime
+  )
+    return null;
 
   if (
-    nextLifecycle === 'OPEN' &&
-    currentUpdatedAtMs !== null &&
-    (nextUpdatedAtMs === null || nextUpdatedAtMs < currentUpdatedAtMs)
-  ) {
+    knownPhase === 'TERMINAL' &&
+    observedPhase === 'OPEN' &&
+    observed.executedQuantity === known.executedQuantity &&
+    exactCompare(observed.executedAmount, known.executedAmount) === 0 &&
+    doesNotAdvanceTime
+  )
     return null;
-  }
 
-  const hasValidIncomingExecutionPrice =
-    observedFact.executedPrice !== null &&
-    Number.isFinite(observedFact.executedPrice) &&
-    observedFact.executedPrice > 0;
+  const previous: BrokerOrderExecutionFact | undefined =
+    known.lastOrderUpdateAtMs === null
+      ? undefined
+      : {
+          brokerOrderId: known.orderId,
+          symbol: known.symbol,
+          side: known.executionSide,
+          cumulativeQuantity: known.executedQuantity,
+          cumulativeAmount: known.executedAmount,
+          executionTimeMs: known.lastExecutedTimeMs,
+          updatedAtMs: known.lastOrderUpdateAtMs,
+          phase: requireExecutionPhase(knownPhase),
+        };
+  const next = mergeBrokerOrderExecutionFact(previous, {
+    brokerOrderId: known.orderId,
+    symbol: known.symbol,
+    side: known.executionSide,
+    cumulativeQuantity: observed.executedQuantity,
+    cumulativeAmount: observed.executedAmount,
+    executionTimeMs: observed.executedTimeMs,
+    updatedAtMs: observed.updatedAtMs,
+    phase: observedPhase,
+  });
+  if (previous !== undefined && observed.updatedAtMs < previous.updatedAtMs) return null;
 
-  let mergedStatus = observedFact.status;
-  if (currentUpdatedAtMs !== null && nextUpdatedAtMs === currentUpdatedAtMs) {
-    const hasStrongerQuantity = nextExecutedQuantity > trackedOrder.executedQuantity;
-    const hasTerminalProgress = nextLifecycle === 'TERMINAL';
-    if (nextExecutedQuantity < trackedOrder.executedQuantity && !hasTerminalProgress) {
-      return null;
-    }
-
-    if (!hasTerminalProgress) {
-      mergedStatus = resolveSameTimestampOpenStatus(trackedOrder.status, observedFact.status);
-    }
-
-    if (!hasStrongerQuantity && !hasTerminalProgress && mergedStatus === trackedOrder.status) {
-      return null;
-    }
-  } else if (
-    nextLifecycle === 'OPEN' &&
-    !canAdvanceOpenStatus(trackedOrder.status, observedFact.status)
+  let status =
+    previous?.updatedAtMs === observed.updatedAtMs && next.phase === 'OPEN'
+      ? resolveSameTimestampOpenStatus(known.status, observed.status)
+      : observed.status;
+  if (
+    next.phase === 'OPEN' &&
+    previous !== undefined &&
+    observed.updatedAtMs > previous.updatedAtMs &&
+    !canAdvanceOpenStatus(known.status, observed.status)
   ) {
-    if (nextExecutedQuantity <= trackedOrder.executedQuantity) {
-      return null;
+    if (next.cumulativeQuantity <= known.executedQuantity) return null;
+
+    status = known.status;
+  }
+
+  if (next === previous && status === known.status) return null;
+
+  return {
+    status,
+    executionPhase: next.phase,
+    executedQuantity: next.cumulativeQuantity,
+    executedAmount: next.cumulativeAmount,
+    executedPrice: observed.executedPrice,
+    executedTimeMs: next.executionTimeMs,
+    updatedAtMs: next.updatedAtMs,
+  };
+}
+
+/** 终态只使用共享裁决已接受的累计 amount/T/revision，不能补造 broker 执行。 */
+export function normalizeTerminalStateSnapshot(
+  known: KnownOrderFact,
+  terminal: TerminalStateSnapshot,
+  isProtectiveSell = false,
+): NormalizedTerminalStateSnapshot {
+  if (isResourceOnlyTerminal(known, terminal)) {
+    return {
+      ...terminal,
+      executedQuantity: known.executedQuantity,
+      executedAmount: known.executedAmount,
+      executedPrice: known.executedPrice,
+      executionTimeMs: known.lastExecutedTimeMs,
+      executedTimeMs: known.lastExecutedTimeMs,
+      orderUpdatedAtMs: known.lastOrderUpdateAtMs,
+    };
+  }
+
+  if (isProtectiveSell)
+    assertRawExecution(known, {
+      status: terminal.status,
+      executedQuantity: terminal.executedQuantity,
+      executedAmount: terminal.executedAmount,
+      executedPrice: terminal.executedPrice,
+      executedTimeMs: terminal.executionTimeMs,
+      updatedAtMs: terminal.orderUpdatedAtMs,
+    });
+
+  const merged = mergeMonotonicOrderFact(known, {
+    executionPhase: terminal.kind,
+    status: terminal.status,
+    executedQuantity: terminal.executedQuantity,
+    executedAmount: terminal.executedAmount,
+    executedPrice: terminal.executedPrice,
+    executedTimeMs: terminal.executionTimeMs,
+    updatedAtMs: terminal.orderUpdatedAtMs,
+  });
+  if (merged === null) {
+    // 较旧原始候选已经严格预检；资源终态不能抹掉同broker更强的已知经济事实。
+    if (
+      terminal.orderUpdatedAtMs !== null &&
+      known.lastOrderUpdateAtMs !== null &&
+      terminal.orderUpdatedAtMs < known.lastOrderUpdateAtMs &&
+      terminal.executedQuantity !== null &&
+      terminal.executedQuantity <= known.executedQuantity
+    ) {
+      assertRawExecution(known, {
+        status: known.status,
+        executedQuantity: known.executedQuantity,
+        executedAmount: known.executedAmount,
+        executedPrice: known.executedPrice,
+        executedTimeMs: known.lastExecutedTimeMs,
+        updatedAtMs: known.lastOrderUpdateAtMs,
+      });
+      return {
+        ...terminal,
+        executedQuantity: known.executedQuantity,
+        executedAmount: known.executedAmount,
+        executedPrice: known.executedPrice,
+        executionTimeMs: known.lastExecutedTimeMs,
+        executedTimeMs: known.lastExecutedTimeMs,
+        orderUpdatedAtMs: known.lastOrderUpdateAtMs,
+      };
     }
 
-    mergedStatus = trackedOrder.status;
-  }
-
-  const incomingPriceIsAuthoritative =
-    executionQuantityAdvanced ||
-    (nextExecutedQuantity === trackedOrder.executedQuantity &&
-      nextExecutedQuantity > 0 &&
-      hasValidIncomingExecutionPrice &&
-      (currentUpdatedAtMs === null ||
-        (nextUpdatedAtMs !== null && nextUpdatedAtMs >= currentUpdatedAtMs)));
-  const executedQuantity = executionQuantityAdvanced
-    ? nextExecutedQuantity
-    : trackedOrder.executedQuantity;
-  const updatedAtMs = executionQuantityAdvanced
-    ? observedFact.updatedAtMs
-    : resolveMonotonicTimestamp(currentUpdatedAtMs, nextUpdatedAtMs);
-  const executedTimeMs = executionQuantityAdvanced
-    ? observedFact.executedTimeMs
-    : trackedOrder.lastExecutedTimeMs;
-
-  return {
-    status: mergedStatus,
-    executedQuantity,
-    executedPrice: incomingPriceIsAuthoritative
-      ? observedFact.executedPrice
-      : trackedOrder.executedPrice,
-    executedTimeMs,
-    updatedAtMs,
-  };
-}
-
-/**
- * 合并已通过严格 raw 准入的保护性 SELL 事实。
- *
- * 累计成交量推进时，执行时间必须直接来自本次原始 broker observation；
- * 不允许用 tracked 时间取最大值伪造本次新增成交的边界。
- */
-function mergeProtectiveSellRawObservation(
-  trackedOrder: KnownOrderFact,
-  observedFact: OrderObservedFact,
-): MonotonicOrderFact | null {
-  const mergedFact = mergeMonotonicOrderFact(trackedOrder, observedFact);
-  if (mergedFact === null || observedFact.executedQuantity === null) {
-    return mergedFact;
-  }
-
-  if (observedFact.executedQuantity <= trackedOrder.executedQuantity) {
-    return mergedFact;
+    throw new Error(`[订单监控] 订单 ${known.orderId} 终态事实无法与当前已知事实合并`);
   }
 
   return {
-    ...mergedFact,
-    executedTimeMs: observedFact.executedTimeMs,
-  };
-}
-
-/**
- * 将 API TERMINAL state-check 与当前已知订单事实合并为可结算终态。
- * 终态负责关闭生命周期，但成交数量、价格、成交时间和 revision 不得否认更强的已知事实。
- */
-export function normalizeTerminalStateSnapshot(
-  knownFact: KnownOrderFact,
-  terminalState: TerminalStateSnapshot,
-  isProtectiveSell: boolean = false,
-): NormalizedTerminalStateSnapshot {
-  const observedFact = {
-    status: terminalState.status,
-    executedQuantity: terminalState.executedQuantity,
-    executedPrice: terminalState.executedPrice,
-    executedTimeMs: terminalState.orderUpdatedAtMs,
-    updatedAtMs: terminalState.orderUpdatedAtMs,
-  };
-  const mergedFact = isProtectiveSell
-    ? mergeProtectiveSellRawObservation(knownFact, observedFact)
-    : mergeMonotonicOrderFact(knownFact, observedFact);
-  if (mergedFact === null) {
-    throw new Error(`[订单监控] 订单 ${knownFact.orderId} 终态事实无法与当前已知事实合并`);
-  }
-
-  return {
-    ...terminalState,
-    status: mergedFact.status,
-    executedPrice: mergedFact.executedPrice,
-    executedQuantity: mergedFact.executedQuantity,
-    executedTimeMs: mergedFact.executedTimeMs,
-    orderUpdatedAtMs: mergedFact.updatedAtMs,
+    ...terminal,
+    status: merged.status,
+    executedQuantity: merged.executedQuantity,
+    executedPrice: merged.executedPrice,
+    executedAmount: merged.executedAmount,
+    executedTimeMs: merged.executedTimeMs,
+    executionTimeMs: merged.executedTimeMs,
+    orderUpdatedAtMs: merged.updatedAtMs,
   };
 }

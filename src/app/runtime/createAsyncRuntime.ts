@@ -25,6 +25,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   const {
     monitorContext,
     trader,
+    snapshot,
     lastState,
     postTradeConsistencyRuntime,
     signalProcessor,
@@ -54,7 +55,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,
     quoteSubscriptionRuntime,
-    lastState,
+    snapshot,
     getCanProcessTask: () => !termination.isTerminated() && lastState.isTradingEnabled,
     getCanTradeNow: canProcessOrdinaryTradeTask,
     termination,
@@ -70,6 +71,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   if (termination.isTerminated()) return null;
 
   const buyProcessor = createBuyProcessor({
+    snapshot,
     taskQueue: buyTaskQueue,
     monitorContext,
     signalProcessor,
@@ -100,6 +102,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     trader,
     marketDataClient,
     getLastState: () => lastState,
+    snapshot,
     postTradeConsistencyRuntime,
     getCanProcessTask: canProcessOrdinaryTradeTask,
     termination,

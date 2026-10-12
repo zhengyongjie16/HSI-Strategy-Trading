@@ -1,3 +1,5 @@
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
+
 /**
  * Quote 午夜排空重试集成测试。
  * 使用真实 Quote owner 与 dayLifecycle manager，验证外部失败不会永久锁住午夜清理。
@@ -8,11 +10,7 @@ import { createDayLifecycleManager } from '../../../src/main/lifecycle/dayLifecy
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import { createExternalApiAggregateRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import {
-  createLoggerDouble,
-  createMonitorConfigDouble,
-  createPositionCacheDouble,
-} from '../../helpers/testDoubles.js';
+import { createLoggerDouble, createMonitorConfigDouble } from '../../helpers/testDoubles.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { LastState } from '../../../src/types/state.js';
 
@@ -29,9 +27,6 @@ describe('Quote drain 午夜重试', () => {
         lifecycleState: 'ACTIVE',
         pendingOpenRebuild: false,
         isTradingEnabled: true,
-        cachedAccount: null,
-        cachedPositions: [],
-        positionCache: createPositionCacheDouble(),
         cachedTradingDayInfo: null,
         tradingCalendarSnapshot: new Map(),
         allTradingSymbols: new Set(['OLD.HK']),
@@ -59,7 +54,9 @@ describe('Quote drain 午夜重试', () => {
           terminated = true;
         },
       };
+      const snapshot = await createSnapshotFixture({ positions: [] });
       const quote = createQuoteSubscriptionRuntime({
+        snapshot,
         logger: createLoggerDouble(),
         tradingConfig: createTradingConfig({ monitor }),
         symbolRegistry: createSymbolRegistry(monitor),
@@ -78,6 +75,7 @@ describe('Quote drain 午夜重试', () => {
       });
       const completedDomains: string[] = [];
       const manager = createDayLifecycleManager({
+        snapshot,
         mutableState: state,
         termination,
         logger: createLoggerDouble(),
@@ -85,13 +83,17 @@ describe('Quote drain 午夜重试', () => {
         cacheDomains: [
           {
             midnightClear: () => quote.stopAndDrain(),
-            openRebuild: () => quote.reconcileFromCurrentTruth(),
+            openRebuild: async () => {
+              throw new Error('Midnight retry must not enter open rebuild');
+            },
           },
           {
             midnightClear: () => {
               completedDomains.push('dependent');
             },
-            openRebuild: () => {},
+            openRebuild: () => {
+              throw new Error('Midnight retry must not enter dependent open rebuild');
+            },
           },
         ],
       });

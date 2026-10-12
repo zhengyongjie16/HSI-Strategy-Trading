@@ -6,7 +6,15 @@
  */
 import { describe, expect, it } from 'bun:test';
 
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
+import type { PeriodicSwitchTaskData } from '../../src/types/periodicSwitch.js';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
+import { createPeriodicSwitchWakeupRuntime } from '../../src/main/periodicSwitchWakeupRuntime/index.js';
+import { calculateTradingDurationDueAtMs } from '../../src/utils/time/index.js';
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
@@ -14,7 +22,6 @@ import { createTradingGateEventRuntime as createProductionTradingGateEventRuntim
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
 import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { MonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/types.js';
 import type { SwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/types.js';
 
 import {
@@ -23,12 +30,14 @@ import {
   createLoggerDouble,
   createMonitorConfigDouble,
   createOrderRecorderDouble,
-  createPositionCacheDouble,
+  createAccountSnapshotDouble,
+  createMonitorContextDouble,
+  createDailyLossTrackerDouble,
+  createLiquidationCooldownTrackerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
   createRiskCheckerDouble,
-  createSymbolRegistryDouble,
   createTraderDouble,
   createQuoteSubscriptionRuntimeDouble,
-  createPeriodicSwitchWakeupRuntimeDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
 import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
@@ -62,9 +71,6 @@ function createLastState(): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
 
@@ -83,31 +89,22 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number = 1000): Pr
   }
 }
 
-function schedulePeriodicTick(
-  params: Readonly<{
-    monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
-    monitorContext: MonitorContext;
-    direction: 'LONG' | 'SHORT';
-    currentTimeMs: number;
-  }>,
-): void {
-  const { monitorTaskQueue, monitorContext, direction, currentTimeMs } = params;
-  const seatSnapshot = monitorContext.symbolRegistry.getSeatState(direction);
-  if (seatSnapshot.status !== 'ACTIVE' || seatSnapshot.lastSeatActivatedAt === null) {
-    return;
+/** 只触发生产owner原注册且已到期的one-shot，不制造task或receipt。 */
+async function firePeriodicTimers(
+  callbacks: Array<{ handle: ReturnType<typeof setTimeout>; atMs: number; callback: () => void }>,
+  nowMs: number,
+): Promise<void> {
+  for (const entry of callbacks) {
+    if (entry.atMs > nowMs) continue;
+
+    clearTimeout(entry.handle);
+    const index = callbacks.indexOf(entry);
+    if (index !== -1) callbacks.splice(index, 1);
+
+    entry.callback();
   }
 
-  monitorTaskQueue.scheduleLatest({
-    type: 'AUTO_SYMBOL_TICK',
-    dedupeKey: `AUTO_SYMBOL_TICK:${direction}`,
-    data: {
-      direction,
-      seatVersion: monitorContext.symbolRegistry.getSeatVersion(direction),
-      symbol: seatSnapshot.symbol,
-      lastSeatActivatedAt: seatSnapshot.lastSeatActivatedAt,
-      currentTimeMs,
-    },
-  });
+  await Bun.sleep(0);
 }
 
 function createStartedSwitchWakeupRuntime(
@@ -115,6 +112,8 @@ function createStartedSwitchWakeupRuntime(
     monitorContext: MonitorContext;
     trader: Parameters<typeof createSwitchWakeupRuntime>[0]['trader'];
     lastState: LastState;
+    snapshot: AccountPositionSnapshot;
+    settlement: PostTradeConsistencyRuntime;
     now: () => Date;
   }>,
 ): SwitchWakeupRuntime {
@@ -125,11 +124,8 @@ function createStartedSwitchWakeupRuntime(
     symbolRegistry: params.monitorContext.symbolRegistry,
     monitorContext: params.monitorContext,
     lastState: params.lastState,
-    postTradeConsistencyRuntime: {
-      waitForFresh: async () => {},
-      getStatus: () => ({ started: true, currentVersion: 0, staleVersion: 0 }),
-      onFreshReached: () => () => {},
-    },
+    snapshot: params.snapshot,
+    postTradeConsistencyRuntime: params.settlement,
     tradingGateEventRuntime: createTradingGateEventRuntime(),
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
     doomsdayProtectionEnabled: false,
@@ -145,7 +141,21 @@ function createStartedSwitchWakeupRuntime(
     }),
   });
   runtime.start();
-  return runtime;
+  return {
+    ...runtime,
+    handoffPendingSwitch: (handoff) => {
+      const witness = handoff.driveResult.publishedRoute;
+      if (witness === undefined)
+        throw new Error('initial periodic handoff requires real publication');
+
+      expect(witness.isCurrent()).toBeTrue();
+      expect(params.monitorContext.symbolRegistry.getSeatVersion(handoff.direction)).toBe(
+        witness.seatVersion,
+      );
+      expect(handoff.originalDayEpoch).toBe(params.snapshot.getView().token.dayEpoch);
+      runtime.handoffPendingSwitch(handoff);
+    },
+  };
 }
 
 describe('periodic auto-symbol full chain integration', () => {
@@ -155,7 +165,7 @@ describe('periodic auto-symbol full chain integration', () => {
     candidateQueue = [
       null,
       null,
-      createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
+      createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' }),
     ];
     const tradingCalendarSnapshot = new Map([
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
@@ -165,42 +175,38 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 1,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
 
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: 'OLD_BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: readyMs,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 1,
-      shortVersion: 1,
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: readyMs,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: '20000',
     });
 
+    let mutationCalls = 0;
     const trader = createTraderDouble({
+      executeSignals: async (_signals, callerAuthorization) => {
+        mutationCalls += 1;
+        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+
+        throw new Error('periodic switch must never SELL or REBUY');
+      },
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
@@ -214,7 +220,8 @@ describe('periodic auto-symbol full chain integration', () => {
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
-          distanceToStrikePercent: 0.1,
+          distanceNumerator: '0.1',
+          distanceDenominator: '100',
         }),
     });
 
@@ -231,34 +238,121 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorContext = {
+    const dailyLossTracker = createDailyLossTrackerDouble();
+    const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
+      [],
+      monitorConfig,
+      new Date(currentNowMs),
+      undefined,
+      new Set(['OLD_BULL.HK', 'NEW_BULL.HK']),
+    );
+    if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
+
+    dailyLossTracker.publishRecalculation(preparedDaily);
+    const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
       symbolRegistry,
       autoSymbolManager,
       orderRecorder,
-      dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: () => {},
-        recordCumulativeExecution: () => ({
-          authoritativeFactChanged: false,
-          executionAdvanced: false,
-        }),
-        getLossOffset: () => 0,
-      },
+      dailyLossTracker,
       riskChecker,
-      unrealizedLossMonitor: {
-        monitorDirectionalUnrealizedLoss: async () => {},
-      },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-    } as unknown as MonitorContext;
+    });
     const lastState = createLastState();
+    const snapshot = createAccountPositionSnapshot({
+      dayEpoch: 1,
+      scheduler: { schedule: queueMicrotask },
+      readPort: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [],
+      },
+      reportFatalError: rethrowFatalError,
+    });
+    const baseline = await snapshot.requestRefresh({
+      source: 'periodic-integration-baseline',
+      dayEpoch: 1,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
+
+    const settlement = createPostTradeConsistencyRuntime({
+      snapshot,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      getTrader: () => trader,
+      onPositionsCommitted: async (token) => {
+        if (!snapshot.isCurrent(token, { account: false, positions: true }))
+          throw new Error('old position subscription commit');
+      },
+      scheduler: MONITOR_TASK_RUNTIME.scheduler,
+    });
+    settlement.bindBusinessDeps({
+      monitorContext,
+      dailyLossTracker,
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => {
+          throw new Error('periodic case must not create protective completion');
+        },
+      },
+    });
+    settlement.start();
+    expect(await settlement.completeRebuildBaseline()).toBeTrue();
+    const readinessReceipt = await settlement.waitForFresh();
+    expect(readinessReceipt.snapshotToken).toEqual(baseline.snapshotToken);
+    expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
       trader,
       lastState,
+      snapshot,
+      settlement,
       now: () => new Date(currentNowMs),
+    });
+    const issuedTasks: PeriodicSwitchTaskData[] = [];
+    const dueCallbacks: Array<{
+      handle: ReturnType<typeof setTimeout>;
+      atMs: number;
+      callback: () => void;
+    }> = [];
+    const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      monitorContext,
+      symbolRegistry,
+      monitorTaskQueue: {
+        scheduleLatest: (task) => {
+          if (task.type !== 'AUTO_SYMBOL_TICK') throw new Error('unexpected periodic task');
+
+          issuedTasks.push(task.data);
+          expect(task.data.canContinue()).toBeTrue();
+          return monitorTaskQueue.scheduleLatest(task);
+        },
+      },
+      trader,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      postTradeConsistencyRuntime: settlement,
+      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
+        calculateTradingDurationDueAtMs({
+          startMs,
+          targetDurationMs: switchIntervalMinutes * 60000,
+          calendarSnapshot: tradingCalendarSnapshot,
+        }),
+      now: () => new Date(currentNowMs),
+      scheduleTimer: (callback, delayMs) => {
+        const handle = setTimeout(callback, delayMs);
+        dueCallbacks.push({ handle, atMs: currentNowMs + delayMs, callback });
+        return handle;
+      },
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+        const index = dueCallbacks.findIndex((entry) => entry.handle === handle);
+        if (index !== -1) dueCallbacks.splice(index, 1);
+      },
     });
     const processor = createMonitorTaskProcessor({
       ...MONITOR_TASK_RUNTIME,
@@ -268,27 +362,18 @@ describe('periodic auto-symbol full chain integration', () => {
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
-      periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState,
-      getCanTradeNow: () => true,
+      periodicSwitchWakeupRuntime,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();
+    periodicSwitchWakeupRuntime.start();
     try {
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'LONG',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'SHORT',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
       await waitUntil(() => monitorTaskQueue.isEmpty());
       await processor.stopAndDrain();
@@ -303,19 +388,9 @@ describe('periodic auto-symbol full chain integration', () => {
       processor.restart();
       currentNowMs += 600_000;
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'LONG',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'SHORT',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
       await waitUntil(() => monitorTaskQueue.isEmpty());
       await processor.stopAndDrain();
@@ -329,13 +404,18 @@ describe('periodic auto-symbol full chain integration', () => {
     } finally {
       await processor.stopAndDrain();
       await switchWakeupRuntime.stopAndDrain();
+      await periodicSwitchWakeupRuntime.stopAndDrain();
+      await settlement.stopAndDrain();
+      expect(mutationCalls).toBe(0);
+      expect(issuedTasks.length).toBeGreaterThan(0);
+      await snapshot.requestClear({ reason: 'STOP', dayEpoch: snapshot.getView().token.dayEpoch });
     }
   });
 
   it('keeps seat ACTIVE when local pending buy order exists before order recorder is written', async () => {
     const readyMs = Date.parse('2026-02-16T01:30:00.000Z');
     const currentNowMs = Date.parse('2026-02-16T01:31:00.000Z');
-    candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 })];
+    candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' })];
     const tradingCalendarSnapshot = new Map([
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
     ]);
@@ -344,42 +424,38 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 1,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
 
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: 'OLD_BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: readyMs,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 1,
-      shortVersion: 1,
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: readyMs,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: '20000',
     });
 
+    let mutationCalls = 0;
     const trader = createTraderDouble({
+      executeSignals: async (_signals, callerAuthorization) => {
+        mutationCalls += 1;
+        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+
+        throw new Error('periodic switch must never SELL or REBUY');
+      },
       getPendingOrders: async () => [],
       getOrderHoldSymbols: () => new Set(['OLD_BULL.HK']),
       cancelOrder: async () => ({
@@ -395,7 +471,8 @@ describe('periodic auto-symbol full chain integration', () => {
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
-          distanceToStrikePercent: 0.1,
+          distanceNumerator: '0.1',
+          distanceDenominator: '100',
         }),
     });
 
@@ -412,34 +489,121 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorContext = {
+    const dailyLossTracker = createDailyLossTrackerDouble();
+    const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
+      [],
+      monitorConfig,
+      new Date(currentNowMs),
+      undefined,
+      new Set(['OLD_BULL.HK', 'NEW_BULL.HK']),
+    );
+    if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
+
+    dailyLossTracker.publishRecalculation(preparedDaily);
+    const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
       symbolRegistry,
       autoSymbolManager,
       orderRecorder,
-      dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: () => {},
-        recordCumulativeExecution: () => ({
-          authoritativeFactChanged: false,
-          executionAdvanced: false,
-        }),
-        getLossOffset: () => 0,
-      },
+      dailyLossTracker,
       riskChecker,
-      unrealizedLossMonitor: {
-        monitorDirectionalUnrealizedLoss: async () => {},
-      },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-    } as unknown as MonitorContext;
+    });
     const lastState = createLastState();
+    const snapshot = createAccountPositionSnapshot({
+      dayEpoch: 1,
+      scheduler: { schedule: queueMicrotask },
+      readPort: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [],
+      },
+      reportFatalError: rethrowFatalError,
+    });
+    const baseline = await snapshot.requestRefresh({
+      source: 'periodic-integration-baseline',
+      dayEpoch: 1,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
+
+    const settlement = createPostTradeConsistencyRuntime({
+      snapshot,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      getTrader: () => trader,
+      onPositionsCommitted: async (token) => {
+        if (!snapshot.isCurrent(token, { account: false, positions: true }))
+          throw new Error('old position subscription commit');
+      },
+      scheduler: MONITOR_TASK_RUNTIME.scheduler,
+    });
+    settlement.bindBusinessDeps({
+      monitorContext,
+      dailyLossTracker,
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => {
+          throw new Error('periodic case must not create protective completion');
+        },
+      },
+    });
+    settlement.start();
+    expect(await settlement.completeRebuildBaseline()).toBeTrue();
+    const readinessReceipt = await settlement.waitForFresh();
+    expect(readinessReceipt.snapshotToken).toEqual(baseline.snapshotToken);
+    expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
       trader,
       lastState,
+      snapshot,
+      settlement,
       now: () => new Date(currentNowMs),
+    });
+    const issuedTasks: PeriodicSwitchTaskData[] = [];
+    const dueCallbacks: Array<{
+      handle: ReturnType<typeof setTimeout>;
+      atMs: number;
+      callback: () => void;
+    }> = [];
+    const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      monitorContext,
+      symbolRegistry,
+      monitorTaskQueue: {
+        scheduleLatest: (task) => {
+          if (task.type !== 'AUTO_SYMBOL_TICK') throw new Error('unexpected periodic task');
+
+          issuedTasks.push(task.data);
+          expect(task.data.canContinue()).toBeTrue();
+          return monitorTaskQueue.scheduleLatest(task);
+        },
+      },
+      trader,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      postTradeConsistencyRuntime: settlement,
+      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
+        calculateTradingDurationDueAtMs({
+          startMs,
+          targetDurationMs: switchIntervalMinutes * 60000,
+          calendarSnapshot: tradingCalendarSnapshot,
+        }),
+      now: () => new Date(currentNowMs),
+      scheduleTimer: (callback, delayMs) => {
+        const handle = setTimeout(callback, delayMs);
+        dueCallbacks.push({ handle, atMs: currentNowMs + delayMs, callback });
+        return handle;
+      },
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+        const index = dueCallbacks.findIndex((entry) => entry.handle === handle);
+        if (index !== -1) dueCallbacks.splice(index, 1);
+      },
     });
     const processor = createMonitorTaskProcessor({
       ...MONITOR_TASK_RUNTIME,
@@ -449,27 +613,18 @@ describe('periodic auto-symbol full chain integration', () => {
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
-      periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState,
-      getCanTradeNow: () => true,
+      periodicSwitchWakeupRuntime,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();
+    periodicSwitchWakeupRuntime.start();
     try {
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'LONG',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'SHORT',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
       await waitUntil(() => monitorTaskQueue.isEmpty());
       await processor.stopAndDrain();
@@ -481,13 +636,18 @@ describe('periodic auto-symbol full chain integration', () => {
     } finally {
       await processor.stopAndDrain();
       await switchWakeupRuntime.stopAndDrain();
+      await periodicSwitchWakeupRuntime.stopAndDrain();
+      await settlement.stopAndDrain();
+      expect(mutationCalls).toBe(0);
+      expect(issuedTasks.length).toBeGreaterThan(0);
+      await snapshot.requestClear({ reason: 'STOP', dayEpoch: snapshot.getView().token.dayEpoch });
     }
   });
 
   it('keeps seat ACTIVE when local pending sell order remains after order recorder is cleared', async () => {
     const readyMs = Date.parse('2026-02-16T01:30:00.000Z');
     const currentNowMs = Date.parse('2026-02-16T01:31:00.000Z');
-    candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 })];
+    candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' })];
     const tradingCalendarSnapshot = new Map([
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
     ]);
@@ -496,42 +656,38 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 1,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
 
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: 'OLD_BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: readyMs,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 1,
-      shortVersion: 1,
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: readyMs,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: '20000',
     });
 
+    let mutationCalls = 0;
     const trader = createTraderDouble({
+      executeSignals: async (_signals, callerAuthorization) => {
+        mutationCalls += 1;
+        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+
+        throw new Error('periodic switch must never SELL or REBUY');
+      },
       getPendingOrders: async () => [],
       getOrderHoldSymbols: () => new Set(['OLD_BULL.HK']),
       cancelOrder: async () => ({
@@ -547,7 +703,8 @@ describe('periodic auto-symbol full chain integration', () => {
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
-          distanceToStrikePercent: 0.1,
+          distanceNumerator: '0.1',
+          distanceDenominator: '100',
         }),
     });
 
@@ -564,34 +721,121 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorContext = {
+    const dailyLossTracker = createDailyLossTrackerDouble();
+    const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
+      [],
+      monitorConfig,
+      new Date(currentNowMs),
+      undefined,
+      new Set(['OLD_BULL.HK', 'NEW_BULL.HK']),
+    );
+    if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
+
+    dailyLossTracker.publishRecalculation(preparedDaily);
+    const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
       symbolRegistry,
       autoSymbolManager,
       orderRecorder,
-      dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: () => {},
-        recordCumulativeExecution: () => ({
-          authoritativeFactChanged: false,
-          executionAdvanced: false,
-        }),
-        getLossOffset: () => 0,
-      },
+      dailyLossTracker,
       riskChecker,
-      unrealizedLossMonitor: {
-        monitorDirectionalUnrealizedLoss: async () => {},
-      },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-    } as unknown as MonitorContext;
+    });
     const lastState = createLastState();
+    const snapshot = createAccountPositionSnapshot({
+      dayEpoch: 1,
+      scheduler: { schedule: queueMicrotask },
+      readPort: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [],
+      },
+      reportFatalError: rethrowFatalError,
+    });
+    const baseline = await snapshot.requestRefresh({
+      source: 'periodic-integration-baseline',
+      dayEpoch: 1,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
+
+    const settlement = createPostTradeConsistencyRuntime({
+      snapshot,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      getTrader: () => trader,
+      onPositionsCommitted: async (token) => {
+        if (!snapshot.isCurrent(token, { account: false, positions: true }))
+          throw new Error('old position subscription commit');
+      },
+      scheduler: MONITOR_TASK_RUNTIME.scheduler,
+    });
+    settlement.bindBusinessDeps({
+      monitorContext,
+      dailyLossTracker,
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => {
+          throw new Error('periodic case must not create protective completion');
+        },
+      },
+    });
+    settlement.start();
+    expect(await settlement.completeRebuildBaseline()).toBeTrue();
+    const readinessReceipt = await settlement.waitForFresh();
+    expect(readinessReceipt.snapshotToken).toEqual(baseline.snapshotToken);
+    expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
       trader,
       lastState,
+      snapshot,
+      settlement,
       now: () => new Date(currentNowMs),
+    });
+    const issuedTasks: PeriodicSwitchTaskData[] = [];
+    const dueCallbacks: Array<{
+      handle: ReturnType<typeof setTimeout>;
+      atMs: number;
+      callback: () => void;
+    }> = [];
+    const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      monitorContext,
+      symbolRegistry,
+      monitorTaskQueue: {
+        scheduleLatest: (task) => {
+          if (task.type !== 'AUTO_SYMBOL_TICK') throw new Error('unexpected periodic task');
+
+          issuedTasks.push(task.data);
+          expect(task.data.canContinue()).toBeTrue();
+          return monitorTaskQueue.scheduleLatest(task);
+        },
+      },
+      trader,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      postTradeConsistencyRuntime: settlement,
+      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
+        calculateTradingDurationDueAtMs({
+          startMs,
+          targetDurationMs: switchIntervalMinutes * 60000,
+          calendarSnapshot: tradingCalendarSnapshot,
+        }),
+      now: () => new Date(currentNowMs),
+      scheduleTimer: (callback, delayMs) => {
+        const handle = setTimeout(callback, delayMs);
+        dueCallbacks.push({ handle, atMs: currentNowMs + delayMs, callback });
+        return handle;
+      },
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+        const index = dueCallbacks.findIndex((entry) => entry.handle === handle);
+        if (index !== -1) dueCallbacks.splice(index, 1);
+      },
     });
     const processor = createMonitorTaskProcessor({
       ...MONITOR_TASK_RUNTIME,
@@ -601,27 +845,18 @@ describe('periodic auto-symbol full chain integration', () => {
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
-      periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState,
-      getCanTradeNow: () => true,
+      periodicSwitchWakeupRuntime,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();
+    periodicSwitchWakeupRuntime.start();
     try {
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'LONG',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'SHORT',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
       await waitUntil(() => monitorTaskQueue.isEmpty());
       await processor.stopAndDrain();
@@ -633,13 +868,18 @@ describe('periodic auto-symbol full chain integration', () => {
     } finally {
       await processor.stopAndDrain();
       await switchWakeupRuntime.stopAndDrain();
+      await periodicSwitchWakeupRuntime.stopAndDrain();
+      await settlement.stopAndDrain();
+      expect(mutationCalls).toBe(0);
+      expect(issuedTasks.length).toBeGreaterThan(0);
+      await snapshot.requestClear({ reason: 'STOP', dayEpoch: snapshot.getView().token.dayEpoch });
     }
   });
 
   it('applies cross-day trading-duration rule before periodic switch is triggered', async () => {
     const readyMs = Date.parse('2026-02-16T07:59:00.000Z'); // Day1 15:59 HK
     let currentNowMs = Date.parse('2026-02-17T01:30:00.000Z'); // Day2 09:30 HK
-    candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 })];
+    candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' })];
     const tradingCalendarSnapshot = new Map([
       ['2026-02-16', { isTradingDay: true, isHalfDay: false }],
       ['2026-02-17', { isTradingDay: true, isHalfDay: false }],
@@ -649,42 +889,38 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorSymbol: 'HSI.HK',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 2,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
 
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: 'OLD_BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: readyMs,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 1,
-      shortVersion: 1,
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: readyMs,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: '20000',
     });
 
+    let mutationCalls = 0;
     const trader = createTraderDouble({
+      executeSignals: async (_signals, callerAuthorization) => {
+        mutationCalls += 1;
+        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+
+        throw new Error('periodic switch must never SELL or REBUY');
+      },
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
         kind: 'CANCEL_CONFIRMED',
@@ -699,7 +935,8 @@ describe('periodic auto-symbol full chain integration', () => {
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
-          distanceToStrikePercent: 0.1,
+          distanceNumerator: '0.1',
+          distanceDenominator: '100',
         }),
     });
 
@@ -716,34 +953,121 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const monitorContext = {
+    const dailyLossTracker = createDailyLossTrackerDouble();
+    const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
+      [],
+      monitorConfig,
+      new Date(currentNowMs),
+      undefined,
+      new Set(['OLD_BULL.HK', 'NEW_BULL.HK']),
+    );
+    if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
+
+    dailyLossTracker.publishRecalculation(preparedDaily);
+    const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
       symbolRegistry,
       autoSymbolManager,
       orderRecorder,
-      dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: () => {},
-        recordCumulativeExecution: () => ({
-          authoritativeFactChanged: false,
-          executionAdvanced: false,
-        }),
-        getLossOffset: () => 0,
-      },
+      dailyLossTracker,
       riskChecker,
-      unrealizedLossMonitor: {
-        monitorDirectionalUnrealizedLoss: async () => {},
-      },
       longSymbolName: 'OLD_BULL.HK',
       shortSymbolName: '',
       monitorSymbolName: 'HSI.HK',
-    } as unknown as MonitorContext;
+    });
     const lastState = createLastState();
+    const snapshot = createAccountPositionSnapshot({
+      dayEpoch: 1,
+      scheduler: { schedule: queueMicrotask },
+      readPort: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [],
+      },
+      reportFatalError: rethrowFatalError,
+    });
+    const baseline = await snapshot.requestRefresh({
+      source: 'periodic-integration-baseline',
+      dayEpoch: 1,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
+
+    const settlement = createPostTradeConsistencyRuntime({
+      snapshot,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      getTrader: () => trader,
+      onPositionsCommitted: async (token) => {
+        if (!snapshot.isCurrent(token, { account: false, positions: true }))
+          throw new Error('old position subscription commit');
+      },
+      scheduler: MONITOR_TASK_RUNTIME.scheduler,
+    });
+    settlement.bindBusinessDeps({
+      monitorContext,
+      dailyLossTracker,
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+      mixedTradeLogRepository: {
+        appendCompletionIdempotent: () => {
+          throw new Error('periodic case must not create protective completion');
+        },
+      },
+    });
+    settlement.start();
+    expect(await settlement.completeRebuildBaseline()).toBeTrue();
+    const readinessReceipt = await settlement.waitForFresh();
+    expect(readinessReceipt.snapshotToken).toEqual(baseline.snapshotToken);
+    expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
       trader,
       lastState,
+      snapshot,
+      settlement,
       now: () => new Date(currentNowMs),
+    });
+    const issuedTasks: PeriodicSwitchTaskData[] = [];
+    const dueCallbacks: Array<{
+      handle: ReturnType<typeof setTimeout>;
+      atMs: number;
+      callback: () => void;
+    }> = [];
+    const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      monitorContext,
+      symbolRegistry,
+      monitorTaskQueue: {
+        scheduleLatest: (task) => {
+          if (task.type !== 'AUTO_SYMBOL_TICK') throw new Error('unexpected periodic task');
+
+          issuedTasks.push(task.data);
+          expect(task.data.canContinue()).toBeTrue();
+          return monitorTaskQueue.scheduleLatest(task);
+        },
+      },
+      trader,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      postTradeConsistencyRuntime: settlement,
+      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
+        calculateTradingDurationDueAtMs({
+          startMs,
+          targetDurationMs: switchIntervalMinutes * 60000,
+          calendarSnapshot: tradingCalendarSnapshot,
+        }),
+      now: () => new Date(currentNowMs),
+      scheduleTimer: (callback, delayMs) => {
+        const handle = setTimeout(callback, delayMs);
+        dueCallbacks.push({ handle, atMs: currentNowMs + delayMs, callback });
+        return handle;
+      },
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+        const index = dueCallbacks.findIndex((entry) => entry.handle === handle);
+        if (index !== -1) dueCallbacks.splice(index, 1);
+      },
     });
     const processor = createMonitorTaskProcessor({
       ...MONITOR_TASK_RUNTIME,
@@ -753,27 +1077,18 @@ describe('periodic auto-symbol full chain integration', () => {
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
-      periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState,
-      getCanTradeNow: () => true,
+      periodicSwitchWakeupRuntime,
+      snapshot,
+      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
     processor.start();
+    periodicSwitchWakeupRuntime.start();
     try {
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'LONG',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'SHORT',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
       await waitUntil(() => monitorTaskQueue.isEmpty());
       await processor.stopAndDrain();
@@ -783,19 +1098,9 @@ describe('periodic auto-symbol full chain integration', () => {
       processor.restart();
       currentNowMs += 60_000; // Day2 09:31 HK
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'LONG',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
-      schedulePeriodicTick({
-        monitorTaskQueue,
-        monitorContext,
-        direction: 'SHORT',
-        currentTimeMs: currentNowMs,
-      });
+      await firePeriodicTimers(dueCallbacks, currentNowMs);
 
       await waitUntil(() => monitorTaskQueue.isEmpty());
       await waitUntil(() => symbolRegistry.getSeatState('LONG').status === 'ACTIVATING');
@@ -809,6 +1114,11 @@ describe('periodic auto-symbol full chain integration', () => {
     } finally {
       await processor.stopAndDrain();
       await switchWakeupRuntime.stopAndDrain();
+      await periodicSwitchWakeupRuntime.stopAndDrain();
+      await settlement.stopAndDrain();
+      expect(mutationCalls).toBe(0);
+      expect(issuedTasks.length).toBeGreaterThan(0);
+      await snapshot.requestClear({ reason: 'STOP', dayEpoch: snapshot.getView().token.dayEpoch });
     }
   });
 });

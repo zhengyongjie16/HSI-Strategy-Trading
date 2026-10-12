@@ -88,6 +88,7 @@ function scheduleSeatRefresh(params: {
       type: 'SEAT_REFRESH',
       dedupeKey,
       data: {
+        dayEpoch: params.deps.snapshot.getView().token.dayEpoch,
         direction: params.direction,
         seatVersion: params.seatVersion,
         previousSymbol: params.previousSymbol,

@@ -5,15 +5,16 @@ import { OPEN_API_ORDER_TYPE_TO_CONFIG } from '../../constants/index.js';
 import {
   createConfigValidationError,
   getBooleanConfig,
-  getNumberConfig,
+  getFinancialConfig,
   getStringConfig,
   parseLiquidationCooldownConfig,
-  parseNumberRangeConfig,
+  parseDecimalRangeConfig,
   parseOrderOwnershipMapping,
   parseOrderTypeConfig,
   parseSmartCloseTimeoutMinutesConfig,
 } from '../utils.js';
-import type { BoundedNumberConfig, MinimumNumberConfig } from './types.js';
+import type { BoundedNumberConfig } from './types.js';
+import { FINANCIAL_CONFIG_DEFAULTS } from '../../constants/financialConfig.js';
 
 /**
  * 解析关键数值配置：未配置时使用默认值，显式配置非法或越界时立即失败。
@@ -70,45 +71,6 @@ function parseFailFastIntegerBoundedNumberConfig({
 }
 
 /**
- * 解析关键数值配置：未配置时使用默认值，显式配置非法或小于下限时立即失败。
- * @param options 包含 env、envKey、defaultValue、min 的配置对象
- * @returns 大于等于 min 的合法数值
- */
-function parseFailFastMinimumNumberConfig({
-  env,
-  envKey,
-  defaultValue,
-  min,
-}: MinimumNumberConfig): number {
-  const raw = env[envKey];
-  if (raw === undefined || raw.trim() === '') {
-    return defaultValue;
-  }
-
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < min) {
-    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为数字且 >= ${min}）`);
-  }
-
-  return value;
-}
-
-/**
- * 读取百分比值配置并保持运行时口径不变。
- * @param env 进程环境变量对象
- * @param envKey 环境变量键名
- * @param minValue 允许的最小原始数值
- * @returns 百分比值或 null
- */
-function getPercentValueConfig(
-  env: NodeJS.ProcessEnv,
-  envKey: string,
-  minValue: number = 0,
-): number | null {
-  return getNumberConfig(env, envKey, minValue);
-}
-
-/**
  * 将 OpenAPI 订单类型映射为内部订单类型配置。
  * @param orderType OpenAPI 订单类型
  * @returns 内部订单类型配置
@@ -136,25 +98,29 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
   const longSymbol = getStringConfig(env, 'LONG_SYMBOL') ?? '';
   const shortSymbol = getStringConfig(env, 'SHORT_SYMBOL') ?? '';
   const autoSearchEnabled = getBooleanConfig(env, 'AUTO_SEARCH_ENABLED', false);
-  const autoSearchMinDistancePctBull = getPercentValueConfig(
+  const autoSearchMinDistancePctBull = getFinancialConfig(
     env,
     'AUTO_SEARCH_MIN_DISTANCE_PCT_BULL',
-    0,
+    '0',
+    false,
   );
-  const autoSearchMinDistancePctBear = getPercentValueConfig(
+  const autoSearchMinDistancePctBear = getFinancialConfig(
     env,
     'AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR',
-    -100,
+    '-100',
+    false,
   );
-  const autoSearchMinTurnoverPerMinuteBull = getNumberConfig(
+  const autoSearchMinTurnoverPerMinuteBull = getFinancialConfig(
     env,
     'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BULL',
-    0,
+    '0',
+    true,
   );
-  const autoSearchMinTurnoverPerMinuteBear = getNumberConfig(
+  const autoSearchMinTurnoverPerMinuteBear = getFinancialConfig(
     env,
     'AUTO_SEARCH_MIN_TURNOVER_PER_MINUTE_BEAR',
-    0,
+    '0',
+    true,
   );
   const autoSearchExpiryMinMonths = parseFailFastBoundedNumberConfig({
     env,
@@ -179,27 +145,18 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
         max: 120,
       })
     : 0;
-  const switchDistanceRangeBull = parseNumberRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BULL');
-  const switchDistanceRangeBear = parseNumberRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BEAR');
+  const switchDistanceRangeBull = parseDecimalRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BULL');
+  const switchDistanceRangeBear = parseDecimalRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BEAR');
   const orderOwnershipMapping = parseOrderOwnershipMapping(env, 'ORDER_OWNERSHIP_MAPPING');
-  const targetNotional = parseFailFastMinimumNumberConfig({
-    env,
-    envKey: 'TARGET_NOTIONAL',
-    defaultValue: 10000,
-    min: 1,
-  });
-  const maxPositionNotional = parseFailFastMinimumNumberConfig({
-    env,
-    envKey: 'MAX_POSITION_NOTIONAL',
-    defaultValue: 100000,
-    min: 1,
-  });
-  const maxUnrealizedLossPerSymbol = parseFailFastMinimumNumberConfig({
-    env,
-    envKey: 'MAX_UNREALIZED_LOSS_PER_SYMBOL',
-    defaultValue: 0,
-    min: 0,
-  });
+  const targetNotional =
+    getFinancialConfig(env, 'TARGET_NOTIONAL', '1', true) ??
+    FINANCIAL_CONFIG_DEFAULTS.targetNotional;
+  const maxPositionNotional =
+    getFinancialConfig(env, 'MAX_POSITION_NOTIONAL', '1', true) ??
+    FINANCIAL_CONFIG_DEFAULTS.maxPositionNotional;
+  const maxUnrealizedLossPerSymbol =
+    getFinancialConfig(env, 'MAX_UNREALIZED_LOSS_PER_SYMBOL', '0', true) ??
+    FINANCIAL_CONFIG_DEFAULTS.maxUnrealizedLossPerSymbol;
   const buyIntervalSeconds = parseFailFastBoundedNumberConfig({
     env,
     envKey: 'BUY_INTERVAL_SECONDS',

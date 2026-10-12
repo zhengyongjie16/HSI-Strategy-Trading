@@ -5,6 +5,7 @@ import { mock } from 'bun:test';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
+import { loadStartupSnapshot as loadRealStartupSnapshot } from '../../../src/app/startup/startupSnapshot.js';
 import type {
   AsyncRuntime,
   CreatePostGateRuntimeParams,
@@ -24,13 +25,11 @@ import type { LastState } from '../../../src/types/state.js';
 import type { BuyRiskCheckContext } from '../../../src/types/services.js';
 import {
   createAutoSearchWakeupRuntimeDouble,
-  createDailyLossTrackerDouble,
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteSubscriptionRuntimeDouble,
   createSdkConfigDouble,
   createSeatActivationDispatcherDouble,
@@ -59,12 +58,7 @@ function createMinimalLastState(): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: {
-      update: () => {},
-      get: () => null,
-    },
+
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set(),
@@ -151,6 +145,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
 function createMockPostGateRuntime(
   lastState: LastState,
   monitorContext: PostGateRuntime['monitorContext'],
+  owner: StartupRecoveryHarnessParams['executionOwner'],
 ): PostGateRuntime {
   const signalProcessor: SignalProcessor = {
     processSellSignals: ({
@@ -177,10 +172,22 @@ function createMockPostGateRuntime(
     },
   });
 
+  const liquidationCooldownTracker = createLiquidationCooldownTrackerDouble();
+  owner.sink.bindBusinessDeps({
+    monitorContext,
+    dailyLossTracker: owner.daily,
+    liquidationCooldownTracker,
+    protectiveLiquidationEpisodeTracker: owner.episode,
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => {
+        throw new Error('T28 zero-resource recovery cannot publish completion IO');
+      },
+    },
+  });
   return {
-    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-    dailyLossTracker: createDailyLossTrackerDouble(),
-    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    liquidationCooldownTracker,
+    dailyLossTracker: owner.daily,
+    protectiveLiquidationEpisodeTracker: owner.episode,
     monitorContext,
     tradingGateEventRuntime: createTradingGateEventRuntimeDouble({
       onGateStateChanged: () => noop,
@@ -217,27 +224,36 @@ function createMockPostGateRuntime(
       ...createStartStopRecorder('switchWakeupRuntime.start'),
       handoffPendingSwitch: () => {},
     },
+    snapshot: owner.snapshot,
     postTradeConsistencyRuntime: {
-      bindBusinessDeps: noop,
-      recordSettlementRefreshNeed: () => {},
-      getStatus: () => ({ started: false, currentVersion: 0, staleVersion: 0 }),
-      waitForFresh: async () => {},
-      onFreshReached: () => noop,
-      stopScheduling: () => {},
-      abortWaiting: () => {},
-      resetAbort: () => {},
+      ...owner.sink,
       start: () => {
         recordSteadyRuntimeStart('postTradeConsistencyRuntime.start');
+        owner.sink.start();
       },
-      completeRebuildBaseline: () => {
+      completeRebuildBaseline: (...args) => {
         recordSteadyRuntimeStart('postTradeConsistencyRuntime.completeRebuildBaseline');
+        return owner.sink.completeRebuildBaseline(...args);
       },
-      stopAndDrain: async () => {},
-      midnightClear: () => {},
     },
     lastState,
     trader,
-    loadTradingDayRuntimeSnapshot: async () => ({ allOrders: [], quotesMap: new Map() }),
+    loadTradingDayRuntimeSnapshot: async (params) => {
+      const receipt = await owner.snapshot.requestRefresh({
+        source: params.source === 'OPEN_REBUILD' ? 'LIFECYCLE_REBUILD' : 'STARTUP',
+        dayEpoch: owner.snapshot.getView().token.dayEpoch,
+        refreshAccount: true,
+        refreshPositions: true,
+      }).result;
+      return receipt.status === 'ABORTED'
+        ? receipt
+        : {
+            status: 'COMMITTED',
+            snapshotToken: receipt.snapshotToken,
+            allOrders: [],
+            quotesMap: new Map(),
+          };
+    },
     doomsdayProtection: createDoomsdayProtectionDouble(),
     signalProcessor,
     buyTaskQueue: createBuyTaskQueue(),
@@ -260,8 +276,11 @@ export function createStartupRecoveryHarness(
 ): StartupRecoveryHarness {
   const starts: string[] = [];
   const lastState = createMinimalLastState();
-  lastState.isTradingEnabled = false;
-  const post = createMockPostGateRuntime(lastState, createMonitorContextDouble());
+  const post = createMockPostGateRuntime(
+    lastState,
+    createMonitorContextDouble(),
+    params.executionOwner,
+  );
   let shutdown = () => {};
   let termination: RuntimeTermination | undefined;
   const classifiedErrors: unknown[] = [];
@@ -282,17 +301,24 @@ export function createStartupRecoveryHarness(
       resources.monitorTaskQueue = post.monitorTaskQueue;
       return post;
     },
-    loadStartupSnapshot: async () => ({
-      kind: 'READY',
-      now: new Date('2026-04-29T01:31:00Z'),
-      allOrders: [],
-      quotesMap: new Map(),
-    }),
+    loadStartupSnapshot: loadRealStartupSnapshot,
     collectRuntimeValidationSymbols: () => ({ runtimeValidationInputs: [] }),
-    createRebuildTradingDayState: () => async () => {
-      await params.recover();
-      lastState.isTradingEnabled = true;
-    },
+    createRebuildTradingDayState:
+      () =>
+      async ({ snapshotToken }) => {
+        await params.recover();
+        if (
+          !params.executionOwner.snapshot.isCurrent(snapshotToken, {
+            account: true,
+            positions: true,
+            paired: true,
+          })
+        )
+          return { status: 'ABORTED' };
+
+        lastState.isTradingEnabled = true;
+        return { status: 'COMMITTED', snapshotToken };
+      },
     displayAccountAndPositions: noop,
     createBusinessEventProgram: () => createStartStopRecorder('businessEventProgram.start'),
     createAsyncRuntime: createMockAsyncRuntime,

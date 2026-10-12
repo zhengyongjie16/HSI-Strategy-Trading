@@ -21,8 +21,8 @@ function createHarness(overrides: Partial<MonitorDisplayRuntimeDeps> = {}) {
   const quote: Quote = {
     symbol: 'HSI.HK',
     name: '恒生指数',
-    price: 20_010,
-    prevClose: 20_000,
+    price: '20010',
+    prevClose: '20000',
     timestamp: 1_708_000_100_000,
   };
   const getQuotes = mock(async () => new Map([['HSI.HK', quote]]));

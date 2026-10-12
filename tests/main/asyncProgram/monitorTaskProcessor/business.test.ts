@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-import { createMonitorTaskProcessor } from '../../../../src/main/asyncProgram/monitorTaskProcessor/index.js';
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { createMonitorTaskProcessor as createMonitorTaskProcessorImpl } from '../../../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
 import { classifyOrdersForRebuild } from '../../../../src/core/orderRecorder/utils.js';
@@ -16,25 +16,32 @@ import type {
   MonitorTaskStatus,
 } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
+import { mergeBrokerOrderExecutionFact } from '../../../../src/domain/order/executionFact.js';
+import { createSnapshotFixture } from '../../fixtures/accountPositionSnapshot.js';
+import { createIssuedPeriodicTasksFixture } from '../../fixtures/issuedPeriodicTasks.js';
+import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import type { RuntimeTermination } from '../../../../src/types/runtime.js';
+import type { PeriodicSwitchTaskData } from '../../../../src/types/periodicSwitch.js';
+import { createAutoSymbolManager } from '../../../../src/services/autoSymbolManager/index.js';
+import {
+  getDefaultAutoSearchConfig,
+  createWarrantCandidate,
+} from '../../../services/autoSymbolManager/utils.js';
+import type { AccountPositionSnapshot } from '../../../../src/types/accountPosition.js';
 import type { RawOrderFromAPI } from '../../../../src/types/services.js';
+import type { PreparedDailyLossRecalculation } from '../../../../src/types/risk.js';
 import {
   createAccountSnapshotDouble,
+  createMonitorConfigDouble,
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createPositionDouble,
   createQuoteSubscriptionRuntimeDouble,
-  createQuoteDouble,
   createRiskCheckerDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
-import {
-  createLastState,
-  createMonitorContext,
-  rethrowFatalError,
-  runProcessorFlow,
-  waitUntil,
-} from '../utils.js';
+import { createMonitorContext, rethrowFatalError, runProcessorFlow, waitUntil } from '../utils.js';
 import type { CreateBusinessProcessorParams } from '../types.js';
 
 /**
@@ -43,6 +50,188 @@ import type { CreateBusinessProcessorParams } from '../types.js';
  * 功能：
  * - 验证监控任务处理器相关场景意图、边界条件与业务期望。
  */
+
+/** Persisted BUY/SELL loss facts originate in two independent native producer observations. */
+async function createDailyLossSeedOrders(
+  now: Date,
+  prefix: string,
+): Promise<ReadonlyArray<RawOrderFromAPI>> {
+  const buy = await createBrokerIngressFixture({
+    stockName: 'HSI RC',
+    remark: 'AUTO',
+    orderId: prefix + '-buy',
+    tradeId: prefix + '-buy-trade',
+    symbol: 'BULL.HK',
+    side: 'BUY',
+    status: 'Filled',
+    submittedPrice: '1.1',
+    quantity: '100',
+    executedPrice: '1',
+    executedQuantity: '100',
+    submittedAtMs: now.getTime() - 3000,
+    executionTimeMs: now.getTime() - 2000,
+    updatedAtMs: now.getTime() - 1500,
+  });
+  const sell = await createBrokerIngressFixture({
+    stockName: 'HSI RC',
+    remark: 'AUTO',
+    orderId: prefix + '-sell',
+    tradeId: prefix + '-sell-trade',
+    symbol: 'BULL.HK',
+    side: 'SELL',
+    status: 'Filled',
+    submittedPrice: '1.1',
+    quantity: '100',
+    executedPrice: '0.9',
+    executedQuantity: '100',
+    submittedAtMs: now.getTime() - 2000,
+    executionTimeMs: now.getTime() - 1000,
+    updatedAtMs: now.getTime() - 500,
+  });
+  return [buy.queryObservation, sell.queryObservation];
+}
+
+type OwnedProcessorDeps = Omit<MonitorTaskProcessorDeps, 'snapshot'> & {
+  readonly snapshot: AccountPositionSnapshot;
+};
+const processorOwners = new WeakMap<
+  ReturnType<typeof createMonitorTaskProcessorImpl>,
+  OwnedProcessorDeps & { readonly termination: RuntimeTermination }
+>();
+const issuedTaskFixtures: Awaited<ReturnType<typeof createIssuedPeriodicTasksFixture>>[] = [];
+afterEach(async () => {
+  for (const fixture of issuedTaskFixtures.splice(0)) await fixture.stopAndDrain();
+});
+
+function createMonitorTaskProcessor(deps: OwnedProcessorDeps) {
+  const ownerTermination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+  const termination: RuntimeTermination = {
+    ...ownerTermination,
+    isTerminated: () => ownerTermination.isTerminated() || deps.termination.isTerminated(),
+    reportFatalError: (error) => {
+      ownerTermination.reportFatalError(error);
+      deps.termination.reportFatalError(error);
+    },
+  };
+  const ownedDeps = { ...deps, termination };
+  const processor = createMonitorTaskProcessorImpl(ownedDeps);
+  processorOwners.set(processor, ownedDeps);
+  return processor;
+}
+
+function createPeriodicMonitorContext(overrides: Parameters<typeof createMonitorContext>[0]) {
+  const config = createMonitorConfigDouble();
+  return createMonitorContext({
+    ...overrides,
+    config: createMonitorConfigDouble({
+      ...config,
+      autoSearchConfig: {
+        ...getDefaultAutoSearchConfig(),
+        autoSearchEnabled: true,
+        switchIntervalMinutes: 1,
+      },
+    }),
+  });
+}
+
+async function issueTasksForProcessor(
+  processor: ReturnType<typeof createMonitorTaskProcessorImpl>,
+  nowMs: number,
+) {
+  const owner = processorOwners.get(processor);
+  if (owner === undefined) throw new Error('Missing original processor dependencies');
+
+  const fixture = await createIssuedPeriodicTasksFixture({
+    snapshot: owner.snapshot,
+    monitorContext: owner.monitorContext,
+    trader: owner.trader,
+    termination: owner.termination,
+    getCanTradeNow: owner.getCanTradeNow,
+    nowMs,
+  });
+  issuedTaskFixtures.push(fixture);
+  return fixture;
+}
+
+function createRealPeriodicPublicationContext(params: {
+  readonly now: () => Date;
+  readonly afterPublication: () => Promise<void>;
+}) {
+  let brokerCalls = 0;
+  const publications: Awaited<
+    ReturnType<ReturnType<typeof createAutoSymbolManager>['evaluatePeriodicSwitchDue']>
+  >[] = [];
+  const base = createPeriodicMonitorContext({});
+  base.symbolRegistry.updateSeatState('LONG', {
+    ...base.symbolRegistry.getSeatState('LONG'),
+    status: 'ACTIVE',
+    symbol: 'BULL.HK',
+    lastSeatActivatedAt: params.now().getTime() - 120_000,
+    callPrice: null,
+  });
+  const trader = createTraderDouble({
+    executeSignals: async () => {
+      brokerCalls += 1;
+      throw new Error('Initial WAIT publication must not submit a broker order');
+    },
+  });
+  const marketDataClient = createMarketDataClientDouble({
+    getQuotes: async (symbols) =>
+      new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1')])),
+  });
+  const manager = createAutoSymbolManager({
+    monitorConfig: base.config,
+    symbolRegistry: base.symbolRegistry,
+    trader,
+    marketDataClient,
+    orderRecorder: base.orderRecorder,
+    riskChecker: base.riskChecker,
+    clock: { now: params.now },
+    getTradingCalendarSnapshot: () =>
+      new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
+    findBestWarrant: async () => createWarrantCandidate('NEXT_BULL.HK'),
+  });
+  return {
+    trader,
+    marketDataClient,
+    getBrokerCalls: () => brokerCalls,
+    getPublications: () => publications,
+    context: {
+      ...base,
+      autoSymbolManager: {
+        ...manager,
+        evaluatePeriodicSwitchDue: async (
+          ...args: Parameters<typeof manager.evaluatePeriodicSwitchDue>
+        ) => {
+          const result = await manager.evaluatePeriodicSwitchDue(...args);
+          expect(result.kind).toBe('WAIT');
+          if (result.kind !== 'WAIT' || result.publishedRoute === undefined)
+            throw new Error('Expected real initial publication');
+
+          expect(result.publishedRoute.isCurrent()).toBe(true);
+          publications.push(result);
+          await params.afterPublication();
+          return result;
+        },
+      },
+    },
+  };
+}
+
+function issuedAuthorizationFields(task: PeriodicSwitchTaskData) {
+  return {
+    dayEpoch: task.dayEpoch,
+    currentTimeMs: task.currentTimeMs,
+    readinessReceipt: task.readinessReceipt,
+    canContinue: task.canContinue,
+    isRouteCurrent: task.isRouteCurrent,
+  };
+}
 
 const MONITOR_TASK_NOW_MS = Date.parse('2026-03-13T02:00:00.000Z');
 const MONITOR_TASK_RUNTIME = {
@@ -57,15 +246,16 @@ const MONITOR_TASK_RUNTIME = {
   },
 };
 
-function createBusinessProcessor(
-  params: CreateBusinessProcessorParams,
-): ReturnType<typeof createMonitorTaskProcessor> {
+async function createBusinessProcessor(
+  params: Omit<CreateBusinessProcessorParams, 'lastState'>,
+): Promise<
+  ReturnType<typeof createMonitorTaskProcessor> & Readonly<{ snapshot: AccountPositionSnapshot }>
+> {
   const {
     queue,
     context,
     clock = MONITOR_TASK_RUNTIME.clock,
     scheduler = MONITOR_TASK_RUNTIME.scheduler,
-    lastState = createLastState(),
     trader,
     marketDataClient = createMarketDataClientDouble(),
     quoteSubscriptionRuntime = createQuoteSubscriptionRuntimeDouble(),
@@ -83,7 +273,45 @@ function createBusinessProcessor(
     orderRecorder: context.orderRecorder,
   };
 
-  return createMonitorTaskProcessor({
+  let taskReadsEnabled = false;
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [],
+    readPort: {
+      getAccountSnapshot: async () =>
+        taskReadsEnabled
+          ? resolvedTrader.getAccountSnapshot()
+          : createAccountSnapshotDouble('100000'),
+      getStockPositions: async () => (taskReadsEnabled ? resolvedTrader.getStockPositions() : []),
+    },
+  });
+  taskReadsEnabled = true;
+  const commitBatch = context.orderRecorder.commitRebuildSnapshot;
+  const validateBatch = context.orderRecorder.validateRebuildSnapshot;
+  context.orderRecorder.validateRebuildSnapshot = (symbol, orders) => {
+    validateBatch(symbol, orders);
+    classifyOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
+    for (const order of orders.filter((candidate) => candidate.symbol === symbol)) {
+      mergeBrokerOrderExecutionFact(undefined, {
+        brokerOrderId: order.orderId,
+        symbol,
+        side: order.executionSide,
+        phase: order.executionPhase,
+        cumulativeQuantity: order.executedQuantity,
+        cumulativeAmount: order.executedAmount,
+        executionTimeMs: order.executionTimeMs,
+        updatedAtMs: order.updatedAtMs,
+      });
+    }
+  };
+
+  context.orderRecorder.commitRebuildSnapshot = (targets, orders, isCurrent, mode) => {
+    expect(mode).toBe('ACTIVATION');
+    if (!isCurrent()) return { status: 'ABORTED' };
+
+    return commitBatch(targets, orders, isCurrent, mode);
+  };
+  const processor = createMonitorTaskProcessor({
     clock,
     scheduler,
     monitorTaskQueue: queue,
@@ -94,12 +322,22 @@ function createBusinessProcessor(
     switchWakeupRuntime: {
       handoffPendingSwitch: () => {},
     },
-    lastState,
+    snapshot,
     getCanTradeNow,
     periodicSwitchWakeupRuntime,
     ...(getCanProcessTask ? { getCanProcessTask } : {}),
     termination: termination ?? { isTerminated: () => false, reportFatalError: rethrowFatalError },
   });
+  const ownedProcessor = { ...processor, snapshot };
+  const owner = processorOwners.get(processor);
+  if (owner === undefined) throw new Error('Missing constructed processor owner');
+
+  processorOwners.set(ownedProcessor, owner);
+  return ownedProcessor;
+}
+
+function createQuoteDouble(symbol: string, price: string, lotSize = 100) {
+  return { symbol, name: symbol, price, prevClose: price, timestamp: MONITOR_TASK_NOW_MS, lotSize };
 }
 
 function scheduleSeatRefreshTask(
@@ -111,11 +349,12 @@ function scheduleSeatRefreshTask(
     type: 'SEAT_REFRESH',
     dedupeKey,
     data: {
+      dayEpoch: 0,
       direction: 'LONG',
       seatVersion: 2,
       previousSymbol: 'OLD_BULL.HK',
       nextSymbol: 'BULL.HK',
-      callPrice: 20_000,
+      callPrice: '20000',
       symbolName: 'BULL.HK',
       ...overrides,
     },
@@ -149,50 +388,47 @@ describe('monitorTaskProcessor business flow', () => {
       seatVersion: number;
       driveKind: string;
     }> = [];
-    const context = createMonitorContext({
-      autoSymbolManager: {
-        maybeSearchOnEvent: async () => {},
-        evaluatePeriodicSwitchDue: async (params) => {
-          const currentSeat = context.symbolRegistry.getSeatState(params.direction);
-          if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
-            throw new Error('expected runtime ACTIVE seat');
-          }
-
-          context.symbolRegistry.updateSeatStateWithVersionBump(params.direction, currentSeat);
-          return {
-            kind: 'WAIT',
-            wakeups: [{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }],
-          };
-        },
-        startSwitchOnDistance: async (params) => ({
-          started: false,
-          direction: params.direction,
-          driveResult: {
-            kind: 'NOOP',
-          },
-        }),
-        advancePendingSwitch: async (params) => ({
-          advanced: false,
-          direction: params.direction,
-          stillPending: false,
-          driveResult: {
-            kind: 'NOOP',
-          },
-        }),
-        hasPendingSwitch: () => false,
-        getPeriodicSwitchPendingState: () => ({
-          pending: false,
-        }),
-        resetAllState: () => {},
+    let brokerCalls = 0;
+    const baseContext = createPeriodicMonitorContext({});
+    baseContext.symbolRegistry.updateSeatState('LONG', {
+      ...baseContext.symbolRegistry.getSeatState('LONG'),
+      status: 'ACTIVE',
+      symbol: 'BULL.HK',
+      lastSeatActivatedAt: MONITOR_TASK_NOW_MS - 120_000,
+      callPrice: null,
+    });
+    const ownerTrader = createTraderDouble({
+      executeSignals: async () => {
+        brokerCalls += 1;
+        return { executedOrderIds: ['SHOULD-NOT-SUBMIT'] };
       },
     });
+    const marketDataClient = createMarketDataClientDouble({
+      getQuotes: async (symbols) =>
+        new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1')])),
+    });
+    const context = {
+      ...baseContext,
+      autoSymbolManager: createAutoSymbolManager({
+        monitorConfig: baseContext.config,
+        symbolRegistry: baseContext.symbolRegistry,
+        marketDataClient,
+        trader: ownerTrader,
+        riskChecker: baseContext.riskChecker,
+        orderRecorder: baseContext.orderRecorder,
+        clock: MONITOR_TASK_RUNTIME.clock,
+        getTradingCalendarSnapshot: () =>
+          new Map([['2026-03-13', { isTradingDay: true, isHalfDay: false }]]),
+        findBestWarrant: async () => createWarrantCandidate('NEXT_BULL.HK'),
+      }),
+    };
 
     const processor = createMonitorTaskProcessor({
       ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
-      trader: createTraderDouble(),
-      marketDataClient: createMarketDataClientDouble(),
+      trader: ownerTrader,
+      marketDataClient: marketDataClient,
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime: {
         handoffPendingSwitch: (params) => {
@@ -208,10 +444,15 @@ describe('monitorTaskProcessor business flow', () => {
         clearWaitingEmpty: () => {},
         replanRouteAfterTask: () => {},
       },
-      lastState: createLastState(),
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       getCanTradeNow: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
+
+    const issuedTasks = await issueTasksForProcessor(processor, MONITOR_TASK_NOW_MS);
 
     await runProcessorFlow({
       processor,
@@ -219,13 +460,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:WAKEUP',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -239,12 +474,16 @@ describe('monitorTaskProcessor business flow', () => {
         driveKind: 'WAIT',
       },
     ]);
+
+    expect(brokerCalls).toBe(0);
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
+    expect(issuedTasks.getTask('LONG').canContinue()).toBe(false);
   });
 
   it('API 错误标记为普通任务失败且不进入 fatal 通道', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const fatalErrors: unknown[] = [];
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -291,7 +530,10 @@ describe('monitorTaskProcessor business flow', () => {
         clearWaitingEmpty: () => {},
         replanRouteAfterTask: () => {},
       },
-      lastState: createLastState(),
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       getCanTradeNow: () => true,
       termination: {
         isTerminated: () => false,
@@ -301,19 +543,15 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
+    const issuedTasks = await issueTasksForProcessor(processor, Date.now());
+
     await runProcessorFlow({
       processor,
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:API_FAIL',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -327,7 +565,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const fatalErrors: unknown[] = [];
     let periodicEvaluationCalls = 0;
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -371,7 +609,10 @@ describe('monitorTaskProcessor business flow', () => {
         clearWaitingEmpty: () => {},
         replanRouteAfterTask: () => {},
       },
-      lastState: createLastState(),
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       getCanTradeNow: () => true,
       termination: {
         isTerminated: () => false,
@@ -381,30 +622,20 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
+    const issuedTasks = await issueTasksForProcessor(processor, Date.now());
+
     processor.start();
     try {
       queue.scheduleLatest({
         type: 'AUTO_SYMBOL_TICK',
         dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FATAL',
-        data: {
-          direction: 'LONG',
-          seatVersion: 2,
-          symbol: 'BULL.HK',
-          lastSeatActivatedAt: 12_000,
-          currentTimeMs: Date.now(),
-        },
+        data: issuedTasks.getTask('LONG'),
       });
 
       queue.scheduleLatest({
         type: 'AUTO_SYMBOL_TICK',
         dedupeKey: 'AUTO_SYMBOL_TICK:SHORT:AFTER_FATAL',
-        data: {
-          direction: 'SHORT',
-          seatVersion: 3,
-          symbol: 'BEAR.HK',
-          lastSeatActivatedAt: 13_000,
-          currentTimeMs: Date.now(),
-        },
+        data: issuedTasks.getTask('SHORT'),
       });
 
       await waitUntil(() => fatalErrors.length === 1, 500);
@@ -428,12 +659,13 @@ describe('monitorTaskProcessor business flow', () => {
       canContinue: () => boolean;
     }> = [];
 
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {
           maybeSearchCalls += 1;
         },
         evaluatePeriodicSwitchDue: async (params) => {
+          expect(params.canContinue()).toBeTrue();
           intervalCallArgs.push(params);
           return {
             kind: 'NOOP',
@@ -462,10 +694,12 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
     });
+
+    const issuedTasks = await issueTasksForProcessor(processor, Date.now());
 
     await runProcessorFlow({
       processor,
@@ -473,13 +707,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -489,7 +717,8 @@ describe('monitorTaskProcessor business flow', () => {
     expect(maybeSearchCalls).toBe(0);
     expect(intervalCallArgs).toHaveLength(1);
     expect(intervalCallArgs[0]?.direction).toBe('LONG');
-    expect(intervalCallArgs[0]?.canContinue()).toBeTrue();
+    expect(intervalCallArgs[0]?.canContinue()).toBeFalse();
+    expect(issuedTasks.getTask('LONG').canContinue()).toBeTrue();
     expect(intervalCallArgs[0]?.currentTime.getTime()).toBeGreaterThan(0);
   });
 
@@ -501,10 +730,11 @@ describe('monitorTaskProcessor business flow', () => {
       canContinue: () => boolean;
     }> = [];
 
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async (params) => {
+          expect(params.canContinue()).toBeTrue();
           intervalCallArgs.push(params);
           return {
             kind: 'NOOP',
@@ -533,11 +763,16 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    let canTradeNow = true;
+    const processor = await createBusinessProcessor({
       queue,
       context,
-      getCanTradeNow: () => false,
+      getCanTradeNow: () => canTradeNow,
     });
+
+    const issuedTasks = await issueTasksForProcessor(processor, Date.now());
+    canTradeNow = false;
+    expect(issuedTasks.getTask('LONG').canContinue()).toBe(false);
 
     await runProcessorFlow({
       processor,
@@ -545,13 +780,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:CURRENT_GATE',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -561,7 +790,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(intervalCallArgs).toHaveLength(0);
   });
 
-  it('reports blocked outcome to periodic route without stale switch wakeup handoff after takeover begins', async () => {
+  it('hands a real published periodic WAIT across takeover without reauthorizing old mutation', async () => {
     const beforeTakeoverMs = Date.parse('2026-02-16T07:54:59.000Z');
     const takeoverMs = Date.parse('2026-02-16T07:55:00.000Z');
     let currentNowMs = beforeTakeoverMs;
@@ -570,42 +799,38 @@ describe('monitorTaskProcessor business flow', () => {
     const handoffCalls: string[] = [];
     const periodicWakeupCalls: Array<{ kind: string; status?: MonitorTaskStatus }> = [];
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const context = createMonitorContext({
-      autoSymbolManager: {
-        maybeSearchOnEvent: async () => {},
-        evaluatePeriodicSwitchDue: async () => {
-          periodicEvaluationStarted.resolve(null);
-          await releasePeriodicEvaluation.promise;
-          return {
-            kind: 'WAIT',
-            wakeups: [{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }],
-          };
-        },
-        startSwitchOnDistance: async (params) => ({
-          started: false,
-          direction: params.direction,
-          driveResult: { kind: 'NOOP' },
-        }),
-        advancePendingSwitch: async (params) => ({
-          advanced: false,
-          direction: params.direction,
-          stillPending: false,
-          driveResult: { kind: 'NOOP' },
-        }),
-        hasPendingSwitch: () => true,
-        getPeriodicSwitchPendingState: () => ({ pending: false }),
-        resetAllState: () => {},
+    const publication = createRealPeriodicPublicationContext({
+      now: () => new Date(currentNowMs),
+      afterPublication: async () => {
+        periodicEvaluationStarted.resolve(null);
+        await releasePeriodicEvaluation.promise;
       },
     });
+    const context = publication.context;
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
+    const originalDayEpoch = snapshot.getView().token.dayEpoch;
     const processor = createMonitorTaskProcessor({
       ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
-      trader: createTraderDouble(),
-      marketDataClient: createMarketDataClientDouble(),
+      trader: publication.trader,
+      marketDataClient: publication.marketDataClient,
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime: {
-        handoffPendingSwitch: () => {
+        handoffPendingSwitch: (params) => {
+          expect(params.originalDayEpoch).toBe(originalDayEpoch);
+          const returnedResult = publication.getPublications()[0];
+          if (returnedResult?.kind !== 'WAIT')
+            throw new Error('Expected source-produced WAIT object');
+
+          expect(params.driveResult).toBe(returnedResult);
+          expect(params.driveResult.publishedRoute?.isCurrent()).toBe(true);
+          expect(params.driveResult.wakeups).toEqual([
+            { kind: 'RETRY_TIMER', atMs: beforeTakeoverMs },
+          ]);
           handoffCalls.push('handoff');
         },
       },
@@ -620,32 +845,31 @@ describe('monitorTaskProcessor business flow', () => {
           periodicWakeupCalls.push({ kind: 'replan', status: params.status });
         },
       },
-      lastState: createLastState(),
+      snapshot: snapshot,
       getCanTradeNow: () => currentNowMs < takeoverMs,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
+
+    const issuedTasks = await issueTasksForProcessor(processor, beforeTakeoverMs);
 
     processor.start();
     queue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'AUTO_SYMBOL_TICK:LONG:TAKEOVER',
-      data: {
-        direction: 'LONG',
-        seatVersion: 2,
-        symbol: 'BULL.HK',
-        lastSeatActivatedAt: 12_000,
-        currentTimeMs: beforeTakeoverMs,
-      },
+      data: issuedTasks.getTask('LONG'),
     });
 
     await periodicEvaluationStarted.promise;
     currentNowMs = takeoverMs;
     releasePeriodicEvaluation.resolve(null);
-    await waitUntil(() => periodicWakeupCalls.length === 1, 500);
+    await waitUntil(() => handoffCalls.length === 1, 500);
     await processor.stopAndDrain();
 
-    expect(handoffCalls).toEqual([]);
-    expect(periodicWakeupCalls).toEqual([{ kind: 'replan', status: 'blocked' }]);
+    expect(handoffCalls).toEqual(['handoff']);
+    expect(periodicWakeupCalls).toEqual([]);
+    expect(publication.getBrokerCalls()).toBe(0);
+    expect(issuedTasks.getTask('LONG').canContinue()).toBe(false);
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
   });
 
   it('marks periodic route waiting-empty when AUTO_SYMBOL_TICK leaves periodic pending state', async () => {
@@ -656,7 +880,7 @@ describe('monitorTaskProcessor business flow', () => {
       seatVersion: number;
       lastSeatActivatedAt: number;
     }> = [];
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({
@@ -685,7 +909,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       periodicSwitchWakeupRuntime: {
@@ -697,19 +921,15 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
+    const issuedTasks = await issueTasksForProcessor(processor, 70_000);
+
     await runProcessorFlow({
       processor,
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_PENDING',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: 70_000,
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -718,6 +938,7 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(markCalls).toEqual([
       {
+        ...issuedAuthorizationFields(issuedTasks.getTask('LONG')),
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -742,7 +963,7 @@ describe('monitorTaskProcessor business flow', () => {
       taskTimeMs: number;
       status: MonitorTaskStatus;
     }> = [];
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({
@@ -771,7 +992,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       periodicSwitchWakeupRuntime: {
@@ -785,19 +1006,15 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
+    const issuedTasks = await issueTasksForProcessor(processor, 70_000);
+
     await runProcessorFlow({
       processor,
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_REPLAN',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: 70_000,
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -806,6 +1023,7 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(clearCalls).toEqual([
       {
+        ...issuedAuthorizationFields(issuedTasks.getTask('LONG')),
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -815,6 +1033,7 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect(replanCalls).toEqual([
       {
+        ...issuedAuthorizationFields(issuedTasks.getTask('LONG')),
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -837,7 +1056,7 @@ describe('monitorTaskProcessor business flow', () => {
     }> = [];
     const clearCalls: string[] = [];
     let periodicDueCalls = 0;
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -869,10 +1088,11 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    let canTradeNow = true;
+    const processor = await createBusinessProcessor({
       queue,
       context,
-      getCanTradeNow: () => false,
+      getCanTradeNow: () => canTradeNow,
       periodicSwitchWakeupRuntime: {
         markWaitingEmpty: () => {},
         clearWaitingEmpty: () => {
@@ -884,19 +1104,17 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
+    const issuedTasks = await issueTasksForProcessor(processor, 70_000);
+    canTradeNow = false;
+    expect(issuedTasks.getTask('LONG').canContinue()).toBe(false);
+
     await runProcessorFlow({
       processor,
       pushTask: () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:PERIODIC_GATE_CLOSED',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: 70_000,
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -907,6 +1125,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(clearCalls).toEqual([]);
     expect(replanCalls).toEqual([
       {
+        ...issuedAuthorizationFields(issuedTasks.getTask('LONG')),
         direction: 'LONG',
         symbol: 'BULL.HK',
         seatVersion: 2,
@@ -921,7 +1140,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     let maybeSearchCalls = 0;
 
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {
           maybeSearchCalls += 1;
@@ -952,10 +1171,21 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
     });
+
+    const issuedTasks = await issueTasksForProcessor(processor, Date.now());
+    const issuedSeat = context.symbolRegistry.getSeatState('LONG');
+    if (issuedSeat.status !== 'ACTIVE' || issuedSeat.lastSeatActivatedAt === null)
+      throw new Error('Expected original ACTIVE seat');
+
+    context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...issuedSeat,
+      callPrice: null,
+    });
+    expect(issuedTasks.getTask('LONG').canContinue()).toBe(false);
 
     await runProcessorFlow({
       processor,
@@ -963,13 +1193,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-          data: {
-            direction: 'LONG',
-            seatVersion: 1,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -983,7 +1207,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     let periodicDueCalls = 0;
 
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => {
@@ -1015,10 +1239,17 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
     });
+
+    const issuedTasks = await issueTasksForProcessor(processor, Date.now());
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...context.symbolRegistry.getSeatState('LONG'),
+      lastSeatActivatedAt: 13_000,
+    });
+    expect(issuedTasks.getTask('LONG').canContinue()).toBe(false);
 
     await runProcessorFlow({
       processor,
@@ -1026,13 +1257,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:STALE_ACTIVATION',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 13_000,
-            currentTimeMs: Date.now(),
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -1058,10 +1283,10 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       marketDataClient: createMarketDataClientDouble({
@@ -1095,7 +1320,7 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     let maybeSearchCalls = 0;
 
-    const context = createMonitorContext({
+    const context = createPeriodicMonitorContext({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {
           maybeSearchCalls += 1;
@@ -1126,11 +1351,13 @@ describe('monitorTaskProcessor business flow', () => {
       },
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       getCanProcessTask: () => false,
     });
+
+    const issuedTasks = await issueTasksForProcessor(processor, Date.now());
 
     await runProcessorFlow({
       processor,
@@ -1138,13 +1365,7 @@ describe('monitorTaskProcessor business flow', () => {
         queue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG:GATE',
-          data: {
-            direction: 'LONG',
-            seatVersion: 2,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 12_000,
-            currentTimeMs: Date.now(),
-          },
+          data: issuedTasks.getTask('LONG'),
         });
       },
       waitCondition: () => queue.isEmpty(),
@@ -1169,7 +1390,10 @@ describe('monitorTaskProcessor business flow', () => {
     let fetchAllOrdersCalls = 0;
     let preflightCalls = 0;
     let refreshOrdersCalls = 0;
-    let recalculateCalls = 0;
+    let dailyLossPrepareCalls = 0;
+    let dailyLossPublishCalls = 0;
+    let preparedDailyLoss: PreparedDailyLossRecalculation | null = null;
+    const dailyLossOwner = createDailyLossTrackerDouble();
     let refreshUnrealizedCalls = 0;
     let accountSnapshotCalls = 0;
     let stockPositionCalls = 0;
@@ -1181,13 +1405,19 @@ describe('monitorTaskProcessor business flow', () => {
           fetchAllOrdersCalls += 1;
           return allOrders;
         },
-        refreshOrdersFromAllOrdersForLong: async (symbol, snapshot, quote) => {
+        commitRebuildSnapshot: (targets, snapshot, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
+          expect(dailyLossPrepareCalls).toBe(1);
+          expect(dailyLossPublishCalls).toBe(0);
+          expect(preparedDailyLoss?.isCurrent()).toBeTrue();
           refreshOrdersCalls += 1;
           rebuildSteps.push('refresh');
           rebuildSnapshots.push(snapshot);
-          expect(symbol).toBe('BULL.HK');
-          expect(Object.is(quote?.price, 1.1)).toBeTrue();
-          return [];
+          expect(targets).toContainEqual({ symbol: 'BULL.HK', isLongSymbol: true });
+
+          return { status: 'COMMITTED', receipts: [] };
         },
       }),
       {
@@ -1203,31 +1433,31 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorContext({
       orderRecorder,
       dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: (
-          _snapshot,
-          _monitor,
-          _now,
-          _boundaries,
-          relatedTradingSymbols,
-        ) => {
-          recalculateCalls += 1;
-          rebuildSteps.push('daily-loss');
-          rebuildSnapshots.push(_snapshot);
-          dailyLossRelatedTradingSymbols = relatedTradingSymbols;
+        ...dailyLossOwner,
+        prepareRecalculationFromAllOrders: (...params) => {
+          dailyLossPrepareCalls += 1;
+          rebuildSteps.push('daily-prepare');
+          rebuildSnapshots.push(params[0]);
+          dailyLossRelatedTradingSymbols = params[4];
+          expect(refreshOrdersCalls).toBe(0);
+          expect(params[1].monitorSymbol).toBe('HSI.HK');
+          expect(params[2].getTime()).toBe(MONITOR_TASK_NOW_MS);
+          expect(params[3]).toBeUndefined();
+          preparedDailyLoss = dailyLossOwner.prepareRecalculationFromAllOrders(...params);
+          return preparedDailyLoss;
         },
-        recordCumulativeExecution: () => ({
-          authoritativeFactChanged: false,
-          executionAdvanced: false,
-        }),
-        getLossOffset: () => 0,
-        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
-        commitProtectionBoundary: () => {},
-        restoreExecutionSnapshot: () => {},
-        restoreProtectionBoundary: () => {},
+        publishRecalculation: (prepared) => {
+          expect(preparedDailyLoss).toBe(prepared);
+          expect(refreshOrdersCalls).toBe(1);
+          expect(prepared.isCurrent()).toBeTrue();
+          dailyLossOwner.publishRecalculation(prepared);
+          dailyLossPublishCalls += 1;
+          rebuildSteps.push('daily-publish');
+          expect(prepared.isCurrent()).toBeFalse();
+        },
       },
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           refreshUnrealizedCalls += 1;
         },
       }),
@@ -1236,18 +1466,16 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
-    const lastState = createLastState();
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
-      lastState,
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble(200_000);
+          return createAccountSnapshotDouble('200000');
         },
         getStockPositions: async () => {
           stockPositionCalls += 1;
@@ -1264,7 +1492,7 @@ describe('monitorTaskProcessor business flow', () => {
         getQuotes: async () => {
           getQuotesCalls += 1;
           return new Map([
-            ['BULL.HK', { ...createQuoteDouble('BULL.HK', 1.1, 100), name: 'BULL Name' }],
+            ['BULL.HK', { ...createQuoteDouble('BULL.HK', '1.1', 100), name: 'BULL Name' }],
           ]);
         },
       }),
@@ -1282,14 +1510,17 @@ describe('monitorTaskProcessor business flow', () => {
     expect(fetchAllOrdersCalls).toBe(1);
     expect(preflightCalls).toBe(expectedRelatedTradingSymbols.length);
     expect(refreshOrdersCalls).toBe(1);
-    expect(recalculateCalls).toBe(1);
+    expect(dailyLossPrepareCalls).toBe(1);
+    expect(dailyLossPublishCalls).toBe(1);
+    expect(dailyLossOwner.getLossOffset('LONG')).toBe('0');
     expect(preflightSymbols).toEqual([...expectedRelatedTradingSymbols]);
     expect(rebuildSteps).toEqual([
       'preflight:BULL.HK',
       'preflight:OLD_BULL.HK',
       'preflight:BEAR.HK',
-      'daily-loss',
+      'daily-prepare',
       'refresh',
+      'daily-publish',
     ]);
 
     if (!dailyLossRelatedTradingSymbols) {
@@ -1307,11 +1538,11 @@ describe('monitorTaskProcessor business flow', () => {
     expect(getQuotesCalls).toBe(1);
     expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(context.longSymbolName).toBe('BULL Name');
-    expect(lastState.cachedAccount?.totalCash).toBe(200_000);
-    expect(lastState.positionCache.get('BULL.HK')?.quantity).toBe(100);
+    expect(processor.snapshot.getView().account?.totalCash).toBe('200000');
+    expect(processor.snapshot.getAvailablePosition('BULL.HK')?.quantity).toBe(100);
   });
 
-  it('fails SEAT_REFRESH fatally before cache, account, risk, or activation writes when DailyLossTracker rejects updatedAt', async () => {
+  it('fails SEAT_REFRESH fatally before cache, account, risk, or activation writes when the actual query mapper rejects updatedAt', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const fatalErrors: unknown[] = [];
     let refreshOrdersCalls = 0;
@@ -1320,22 +1551,26 @@ describe('monitorTaskProcessor business flow', () => {
     let refreshUnrealizedCalls = 0;
     let warrantInfoWrites = 0;
     let activationWrites = 0;
-    const lastState = createLastState();
-    const invalidExecutedOrder: RawOrderFromAPI = {
+    const ingress = await createBrokerIngressFixture({
       orderId: 'seat-refresh-missing-updated-at',
+      tradeId: 'seat-refresh-missing-updated-at-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
-      side: OrderSide.Buy,
-      status: OrderStatus.Filled,
-      orderType: OrderType.ELO,
       remark: 'AUTO',
-      price: 1.1,
-      quantity: 100,
-      executedPrice: 1.1,
-      executedQuantity: 100,
-      submittedAt: new Date('2026-03-13T02:00:00.000Z'),
-      updatedAt: null,
-    };
+      side: 'BUY',
+      status: 'Filled',
+      submittedPrice: '1.1',
+      quantity: '100',
+      executedPrice: '1.1',
+      executedQuantity: '100',
+      submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
+      executionTimeMs: MONITOR_TASK_NOW_MS,
+      updatedAtMs: MONITOR_TASK_NOW_MS,
+    });
+    const readOrders = ingress.createQueryOrdersReader();
+    ingress.setQueryUpdatedAtMs(Number.NaN);
+    expect(ingress.nativeReadCounts().detail).toBe(0);
+    let queryFailure: unknown = null;
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
@@ -1345,14 +1580,24 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorContext({
       dailyLossTracker,
       orderRecorder: createOrderRecorderDouble({
-        fetchAllOrdersFromAPI: async () => [invalidExecutedOrder],
-        refreshOrdersFromAllOrdersForLong: async () => {
+        fetchAllOrdersFromAPI: async () => {
+          try {
+            return await readOrders();
+          } catch (error) {
+            queryFailure = error;
+            throw error;
+          }
+        },
+        commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           refreshOrdersCalls += 1;
-          return [];
+          return { status: 'COMMITTED', receipts: [] };
         },
       }),
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           refreshUnrealizedCalls += 1;
         },
         setWarrantInfoFromCallPrice: () => {
@@ -1365,7 +1610,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
     context.symbolRegistry.updateSeatState = (direction, nextState) => {
@@ -1376,14 +1621,13 @@ describe('monitorTaskProcessor business flow', () => {
       return updateSeatState(direction, nextState);
     };
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
-      lastState,
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble(100_000);
+          return createAccountSnapshotDouble('100000');
         },
         getStockPositions: async () => {
           stockPositionCalls += 1;
@@ -1393,8 +1637,8 @@ describe('monitorTaskProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
           ]),
       }),
       termination: {
@@ -1420,46 +1664,60 @@ describe('monitorTaskProcessor business flow', () => {
       throw new Error('expected DailyLossTracker failure to reach the fatal channel');
     }
 
-    expect(fatalError.message).toContain('已成交订单缺少有效更新时间');
+    expect(fatalErrors[0]).toBe(queryFailure);
+    expect(fatalError.message).toBe('[orderMapper] invalid updatedAt');
+    expect(ingress.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+    expect(ingress.nativeMutations()).toEqual([]);
     expect(refreshOrdersCalls).toBe(0);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
     expect(refreshUnrealizedCalls).toBe(0);
     expect(warrantInfoWrites).toBe(0);
     expect(activationWrites).toBe(0);
-    expect(lastState.cachedAccount).toBeNull();
-    expect(lastState.cachedPositions).toEqual([]);
+    expect(processor.snapshot.getView().account?.totalCash).toBe('100000');
+    expect(processor.snapshot.getView().positions).toEqual([]);
     expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   });
 
   it('preflights SEAT_REFRESH before DailyLoss rejects a relevant unowned execution', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const fatalErrors: unknown[] = [];
-    const now = new Date();
-    const knownSideOrder: RawOrderFromAPI = {
+    const now = new Date(MONITOR_TASK_NOW_MS);
+    const ingress = await createBrokerIngressFixture({
       orderId: 'seat-refresh-unowned-known-side',
+      tradeId: 'seat-refresh-unowned-known-side-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
-      side: OrderSide.Buy,
-      status: OrderStatus.Filled,
-      orderType: OrderType.ELO,
       remark: 'AUTO',
-      price: 1.1,
-      quantity: 100,
-      executedPrice: 1.1,
-      executedQuantity: 100,
-      submittedAt: now,
-      updatedAt: now,
-    };
+      side: 'BUY',
+      status: 'Filled',
+      submittedPrice: '1.1',
+      quantity: '100',
+      executedPrice: '1.1',
+      executedQuantity: '100',
+      submittedAtMs: now.getTime(),
+      executionTimeMs: MONITOR_TASK_NOW_MS,
+      updatedAtMs: now.getTime(),
+    });
+    const knownSideOrder = ingress.queryObservation;
     let preflightCalls = 0;
     const preflightSymbols: string[] = [];
     let refreshOrdersCalls = 0;
+    let quotesCalls = 0;
+    let accountReads = 0;
+    let positionReads = 0;
+    let prepareCalls = 0;
+    let publishCalls = 0;
+    let warrantWrites = 0;
     const orderRecorder = Object.assign(
       createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [knownSideOrder],
-        refreshOrdersFromAllOrdersForLong: async () => {
+        commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           refreshOrdersCalls += 1;
-          return [];
+          return { status: 'COMMITTED', receipts: [] };
         },
       }),
       {
@@ -1478,19 +1736,45 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorContext({
       dailyLossTracker,
       orderRecorder,
+      riskChecker: createRiskCheckerDouble({
+        prepareUnrealizedLossData: (_recorder, symbol) => {
+          prepareCalls += 1;
+          return { symbol, data: { r1: '0', n1: 0 } };
+        },
+        publishUnrealizedLossData: () => {
+          publishCalls += 1;
+        },
+        setWarrantInfoFromCallPrice: () => {
+          warrantWrites += 1;
+          return { status: 'ok', isWarrant: true };
+        },
+      }),
     });
     context.symbolRegistry.updateSeatState('LONG', {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
+      trader: createTraderDouble({
+        getAccountSnapshot: async () => {
+          accountReads += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionReads += 1;
+          return [];
+        },
+      }),
       marketDataClient: createMarketDataClientDouble({
-        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]),
+        getQuotes: async () => {
+          quotesCalls += 1;
+          return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]);
+        },
       }),
       termination: {
         isTerminated: () => false,
@@ -1514,9 +1798,21 @@ describe('monitorTaskProcessor business flow', () => {
       throw new Error('expected DailyLossTracker ownership failure to reach the fatal channel');
     }
 
-    expect(fatalError.message).toContain('相关成交订单无法归属');
+    expect(fatalError.message).toBe(
+      '[DailyLossTracker] 相关成交订单无法归属: monitorSymbol=HSI.HK symbol=BULL.HK orderId=seat-refresh-unowned-known-side',
+    );
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    expect(processor.snapshot.getView().account?.totalCash).toBe('100000');
+    expect(processor.snapshot.getView().positions).toEqual([]);
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
     expect(preflightCalls).toBe(3);
     expect(preflightSymbols).toEqual(['BULL.HK', 'OLD_BULL.HK', 'BEAR.HK']);
+    expect(quotesCalls).toBe(1);
+    expect(accountReads).toBe(0);
+    expect(positionReads).toBe(0);
+    expect(prepareCalls).toBe(0);
+    expect(publishCalls).toBe(0);
+    expect(warrantWrites).toBe(0);
     expect(refreshOrdersCalls).toBe(0);
   });
 
@@ -1529,32 +1825,41 @@ describe('monitorTaskProcessor business flow', () => {
     let refreshUnrealizedCalls = 0;
     let warrantInfoWrites = 0;
     let activationWrites = 0;
-    const lastState = createLastState();
-    const malformedPositiveExecution: RawOrderFromAPI = {
+    const ingress = await createBrokerIngressFixture({
       orderId: 'seat-refresh-invalid-execution-price',
+      tradeId: 'seat-refresh-invalid-execution-price-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
-      side: OrderSide.Buy,
-      status: OrderStatus.Filled,
-      orderType: OrderType.ELO,
       remark: 'AUTO',
-      price: 1.1,
-      quantity: 100,
-      executedPrice: 0,
-      executedQuantity: 100,
-      submittedAt: new Date('2026-03-13T02:00:00.000Z'),
-      updatedAt: new Date('2026-03-13T02:01:00.000Z'),
+      side: 'BUY',
+      status: 'Filled',
+      submittedPrice: '1.1',
+      quantity: '100',
+      executedPrice: '1.1',
+      executedQuantity: '100',
+      submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
+      executionTimeMs: MONITOR_TASK_NOW_MS,
+      updatedAtMs: Date.parse('2026-03-13T02:01:00.000Z'),
+    });
+    const malformedPositiveExecution: RawOrderFromAPI = {
+      ...ingress.queryObservation,
+      executedPrice: '0',
+      executedAmount: '0',
     };
     const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [malformedPositiveExecution],
-        refreshOrdersFromAllOrdersForLong: async (_symbol, allOrders) => {
+        commitRebuildSnapshot: (_targets, allOrders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           refreshOrdersCalls += 1;
-          return classifyOrdersForRebuild(allOrders).executedBuyOrders;
+          classifyOrdersForRebuild(allOrders);
+          return { status: 'COMMITTED', receipts: [] };
         },
       }),
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           refreshUnrealizedCalls += 1;
         },
         setWarrantInfoFromCallPrice: () => {
@@ -1567,7 +1872,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
     context.symbolRegistry.updateSeatState = (direction, nextState) => {
@@ -1578,14 +1883,13 @@ describe('monitorTaskProcessor business flow', () => {
       return updateSeatState(direction, nextState);
     };
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
-      lastState,
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble(100_000);
+          return createAccountSnapshotDouble('100000');
         },
         getStockPositions: async () => {
           stockPositionCalls += 1;
@@ -1595,8 +1899,8 @@ describe('monitorTaskProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
           ]),
       }),
       termination: {
@@ -1622,32 +1926,33 @@ describe('monitorTaskProcessor business flow', () => {
       throw new Error('expected malformed execution fact to reach the fatal channel');
     }
 
-    expect(fatalError.message).toMatch(/执行事实/);
-    expect(refreshOrdersCalls).toBe(1);
+    expect(fatalError.message).toBe('[订单记录] 金额、数量或执行时间无效');
+    expect(refreshOrdersCalls).toBe(0);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
     expect(refreshUnrealizedCalls).toBe(0);
     expect(warrantInfoWrites).toBe(0);
     expect(activationWrites).toBe(0);
-    expect(lastState.cachedAccount).toBeNull();
-    expect(lastState.cachedPositions).toEqual([]);
+    expect(processor.snapshot.getView().account?.totalCash).toBe('100000');
+    expect(processor.snapshot.getView().positions).toEqual([]);
     expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   });
 
   for (const unknownSideCase of [
     {
       label: 'Filled with positive execution',
-      status: OrderStatus.Filled,
-      executedPrice: 1,
+      status: 'Filled',
+      executionStatus: 'FILLED',
+      executedPrice: '1',
       executedQuantity: 100,
     },
     {
       label: 'PartialFilled with zero execution',
-      status: OrderStatus.PartialFilled,
-      executedPrice: 0,
+      status: 'PartialFilled',
+      executedPrice: '0',
       executedQuantity: 0,
     },
-  ]) {
+  ] as const) {
     it(`fails SEAT_REFRESH fatally before post-refresh writes for Unknown-side ${unknownSideCase.label}`, async () => {
       const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
       const fatalErrors: unknown[] = [];
@@ -1658,23 +1963,27 @@ describe('monitorTaskProcessor business flow', () => {
       let refreshUnrealizedCalls = 0;
       let warrantInfoWrites = 0;
       let activationWrites = 0;
-      const lastState = createLastState();
-      const now = new Date();
-      const unknownSideOrder: RawOrderFromAPI = {
-        orderId: `seat-refresh-unknown-side-${unknownSideCase.label}`,
-        symbol: 'BULL.HK',
+      const now = new Date(MONITOR_TASK_NOW_MS);
+      const ingress = await createBrokerIngressFixture({
         stockName: 'HSI RC',
-        side: OrderSide.Unknown,
+        orderId: `seat-refresh-unknown-side-${unknownSideCase.label}`,
+        tradeId: `trade-${unknownSideCase.label}`,
+        symbol: 'BULL.HK',
+        side: 'BUY',
         status: unknownSideCase.status,
-        orderType: OrderType.ELO,
-        remark: 'AUTO',
-        price: 1.1,
-        quantity: 100,
+        submittedPrice: '1.1',
+        quantity: '100',
         executedPrice: unknownSideCase.executedPrice,
-        executedQuantity: unknownSideCase.executedQuantity,
-        submittedAt: now,
-        updatedAt: now,
-      };
+        executedQuantity: String(unknownSideCase.executedQuantity),
+        submittedAtMs: now.getTime(),
+        executionTimeMs: now.getTime(),
+        updatedAtMs: now.getTime(),
+        remark: 'AUTO',
+      });
+      const readOrders = ingress.createQueryOrdersReader();
+      ingress.setQuerySideUnknown();
+      expect(ingress.nativeReadCounts().detail).toBe(0);
+      let queryFailure: unknown = null;
       const dailyLossTracker = createDailyLossTracker({
         ...createDailyLossOrderAnalysisDeps(),
         resolveOrderOwnership: (order) =>
@@ -1683,10 +1992,21 @@ describe('monitorTaskProcessor business flow', () => {
       });
       const orderRecorder = Object.assign(
         createOrderRecorderDouble({
-          fetchAllOrdersFromAPI: async () => [unknownSideOrder],
-          refreshOrdersFromAllOrdersForLong: async (_symbol, allOrders) => {
+          fetchAllOrdersFromAPI: async () => {
+            try {
+              return await readOrders();
+            } catch (error) {
+              queryFailure = error;
+              throw error;
+            }
+          },
+          commitRebuildSnapshot: (_targets, allOrders, isCurrent, mode) => {
+            expect(mode).toBe('ACTIVATION');
+            if (!isCurrent()) return { status: 'ABORTED' };
+
             refreshOrdersCalls += 1;
-            return classifyOrdersForRebuild(allOrders).executedBuyOrders;
+            classifyOrdersForRebuild(allOrders);
+            return { status: 'COMMITTED', receipts: [] };
           },
         }),
         {
@@ -1700,7 +2020,7 @@ describe('monitorTaskProcessor business flow', () => {
         dailyLossTracker,
         orderRecorder,
         riskChecker: createRiskCheckerDouble({
-          refreshUnrealizedLossData: async () => {
+          publishUnrealizedLossData: () => {
             refreshUnrealizedCalls += 1;
           },
           setWarrantInfoFromCallPrice: () => {
@@ -1713,30 +2033,9 @@ describe('monitorTaskProcessor business flow', () => {
         ...context.symbolRegistry.getSeatState('LONG'),
         symbol: 'BULL.HK',
         status: 'ACTIVATING',
-        callPrice: 20_000,
+        callPrice: '20000',
       });
-      const seedOrders: ReadonlyArray<RawOrderFromAPI> = [
-        {
-          ...unknownSideOrder,
-          orderId: `seat-refresh-seed-buy-${unknownSideCase.label}`,
-          side: OrderSide.Buy,
-          status: OrderStatus.Filled,
-          executedPrice: 1,
-          executedQuantity: 100,
-          submittedAt: new Date(now.getTime() - 2_000),
-          updatedAt: new Date(now.getTime() - 2_000),
-        },
-        {
-          ...unknownSideOrder,
-          orderId: `seat-refresh-seed-sell-${unknownSideCase.label}`,
-          side: OrderSide.Sell,
-          status: OrderStatus.Filled,
-          executedPrice: 0.9,
-          executedQuantity: 100,
-          submittedAt: new Date(now.getTime() - 1_000),
-          updatedAt: new Date(now.getTime() - 1_000),
-        },
-      ];
+      const seedOrders = await createDailyLossSeedOrders(now, `unknown-${unknownSideCase.label}`);
       dailyLossTracker.recalculateFromAllOrders(
         seedOrders,
         context.config,
@@ -1744,7 +2043,7 @@ describe('monitorTaskProcessor business flow', () => {
         undefined,
         new Set(['BULL.HK']),
       );
-      expect(dailyLossTracker.getLossOffset('LONG')).toBe(-10);
+      expect(dailyLossTracker.getLossOffset('LONG')).toBe('-10');
       const updateSeatState = context.symbolRegistry.updateSeatState;
       context.symbolRegistry.updateSeatState = (direction, nextState) => {
         if (direction === 'LONG' && nextState.status === 'ACTIVE') {
@@ -1754,14 +2053,13 @@ describe('monitorTaskProcessor business flow', () => {
         return updateSeatState(direction, nextState);
       };
 
-      const processor = createBusinessProcessor({
+      const processor = await createBusinessProcessor({
         queue,
         context,
-        lastState,
         trader: createTraderDouble({
           getAccountSnapshot: async () => {
             accountSnapshotCalls += 1;
-            return createAccountSnapshotDouble(100_000);
+            return createAccountSnapshotDouble('100000');
           },
           getStockPositions: async () => {
             stockPositionCalls += 1;
@@ -1771,8 +2069,8 @@ describe('monitorTaskProcessor business flow', () => {
         marketDataClient: createMarketDataClientDouble({
           getQuotes: async () =>
             new Map([
-              ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-              ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+              ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+              ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
             ]),
         }),
         termination: {
@@ -1792,9 +2090,11 @@ describe('monitorTaskProcessor business flow', () => {
         timeoutMs: 500,
       });
 
+      expect(ingress.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+      expect(ingress.nativeMutations()).toEqual([]);
+      expect(fatalErrors[0]).toBe(queryFailure);
       const fatalError = fatalErrors[0];
-      const refreshWasBlocked =
-        fatalError instanceof Error && fatalError.message.includes('订单方向不可归属');
+      const refreshWasBlocked = fatalError instanceof Error && fatalError === queryFailure;
 
       expect({
         refreshWasBlocked,
@@ -1805,22 +2105,22 @@ describe('monitorTaskProcessor business flow', () => {
         refreshUnrealizedCalls,
         warrantInfoWrites,
         activationWrites,
-        cachedAccount: lastState.cachedAccount,
-        cachedPositions: lastState.cachedPositions,
+        canonicalCash: processor.snapshot.getView().account?.totalCash,
+        canonicalPositions: processor.snapshot.getView().positions,
         dailyLossOffset: dailyLossTracker.getLossOffset('LONG'),
         seatStatus: context.symbolRegistry.getSeatState('LONG').status,
       }).toEqual({
         refreshWasBlocked: true,
-        preflightCalls: 1,
+        preflightCalls: 0,
         refreshOrdersCalls: 0,
         accountSnapshotCalls: 0,
         stockPositionCalls: 0,
         refreshUnrealizedCalls: 0,
         warrantInfoWrites: 0,
         activationWrites: 0,
-        cachedAccount: null,
-        cachedPositions: [],
-        dailyLossOffset: -10,
+        canonicalCash: '100000',
+        canonicalPositions: [],
+        dailyLossOffset: '-10',
         seatStatus: 'ACTIVATING',
       });
     });
@@ -1829,40 +2129,48 @@ describe('monitorTaskProcessor business flow', () => {
   for (const relatedOrderCase of [
     {
       label: 'Unknown Filled execution',
-      side: OrderSide.Unknown,
-      status: OrderStatus.Filled,
-      executedPrice: 1,
+      status: 'Filled',
+      executionStatus: 'FILLED',
+      executedPrice: '1',
       executedQuantity: 100,
       expectedErrorFragment: '订单方向不可归属',
     },
     {
       label: 'malformed known-side execution',
-      side: OrderSide.Buy,
-      status: OrderStatus.Filled,
-      executedPrice: 0,
+
+      executionStatus: 'FILLED',
+      status: 'Filled',
+      executedPrice: '0',
       executedQuantity: 100,
-      expectedErrorFragment: '执行事实',
+      expectedErrorFragment: '金额、数量或执行时间无效',
     },
   ] as const) {
     it(`fails SEAT_REFRESH before DailyLoss writes for non-target related ${relatedOrderCase.label}`, async () => {
       const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
       const fatalErrors: unknown[] = [];
-      const now = new Date();
-      const relatedOrder: RawOrderFromAPI = {
-        orderId: `seat-refresh-related-${relatedOrderCase.label}`,
-        symbol: 'OLD_BULL.HK',
+      const now = new Date(MONITOR_TASK_NOW_MS);
+      const ingress = await createBrokerIngressFixture({
         stockName: 'HSI RC',
-        side: relatedOrderCase.side,
-        status: relatedOrderCase.status,
-        orderType: OrderType.ELO,
+        orderId: `seat-refresh-related-${relatedOrderCase.label}`,
+        tradeId: `trade-related-${relatedOrderCase.label}`,
+        symbol: 'OLD_BULL.HK',
+        side: 'BUY',
+        status: 'Filled',
+        submittedPrice: '1.1',
+        quantity: '100',
+        executedPrice: '1',
+        executedQuantity: '100',
+        submittedAtMs: now.getTime(),
+        executionTimeMs: now.getTime(),
+        updatedAtMs: now.getTime(),
         remark: 'AUTO',
-        price: 1.1,
-        quantity: 100,
-        executedPrice: relatedOrderCase.executedPrice,
-        executedQuantity: relatedOrderCase.executedQuantity,
-        submittedAt: now,
-        updatedAt: now,
-      };
+      });
+      const isUnknownSide = relatedOrderCase.label === 'Unknown Filled execution';
+      if (isUnknownSide) ingress.setQuerySideUnknown();
+
+      expect(ingress.nativeReadCounts().detail).toBe(0);
+      const readOrders = ingress.createQueryOrdersReader();
+      let queryFailure: unknown = null;
       const dailyLossTracker = createDailyLossTracker({
         ...createDailyLossOrderAnalysisDeps(),
         resolveOrderOwnership: (order) =>
@@ -1873,14 +2181,27 @@ describe('monitorTaskProcessor business flow', () => {
       let refreshOrdersCalls = 0;
       let activationWrites = 0;
       const orderRecorder = createOrderRecorderDouble({
-        fetchAllOrdersFromAPI: async () => [relatedOrder],
+        fetchAllOrdersFromAPI: async () => {
+          if (!isUnknownSide)
+            return [{ ...ingress.queryObservation, executedPrice: '0', executedAmount: '0' }];
+
+          try {
+            return await readOrders();
+          } catch (error) {
+            queryFailure = error;
+            throw error;
+          }
+        },
         validateRebuildSnapshot: (symbol, allOrders) => {
           preflightSymbols.push(symbol);
           classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
         },
-        refreshOrdersFromAllOrdersForLong: async () => {
+        commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           refreshOrdersCalls += 1;
-          return [];
+          return { status: 'COMMITTED', receipts: [] };
         },
       });
       const context = createMonitorContext({
@@ -1891,32 +2212,9 @@ describe('monitorTaskProcessor business flow', () => {
         ...context.symbolRegistry.getSeatState('LONG'),
         symbol: 'BULL.HK',
         status: 'ACTIVATING',
-        callPrice: 20_000,
+        callPrice: '20000',
       });
-      const seedOrders: ReadonlyArray<RawOrderFromAPI> = [
-        {
-          ...relatedOrder,
-          orderId: `seat-refresh-related-seed-buy-${relatedOrderCase.label}`,
-          symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          status: OrderStatus.Filled,
-          executedPrice: 1,
-          executedQuantity: 100,
-          submittedAt: new Date(now.getTime() - 2_000),
-          updatedAt: new Date(now.getTime() - 2_000),
-        },
-        {
-          ...relatedOrder,
-          orderId: `seat-refresh-related-seed-sell-${relatedOrderCase.label}`,
-          symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          status: OrderStatus.Filled,
-          executedPrice: 0.9,
-          executedQuantity: 100,
-          submittedAt: new Date(now.getTime() - 1_000),
-          updatedAt: new Date(now.getTime() - 1_000),
-        },
-      ];
+      const seedOrders = await createDailyLossSeedOrders(now, `related-${relatedOrderCase.label}`);
       dailyLossTracker.recalculateFromAllOrders(
         seedOrders,
         context.config,
@@ -1924,7 +2222,7 @@ describe('monitorTaskProcessor business flow', () => {
         undefined,
         new Set(['BULL.HK']),
       );
-      expect(dailyLossTracker.getLossOffset('LONG')).toBe(-10);
+      expect(dailyLossTracker.getLossOffset('LONG')).toBe('-10');
       const updateSeatState = context.symbolRegistry.updateSeatState;
       context.symbolRegistry.updateSeatState = (direction, nextState) => {
         if (direction === 'LONG' && nextState.status === 'ACTIVE') {
@@ -1934,14 +2232,14 @@ describe('monitorTaskProcessor business flow', () => {
         return updateSeatState(direction, nextState);
       };
 
-      const processor = createBusinessProcessor({
+      const processor = await createBusinessProcessor({
         queue,
         context,
         marketDataClient: createMarketDataClientDouble({
           getQuotes: async () =>
             new Map([
-              ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-              ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+              ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+              ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
             ]),
         }),
         termination: {
@@ -1961,10 +2259,16 @@ describe('monitorTaskProcessor business flow', () => {
         timeoutMs: 500,
       });
 
+      expect(ingress.nativeReadCounts()).toEqual({ cancel: 0, detail: isUnknownSide ? 1 : 0 });
+      expect(ingress.nativeMutations()).toEqual([]);
+      if (isUnknownSide) expect(fatalErrors[0]).toBe(queryFailure);
+
       const fatalError = fatalErrors[0];
       const preflightBlocked =
         fatalError instanceof Error &&
-        fatalError.message.includes(relatedOrderCase.expectedErrorFragment);
+        (isUnknownSide
+          ? fatalError === queryFailure
+          : fatalError.message.includes(relatedOrderCase.expectedErrorFragment));
 
       expect({
         preflightBlocked,
@@ -1975,9 +2279,9 @@ describe('monitorTaskProcessor business flow', () => {
         seatStatus: context.symbolRegistry.getSeatState('LONG').status,
       }).toEqual({
         preflightBlocked: true,
-        preflightSymbols: ['BULL.HK', 'OLD_BULL.HK'],
+        preflightSymbols: isUnknownSide ? [] : ['BULL.HK', 'OLD_BULL.HK'],
         refreshOrdersCalls: 0,
-        dailyLossOffset: -10,
+        dailyLossOffset: '-10',
         activationWrites: 0,
         seatStatus: 'ACTIVATING',
       });
@@ -1990,29 +2294,34 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [],
-        refreshOrdersFromAllOrdersForShort: async (_symbol, _allOrders, quote) => {
+        commitRebuildSnapshot: (_targets, __allOrders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           refreshOrdersCalls += 1;
-          expect(Object.is(quote?.price, 0.9)).toBeTrue();
-          return [];
+
+          return { status: 'COMMITTED', receipts: [] };
         },
       }),
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {},
+        publishUnrealizedLossData: () => {},
       }),
     });
     context.symbolRegistry.updateSeatState('SHORT', {
       ...context.symbolRegistry.getSeatState('SHORT'),
       symbol: 'BEAR.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
-          new Map([['BEAR.HK', { ...createQuoteDouble('BEAR.HK', 0.9, 100), name: 'BEAR Name' }]]),
+          new Map([
+            ['BEAR.HK', { ...createQuoteDouble('BEAR.HK', '0.9', 100), name: 'BEAR Name' }],
+          ]),
       }),
     });
 
@@ -2048,7 +2357,7 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: null,
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
     });
@@ -2092,13 +2401,16 @@ describe('monitorTaskProcessor business flow', () => {
           fetchAllOrdersCalls += 1;
           return [];
         },
-        refreshOrdersFromAllOrdersForLong: async () => {
+        commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           refreshOrdersCalls += 1;
-          return [];
+          return { status: 'COMMITTED', receipts: [] };
         },
       }),
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           refreshUnrealizedCalls += 1;
         },
       }),
@@ -2107,16 +2419,16 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
           getQuotesCalls += 1;
-          return new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]);
+          return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]);
         },
       }),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble({
@@ -2164,18 +2476,11 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorContext({
       riskChecker: {
         ...baseRiskChecker,
-        refreshUnrealizedLossData: async (
-          orderRecorder,
-          symbol,
-          isLongSymbol,
-          quote,
-          dailyLossOffset,
-        ) => {
-          await baseRiskChecker.refreshUnrealizedLossData(
+        prepareUnrealizedLossData: (orderRecorder, symbol, isLongSymbol, dailyLossOffset) => {
+          const prepared = baseRiskChecker.prepareUnrealizedLossData(
             orderRecorder,
             symbol,
             isLongSymbol,
-            quote,
             dailyLossOffset,
           );
           const latestSeat = context.symbolRegistry.getSeatState('LONG');
@@ -2186,6 +2491,7 @@ describe('monitorTaskProcessor business flow', () => {
             lastSwitchAt: Date.now(),
             callPrice: null,
           });
+          return prepared;
         },
       },
     });
@@ -2193,17 +2499,17 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
           ]),
       }),
     });
@@ -2217,43 +2523,47 @@ describe('monitorTaskProcessor business flow', () => {
       timeoutMs: 500,
     });
 
-    const riskCheckResult = context.riskChecker.checkWarrantRisk('NEXT_BULL.HK', 'BUYCALL', 20_010);
+    const riskCheckResult = context.riskChecker.checkWarrantRisk(
+      'NEXT_BULL.HK',
+      'BUYCALL',
+      '20010',
+    );
     expect(riskCheckResult.allowed).toBeTrue();
   });
 
   it('does not write shared refresh state when SEAT_REFRESH becomes stale before cache rebuild starts', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    let recalculateCalls = 0;
+    let dailyLossPrepareCalls = 0;
+    let dailyLossPublishCalls = 0;
+    const dailyLossOwner = createDailyLossTrackerDouble();
     let refreshOrdersCalls = 0;
     let refreshUnrealizedCalls = 0;
     let accountSnapshotCalls = 0;
     let stockPositionCalls = 0;
-    const lastState = createLastState();
     const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [],
-        refreshOrdersFromAllOrdersForLong: async () => {
+        commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           refreshOrdersCalls += 1;
-          return [];
+          return { status: 'COMMITTED', receipts: [] };
         },
       }),
       dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: () => {
-          recalculateCalls += 1;
+        ...dailyLossOwner,
+        prepareRecalculationFromAllOrders: (...params) => {
+          dailyLossPrepareCalls += 1;
+          return dailyLossOwner.prepareRecalculationFromAllOrders(...params);
         },
-        recordCumulativeExecution: () => ({
-          authoritativeFactChanged: false,
-          executionAdvanced: false,
-        }),
-        getLossOffset: () => 0,
-        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
-        commitProtectionBoundary: () => {},
-        restoreExecutionSnapshot: () => {},
-        restoreProtectionBoundary: () => {},
+        publishRecalculation: (prepared) => {
+          dailyLossPublishCalls += 1;
+          dailyLossOwner.publishRecalculation(prepared);
+        },
       },
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           refreshUnrealizedCalls += 1;
         },
       }),
@@ -2263,17 +2573,16 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
-      lastState,
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble(123_000);
+          return createAccountSnapshotDouble('123000');
         },
         getStockPositions: async () => {
           stockPositionCalls += 1;
@@ -2297,8 +2606,8 @@ describe('monitorTaskProcessor business flow', () => {
             callPrice: null,
           });
           return new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
           ]);
         },
       }),
@@ -2313,14 +2622,15 @@ describe('monitorTaskProcessor business flow', () => {
       timeoutMs: 500,
     });
 
-    expect(recalculateCalls).toBe(0);
+    expect(dailyLossPrepareCalls).toBe(0);
+    expect(dailyLossPublishCalls).toBe(0);
     expect(refreshOrdersCalls).toBe(0);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
     expect(refreshUnrealizedCalls).toBe(0);
-    expect(lastState.cachedAccount).toBeNull();
-    expect(lastState.cachedPositions).toEqual([]);
-    expect(lastState.positionCache.get('BULL.HK')).toBeNull();
+    expect(processor.snapshot.getView().account?.totalCash).toBe('100000');
+    expect(processor.snapshot.getView().positions).toEqual([]);
+    expect(processor.snapshot.getAvailablePosition('BULL.HK')).toBeNull();
     expect(context.longSymbolName).toBe('OLD_BULL');
     expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(3);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
@@ -2341,11 +2651,11 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
     const originalSeatVersion = context.symbolRegistry.getSeatVersion('LONG');
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       scheduler: {
@@ -2407,7 +2717,10 @@ describe('monitorTaskProcessor business flow', () => {
       longSymbolName: 'OLD_BULL',
       orderRecorder: createOrderRecorderDouble({
         fetchAllOrdersFromAPI: async () => [],
-        refreshOrdersFromAllOrdersForLong: async () => {
+        commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+          expect(mode).toBe('ACTIVATION');
+          if (!isCurrent()) return { status: 'ABORTED' };
+
           throw new Error('seat refresh order rebuild failed');
         },
       }),
@@ -2416,16 +2729,16 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
           getQuotesCalls += 1;
-          return new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]);
+          return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]);
         },
       }),
       termination: {
@@ -2451,7 +2764,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
     expect(context.longSymbolName).toBe('OLD_BULL');
     expect(context.symbolRegistry.getSeatVersion('LONG')).toBe(2);
@@ -2461,17 +2774,17 @@ describe('monitorTaskProcessor business flow', () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const rebuildStarted = createDeferred<null>();
     const releaseRebuild = createDeferred<null>();
-    let dailyLossRecalculations = 0;
+    let dailyLossPrepareCalls = 0;
+    let dailyLossPublishCalls = 0;
+    const dailyLossOwner = createDailyLossTrackerDouble();
     let accountSnapshotCalls = 0;
     let stockPositionCalls = 0;
     let refreshUnrealizedCalls = 0;
     let warrantInfoWrites = 0;
     let activationWrites = 0;
-    const lastState = createLastState();
     const orderRecorder = Object.assign(
       createOrderRecorderDouble({
-        fetchAllOrdersFromAPI: async () => [],
-        refreshOrdersFromAllOrdersForLong: async () => {
+        fetchAllOrdersFromAPI: async () => {
           rebuildStarted.resolve(null);
           await releaseRebuild.promise;
           return [];
@@ -2482,14 +2795,20 @@ describe('monitorTaskProcessor business flow', () => {
       },
     );
     const context = createMonitorContext({
-      dailyLossTracker: createDailyLossTrackerDouble({
-        recalculateFromAllOrders: () => {
-          dailyLossRecalculations += 1;
+      dailyLossTracker: {
+        ...dailyLossOwner,
+        prepareRecalculationFromAllOrders: (...params) => {
+          dailyLossPrepareCalls += 1;
+          return dailyLossOwner.prepareRecalculationFromAllOrders(...params);
         },
-      }),
+        publishRecalculation: (prepared) => {
+          dailyLossPublishCalls += 1;
+          dailyLossOwner.publishRecalculation(prepared);
+        },
+      },
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           refreshUnrealizedCalls += 1;
         },
         setWarrantInfoFromCallPrice: () => {
@@ -2502,7 +2821,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
     context.symbolRegistry.updateSeatState = (direction, nextState) => {
@@ -2513,14 +2832,13 @@ describe('monitorTaskProcessor business flow', () => {
       return updateSeatState(direction, nextState);
     };
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
-      lastState,
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble(100_000);
+          return createAccountSnapshotDouble('100000');
         },
         getStockPositions: async () => {
           stockPositionCalls += 1;
@@ -2528,7 +2846,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
       marketDataClient: createMarketDataClientDouble({
-        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)]]),
+        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]),
       }),
     });
 
@@ -2547,14 +2865,15 @@ describe('monitorTaskProcessor business flow', () => {
     releaseRebuild.resolve(null);
     await processor.stopAndDrain();
 
-    expect(dailyLossRecalculations).toBe(1);
+    expect(dailyLossPrepareCalls).toBe(0);
+    expect(dailyLossPublishCalls).toBe(0);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
     expect(refreshUnrealizedCalls).toBe(0);
     expect(warrantInfoWrites).toBe(0);
     expect(activationWrites).toBe(0);
-    expect(lastState.cachedAccount).toBeNull();
-    expect(lastState.cachedPositions).toEqual([]);
+    expect(processor.snapshot.getView().account?.totalCash).toBe('100000');
+    expect(processor.snapshot.getView().positions).toEqual([]);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: 'NEXT_BULL.HK',
       status: 'SWITCHING',
@@ -2571,7 +2890,10 @@ describe('monitorTaskProcessor business flow', () => {
     let activationWrites = 0;
     const orderRecorder = createOrderRecorderDouble({
       fetchAllOrdersFromAPI: async () => [],
-      refreshOrdersFromAllOrdersForLong: async () => [],
+      commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+        expect(mode).toBe('ACTIVATION');
+        return isCurrent() ? { status: 'COMMITTED', receipts: [] } : { status: 'ABORTED' };
+      },
       clearBuyOrders: () => {
         clearBuyOrdersCalls += 1;
       },
@@ -2579,7 +2901,7 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorContext({
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           riskRefreshCalls += 1;
         },
         setWarrantInfoFromCallPrice: () => {
@@ -2592,7 +2914,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
     context.symbolRegistry.updateSeatState = (direction, nextState) => {
@@ -2603,22 +2925,22 @@ describe('monitorTaskProcessor business flow', () => {
       return updateSeatState(direction, nextState);
     };
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       trader: createTraderDouble({
         getAccountSnapshot: async () => {
           accountRefreshStarted.resolve(null);
           await releaseAccountRefresh.promise;
-          return createAccountSnapshotDouble(100_000);
+          return createAccountSnapshotDouble('100000');
         },
         getStockPositions: async () => [],
       }),
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
           ]),
       }),
     });
@@ -2657,7 +2979,10 @@ describe('monitorTaskProcessor business flow', () => {
     let activationWrites = 0;
     const orderRecorder = createOrderRecorderDouble({
       fetchAllOrdersFromAPI: async () => [],
-      refreshOrdersFromAllOrdersForLong: async () => [],
+      commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
+        expect(mode).toBe('ACTIVATION');
+        return isCurrent() ? { status: 'COMMITTED', receipts: [] } : { status: 'ABORTED' };
+      },
       clearBuyOrders: () => {
         clearBuyOrdersCalls += 1;
       },
@@ -2665,9 +2990,8 @@ describe('monitorTaskProcessor business flow', () => {
     const context = createMonitorContext({
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {
-          riskRefreshStarted.resolve(null);
-          await releaseRiskRefresh.promise;
+        publishUnrealizedLossData: () => {
+          throw new Error('obsolete prepared risk must not publish');
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
@@ -2679,7 +3003,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
     context.symbolRegistry.updateSeatState = (direction, nextState) => {
@@ -2690,18 +3014,25 @@ describe('monitorTaskProcessor business flow', () => {
       return updateSeatState(direction, nextState);
     };
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
+      quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble({
+        reconcilePositionHoldFromCurrentTruth: async (token) => {
+          expect(token).toEqual(processor.snapshot.getView().token);
+          riskRefreshStarted.resolve(null);
+          await releaseRiskRefresh.promise;
+        },
+      }),
       trader: createTraderDouble({
-        getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
         getStockPositions: async () => [],
       }),
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
           ]),
       }),
     });
@@ -2737,10 +3068,10 @@ describe('monitorTaskProcessor business flow', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20_000,
+      callPrice: '20000',
     });
 
-    context.riskChecker.refreshUnrealizedLossData = async () => {
+    context.riskChecker.prepareUnrealizedLossData = (_recorder, symbol) => {
       const latestSeat = context.symbolRegistry.getSeatState('LONG');
       context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
         ...latestSeat,
@@ -2749,16 +3080,17 @@ describe('monitorTaskProcessor business flow', () => {
         lastSwitchAt: Date.now(),
         callPrice: null,
       });
+      return { symbol, data: { r1: '0', n1: 0 } };
     };
 
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', 1, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['OLD_BULL.HK', createQuoteDouble('OLD_BULL.HK', '1', 100)],
           ]),
       }),
     });
@@ -2794,9 +3126,9 @@ describe('SEAT_REFRESH retry identity', () => {
       ...context.symbolRegistry.getSeatState('LONG'),
       symbol: 'BULL.HK',
       status: 'ACTIVATING',
-      callPrice: 20000,
+      callPrice: '20000',
     });
-    const processor = createBusinessProcessor({
+    const processor = await createBusinessProcessor({
       queue,
       context,
       scheduler: {

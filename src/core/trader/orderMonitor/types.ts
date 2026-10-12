@@ -1,5 +1,8 @@
+import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
 import type { RuntimeTermination } from '../../../types/runtime.js';
-import type { Decimal, OrderStatus, PushOrderChanged, TradeContext } from 'longbridge';
+import type { OrderExecutionLedgerPort } from '../../../types/orderExecutionLedger.js';
+import type { TradeMutationPort, TradeSubmitResult } from '../../../types/tradeMutationPorts.js';
+import type { OrderDetailReadPort } from '../../../types/orderDetailReadPorts.js';
 import type { MonitorConfig, TradingConfig } from '../../../types/config.js';
 import type { Quote } from '../../../types/quote.js';
 import type {
@@ -16,7 +19,6 @@ import type {
 } from '../../../types/trader.js';
 import type {
   OrderRecorder,
-  PostTradeConsistencyRuntimePort,
   RateLimiter,
   RawOrderFromAPI,
   MarketDataClient,
@@ -25,6 +27,8 @@ import type {
   Unsubscribe,
 } from '../../../types/services.js';
 import type { BoundedOneShotTimerController } from '../../../utils/timer/types.js';
+import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
+import type { SettlementRefreshNeedRecorder } from '../../../types/settlement.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../protectiveLiquidationEpisodeTracker/types.js';
 import type {
   CancelOrderMutationRequest,
@@ -65,8 +69,9 @@ export type TerminalSettlementInput = {
     readonly orderId: string;
     readonly closedReason: TerminalClosedReason;
     readonly source: 'API' | 'WS';
-    readonly executedPrice: number | null;
+    readonly executedPrice: string | null;
     readonly executedQuantity: number | null;
+    readonly executedAmount: string;
     readonly executedTimeMs: number | null;
     readonly orderUpdatedAtMs: number | null;
     readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
@@ -111,7 +116,7 @@ export type TimeoutMarketConversionSubmitOutcome =
     }
   | {
       readonly kind: 'BROKER_RESPONSE';
-      readonly brokerResponse: Awaited<ReturnType<TradeContext['submitOrder']>>;
+      readonly brokerResponse: TradeSubmitResult;
     }
   | {
       readonly kind: 'BROKER_REQUEST_STARTED_UNKNOWN';
@@ -277,8 +282,9 @@ export interface RouteRuntime {
 export type TimeoutMarketConversionTerminalState = Readonly<{
   readonly closedReason: OrderClosedReason;
   readonly source: 'WS';
-  readonly executedPrice: number | null;
+  readonly executedPrice: string | null;
   readonly executedQuantity: number | null;
+  readonly executedAmount: string;
   readonly executedTimeMs: number | null;
   readonly orderUpdatedAtMs: number | null;
   readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
@@ -298,8 +304,9 @@ export type OrderCumulativeExecutionParams = Readonly<{
   symbol: string;
   isLongSymbol: boolean;
   isProtectiveLiquidation: boolean;
-  executedPrice: number | null;
+  executedPrice: string | null;
   executedQuantity: number | null;
+  executedAmount: string;
   executedTimeMs: number | null;
   orderUpdatedAtMs: number | null;
 }>;
@@ -307,13 +314,15 @@ export type OrderCumulativeExecutionParams = Readonly<{
 /**
  * 订单事实观察值。
  * 类型用途：统一承载 WS 与权威 state-check 输入单调合并的状态、成交和 revision。
- * 数据来源：PushOrderChanged 或 OrderStateCheckResult OPEN/TERMINAL 分支。
+ * 数据来源：RawOrderFromAPI 或 OrderStateCheckResult OPEN/TERMINAL 分支。
  * 使用范围：orderMonitor 内部。
  */
 export type OrderObservedFact = Readonly<{
-  status: OrderStatus;
+  status: OrderReadStatus;
+  executionPhase: 'OPEN' | 'TERMINAL';
   executedQuantity: number | null;
-  executedPrice: number | null;
+  executedAmount: string;
+  executedPrice: string | null;
   executedTimeMs: number | null;
   updatedAtMs: number | null;
 }>;
@@ -325,9 +334,11 @@ export type OrderObservedFact = Readonly<{
  * 使用范围：orderMonitor 内部。
  */
 export type MonotonicOrderFact = Readonly<{
-  status: OrderStatus;
+  status: OrderReadStatus;
+  executionPhase: 'OPEN' | 'TERMINAL';
   executedQuantity: number;
-  executedPrice: number | null;
+  executedAmount: string;
+  executedPrice: string | null;
   executedTimeMs: number | null;
   updatedAtMs: number | null;
 }>;
@@ -341,10 +352,15 @@ export type MonotonicOrderFact = Readonly<{
 export type KnownOrderFact = Pick<
   OrderMonitorTrackedOrder,
   | 'orderId'
+  | 'symbol'
+  | 'side'
+  | 'executionSide'
+  | 'executionPhase'
   | 'submittedQuantity'
   | 'status'
   | 'executedQuantity'
   | 'executedPrice'
+  | 'executedAmount'
   | 'lastExecutedTimeMs'
   | 'lastOrderUpdateAtMs'
 >;
@@ -401,7 +417,7 @@ export type ReplaceBlockOwnerSnapshot = Readonly<{
 export type OrderMonitorRuntimeStore = {
   readonly trackedOrders: Map<string, OrderMonitorTrackedOrder>;
   readonly trackedOrderLifecycles: Map<string, TrackedOrderLifecycleState>;
-  readonly bootstrappingOrderEvents: Map<string, PushOrderChanged>;
+  readonly bootstrappingOrderEvents: Map<string, RawOrderFromAPI>;
   readonly closedOrderIds: Set<string>;
   readonly queriedTerminalStateByOrderId: Map<string, TerminalStateSnapshot>;
 
@@ -432,7 +448,7 @@ export type RecoveryFlowDeps = {
   readonly trackOrder: (params: TrackOrderParams) => void;
   readonly cancelOrder: (orderId: string) => Promise<CancelOrderOutcome>;
   readonly settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
-  readonly handleOrderChangedWhenActive: (event: PushOrderChanged) => void;
+  readonly handleOrderChangedWhenActive: (event: RawOrderFromAPI) => void;
 };
 
 /**
@@ -442,7 +458,7 @@ export type RecoveryFlowDeps = {
  * 使用范围：orderMonitor/index.ts 调用。
  */
 export interface RecoveryFlow {
-  cacheBootstrappingEvent: (event: PushOrderChanged) => void;
+  cacheBootstrappingEvent: (event: RawOrderFromAPI) => void;
   clearBootstrappingEventBuffer: () => void;
   resetRecoveryTrackingState: () => void;
   recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<RawOrderFromAPI>) => Promise<void>;
@@ -456,6 +472,7 @@ export interface RecoveryFlow {
  */
 export type EventFlowDeps = {
   readonly now: () => Date;
+  readonly monitorConfig: MonitorConfig;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderRecorder: OrderRecorder;
   readonly recordCumulativeExecution: (params: OrderCumulativeExecutionParams) => void;
@@ -465,7 +482,7 @@ export type EventFlowDeps = {
     params: FinalizeOrderSettlementParams,
   ) => DailyLossCumulativeExecutionResult | null;
   readonly settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
-  readonly cacheBootstrappingEvent: (event: PushOrderChanged) => void;
+  readonly cacheBootstrappingEvent: (event: RawOrderFromAPI) => void;
   readonly triggerRoute: (symbol: string, wakeupKind: OrderMonitorWakeupKind) => void;
 };
 
@@ -476,8 +493,8 @@ export type EventFlowDeps = {
  * 使用范围：orderMonitor/index.ts 调用。
  */
 export interface EventFlow {
-  handleOrderChangedWhenActive: (event: PushOrderChanged) => void;
-  handleOrderChanged: (event: PushOrderChanged) => void;
+  handleOrderChangedWhenActive: (event: RawOrderFromAPI) => void;
+  handleOrderChanged: (event: RawOrderFromAPI) => void;
 }
 
 /**
@@ -487,8 +504,10 @@ export interface EventFlow {
  * 使用范围：仅 orderMonitor/orderStatusQuery.ts 使用。
  */
 export type OrderStatusQueryDeps = {
-  readonly ctx: TradeContext;
+  readonly orderDetailReadPort: OrderDetailReadPort;
+  readonly executionLedgerPort: OrderExecutionLedgerPort;
   readonly rateLimiter: RateLimiter;
+  readonly getExecutionTimeEvidence: (orderId: string) => ReadonlyArray<OrderExecutionTimeEvidence>;
 };
 
 /**
@@ -498,7 +517,10 @@ export type OrderStatusQueryDeps = {
  * 使用范围：orderMonitor/orderOps.ts 调用。
  */
 export interface OrderStatusQuery {
-  checkOrderState: (orderId: string) => Promise<OrderStateCheckResult>;
+  checkOrderState: (
+    orderId: string,
+    isWorkCurrent: () => boolean,
+  ) => Promise<OrderStateCheckResult>;
 }
 
 /**
@@ -508,11 +530,13 @@ export interface OrderStatusQuery {
  * 使用范围：仅 orderMonitor/orderOps.ts 使用。
  */
 export type OrderOpsDeps = {
+  /** 每operation捕获原 ingress generation；停止后不能发后继query或发布旧事实。 */
+  readonly captureWorkGuard: () => () => boolean;
+  readonly tradeMutationPort: TradeMutationPort;
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly monitorConfig: MonitorConfig;
-  readonly ctx: TradeContext;
   readonly rateLimiter: RateLimiter;
   readonly cacheManager: OrderCacheManager;
   readonly orderHoldRegistry: OrderHoldRegistry;
@@ -553,13 +577,13 @@ export interface OrderOps {
   ) => Promise<CancelOrderPreflightOutcome>;
   replaceOrderPrice: (
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     request: OrderMutationRequest,
     quantity?: number | null,
   ) => Promise<ReplaceOrderPriceOutcome>;
   replaceOrderPriceWithPermit: (
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     request: OrderMutationRequest,
     permit: TradeMutationPermit,
     quantity?: number | null,
@@ -573,12 +597,11 @@ export interface OrderOps {
  * 使用范围：仅 orderMonitor/routeProcessor.ts 使用。
  */
 export type RouteProcessorDeps = {
+  readonly tradeMutationPort: TradeMutationPort;
   readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly config: OrderMonitorConfig;
-  readonly thresholdDecimal: Decimal;
   readonly orderRecorder: OrderRecorder;
-  readonly ctx: TradeContext;
   readonly rateLimiter: RateLimiter;
   readonly isContinuousTradingAllowed: () => boolean;
   readonly trackOrder: (params: TrackOrderParams) => void;
@@ -589,7 +612,7 @@ export type RouteProcessorDeps = {
   readonly settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
   readonly replaceOrderPrice: (
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     quantity?: number | null,
   ) => Promise<void>;
 };
@@ -629,10 +652,11 @@ export type FinalizeOrderSettlementParams = {
   readonly orderId: string;
   readonly closedReason: OrderClosedReason;
   readonly source: 'API' | 'WS' | 'STATE_CHECK' | 'RECOVERY';
-  readonly executedPrice?: number | null;
-  readonly executedQuantity?: number | null;
-  readonly executedTimeMs?: number | null;
-  readonly orderUpdatedAtMs?: number | null;
+  readonly executedPrice: string | null;
+  readonly executedAmount: string;
+  readonly executedQuantity: number | null;
+  readonly executedTimeMs: number | null;
+  readonly orderUpdatedAtMs: number | null;
   readonly symbol?: string;
   readonly side?: 'BUY' | 'SELL';
   readonly monitorSymbol?: string | null;
@@ -670,7 +694,7 @@ export type SettlementFlowDeps = {
   readonly persistProtectiveLiquidationExecutionProgress: (
     input: ProtectiveLiquidationExecutionProgressInput,
   ) => void;
-  readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntimePort;
+  readonly postTradeConsistencyRuntime: SettlementRefreshNeedRecorder;
   readonly emitOrderStateChanged: (event: OrderStateChangedEvent) => void;
 };
 

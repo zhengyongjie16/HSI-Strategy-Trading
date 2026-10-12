@@ -3,7 +3,8 @@
  *
  * 职责：
  * - 执行 monitor quote 驱动的静态距回收价清仓
- * - 复用历史清仓执行态的清仓、清缓存与浮亏刷新语义
+ * - 从只读 canonical snapshot 与真实 settlement receipt 捕获执行授权
+ * - 远端确认不冒充空仓；仅授权仍有效时沿原清理与风险发布语义推进
  */
 import { WARRANT_LIQUIDATION_ORDER_TYPE } from '../../constants/index.js';
 import { validateSignalSeat } from '../../services/autoSymbolManager/utils.js';
@@ -12,6 +13,9 @@ import type { MonitorContext } from '../../types/state.js';
 import type { QuoteUpdatedEvent } from '../../types/services.js';
 import { isSeatActive } from '../../utils/seat/guards.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import { exactCompare, sumSafeQuantities } from '../../utils/numeric/exact.js';
+import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import { resolveNextQuoteRetry } from '../../utils/quoteRetry/index.js';
 import type {
   CreateStaticLiquidationExecutorDeps,
@@ -79,9 +83,12 @@ function createStaticLiquidationCandidate(params: {
     return { kind: 'SKIP' };
   }
 
-  if (!Number.isFinite(availableQuantity) || availableQuantity <= 0) {
-    return { kind: 'SKIP' };
-  }
+  if (!Number.isSafeInteger(availableQuantity) || availableQuantity < 0)
+    throw new RangeError(
+      'Static liquidation available quantity must be a nonnegative safe integer',
+    );
+
+  if (availableQuantity === 0) return { kind: 'SKIP' };
 
   const liquidationResult = monitorContext.riskChecker.checkWarrantDistanceLiquidation(
     seatState.symbol,
@@ -92,13 +99,12 @@ function createStaticLiquidationCandidate(params: {
     return { kind: 'SKIP' };
   }
 
-  if (
-    tradingQuote === null ||
-    !Number.isFinite(tradingQuote.price) ||
-    !Number.isFinite(tradingQuote.lotSize)
-  ) {
-    return { kind: 'WAIT' };
-  }
+  if (tradingQuote?.lotSize === undefined) return { kind: 'WAIT' };
+
+  if (!Number.isSafeInteger(tradingQuote.lotSize) || tradingQuote.lotSize <= 0)
+    throw new RangeError('Static liquidation lot size must be a positive safe integer');
+
+  if (exactCompare(tradingQuote.price, '0') <= 0) return { kind: 'SKIP' };
 
   const signal: SellSignal = {
     symbol: seatState.symbol,
@@ -138,7 +144,7 @@ export function createStaticLiquidationExecutor(
   readonly canContinue: () => boolean;
   readonly onDirectionSubmitted?: (direction: 'LONG' | 'SHORT') => void;
 }) => Promise<StaticLiquidationRuntimeResult> {
-  const { trader, marketDataClient, lastState, now } = deps;
+  const { trader, marketDataClient, snapshot, postTradeConsistencyRuntime, now } = deps;
 
   return async function executeStaticLiquidation(params: {
     readonly monitorContext: MonitorContext;
@@ -153,11 +159,23 @@ export function createStaticLiquidationExecutor(
 
     const { monitorContext } = params;
     const executionTime = now();
+    const dayEpoch = snapshot.getView().token.dayEpoch;
     const monitorSymbol = monitorContext.config.monitorSymbol;
     const longSeat = monitorContext.symbolRegistry.getSeatState('LONG');
     const shortSeat = monitorContext.symbolRegistry.getSeatState('SHORT');
     const longSymbol = isSeatActive(longSeat) ? longSeat.symbol : null;
     const shortSymbol = isSeatActive(shortSeat) ? shortSeat.symbol : null;
+    const longSeatVersion = monitorContext.symbolRegistry.getSeatVersion('LONG');
+    const shortSeatVersion = monitorContext.symbolRegistry.getSeatVersion('SHORT');
+    const isSeatCurrent = (direction: 'LONG' | 'SHORT'): boolean => {
+      const current = monitorContext.symbolRegistry.getSeatState(direction);
+      return (
+        isSeatActive(current) &&
+        current.symbol === (direction === 'LONG' ? longSymbol : shortSymbol) &&
+        monitorContext.symbolRegistry.getSeatVersion(direction) ===
+          (direction === 'LONG' ? longSeatVersion : shortSeatVersion)
+      );
+    };
     const wakeupSymbols = buildStaticLiquidationWakeupSymbols({
       monitorSymbol,
       longSymbol,
@@ -167,6 +185,26 @@ export function createStaticLiquidationExecutor(
       return { kind: 'NOOP' };
     }
 
+    let receipt: SettlementReadinessReceipt;
+    try {
+      receipt = await postTradeConsistencyRuntime.waitForFresh();
+    } catch (error) {
+      if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) return { kind: 'NOOP' };
+
+      throw error;
+    }
+
+    if (!params.canContinue() || snapshot.getView().token.dayEpoch !== dayEpoch)
+      return { kind: 'NOOP' };
+
+    const view = snapshot.getView();
+    const isCurrent = (): boolean =>
+      params.canContinue() &&
+      snapshot.getView().token.dayEpoch === dayEpoch &&
+      postTradeConsistencyRuntime.isCurrent(receipt) &&
+      snapshot.isCurrent(view.token, { account: false, positions: true });
+    if (!isCurrent()) return { kind: 'RE_EVALUATE' };
+
     let executionQuotes: Awaited<ReturnType<typeof marketDataClient.getQuotes>>;
     try {
       executionQuotes = await marketDataClient.getQuotes(wakeupSymbols);
@@ -175,9 +213,10 @@ export function createStaticLiquidationExecutor(
         throw error;
       }
 
-      if (!params.canContinue()) {
+      if (!params.canContinue() || snapshot.getView().token.dayEpoch !== dayEpoch)
         return { kind: 'NOOP' };
-      }
+
+      if (!isCurrent()) return { kind: 'RE_EVALUATE' };
 
       return createStaticLiquidationWaitResult(
         wakeupSymbols,
@@ -186,12 +225,13 @@ export function createStaticLiquidationExecutor(
       );
     }
 
-    if (!params.canContinue()) {
+    if (!params.canContinue() || snapshot.getView().token.dayEpoch !== dayEpoch)
       return { kind: 'NOOP' };
-    }
+
+    if (!isCurrent()) return { kind: 'RE_EVALUATE' };
 
     const monitorQuote = executionQuotes.get(monitorSymbol) ?? null;
-    if (monitorQuote === null || !Number.isFinite(monitorQuote.price)) {
+    if (monitorQuote === null) {
       return createStaticLiquidationWaitResult(
         wakeupSymbols,
         params.retryAttempts,
@@ -199,21 +239,39 @@ export function createStaticLiquidationExecutor(
       );
     }
 
+    // 内部价格非法立即失败；合法非正监控价仍由 warrant 原规则拒绝，不变成外部行情重试。
+    exactCompare(monitorQuote.price, '0');
     const longQuote = longSymbol ? (executionQuotes.get(longSymbol) ?? null) : null;
     const shortQuote = shortSymbol ? (executionQuotes.get(shortSymbol) ?? null) : null;
-    const longPosition = longSymbol ? lastState.positionCache.get(longSymbol) : null;
-    const shortPosition = shortSymbol ? lastState.positionCache.get(shortSymbol) : null;
+    const getAvailableQuantity = (symbol: string): number => {
+      const total = sumSafeQuantities(
+        view.positions
+          .filter((position) => position.symbol === symbol)
+          .map((position) => String(position.quantity)),
+      );
+      if (total === 0) return 0;
+
+      // available lookup 只决定本次可卖量；lookup为空或available=0不证明total持仓flat。
+      const position = snapshot.getAvailablePosition(symbol);
+      const available = position?.availableQuantity ?? 0;
+      if (!Number.isSafeInteger(available) || available < 0)
+        throw new RangeError(
+          'Static liquidation available quantity must be a nonnegative safe integer',
+        );
+
+      return available;
+    };
     const candidates: StaticLiquidationCandidate[] = [];
     let hasPendingWait = false;
 
     const longCandidateResult =
-      longSymbol && !params.excludedDirections?.has('LONG')
+      longSymbol && isSeatCurrent('LONG') && !params.excludedDirections?.has('LONG')
         ? createStaticLiquidationCandidate({
             monitorContext,
             direction: 'LONG',
             monitorQuote,
             tradingQuote: longQuote,
-            availableQuantity: longPosition?.availableQuantity ?? 0,
+            availableQuantity: getAvailableQuantity(longSymbol),
             executionTime,
           })
         : { kind: 'SKIP' as const };
@@ -224,13 +282,13 @@ export function createStaticLiquidationExecutor(
     }
 
     const shortCandidateResult =
-      shortSymbol && !params.excludedDirections?.has('SHORT')
+      shortSymbol && isSeatCurrent('SHORT') && !params.excludedDirections?.has('SHORT')
         ? createStaticLiquidationCandidate({
             monitorContext,
             direction: 'SHORT',
             monitorQuote,
             tradingQuote: shortQuote,
-            availableQuantity: shortPosition?.availableQuantity ?? 0,
+            availableQuantity: getAvailableQuantity(shortSymbol),
             executionTime,
           })
         : { kind: 'SKIP' as const };
@@ -251,6 +309,12 @@ export function createStaticLiquidationExecutor(
         return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'NOOP' };
       }
 
+      if (!isCurrent())
+        return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'RE_EVALUATE' };
+
+      const direction = candidate.signal.action === 'SELLCALL' ? 'LONG' : 'SHORT';
+      if (!isSeatCurrent(direction)) continue;
+
       const seatValidation = validateSignalSeat({
         signal: candidate.signal,
         symbolRegistry: monitorContext.symbolRegistry,
@@ -263,52 +327,65 @@ export function createStaticLiquidationExecutor(
         return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'NOOP' };
       }
 
-      const executionResult = await trader.executeSignals([candidate.signal]);
-      if (!params.canContinue()) {
-        return executionResult.executedOrderIds.length > 0 || hasSubmittedCandidate
-          ? { kind: 'COMPLETED' }
-          : { kind: 'NOOP' };
-      }
+      // 最终同步提交条件重新检查：receipt/epoch/seat/position与风险阈值均仍成立。
+      if (!isCurrent())
+        return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'RE_EVALUATE' };
 
-      if (executionResult.executedOrderIds.length !== 1) {
+      if (
+        !isSeatCurrent(direction) ||
+        !monitorContext.riskChecker.checkWarrantDistanceLiquidation(
+          candidate.signal.symbol,
+          direction === 'LONG',
+          monitorQuote.price,
+        ).shouldLiquidate
+      )
         continue;
-      }
 
-      hasSubmittedCandidate = true;
+      if (!isCurrent())
+        return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'RE_EVALUATE' };
 
-      const isLongDirection = candidate.signal.action === 'SELLCALL';
-      if (!params.canContinue()) {
-        return { kind: 'COMPLETED' };
-      }
+      if (!isSeatCurrent(direction)) continue;
 
-      params.onDirectionSubmitted?.(isLongDirection ? 'LONG' : 'SHORT');
-      if (!params.canContinue()) {
-        return { kind: 'COMPLETED' };
-      }
+      // executor内部每个await与最终broker调用复用原receipt/组件/席位票，不在其内换票。
+      const executionResult = await trader.executeSignals(
+        [candidate.signal],
+        () => isCurrent() && isSeatCurrent(direction),
+      );
+      const submitted = executionResult.executedOrderIds.length > 0;
+      hasSubmittedCandidate = hasSubmittedCandidate || submitted;
+      // 已确认orderId是真实远端事实；原tracker负责终态，不因授权失效否认/取消/重提。
+      if (
+        submitted &&
+        params.canContinue() &&
+        snapshot.getView().token.dayEpoch === dayEpoch &&
+        isSeatCurrent(direction)
+      )
+        params.onDirectionSubmitted?.(direction);
 
+      if (!params.canContinue() || snapshot.getView().token.dayEpoch !== dayEpoch)
+        return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'NOOP' };
+
+      if (!isCurrent())
+        return hasSubmittedCandidate ? { kind: 'COMPLETED' } : { kind: 'RE_EVALUATE' };
+
+      if (!isSeatCurrent(direction) || executionResult.executedOrderIds.length !== 1) continue;
+
+      const isLongDirection = direction === 'LONG';
       monitorContext.orderRecorder.clearBuyOrders(
         candidate.signal.symbol,
         isLongDirection,
         candidate.quote,
       );
-      const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(
-        isLongDirection ? 'LONG' : 'SHORT',
-      );
-      if (!params.canContinue()) {
-        return { kind: 'COMPLETED' };
-      }
-
-      await monitorContext.riskChecker.refreshUnrealizedLossData(
+      const prepared = monitorContext.riskChecker.prepareUnrealizedLossData(
         monitorContext.orderRecorder,
         candidate.signal.symbol,
         isLongDirection,
-        candidate.quote,
-        dailyLossOffset,
+        monitorContext.dailyLossTracker.getLossOffset(direction),
       );
+      // prepare不发布；最终校验—发布尾段没有await，旧结果不污染风险缓存。
+      if (!isCurrent() || !isSeatCurrent(direction)) return { kind: 'COMPLETED' };
 
-      if (!params.canContinue()) {
-        return { kind: 'COMPLETED' };
-      }
+      monitorContext.riskChecker.publishUnrealizedLossData(prepared);
     }
 
     if (hasPendingWait) {

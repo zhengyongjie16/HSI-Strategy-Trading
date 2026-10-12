@@ -2,6 +2,7 @@ import { logger } from '../../utils/logger/index.js';
 import type { BaseProcessorConfig, Processor } from './types.js';
 import type { TaskAddedCallback } from './tradeTaskQueue/types.js';
 import type { Trader } from '../../types/services.js';
+import type { ExecuteSignalsResult, SignalCallerAuthorization } from '../../types/trader.js';
 import type { ExecutableSignal } from '../../types/signal.js';
 import { formatError } from '../../utils/error/index.js';
 
@@ -10,24 +11,30 @@ import { formatError } from '../../utils/error/index.js';
  * 调用方负责 catch 异常并记录错误日志。
  *
  * @param params 参数（getCanProcessTask、trader、signal、symbolDisplay、loggerPrefix、successMessage）
- * @returns 无返回值
+ * @returns 原执行结果；未进入执行时显式报告空 accepted IDs，不能以 void 冒充提交成功
  */
 export async function executeSignalsWithLifecycleGate(params: {
-  readonly getCanProcessTask?: (() => boolean) | undefined;
+  readonly callerAuthorization: SignalCallerAuthorization;
   readonly trader: Trader;
   readonly signal: ExecutableSignal;
   readonly symbolDisplay: string;
   readonly loggerPrefix: string;
   readonly successMessage: string;
-}): Promise<void> {
-  const { getCanProcessTask, trader, signal, symbolDisplay, loggerPrefix, successMessage } = params;
-  if (getCanProcessTask !== undefined && !getCanProcessTask()) {
+}): Promise<ExecuteSignalsResult> {
+  const { callerAuthorization, trader, signal, symbolDisplay, loggerPrefix, successMessage } =
+    params;
+  if (!callerAuthorization()) {
     logger.debug(`[${loggerPrefix}] 生命周期门禁关闭，放弃执行: ${symbolDisplay} ${signal.action}`);
-    return;
+    return { executedOrderIds: [] };
   }
 
-  await trader.executeSignals([signal]);
+  const result = await trader.executeSignals([signal], callerAuthorization);
+  if (!Array.isArray(result.executedOrderIds)) {
+    throw new TypeError('信号执行必须显式报告原 accepted order IDs');
+  }
+
   logger.debug(`[${loggerPrefix}] ${successMessage}: ${symbolDisplay} ${signal.action}`);
+  return result;
 }
 
 /**

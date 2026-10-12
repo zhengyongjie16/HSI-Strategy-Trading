@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import type { LastState } from '../../../src/types/state.js';
@@ -8,7 +9,7 @@ import { createExternalApiRequestError } from '../../helpers/createExternalApiRe
 import {
   createLoggerDouble,
   createMonitorConfigDouble,
-  createPositionCacheDouble,
+  createAccountSnapshotDouble,
   createPositionDouble,
 } from '../../helpers/testDoubles.js';
 
@@ -28,9 +29,6 @@ function createLastState(): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
 
@@ -125,13 +123,17 @@ describe('QuoteSubscriptionRuntime', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
-    lastState.cachedPositions = [
-      createPositionDouble({ symbol: 'POS.HK', quantity: 100, availableQuantity: 100 }),
-    ];
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [
+        createPositionDouble({ symbol: 'POS.HK', quantity: 100, availableQuantity: 100 }),
+      ],
+    });
     const orderHoldEventSource = createOrderHoldEventSource(['ORDER.HK']);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -163,10 +165,15 @@ describe('QuoteSubscriptionRuntime', () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -207,9 +214,14 @@ describe('QuoteSubscriptionRuntime', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -248,10 +260,15 @@ describe('QuoteSubscriptionRuntime', () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -288,10 +305,15 @@ describe('QuoteSubscriptionRuntime', () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const releaseError = new Error('unsubscribe failed');
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -334,9 +356,14 @@ describe('QuoteSubscriptionRuntime', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -372,10 +399,15 @@ describe('QuoteSubscriptionRuntime', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -408,11 +440,16 @@ describe('QuoteSubscriptionRuntime', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     lastState.allTradingSymbols = new Set(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -444,10 +481,15 @@ describe('QuoteSubscriptionRuntime', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscriptionError = new Error('subscribe failed');
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -491,10 +533,15 @@ describe('QuoteSubscriptionRuntime', () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscriptionError = new Error('order hold subscribe failed');
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -531,12 +578,17 @@ describe('Quote activation 准入纪律', () => {
     const monitorConfig = createMonitorConfigDouble();
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const lockEntered = Promise.withResolvers<undefined>();
     const lockGate = Promise.withResolvers<undefined>();
     const fatalErrors: unknown[] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -589,6 +641,10 @@ describe('Quote activation 准入纪律', () => {
     const monitorConfig = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const nextError = await createExternalApiRequestError({
       operation: 'subscribeSymbols',
@@ -600,6 +656,7 @@ describe('Quote activation 准入纪律', () => {
     let allowNext = false;
     let nextSubscriptions = 0;
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -669,10 +726,15 @@ describe('Quote activation 准入纪律', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const subscribed: string[][] = [];
     const unsubscribed: string[][] = [];
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -699,7 +761,7 @@ describe('Quote activation 准入纪律', () => {
       lastSwitchAt: 1000,
       lastSearchAt: 1000,
       lastSeatActivatedAt: null,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     } as const;
@@ -764,8 +826,13 @@ describe('Quote activation 准入纪律', () => {
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
     const lastState = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const orderHoldEventSource = createOrderHoldEventSource([]);
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry,
@@ -795,7 +862,7 @@ describe('Quote activation 准入纪律', () => {
       lastSwitchAt: 2000,
       lastSearchAt: 2000,
       lastSeatActivatedAt: null,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -827,11 +894,16 @@ describe('Quote 半成功事实登记', () => {
   it('同 owner OLD→NEXT 半成功后 release 收口，actual 与 committed 均空', async () => {
     const monitor = createMonitorConfigDouble();
     const state = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     state.allTradingSymbols = new Set(['OLD.HK']);
     const source = createOrderHoldEventSource([]);
     const double = createStatefulMarketDataDouble(['OLD.HK'], new Map([['OLD.HK', 1]]));
     const owner = { ownerKey: 'SWITCH_WAKEUP:long', reason: 'SWITCH_WAKEUP' as const };
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry: createSymbolRegistry(monitor),
@@ -861,11 +933,16 @@ describe('Quote 半成功事实登记', () => {
   it('同 owner OLD→NEXT 半成功后接续无关命令不丢已确认订阅事实', async () => {
     const monitor = createMonitorConfigDouble();
     const state = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     state.allTradingSymbols = new Set(['OLD.HK']);
     const source = createOrderHoldEventSource([]);
     const double = createStatefulMarketDataDouble(['OLD.HK'], new Map([['OLD.HK', 1]]));
     const owner = { ownerKey: 'SWITCH_WAKEUP:long', reason: 'SWITCH_WAKEUP' as const };
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry: createSymbolRegistry(monitor),
@@ -896,11 +973,16 @@ describe('Quote 半成功事实登记', () => {
   it('同 owner OLD→NEXT 半成功后立即 stop，首轮 drain 保留原错，显式 retry drain 收口为空', async () => {
     const monitor = createMonitorConfigDouble();
     const state = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     state.allTradingSymbols = new Set(['OLD.HK']);
     const source = createOrderHoldEventSource([]);
     const double = createStatefulMarketDataDouble(['OLD.HK'], new Map([['OLD.HK', 1]]));
     const owner = { ownerKey: 'SWITCH_WAKEUP:long', reason: 'SWITCH_WAKEUP' as const };
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry: createSymbolRegistry(monitor),
@@ -933,6 +1015,10 @@ describe('Quote drain 失败轮次隔离', () => {
     async (terminal) => {
       const monitor = createMonitorConfigDouble();
       const state = createLastState();
+      const snapshot = await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      });
       state.allTradingSymbols = new Set(['OLD.HK']);
       const source = createOrderHoldEventSource([]);
       const failure = new Error('unsubscribe failed');
@@ -943,6 +1029,7 @@ describe('Quote drain 失败轮次隔离', () => {
       let subscriptions = 0;
       let terminated = false;
       const runtime = createQuoteSubscriptionRuntime({
+        snapshot,
         logger: createLoggerDouble(),
         tradingConfig: createTradingConfig({ monitor }),
         symbolRegistry: createSymbolRegistry(monitor),
@@ -987,7 +1074,7 @@ describe('Quote drain 失败轮次隔离', () => {
         reason: 'SEAT_REFRESH_WAIT',
         symbols: ['LATE.HK'],
       });
-      await runtime.reconcilePositionHoldFromCurrentTruth();
+      await runtime.reconcilePositionHoldFromCurrentTruth(snapshot.getView().token);
       expect(attempts).toBe(1);
       expect(subscriptions).toBe(0);
 
@@ -1017,9 +1104,14 @@ describe('Quote drain 失败轮次隔离', () => {
   it('进入 stop 前 mutationChain 已拒绝，首轮仍拒绝原错，后续显式 drain 可收口', async () => {
     const monitor = createMonitorConfigDouble();
     const state = createLastState();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const failure = new Error('release failed');
     let attempts = 0;
     const runtime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry: createSymbolRegistry(monitor),

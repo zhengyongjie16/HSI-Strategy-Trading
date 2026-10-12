@@ -11,8 +11,9 @@
  * - 指标缓存相关：计算缓存、时序缓存配置
  * - 信号相关：交易信号类型定义
  */
-import { FilterWarrantExpiryDate, OrderSide, OrderStatus, OrderType, Period } from 'longbridge';
+import { OrderSide, OrderStatus, OrderType, Period } from 'longbridge';
 import type { OrderTypeConfig, SignalType } from '../types/signal.js';
+import type { MarketWarrantExpiryRange } from '../types/marketPorts.js';
 import type {
   ValidatedOrderSide,
   ValidatedOrderStatus,
@@ -176,7 +177,7 @@ export const API = {
 } as const;
 
 /** 订单相关常量 */
-export const ORDER_PRICE_DIFF_THRESHOLD = 0.001;
+export const ORDER_PRICE_DIFF_THRESHOLD = '0.001';
 
 /** 订单路径行情重试统一参数 */
 export const ORDER_QUOTE_RETRY = {
@@ -291,20 +292,20 @@ export const NON_REPLACEABLE_ORDER_TYPES: ReadonlySet<OrderType> = new Set<Order
 ]);
 
 /** 风险检查相关常量（牛熊证） */
-/** 牛证最低距离回收价百分比（低于此值拒绝买入） */
-export const BULL_WARRANT_MIN_DISTANCE_PERCENT = 0.35;
+/** 牛证最低距离回收价百分比文本（低于此值拒绝买入） */
+export const BULL_WARRANT_MIN_DISTANCE_PERCENT = '0.35';
 
-/** 熊证最高距离回收价百分比（高于此值拒绝买入） */
-export const BEAR_WARRANT_MAX_DISTANCE_PERCENT = -0.35;
+/** 熊证最高距离回收价百分比文本（高于此值拒绝买入） */
+export const BEAR_WARRANT_MAX_DISTANCE_PERCENT = '-0.35';
 
-/** 牛证触发清仓的距离回收价百分比（低于此值触发保护清仓） */
-export const BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT = 0.3;
+/** 牛证触发清仓的距离回收价百分比文本（低于或等于此值触发保护清仓） */
+export const BULL_WARRANT_LIQUIDATION_DISTANCE_PERCENT = '0.3';
 
-/** 熊证触发清仓的距离回收价百分比（高于此值触发保护清仓） */
-export const BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT = -0.3;
+/** 熊证触发清仓的距离回收价百分比文本（高于或等于此值触发保护清仓） */
+export const BEAR_WARRANT_LIQUIDATION_DISTANCE_PERCENT = '-0.3';
 
-/** 监控标的价格最小有效值（低于此值视为异常） */
-export const MIN_MONITOR_PRICE_THRESHOLD = 1;
+/** 监控标的价格最小有效值文本（低于此值视为异常） */
+export const MIN_MONITOR_PRICE_THRESHOLD = '1';
 
 /** 价格格式化小数位数 */
 export const DEFAULT_PRICE_DECIMALS = 3;
@@ -405,18 +406,11 @@ export const WARRANT_TYPE_NAMES: Readonly<Record<'BULL' | 'BEAR', string>> = {
 };
 
 /** 自动寻标默认到期日筛选条件 */
-export const EXPIRY_DATE_FILTERS: ReadonlyArray<FilterWarrantExpiryDate> = [
-  FilterWarrantExpiryDate.Between_3_6,
-  FilterWarrantExpiryDate.Between_6_12,
-  FilterWarrantExpiryDate.GT_12,
+export const EXPIRY_DATE_FILTERS: ReadonlyArray<MarketWarrantExpiryRange> = [
+  'MONTHS_3_TO_6',
+  'MONTHS_6_TO_12',
+  'OVER_12_MONTHS',
 ];
-
-/** 订单归属解析常量（标准化规则 + 多空标记） */
-export const ORDER_OWNERSHIP = {
-  NORMALIZE_PATTERN: /[^\p{L}\p{N}]/gu,
-  LONG_MARKERS: ['RC', 'BULL', 'CALL', '\u725B'],
-  SHORT_MARKERS: ['RP', 'BEAR', 'PUT', '\u718A'],
-} as const;
 
 export const LONG_DIRECTION_NAME = '\u505A\u591A\u6807\u7684';
 

@@ -5,17 +5,11 @@
  * 职责：调用 warrantList API、到期日筛选、带缓存的列表获取、选优并返回 WarrantCandidate。
  * 执行流程：findBestWarrant 入参校验 → 可选缓存获取列表 → selectBestWarrant 筛选 → 返回最佳或 null。
  */
-import {
-  FilterWarrantInOutBoundsType,
-  SortOrderType,
-  WarrantSortBy,
-  WarrantStatus,
-  WarrantType,
-  type FilterWarrantExpiryDate,
-} from 'longbridge';
+import type { BullBearWarrantType } from '../../types/services.js';
+import type { MarketWarrantExpiryRange } from '../../types/marketPorts.js';
 import { DEFAULT_PERCENT_DECIMALS, DEFAULT_PRICE_DECIMALS } from '../../constants/index.js';
 import { buildExpiryDateFilters, selectBestWarrant } from './utils.js';
-import { formatDecimal } from '../../utils/numeric/index.js';
+import { formatDecimal } from '../../utils/numeric/exact.js';
 import type {
   DirectionalAutoSearchPolicy,
   FindBestWarrantInput,
@@ -34,19 +28,19 @@ import type {
  */
 function buildCacheKey(
   monitorSymbol: string,
-  warrantType: WarrantType,
-  expiryFilters: ReadonlyArray<FilterWarrantExpiryDate>,
+  warrantType: BullBearWarrantType,
+  expiryFilters: ReadonlyArray<MarketWarrantExpiryRange>,
 ): string {
-  return `${monitorSymbol}:${String(warrantType)}:${expiryFilters.join(',')}`;
+  return `${monitorSymbol}:${warrantType}:${expiryFilters.join(',')}`;
 }
 
 /**
  * 根据共享策略方向解析 warrantList 所需的牛熊证类型。
  * @param policy 方向化自动寻标策略
- * @returns LONG 返回 Bull，SHORT 返回 Bear
+ * @returns LONG 返回 BULL，SHORT 返回 BEAR
  */
-function resolvePolicyWarrantType(policy: DirectionalAutoSearchPolicy): WarrantType {
-  return policy.direction === 'LONG' ? WarrantType.Bull : WarrantType.Bear;
+function resolvePolicyWarrantType(policy: DirectionalAutoSearchPolicy): BullBearWarrantType {
+  return policy.direction === 'LONG' ? 'BULL' : 'BEAR';
 }
 
 /**
@@ -73,18 +67,32 @@ function logSelectedCandidate(params: {
   readonly degradedCandidateCount: number;
 }): void {
   const directionLabel = resolvePolicyDirectionLabel(params.policy);
-  const thresholdText = formatDecimal(params.policy.primaryThreshold, DEFAULT_PERCENT_DECIMALS);
+  const thresholdText = formatDecimal(
+    params.policy.primaryThreshold,
+    DEFAULT_PERCENT_DECIMALS,
+    'unsigned',
+  );
   const degradedRangeText = `${formatDecimal(
     params.policy.degradedRange.min,
     DEFAULT_PERCENT_DECIMALS,
-  )},${formatDecimal(params.policy.degradedRange.max, DEFAULT_PERCENT_DECIMALS)}`;
-  const distanceText = formatDecimal(params.candidate.distancePct, DEFAULT_PERCENT_DECIMALS);
-  const turnoverText = formatDecimal(params.candidate.turnoverPerMinute, 0);
+    'unsigned',
+  )},${formatDecimal(params.policy.degradedRange.max, DEFAULT_PERCENT_DECIMALS, 'unsigned')}`;
+  const distanceText = formatDecimal(
+    params.candidate.distancePct,
+    DEFAULT_PERCENT_DECIMALS,
+    'unsigned',
+  );
+  const turnoverText = params.candidate.turnoverPerMinute;
   const distanceDeltaText = formatDecimal(
     params.candidate.distanceDeltaToThreshold,
     DEFAULT_PERCENT_DECIMALS,
+    'unsigned',
   );
-  const callPriceText = formatDecimal(params.candidate.callPrice, DEFAULT_PRICE_DECIMALS);
+  const callPriceText = formatDecimal(
+    params.candidate.callPrice,
+    DEFAULT_PRICE_DECIMALS,
+    'unsigned',
+  );
   if (params.candidate.selectionStage === 'PRIMARY') {
     params.logger.info(
       `[自动寻标] 主条件命中${directionLabel}证：${params.monitorSymbol} -> ${params.candidate.symbol} ` +
@@ -121,9 +129,9 @@ function logNoCandidateFound(params: {
   params.logger.warn(
     `[自动寻标] 主条件与降级条件均未命中${directionLabel}证：${params.monitorSymbol} ` +
       `(列表条数=${params.warrants.length}, 交易分钟数=${params.tradingMinutes}, ` +
-      `primaryThreshold=${formatDecimal(params.policy.primaryThreshold, DEFAULT_PERCENT_DECIMALS)}%, ` +
-      `degradedRange=${formatDecimal(params.policy.degradedRange.min, DEFAULT_PERCENT_DECIMALS)}%,` +
-      `${formatDecimal(params.policy.degradedRange.max, DEFAULT_PERCENT_DECIMALS)}%, ` +
+      `primaryThreshold=${formatDecimal(params.policy.primaryThreshold, DEFAULT_PERCENT_DECIMALS, 'unsigned')}%, ` +
+      `degradedRange=${formatDecimal(params.policy.degradedRange.min, DEFAULT_PERCENT_DECIMALS, 'unsigned')}%,` +
+      `${formatDecimal(params.policy.degradedRange.max, DEFAULT_PERCENT_DECIMALS, 'unsigned')}%, ` +
       `primaryCandidates=${params.primaryCandidateCount}, degradedCandidates=${params.degradedCandidateCount})`,
   );
 }
@@ -133,22 +141,32 @@ function logNoCandidateFound(params: {
  * @param params - 请求参数（ctx、monitorSymbol、warrantType、expiryFilters）
  * @returns 牛熊证列表
  */
-function requestWarrantList({
+async function requestWarrantList({
   ctx,
   monitorSymbol,
   warrantType,
   expiryFilters,
 }: WarrantListRequestParams): Promise<ReadonlyArray<WarrantListItem>> {
-  return ctx.warrantList({
+  const warrants = await ctx.warrantList({
     symbol: monitorSymbol,
-    sortBy: WarrantSortBy.Turnover,
-    sortOrder: SortOrderType.Descending,
+    sortBy: 'TURNOVER',
+    sortOrder: 'DESCENDING',
     types: [warrantType],
     issuerIds: null,
     expiryFilters: [...expiryFilters],
-    inOutBoundsTypes: [FilterWarrantInOutBoundsType.In],
-    status: [WarrantStatus.Normal],
+    inOutBoundsTypes: ['IN'],
+    status: ['NORMAL'],
   });
+
+  // 中性 port 的缺失字段统一保留为空事实；不读取无关 lastDone，更不转换 SDK/number 金融值。
+  return warrants.map((warrant) => ({
+    symbol: warrant.symbol,
+    name: warrant.name ?? null,
+    callPrice: warrant.callPrice ?? null,
+    toCallPrice: warrant.toCallPrice ?? null,
+    turnover: warrant.turnover ?? null,
+    status: warrant.status,
+  }));
 }
 
 /**

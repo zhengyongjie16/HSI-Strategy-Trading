@@ -10,7 +10,48 @@ import type {
   WarrantCandidate,
 } from '../../../src/services/autoSymbolFinder/types.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
-import { createQuoteContextDouble } from '../../helpers/testDoubles.js';
+import type { SymbolRegistry } from '../../../src/types/seat.js';
+import type { SignalCallerAuthorization } from '../../../src/types/trader.js';
+
+/**
+ * 场景显式捕获原席位版本；异步期间真实版本变化后不得继续推进。
+ * @param registry 本场景唯一席位事实源
+ * @param direction 本轮方向
+ * @returns 绑定原版本的授权闭包；不是默认放行或迟到重新取票
+ */
+export function captureSwitchSeatAuthorization(
+  registry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>,
+  direction: 'LONG' | 'SHORT',
+): SignalCallerAuthorization {
+  const capturedVersion = registry.getSeatVersion(direction);
+  return () => {
+    const seat = registry.getSeatState(direction);
+    return (
+      registry.getSeatVersion(direction) === capturedVersion &&
+      (seat.status === 'ACTIVE' || seat.status === 'SWITCHING')
+    );
+  };
+}
+
+/**
+ * 寻标场景捕获原EMPTY/SEARCHING席位版本；新版本或非寻标owner状态使原授权失效。
+ * @param registry 场景唯一席位事实源
+ * @param direction 原寻标方向
+ * @returns 原版本授权，不给后继任务默认放行
+ */
+export function captureSearchSeatAuthorization(
+  registry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>,
+  direction: 'LONG' | 'SHORT',
+): SignalCallerAuthorization {
+  const capturedVersion = registry.getSeatVersion(direction);
+  return () => {
+    const seat = registry.getSeatState(direction);
+    return (
+      registry.getSeatVersion(direction) === capturedVersion &&
+      (seat.status === 'EMPTY' || seat.status === 'SEARCHING')
+    );
+  };
+}
 
 /**
  * 创建无操作 logger 替身，用于隔离日志副作用的测试。
@@ -39,15 +80,15 @@ export function createLoggerStub(): {
 export function getDefaultAutoSearchConfig(): AutoSearchConfig {
   return {
     autoSearchEnabled: true,
-    autoSearchMinDistancePctBull: 0.35,
-    autoSearchMinDistancePctBear: -0.35,
-    autoSearchMinTurnoverPerMinuteBull: 100_000,
-    autoSearchMinTurnoverPerMinuteBear: 100_000,
+    autoSearchMinDistancePctBull: '0.35',
+    autoSearchMinDistancePctBear: '-0.35',
+    autoSearchMinTurnoverPerMinuteBull: '100000',
+    autoSearchMinTurnoverPerMinuteBear: '100000',
     autoSearchExpiryMinMonths: 3,
     autoSearchOpenDelayMinutes: 0,
     switchIntervalMinutes: 0,
-    switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-    switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+    switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+    switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
   };
 }
 
@@ -63,19 +104,19 @@ export function createDirectionalAutoSearchPolicy(
   if (direction === 'LONG') {
     return {
       direction,
-      primaryThreshold: 0.35,
-      minTurnoverPerMinute: 100_000,
-      degradedRange: { min: 0.2, max: 0.35 },
-      switchDistanceRange: { min: 0.2, max: 1.5 },
+      primaryThreshold: '0.35',
+      minTurnoverPerMinute: '100000',
+      degradedRange: { min: '0.2', max: '0.35' },
+      switchDistanceRange: { min: '0.2', max: '1.5' },
     };
   }
 
   return {
     direction,
-    primaryThreshold: -0.35,
-    minTurnoverPerMinute: 100_000,
-    degradedRange: { min: -0.35, max: -0.2 },
-    switchDistanceRange: { min: -1.5, max: -0.2 },
+    primaryThreshold: '-0.35',
+    minTurnoverPerMinute: '100000',
+    degradedRange: { min: '-0.35', max: '-0.2' },
+    switchDistanceRange: { min: '-1.5', max: '-0.2' },
   };
 }
 
@@ -103,12 +144,12 @@ export function createWarrantCandidateWithOverrides(
   return {
     symbol,
     name: symbol,
-    callPrice: 21_000,
-    distancePct: 0.5,
-    turnover: 1_000_000,
-    turnoverPerMinute: 100_000,
+    callPrice: '21000',
+    distancePct: '0.5',
+    turnover: '1000000',
+    turnoverPerMinute: '100000',
     selectionStage: 'PRIMARY',
-    distanceDeltaToThreshold: 0.15,
+    distanceDeltaToThreshold: '0.15',
     ...overrides,
   };
 }
@@ -123,7 +164,7 @@ export function createFindBestWarrantInputDouble(
   policy: DirectionalAutoSearchPolicy = createDirectionalAutoSearchPolicy('LONG'),
 ): FindBestWarrantInput {
   return {
-    ctx: createQuoteContextDouble(),
+    ctx: { warrantQuote: async () => [], warrantList: async () => [] },
     monitorSymbol: 'HSI.HK',
     tradingMinutes: 10,
     policy,

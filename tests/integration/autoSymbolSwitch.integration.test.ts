@@ -5,13 +5,13 @@
  * - 验证自动换标端到端场景与业务期望。
  */
 import { describe, expect, it, setSystemTime } from 'bun:test';
-import { OrderSide } from 'longbridge';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
+import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
 import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
-import { createOrderExecutor as createOrderExecutorCore } from '../../src/core/trader/orderExecutor/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
-import { createStockPositionsResponse } from '../../mock/factories/tradeFactory.js';
 
 import {
   createMarketDataClientDouble,
@@ -21,34 +21,34 @@ import {
   createQuoteDouble,
   createRateLimiterDouble,
   createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-  createTradeContextDouble,
   createTraderDouble,
+  createDailyLossTrackerDouble,
+  createTerminationDouble,
+  createMonitorContextDouble,
+  createLiquidationCooldownTrackerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
-import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
-import type { OrderExecutorDeps } from '../../src/core/trader/types.js';
-
-type OrderExecutorTestDeps = Omit<OrderExecutorDeps, 'unrealizedLossBuyGate'> &
-  Partial<Pick<OrderExecutorDeps, 'unrealizedLossBuyGate'>>;
-
-function createOrderExecutor(deps: OrderExecutorTestDeps) {
-  return createOrderExecutorCore({
-    unrealizedLossBuyGate: createRiskCheckerDouble(),
-    ...deps,
-  });
-}
+import {
+  captureSearchSeatAuthorization,
+  captureSwitchSeatAuthorization,
+  createWarrantCandidateWithOverrides,
+} from '../services/autoSymbolManager/utils.js';
 
 let candidateQueue: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
 
 async function runDistanceSwitch(
   manager: ReturnType<typeof createAutoSymbolManager>,
+  symbolRegistry: Parameters<typeof captureSwitchSeatAuthorization>[0],
   params: Omit<
     Parameters<ReturnType<typeof createAutoSymbolManager>['startSwitchOnDistance']>[0],
     'canContinue'
   >,
 ): Promise<void> {
-  const switchParams = { ...params, canContinue: () => true };
+  const switchParams = {
+    ...params,
+    canContinue: captureSwitchSeatAuthorization(symbolRegistry, params.direction),
+  };
   if (manager.hasPendingSwitch(params.direction)) {
     await manager.advancePendingSwitch(switchParams);
     return;
@@ -56,54 +56,47 @@ async function runDistanceSwitch(
 
   const startResult = await manager.startSwitchOnDistance(switchParams);
   if (startResult.started) {
-    await manager.advancePendingSwitch(switchParams);
+    await manager.advancePendingSwitch({
+      ...params,
+      canContinue: captureSwitchSeatAuthorization(symbolRegistry, params.direction),
+    });
   }
 }
 
 describe('auto-symbol-switch integration', () => {
   it('runs empty-seat search then distance-triggered switch with sell->rebuy flow', async () => {
     candidateQueue = [
-      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
-      createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
+      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
+      createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' }),
     ];
 
     const monitorConfig = createMonitorConfigDouble({
-      targetNotional: 5_000,
+      targetNotional: '5000',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
 
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      longVersion: 1,
-      shortVersion: 1,
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: null,
+      status: 'EMPTY',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: null,
     });
 
     const executedActions: Array<{
@@ -112,7 +105,8 @@ describe('auto-symbol-switch integration', () => {
       quantity: number | null | undefined;
     }> = [];
     const trader = createTraderDouble({
-      executeSignals: async (signals) => {
+      executeSignals: async (signals, callerAuthorization) => {
+        expect(callerAuthorization()).toBeTrue();
         const signal = signals[0];
         executedActions.push({
           action: signal?.action,
@@ -139,7 +133,7 @@ describe('auto-symbol-switch integration', () => {
           ? {
               orderId: 'SELL-ORDER-1',
               symbol: 'OLD_BULL.HK',
-              executedPrice: 2,
+              costAmount: '200',
               executedQuantity: 100,
               executedTime: 9_999_999_999_999,
               submittedAt: undefined,
@@ -156,7 +150,8 @@ describe('auto-symbol-switch integration', () => {
 
         return createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
-          distanceToStrikePercent: 0.1,
+          distanceNumerator: '0.1',
+          distanceDenominator: '100',
         });
       },
     });
@@ -166,7 +161,7 @@ describe('auto-symbol-switch integration', () => {
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async (symbols) =>
-          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1, 100)])),
+          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
       trader,
       orderRecorder,
@@ -180,7 +175,7 @@ describe('auto-symbol-switch integration', () => {
     await manager.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
     });
 
     const searchedSeat = symbolRegistry.getSeatState('LONG');
@@ -197,9 +192,9 @@ describe('auto-symbol-switch integration', () => {
       lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
     });
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [
         {
           symbol: 'OLD_BULL.HK',
@@ -208,7 +203,7 @@ describe('auto-symbol-switch integration', () => {
           symbolName: 'OLD_BULL',
           accountChannel: 'lb_papertrading',
           currency: 'HKD',
-          costPrice: 1,
+          costPrice: '1',
         },
       ],
     });
@@ -217,18 +212,18 @@ describe('auto-symbol-switch integration', () => {
     expect(executedActions).toHaveLength(1);
     expect(executedActions[0]?.action).toBe('SELLCALL');
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
     expect(executedActions).toHaveLength(1);
     expect(manager.hasPendingSwitch('LONG')).toBeTrue();
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
@@ -240,7 +235,7 @@ describe('auto-symbol-switch integration', () => {
     const finalSeat = symbolRegistry.getSeatState('LONG');
     expect(finalSeat.status).toBe('ACTIVATING');
     expect(finalSeat.symbol).toBe('NEW_BULL.HK');
-    expect(finalSeat.callPrice).toBe(21_000);
+    expect(finalSeat.callPrice).toBe('21000');
     expect(symbolRegistry.getSeatVersion('LONG')).toBe(3);
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
   });
@@ -251,86 +246,141 @@ describe('auto-symbol-switch integration', () => {
     setSystemTime(hostNowMs);
     try {
       candidateQueue = [
-        createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
-        createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
+        createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
+        createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' }),
       ];
 
       const monitorConfig = createMonitorConfigDouble({
-        targetNotional: 5_000,
+        targetNotional: '5000',
         autoSearchConfig: {
           autoSearchEnabled: true,
-          autoSearchMinDistancePctBull: 0.35,
-          autoSearchMinDistancePctBear: -0.35,
-          autoSearchMinTurnoverPerMinuteBull: 100_000,
-          autoSearchMinTurnoverPerMinuteBear: 100_000,
+          autoSearchMinDistancePctBull: '0.35',
+          autoSearchMinDistancePctBear: '-0.35',
+          autoSearchMinTurnoverPerMinuteBull: '100000',
+          autoSearchMinTurnoverPerMinuteBear: '100000',
           autoSearchExpiryMinMonths: 3,
           autoSearchOpenDelayMinutes: 0,
           switchIntervalMinutes: 0,
-          switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-          switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+          switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+          switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
         },
       });
 
-      const symbolRegistry = createSymbolRegistryDouble({
-        longSeat: {
-          symbol: null,
-          status: 'EMPTY',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-        shortSeat: {
-          symbol: null,
-          status: 'EMPTY',
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        },
-        longVersion: 1,
-        shortVersion: 1,
+      const symbolRegistry = createSymbolRegistry(monitorConfig);
+
+      symbolRegistry.updateSeatState('LONG', {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+        callPrice: null,
       });
 
-      const tradeCtx = createTradeContextMock();
-      tradeCtx.seedStockPositions(
-        createStockPositionsResponse({
+      // 原 SELL recorder fixture 的独立成交事实为 quantity200 × price1 = amount200；
+      // 不从后续 native submission100 推导或重算既有金额 oracle。
+      const native = await createBrokerIngressFixture({
+        orderId: 'MOCK-000001',
+        tradeId: 'SWITCH-SELL-FILL',
+        symbol: 'OLD_BULL.HK',
+        stockName: 'OLD_BULL',
+        remark: 'HSI',
+        side: 'SELL',
+        status: 'Filled',
+        quantity: '200',
+        executedQuantity: '200',
+        submittedPrice: '1',
+        executedPrice: '1',
+        submittedAtMs: fixedNowMs - 2000,
+        executionTimeMs: fixedNowMs - 1000,
+        updatedAtMs: fixedNowMs - 500,
+      });
+      native.setStockPositions([
+        {
           symbol: 'OLD_BULL.HK',
-          quantity: 100,
-          availableQuantity: 100,
-        }),
-      );
+          symbolName: 'OLD_BULL',
+          accountChannel: 'lb_papertrading',
+          currency: 'HKD',
+          quantity: '100',
+          availableQuantity: '100',
+          costPrice: '1',
+        },
+      ]);
 
+      native.setAccountBalance({
+        currency: 'HKD',
+        totalCash: '100000',
+        netAssets: '100100',
+        availableCash: '100000',
+      });
+      let nativeSubmits = 0;
+      native.setSubmitBehavior(async () => {
+        nativeSubmits += 1;
+        return nativeSubmits === 1 ? 'MOCK-000001' : 'MOCK-000002';
+      });
       const tradingConfig = createTradingConfig({
         monitor: monitorConfig,
       });
 
-      const orderRecorder = createOrderRecorderDouble({
-        getSellRecordByOrderId: (orderId) =>
-          orderId === 'MOCK-000001'
-            ? {
-                orderId: 'MOCK-000001',
-                symbol: 'OLD_BULL.HK',
-                executedPrice: 2,
-                executedQuantity: 100,
-                executedTime: 9_999_999_999_999,
-                submittedAt: undefined,
-                updatedAt: undefined,
-              }
-            : null,
+      const rateLimiter = createRateLimiterDouble();
+      const accountService = native.createAccountService({ rateLimiter });
+      const snapshot = createAccountPositionSnapshot({
+        dayEpoch: 1,
+        scheduler: { schedule: queueMicrotask },
+        readPort: accountService,
+        reportFatalError: (error) => {
+          throw error;
+        },
+      });
+      const committed = await snapshot.requestRefresh({
+        source: 'switch-native-baseline',
+        dayEpoch: 1,
+        refreshAccount: true,
+        refreshPositions: true,
+      }).result;
+      if (committed.status !== 'COMMITTED') throw new Error('expected canonical baseline commit');
+
+      const dailyLossTracker = createDailyLossTrackerDouble();
+      const prepared = dailyLossTracker.prepareRecalculationFromAllOrders(
+        [],
+        monitorConfig,
+        new Date(fixedNowMs),
+        undefined,
+        new Set(['OLD_BULL.HK', 'NEW_BULL.HK']),
+      );
+      dailyLossTracker.publishRecalculation(prepared);
+      let boundTrader: ReturnType<typeof createTraderDouble> | null = null;
+      const settlement = createPostTradeConsistencyRuntime({
+        snapshot,
+        termination: createTerminationDouble(),
+        getTrader: () => {
+          if (boundTrader === null) throw new Error('trader must bind before settlement starts');
+
+          return boundTrader;
+        },
+        onPositionsCommitted: async (token) => {
+          if (!snapshot.isCurrent(token, { account: false, positions: true }))
+            throw new Error('stale subscription fact');
+        },
+        scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
+      });
+      const orderRecorder = native.createRecorder({
+        rateLimiter,
+        getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
+        settlementRefreshNeedRecorder: settlement,
       });
       const marketDataClient = createMarketDataClientDouble({
         getQuotes: async (symbols) =>
-          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1, 100)])),
+          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       });
       let rebuyLossGateCalls = 0;
       const riskChecker = createRiskCheckerDouble({
         checkUnrealizedLoss: (symbol, price, isLongSymbol) => {
           rebuyLossGateCalls += 1;
           expect(symbol).toBe('NEW_BULL.HK');
-          expect(price).toBe(1);
+          expect(price).toBe('1');
           expect(isLongSymbol).toBeTrue();
           return { shouldLiquidate: false };
         },
@@ -341,14 +391,15 @@ describe('auto-symbol-switch integration', () => {
 
           return createWarrantDistanceInfoDouble({
             warrantType: 'BULL',
-            distanceToStrikePercent: 0.1,
+            distanceNumerator: '0.1',
+            distanceDenominator: '100',
           });
         },
       });
 
-      const trackedOrders: Array<{ orderId: string; side: OrderSide; quantity: number }> = [];
-      const orderExecutor = createOrderExecutor({
-        ctx: createTradeContextDouble(tradeCtx),
+      const trackedOrders: Array<{ orderId: string; side: string; quantity: number }> = [];
+      const executionGate = { open: true };
+      const orderExecutor = native.createExecutor({
         rateLimiter: createRateLimiterDouble(),
         marketDataClient,
         cacheManager: {
@@ -357,15 +408,19 @@ describe('auto-symbol-switch integration', () => {
         },
         orderMonitor: createOrderMonitorDouble({
           trackOrder: ({ orderId, side, quantity }) => {
-            trackedOrders.push({ orderId, side, quantity });
+            trackedOrders.push({
+              orderId,
+              side: side === native.queryObservation.executionSide ? 'SELL' : 'BUY',
+              quantity,
+            });
           },
         }),
         orderRecorder,
         unrealizedLossBuyGate: riskChecker,
         tradingConfig,
         symbolRegistry,
-        isExecutionAllowed: () => true,
-        isContinuousTradingAllowed: () => true,
+        isExecutionAllowed: () => executionGate.open,
+        isContinuousTradingAllowed: () => executionGate.open,
         now: () => new Date(fixedNowMs),
         readCurrentTradingDayInfo: () => ({
           dateKey: '2026-02-16',
@@ -375,7 +430,8 @@ describe('auto-symbol-switch integration', () => {
 
       const generatedTriggerTimes: number[] = [];
       const trader = createTraderDouble({
-        executeSignals: async (signals) => {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(callerAuthorization()).toBeTrue();
           for (const signal of signals) {
             if (!signal.triggerTime) {
               throw new Error('自动换标信号必须包含 triggerTime');
@@ -384,7 +440,47 @@ describe('auto-symbol-switch integration', () => {
             generatedTriggerTimes.push(signal.triggerTime.getTime());
           }
 
-          return orderExecutor.executeSignals(signals);
+          const result = await orderExecutor.executeSignals(signals, callerAuthorization);
+          if (signals[0]?.action === 'SELLCALL' && result.executedOrderIds[0] === 'MOCK-000001') {
+            const [observation] = await native.createQueryOrdersReader('MOCK-000001')();
+            if (
+              observation?.executedAmount !== '200' ||
+              observation.executionTimeMs !== fixedNowMs - 1000 ||
+              observation.updatedAtMs !== fixedNowMs - 500
+            )
+              throw new Error('expected independent SDK execution amount/time');
+
+            native.setStockPositions([]);
+            orderRecorder.commitExecutionFact(
+              {
+                brokerOrderId: observation.orderId,
+                symbol: observation.symbol,
+                side: 'SELL',
+                cumulativeQuantity: observation.executedQuantity,
+                cumulativeAmount: observation.executedAmount,
+                executionTimeMs: observation.executionTimeMs,
+                updatedAtMs: observation.updatedAtMs,
+                phase: 'TERMINAL',
+              },
+              true,
+              [],
+              () =>
+                dailyLossTracker.recordCumulativeExecution({
+                  factStage: 'TERMINAL',
+                  direction: 'LONG',
+                  symbol: observation.symbol,
+                  side: 'SELL',
+                  executedPrice: '1',
+                  executedQuantity: 200,
+                  executedTimeMs: fixedNowMs - 1000,
+                  orderUpdatedAtMs: fixedNowMs - 500,
+                  orderId: observation.orderId,
+                }).admission,
+            );
+            expect(orderRecorder.getSellRecordByOrderId('MOCK-000001')?.costAmount).toBe('200');
+          }
+
+          return result;
         },
         getPendingOrders: async () => [],
         cancelOrder: async () => ({
@@ -393,6 +489,7 @@ describe('auto-symbol-switch integration', () => {
         }),
       });
 
+      boundTrader = trader;
       const manager = createAutoSymbolManager({
         monitorConfig,
         symbolRegistry,
@@ -406,10 +503,64 @@ describe('auto-symbol-switch integration', () => {
           new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
       });
 
+      const monitorContext = createMonitorContextDouble({
+        config: monitorConfig,
+        symbolRegistry,
+        autoSymbolManager: manager,
+        orderRecorder,
+        dailyLossTracker,
+        riskChecker,
+      });
+      settlement.bindBusinessDeps({
+        monitorContext,
+        dailyLossTracker,
+        liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+        protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+        mixedTradeLogRepository: {
+          appendCompletionIdempotent: () => {
+            throw new Error('switch is not protective completion');
+          },
+        },
+      });
+      settlement.start();
+      expect(await settlement.completeRebuildBaseline()).toBeTrue();
+      const originalReceipt = await settlement.waitForFresh();
+      expect(originalReceipt.snapshotToken).toEqual(committed.snapshotToken);
+      const runCanonicalDistance = async (
+        params: Parameters<typeof runDistanceSwitch>[2],
+      ): Promise<void> => {
+        const receipt = await settlement.waitForFresh();
+        const capturedSeat = captureSwitchSeatAuthorization(symbolRegistry, 'LONG');
+        const originalOrigin = () =>
+          executionGate.open &&
+          settlement.isCurrent(receipt) &&
+          snapshot.isCurrent(receipt.snapshotToken, { account: false, positions: true }) &&
+          snapshot.getView().token.dayEpoch === receipt.snapshotToken.dayEpoch;
+        if (manager.hasPendingSwitch('LONG')) {
+          await manager.advancePendingSwitch({
+            ...params,
+            canContinue: () => originalOrigin() && capturedSeat(),
+          });
+          return;
+        }
+
+        const started = await manager.startSwitchOnDistance({
+          ...params,
+          canContinue: () => originalOrigin() && capturedSeat(),
+        });
+        if (started.started) {
+          expect(started.driveResult.publishedRoute?.isCurrent()).toBeTrue();
+          const publishedSeat = captureSwitchSeatAuthorization(symbolRegistry, 'LONG');
+          await manager.advancePendingSwitch({
+            ...params,
+            canContinue: () => originalOrigin() && publishedSeat(),
+          });
+        }
+      };
       await manager.maybeSearchOnEvent({
         direction: 'LONG',
         currentTime: new Date(fixedNowMs),
-        canContinue: () => true,
+        canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
       });
 
       const searchedSeat = symbolRegistry.getSeatState('LONG');
@@ -425,9 +576,9 @@ describe('auto-symbol-switch integration', () => {
         lastSeatActivatedAt: fixedNowMs,
       });
 
-      await runDistanceSwitch(manager, {
+      await runCanonicalDistance({
         direction: 'LONG',
-        monitorPrice: 20_000,
+        monitorPrice: '20000',
         positions: [
           {
             symbol: 'OLD_BULL.HK',
@@ -436,47 +587,47 @@ describe('auto-symbol-switch integration', () => {
             symbolName: 'OLD_BULL',
             accountChannel: 'lb_papertrading',
             currency: 'HKD',
-            costPrice: 1,
+            costPrice: '1',
           },
         ],
       });
 
-      await runDistanceSwitch(manager, {
+      await runCanonicalDistance({
         direction: 'LONG',
-        monitorPrice: 20_000,
+        monitorPrice: '20000',
         positions: [],
       });
 
-      expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
+      expect(native.nativeMutations()).toHaveLength(1);
 
-      await runDistanceSwitch(manager, {
+      await runCanonicalDistance({
         direction: 'LONG',
-        monitorPrice: 20_000,
+        monitorPrice: '20000',
         positions: [],
       });
 
-      const submitCalls = tradeCtx.getCalls('submitOrder');
+      const submitCalls = native.nativeMutations();
       expect(submitCalls).toHaveLength(2);
       expect(trackedOrders).toHaveLength(2);
-      expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
-      expect(trackedOrders[1]?.side).toBe(OrderSide.Buy);
+      expect(trackedOrders[0]?.side).toBe('SELL');
+      expect(trackedOrders[1]?.side).toBe('BUY');
       expect(rebuyLossGateCalls).toBe(1);
       expect(generatedTriggerTimes).toEqual([fixedNowMs, fixedNowMs]);
 
-      const sellPayload = submitCalls[0]?.args[0] as {
-        readonly submittedQuantity: { readonly toString: () => string };
-      };
-      const rebuyPayload = submitCalls[1]?.args[0] as {
-        readonly submittedQuantity: { readonly toString: () => string };
-      };
-
-      expect(Number(sellPayload.submittedQuantity.toString())).toBe(100);
-      expect(Number(rebuyPayload.submittedQuantity.toString())).toBe(200);
-
+      expect(submitCalls[0]?.quantity).toBe('100');
+      expect(submitCalls[0]?.symbol).toBe('OLD_BULL.HK');
+      expect(submitCalls[0]?.day).toBeTrue();
+      expect(submitCalls[1]?.quantity).toBe('200');
+      expect(submitCalls[1]?.symbol).toBe('NEW_BULL.HK');
+      expect(submitCalls[1]?.day).toBeTrue();
+      expect(native.accountReadCounts().positions).toBeGreaterThanOrEqual(2);
+      expect(native.accountReadCounts().balance).toBeGreaterThanOrEqual(1);
       const finalSeat = symbolRegistry.getSeatState('LONG');
       expect(finalSeat.status).toBe('ACTIVATING');
       expect(finalSeat.symbol).toBe('NEW_BULL.HK');
       expect(manager.hasPendingSwitch('LONG')).toBeFalse();
+      await settlement.stopAndDrain();
+      await snapshot.requestClear({ reason: 'STOP', dayEpoch: 1 });
     } finally {
       setSystemTime();
     }
@@ -484,45 +635,36 @@ describe('auto-symbol-switch integration', () => {
 
   it('re-enters distance presearch on danger-side after safe-side same-symbol suppression', async () => {
     candidateQueue = [
-      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
-      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
+      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
+      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
     ];
     let findBestCalls = 0;
-    let distanceToStrikePercent = 2;
+    let distanceToStrikePercent = '2';
 
     const monitorConfig = createMonitorConfigDouble({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: 'OLD_BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: '20000',
     });
 
     const manager = createAutoSymbolManager({
@@ -530,7 +672,7 @@ describe('auto-symbol-switch integration', () => {
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async (symbols) =>
-          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1, 100)])),
+          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
       trader: createTraderDouble({
         getPendingOrders: async () => [],
@@ -540,7 +682,8 @@ describe('auto-symbol-switch integration', () => {
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
             warrantType: 'BULL',
-            distanceToStrikePercent,
+            distanceNumerator: distanceToStrikePercent,
+            distanceDenominator: '100',
           }),
       }),
       findBestWarrant: async () => {
@@ -552,24 +695,24 @@ describe('auto-symbol-switch integration', () => {
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
     expect(findBestCalls).toBe(1);
 
-    distanceToStrikePercent = 0.1;
-    await runDistanceSwitch(manager, {
+    distanceToStrikePercent = '0.1';
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
@@ -582,46 +725,37 @@ describe('auto-symbol-switch integration', () => {
 
   it('does not write suppression on danger-side same-symbol, and safe-side still re-runs presearch once', async () => {
     candidateQueue = [
-      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
-      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
-      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
+      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
+      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
+      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
     ];
     let findBestCalls = 0;
-    let distanceToStrikePercent = 0.1;
+    let distanceToStrikePercent = '0.1';
 
     const monitorConfig = createMonitorConfigDouble({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: 'OLD_BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: '20000',
     });
 
     const manager = createAutoSymbolManager({
@@ -629,7 +763,7 @@ describe('auto-symbol-switch integration', () => {
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async (symbols) =>
-          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1, 100)])),
+          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
       trader: createTraderDouble({
         getPendingOrders: async () => [],
@@ -639,7 +773,8 @@ describe('auto-symbol-switch integration', () => {
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
             warrantType: 'BULL',
-            distanceToStrikePercent,
+            distanceNumerator: distanceToStrikePercent,
+            distanceDenominator: '100',
           }),
       }),
       findBestWarrant: async () => {
@@ -651,22 +786,22 @@ describe('auto-symbol-switch integration', () => {
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
-    distanceToStrikePercent = 2;
-    await runDistanceSwitch(manager, {
+    distanceToStrikePercent = '2';
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
@@ -680,42 +815,33 @@ describe('auto-symbol-switch integration', () => {
   it('falls back to EMPTY on danger-side no-candidate and can recover via next auto-search tick', async () => {
     candidateQueue = [
       null,
-      createWarrantCandidateWithOverrides('RECOVER_BULL.HK', { callPrice: 22_000 }),
+      createWarrantCandidateWithOverrides('RECOVER_BULL.HK', { callPrice: '22000' }),
     ];
 
     const monitorConfig = createMonitorConfigDouble({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
-    const symbolRegistry = createSymbolRegistryDouble({
-      longSeat: {
-        symbol: 'OLD_BULL.HK',
-        status: 'ACTIVE',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
-      shortSeat: {
-        symbol: null,
-        status: 'EMPTY',
-        lastSwitchAt: null,
-        lastSearchAt: null,
-        lastSeatActivatedAt: null,
-        searchFailCountToday: 0,
-        frozenTradingDayKey: null,
-      },
+    const symbolRegistry = createSymbolRegistry(monitorConfig);
+    symbolRegistry.updateSeatState('LONG', {
+      symbol: 'OLD_BULL.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: Date.parse('2026-02-16T01:00:00.000Z'),
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+      callPrice: '20000',
     });
 
     const manager = createAutoSymbolManager({
@@ -723,7 +849,7 @@ describe('auto-symbol-switch integration', () => {
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async (symbols) =>
-          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1, 100)])),
+          new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
       trader: createTraderDouble({
         getPendingOrders: async () => [],
@@ -733,7 +859,8 @@ describe('auto-symbol-switch integration', () => {
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
             warrantType: 'BULL',
-            distanceToStrikePercent: 0.1,
+            distanceNumerator: '0.1',
+            distanceDenominator: '100',
           }),
       }),
       findBestWarrant: async () => candidateQueue.shift() ?? null,
@@ -742,9 +869,9 @@ describe('auto-symbol-switch integration', () => {
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
 
-    await runDistanceSwitch(manager, {
+    await runDistanceSwitch(manager, symbolRegistry, {
       direction: 'LONG',
-      monitorPrice: 20_000,
+      monitorPrice: '20000',
       positions: [],
     });
 
@@ -756,7 +883,7 @@ describe('auto-symbol-switch integration', () => {
     await manager.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:11:00.000Z'),
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
     });
 
     const recoveredSeat = symbolRegistry.getSeatState('LONG');

@@ -157,15 +157,15 @@ function createAutoSearchEnabledTradingConfig() {
     monitor: createMonitorConfig({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 5,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
       orderOwnershipMapping: ['HSI'],
     }),
@@ -185,13 +185,25 @@ describe('trading config fail-fast parsing', () => {
       env: createBaseEnv(),
     });
 
-    expect(config.monitor.targetNotional).toBe(10_000);
-    expect(config.monitor.maxPositionNotional).toBe(100_000);
+    expect(config.monitor.targetNotional).toBe('10000');
+    expect(config.monitor.maxPositionNotional).toBe('100000');
     expect(config.monitor.buyIntervalSeconds).toBe(60);
     expect(config.monitor.autoSearchConfig.switchIntervalMinutes).toBe(0);
     expect(config.global.buyOrderTimeout.timeoutSeconds).toBe(180);
     expect(config.global.sellOrderTimeout.timeoutSeconds).toBe(180);
     expect(config.global.orderMonitorPriceUpdateInterval).toBe(5);
+  });
+
+  it('preserves the amount 10+3 text boundary and rejects non-plain financial configuration', () => {
+    const config = parseTradingConfig({
+      env: createBaseEnv({ TARGET_NOTIONAL: '9999999999.999' }),
+    });
+    expect(config.monitor.targetNotional).toBe('9999999999.999');
+    for (const value of ['10000000000', '1.0001', '1e3', 'NaN', 'Infinity']) {
+      expect(() => parseTradingConfig({ env: createBaseEnv({ TARGET_NOTIONAL: value }) })).toThrow(
+        /TARGET_NOTIONAL/,
+      );
+    }
   });
 
   it('accepts switchIntervalMinutes=0 as a valid business value', () => {

@@ -167,20 +167,46 @@ async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownE
 
       return runtime;
     },
-    loadStartupSnapshot: async () => ({
-      kind: 'READY',
-      allOrders: [],
-      quotesMap: new Map(),
-      now: h.deps.clock.now(),
-    }),
+    loadStartupSnapshot: async () => {
+      const snapshot = resources.current?.snapshot;
+      if (snapshot === undefined) throw new Error('post-gate snapshot was not acquired');
+
+      const timerCount = h.timers.length;
+      const refresh = snapshot.requestRefresh({
+        source: 'TEST_STARTUP',
+        dayEpoch: snapshot.getView().token.dayEpoch,
+        refreshAccount: true,
+        refreshPositions: true,
+      });
+      const issuedTimer = h.timers[timerCount];
+      if (issuedTimer === undefined || issuedTimer.cleared || issuedTimer.delay !== 0) {
+        throw new Error('canonical refresh did not schedule its issued batch');
+      }
+
+      issuedTimer.callback();
+      const refreshed = await refresh.result;
+      if (refreshed.status !== 'COMMITTED') throw new Error('startup snapshot refresh was aborted');
+
+      return {
+        kind: 'READY',
+        snapshotToken: refreshed.snapshotToken,
+        allOrders: [],
+        quotesMap: new Map(),
+        now: h.deps.clock.now(),
+      };
+    },
     collectRuntimeValidationSymbols: () => ({ runtimeValidationInputs: [] }),
     validateRuntimeSymbolsFromQuotesMap: () => ({ valid: true, warnings: [], errors: [] }),
-    createRebuildTradingDayState: () => async () => {
-      if (stage === 'rebuild') {
-        reached.resolve();
-        await controlled.promise;
-      }
-    },
+    createRebuildTradingDayState:
+      () =>
+      async ({ snapshotToken }) => {
+        if (stage === 'rebuild') {
+          reached.resolve();
+          await controlled.promise;
+        }
+
+        return { status: 'COMMITTED', snapshotToken };
+      },
     displayAccountAndPositions: () => {},
     createBusinessEventProgram: () => idleProcessor(),
     createAsyncRuntime: () => ({
@@ -266,7 +292,8 @@ describe('root termination with real post-gate ownership', () => {
         const h = await harness(stage);
         const failure = { stage, mode };
         const state = h.resources.current?.lastState;
-        expect(state?.isTradingEnabled).toBe(true);
+        // 重建与订阅对账等待期间保持门闭，只有完成同 token H/S 准入后才进入 time 阶段。
+        expect(state?.isTradingEnabled).toBe(stage === 'time');
         if (mode === 'fatal') h.termination.current?.reportFatalError(failure);
         else h.shutdown();
 
@@ -290,14 +317,15 @@ describe('root termination with real post-gate ownership', () => {
         expect(h.counts().cleanupCount).toBe(0);
         expect(
           h.resources.current?.monitorTaskQueue?.scheduleLatest({
-            type: 'AUTO_SYMBOL_TICK',
+            type: 'SEAT_REFRESH',
             dedupeKey: 'terminated',
             data: {
+              dayEpoch: 0,
               direction: 'LONG',
               seatVersion: 1,
-              symbol: 'BULL.HK',
-              lastSeatActivatedAt: 0,
-              currentTimeMs: 0,
+              previousSymbol: null,
+              nextSymbol: 'BULL.HK',
+              symbolName: null,
             },
           }),
         ).toBe(false);

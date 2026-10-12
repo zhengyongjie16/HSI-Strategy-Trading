@@ -6,17 +6,23 @@
  * - 初始化 WebSocket 私有主题订阅并分发订单推送
  * - 对外暴露事件驱动的 OrderMonitor 接口
  */
-import { OrderSide, OrderStatus, TopicType, type PushOrderChanged } from 'longbridge';
+import type { OrderPushDecoder } from '../../../types/orderPushPorts.js';
+import type { OrderExecutionLedgerFact } from '../../../types/orderExecutionLedger.js';
 import { logger } from '../../../utils/logger/index.js';
-import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
-import { toDecimal } from '../utils.js';
-import { isOpenOrderStatus } from '../../orderStatusLifecycle/utils.js';
+import {
+  wrapExternalApiRequest,
+  isExternalApiRequestError,
+} from '../../../utils/apiFailure/index.js';
+import { withTrustedOrderExecutionTimes } from '../../../domain/order/executionFact.js';
+import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
+import { isOpenOrderReadStatus } from './orderReadLifecycle.js';
 import type {
   CancelOrderMutationRequest,
   OrderMutationRequest,
   OrderMonitor,
   OrderMonitorDeps,
   PendingSellOrderSnapshot,
+  ReplaceOrderPriceOutcome,
 } from '../types.js';
 import type {
   OrderStateChangedEvent,
@@ -68,12 +74,11 @@ function requirePublicCancelOrderOutcome(outcome: CancelOrderPreflightOutcome): 
 /**
  * 创建订单监控器。
  *
- * @param deps 依赖（ctx、rateLimiter、cacheManager、orderRecorder、dailyLossTracker、orderHoldRegistry、tradingConfig 等）
+ * @param deps 依赖（orderDetailReadPort、orderPushPort、tradeMutationPort、rateLimiter、cacheManager、orderRecorder、dailyLossTracker、orderHoldRegistry、tradingConfig 等）
  * @returns 实现 OrderMonitor 接口的实例
  */
 export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   const {
-    ctx,
     rateLimiter,
     cacheManager,
     marketDataClient,
@@ -94,11 +99,10 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   const isContinuousTradingAllowed = (): boolean =>
     !termination.isTerminated() && isLifecycleContinuousTradingAllowed();
   const config = buildOrderMonitorConfig(tradingConfig.global);
-  const thresholdDecimal = toDecimal(config.priceDiffThreshold);
   const runtime: OrderMonitorRuntimeStore = {
     trackedOrders: new Map<string, OrderMonitorTrackedOrder>(),
     trackedOrderLifecycles: new Map(),
-    bootstrappingOrderEvents: new Map<string, PushOrderChanged>(),
+    bootstrappingOrderEvents: new Map<string, RawOrderFromAPI>(),
     closedOrderIds: new Set(),
     queriedTerminalStateByOrderId: new Map(),
     latestReplaceTerminalByOrderId: new Map(),
@@ -115,6 +119,54 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   let teardownPromise: Promise<void> | null = null;
   let finalized = false;
   let routeRuntime: RouteRuntime | null = null;
+  let orderIngressGeneration = 0;
+  let orderIngressDrain: Promise<void> = Promise.resolve();
+  const activePublicOperations = new Set<Promise<unknown>>();
+
+  /** 公共operation ledger包含实际query/replace/cancel的整个等待链，而非只SDK invoke。 */
+  function registerPublicOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const promise = operation();
+    activePublicOperations.add(promise);
+    void promise.then(
+      () => {
+        activePublicOperations.delete(promise);
+      },
+      () => {
+        activePublicOperations.delete(promise);
+      },
+    );
+    return promise;
+  }
+
+  function captureWorkGuard(): () => boolean {
+    const generation = orderIngressGeneration;
+    return () =>
+      generation === orderIngressGeneration &&
+      !finalized &&
+      !termination.isTerminated() &&
+      runtime.runtimeState !== 'STOPPED';
+  }
+
+  function getExecutionTimeEvidence(orderId: string): ReadonlyArray<OrderExecutionTimeEvidence> {
+    const fact = orderRecorder.getExecutionFact(orderId);
+    return [
+      ...dailyLossTracker.getExecutionTimeEvidence(),
+      ...(fact?.executionTimeMs === null || fact === null
+        ? []
+        : [
+            {
+              brokerOrderId: fact.brokerOrderId,
+              symbol: fact.symbol,
+              side: fact.side,
+              cumulativeQuantity: fact.cumulativeQuantity,
+              cumulativeAmount: fact.cumulativeAmount,
+              lastExecutionTimeMs: fact.executionTimeMs,
+              orderRevisionMs: fact.updatedAtMs,
+              phase: fact.phase,
+            },
+          ]),
+    ];
+  }
 
   function triggerRoute(symbol: string, wakeupKind: OrderMonitorWakeupKind): void {
     if (routeRuntime === null) {
@@ -140,16 +192,19 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   const orderStatusQuery = createOrderStatusQuery({
-    ctx,
+    orderDetailReadPort: deps.orderDetailReadPort,
+    executionLedgerPort: deps.executionLedgerPort,
     rateLimiter,
+    getExecutionTimeEvidence,
   });
 
   const orderOps = createOrderOps({
+    captureWorkGuard,
+    tradeMutationPort: deps.tradeMutationPort,
     termination,
     now,
     runtime,
     monitorConfig: tradingConfig.monitor,
-    ctx,
     rateLimiter,
     cacheManager,
     orderHoldRegistry,
@@ -161,7 +216,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     triggerRoute,
   });
 
-  let activeHandler: ((event: PushOrderChanged) => void) | null = null;
+  let activeHandler: ((event: RawOrderFromAPI) => void) | null = null;
   const recoveryFlow = createRecoveryFlow({
     termination,
     runtime,
@@ -184,6 +239,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   const eventFlow = createEventFlow({
     now,
+    monitorConfig: tradingConfig.monitor,
     runtime,
     orderRecorder,
     recordCumulativeExecution: (params) => {
@@ -204,12 +260,11 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   }
 
   const routeProcessor = createRouteProcessor({
+    tradeMutationPort: deps.tradeMutationPort,
     now,
     runtime,
     config,
-    thresholdDecimal,
     orderRecorder,
-    ctx,
     rateLimiter,
     isContinuousTradingAllowed,
     trackOrder: orderOps.trackOrder,
@@ -261,8 +316,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     terminalState: TerminalStateSnapshot,
   ) {
     assertProtectiveSellRawTerminalStateFactsReady(trackedOrder, terminalState);
-    const isProtectiveSell =
-      trackedOrder.side === OrderSide.Sell && trackedOrder.isProtectiveLiquidation;
+    const isProtectiveSell = trackedOrder.side === 'SELL' && trackedOrder.isProtectiveLiquidation;
     const normalizedTerminalState = normalizeTerminalStateSnapshot(
       trackedOrder,
       terminalState,
@@ -274,6 +328,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       closedReason: normalizedTerminalState.closedReason,
       source: 'STATE_CHECK',
       executedPrice: normalizedTerminalState.executedPrice,
+      executedAmount: normalizedTerminalState.executedAmount,
       executedQuantity: normalizedTerminalState.executedQuantity,
       executedTimeMs: normalizedTerminalState.executedTimeMs,
       orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
@@ -369,7 +424,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     orderId: string,
     request: OrderMutationRequest,
   ): Promise<CancelOrderOutcome> {
-    return requirePublicCancelOrderOutcome(await cancelAndSettle(orderId, request));
+    return registerPublicOperation(async () =>
+      requirePublicCancelOrderOutcome(await cancelAndSettle(orderId, request)),
+    );
   }
 
   /**
@@ -383,7 +440,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     orderId: string,
     request: DoomsdayCancelOrderRequest,
   ): Promise<DoomsdayCancelOrderOutcome> {
-    return cancelAndSettle(orderId, request);
+    return registerPublicOperation(() => cancelAndSettle(orderId, request));
   }
 
   /**
@@ -392,18 +449,33 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
    */
   async function replaceOrderPriceWithPermit(
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     request: OrderMutationRequest,
     permit: TradeMutationPermit,
     quantity?: number | null,
   ) {
-    const result = await orderOps.replaceOrderPriceWithPermit(
-      orderId,
-      newPrice,
-      request,
-      permit,
-      quantity,
+    const result = await registerPublicOperation(() =>
+      orderOps.replaceOrderPriceWithPermit(orderId, newPrice, request, permit, quantity),
     );
+    if (result.kind === 'POST_FAILURE_CONFIRMATION_REQUIRED') {
+      return {
+        kind: 'POST_FAILURE_CONFIRMATION_REQUIRED' as const,
+        confirmAfterPermitReleased: () =>
+          registerPublicOperation(async () => {
+            const confirmed = await result.confirmAfterPermitReleased();
+            return settleReplaceOutcome(orderId, confirmed);
+          }),
+      };
+    }
+
+    return settleReplaceOutcome(orderId, result);
+  }
+
+  /** 只在实际query完成后同步结算，绝不在外层FIFO内启动后继query。 */
+  function settleReplaceOutcome(
+    orderId: string,
+    result: ReplaceOrderPriceOutcome,
+  ): ReplaceOrderPriceOutcome {
     const replaceTerminal = peekLatestReplaceTerminal(runtime, orderId);
     if (replaceTerminal === null) {
       return result;
@@ -429,6 +501,103 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
    *
    * @returns 初始化 Promise
    */
+  function observeIngressRead<T>(promise: Promise<T>): Promise<T> {
+    return promise.catch((error: unknown) => {
+      if (!isExternalApiRequestError(error)) termination.reportFatalError(error);
+
+      throw error;
+    });
+  }
+
+  function handleOrderPush(err: Error | null, decoder: OrderPushDecoder): void {
+    if (finalized) return;
+
+    if (err) {
+      logger.error('[订单监控] WebSocket 推送错误:', err.message);
+      return;
+    }
+
+    if (runtime.runtimeState === 'STOPPED' || termination.isTerminated()) return;
+
+    const generation = orderIngressGeneration;
+    // ingress 串行包含实际 ledger IO；stop 等本链，旧 generation 不发布或重发订单。
+    orderIngressDrain = orderIngressDrain
+      .then(async () => {
+        if (
+          generation !== orderIngressGeneration ||
+          runtime.runtimeState === 'STOPPED' ||
+          termination.isTerminated()
+        )
+          return;
+
+        const readFact = decoder.inspect();
+        let executions: ReadonlyArray<OrderExecutionLedgerFact> = [];
+        if (readFact.executedQuantity > 0) {
+          await rateLimiter.throttle();
+          if (generation !== orderIngressGeneration || termination.isTerminated()) return;
+
+          const results = await Promise.allSettled([
+            observeIngressRead(
+              wrapExternalApiRequest({
+                operation: 'TradeContext.todayExecutions',
+                request: () =>
+                  deps.executionLedgerPort.todayExecutions({ orderId: readFact.orderId }),
+              }),
+            ),
+            observeIngressRead(
+              wrapExternalApiRequest({
+                operation: 'TradeContext.historyExecutions',
+                request: () =>
+                  deps.executionLedgerPort.historyExecutions({
+                    symbol: readFact.symbol,
+                    endAt: new Date(readFact.updatedAtMs),
+                  }),
+              }),
+            ),
+          ]);
+          for (const result of results) if (result.status === 'rejected') throw result.reason;
+
+          if (results[0].status !== 'fulfilled' || results[1].status !== 'fulfilled')
+            throw new Error('[订单监控] ledger result invariant');
+
+          executions = [...results[0].value, ...results[1].value];
+        }
+
+        const known = runtime.trackedOrders.get(readFact.orderId);
+        // 保护性 SELL 必须保留本次原始价准入，完整 ledger 仅证明执行时间，不授权借旧价收口。
+        const confirmed =
+          !(known?.executionSide === 'SELL' && known.isProtectiveLiquidation) &&
+          known?.lastOrderUpdateAtMs !== undefined &&
+          known.lastOrderUpdateAtMs !== null &&
+          known.executionPhase !== null
+            ? {
+                brokerOrderId: known.orderId,
+                symbol: known.symbol,
+                side: known.executionSide,
+                cumulativeQuantity: known.executedQuantity,
+                cumulativeAmount: known.executedAmount,
+                executionTimeMs: known.lastExecutedTimeMs,
+                updatedAtMs: known.lastOrderUpdateAtMs,
+                phase: known.executionPhase,
+                executedPrice: known.executedPrice,
+              }
+            : undefined;
+        const mapped = decoder.decode(executions, confirmed);
+        if (generation !== orderIngressGeneration || termination.isTerminated()) return;
+
+        const trusted = withTrustedOrderExecutionTimes(
+          [mapped],
+          getExecutionTimeEvidence(mapped.orderId),
+        )[0];
+        if (trusted === undefined) throw new Error('[订单监控] missing mapped ingress fact');
+
+        eventFlow.handleOrderChanged(trusted);
+      })
+      .catch((error: unknown) => {
+        termination.reportFatalError(error);
+      });
+  }
+
   async function initializeSubscription(): Promise<void> {
     if (finalized || termination.isTerminated()) return;
 
@@ -437,28 +606,12 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       recoveryFlow.clearBootstrappingEventBuffer();
     }
 
-    if (initialized) {
-      return;
-    }
+    if (initialized) return;
 
-    ctx.setOnOrderChanged((err: Error | null, event: PushOrderChanged) => {
-      if (finalized) return;
-
-      if (err) {
-        logger.error('[订单监控] WebSocket 推送错误:', err.message);
-        return;
-      }
-
-      try {
-        eventFlow.handleOrderChanged(event);
-      } catch (error: unknown) {
-        termination.reportFatalError(error);
-      }
-    });
-
+    deps.orderPushPort.setOnOrderChanged(handleOrderPush);
     await wrapExternalApiRequest({
       operation: 'TradeContext.subscribe.private',
-      request: () => ctx.subscribe([TopicType.Private]),
+      request: () => deps.orderPushPort.subscribePrivate(),
     });
     initialized = true;
     if (teardownPromise !== null || termination.isTerminated()) {
@@ -495,7 +648,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
       await wrapExternalApiRequest({
         operation: 'TradeContext.unsubscribe.private',
-        request: () => ctx.unsubscribe([TopicType.Private]),
+        request: () => deps.orderPushPort.unsubscribePrivate(),
       });
       initialized = false;
     });
@@ -526,12 +679,18 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
    */
   async function stopRuntimeAndDrain(): Promise<void> {
     runtime.runtimeState = 'STOPPED';
+    orderIngressGeneration++;
     recoveryFlow.clearBootstrappingEventBuffer();
     if (routeRuntime === null) {
       throw new Error('[订单监控] route runtime 尚未初始化，禁止停止 runtime');
     }
 
-    await routeRuntime.stopAndDrain();
+    const results = await Promise.allSettled([
+      routeRuntime.stopAndDrain(),
+      orderIngressDrain,
+      ...activePublicOperations,
+    ]);
+    for (const result of results) if (result.status === 'rejected') throw result.reason;
   }
 
   function onOrderStateChanged(listener: (event: OrderStateChangedEvent) => void): () => void {
@@ -552,15 +711,15 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   function getPendingSellOrders(symbol: string): ReadonlyArray<PendingSellOrderSnapshot> {
     const pendingOrders: PendingSellOrderSnapshot[] = [];
     for (const order of runtime.trackedOrders.values()) {
-      if (order.symbol !== symbol || order.side !== OrderSide.Sell) {
+      if (order.symbol !== symbol || order.executionSide !== 'SELL') {
         continue;
       }
 
-      if (!isOpenOrderStatus(order.status)) {
+      if (!isOpenOrderReadStatus(order.status)) {
         continue;
       }
 
-      if (order.status === OrderStatus.PartialWithdrawal) {
+      if (order.status === 'PARTIALLY_CANCELED') {
         continue;
       }
 
@@ -572,7 +731,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       pendingOrders.push({
         orderId: order.orderId,
         symbol: order.symbol,
-        side: order.side,
+        side: order.executionSide,
         status: order.status,
         orderType: order.orderType,
         submittedPrice: order.submittedPrice,
@@ -591,11 +750,11 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         continue;
       }
 
-      if (!isOpenOrderStatus(trackedOrder.status)) {
+      if (!isOpenOrderReadStatus(trackedOrder.status)) {
         continue;
       }
 
-      if (trackedOrder.side !== OrderSide.Sell) {
+      if (trackedOrder.side !== 'SELL') {
         continue;
       }
 

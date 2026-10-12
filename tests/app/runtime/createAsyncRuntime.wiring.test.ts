@@ -1,3 +1,6 @@
+import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createIssuedPeriodicTasksFixture } from '../../main/fixtures/issuedPeriodicTasks.js';
+import { getDefaultAutoSearchConfig } from '../../services/autoSymbolManager/utils.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import type { RuntimeTermination } from '../../../src/types/runtime.js';
@@ -9,7 +12,7 @@ import type { RuntimeTermination } from '../../../src/types/runtime.js';
  * - lifecycle/末日 gate 关闭时，AUTO_SYMBOL_TICK 不回写 PeriodicSwitchWakeupRuntime owner
  * - 外部 API 失败时以 failed 状态回写 owner；非 API 错误进入异步 fatal 通道且不回写 periodic route
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { createAsyncRuntime as buildAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
@@ -25,6 +28,8 @@ import type { LastState, MonitorContext } from '../../../src/types/state.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
   createDailyLossTrackerDouble,
+  createAccountSnapshotDouble,
+  createMonitorConfigDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
@@ -40,6 +45,11 @@ import {
 } from '../../main/asyncProgram/utils.js';
 
 let activeTermination: RuntimeTermination;
+let issued: Awaited<ReturnType<typeof createIssuedPeriodicTasksFixture>>;
+const fixtureCleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const cleanup of fixtureCleanups.splice(0)) await cleanup();
+});
 function createAsyncRuntime(params: AsyncRuntimeFactoryDeps) {
   const runtime = buildAsyncRuntime(params);
   if (runtime === null) throw new Error('unexpected terminated runtime');
@@ -70,7 +80,7 @@ function createPeriodicSwitchWakeupRuntimeRecorder(
   };
 }
 
-function createDeps(
+async function createDeps(
   options: Readonly<{
     lastState: LastState;
     monitorTaskQueue: ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>;
@@ -78,17 +88,43 @@ function createDeps(
     monitorContext?: MonitorContext;
     clockNow?: () => Date;
   }>,
-): AsyncRuntimeFactoryDeps {
+): Promise<AsyncRuntimeFactoryDeps> {
   const { lastState, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContext, clockNow } =
     options;
   const warrantListCache = createWarrantListCache();
-  const runtimeMonitorContext = monitorContext ?? createMonitorContext();
+  const runtimeMonitorContext = {
+    ...(monitorContext ?? createMonitorContext()),
+    config: createMonitorConfigDouble({
+      autoSearchConfig: { ...getDefaultAutoSearchConfig(), switchIntervalMinutes: 1 },
+    }),
+  };
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [],
+  });
+  const trader = createTraderDouble();
+  for (const direction of ['LONG', 'SHORT'] as const)
+    runtimeMonitorContext.symbolRegistry.updateSeatState(direction, {
+      ...runtimeMonitorContext.symbolRegistry.getSeatState(direction),
+      lastSeatActivatedAt: 12000,
+    });
+
   activeTermination = createTerminationRuntime({
     closeTradingGate: () => {},
     closeProducerAdmission: () => {},
     stopProducers: [],
     onSecondaryError: () => {},
   });
+
+  issued = await createIssuedPeriodicTasksFixture({
+    snapshot,
+    monitorContext: runtimeMonitorContext,
+    trader,
+    termination: activeTermination,
+    getCanTradeNow: () => lastState.canTrade === true,
+    nowMs: 70000,
+  });
+  fixtureCleanups.push(issued.stopAndDrain);
 
   return {
     termination: activeTermination,
@@ -114,6 +150,7 @@ function createDeps(
       startupTradingDayInfo: null,
     },
     postGateRuntime: {
+      snapshot,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
@@ -170,23 +207,21 @@ function createDeps(
         stopAndDrain: async () => {},
         handoffPendingSwitch: () => {},
       },
-      postTradeConsistencyRuntime: {
-        bindBusinessDeps: () => {},
-        recordSettlementRefreshNeed: () => {},
-        getStatus: () => ({ started: false, currentVersion: 0, staleVersion: 0 }),
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-        stopScheduling: () => {},
-        abortWaiting: () => {},
-        resetAbort: () => {},
-        start: () => {},
-        stopAndDrain: async () => {},
-        midnightClear: () => {},
-        completeRebuildBaseline: () => {},
-      },
+      postTradeConsistencyRuntime: issued.settlement,
       lastState,
-      trader: createTraderDouble(),
-      loadTradingDayRuntimeSnapshot: async () => ({ allOrders: [], quotesMap: new Map() }),
+      trader,
+      loadTradingDayRuntimeSnapshot: async () => {
+        const capture = snapshot.getView();
+        if (!snapshot.isCurrent(capture.token, { account: true, positions: true, paired: true }))
+          return { status: 'ABORTED' };
+
+        return {
+          status: 'COMMITTED',
+          snapshotToken: capture.token,
+          allOrders: [],
+          quotesMap: new Map(),
+        };
+      },
       doomsdayProtection: createDoomsdayProtectionDouble(),
       signalProcessor: {
         processSellSignals: ({ signals }) => signals,
@@ -205,7 +240,7 @@ describe('app createAsyncRuntime wiring', () => {
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     const runtime = createAsyncRuntime(
-      createDeps({
+      await createDeps({
         lastState: createLastState({ isTradingEnabled: false }),
         monitorTaskQueue,
         periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
@@ -218,13 +253,7 @@ describe('app createAsyncRuntime wiring', () => {
         monitorTaskQueue.scheduleLatest({
           type: 'AUTO_SYMBOL_TICK',
           dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-          data: {
-            direction: 'LONG',
-            seatVersion: 7,
-            symbol: 'BULL.HK',
-            lastSeatActivatedAt: 1_000,
-            currentTimeMs: 2_000,
-          },
+          data: issued.getTask('LONG'),
         });
       },
       waitCondition: () => monitorTaskQueue.isEmpty(),
@@ -232,11 +261,8 @@ describe('app createAsyncRuntime wiring', () => {
 
     expect(replanCalls).toEqual([
       {
-        direction: 'LONG',
-        seatVersion: 7,
-        symbol: 'BULL.HK',
-        lastSeatActivatedAt: 1_000,
-        taskTimeMs: 2_000,
+        ...issued.getTask('LONG'),
+        taskTimeMs: issued.getTask('LONG').currentTimeMs,
         status: 'skipped',
       },
     ]);
@@ -280,7 +306,7 @@ describe('app createAsyncRuntime wiring', () => {
         },
       });
       const runtime = createAsyncRuntime(
-        createDeps({
+        await createDeps({
           lastState: createLastState({ canTrade: true, isHalfDay: false }),
           monitorContext: context,
           monitorTaskQueue,
@@ -295,13 +321,7 @@ describe('app createAsyncRuntime wiring', () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
             dedupeKey: 'AUTO_SYMBOL_TICK:LONG:DOOMSDAY',
-            data: {
-              direction: 'LONG',
-              seatVersion: 2,
-              symbol: 'BULL.HK',
-              lastSeatActivatedAt: 12_000,
-              currentTimeMs: 70_000,
-            },
+            data: issued.getTask('LONG'),
           });
         },
         waitCondition: () => monitorTaskQueue.isEmpty(),
@@ -310,11 +330,8 @@ describe('app createAsyncRuntime wiring', () => {
       expect(periodicDueCalls).toBe(0);
       expect(replanCalls).toEqual([
         {
-          direction: 'LONG',
-          seatVersion: 2,
-          symbol: 'BULL.HK',
-          lastSeatActivatedAt: 12_000,
-          taskTimeMs: 70_000,
+          ...issued.getTask('LONG'),
+          taskTimeMs: issued.getTask('LONG').currentTimeMs,
           status: 'blocked',
         },
       ]);
@@ -362,7 +379,7 @@ describe('app createAsyncRuntime wiring', () => {
         },
       });
       const runtime = createAsyncRuntime(
-        createDeps({
+        await createDeps({
           lastState: createLastState(),
           monitorContext: context,
           monitorTaskQueue,
@@ -376,13 +393,7 @@ describe('app createAsyncRuntime wiring', () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
             dedupeKey: 'AUTO_SYMBOL_TICK:LONG:API_FAIL',
-            data: {
-              direction: 'LONG',
-              seatVersion: 2,
-              symbol: 'BULL.HK',
-              lastSeatActivatedAt: 12_000,
-              currentTimeMs: 70_000,
-            },
+            data: issued.getTask('LONG'),
           });
         },
         waitCondition: () => monitorTaskQueue.isEmpty(),
@@ -390,11 +401,8 @@ describe('app createAsyncRuntime wiring', () => {
 
       expect(replanCalls).toEqual([
         {
-          direction: 'LONG',
-          seatVersion: 2,
-          symbol: 'BULL.HK',
-          lastSeatActivatedAt: 12_000,
-          taskTimeMs: 70_000,
+          ...issued.getTask('LONG'),
+          taskTimeMs: issued.getTask('LONG').currentTimeMs,
           status: 'failed',
         },
       ]);
@@ -438,7 +446,7 @@ describe('app createAsyncRuntime wiring', () => {
         },
       });
       const runtime = createAsyncRuntime(
-        createDeps({
+        await createDeps({
           lastState: createLastState(),
           monitorContext: context,
           monitorTaskQueue,
@@ -453,13 +461,7 @@ describe('app createAsyncRuntime wiring', () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
             dedupeKey: 'AUTO_SYMBOL_TICK:LONG:FAIL',
-            data: {
-              direction: 'LONG',
-              seatVersion: 2,
-              symbol: 'BULL.HK',
-              lastSeatActivatedAt: 12_000,
-              currentTimeMs: 70_000,
-            },
+            data: issued.getTask('LONG'),
           });
         },
         waitCondition: () => monitorTaskQueue.isEmpty(),
@@ -468,7 +470,9 @@ describe('app createAsyncRuntime wiring', () => {
       const fatalError = await fatalErrorPromise;
 
       expect(fatalError).toBeInstanceOf(TypeError);
-      expect((fatalError as Error).message).toBe('periodic due contract broken');
+      if (!(fatalError instanceof TypeError)) throw new Error('Expected original internal fault');
+
+      expect(fatalError.message).toBe('periodic due contract broken');
       expect(replanCalls).toEqual([]);
     } finally {
       Date.now = originalNow;

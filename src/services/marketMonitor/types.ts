@@ -6,6 +6,15 @@ import type {
   WarrantDistanceInfo,
 } from '../../types/services.js';
 
+/** 交易行情原始金融文本在终态一次格式化的展示投影，不回流价格或涨跌事实。 */
+export type QuoteDisplay = {
+  readonly nameText: string;
+  readonly codeText: string;
+  readonly priceText: string;
+  readonly changeAmountText: string;
+  readonly changePercentText: string;
+};
+
 /**
  * 交易标的价格显示附加信息。
  * 类型用途：承载 trading quote 显示所需的距回收价、浮亏与订单数信息。

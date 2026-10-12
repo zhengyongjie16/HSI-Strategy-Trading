@@ -5,7 +5,6 @@
  * 数量未增加时则仅允许使用已确认事实完成生命周期收口。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus } from 'longbridge';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
 import {
@@ -20,15 +19,21 @@ import type {
 import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
 
 const FIRST_REVISION_MS = Date.parse('2026-07-14T02:00:00.000Z');
+const FIRST_EXECUTION_MS = Date.parse('2026-07-14T02:00:00.000Z');
 
 function createKnownFact(overrides: Partial<KnownOrderFact> = {}): KnownOrderFact {
   return {
     orderId: 'ORDER-TERMINAL-FACT-BOUNDARY',
+    symbol: 'BULL.HK',
+    side: 'BUY',
+    executionSide: 'BUY',
+    executionPhase: 'OPEN',
     submittedQuantity: 100,
-    status: OrderStatus.PartialFilled,
+    status: 'PARTIALLY_FILLED',
     executedQuantity: 40,
-    executedPrice: 1.02,
-    lastExecutedTimeMs: FIRST_REVISION_MS,
+    executedAmount: '40.8',
+    executedPrice: '1.02',
+    lastExecutedTimeMs: FIRST_EXECUTION_MS,
     lastOrderUpdateAtMs: FIRST_REVISION_MS,
     ...overrides,
   };
@@ -38,12 +43,15 @@ function createTerminalState(
   overrides: Partial<TerminalStateSnapshot> = {},
 ): TerminalStateSnapshot {
   return {
+    executionStatus: 'PARTIAL',
     kind: 'TERMINAL',
     closedReason: 'CANCELED',
-    status: OrderStatus.Canceled,
+    status: 'CANCELED',
     submittedQuantity: 100,
     executedQuantity: 100,
-    executedPrice: 1.03,
+    executedAmount: '103',
+    executedPrice: '1.03',
+    executionTimeMs: FIRST_EXECUTION_MS,
     orderUpdatedAtMs: FIRST_REVISION_MS,
     ...overrides,
   };
@@ -56,31 +64,36 @@ function createProtectiveSellKnownFact(): Pick<
   KnownOrderFact {
   return {
     ...createKnownFact(),
-    side: OrderSide.Sell,
+    side: 'BUY',
+    executionSide: 'SELL',
     isProtectiveLiquidation: true,
   };
 }
 
 describe('orderMonitor terminal snapshot raw fact boundary', () => {
-  for (const ordinarySide of [OrderSide.Buy, OrderSide.Sell] as const) {
-    const sideText = ordinarySide === OrderSide.Buy ? 'BUY' : 'SELL';
-
+  for (const [ordinarySide, sideText] of [
+    ['BUY', 'BUY'],
+    ['BUY', 'SELL'],
+  ] as const) {
     it(`rejects ordinary ${sideText} terminal execution advance without a raw broker revision`, () => {
       expect(() => {
         normalizeTerminalStateSnapshot(
-          createKnownFact(),
+          createKnownFact({ side: ordinarySide, executionSide: sideText }),
           createTerminalState({ orderUpdatedAtMs: null }),
         );
-      }).toThrow(/累计成交数量推进但原始执行时间或 broker revision 无效/);
+      }).toThrow(/正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision/);
     });
 
     it(`rejects ordinary ${sideText} terminal execution advance with a stale raw broker revision`, () => {
       expect(() => {
         normalizeTerminalStateSnapshot(
-          createKnownFact(),
-          createTerminalState({ orderUpdatedAtMs: FIRST_REVISION_MS - 1 }),
+          createKnownFact({ side: ordinarySide, executionSide: sideText }),
+          createTerminalState({
+            executionTimeMs: FIRST_EXECUTION_MS - 1,
+            orderUpdatedAtMs: FIRST_REVISION_MS - 1,
+          }),
         );
-      }).toThrow(/累计成交数量推进但原始执行时间倒退/);
+      }).toThrow(/broker revision.*倒退/);
     });
   }
 
@@ -89,8 +102,9 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
 
     expect(normalized).toMatchObject({
       executedQuantity: 100,
-      executedPrice: 1.03,
-      executedTimeMs: FIRST_REVISION_MS,
+      executedPrice: '1.03',
+      executedAmount: '103',
+      executedTimeMs: FIRST_EXECUTION_MS,
       orderUpdatedAtMs: FIRST_REVISION_MS,
     });
   });
@@ -106,8 +120,10 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
         knownFact,
         createTerminalState({
           closedReason: 'FILLED',
-          status: OrderStatus.Filled,
           executedQuantity: 101,
+          executedAmount: '104.03',
+          executionStatus: 'FILLED',
+          status: 'FILLED',
         }),
       );
     }).toThrow(/累计成交量超过有效委托数量/);
@@ -117,6 +133,8 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     const knownFact = createProtectiveSellKnownFact();
     const terminalState = createTerminalState({
       executedQuantity: 40,
+      executedAmount: '40.8',
+      executionTimeMs: null,
       executedPrice: null,
       orderUpdatedAtMs: null,
     });
@@ -130,7 +148,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     expect(normalized).toMatchObject({
       closedReason: 'CANCELED',
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
       executedTimeMs: FIRST_REVISION_MS,
       orderUpdatedAtMs: FIRST_REVISION_MS,
     });
@@ -140,6 +158,8 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     const knownFact = createProtectiveSellKnownFact();
     const terminalState = createTerminalState({
       executedQuantity: 40,
+      executedAmount: '40.8',
+      executionTimeMs: null,
       executedPrice: null,
       orderUpdatedAtMs: null,
     });
@@ -167,7 +187,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
       factStage: 'OPEN',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       executedPrice: knownFact.executedPrice,
       executedQuantity: knownFact.executedQuantity,
       executedTimeMs: knownFact.lastExecutedTimeMs,
@@ -178,7 +198,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
       factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       executedPrice: normalized.executedPrice,
       executedQuantity: normalized.executedQuantity,
       executedTimeMs: normalized.executedTimeMs,
@@ -186,8 +206,14 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
       orderId: knownFact.orderId,
     });
 
-    expect(openResult).toEqual({ authoritativeFactChanged: true, executionAdvanced: true });
+    expect(openResult).toEqual({
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
+      executionAdvanced: true,
+    });
+
     expect(terminalResult).toEqual({
+      admission: 'ADMITTED',
       authoritativeFactChanged: true,
       executionAdvanced: false,
     });
@@ -201,6 +227,6 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
 
     expect(() => {
       assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
-    }).toThrow(/保护性 SELL 存在正累计成交但执行事实不完整/);
+    }).toThrow(/正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision/);
   });
 });

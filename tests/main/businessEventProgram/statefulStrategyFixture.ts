@@ -5,12 +5,7 @@ import type {
   TradingSignalStrategy,
 } from '../../../src/core/strategy/types.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
-import type {
-  Action,
-  Direction,
-  PendingEntry,
-  StatefulStrategyFixture,
-} from './types.js';
+import type { Action, Direction, PendingEntry, StatefulStrategyFixture } from './types.js';
 
 /** 创建不读取 intradayRegression 私有状态的最小延迟策略；timer 由调用方注入并显式推进。 */
 export function createStatefulStrategyFixture(

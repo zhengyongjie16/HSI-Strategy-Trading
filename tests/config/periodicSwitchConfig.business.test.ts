@@ -74,15 +74,15 @@ describe('periodic switch config business flow', () => {
     const monitorConfig = createMonitorConfig({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
       orderOwnershipMapping: ['HSI'],
     });

@@ -1,6 +1,7 @@
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
+import type { AccountPositionSnapshot } from '../../types/accountPosition.js';
 import type { SellSignalAction } from '../../types/signal.js';
 import type { Trader, MarketDataClient } from '../../types/services.js';
 
@@ -51,8 +52,10 @@ export type DoomsdayClearanceContext = {
   readonly monitorContext: MonitorContext;
   readonly trader: Trader;
   readonly marketDataClient: MarketDataClient;
-  readonly lastState: LastState;
-  readonly onPositionsCommitted?: () => Promise<void>;
+  readonly lastState: Pick<LastState, 'isTradingEnabled'>;
+
+  /** accepted submit 不是成交；仅同 epoch、all-success、live 时允许失效账户，禁止修改持仓。 */
+  readonly snapshot: Pick<AccountPositionSnapshot, 'getView' | 'invalidateAccount'>;
 };
 
 /**

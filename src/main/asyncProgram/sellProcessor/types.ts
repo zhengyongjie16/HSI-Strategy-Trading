@@ -1,9 +1,7 @@
 import type { MonitorContext, LastState } from '../../../types/state.js';
-import type {
-  MarketDataClient,
-  PostTradeConsistencyFreshnessPort,
-  Trader,
-} from '../../../types/services.js';
+import type { MarketDataClient, Trader } from '../../../types/services.js';
+import type { AccountPositionSnapshotReader } from '../../../types/accountPosition.js';
+import type { SettlementFreshnessReader } from '../../../types/settlement.js';
 import type { ExecutableSellSignal } from '../../../types/signal.js';
 import type { TaskQueue, SellTaskType } from '../tradeTaskQueue/types.js';
 import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
@@ -19,6 +17,9 @@ export type SellRetryState = {
   handle: ReturnType<typeof setTimeout> | null;
   retrySignal: ExecutableSellSignal | null;
   attempts: number;
+
+  /** 原 SELL owner 的交易日；延迟 quote retry 不以新日 token 洗白旧信号。 */
+  readonly dayEpoch: number;
 };
 
 /**
@@ -46,14 +47,23 @@ export type SellProcessorDeps = {
   /** 行情客户端 */
   readonly marketDataClient: MarketDataClient;
 
-  /** 获取全局状态的函数 */
-  readonly getLastState: () => LastState;
+  /** 只读取日历与交易时段标志，不再承载账户或持仓事实。 */
+  readonly getLastState: () => Pick<LastState, 'isHalfDay' | 'tradingCalendarSnapshot'>;
 
-  /** 成交后一致性 freshness 等待端口（等待缓存刷新） */
-  readonly postTradeConsistencyRuntime: PostTradeConsistencyFreshnessPort;
+  /** 同一 canonical owner 的只读持仓事实与版本授权。 */
+  readonly snapshot: Pick<
+    AccountPositionSnapshotReader,
+    'getView' | 'getAvailablePosition' | 'isCurrent'
+  >;
+
+  /** 真实成交后 readiness receipt 等待与复核，不以 Promise<void> 冒充就绪。 */
+  readonly postTradeConsistencyRuntime: Pick<
+    SettlementFreshnessReader,
+    'waitForFresh' | 'isCurrent'
+  >;
 
   /** 生命周期门禁：false 时跳过任务执行 */
-  readonly getCanProcessTask?: () => boolean;
+  readonly getCanProcessTask: () => boolean;
 
   /** 非 API 程序错误进入 fatal 通道 */
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;

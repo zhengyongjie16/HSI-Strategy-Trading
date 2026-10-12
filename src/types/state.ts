@@ -1,7 +1,6 @@
-import type { AccountSnapshot, Position } from './account.js';
 import type { MonitorConfig } from './config.js';
 import type { SymbolRegistry, LifecycleState } from './seat.js';
-import type { OrderRecorder, PositionCache, RiskChecker, TradingDayInfo } from './services.js';
+import type { OrderRecorder, RiskChecker, TradingDayInfo } from './services.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from './risk.js';
 import type { AutoSymbolManagerPort } from './monitorContextPorts.js';
 import type { TradingSignalStrategy } from '../core/strategy/types.js';
@@ -19,14 +18,14 @@ type CachedLastStateTradingDayInfo = Readonly<{
 
 /**
  * 系统全局状态。
- * 类型用途：聚合可交易标志、半日市、账户/持仓缓存、唯一监控标的状态等，供时间唤醒评估、业务事件链路、异步处理器与生命周期域使用。
+ * 类型用途：聚合交易门禁与交易日运行状态；账户/持仓事实仅归独立 snapshot owner。
  * 数据来源：启动快照、生命周期域、timeWakeupEvaluationProgram、businessEventProgram 与异步处理器共同维护。
  * 使用范围：timeWakeupEvaluationProgram、MonitorContext、买卖处理器等；全项目可引用。
  */
 export type LastState = {
   /**
    * 运行中持续更新的状态字段（性能考虑保持可变）
-   * - canTrade/isHalfDay/openProtectionActive/cachedAccount/cachedPositions/cachedTradingDayInfo/allTradingSymbols
+   * - canTrade/isHalfDay/openProtectionActive/cachedTradingDayInfo/allTradingSymbols
    */
   /** 当前是否可交易 */
   canTrade: boolean | null;
@@ -48,15 +47,6 @@ export type LastState = {
 
   /** 生命周期交易门禁（仅 ACTIVE 为 true） */
   isTradingEnabled: boolean;
-
-  /** 账户快照缓存 */
-  cachedAccount: AccountSnapshot | null;
-
-  /** 持仓列表缓存 */
-  cachedPositions: ReadonlyArray<Position>;
-
-  /** 持仓缓存（O(1) 查找） */
-  readonly positionCache: PositionCache;
 
   /** 交易日信息缓存 */
   cachedTradingDayInfo: CachedLastStateTradingDayInfo | null;

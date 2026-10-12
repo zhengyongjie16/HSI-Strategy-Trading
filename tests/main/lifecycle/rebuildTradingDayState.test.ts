@@ -1,3 +1,4 @@
+import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 
 /**
@@ -9,7 +10,6 @@ import { createTerminationRuntime } from '../../../src/app/runtime/createTermina
  * - 预热失败时重建 fail-fast
  */
 import { describe, it, expect } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { TIME } from '../../../src/constants/index.js';
 import {
   captureSeatActivationCarryover,
@@ -30,7 +30,19 @@ import type {
   Trader,
   TradingDaysResult,
 } from '../../../src/types/services.js';
-import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
+import {
+  createAccountSnapshotDouble,
+  createSymbolRegistryDouble,
+} from '../../helpers/testDoubles.js';
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
+
+/** 使用实际 native query mapper 生成订单观察；不由 domain 解析 SDK phase。 */
+async function readNativeOrder(
+  input: Parameters<typeof createBrokerIngressFixture>[0],
+): Promise<RawOrderFromAPI> {
+  const ingress = await createBrokerIngressFixture(input);
+  return ingress.queryObservation;
+}
 
 const emptyQuotesMap = new Map<string, Quote | null>();
 const emptyOrders: ReadonlyArray<RawOrderFromAPI> = [];
@@ -56,43 +68,20 @@ function createSymbolRegistry(
   seatStatus: 'ACTIVE' | 'EMPTY',
   symbol: string = 'BULL.HK',
 ): SymbolRegistry {
-  let readySeatState: SeatState =
-    seatStatus === 'ACTIVE'
-      ? {
-          symbol,
-          status: 'ACTIVE' as const,
-          lastSwitchAt: null,
-          lastSearchAt: null,
-          lastSeatActivatedAt: 1,
-          callPrice: null,
-          searchFailCountToday: 0,
-          frozenTradingDayKey: null,
-        }
-      : emptySeatState;
-  return {
-    getSeatState: (_direction: 'LONG' | 'SHORT') => readySeatState,
-    getSeatVersion: () => 1,
-    resolveSeatBySymbol: () => null,
-    updateSeatState: (_direction: 'LONG' | 'SHORT', nextState: SeatState) => {
-      readySeatState = nextState;
-      return readySeatState;
-    },
-    updateSeatStateWithVersionBump: (_direction: 'LONG' | 'SHORT', nextState: SeatState) => {
-      readySeatState = nextState;
-      return { seatState: readySeatState, seatVersion: 2 };
-    },
-    onSeatStateChanged: () => () => {},
-    onSeatTruthChanged: () => {
-      throw new Error('rebuildTradingDayState test must not subscribe to seat truth events');
-    },
-  };
+  return createSymbolRegistryDouble({
+    longSeat:
+      seatStatus === 'ACTIVE'
+        ? { ...emptySeatState, symbol, status: 'ACTIVE', lastSeatActivatedAt: 1 }
+        : emptySeatState,
+    shortSeat: emptySeatState,
+  });
 }
 
 function createBuyOrder(executedTime: number, symbol: string): OrderRecord {
   return {
     orderId: `BUY-${executedTime}`,
     symbol,
-    executedPrice: 1,
+    costAmount: '100',
     executedQuantity: 100,
     executedTime,
     submittedAt: new Date(executedTime),
@@ -104,30 +93,44 @@ function createMonitorContext(params: {
   symbolRegistry: SymbolRegistry;
   monitorSymbol?: string;
   buyOrders?: ReadonlyArray<OrderRecord>;
-  onRefreshLong?: (
-    symbol: string,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    quote?: Quote | null,
-  ) => Promise<ReadonlyArray<OrderRecord>>;
+  onCommitBatch?: MonitorContext['orderRecorder']['commitRebuildSnapshot'];
 }): MonitorContext {
-  const {
-    symbolRegistry,
-    monitorSymbol = 'HSI.HK',
-    buyOrders = [],
-    onRefreshLong = async () => [],
-  } = params;
+  const { symbolRegistry, monitorSymbol = 'HSI.HK', buyOrders = [], onCommitBatch } = params;
   return {
     config: { monitorSymbol },
     symbolRegistry,
     orderRecorder: {
-      refreshOrdersFromAllOrdersForLong: onRefreshLong,
-      refreshOrdersFromAllOrdersForShort: async () => [],
+      validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => {
+        classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
+      },
+      commitRebuildSnapshot: ((targets, allOrders, isCurrent, mode) => {
+        expect(mode).toBe('REBUILD');
+        for (const target of targets) {
+          classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === target.symbol));
+        }
+
+        if (!isCurrent()) return { status: 'ABORTED' };
+
+        return (
+          onCommitBatch?.(targets, allOrders, isCurrent, mode) ?? {
+            status: 'COMMITTED',
+            receipts: [],
+          }
+        );
+      }) satisfies MonitorContext['orderRecorder']['commitRebuildSnapshot'],
       getBuyOrdersForSymbol: () => buyOrders,
     },
     riskChecker: {
       setWarrantInfoFromCallPrice: () => ({ status: 'ok' as const }),
       refreshWarrantInfoForSymbol: async () => ({ status: 'ok' as const }),
-      refreshUnrealizedLossData: async () => {},
+      prepareUnrealizedLossData: ((recorder, symbol, _isLongSymbol, dailyLossOffset) => {
+        expect(recorder.getBuyOrdersForSymbol(symbol, _isLongSymbol)).toEqual(buyOrders);
+        expect(dailyLossOffset).toBe('0');
+        return { symbol, data: { r1: '0', n1: 0 } };
+      }) satisfies MonitorContext['riskChecker']['prepareUnrealizedLossData'],
+      publishUnrealizedLossData: ((
+        _prepared,
+      ) => {}) satisfies MonitorContext['riskChecker']['publishUnrealizedLossData'],
     },
   } as unknown as MonitorContext;
 }
@@ -147,9 +150,9 @@ function createDefaultMarketDataClient(
   } as unknown as MarketDataClient;
 }
 
-function createRebuildDeps(
+async function createRebuildDeps(
   overrides?: Partial<RebuildTradingDayStateDeps>,
-): RebuildTradingDayStateDeps {
+): Promise<RebuildTradingDayStateDeps> {
   const tradingDayCalls: Array<{ startDate: Date; endDate: Date }> = [];
   const trader: Trader = {
     recoverOrderTrackingFromSnapshot: async () => {},
@@ -164,18 +167,141 @@ function createRebuildDeps(
     marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
     trader,
     lastState: createMinimalLastState(),
+    snapshot: await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    }),
     symbolRegistry: createSymbolRegistry('EMPTY'),
     monitorContext: createMonitorContext({
       symbolRegistry: createSymbolRegistry('EMPTY'),
     }),
     dailyLossTracker: {
-      getLossOffset: () => 0,
+      getLossOffset: () => '0',
     } as unknown as RebuildTradingDayStateDeps['dailyLossTracker'],
     displayAccountAndPositions: () => {},
     ...overrides,
   };
 }
 describe('createRebuildTradingDayState', () => {
+  it('commits both captured directions once in REBUILD mode, then prepares both before publishing without changing the snapshot', async () => {
+    const registry = createSymbolRegistryDouble({
+      longSeat: { ...emptySeatState, symbol: 'BULL.HK', status: 'ACTIVATING' },
+      shortSeat: { ...emptySeatState, symbol: 'BEAR.HK', status: 'ACTIVATING' },
+    });
+    let commitCalls = 0;
+    const context = createMonitorContext({
+      symbolRegistry: registry,
+      onCommitBatch: (targets, allOrders, isCurrent, mode) => {
+        expect(targets.map(({ symbol, isLongSymbol }) => ({ symbol, isLongSymbol }))).toEqual([
+          { symbol: 'BULL.HK', isLongSymbol: true },
+          { symbol: 'BEAR.HK', isLongSymbol: false },
+        ]);
+        expect(allOrders).toBe(emptyOrders);
+        expect(isCurrent()).toBe(true);
+        expect(mode).toBe('REBUILD');
+        commitCalls += 1;
+        return { status: 'COMMITTED', receipts: [] };
+      },
+    });
+    const trace: string[] = [];
+    const prepare = context.riskChecker.prepareUnrealizedLossData;
+    context.riskChecker.prepareUnrealizedLossData = (...args) => {
+      trace.push(`prepare:${args[1]}`);
+      return prepare(...args);
+    };
+
+    context.riskChecker.publishUnrealizedLossData = (prepared) => {
+      trace.push(`publish:${prepared.symbol}`);
+    };
+    const deps = await createRebuildDeps({ symbolRegistry: registry, monitorContext: context });
+    const snapshotToken = deps.snapshot.getView().token;
+    await createRebuildTradingDayState(deps)({
+      snapshotToken,
+      allOrders: emptyOrders,
+      quotesMap: emptyQuotesMap,
+      now: REBUILD_TEST_NOW,
+    });
+    expect(commitCalls).toBe(1);
+    expect(trace).toEqual([
+      'prepare:BULL.HK',
+      'prepare:BEAR.HK',
+      'publish:BULL.HK',
+      'publish:BEAR.HK',
+    ]);
+    expect(deps.snapshot.getView().token).toEqual(snapshotToken);
+    expect(registry.getSeatState('LONG').status).toBe('ACTIVE');
+    expect(registry.getSeatState('SHORT').status).toBe('ACTIVE');
+  });
+
+  it('SHORT invalid execution fails the whole preflight before any commit, prepare, publish, tracking or ACTIVE write', async () => {
+    const registry = createSymbolRegistryDouble({
+      longSeat: { ...emptySeatState, symbol: 'BULL.HK', status: 'ACTIVATING' },
+      shortSeat: { ...emptySeatState, symbol: 'BEAR.HK', status: 'ACTIVATING' },
+    });
+    const sideEffects: string[] = [];
+    const context = createMonitorContext({
+      symbolRegistry: registry,
+      onCommitBatch: () => {
+        sideEffects.push('commit');
+        return { status: 'COMMITTED', receipts: [] };
+      },
+    });
+    const prepare = context.riskChecker.prepareUnrealizedLossData;
+    context.riskChecker.prepareUnrealizedLossData = (...args) => {
+      sideEffects.push('prepare');
+      return prepare(...args);
+    };
+
+    context.riskChecker.publishUnrealizedLossData = () => {
+      sideEffects.push('publish');
+    };
+    const deps = await createRebuildDeps({
+      symbolRegistry: registry,
+      monitorContext: context,
+      trader: {
+        recoverOrderTrackingFromSnapshot: async () => {
+          sideEffects.push('tracking');
+        },
+      } as unknown as Trader,
+      displayAccountAndPositions: () => {
+        sideEffects.push('display');
+      },
+    });
+    const executionTimeMs = Date.parse('2026-03-13T02:00:00.000Z');
+    expect(
+      createRebuildTradingDayState(deps)({
+        snapshotToken: deps.snapshot.getView().token,
+        allOrders: [
+          {
+            ...(await readNativeOrder({
+              orderId: 'INVALID-SHORT-EXECUTION',
+              tradeId: 'INVALID-SHORT-EXECUTION' + '-trade',
+              symbol: 'BEAR.HK',
+              stockName: 'Bear',
+              remark: '',
+              side: 'BUY',
+              status: 'Filled',
+              submittedPrice: '1',
+              quantity: '100',
+              executedPrice: '1',
+              executedQuantity: '100',
+              submittedAtMs: new Date(executionTimeMs - 30_000).getTime(),
+              executionTimeMs,
+              updatedAtMs: executionTimeMs + 30_000,
+            })),
+            executedPrice: '0',
+            executedAmount: '0',
+          },
+        ],
+        quotesMap: emptyQuotesMap,
+        now: REBUILD_TEST_NOW,
+      }),
+    ).rejects.toThrow('[订单记录] 金额、数量或执行时间无效');
+    expect(sideEffects).toEqual([]);
+    expect(registry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(registry.getSeatState('SHORT').status).toBe('ACTIVATING');
+  });
+
   it('无 ACTIVE 席位时仍调用 recoverOrderTrackingFromSnapshot 与 displayAccountAndPositions', async () => {
     let recoverCalled = false;
     let displayCalled = false;
@@ -183,7 +309,7 @@ describe('createRebuildTradingDayState', () => {
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
     });
-    const deps = createRebuildDeps({
+    const deps = await createRebuildDeps({
       symbolRegistry: registry,
       trader: {
         recoverOrderTrackingFromSnapshot: async () => {
@@ -196,7 +322,13 @@ describe('createRebuildTradingDayState', () => {
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
-    await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW });
+    const snapshotToken = deps.snapshot.getView().token;
+    await rebuild({
+      snapshotToken,
+      allOrders: emptyOrders,
+      quotesMap: emptyQuotesMap,
+      now: REBUILD_TEST_NOW,
+    });
     expect(recoverCalled).toBe(true);
     expect(displayCalled).toBe(true);
   });
@@ -210,28 +342,32 @@ describe('createRebuildTradingDayState', () => {
       symbolRegistry: registry,
       buyOrders: [],
     });
-    const deps = createRebuildDeps({
+    const deps = await createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
     await rebuild({
+      snapshotToken,
       allOrders: [
-        {
+        await readNativeOrder({
           orderId: 'HISTORY-001',
+          tradeId: 'HISTORY-001' + '-trade',
           symbol: 'BULL.HK',
           stockName: 'Bull',
-          side: 'Buy',
+          remark: '',
+          side: 'BUY',
           status: 'Filled',
-          orderType: 'LO',
-          price: 1,
-          quantity: 100,
-          executedPrice: 1,
-          executedQuantity: 100,
-          submittedAt: new Date(oldExecutedTime),
-          updatedAt: new Date(oldExecutedTime),
-        } as unknown as RawOrderFromAPI,
+          submittedPrice: '1',
+          quantity: '100',
+          executedPrice: '1',
+          executedQuantity: '100',
+          submittedAtMs: new Date(oldExecutedTime).getTime(),
+          executionTimeMs: oldExecutedTime,
+          updatedAtMs: oldExecutedTime,
+        }),
       ],
       quotesMap: emptyQuotesMap,
       now,
@@ -252,14 +388,16 @@ describe('createRebuildTradingDayState', () => {
       buyOrders: [createBuyOrder(oldOpenOrderTime, 'BULL.HK')],
     });
     const lastState = createMinimalLastState();
-    const deps = createRebuildDeps({
+    const deps = await createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
       monitorContext,
       lastState,
     });
     const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
     await rebuild({
+      snapshotToken,
       allOrders: emptyOrders,
       quotesMap: emptyQuotesMap,
       now: new Date('2026-02-20T03:00:00.000Z'),
@@ -285,13 +423,14 @@ describe('createRebuildTradingDayState', () => {
       symbolRegistry: registry,
       buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
     });
-    const deps = createRebuildDeps({
+    const deps = await createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
-    await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
+    const snapshotToken = deps.snapshot.getView().token;
+    await rebuild({ snapshotToken, allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
     expect(tradingDayCalls.length).toBeGreaterThan(1);
     for (const call of tradingDayCalls) {
       const startMonthKey = getRequiredHKDateKey(call.startDate).slice(0, 7);
@@ -310,40 +449,51 @@ describe('createRebuildTradingDayState', () => {
       symbolRegistry: registry,
       buyOrders: [createBuyOrder(openOrderTime, 'BULL.HK')],
     });
-    const deps = createRebuildDeps({
+    const deps = await createRebuildDeps({
       marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
       symbolRegistry: registry,
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
     let caughtError: unknown = null;
     try {
-      await rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
+      await rebuild({ snapshotToken, allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
     } catch (error) {
       caughtError = error;
     }
 
     expect(caughtError).toBeInstanceOf(Error);
-    expect((caughtError as Error).message).toMatch(/\[Lifecycle\] 重建交易日状态失败/);
+    if (!(caughtError instanceof Error))
+      throw new Error('Expected actual calendar boundary rejection');
+
+    expect(caughtError.message).toBe('[交易日历快照] 预热窗口超出接口最近一年限制，重建已阻断');
     expect(tradingDayCalls).toHaveLength(0);
   });
 
-  it('rebuildOrderRecords 中抛错时抛出带 [Lifecycle] 重建交易日状态失败 前缀的错误', async () => {
+  it('rebuildOrderRecords 内部错误保持原始 identity', async () => {
+    const failure = new Error('order batch commit fail');
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
-      onRefreshLong: async () => {
-        throw new Error('order refresh fail');
+      onCommitBatch: () => {
+        throw failure;
       },
     });
-    const deps = createRebuildDeps({
+    const deps = await createRebuildDeps({
       symbolRegistry: registry,
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
     expect(
-      rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW }),
-    ).rejects.toThrow(/\[Lifecycle\] 重建交易日状态失败/);
+      rebuild({
+        snapshotToken,
+        allOrders: emptyOrders,
+        quotesMap: emptyQuotesMap,
+        now: REBUILD_TEST_NOW,
+      }),
+    ).rejects.toBe(failure);
   });
 
   it('正成交事实无效时在席位激活、恢复追踪和展示前阻断 open rebuild', async () => {
@@ -361,41 +511,46 @@ describe('createRebuildTradingDayState', () => {
     };
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
-      onRefreshLong: async (_symbol, allOrders) =>
-        classifyOrdersForRebuild(allOrders).executedBuyOrders,
     });
     const malformedPositiveExecution: RawOrderFromAPI = {
-      orderId: 'INVALID-OPEN-REBUILD-EXECUTION',
-      symbol: 'BULL.HK',
-      stockName: 'Bull',
-      side: OrderSide.Buy,
-      status: OrderStatus.Filled,
-      orderType: OrderType.ELO,
-      price: 1,
-      quantity: 100,
-      executedPrice: 0,
-      executedQuantity: 100,
-      submittedAt: new Date('2026-03-13T02:00:00.000Z'),
-      updatedAt: new Date('2026-03-13T02:01:00.000Z'),
+      ...(await readNativeOrder({
+        orderId: 'INVALID-OPEN-REBUILD-EXECUTION',
+        tradeId: 'INVALID-OPEN-REBUILD-EXECUTION' + '-trade',
+        symbol: 'BULL.HK',
+        stockName: 'Bull',
+        remark: '',
+        side: 'BUY',
+        status: 'Filled',
+        submittedPrice: '1',
+        quantity: '100',
+        executedPrice: '1',
+        executedQuantity: '100',
+        submittedAtMs: new Date('2026-03-13T02:00:00.000Z').getTime(),
+        executionTimeMs: Date.parse('2026-03-13T02:01:00.000Z'),
+        updatedAtMs: Date.parse('2026-03-13T02:01:30.000Z'),
+      })),
+      executedPrice: '0',
+      executedAmount: '0',
     };
-    const rebuild = createRebuildTradingDayState(
-      createRebuildDeps({
-        symbolRegistry: registry,
-        monitorContext,
-        trader: {
-          recoverOrderTrackingFromSnapshot: async () => {
-            recoverOrderTrackingCalls += 1;
-          },
-        } as unknown as Trader,
-        displayAccountAndPositions: () => {
-          displayCalls += 1;
+    const deps = await createRebuildDeps({
+      symbolRegistry: registry,
+      monitorContext,
+      trader: {
+        recoverOrderTrackingFromSnapshot: async () => {
+          recoverOrderTrackingCalls += 1;
         },
-      }),
-    );
+      } as unknown as Trader,
+      displayAccountAndPositions: () => {
+        displayCalls += 1;
+      },
+    });
+    const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
 
     let caughtError: unknown = null;
     try {
       await rebuild({
+        snapshotToken,
         allOrders: [malformedPositiveExecution],
         quotesMap: emptyQuotesMap,
         now: REBUILD_TEST_NOW,
@@ -408,7 +563,7 @@ describe('createRebuildTradingDayState', () => {
       throw new Error('expected malformed execution fact to block open rebuild');
     }
 
-    expect(caughtError.message).toMatch(/\[Lifecycle\] 重建交易日状态失败/);
+    expect(caughtError.message).toBe('[订单记录] 金额、数量或执行时间无效');
     expect(activationWrites).toBe(0);
     expect(recoverOrderTrackingCalls).toBe(0);
     expect(displayCalls).toBe(0);
@@ -417,17 +572,19 @@ describe('createRebuildTradingDayState', () => {
   for (const unknownSideCase of [
     {
       label: 'Filled with positive execution',
-      status: OrderStatus.Filled,
-      executedPrice: 1,
+      status: 'Filled',
+      executedPrice: '1',
+      executedAmount: '100',
       executedQuantity: 100,
     },
     {
       label: 'PartialFilled with zero execution',
-      status: OrderStatus.PartialFilled,
-      executedPrice: 0,
+      status: 'PartialFilled',
+      executedPrice: '0',
+      executedAmount: '0',
       executedQuantity: 0,
     },
-  ]) {
+  ] as const) {
     it(`Unknown-side ${unknownSideCase.label} blocks open rebuild before activation, recovery, and display`, async () => {
       let activationWrites = 0;
       let recoverOrderTrackingCalls = 0;
@@ -443,42 +600,57 @@ describe('createRebuildTradingDayState', () => {
       };
       const monitorContext = createMonitorContext({
         symbolRegistry: registry,
-        onRefreshLong: async (_symbol, allOrders) =>
-          classifyOrdersForRebuild(allOrders).executedBuyOrders,
       });
-      const unknownSideOrder: RawOrderFromAPI = {
+      const ingress = await createBrokerIngressFixture({
         orderId: `UNKNOWN-OPEN-REBUILD-${unknownSideCase.label}`,
+        tradeId: `UNKNOWN-TRADE-${unknownSideCase.label}`,
         symbol: 'BULL.HK',
         stockName: 'Bull',
-        side: OrderSide.Unknown,
+        remark: '',
+        side: 'BUY',
         status: unknownSideCase.status,
-        orderType: OrderType.ELO,
-        price: 1,
-        quantity: 100,
+        submittedPrice: '1',
+        quantity: '100',
         executedPrice: unknownSideCase.executedPrice,
-        executedQuantity: unknownSideCase.executedQuantity,
-        submittedAt: new Date('2026-03-13T02:00:00.000Z'),
-        updatedAt: new Date('2026-03-13T02:01:00.000Z'),
-      };
-      const rebuild = createRebuildTradingDayState(
-        createRebuildDeps({
-          symbolRegistry: registry,
-          monitorContext,
-          trader: {
-            recoverOrderTrackingFromSnapshot: async () => {
-              recoverOrderTrackingCalls += 1;
-            },
-          } as unknown as Trader,
-          displayAccountAndPositions: () => {
-            displayCalls += 1;
+        executedQuantity: String(unknownSideCase.executedQuantity),
+        executionTimeMs: Date.parse('2026-03-13T02:01:00.000Z'),
+        updatedAtMs: Date.parse('2026-03-13T02:01:30.000Z'),
+        submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
+      });
+      const query = ingress.createQueryOrdersReader();
+      ingress.setQuerySideUnknown();
+      expect(ingress.nativeReadCounts().detail).toBe(0);
+      let queryFailure: unknown = null;
+      let rebuildCalls = 0;
+      const deps = await createRebuildDeps({
+        symbolRegistry: registry,
+        monitorContext,
+        trader: {
+          recoverOrderTrackingFromSnapshot: async () => {
+            recoverOrderTrackingCalls += 1;
           },
-        }),
-      );
+        } as unknown as Trader,
+        displayAccountAndPositions: () => {
+          displayCalls += 1;
+        },
+      });
+      const rebuild = createRebuildTradingDayState(deps);
+      const snapshotToken = deps.snapshot.getView().token;
 
       let caughtError: unknown = null;
       try {
+        let allOrders: ReadonlyArray<RawOrderFromAPI>;
+        try {
+          allOrders = await query();
+        } catch (error) {
+          queryFailure = error;
+          throw error;
+        }
+
+        rebuildCalls += 1;
         await rebuild({
-          allOrders: [unknownSideOrder],
+          snapshotToken,
+          allOrders,
           quotesMap: emptyQuotesMap,
           now: REBUILD_TEST_NOW,
         });
@@ -488,8 +660,13 @@ describe('createRebuildTradingDayState', () => {
 
       const rebuildWasBlocked =
         caughtError instanceof Error &&
-        caughtError.message.includes('[Lifecycle] 重建交易日状态失败');
+        caughtError === queryFailure &&
+        caughtError.message === '[orderMapper] unknown SDK execution side';
 
+      expect(ingress.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+      expect(ingress.nativeMutations()).toEqual([]);
+      expect(rebuildCalls).toBe(0);
+      expect(caughtError).toBe(queryFailure);
       expect({
         rebuildWasBlocked,
         activationWrites,
@@ -504,7 +681,8 @@ describe('createRebuildTradingDayState', () => {
     });
   }
 
-  it('交易日历预热失败时，rebuildTradingDayState 会抛错', async () => {
+  it('交易日历预热内部错误保持原始 identity', async () => {
+    const failure = new Error('calendar api fail');
     const registry = createSymbolRegistry('ACTIVE');
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
@@ -512,31 +690,44 @@ describe('createRebuildTradingDayState', () => {
         createBuyOrder(REBUILD_TEST_NOW.getTime() - 2 * TIME.MILLISECONDS_PER_DAY, 'BULL.HK'),
       ],
     });
-    const deps = createRebuildDeps({
+    const deps = await createRebuildDeps({
       marketDataClient: {
         getTradingDays: async () => {
-          throw new Error('calendar api fail');
+          throw failure;
         },
       } as unknown as MarketDataClient,
       symbolRegistry: registry,
       monitorContext,
     });
     const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
     expect(
-      rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW }),
-    ).rejects.toThrow(/\[Lifecycle\] 重建交易日状态失败/);
+      rebuild({
+        snapshotToken,
+        allOrders: emptyOrders,
+        quotesMap: emptyQuotesMap,
+        now: REBUILD_TEST_NOW,
+      }),
+    ).rejects.toBe(failure);
   });
 
-  it('displayAccountAndPositions 抛错时同样抛出带前缀的错误', async () => {
-    const deps = createRebuildDeps({
+  it('displayAccountAndPositions 内部错误保持原始 identity', async () => {
+    const failure = new Error('display fail');
+    const deps = await createRebuildDeps({
       displayAccountAndPositions: () => {
-        throw new Error('display fail');
+        throw failure;
       },
     });
     const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
     expect(
-      rebuild({ allOrders: emptyOrders, quotesMap: emptyQuotesMap, now: REBUILD_TEST_NOW }),
-    ).rejects.toThrow(/\[Lifecycle\] 重建交易日状态失败/);
+      rebuild({
+        snapshotToken,
+        allOrders: emptyOrders,
+        quotesMap: emptyQuotesMap,
+        now: REBUILD_TEST_NOW,
+      }),
+    ).rejects.toBe(failure);
   });
 
   it('open rebuild 恢复出同一 symbol 时保留前一交易日的 lastSeatActivatedAt', async () => {
@@ -563,14 +754,15 @@ describe('createRebuildTradingDayState', () => {
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
     });
-    const rebuild = createRebuildTradingDayState(
-      createRebuildDeps({
-        symbolRegistry: registry,
-        monitorContext,
-      }),
-    );
+    const deps = await createRebuildDeps({
+      symbolRegistry: registry,
+      monitorContext,
+    });
+    const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
 
     await rebuild({
+      snapshotToken,
       allOrders: emptyOrders,
       quotesMap: emptyQuotesMap,
       now: rebuildNow,
@@ -604,14 +796,15 @@ describe('createRebuildTradingDayState', () => {
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
     });
-    const rebuild = createRebuildTradingDayState(
-      createRebuildDeps({
-        symbolRegistry: registry,
-        monitorContext,
-      }),
-    );
+    const deps = await createRebuildDeps({
+      symbolRegistry: registry,
+      monitorContext,
+    });
+    const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
 
     await rebuild({
+      snapshotToken,
       allOrders: emptyOrders,
       quotesMap: emptyQuotesMap,
       now: rebuildNow,
@@ -658,14 +851,15 @@ describe('createRebuildTradingDayState', () => {
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
     });
-    const rebuild = createRebuildTradingDayState(
-      createRebuildDeps({
-        symbolRegistry: registry,
-        monitorContext,
-      }),
-    );
+    const deps = await createRebuildDeps({
+      symbolRegistry: registry,
+      monitorContext,
+    });
+    const rebuild = createRebuildTradingDayState(deps);
+    const snapshotToken = deps.snapshot.getView().token;
 
     await rebuild({
+      snapshotToken,
       allOrders: emptyOrders,
       quotesMap: emptyQuotesMap,
       now: rebuildNow,

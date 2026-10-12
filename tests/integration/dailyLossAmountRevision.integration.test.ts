@@ -5,9 +5,9 @@
  * WS → DailyLoss → progress 持久化 → 风险刷新以及 crash-gap baseline 的一致性。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createPushOrderChanged } from '../../mock/factories/tradeFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
@@ -21,23 +21,23 @@ import type {
 } from '../../src/core/trader/orderMonitor/types.js';
 import type { OrderHoldRegistry } from '../../src/core/trader/types.js';
 import type { RawOrderFromAPI } from '../../src/types/services.js';
-import type { LastState } from '../../src/types/state.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
   createTerminationDouble,
+  createRateLimiterDouble,
   createLiquidationCooldownTrackerDouble,
   createMonitorContextDouble,
-  createOrderRecorderDouble,
-  createPositionCacheDouble,
   createRiskCheckerDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
 
-type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig'> &
+  Partial<Pick<EventFlowDeps, 'now'>>;
 
 function createEventFlow(deps: TestEventFlowDeps) {
   return createProductionEventFlow({
     now: () => new Date('2031-01-02T03:04:05.000Z'),
+    monitorConfig: createTradingConfig().monitor,
     ...deps,
   });
 }
@@ -71,42 +71,29 @@ function createOrderHoldRegistry(): OrderHoldRegistry {
   };
 }
 
-function createLastState(): LastState {
-  return {
-    canTrade: true,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-07-11',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: createPositionCacheDouble(),
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-
-    allTradingSymbols: new Set(),
-  };
-}
-
-function createProtectiveTrackedOrder(revisionMs: number): OrderMonitorTrackedOrder {
+function createProtectiveTrackedOrder(
+  revisionMs: number,
+  native: RawOrderFromAPI,
+): OrderMonitorTrackedOrder {
   return {
     orderId: 'PROTECTIVE-AMOUNT-REVISION',
     symbol: 'BULL.HK',
-    side: OrderSide.Sell,
+    side: native.executionSide,
+    executionSide: 'SELL',
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: true,
-    orderType: OrderType.ELO,
-    submittedPrice: 9,
-    initialSubmittedPrice: 9,
+    orderType: native.orderType,
+    submittedPrice: '9',
+    initialSubmittedPrice: '9',
     submittedQuantity: 5,
     executedQuantity: 0,
+    executedAmount: '0',
     executedPrice: null,
     lastExecutedTimeMs: null,
     lastOrderUpdateAtMs: null,
-    status: OrderStatus.New,
+    status: native.status,
+    executionPhase: native.executionPhase,
     submittedAt: revisionMs - 10,
     lastPriceUpdateAt: revisionMs - 10,
     convertedToMarket: false,
@@ -124,8 +111,200 @@ function createProtectiveTrackedOrder(revisionMs: number): OrderMonitorTrackedOr
   };
 }
 
+async function createAmountActors(
+  revisionMs: number,
+  dailyLossTracker: ReturnType<typeof createDailyLossTracker>,
+  protectiveLiquidationEpisodeTracker: ReturnType<typeof createProtectiveLiquidationEpisodeTracker>,
+  appendCompletion: (boundary: number) => void,
+  flat: boolean,
+  onRefresh: () => void,
+) {
+  const native = await createBrokerIngressFixture({
+    orderId: 'BUY-AMOUNT-REVISION-COST',
+    tradeId: 'BUY-T',
+    symbol: 'BULL.HK',
+    stockName: 'HSI BULL',
+    remark: '',
+    side: 'BUY',
+    status: 'Filled',
+    orderType: 'ELO',
+    quantity: '5',
+    executedQuantity: '5',
+    submittedPrice: '10',
+    executedPrice: '10',
+    submittedAtMs: revisionMs - 10,
+    executionTimeMs: revisionMs - 1,
+    updatedAtMs: revisionMs - 1,
+  });
+  native.setAccountBalance({
+    currency: 'HKD',
+    totalCash: '10000',
+    netAssets: flat ? '10000' : '10050',
+    availableCash: '10000',
+  });
+
+  native.setStockPositions(
+    flat
+      ? []
+      : [
+          {
+            symbol: 'BULL.HK',
+            symbolName: 'BULL',
+            accountChannel: 'lb_papertrading',
+            currency: 'HKD',
+            quantity: '5',
+            availableQuantity: '5',
+            costPrice: '10',
+          },
+        ],
+  );
+  const account = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
+  const snapshot = createAccountPositionSnapshot({
+    dayEpoch: 1,
+    readPort: account,
+    scheduler: { schedule: queueMicrotask },
+    reportFatalError: (error) => {
+      throw error;
+    },
+  });
+  const committed = await snapshot.requestRefresh({
+    source: 'amount-revision-baseline',
+    dayEpoch: 1,
+    refreshAccount: true,
+    refreshPositions: true,
+  }).result;
+  if (committed.status !== 'COMMITTED') throw new Error('expected actual paired baseline');
+
+  let boundTrader: ReturnType<typeof createTraderDouble> | null = null;
+  const postTrade = createPostTradeConsistencyRuntime({
+    snapshot,
+    termination: createTerminationDouble(),
+    getTrader: () => {
+      if (boundTrader === null) throw new Error('unbound trader');
+
+      return boundTrader;
+    },
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: false, positions: true }))
+        throw new Error('stale commit');
+    },
+    scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
+  });
+  const orderRecorder = native.createRecorder({
+    rateLimiter: createRateLimiterDouble(),
+    getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
+    settlementRefreshNeedRecorder: {
+      recordSettlementRefreshNeed: (need) => {
+        onRefresh();
+        postTrade.recordSettlementRefreshNeed(need);
+      },
+    },
+  });
+  const config = createTradingConfig().monitor;
+  dailyLossTracker.publishRecalculation(
+    dailyLossTracker.prepareRecalculationFromAllOrders(
+      [],
+      config,
+      new Date(revisionMs),
+      undefined,
+      new Set(['BULL.HK']),
+    ),
+  );
+
+  orderRecorder.commitExecutionFact(
+    {
+      brokerOrderId: 'BUY-AMOUNT-REVISION-COST',
+      symbol: 'BULL.HK',
+      side: 'BUY',
+      cumulativeQuantity: 5,
+      cumulativeAmount: '50',
+      executionTimeMs: revisionMs - 1,
+      updatedAtMs: revisionMs - 1,
+      phase: 'TERMINAL',
+    },
+    true,
+    [],
+    () =>
+      dailyLossTracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        executedPrice: '10',
+        executedQuantity: 5,
+        executedTimeMs: revisionMs - 1,
+        orderUpdatedAtMs: revisionMs - 1,
+        orderId: 'BUY-AMOUNT-REVISION-COST',
+      }).admission,
+  );
+  const trader = createTraderDouble({
+    ...account,
+    orderRecorder,
+    executeSignals: async () => {
+      throw new Error('revision facts never submit');
+    },
+    hasPendingProtectiveLiquidationOrders: () => false,
+  });
+  boundTrader = trader;
+  const monitorContext = createMonitorContextDouble({
+    config,
+    orderRecorder,
+    dailyLossTracker,
+    riskChecker: createRiskCheckerDouble(),
+  });
+  postTrade.bindBusinessDeps({
+    monitorContext,
+    dailyLossTracker,
+    protectiveLiquidationEpisodeTracker,
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: (completion) => {
+        appendCompletion(completion.boundaryExecutedTimeMs);
+      },
+    },
+  });
+  // 上面的真实 BUY 提交已使初始 paired token 失效；baseline owner 必须先取得当前事实，不由 S 隐式补读。
+  const rebuilt = await snapshot.requestRefresh({
+    source: 'amount-revision-current-baseline',
+    dayEpoch: 1,
+    refreshAccount: true,
+    refreshPositions: true,
+  }).result;
+  expect(rebuilt.status).toBe('COMMITTED');
+  postTrade.start();
+  expect(await postTrade.completeRebuildBaseline()).toBeTrue();
+  const receipt = await postTrade.waitForFresh();
+  expect(receipt.snapshotToken.dayEpoch).toBe(committed.snapshotToken.dayEpoch);
+  expect(
+    snapshot.isCurrent(receipt.snapshotToken, { account: true, positions: true, paired: true }),
+  ).toBeTrue();
+  expect(postTrade.isCurrent(receipt)).toBeTrue();
+  const sellFrame = {
+    orderId: 'PROTECTIVE-AMOUNT-REVISION',
+    tradeId: 'SELL-T',
+    symbol: 'BULL.HK',
+    stockName: 'HSI BULL',
+    remark: '',
+    side: 'SELL' as const,
+    status: 'New' as const,
+    orderType: 'ELO' as const,
+    quantity: '5',
+    executedQuantity: '0',
+    submittedPrice: '9',
+    executedPrice: '0',
+    submittedAtMs: revisionMs - 10,
+    executionTimeMs: null,
+    updatedAtMs: revisionMs,
+  };
+  native.setOrderDetailReplies([sellFrame]);
+  const [newSell] = await native.createQueryOrdersReader(sellFrame.orderId)();
+  if (newSell === undefined) throw new Error('expected native new SELL fact');
+
+  return { native, sellFrame, newSell, postTrade, snapshot, orderRecorder, monitorContext };
+}
+
 describe('DailyLoss protective amount revision integration', () => {
-  it('persists an unsealed same-quantity amount revision, refreshes risk, and preserves its crash-gap baseline', () => {
+  it('persists an unsealed same-quantity amount revision, refreshes risk, and preserves its crash-gap baseline', async () => {
     const firstRevisionMs = Date.parse('2026-07-11T02:00:00.000Z');
     const secondRevisionMs = firstRevisionMs + 1_000;
     const runtime = createRuntime();
@@ -135,17 +314,6 @@ describe('DailyLoss protective amount revision integration', () => {
       toHongKongTimeIso,
     });
     dailyLossTracker.resetAll(new Date('2026-07-11T01:00:00.000Z'));
-    dailyLossTracker.recordCumulativeExecution({
-      factStage: 'TERMINAL',
-      direction: 'LONG',
-      symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
-      executedQuantity: 5,
-      executedTimeMs: firstRevisionMs - 1,
-      orderUpdatedAtMs: firstRevisionMs - 1,
-      orderId: 'BUY-AMOUNT-REVISION-COST',
-    });
 
     const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
     const persistedProgress: Array<{
@@ -156,10 +324,23 @@ describe('DailyLoss protective amount revision integration', () => {
       readonly orderRevisionMs: number;
     }> = [];
     let refreshCount = 0;
+    const actors = await createAmountActors(
+      firstRevisionMs,
+      dailyLossTracker,
+      protectiveLiquidationEpisodeTracker,
+      () => {
+        throw new Error('held positions must not complete');
+      },
+      false,
+      () => {
+        refreshCount += 1;
+      },
+    );
+    refreshCount = 0;
     const settlementFlow = createSettlementFlow({
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
-      orderRecorder: createOrderRecorderDouble(),
+      orderRecorder: actors.orderRecorder,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
       persistProtectiveLiquidationExecutionProgress: (progress) => {
@@ -172,17 +353,17 @@ describe('DailyLoss protective amount revision integration', () => {
         });
       },
       postTradeConsistencyRuntime: {
-        recordSettlementRefreshNeed: () => {
-          refreshCount += 1;
+        recordSettlementRefreshNeed: (need) => {
+          actors.postTrade.recordSettlementRefreshNeed(need);
         },
       },
       emitOrderStateChanged: () => {},
     });
-    const trackedOrder = createProtectiveTrackedOrder(firstRevisionMs);
+    const trackedOrder = createProtectiveTrackedOrder(firstRevisionMs, actors.newSell);
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const eventFlow = createEventFlow({
       runtime,
-      orderRecorder: createOrderRecorderDouble(),
+      orderRecorder: actors.orderRecorder,
       recordCumulativeExecution: (params) => {
         settlementFlow.recordCumulativeExecution(params);
       },
@@ -192,31 +373,43 @@ describe('DailyLoss protective amount revision integration', () => {
       triggerRoute: () => {},
     });
 
-    eventFlow.handleOrderChangedWhenActive(
-      createPushOrderChanged({
+    for (const [revision, price, amount] of [
+      [firstRevisionMs, '9', '45'],
+      [secondRevisionMs, '9.4', '47'],
+    ] as const) {
+      actors.native.setExecutionReplies([
+        {
+          orderId: trackedOrder.orderId,
+          tradeId: 'SELL-T',
+          symbol: 'BULL.HK',
+          quantity: '5',
+          price,
+          tradeDoneAtMs: firstRevisionMs,
+        },
+      ]);
+      const executions = await actors.native.executionLedgerPort.todayExecutions({
         orderId: trackedOrder.orderId,
-        symbol: trackedOrder.symbol,
-        side: trackedOrder.side,
-        status: OrderStatus.PartialFilled,
-        executedQuantity: 5,
-        executedPrice: 9,
-        updatedAtMs: firstRevisionMs,
-      }),
-    );
+      });
+      actors.native.createPushPort().setOnOrderChanged((error, decoder) => {
+        if (error !== null) throw error;
 
-    eventFlow.handleOrderChangedWhenActive(
-      createPushOrderChanged({
-        orderId: trackedOrder.orderId,
-        symbol: trackedOrder.symbol,
-        side: trackedOrder.side,
-        status: OrderStatus.PartialFilled,
-        executedQuantity: 5,
-        executedPrice: 9.4,
-        updatedAtMs: secondRevisionMs,
-      }),
-    );
+        const fact = decoder.decode(executions);
+        expect(fact.executedAmount).toBe(amount);
+        eventFlow.handleOrderChangedWhenActive(fact);
+      });
 
-    expect(dailyLossTracker.getLossOffset('LONG')).toBe(-3);
+      actors.native.emitOrderChangedFrame({
+        ...actors.sellFrame,
+        status: 'PartialFilled',
+        executedQuantity: '5',
+        executedPrice: price,
+        updatedAtMs: revision,
+        executionTimeMs: firstRevisionMs,
+      });
+    }
+
+    await actors.postTrade.waitForFresh();
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('-3');
     expect(persistedProgress).toEqual([
       {
         factStage: 'OPEN',
@@ -247,21 +440,19 @@ describe('DailyLoss protective amount revision integration', () => {
       resolveOrderOwnership: () => ({ monitorSymbol: 'HSI.HK', direction: 'LONG' }),
       toHongKongTimeIso,
     });
-    const currentOrder: RawOrderFromAPI = {
-      orderId: trackedOrder.orderId,
-      symbol: trackedOrder.symbol,
-      stockName: trackedOrder.symbol,
-      side: OrderSide.Sell,
-      status: OrderStatus.PartialFilled,
-      orderType: OrderType.ELO,
-      remark: null,
-      price: 9.4,
-      quantity: 5,
-      executedPrice: 9.4,
-      executedQuantity: 5,
-      submittedAt: new Date(firstRevisionMs),
-      updatedAt: new Date(secondRevisionMs),
-    };
+    actors.native.setOrderDetailReplies([
+      {
+        ...actors.sellFrame,
+        status: 'PartialFilled',
+        executedQuantity: '5',
+        executedPrice: '9.4',
+        updatedAtMs: secondRevisionMs,
+        executionTimeMs: firstRevisionMs,
+      },
+    ]);
+    const [currentOrder] = await actors.native.createQueryOrdersReader(trackedOrder.orderId)();
+    if (currentOrder === undefined) throw new Error('expected actual revised order');
+
     restartedTracker.recalculateFromAllOrders(
       [currentOrder],
       createTradingConfig().monitor,
@@ -273,7 +464,7 @@ describe('DailyLoss protective amount revision integration', () => {
       factStage: 'OPEN',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       orderId: trackedOrder.orderId,
       cumulativeQuantity: '5',
       cumulativeAmount: '47',
@@ -297,6 +488,8 @@ describe('DailyLoss protective amount revision integration', () => {
         orderRevisionMs: secondRevisionMs,
       },
     ]);
+    await actors.postTrade.stopAndDrain();
+    await actors.snapshot.requestClear({ reason: 'STOP', dayEpoch: 1 });
   });
 
   it('does not rewrite a completion sealed by the real post-trade path with a late pre-boundary revision', async () => {
@@ -315,44 +508,17 @@ describe('DailyLoss protective amount revision integration', () => {
       readonly orderRevisionMs: number;
     }> = [];
     const completionBoundaryMs: number[] = [];
-    const orderRecorder = createOrderRecorderDouble();
-    const trader = createTraderDouble({
-      orderRecorder,
-      getStockPositions: async () => [],
-      hasPendingProtectiveLiquidationOrders: () => false,
-    });
-    const lastState = createLastState();
-    const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
-      termination: createTerminationDouble(),
-      getTrader: () => trader,
-      lastState,
-      onPositionsCommitted: async () => {},
-      scheduler: {
-        scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-        clearTimer: (handle) => {
-          clearTimeout(handle);
-        },
-      },
-    });
-    const monitorContext = createMonitorContextDouble({
-      config: createTradingConfig().monitor,
-      orderRecorder,
+    const actors = await createAmountActors(
+      firstRevisionMs,
       dailyLossTracker,
-      riskChecker: createRiskCheckerDouble({
-        refreshUnrealizedLossData: async () => {},
-      }),
-    });
-    postTradeConsistencyRuntime.bindBusinessDeps({
-      monitorContext,
-      dailyLossTracker,
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       protectiveLiquidationEpisodeTracker,
-      mixedTradeLogRepository: {
-        appendCompletionIdempotent: (completion) => {
-          completionBoundaryMs.push(completion.boundaryExecutedTimeMs);
-        },
+      (boundary) => {
+        completionBoundaryMs.push(boundary);
       },
-    });
+      true,
+      () => {},
+    );
+    const { orderRecorder, postTrade: postTradeConsistencyRuntime } = actors;
     const settlementFlow = createSettlementFlow({
       runtime: createRuntime(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -370,7 +536,34 @@ describe('DailyLoss protective amount revision integration', () => {
       emitOrderStateChanged: () => {},
     });
 
-    postTradeConsistencyRuntime.start();
+    actors.native.setExecutionReplies([
+      {
+        orderId: 'SEALED-PROTECTIVE-AMOUNT-REVISION',
+        tradeId: 'SEALED-T',
+        symbol: 'BULL.HK',
+        quantity: '5',
+        price: '9',
+        tradeDoneAtMs: firstRevisionMs,
+      },
+    ]);
+
+    actors.native.setOrderDetailReplies([
+      {
+        ...actors.sellFrame,
+        orderId: 'SEALED-PROTECTIVE-AMOUNT-REVISION',
+        status: 'PartialFilled',
+        executedQuantity: '5',
+        executedPrice: '9',
+        executionTimeMs: firstRevisionMs,
+        updatedAtMs: firstRevisionMs,
+      },
+    ]);
+    const [originalObservation] = await actors.native.createQueryOrdersReader(
+      'SEALED-PROTECTIVE-AMOUNT-REVISION',
+    )();
+    if (originalObservation === undefined) throw new Error('missing actual sealed input');
+
+    expect(originalObservation.executedAmount).toBe('45');
     settlementFlow.recordCumulativeExecution({
       factStage: 'OPEN',
       orderId: 'SEALED-PROTECTIVE-AMOUNT-REVISION',
@@ -379,10 +572,11 @@ describe('DailyLoss protective amount revision integration', () => {
       symbol: 'BULL.HK',
       isLongSymbol: true,
       isProtectiveLiquidation: true,
-      executedPrice: 9,
-      executedQuantity: 5,
-      executedTimeMs: firstRevisionMs,
-      orderUpdatedAtMs: firstRevisionMs,
+      executedPrice: originalObservation.executedPrice,
+      executedAmount: originalObservation.executedAmount,
+      executedQuantity: originalObservation.executedQuantity,
+      executedTimeMs: originalObservation.executionTimeMs,
+      orderUpdatedAtMs: originalObservation.updatedAtMs,
     });
     await postTradeConsistencyRuntime.waitForFresh();
     await postTradeConsistencyRuntime.stopAndDrain();
@@ -396,13 +590,18 @@ describe('DailyLoss protective amount revision integration', () => {
       symbol: 'BULL.HK',
       isLongSymbol: true,
       isProtectiveLiquidation: true,
-      executedPrice: 9.4,
+      executedPrice: '9.4',
+      executedAmount: '47',
       executedQuantity: 5,
       executedTimeMs: firstRevisionMs,
       orderUpdatedAtMs: secondRevisionMs,
     });
 
-    expect(revisionResult).toEqual({ authoritativeFactChanged: false, executionAdvanced: false });
+    expect(revisionResult).toMatchObject({
+      authoritativeFactChanged: false,
+      executionAdvanced: false,
+    });
+    expect(revisionResult.admission).toBe('SUPPRESSED');
     expect(persistedProgress).toEqual([
       {
         factStage: 'OPEN',
@@ -413,5 +612,6 @@ describe('DailyLoss protective amount revision integration', () => {
     expect(completionBoundaryMs).toEqual([firstRevisionMs]);
     expect(protectiveLiquidationEpisodeTracker.getInProgressEpisodes()).toEqual([]);
     expect(postTradeConsistencyRuntime.getStatus()).toEqual(statusAfterCompletion);
+    await actors.snapshot.requestClear({ reason: 'STOP', dayEpoch: 1 });
   });
 });

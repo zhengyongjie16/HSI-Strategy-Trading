@@ -1,3 +1,5 @@
+import { createAccountSnapshotDouble } from '../../helpers/testDoubles.js';
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 
 /**
@@ -37,25 +39,44 @@ describe('跨日清理与开盘重建全链路', () => {
   it('全链路：跨日后午夜清理完成，再 tick 满足开盘条件时执行开盘重建并恢复交易', async () => {
     const mutableState = createMutableState({ currentDayKey: '2025-02-14' });
     const steps: string[] = [];
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const domains: ReadonlyArray<CacheDomain> = [
       {
         midnightClear: () => {
           steps.push('midnight-1');
         },
-        openRebuild: () => {
+        openRebuild: (ctx) => {
           steps.push('open-1');
+          expect(
+            snapshot.isCurrent(ctx.snapshotToken, { account: true, positions: true, paired: true }),
+          ).toBe(true);
+          return { status: 'COMMITTED', snapshotToken: ctx.snapshotToken };
         },
       },
       {
         midnightClear: () => {
           steps.push('midnight-2');
         },
-        openRebuild: () => {
+        openRebuild: async (ctx) => {
           steps.push('open-2');
+          const receipt = await snapshot.requestRefresh({
+            source: 'LIFECYCLE_REBUILD',
+            dayEpoch: ctx.dayEpoch,
+            refreshAccount: true,
+            refreshPositions: true,
+          }).result;
+          if (receipt.status === 'ABORTED' || !ctx.isCurrent()) return { status: 'ABORTED' };
+
+          expect(receipt.snapshotToken.dayEpoch).toBe(ctx.dayEpoch);
+          return { status: 'COMMITTED', snapshotToken: receipt.snapshotToken };
         },
       },
     ];
     const manager = createDayLifecycleManager({
+      snapshot,
       termination: createTerminationRuntime({
         closeTradingGate: () => {},
         closeProducerAdmission: () => {},
@@ -85,15 +106,21 @@ describe('跨日清理与开盘重建全链路', () => {
       isTradingEnabled: false,
     });
     let openRebuildCount = 0;
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    });
     const domains: ReadonlyArray<CacheDomain> = [
       {
         midnightClear: () => {},
         openRebuild: () => {
           openRebuildCount += 1;
+          throw new Error('Non-trading day must not enter rebuild');
         },
       },
     ];
     const manager = createDayLifecycleManager({
+      snapshot,
       termination: createTerminationRuntime({
         closeTradingGate: () => {},
         closeProducerAdmission: () => {},

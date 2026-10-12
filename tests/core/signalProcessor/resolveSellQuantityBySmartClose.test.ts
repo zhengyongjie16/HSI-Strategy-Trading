@@ -14,13 +14,14 @@ import type {
   SellableOrderSelectParams,
 } from '../../../src/types/services.js';
 import type { TradingCalendarSnapshot } from '../../../src/types/tradingCalendar.js';
+import type { OrderCostBasis } from '../../../src/types/orderRecorder.js';
 import { createOrderRecorderDouble } from '../../helpers/testDoubles.js';
 
-function makeOrder(orderId: string, price: number, quantity: number): OrderRecord {
+function makeOrder(orderId: string, costAmount: string, quantity: number): OrderRecord {
   return {
     orderId,
     symbol: 'TEST.HK',
-    executedPrice: price,
+    costAmount,
     executedQuantity: quantity,
     executedTime: Date.now(),
     submittedAt: undefined,
@@ -29,11 +30,11 @@ function makeOrder(orderId: string, price: number, quantity: number): OrderRecor
 }
 
 function createMockOrderRecorder(params: {
-  costAveragePrice: number | null;
+  costBasis: OrderCostBasis | null;
   selectSellableOrders: (input: SellableOrderSelectParams) => SellableOrderResult;
 }): OrderRecorder {
   return createOrderRecorderDouble({
-    getCostAveragePrice: () => params.costAveragePrice,
+    getCostBasis: () => params.costBasis,
     selectSellableOrders: params.selectSellableOrders,
   });
 }
@@ -42,7 +43,7 @@ const emptyCalendarSnapshot: TradingCalendarSnapshot = new Map();
 
 describe('resolveSellQuantityBySmartClose', () => {
   const baseParams = {
-    currentPrice: 1.1,
+    currentPrice: '1.1',
     availableQuantity: 300,
     direction: 'LONG' as const,
     symbol: 'TEST.HK',
@@ -66,11 +67,11 @@ describe('resolveSellQuantityBySmartClose', () => {
   it('阶段1命中（整体盈利）时仅调用 ALL 策略并直接返回', () => {
     const calls: Array<SellableOrderSelectParams['strategy']> = [];
     const recorder = createMockOrderRecorder({
-      costAveragePrice: 1,
+      costBasis: { costAmount: '330', quantity: 300 },
       selectSellableOrders: (input) => {
         calls.push(input.strategy);
         return {
-          orders: [makeOrder('A1', 0.9, 100), makeOrder('A2', 1.2, 200)],
+          orders: [makeOrder('A1', '90', 100), makeOrder('A2', '240', 200)],
           totalQuantity: 300,
         };
       },
@@ -78,7 +79,7 @@ describe('resolveSellQuantityBySmartClose', () => {
 
     const result = resolveSellQuantityBySmartClose({
       ...baseParams,
-      currentPrice: 1.2,
+      currentPrice: '1.2',
       orderRecorder: recorder,
       smartCloseTimeoutMinutes: 30,
     });
@@ -92,11 +93,11 @@ describe('resolveSellQuantityBySmartClose', () => {
   it('阶段2后 timeout=null 时不执行阶段3', () => {
     const calls: Array<SellableOrderSelectParams['strategy']> = [];
     const recorder = createMockOrderRecorder({
-      costAveragePrice: 1.5,
+      costBasis: { costAmount: '450', quantity: 300 },
       selectSellableOrders: (input) => {
         calls.push(input.strategy);
         return {
-          orders: [makeOrder('P1', 0.9, 100)],
+          orders: [makeOrder('P1', '90', 100)],
           totalQuantity: 100,
         };
       },
@@ -104,7 +105,7 @@ describe('resolveSellQuantityBySmartClose', () => {
 
     const result = resolveSellQuantityBySmartClose({
       ...baseParams,
-      currentPrice: 1.1,
+      currentPrice: '1.1',
       orderRecorder: recorder,
       smartCloseTimeoutMinutes: null,
     });
@@ -117,11 +118,11 @@ describe('resolveSellQuantityBySmartClose', () => {
 
   it('阶段3仅从阶段2剩余订单选择，并排除阶段2已选订单', () => {
     const recorder = createMockOrderRecorder({
-      costAveragePrice: 1.5,
+      costBasis: { costAmount: '450', quantity: 300 },
       selectSellableOrders: (input) => {
         if (input.strategy === 'PROFIT_ONLY') {
           return {
-            orders: [makeOrder('P1', 0.9, 100)],
+            orders: [makeOrder('P1', '90', 100)],
             totalQuantity: 100,
           };
         }
@@ -130,7 +131,7 @@ describe('resolveSellQuantityBySmartClose', () => {
         expect(input.maxSellQuantity).toBe(200);
         expect(input.excludeOrderIds?.has('P1')).toBe(true);
         return {
-          orders: [makeOrder('T1', 1.4, 200)],
+          orders: [makeOrder('T1', '280', 200)],
           totalQuantity: 200,
         };
       },
@@ -138,7 +139,7 @@ describe('resolveSellQuantityBySmartClose', () => {
 
     const result = resolveSellQuantityBySmartClose({
       ...baseParams,
-      currentPrice: 1.1,
+      currentPrice: '1.1',
       orderRecorder: recorder,
       smartCloseTimeoutMinutes: 30,
     });
@@ -150,18 +151,18 @@ describe('resolveSellQuantityBySmartClose', () => {
 
   it('阶段3数量受 AQ - Q2 约束', () => {
     const recorder = createMockOrderRecorder({
-      costAveragePrice: 1.5,
+      costBasis: { costAmount: '450', quantity: 300 },
       selectSellableOrders: (input) => {
         if (input.strategy === 'PROFIT_ONLY') {
           return {
-            orders: [makeOrder('P1', 0.9, 250)],
+            orders: [makeOrder('P1', '225', 250)],
             totalQuantity: 250,
           };
         }
 
         expect(input.maxSellQuantity).toBe(50);
         return {
-          orders: [makeOrder('T1', 1.4, 50)],
+          orders: [makeOrder('T1', '70', 50)],
           totalQuantity: 50,
         };
       },
@@ -169,7 +170,7 @@ describe('resolveSellQuantityBySmartClose', () => {
 
     const result = resolveSellQuantityBySmartClose({
       ...baseParams,
-      currentPrice: 1.1,
+      currentPrice: '1.1',
       orderRecorder: recorder,
       smartCloseTimeoutMinutes: 30,
     });
@@ -181,7 +182,7 @@ describe('resolveSellQuantityBySmartClose', () => {
 
   it('阶段2与阶段3都无结果时保持持仓', () => {
     const recorder = createMockOrderRecorder({
-      costAveragePrice: 1.5,
+      costBasis: { costAmount: '450', quantity: 300 },
       selectSellableOrders: () => ({
         orders: [],
         totalQuantity: 0,
@@ -190,7 +191,7 @@ describe('resolveSellQuantityBySmartClose', () => {
 
     const result = resolveSellQuantityBySmartClose({
       ...baseParams,
-      currentPrice: 1.1,
+      currentPrice: '1.1',
       orderRecorder: recorder,
       smartCloseTimeoutMinutes: 30,
     });

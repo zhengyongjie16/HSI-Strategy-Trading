@@ -12,10 +12,10 @@ export type Quote = {
   readonly name: string | null;
 
   /** 当前价格 */
-  readonly price: number;
+  readonly price: string;
 
   /** 前收盘价 */
-  readonly prevClose: number;
+  readonly prevClose: string;
 
   /** 行情时间戳 */
   readonly timestamp: number;

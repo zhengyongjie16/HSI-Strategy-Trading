@@ -1,12 +1,10 @@
+import {
+  NON_REPLACEABLE_READ_STATUSES,
+  NON_REPLACEABLE_READ_TYPES,
+} from '../../constants/orderReadMetadata.js';
 import { Decimal, type OrderType } from 'longbridge';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
-import {
-  NON_REPLACEABLE_ORDER_STATUSES,
-  NON_REPLACEABLE_ORDER_TYPES,
-  ORDER_TYPE_CODE_MAP,
-  ORDER_TYPE_LABEL_MAP,
-  TRADING,
-} from '../../constants/index.js';
+import { ORDER_TYPE_CODE_MAP, ORDER_TYPE_LABEL_MAP, TRADING } from '../../constants/index.js';
 import type { OrderTypeConfig, Signal } from '../../types/signal.js';
 import type {
   OrderSubmitResponse,
@@ -194,10 +192,10 @@ export function resolveSellMergeDecision(input: SellMergeDecisionInput): SellMer
   const hasMultiple = normalized.length > 1;
   const hasTypeMismatch = normalized.some((item) => item.order.orderType !== input.newOrderType);
   const hasNonReplaceableStatus = normalized.some((item) =>
-    NON_REPLACEABLE_ORDER_STATUSES.has(item.order.status),
+    NON_REPLACEABLE_READ_STATUSES.has(item.order.status),
   );
   const hasNonReplaceableType = normalized.some((item) =>
-    NON_REPLACEABLE_ORDER_TYPES.has(item.order.orderType),
+    NON_REPLACEABLE_READ_TYPES.has(item.order.orderType),
   );
 
   if (

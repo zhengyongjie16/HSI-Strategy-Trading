@@ -57,12 +57,65 @@ describe('autoSymbolManager utils business flow', () => {
       lastSwitchAt: 100,
       lastSearchAt: 100,
       lastSeatActivatedAt: 120,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
 
     expect(nextState.lastSeatActivatedAt).toBe(120);
+  });
+
+  it('preserves raw financial callPrice and unknown null without number projection or zero fill', () => {
+    const registry = createSymbolRegistry(createMonitorConfigDouble());
+    const state = registry.updateSeatState('LONG', {
+      symbol: 'RAW_BULL.HK',
+      status: 'ACTIVATING',
+      lastSwitchAt: 100,
+      lastSearchAt: 100,
+      lastSeatActivatedAt: null,
+      callPrice: '21000.000000000000000001',
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    });
+    expect(state.callPrice).toBe('21000.000000000000000001');
+    expect(
+      registry.updateSeatState('LONG', {
+        ...state,
+        symbol: 'RAW_BULL.HK',
+        status: 'ACTIVATING',
+        callPrice: null,
+      }).callPrice,
+    ).toBeNull();
+  });
+
+  it('rejects malformed financial callPrice before truth, version or observer publication', () => {
+    const registry = createSymbolRegistry(createMonitorConfigDouble());
+    const previous = registry.getSeatState('LONG');
+    const version = registry.getSeatVersion('LONG');
+    const observed: string[] = [];
+    registry.onSeatStateChanged(() => {
+      observed.push('state');
+    });
+
+    registry.onSeatTruthChanged(() => {
+      observed.push('truth');
+    });
+
+    expect(() =>
+      registry.updateSeatStateWithVersionBump('LONG', {
+        symbol: 'BROKEN.HK',
+        status: 'ACTIVATING',
+        lastSwitchAt: 100,
+        lastSearchAt: 100,
+        lastSeatActivatedAt: null,
+        callPrice: 'NaN',
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      }),
+    ).toThrow(TypeError);
+    expect(registry.getSeatState('LONG')).toBe(previous);
+    expect(registry.getSeatVersion('LONG')).toBe(version);
+    expect(observed).toEqual([]);
   });
 
   it('rejects static-shaped ACTIVE null after runtime transition before mutating truth', () => {
@@ -168,7 +221,7 @@ describe('autoSymbolManager utils business flow', () => {
         lastSwitchAt: 100,
         lastSearchAt: 100,
         lastSeatActivatedAt: Number.POSITIVE_INFINITY,
-        callPrice: 20_000,
+        callPrice: '20000',
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       }),
@@ -234,7 +287,7 @@ describe('autoSymbolManager utils business flow', () => {
       lastSwitchAt: 100,
       lastSearchAt: 100,
       lastSeatActivatedAt: null,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -293,7 +346,7 @@ describe('autoSymbolManager utils business flow', () => {
       lastSwitchAt: 100,
       lastSearchAt: 100,
       lastSeatActivatedAt: null,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -354,7 +407,7 @@ describe('autoSymbolManager utils business flow', () => {
         lastSwitchAt: 100,
         lastSearchAt: 100,
         lastSeatActivatedAt: 120,
-        callPrice: 20_000,
+        callPrice: '20000',
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });
@@ -412,7 +465,7 @@ describe('autoSymbolManager utils business flow', () => {
         lastSwitchAt: 100,
         lastSearchAt: 100,
         lastSeatActivatedAt: null,
-        callPrice: 20_000,
+        callPrice: '20000',
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });

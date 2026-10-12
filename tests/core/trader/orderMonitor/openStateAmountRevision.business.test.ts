@@ -1,219 +1,145 @@
-/**
- * OPEN state-check 金额修订业务测试。
- *
- * 验证数量不变但权威 revision 提高成交金额时，订单监控仍将事实交给 DailyLoss 链路，
- * 同时不得把它误当作新的部分成交而重复更新卖单数量。
- */
+/** OPEN state-check 金额修订：同 O/Daily/H/S 自然结算登记，原 durable/partial-count oracle 不变。 */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
-import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
-import { createEventFlow as createProductionEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
-import { createOrderOps as createProductionOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
-import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import type {
-  OrderMonitorRuntimeStore,
-  OrderMonitorTrackedOrder,
-  EventFlowDeps,
-  OrderOpsDeps,
-} from '../../../../src/core/trader/orderMonitor/types.js';
-import type { OrderCacheManager, OrderHoldRegistry } from '../../../../src/core/trader/types.js';
-import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
-import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
-import {
-  createOrderRecorderDouble,
-  createTradeContextDouble,
-} from '../../../helpers/testDoubles.js';
-
-type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
-type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now' | 'termination'> &
-  Partial<Pick<OrderOpsDeps, 'now' | 'termination'>>;
-
-function createEventFlow(deps: TestEventFlowDeps) {
-  return createProductionEventFlow({
-    now: () => new Date('2031-01-02T03:04:05.000Z'),
-    ...deps,
-  });
-}
-
-function createOrderOps(deps: TestOrderOpsDeps) {
-  return createProductionOrderOps({
-    termination: { isTerminated: () => false, reportFatalError: () => {} },
-    now: () => new Date('2031-01-02T03:04:05.000Z'),
-    ...deps,
-  });
-}
-
-function createRuntime(): OrderMonitorRuntimeStore {
-  return {
-    trackedOrders: new Map<string, OrderMonitorTrackedOrder>(),
-    trackedOrderLifecycles: new Map(),
-    bootstrappingOrderEvents: new Map(),
-    closedOrderIds: new Set(),
-    queriedTerminalStateByOrderId: new Map(),
-    latestReplaceTerminalByOrderId: new Map(),
-    orderStateChangedListeners: new Set(),
-    trackedOrderIdsBySymbol: new Map(),
-    routeStatesBySymbol: new Map(),
-    latestRouteGenerationBySymbol: new Map(),
-    runtimeState: 'ACTIVE',
-    running: true,
-    unsubscribeQuoteUpdated: null,
-  };
-}
-
-function createOrderHoldRegistry(): OrderHoldRegistry {
-  return {
-    trackOrder: () => {},
-    markOrderClosed: () => {},
-    seedFromOrders: () => {},
-    getHoldSymbols: () => new Set(),
-    onOrderHoldSymbolsChanged: () => () => {},
-    clear: () => {},
-  };
-}
-
-function createRateLimiter(): RateLimiter {
-  return {
-    throttle: async () => {},
-    withTradeMutation: async <T>(
-      callback: (permit: TradeMutationPermit) => Promise<T>,
-    ): Promise<T> =>
-      callback({
-        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
-      }),
-  };
-}
-
-function createCacheManager(): OrderCacheManager {
-  return {
-    getPendingOrders: async () => [],
-    clearCache: () => {},
-  };
-}
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
+import type { ProtectiveLiquidationExecutionProgressInput } from '../../../../src/types/risk.js';
+import { createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
+import { createExecutionFixture } from '../../orderRecorder/executionFixture.js';
 
 describe('orderMonitor OPEN state-check amount revision', () => {
   it('routes a higher-revision equal-quantity correction through DailyLoss without re-marking partial fill', async () => {
     const firstRevisionMs = Date.parse('2026-07-11T02:00:00.000Z');
-    const secondRevisionMs = firstRevisionMs + 1_000;
-    const runtime = createRuntime();
-    const tradeContext = createTradeContextMock();
-    tradeContext.cancelOrder = async () => {
-      throw new Error('openapi error: code=601011: order cannot be cancelled');
-    };
+    const secondRevisionMs = firstRevisionMs + 1000;
+    const persisted: ProtectiveLiquidationExecutionProgressInput[] = [];
     const partialFills: number[] = [];
-    const persistedProgress: Array<{
-      readonly factStage: 'OPEN' | 'TERMINAL';
-      readonly cumulativeQuantity: string;
-      readonly cumulativeAmount: string;
-      readonly lastExecutionTimeMs: number;
-      readonly orderRevisionMs: number;
-    }> = [];
-    let refreshCount = 0;
-    const orderRecorder = createOrderRecorderDouble({
-      markSellPartialFilled: (_orderId, quantity) => {
+    const routeWakeups: string[] = [];
+    const f = createExecutionFixture({
+      nowMs: firstRevisionMs - 60_000,
+      persistProgress: (progress) => {
+        persisted.push(progress);
+      },
+    });
+    f.runtime.runtimeState = 'ACTIVE';
+    f.runtime.running = true;
+    const orderId = 'OPEN-STATE-AMOUNT-REVISION';
+    f.recorder.submitSellOrder(orderId, 'BULL.HK', 'LONG', 100, [], true, firstRevisionMs - 10);
+    const recorder = {
+      ...f.recorder,
+      markSellPartialFilled: (id: string, quantity: number) => {
         partialFills.push(quantity);
-        return null;
+        return f.recorder.markSellPartialFilled(id, quantity);
       },
-    });
-    const dailyLossTracker = createDailyLossTracker({
-      ...createDailyLossOrderAnalysisDeps(),
-      resolveOrderOwnership: () => null,
-      toHongKongTimeIso,
-    });
-    dailyLossTracker.resetAll(new Date('2026-07-11T01:00:00.000Z'));
-    const settlementFlow = createSettlementFlow({
-      runtime,
-      orderHoldRegistry: createOrderHoldRegistry(),
-      orderRecorder,
-      dailyLossTracker,
-      protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTracker(),
-      persistProtectiveLiquidationExecutionProgress: (progress) => {
-        persistedProgress.push({
-          factStage: progress.factStage,
-          cumulativeQuantity: progress.cumulativeQuantity,
-          cumulativeAmount: progress.cumulativeAmount,
-          lastExecutionTimeMs: progress.lastExecutionTimeMs,
-          orderRevisionMs: progress.orderRevisionMs,
-        });
+    };
+    const frame = {
+      orderId,
+      tradeId: 'OPEN-AMOUNT-EXEC',
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC',
+      remark: '',
+      side: 'SELL' as const,
+      status: 'PartialFilled' as const,
+      orderType: 'ELO' as const,
+      quantity: '100',
+      executedQuantity: '40',
+      submittedPrice: '9',
+      executedPrice: '9',
+      submittedAtMs: firstRevisionMs - 10,
+      executionTimeMs: firstRevisionMs,
+      updatedAtMs: firstRevisionMs,
+    };
+    const native = await createBrokerIngressFixture(frame);
+    native.setCancelFailure(new Error('openapi error: code=601011: order cannot be cancelled'));
+    native.setOrderDetailReplies([
+      { ...frame, executedPrice: '9.4', updatedAtMs: secondRevisionMs },
+    ]);
+
+    native.setExecutionReplies([
+      {
+        orderId,
+        tradeId: frame.tradeId,
+        symbol: frame.symbol,
+        quantity: '40',
+        price: '9.4',
+        tradeDoneAtMs: firstRevisionMs,
       },
-      postTradeConsistencyRuntime: {
-        recordSettlementRefreshNeed: () => {
-          refreshCount += 1;
+    ]);
+    const now = () => new Date(secondRevisionMs);
+    const workGuard = () => {
+      const captured = f.snapshot.getView().token.dayEpoch;
+      return () =>
+        captured === f.snapshot.getView().token.dayEpoch &&
+        !f.termination.isTerminated() &&
+        f.runtime.runtimeState !== 'STOPPED';
+    };
+    const orderOps = native.createOperations({
+      captureWorkGuard: workGuard,
+      runtime: f.runtime,
+      monitorConfig: createMonitorConfigDouble(),
+      rateLimiter: f.rateLimiter,
+      cacheManager: {
+        clearCache: () => {},
+        getPendingOrders: async () => {
+          throw new Error('OPEN correction cannot issue pending snapshot IO');
         },
       },
-      emitOrderStateChanged: () => {},
-    });
-    const orderOps = createOrderOps({
-      runtime,
-      monitorConfig: createTradingConfig().monitor,
-      ctx: createTradeContextDouble(tradeContext),
-      rateLimiter: createRateLimiter(),
-      cacheManager: createCacheManager(),
-      orderHoldRegistry: createOrderHoldRegistry(),
-      orderRecorder,
+      orderHoldRegistry: f.holds,
+      orderRecorder: recorder,
       recordCumulativeExecution: (params) => {
-        settlementFlow.recordCumulativeExecution(params);
+        f.flow.recordCumulativeExecution(params);
       },
-      orderStatusQuery: {
-        checkOrderState: async () => ({
-          kind: 'OPEN' as const,
-          status: OrderStatus.PartialFilled,
-          executedPrice: 9.4,
-          executedQuantity: 40,
-          updatedAtMs: secondRevisionMs,
-        }),
+      getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
+      triggerRoute: (symbol, reason) => {
+        routeWakeups.push(`${symbol}:${reason}`);
       },
-      triggerRoute: () => {},
+      termination: f.termination,
+      now,
     });
     orderOps.trackOrder({
-      orderId: 'OPEN-STATE-AMOUNT-REVISION',
+      orderId,
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 9,
-      initialSubmittedPrice: 9,
+      side: native.queryObservation.executionSide,
+      executionSide: 'SELL',
+      price: '9',
+      initialSubmittedPrice: '9',
       quantity: 100,
-      initialStatus: OrderStatus.PartialFilled,
+      initialStatus: native.queryObservation.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
-      orderType: OrderType.ELO,
+      orderType: native.queryObservation.orderType,
     });
-    const trackedOrder = runtime.trackedOrders.get('OPEN-STATE-AMOUNT-REVISION');
-    if (trackedOrder === undefined) {
-      throw new Error('missing tracked order');
-    }
-
     const eventFlow = createEventFlow({
-      runtime,
-      orderRecorder,
-      recordCumulativeExecution: (params) => {
-        settlementFlow.recordCumulativeExecution(params);
-      },
-      prepareProtectiveTerminalExecution: settlementFlow.prepareProtectiveTerminalExecution,
-      settleOrder: settlementFlow.settleOrder,
-      cacheBootstrappingEvent: () => {},
-      triggerRoute: () => {},
-    });
-    eventFlow.handleOrderChangedWhenActive(
-      createPushOrderChanged({
-        orderId: trackedOrder.orderId,
-        symbol: trackedOrder.symbol,
-        side: trackedOrder.side,
-        status: OrderStatus.PartialFilled,
-        executedQuantity: 40,
-        executedPrice: 9,
-        updatedAtMs: firstRevisionMs,
+      monitorConfig: createMonitorConfigDouble({
+        monitorSymbol: 'HSI.HK',
+        orderOwnershipMapping: ['HSI'],
       }),
-    );
-
-    await orderOps.cancelOrder('OPEN-STATE-AMOUNT-REVISION', { kind: 'ORDER_FACT' });
-
-    expect(persistedProgress).toEqual([
+      runtime: f.runtime,
+      orderRecorder: recorder,
+      recordCumulativeExecution: (params) => {
+        f.flow.recordCumulativeExecution(params);
+      },
+      prepareProtectiveTerminalExecution: f.flow.prepareProtectiveTerminalExecution,
+      settleOrder: f.flow.settleOrder,
+      cacheBootstrappingEvent: () => {
+        throw new Error('active event must not cache bootstrapping event');
+      },
+      triggerRoute: (symbol, reason) => {
+        routeWakeups.push(`${symbol}:${reason}`);
+      },
+      now,
+    });
+    const first = native.queryObservation;
+    eventFlow.handleOrderChangedWhenActive(first);
+    await orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' });
+    expect(
+      persisted.map((progress) => ({
+        factStage: progress.factStage,
+        cumulativeQuantity: progress.cumulativeQuantity,
+        cumulativeAmount: progress.cumulativeAmount,
+        lastExecutionTimeMs: progress.lastExecutionTimeMs,
+        orderRevisionMs: progress.orderRevisionMs,
+      })),
+    ).toEqual([
       {
         factStage: 'OPEN',
         cumulativeQuantity: '40',
@@ -230,6 +156,20 @@ describe('orderMonitor OPEN state-check amount revision', () => {
       },
     ]);
     expect(partialFills).toEqual([40]);
-    expect(refreshCount).toBe(2);
+    expect(routeWakeups).toEqual(['BULL.HK:TRACKED', 'BULL.HK:ORDER_EVENT']);
+    expect(f.sink.getStatus()).toEqual({ started: false, currentVersion: 0, staleVersion: 2 });
+    expect(f.snapshot.getView().token.snapshotGeneration).toBe(2);
+    expect(f.recorder.getExecutionFact(orderId)).toMatchObject({
+      cumulativeQuantity: 40,
+      cumulativeAmount: '376',
+      executionTimeMs: firstRevisionMs,
+      updatedAtMs: secondRevisionMs,
+      phase: 'OPEN',
+    });
+
+    expect(f.recorder.getPendingSellSnapshot()).toMatchObject([
+      { orderId, filledQuantity: 40, status: 'partial' },
+    ]);
+    expect(f.io.calls).toEqual([]);
   });
 });

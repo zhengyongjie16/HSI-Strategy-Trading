@@ -22,7 +22,7 @@ type SeatLifecycleMetadata = {
   readonly lastSearchAt: number | null;
 
   /** 回收价（从 warrantList 透传，做多/做空标的换标后用于 setWarrantInfoFromCallPrice） */
-  readonly callPrice?: number | null;
+  readonly callPrice?: string | null;
 
   /** 当日连续寻标失败次数 */
   readonly searchFailCountToday: number;

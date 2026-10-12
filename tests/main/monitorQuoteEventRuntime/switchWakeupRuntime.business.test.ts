@@ -1,5 +1,13 @@
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../fixtures/settlementRuntime.js';
+import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
+import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
+import type {
+  SettlementFreshnessReader,
+  SettlementReadinessReceipt,
+} from '../../../src/types/settlement.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   createMonitorContextDouble,
   createAutoSymbolManagerDouble,
@@ -7,6 +15,7 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
   createPositionDouble,
+  createAccountSnapshotDouble,
 } from '../../helpers/testDoubles.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createSwitchWakeupRuntime } from '../../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
@@ -53,46 +62,114 @@ function waitTick(): Promise<void> {
   });
 }
 
-type ConsistencyStatus = Readonly<{
-  started: boolean;
-  currentVersion: number;
-  staleVersion: number;
-}>;
+const settlementCleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const cleanup of settlementCleanups.splice(0)) await cleanup();
+});
 
-function createConsistencyHarness(initialStatus: ConsistencyStatus) {
-  let status = initialStatus;
-  let freshDeferred: ReturnType<typeof createDeferred<void>> | null = null;
-  let freshReachedListener: (() => void) | null = null;
+/** Real H/S producer; a paused await delivers the captured original receipt, never a replacement. */
+async function createConsistencyHarness(
+  params: Readonly<{
+    snapshot: AccountPositionSnapshot;
+    monitorContext: MonitorContext;
+    started: boolean;
+  }>,
+) {
+  let deliveryGate: ReturnType<typeof createDeferred<void>> | null = null;
+  const owner = createSettlementRuntimeFixture({
+    snapshot: params.snapshot,
+    monitorContext: params.monitorContext,
+    termination: createTerminationRuntime({
+      closeTradingGate: () => {},
+      closeProducerAdmission: () => {},
+      stopProducers: [],
+      onSecondaryError: () => {},
+    }),
+    getTrader: () => createTraderDouble(),
+    onPositionsCommitted: async (token) => {
+      if (!params.snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
+        throw new Error('Stale settlement positions callback');
+    },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
+  if (params.started) {
+    owner.start();
+    expect(await owner.completeRebuildBaseline()).toBeTrue();
+    const completed = await owner.waitForFresh();
+    // pending-switch 消费当前持仓，不要求原完成 receipt 与普通 commit 的 revision 相等。
+    for (const refreshAccount of [true, false]) {
+      await params.snapshot.requestRefresh({
+        source: 'SEAT_ACTIVATION',
+        dayEpoch: completed.snapshotToken.dayEpoch,
+        refreshAccount,
+        refreshPositions: true,
+      }).result;
+      expect(owner.isCurrent(completed)).toBe(true);
+      expect(await owner.waitForFresh()).toBe(completed);
+    }
+  }
 
+  let freshListenerCount = 0;
+  let waitingReceipt: SettlementReadinessReceipt | null = null;
+  let deliveredReceipt: SettlementReadinessReceipt | null = null;
+  const port: SettlementFreshnessReader & Pick<PostTradeConsistencyRuntime, 'getStatus'> = {
+    getStatus: owner.getStatus,
+    isCurrent: owner.isCurrent,
+    onFreshReached: (listener) => {
+      freshListenerCount += 1;
+      const unsubscribe = owner.onFreshReached(listener);
+      return () => {
+        freshListenerCount -= 1;
+        unsubscribe();
+      };
+    },
+    waitForFresh: async () => {
+      const receipt = await owner.waitForFresh();
+      waitingReceipt = receipt;
+      const gate = deliveryGate;
+      if (gate !== null) await gate.promise;
+
+      deliveredReceipt = receipt;
+      return receipt;
+    },
+  };
+  settlementCleanups.push(async () => {
+    deliveryGate?.resolve();
+    await owner.stopAndDrain();
+  });
   return {
-    port: {
-      getStatus: () => status,
-      waitForFresh: async () => {
-        if (freshDeferred !== null) {
-          await freshDeferred.promise;
-        }
-      },
-      onFreshReached: (listener: () => void) => {
-        freshReachedListener = listener;
-        return () => {
-          if (freshReachedListener === listener) {
-            freshReachedListener = null;
-          }
-        };
-      },
-    },
-    setStatus: (nextStatus: ConsistencyStatus) => {
-      status = nextStatus;
-    },
+    port,
+    owner,
+    getFreshListenerCount: () => freshListenerCount,
+    getWaitingReceipt: () => waitingReceipt,
+    getDeliveredReceipt: () => deliveredReceipt,
     blockFreshWait: () => {
-      freshDeferred = createDeferred();
+      deliveryGate = createDeferred();
     },
     resolveFreshWait: () => {
-      freshDeferred?.resolve();
-      freshDeferred = null;
+      deliveryGate?.resolve();
+      deliveryGate = null;
     },
-    emitFreshReached: () => {
-      freshReachedListener?.();
+    startBaseline: async () => {
+      const rebuilt = await params.snapshot.requestRefresh({
+        source: 'TEST_REBUILD',
+        dayEpoch: params.snapshot.getView().token.dayEpoch,
+        refreshAccount: true,
+        refreshPositions: true,
+      }).result;
+      expect(rebuilt.status).toBe('COMMITTED');
+      owner.start();
+      expect(await owner.completeRebuildBaseline()).toBeTrue();
+      await owner.waitForFresh();
+    },
+    refreshFacts: async () => {
+      owner.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
+      if (owner.getStatus().started) await owner.waitForFresh();
     },
   };
 }
@@ -162,7 +239,7 @@ describe('switchWakeupRuntime', () => {
     orderStateChangedListener = null;
   });
 
-  function createBaseHarness(
+  async function createBaseHarness(
     params: {
       readonly monitorContext?: MonitorContext;
       readonly symbolRegistry?: SymbolRegistry;
@@ -170,9 +247,8 @@ describe('switchWakeupRuntime', () => {
         canTrade: boolean | null;
         isTradingEnabled: boolean;
         isHalfDay: boolean | null;
-        cachedPositions: ReturnType<typeof createPositionDouble>[];
       };
-      readonly consistencyStatus?: ConsistencyStatus;
+      readonly startSettlement?: boolean;
       readonly doomsdayProtectionEnabled?: boolean;
       readonly now?: () => Date;
       readonly timerHarness?: ReturnType<typeof createTimerHarness>;
@@ -187,25 +263,30 @@ describe('switchWakeupRuntime', () => {
         readonly reportFatalError: (error: unknown) => void;
       };
     } = {},
-  ): Readonly<{
-    runtime: ReturnType<typeof createSwitchWakeupRuntime>;
-    symbolRegistry: SymbolRegistry;
-    monitorContext: MonitorContext;
-    lastState: {
-      canTrade: boolean | null;
-      isTradingEnabled: boolean;
-      isHalfDay: boolean | null;
-      cachedPositions: ReturnType<typeof createPositionDouble>[];
-    };
-    consistencyHarness: ReturnType<typeof createConsistencyHarness>;
-    timerHarness: ReturnType<typeof createTimerHarness>;
-  }> {
+  ): Promise<
+    Readonly<{
+      snapshot: AccountPositionSnapshot;
+      commitPositions: (
+        positions: ReadonlyArray<ReturnType<typeof createPositionDouble>>,
+      ) => Promise<void>;
+      runtime: ReturnType<typeof createSwitchWakeupRuntime>;
+      symbolRegistry: SymbolRegistry;
+      monitorContext: MonitorContext;
+      lastState: {
+        canTrade: boolean | null;
+        isTradingEnabled: boolean;
+        isHalfDay: boolean | null;
+      };
+      consistencyHarness: Awaited<ReturnType<typeof createConsistencyHarness>>;
+      timerHarness: ReturnType<typeof createTimerHarness>;
+    }>
+  > {
     const symbolRegistry =
       params.symbolRegistry ??
       createSymbolRegistryDouble({
         longSeat: {
           symbol: 'BULL.HK',
-          status: 'ACTIVE',
+          status: 'SWITCHING',
           lastSwitchAt: null,
           lastSearchAt: null,
           lastSeatActivatedAt: null,
@@ -214,7 +295,7 @@ describe('switchWakeupRuntime', () => {
         },
         shortSeat: {
           symbol: 'BEAR.HK',
-          status: 'ACTIVE',
+          status: 'SWITCHING',
           lastSwitchAt: null,
           lastSearchAt: null,
           lastSeatActivatedAt: null,
@@ -224,21 +305,11 @@ describe('switchWakeupRuntime', () => {
         longVersion: 1,
         shortVersion: 1,
       });
-    const consistencyHarness = createConsistencyHarness(
-      params.consistencyStatus ?? {
-        started: true,
-        currentVersion: 1,
-        staleVersion: 1,
-      },
-    );
     const timerHarness = params.timerHarness ?? createTimerHarness();
     const lastState = params.lastState ?? {
       canTrade: true,
       isTradingEnabled: true,
       isHalfDay: false,
-      cachedPositions: [
-        createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
-      ],
     };
     const monitorContext =
       params.monitorContext ??
@@ -248,6 +319,22 @@ describe('switchWakeupRuntime', () => {
 
         ...(params.autoSymbolManager ? { autoSymbolManager: params.autoSymbolManager } : {}),
       });
+    let positions: ReadonlyArray<ReturnType<typeof createPositionDouble>> = [
+      createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
+    ];
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions,
+      readPort: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => positions,
+      },
+    });
+    const consistencyHarness = await createConsistencyHarness({
+      snapshot,
+      monitorContext,
+      started: params.startSettlement ?? true,
+    });
     const trader = createTraderDouble({
       onOrderStateChanged: (listener) => {
         orderStateChangedListener = listener;
@@ -277,6 +364,7 @@ describe('switchWakeupRuntime', () => {
       symbolRegistry,
       monitorContext,
       lastState,
+      snapshot,
       postTradeConsistencyRuntime: consistencyHarness.port,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: params.doomsdayProtectionEnabled ?? false,
@@ -299,9 +387,20 @@ describe('switchWakeupRuntime', () => {
       },
     };
     const runtime = createSwitchWakeupRuntime(runtimeDeps);
+    const originalDayEpoch = snapshot.getView().token.dayEpoch;
 
     return {
-      runtime,
+      snapshot,
+      commitPositions: async (nextPositions) => {
+        positions = nextPositions;
+        await consistencyHarness.refreshFacts();
+      },
+      runtime: {
+        ...runtime,
+        handoffPendingSwitch: (handoff) => {
+          runtime.handoffPendingSwitch({ ...handoff, originalDayEpoch });
+        },
+      },
       symbolRegistry,
       monitorContext,
       lastState,
@@ -313,7 +412,7 @@ describe('switchWakeupRuntime', () => {
   function emitQuoteUpdated(symbol: string, price: number): void {
     quoteUpdatedListener?.({
       symbol,
-      quote: createQuoteDouble(symbol, price, 100),
+      quote: createQuoteDouble(symbol, String(price), 100),
     });
   }
 
@@ -327,7 +426,7 @@ describe('switchWakeupRuntime', () => {
       monitorSymbol: 'HSI.HK',
       isLongSymbol: true,
       isProtectiveLiquidation: false,
-      executedPrice: 1,
+      executedPrice: '1',
       executedQuantity: 1,
       executedTimeMs: Date.now(),
     });
@@ -344,7 +443,7 @@ describe('switchWakeupRuntime', () => {
 
   it('exposes pending switch route errors to fatal handler', async () => {
     const fatalErrors: unknown[] = [];
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       termination: {
         isTerminated: () => false,
         reportFatalError: (error) => {
@@ -401,7 +500,7 @@ describe('switchWakeupRuntime', () => {
     const reentryError = new Error('re-entry route failure');
     const fatalErrors: unknown[] = [];
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       termination: {
         isTerminated: () => false,
         reportFatalError: (error) => {
@@ -459,7 +558,7 @@ describe('switchWakeupRuntime', () => {
     const advanceStarted = createDeferred();
     const releaseAdvance = createDeferred();
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       termination: {
         isTerminated: () => false,
         reportFatalError: (error) => {
@@ -503,7 +602,7 @@ describe('switchWakeupRuntime', () => {
       monitorContext: runtimeHarness.monitorContext,
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await advanceStarted.promise;
 
     runtimeHarness.lastState.isTradingEnabled = false;
@@ -532,7 +631,7 @@ describe('switchWakeupRuntime', () => {
       positionQuantities: ReadonlyArray<number>;
     }> = [];
     const timerHarness = createTimerHarness(10_000);
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       timerHarness,
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -611,35 +710,34 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
     expect(advanceCalls).toHaveLength(0);
 
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 1, availableQuantity: 1 }),
-    ];
+    ]);
 
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 200, availableQuantity: 200 }),
-    ];
+    ]);
     emitOrderStateChanged('BULL.HK');
     await waitTick();
 
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 300, availableQuantity: 300 }),
-    ];
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    ]);
     await waitTick();
 
     emitQuoteUpdated('OTHER.HK', 1.2);
     await waitTick();
     expect(advanceCalls).toHaveLength(2);
 
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 400, availableQuantity: 400 }),
-    ];
+    ]);
     emitQuoteUpdated('BULL.HK', 1.23);
     await waitTick();
 
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
-    ];
+    ]);
     timerHarness.setNow(10_100);
     timerHarness.fireDueTimers();
     await waitTick();
@@ -673,13 +771,7 @@ describe('switchWakeupRuntime', () => {
       longVersion: 1,
       shortVersion: 1,
     });
-    const consistencyHarness = createConsistencyHarness({
-      started: true,
-      currentVersion: 1,
-      staleVersion: 2,
-    });
     const tradingGateHarness = createTradingGateHarness();
-    consistencyHarness.blockFreshWait();
     const monitorContext = createMonitorContextDouble({
       config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
       symbolRegistry,
@@ -707,46 +799,13 @@ describe('switchWakeupRuntime', () => {
         resetAllState: () => {},
       },
     });
-    const runtime = createSwitchWakeupRuntime({
-      logger: { error: () => {} },
-      marketDataClient: {
-        onQuoteUpdated: (listener) => {
-          quoteUpdatedListener = listener;
-          return () => {
-            if (quoteUpdatedListener === listener) {
-              quoteUpdatedListener = null;
-            }
-          };
-        },
-      },
-      trader: createTraderDouble({
-        onOrderStateChanged: (listener) => {
-          orderStateChangedListener = listener;
-          return () => {
-            if (orderStateChangedListener === listener) {
-              orderStateChangedListener = null;
-            }
-          };
-        },
-      }),
+    const customHarness = await createBaseHarness({
       symbolRegistry,
       monitorContext,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-        cachedPositions: [],
-      },
-      postTradeConsistencyRuntime: consistencyHarness.port,
       tradingGateEventRuntime: tradingGateHarness.port,
-      doomsdayProtectionEnabled: false,
-      now: () => new Date('2026-04-07T02:00:00.000Z'),
-      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-      clearTimer: (handle) => {
-        clearTimeout(handle);
-      },
-      termination: { isTerminated: () => false, reportFatalError: () => {} },
     });
+    const { runtime, consistencyHarness } = customHarness;
+    consistencyHarness.blockFreshWait();
 
     runtime.start();
     runtime.handoffPendingSwitch({
@@ -782,20 +841,23 @@ describe('switchWakeupRuntime', () => {
     });
     emitOrderStateChanged('BULL.HK');
     await waitTick();
+    const originalReceipt = consistencyHarness.getWaitingReceipt();
+    if (originalReceipt === null)
+      throw new Error('Expected original producer-issued S receipt before the await barrier');
+
+    expect(consistencyHarness.port.isCurrent(originalReceipt)).toBe(true);
 
     symbolRegistry.updateSeatStateWithVersionBump('LONG', {
       ...symbolRegistry.getSeatState('LONG'),
       lastSeatActivatedAt: 1,
     });
 
-    consistencyHarness.setStatus({
-      started: true,
-      currentVersion: 2,
-      staleVersion: 2,
-    });
+    await consistencyHarness.refreshFacts();
+    expect(consistencyHarness.port.isCurrent(originalReceipt)).toBe(false);
     consistencyHarness.resolveFreshWait();
     await waitTick();
 
+    expect(consistencyHarness.getDeliveredReceipt()).toBe(originalReceipt);
     expect(advanceCalls).toEqual([]);
     await runtime.stopAndDrain();
   });
@@ -803,7 +865,7 @@ describe('switchWakeupRuntime', () => {
   it('deletes the route when pending switch is cleared before a wakeup is handled', async () => {
     let advanceCalls = 0;
     let pendingSwitchActive = true;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -852,7 +914,7 @@ describe('switchWakeupRuntime', () => {
   it('deletes the route when pending switch is cleared during freshness wait', async () => {
     let advanceCalls = 0;
     let pendingSwitchActive = true;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -887,7 +949,7 @@ describe('switchWakeupRuntime', () => {
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
 
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await waitTick();
 
     pendingSwitchActive = false;
@@ -896,7 +958,7 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
 
     pendingSwitchActive = true;
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await waitTick();
 
     expect(advanceCalls).toBe(0);
@@ -906,7 +968,7 @@ describe('switchWakeupRuntime', () => {
   it('re-drives the route after quote retain resolves for the current route', async () => {
     const retainDeferred = createDeferred<() => void>();
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       quoteSubscriptionRuntime: {
         retainSymbols: async () => {
           await retainDeferred.promise;
@@ -961,7 +1023,7 @@ describe('switchWakeupRuntime', () => {
     const retainDeferred = createDeferred<() => void>();
     let advanceCalls = 0;
     const symbolRegistry = createSymbolRegistryDouble({ longVersion: 1, shortVersion: 1 });
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       symbolRegistry,
       quoteSubscriptionRuntime: {
         retainSymbols: async () => {
@@ -1022,7 +1084,7 @@ describe('switchWakeupRuntime', () => {
     const bearRetainDeferred = createDeferred<() => void>();
     const retainCalls: string[] = [];
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       quoteSubscriptionRuntime: {
         retainSymbols: async ({ symbols }) => {
           const [symbol] = [...symbols];
@@ -1103,7 +1165,7 @@ describe('switchWakeupRuntime', () => {
     const retainError = new Error('retain failed');
     const fatalErrors: unknown[] = [];
     let remainingRetainFailures = 1;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       quoteSubscriptionRuntime: {
         retainSymbols: async ({ symbols }) => {
           retainCalls.push([...symbols]);
@@ -1168,7 +1230,7 @@ describe('switchWakeupRuntime', () => {
     const releaseError = new Error('release failed');
     const retainError = new Error('retain failed');
     const fatalErrors: unknown[] = [];
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       quoteSubscriptionRuntime: {
         retainSymbols: async () => {
           throw retainError;
@@ -1206,7 +1268,7 @@ describe('switchWakeupRuntime', () => {
 
   it('switches symbol quote wakeup membership when WAIT wakeups change', async () => {
     const advanceCalls: string[] = [];
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -1262,7 +1324,7 @@ describe('switchWakeupRuntime', () => {
 
   it('removes old order event wakeup membership when WAIT wakeups change', async () => {
     const advanceCalls: string[] = [];
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -1318,7 +1380,7 @@ describe('switchWakeupRuntime', () => {
 
   it('ignores order events without a symbol', async () => {
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -1360,7 +1422,7 @@ describe('switchWakeupRuntime', () => {
   });
 
   it('fails fast when handoff monitorContext identity does not match the unique context', async () => {
-    const runtimeHarness = createBaseHarness();
+    const runtimeHarness = await createBaseHarness();
     const detachedMonitorContext = createMonitorContextDouble({
       config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
       symbolRegistry: runtimeHarness.symbolRegistry,
@@ -1381,7 +1443,7 @@ describe('switchWakeupRuntime', () => {
 
   it('fails fast on empty WAIT handoff before replacing a valid route owner', async () => {
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -1457,7 +1519,7 @@ describe('switchWakeupRuntime', () => {
         };
       },
     });
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager,
       termination: {
         isTerminated: () => false,
@@ -1502,7 +1564,7 @@ describe('switchWakeupRuntime', () => {
         };
       },
     });
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager,
       termination: {
         isTerminated: () => false,
@@ -1542,7 +1604,7 @@ describe('switchWakeupRuntime', () => {
         driveResult: { kind: 'WAIT', wakeups: [{ kind: 'FRESHNESS' }] },
       }),
     });
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager,
       termination: {
         isTerminated: () => false,
@@ -1572,7 +1634,7 @@ describe('switchWakeupRuntime', () => {
     const timerHarness = createTimerHarness(40_000);
     const symbolRegistry = createSymbolRegistryDouble({ longVersion: 1, shortVersion: 1 });
     const advanceCalls: string[] = [];
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       symbolRegistry,
       timerHarness,
       autoSymbolManager: {
@@ -1640,8 +1702,18 @@ describe('switchWakeupRuntime', () => {
   it('ignores old events and retry timers after stopAndDrain', async () => {
     const timerHarness = createTimerHarness(20_000);
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const retainedOwners: string[] = [];
+    const releasedOwners: string[] = [];
+    const runtimeHarness = await createBaseHarness({
       timerHarness,
+      quoteSubscriptionRuntime: {
+        retainSymbols: async ({ ownerKey }) => {
+          retainedOwners.push(ownerKey);
+        },
+        releaseRetain: async ({ ownerKey }) => {
+          releasedOwners.push(ownerKey);
+        },
+      },
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -1656,7 +1728,10 @@ describe('switchWakeupRuntime', () => {
             advanced: true,
             direction: params.direction,
             stillPending: true,
-            driveResult: createWaitResult([{ kind: 'RETRY_TIMER', atMs: 20_100 }]),
+            driveResult: createWaitResult([
+              { kind: 'RETRY_TIMER', atMs: 20_100 },
+              { kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' },
+            ]),
           };
         },
         hasPendingSwitch: () => true,
@@ -1672,32 +1747,62 @@ describe('switchWakeupRuntime', () => {
     runtimeHarness.runtime.handoffPendingSwitch({
       direction: 'LONG',
       monitorContext: stopMonitorContext,
-      driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
+      driveResult: createWaitResult([
+        { kind: 'ORDER_EVENT', symbols: ['BULL.HK'] },
+        { kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' },
+      ]),
     });
 
+    await waitTick();
+    expect(advanceCalls).toBe(1); // Actual retain completion naturally wakes the registered quote route.
     emitOrderStateChanged('BULL.HK');
     await waitTick();
     expect(advanceCalls).toBe(1);
     expect(timerHarness.getPendingTimerCount()).toBe(1);
+    expect(retainedOwners).toHaveLength(1);
+    expect(releasedOwners).toEqual([]);
+    expect(runtimeHarness.consistencyHarness.getFreshListenerCount()).toBe(1);
 
     await runtimeHarness.runtime.stopAndDrain();
+    expect(releasedOwners).toEqual(retainedOwners);
+    expect(runtimeHarness.consistencyHarness.getFreshListenerCount()).toBe(0);
+    expect(quoteUpdatedListener).toBeNull();
+    expect(orderStateChangedListener).toBeNull();
 
     emitOrderStateChanged('BULL.HK');
     emitQuoteUpdated('BULL.HK', 1.23);
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     timerHarness.setNow(20_100);
     timerHarness.fireDueTimers();
     await waitTick();
 
     expect(advanceCalls).toBe(1);
     expect(timerHarness.getPendingTimerCount()).toBe(0);
+    const oldEpoch = runtimeHarness.snapshot.getView().token.dayEpoch;
+    await runtimeHarness.snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: oldEpoch + 1 });
+    runtimeHarness.runtime.start();
+    runtimeHarness.runtime.handoffPendingSwitch({
+      direction: 'LONG',
+      monitorContext: stopMonitorContext,
+      driveResult: createWaitResult([
+        { kind: 'SYMBOL_QUOTE', symbol: 'BULL.HK' },
+        { kind: 'RETRY_TIMER', atMs: 20100 },
+      ]),
+    });
+    await waitTick();
+    expect(retainedOwners).toHaveLength(1);
+    expect(releasedOwners).toEqual(retainedOwners);
+    expect(timerHarness.getPendingTimerCount()).toBe(0);
+    expect(advanceCalls).toBe(1);
+    await runtimeHarness.runtime.stopAndDrain();
+    expect(runtimeHarness.consistencyHarness.getFreshListenerCount()).toBe(0);
   });
 
   it('does not keep retry timers registered when stopAndDrain races with an in-flight advance', async () => {
     const timerHarness = createTimerHarness(30_000);
     const firstAdvance = createDeferred();
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       timerHarness,
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -1750,17 +1855,12 @@ describe('switchWakeupRuntime', () => {
 
   it('does not retain a pending-switch handoff while the lifecycle gate is closed', async () => {
     let advanceCalls = 0;
-    const runtimeHarness = createBaseHarness({
-      consistencyStatus: {
-        started: false,
-        currentVersion: 0,
-        staleVersion: 0,
-      },
+    const runtimeHarness = await createBaseHarness({
+      startSettlement: false,
       lastState: {
         canTrade: false,
         isTradingEnabled: false,
         isHalfDay: false,
-        cachedPositions: [],
       },
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -1795,18 +1895,14 @@ describe('switchWakeupRuntime', () => {
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
 
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await waitTick();
     expect(advanceCalls).toBe(0);
 
     runtimeHarness.lastState.canTrade = true;
     runtimeHarness.lastState.isTradingEnabled = true;
-    runtimeHarness.consistencyHarness.setStatus({
-      started: true,
-      currentVersion: 1,
-      staleVersion: 1,
-    });
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.startBaseline();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await waitTick();
 
     expect(advanceCalls).toBe(0);
@@ -1816,7 +1912,7 @@ describe('switchWakeupRuntime', () => {
   it('keeps an existing pending switch route through lunch and re-drives it when the gate reopens', async () => {
     let advanceCalls = 0;
     const tradingGateHarness = createTradingGateHarness();
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       tradingGateEventRuntime: tradingGateHarness.port,
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -1869,7 +1965,7 @@ describe('switchWakeupRuntime', () => {
     const canContinueDuringLunch: boolean[] = [];
     let advanceCalls = 0;
     const tradingGateHarness = createTradingGateHarness();
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       tradingGateEventRuntime: tradingGateHarness.port,
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -1917,7 +2013,7 @@ describe('switchWakeupRuntime', () => {
       monitorContext: runtimeHarness.monitorContext,
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await advanceStarted.promise;
 
     runtimeHarness.lastState.canTrade = false;
@@ -1943,7 +2039,7 @@ describe('switchWakeupRuntime', () => {
     const releaseAdvance = createDeferred();
     const observedCanContinue: boolean[] = [];
     let managerStateMutations = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -1982,7 +2078,7 @@ describe('switchWakeupRuntime', () => {
       monitorContext: runtimeHarness.monitorContext,
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await advanceStarted.promise;
 
     const stopPromise = runtimeHarness.runtime.stopAndDrain();
@@ -1996,7 +2092,7 @@ describe('switchWakeupRuntime', () => {
   it('deletes an existing pending switch route when the lifecycle gate closes', async () => {
     let advanceCalls = 0;
     const tradingGateHarness = createTradingGateHarness();
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       tradingGateEventRuntime: tradingGateHarness.port,
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
@@ -2037,7 +2133,7 @@ describe('switchWakeupRuntime', () => {
 
     runtimeHarness.lastState.isTradingEnabled = true;
     runtimeHarness.lastState.canTrade = true;
-    runtimeHarness.consistencyHarness.emitFreshReached();
+    await runtimeHarness.consistencyHarness.refreshFacts();
     await waitTick();
 
     expect(advanceCalls).toBe(0);
@@ -2048,7 +2144,7 @@ describe('switchWakeupRuntime', () => {
     const firstAdvance = createDeferred();
     const observedPositionQuantities: ReadonlyArray<number>[] = [];
     let callCount = 0;
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
       autoSymbolManager: {
         maybeSearchOnEvent: async () => {},
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
@@ -2086,9 +2182,9 @@ describe('switchWakeupRuntime', () => {
     });
     const monitorContext = runtimeHarness.monitorContext;
 
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
-    ];
+    ]);
 
     runtimeHarness.runtime.start();
     runtimeHarness.runtime.handoffPendingSwitch({
@@ -2099,13 +2195,13 @@ describe('switchWakeupRuntime', () => {
 
     emitOrderStateChanged('BULL.HK');
     await waitTick();
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 200, availableQuantity: 200 }),
-    ];
+    ]);
 
-    runtimeHarness.lastState.cachedPositions = [
+    await runtimeHarness.commitPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 300, availableQuantity: 300 }),
-    ];
+    ]);
     emitOrderStateChanged('BULL.HK');
     await waitTick();
 
@@ -2117,13 +2213,24 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.runtime.stopAndDrain();
   });
 
-  it('does not requeue a pending switch after doomsday takeover begins during advance', async () => {
+  it('keeps the pending owner but does not advance it after doomsday takeover begins during advance', async () => {
     const beforeTakeoverMs = Date.parse('2026-02-16T07:54:59.000Z');
     const takeoverMs = Date.parse('2026-02-16T07:55:00.000Z');
     let currentNowMs = beforeTakeoverMs;
+    let advanceCalls = 0;
+    let retained = 0;
+    let released = 0;
     const advanceStarted = createDeferred();
     const releaseAdvance = createDeferred();
-    const runtimeHarness = createBaseHarness({
+    const runtimeHarness = await createBaseHarness({
+      quoteSubscriptionRuntime: {
+        retainSymbols: async () => {
+          retained += 1;
+        },
+        releaseRetain: async () => {
+          released += 1;
+        },
+      },
       doomsdayProtectionEnabled: true,
       now: () => new Date(currentNowMs),
       autoSymbolManager: {
@@ -2135,8 +2242,11 @@ describe('switchWakeupRuntime', () => {
           driveResult: { kind: 'NOOP' },
         }),
         advancePendingSwitch: async (params) => {
+          advanceCalls += 1;
+          expect(params.canContinue()).toBe(true);
           advanceStarted.resolve();
           await releaseAdvance.promise;
+          expect(params.canContinue()).toBe(false);
           return {
             advanced: true,
             direction: params.direction,
@@ -2163,8 +2273,20 @@ describe('switchWakeupRuntime', () => {
     releaseAdvance.resolve();
     await waitTick();
 
-    expect(runtimeHarness.timerHarness.getPendingTimerCount()).toBe(0);
+    expect(advanceCalls).toBe(1);
+    expect(retained).toBe(1);
+    expect(released).toBe(1);
+    expect(runtimeHarness.timerHarness.getPendingTimerCount()).toBe(1);
+    runtimeHarness.timerHarness.setNow(takeoverMs + 1000);
+    runtimeHarness.timerHarness.fireDueTimers();
+    emitQuoteUpdated('BULL.HK', 1.24);
+    emitOrderStateChanged('BULL.HK');
+    await waitTick();
+    expect(advanceCalls).toBe(1);
     await runtimeHarness.runtime.stopAndDrain();
+    expect(runtimeHarness.timerHarness.getPendingTimerCount()).toBe(0);
+    expect(quoteUpdatedListener).toBeNull();
+    expect(orderStateChangedListener).toBeNull();
   });
 
   describe('switch owner drain settlement', () => {
@@ -2196,7 +2318,7 @@ describe('switchWakeupRuntime', () => {
           await releaseGate.promise;
           throw new Error('release');
         };
-        const harness = createBaseHarness({
+        const harness = await createBaseHarness({
           termination,
           quoteSubscriptionRuntime: { retainSymbols: retainWork, releaseRetain: releaseWork },
         });
@@ -2264,7 +2386,7 @@ describe('switchWakeupRuntime', () => {
           await releaseGate.promise;
           releaseFinished = true;
         };
-        const harness = createBaseHarness({
+        const harness = await createBaseHarness({
           quoteSubscriptionRuntime: { retainSymbols: retainWork, releaseRetain: releaseWork },
         });
         harness.runtime.start();

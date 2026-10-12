@@ -1,47 +1,40 @@
+/** 市场显示工具：金额/价格原文一次 half-even 输出，不把显示舍入回写金融事实。 */
 import { DEFAULT_PERCENT_DECIMALS } from '../../constants/index.js';
+import {
+  exactCompare,
+  exactMultiply,
+  exactSubtract,
+  formatDecimal,
+  formatRatio,
+} from '../../utils/numeric/exact.js';
 import type { UnrealizedLossMetrics, WarrantDistanceInfo } from '../../types/services.js';
 import type { Quote } from '../../types/quote.js';
-import { decimalGte, formatDecimal } from '../../utils/numeric/index.js';
+import type { QuoteDisplay } from './types.js';
 
 /**
- * 格式化行情数据显示为可读字段。默认行为：quote 为 null 时返回 null。
- *
- * @param quote 行情对象
- * @param symbol 标的代码
- * @returns 格式化后的行情显示对象，quote 无效时返回 null
+ * 格式化交易行情；非法金融文本穿透，合法零/负值沿用既有字段显示政策。
+ * @param quote 保真行情或外部缺失值
+ * @param symbol 展示标的
+ * @returns 一次half-even的终态字段；缺行情时返回null
  */
-export function formatQuoteDisplay(
-  quote: Quote | null,
-  symbol: string,
-): {
-  readonly nameText: string;
-  readonly codeText: string;
-  readonly priceText: string;
-  readonly changeAmountText: string;
-  readonly changePercentText: string;
-} | null {
-  if (!quote) {
-    return null;
-  }
+export function formatQuoteDisplay(quote: Quote | null, symbol: string): QuoteDisplay | null {
+  if (quote === null) return null;
 
-  const nameText = quote.name ?? '-';
-  const currentPrice = quote.price;
-
-  const priceText = Number.isFinite(currentPrice) ? currentPrice.toFixed(3) : String(currentPrice);
-
+  const priceText = formatDecimal(quote.price, 3, 'preserve');
   let changeAmountText = '-';
   let changePercentText = '-';
-
-  if (Number.isFinite(currentPrice) && Number.isFinite(quote.prevClose) && quote.prevClose !== 0) {
-    const changeAmount = currentPrice - quote.prevClose;
-    changeAmountText = `${changeAmount >= 0 ? '+' : ''}${changeAmount.toFixed(3)}`;
-
-    const changePercent = (changeAmount / quote.prevClose) * 100;
-    changePercentText = `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%`;
+  const previous = exactCompare(quote.prevClose, '0');
+  if (previous !== 0) {
+    const delta = exactSubtract(quote.price, quote.prevClose);
+    const sign = exactCompare(delta, '0') >= 0 ? '+' : '';
+    changeAmountText = `${sign}${formatDecimal(delta, 3, 'preserve')}`;
+    const numerator = exactMultiply(delta, previous > 0 ? '100' : '-100');
+    const denominator = previous > 0 ? quote.prevClose : exactSubtract('0', quote.prevClose);
+    changePercentText = `${exactCompare(numerator, '0') >= 0 ? '+' : ''}${formatRatio(numerator, denominator, 2, 'preserve')}%`;
   }
 
   return {
-    nameText,
+    nameText: quote.name ?? '-',
     codeText: symbol,
     priceText,
     changeAmountText,
@@ -50,52 +43,46 @@ export function formatQuoteDisplay(
 }
 
 /**
- * 格式化距离回收价的显示文本
- * @param warrantDistanceInfo 牛熊证距离信息，为 null 时返回 null
- * @param decimals 小数位数，默认使用 DEFAULT_PERCENT_DECIMALS
- * @returns 格式化后的距离文本，距离无效时返回"距回收价=未知"，warrantDistanceInfo 为 null 时返回 null
+ * 距回收价由原始比例一次展示舍入；旧formatter路径维持unsigned负零，与原生价格字段不同。
+ * @param info 距回收价的原始分子/正分母；两者同时null表达未知
+ * @param decimals 字段既定展示小数位
+ * @returns 距离文本；无风险信息时返回null，内部损坏不伪装未知
  */
 export function formatWarrantDistanceDisplay(
-  warrantDistanceInfo: WarrantDistanceInfo | null,
+  info: WarrantDistanceInfo | null,
   decimals: number = DEFAULT_PERCENT_DECIMALS,
 ): string | null {
-  if (!warrantDistanceInfo) {
-    return null;
-  }
+  if (info === null) return null;
 
-  const distance = warrantDistanceInfo.distanceToStrikePercent;
-  if (distance === null) {
-    return '距回收价=未知';
-  }
+  const { distanceNumerator, distanceDenominator } = info;
+  if (distanceNumerator === null && distanceDenominator === null) return '距回收价=未知';
 
-  const sign = decimalGte(distance, 0) ? '+' : '';
-  return `距回收价=${sign}${formatDecimal(distance, decimals)}%`;
+  if (distanceNumerator === null || distanceDenominator === null)
+    throw new TypeError('Warrant distance basis must be jointly known or unknown');
+
+  const numerator = exactMultiply(distanceNumerator, '100');
+  return `距回收价=${exactCompare(numerator, '0') >= 0 ? '+' : ''}${formatRatio(numerator, distanceDenominator, decimals, 'unsigned')}%`;
 }
 
 /**
- * 格式化浮亏指标展示文本（持仓市值、持仓盈亏、订单数量）。
- * @param metrics 浮亏实时指标，null 时以 "-" 展示市值与持仓盈亏
- * @param orderCount 未平仓买入订单数量（笔数），null 时展示 "-"
- * @param decimals 金额小数位数，默认 2
- * @returns 统一格式文本
+ * R1/N1派生金额一次展示舍入；价格/盈亏字段保留严格负数舍入为零的负号。
+ * @param metrics 精确派生持仓指标或未获取值
+ * @param orderCount 非负安全整数订单数或未获取值
+ * @param decimals 字段既定展示小数位
+ * @returns 既有标签及顺序的展示文本；内部损坏直接失败
  */
 export function formatPositionDisplay(
   metrics: UnrealizedLossMetrics | null,
   orderCount: number | null,
   decimals: number = 2,
 ): string {
-  const marketValueText =
-    metrics && Number.isFinite(metrics.r2) ? metrics.r2.toFixed(decimals) : '-';
-  let pnlText: string;
-  if (metrics && Number.isFinite(metrics.unrealizedPnL)) {
-    const sign = metrics.unrealizedPnL >= 0 ? '+' : '';
-    pnlText = `${sign}${metrics.unrealizedPnL.toFixed(decimals)}`;
-  } else {
-    pnlText = '-';
-  }
+  if (orderCount !== null && (!Number.isSafeInteger(orderCount) || orderCount < 0))
+    throw new RangeError('Display order count must be a nonnegative safe integer');
 
-  const orderCountText =
-    orderCount !== null && Number.isFinite(orderCount) ? String(orderCount) : '-';
+  if (metrics === null) return `持仓市值=- 持仓盈亏=- 订单数量=${orderCount ?? '-'}`;
 
-  return `持仓市值=${marketValueText} 持仓盈亏=${pnlText} 订单数量=${orderCountText}`;
+  const market = formatDecimal(metrics.r2, decimals, 'preserve');
+  const sign = exactCompare(metrics.unrealizedPnL, '0') >= 0 ? '+' : '';
+  const pnl = `${sign}${formatDecimal(metrics.unrealizedPnL, decimals, 'preserve')}`;
+  return `持仓市值=${market} 持仓盈亏=${pnl} 订单数量=${orderCount ?? '-'}`;
 }

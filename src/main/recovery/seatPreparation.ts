@@ -19,7 +19,7 @@ import {
   resolveNextSearchFailureState,
   resolveSeatOnStartup,
 } from '../../services/autoSymbolManager/utils.js';
-import { getLatestTradedSymbol } from '../../core/orderRecorder/index.js';
+import { getLatestTradedSymbol } from '../../domain/order/orderOwnership.js';
 import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../constants/index.js';
 import { getHKDateKey } from '../../utils/time/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
@@ -45,17 +45,20 @@ export async function prepareSeatsForRuntime(deps: PrepareSeatsForRuntimeDeps): 
     warrantListCacheConfig,
   } = deps;
   const monitorConfig = tradingConfig.monitor;
+  const latestTradeFacts = orders.map(({ stockName, symbol, executionStatus, updatedAt }) =>
+    Object.freeze({ stockName, symbol, executionStatus, updatedAt }),
+  );
   const resolvedLongSymbol = resolveSeatOnStartup({
     autoSearchEnabled: monitorConfig.autoSearchConfig.autoSearchEnabled,
     candidateSymbol:
-      getLatestTradedSymbol(orders, monitorConfig.orderOwnershipMapping, 'LONG') ?? null,
+      getLatestTradedSymbol(latestTradeFacts, monitorConfig.orderOwnershipMapping, 'LONG') ?? null,
     configuredSymbol: monitorConfig.longSymbol,
     positions,
   });
   const resolvedShortSymbol = resolveSeatOnStartup({
     autoSearchEnabled: monitorConfig.autoSearchConfig.autoSearchEnabled,
     candidateSymbol:
-      getLatestTradedSymbol(orders, monitorConfig.orderOwnershipMapping, 'SHORT') ?? null,
+      getLatestTradedSymbol(latestTradeFacts, monitorConfig.orderOwnershipMapping, 'SHORT') ?? null,
     configuredSymbol: monitorConfig.shortSymbol,
     positions,
   });

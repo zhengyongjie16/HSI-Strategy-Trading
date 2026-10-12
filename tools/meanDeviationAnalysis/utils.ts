@@ -1,9 +1,8 @@
-import { NaiveDate } from 'longbridge';
+import { NaiveDate, type Candlestick } from 'longbridge';
 
 import { formatFiniteNumber } from '../utils.js';
-import { decimalToNumber } from '../../src/utils/helpers/index.js';
+import { canonicalDecimal } from '../../src/utils/numeric/exact.js';
 import { toHongKongTimeLog } from '../../src/utils/time/index.js';
-import type { DecimalLike } from '../../src/utils/helpers/types.js';
 import type {
   AnalysisOptions,
   ComputeDailyDeviationMetricsParams,
@@ -84,12 +83,13 @@ export function toNaiveDate(tradeDate: string): NaiveDate {
  * @returns 内部计算所需的最小字段
  */
 export function normalizeMinuteCandle(candle: {
-  readonly close: DecimalLike;
+  readonly close: Candlestick['close'];
   readonly volume: number;
   readonly timestamp: Date;
 }): MinuteDeviationCandle {
   return {
-    close: decimalToNumber(candle.close),
+    // 本工具只计算近似number VWAP偏离指标；原SDK值先保真文本验证，不进入交易经济账。
+    close: Number(canonicalDecimal(candle.close.toString())),
     volume: candle.volume,
     timestamp: candle.timestamp,
   };

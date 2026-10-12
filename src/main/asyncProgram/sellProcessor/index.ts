@@ -54,6 +54,7 @@ import type { SellProcessorDeps, SellRetryState } from './types.js';
 import type { Task, SellTaskType } from '../tradeTaskQueue/types.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import type { ExecutableSellSignal } from '../../../types/signal.js';
+import type { SettlementReadinessReceipt } from '../../../types/settlement.js';
 
 /**
  * 复制卖出信号，用于 quote retry 的 delayed re-enqueue。
@@ -96,7 +97,7 @@ function buildSellRetryKey(params: { readonly signal: ExecutableSellSignal }): s
  * 创建卖出处理器。
  * 消费 SellTaskQueue 中的卖出任务，经成交后一致性 freshness 等待后计算卖出数量并执行；独立于买入处理器，保证卖出优先、不被风险检查阻塞。
  *
- * @param deps 依赖注入（任务队列、唯一 monitorContext、signalProcessor、trader、getLastState、postTradeConsistencyRuntime、可选 getCanProcessTask）
+ * @param deps 任务队列、唯一 monitorContext、真实 H/S reader、行情、交易器与非金融日历状态
  * @returns 实现 Processor 接口的卖出处理器实例（start/stop/stopAndDrain/restart）
  */
 export function createSellProcessor(deps: SellProcessorDeps): Processor {
@@ -108,6 +109,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     signalProcessor,
     trader,
     marketDataClient,
+    snapshot,
     getLastState,
     postTradeConsistencyRuntime,
     getCanProcessTask,
@@ -118,7 +120,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
 
   /** 重试与异步返回共同检查 owner、终态及适用交易授权。 */
   function canContinue(): boolean {
-    return lifecycleActive && !termination.isTerminated() && (getCanProcessTask?.() ?? true);
+    return lifecycleActive && !termination.isTerminated() && getCanProcessTask();
   }
 
   function clearRetryState(retryKey: string): void {
@@ -145,182 +147,245 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
   async function processTask(task: Task<SellTaskType>): Promise<void> {
     const signal = task.data;
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
+    const retryKey = buildSellRetryKey({ signal });
+    const originDayEpoch = retryStates.get(retryKey)?.dayEpoch ?? snapshot.getView().token.dayEpoch;
+    const canContinueOrigin = (): boolean =>
+      canContinue() &&
+      snapshot.getView().token.dayEpoch === originDayEpoch &&
+      validateSignalSeat({ signal, symbolRegistry: monitorContext.symbolRegistry }).valid;
     try {
-      try {
-        await postTradeConsistencyRuntime.waitForFresh();
-      } catch (err) {
-        if (isRefreshGateAbortError(err, 'STOP_AND_DRAIN')) {
-          return;
+      // 持仓/readiness supersession 只由本 SELL owner 重选，不排 timer、不消耗 quote retry。
+      while (canContinueOrigin()) {
+        let receipt: SettlementReadinessReceipt;
+        try {
+          receipt = await postTradeConsistencyRuntime.waitForFresh();
+        } catch (err) {
+          if (isRefreshGateAbortError(err, 'STOP_AND_DRAIN')) {
+            return;
+          }
+
+          throw err;
         }
 
-        throw err;
-      }
+        if (!canContinueOrigin()) return;
 
-      if (!canContinue()) return;
+        const isReceiptCurrent = (): boolean =>
+          canContinueOrigin() &&
+          receipt.snapshotToken.dayEpoch === originDayEpoch &&
+          postTradeConsistencyRuntime.isCurrent(receipt);
+        if (!isReceiptCurrent()) continue;
 
-      const ctx = monitorContext;
-      const { config, orderRecorder, symbolRegistry } = ctx;
-      const lastState = getLastState();
-      const seatValidation = validateSignalSeat({
-        signal,
-        symbolRegistry,
-      });
-      if (!seatValidation.valid) {
-        logger.debug(
-          `[SellProcessor] ${describeSignalSeatValidationFailure(seatValidation)}，跳过信号: ${symbolDisplay} ${signal.action}`,
-        );
-        return;
-      }
-
-      // 获取持仓数据（从 positionCache 获取）
-      const longSeatState = symbolRegistry.getSeatState('LONG');
-      const shortSeatState = symbolRegistry.getSeatState('SHORT');
-      const longPosition = isSeatActive(longSeatState)
-        ? lastState.positionCache.get(longSeatState.symbol)
-        : null;
-      const shortPosition = isSeatActive(shortSeatState)
-        ? lastState.positionCache.get(shortSeatState.symbol)
-        : null;
-      const quoteSymbols: string[] = [];
-      if (isSeatActive(longSeatState)) {
-        quoteSymbols.push(longSeatState.symbol);
-      }
-
-      if (isSeatActive(shortSeatState)) {
-        quoteSymbols.push(shortSeatState.symbol);
-      }
-
-      const executionQuotes = await marketDataClient.getQuotes(quoteSymbols);
-      if (!canContinue() || !validateSignalSeat({ signal, symbolRegistry }).valid) return;
-
-      const longQuote = isSeatActive(longSeatState)
-        ? (executionQuotes.get(longSeatState.symbol) ?? null)
-        : null;
-      const shortQuote = isSeatActive(shortSeatState)
-        ? (executionQuotes.get(shortSeatState.symbol) ?? null)
-        : null;
-      const retryKey = buildSellRetryKey({ signal });
-      const retryState = retryStates.get(retryKey);
-      const targetQuote = signal.action === 'SELLCALL' ? longQuote : shortQuote;
-      const quoteReadiness = resolveQuoteReadinessForRequirement({
-        quote: targetQuote,
-        requirement: 'PRICE',
-      });
-      if (quoteReadiness !== 'READY') {
-        if (!canContinue()) {
-          return;
-        }
-
-        if (quoteReadiness !== 'MISSING') {
-          clearRetryState(retryKey);
-          logger.warn(
-            `[SellProcessor] 卖出行情无效，放弃当前执行: ${symbolDisplay} ${signal.action} readiness=${quoteReadiness}`,
+        const ctx = monitorContext;
+        const { config, orderRecorder, symbolRegistry } = ctx;
+        const lastState = getLastState();
+        const seatValidation = validateSignalSeat({
+          signal,
+          symbolRegistry,
+        });
+        if (!seatValidation.valid) {
+          logger.debug(
+            `[SellProcessor] ${describeSignalSeatValidationFailure(seatValidation)}，跳过信号: ${symbolDisplay} ${signal.action}`,
           );
           return;
         }
 
-        if (retryState?.retrySignal === null || !retryState) {
-          const nextRetry = resolveNextQuoteRetry({
-            attempts: retryState?.attempts ?? 0,
-            nowMs: clock.now().getTime(),
-            intervalMs: ORDER_QUOTE_RETRY.INTERVAL_MS,
-            maxAttempts: ORDER_QUOTE_RETRY.MAX_ATTEMPTS,
-          });
-          if (nextRetry.exhausted) {
-            clearRetryState(retryKey);
-            logger.warn(
-              `[SellProcessor] 卖出行情重试耗尽，放弃执行: ${symbolDisplay} ${signal.action}`,
+        const longSeatState = symbolRegistry.getSeatState('LONG');
+        const shortSeatState = symbolRegistry.getSeatState('SHORT');
+        const capturedSeats = (['LONG', 'SHORT'] as const).map((direction) => ({
+          direction,
+          symbol: symbolRegistry.getSeatState(direction).symbol,
+          status: symbolRegistry.getSeatState(direction).status,
+          seatVersion: symbolRegistry.getSeatVersion(direction),
+        }));
+        const selectedView = snapshot.getView();
+        const isSelectionCurrent = (): boolean =>
+          isReceiptCurrent() &&
+          snapshot.isCurrent(selectedView.token, { account: false, positions: true }) &&
+          capturedSeats.every(({ direction, symbol, status, seatVersion }) => {
+            const currentSeat = symbolRegistry.getSeatState(direction);
+            return (
+              currentSeat.symbol === symbol &&
+              currentSeat.status === status &&
+              symbolRegistry.getSeatVersion(direction) === seatVersion
             );
-          } else {
-            const retrySignal = cloneSellSignal(signal);
-            const nextRetryState: SellRetryState = {
-              handle: null,
-              retrySignal,
-              attempts: nextRetry.nextAttempts,
-            };
-            const retryHandle = scheduler.scheduleTimer(() => {
-              try {
-                const pendingRetryState = retryStates.get(retryKey);
-                if (pendingRetryState !== nextRetryState || !pendingRetryState.retrySignal) {
-                  return;
-                }
+          });
+        const resolvePosition = (symbol: string) =>
+          snapshot.getAvailablePosition(symbol) ??
+          selectedView.positions.find(
+            (position) => position.symbol === symbol && position.quantity > 0,
+          ) ??
+          null;
+        // 可卖量为 0 时仍保留真实总持仓；不能把 occupied-but-unavailable 解释成 flat。
+        const longPosition = isSeatActive(longSeatState)
+          ? resolvePosition(longSeatState.symbol)
+          : null;
+        const shortPosition = isSeatActive(shortSeatState)
+          ? resolvePosition(shortSeatState.symbol)
+          : null;
+        if (!isSelectionCurrent()) continue;
 
-                if (
-                  !canContinue() ||
-                  (!isLiquidationSignal(pendingRetryState.retrySignal) &&
-                    isStaleCrossDaySignal(pendingRetryState.retrySignal, clock.now())) ||
-                  !validateSignalSeat({ signal: pendingRetryState.retrySignal, symbolRegistry })
-                    .valid
-                ) {
-                  clearRetryState(retryKey);
-                  return;
-                }
-
-                const queuedRetrySignal = pendingRetryState.retrySignal;
-                pendingRetryState.retrySignal = null;
-                const admitted = taskQueue.push({
-                  type: task.type,
-                  data: queuedRetrySignal,
-                });
-                if (!admitted && !termination.isTerminated()) {
-                  termination.reportFatalError(new Error('[SellProcessor] 非终态队列拒绝重试任务'));
-                }
-              } catch (error) {
-                termination.reportFatalError(error);
-              }
-            }, ORDER_QUOTE_RETRY.INTERVAL_MS);
-            nextRetryState.handle = retryHandle;
-            retryStates.set(retryKey, nextRetryState);
-          }
+        const quoteSymbols: string[] = [];
+        if (isSeatActive(longSeatState)) {
+          quoteSymbols.push(longSeatState.symbol);
         }
 
+        if (isSeatActive(shortSeatState)) {
+          quoteSymbols.push(shortSeatState.symbol);
+        }
+
+        const executionQuotes = await marketDataClient.getQuotes(quoteSymbols);
+        if (!canContinueOrigin()) return;
+
+        if (!isSelectionCurrent()) continue;
+
+        const longQuote = isSeatActive(longSeatState)
+          ? (executionQuotes.get(longSeatState.symbol) ?? null)
+          : null;
+        const shortQuote = isSeatActive(shortSeatState)
+          ? (executionQuotes.get(shortSeatState.symbol) ?? null)
+          : null;
+        const retryState = retryStates.get(retryKey);
+        const targetQuote = signal.action === 'SELLCALL' ? longQuote : shortQuote;
+        const quoteReadiness = resolveQuoteReadinessForRequirement({
+          quote: targetQuote,
+          requirement: 'PRICE',
+        });
+        if (quoteReadiness !== 'READY') {
+          if (!canContinue()) {
+            return;
+          }
+
+          if (quoteReadiness !== 'MISSING') {
+            clearRetryState(retryKey);
+            logger.warn(
+              `[SellProcessor] 卖出行情无效，放弃当前执行: ${symbolDisplay} ${signal.action} readiness=${quoteReadiness}`,
+            );
+            return;
+          }
+
+          if (retryState?.retrySignal === null || !retryState) {
+            const nextRetry = resolveNextQuoteRetry({
+              attempts: retryState?.attempts ?? 0,
+              nowMs: clock.now().getTime(),
+              intervalMs: ORDER_QUOTE_RETRY.INTERVAL_MS,
+              maxAttempts: ORDER_QUOTE_RETRY.MAX_ATTEMPTS,
+            });
+            if (nextRetry.exhausted) {
+              clearRetryState(retryKey);
+              logger.warn(
+                `[SellProcessor] 卖出行情重试耗尽，放弃执行: ${symbolDisplay} ${signal.action}`,
+              );
+            } else {
+              const retrySignal = cloneSellSignal(signal);
+              const nextRetryState: SellRetryState = {
+                handle: null,
+                retrySignal,
+                attempts: nextRetry.nextAttempts,
+                dayEpoch: originDayEpoch,
+              };
+              const retryHandle = scheduler.scheduleTimer(() => {
+                try {
+                  const pendingRetryState = retryStates.get(retryKey);
+                  if (pendingRetryState !== nextRetryState || !pendingRetryState.retrySignal) {
+                    return;
+                  }
+
+                  if (
+                    !canContinue() ||
+                    snapshot.getView().token.dayEpoch !== pendingRetryState.dayEpoch ||
+                    (!isLiquidationSignal(pendingRetryState.retrySignal) &&
+                      isStaleCrossDaySignal(pendingRetryState.retrySignal, clock.now())) ||
+                    !validateSignalSeat({ signal: pendingRetryState.retrySignal, symbolRegistry })
+                      .valid
+                  ) {
+                    clearRetryState(retryKey);
+                    return;
+                  }
+
+                  const queuedRetrySignal = pendingRetryState.retrySignal;
+                  pendingRetryState.retrySignal = null;
+                  const admitted = taskQueue.push({
+                    type: task.type,
+                    data: queuedRetrySignal,
+                  });
+                  if (!admitted && !termination.isTerminated()) {
+                    termination.reportFatalError(
+                      new Error('[SellProcessor] 非终态队列拒绝重试任务'),
+                    );
+                  }
+                } catch (error) {
+                  termination.reportFatalError(error);
+                }
+              }, ORDER_QUOTE_RETRY.INTERVAL_MS);
+              nextRetryState.handle = retryHandle;
+              retryStates.set(retryKey, nextRetryState);
+            }
+          }
+
+          return;
+        }
+
+        clearRetryState(retryKey);
+
+        // 卖出只进入卖量计算与卖出执行链路，不经过买入风控。
+        const processedSignals = signalProcessor.processSellSignals({
+          signals: [signal],
+          longPosition,
+          shortPosition,
+          longQuote,
+          shortQuote,
+          orderRecorder,
+          smartCloseEnabled: config.smartCloseEnabled,
+          smartCloseTimeoutMinutes: config.smartCloseTimeoutMinutes,
+          nowMs: clock.now().getTime(),
+          isHalfDay: lastState.isHalfDay ?? false,
+          tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
+        });
+
+        if (!canContinueOrigin()) return;
+
+        if (!isSelectionCurrent()) continue;
+
+        // 如果信号被转为 HOLD，跳过执行
+        const firstSignal = processedSignals[0];
+        if (!firstSignal || firstSignal.action === 'HOLD') {
+          logger.debug(`[SellProcessor] 卖出信号被跳过: ${symbolDisplay} ${signal.action}`);
+          return; // 处理成功（虽然跳过了）
+        }
+
+        const executionSeatValidation = validateSignalSeat({
+          signal: firstSignal,
+          symbolRegistry,
+        });
+        if (!executionSeatValidation.valid) {
+          logger.debug(
+            `[SellProcessor] ${describeSignalSeatValidationFailure(executionSeatValidation)}，执行前复核失败，跳过信号: ${symbolDisplay} ${signal.action}`,
+          );
+          return;
+        }
+
+        if (!isSelectionCurrent()) continue;
+
+        const executionResult = await executeSignalsWithLifecycleGate({
+          callerAuthorization: isSelectionCurrent,
+          trader,
+          signal: firstSignal,
+          symbolDisplay,
+          loggerPrefix: 'SellProcessor',
+          successMessage: '卖出订单执行完成',
+        });
+        // 无 accepted ID 且原选择失效时由本 owner 重选，不能把最终量/quote 阶段的 stale 当成功消费。
+        if (
+          executionResult.executedOrderIds.length === 0 &&
+          canContinueOrigin() &&
+          !isSelectionCurrent()
+        ) {
+          continue;
+        }
+
+        // 已完成远端执行的 id/ACK 不因随后的 receipt 失效而否认或重新提交；终态资源仍由 O owner 收口。
         return;
       }
-
-      clearRetryState(retryKey);
-
-      // 卖出只进入卖量计算与卖出执行链路，不经过买入风控。
-      const processedSignals = signalProcessor.processSellSignals({
-        signals: [signal],
-        longPosition,
-        shortPosition,
-        longQuote,
-        shortQuote,
-        orderRecorder,
-        smartCloseEnabled: config.smartCloseEnabled,
-        smartCloseTimeoutMinutes: config.smartCloseTimeoutMinutes,
-        nowMs: clock.now().getTime(),
-        isHalfDay: lastState.isHalfDay ?? false,
-        tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
-      });
-
-      // 如果信号被转为 HOLD，跳过执行
-      const firstSignal = processedSignals[0];
-      if (!firstSignal || firstSignal.action === 'HOLD') {
-        logger.debug(`[SellProcessor] 卖出信号被跳过: ${symbolDisplay} ${signal.action}`);
-        return; // 处理成功（虽然跳过了）
-      }
-
-      const executionSeatValidation = validateSignalSeat({
-        signal: firstSignal,
-        symbolRegistry,
-      });
-      if (!executionSeatValidation.valid) {
-        logger.debug(
-          `[SellProcessor] ${describeSignalSeatValidationFailure(executionSeatValidation)}，执行前复核失败，跳过信号: ${symbolDisplay} ${signal.action}`,
-        );
-        return;
-      }
-
-      await executeSignalsWithLifecycleGate({
-        getCanProcessTask,
-        trader,
-        signal: firstSignal,
-        symbolDisplay,
-        loggerPrefix: 'SellProcessor',
-        successMessage: '卖出订单执行完成',
-      });
-      return;
     } catch (err) {
       if (!isExternalApiRequestError(err)) {
         throw err;
@@ -338,7 +403,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
     loggerPrefix: 'SellProcessor',
     taskQueue,
     processTask,
-    ...(getCanProcessTask ? { getCanProcessTask } : {}),
+    getCanProcessTask,
     termination,
   });
 

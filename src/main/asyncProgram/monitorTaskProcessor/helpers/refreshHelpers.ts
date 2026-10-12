@@ -1,68 +1,46 @@
 /**
  * 席位刷新事实获取助手
  *
- * 功能：
- * - 获取席位刷新所需的最新订单、账户与持仓事实
- * - 统一刷新账户与持仓缓存
+ * 获取每个 activation 使用的订单事实，并向唯一账户持仓 owner 登记受控成对读取。
+ * 不写 LastState 缓存；请求 receipt 与席位身份的最终授权由 activation owner 验证。
  */
-import type { LastState } from '../../../../types/state.js';
-import type { RawOrderFromAPI, Trader } from '../../../../types/services.js';
-import type { QuoteSubscriptionRuntime } from '../../../quoteSubscriptionRuntime/types.js';
-import type { RefreshHelpers } from '../types.js';
+import type {
+  AccountPositionSnapshot,
+  SnapshotRefreshHandle,
+} from '../../../../types/accountPosition.js';
+import type { OrderRecorder, RawOrderFromAPI } from '../../../../types/services.js';
 
 /**
- * 创建刷新助手，用于为每个席位刷新任务获取同一任务时段内的最新事实。
- *
- * @param deps 包含 trader、lastState
- * @returns RefreshHelpers，含 ensureAllOrders、refreshAccountCaches
+ * 创建刷新助手，每个任务独立读取订单，canonical 请求保留调用者 captured dayEpoch。
+ * @param deps trader 与唯一 snapshot owner
+ * @returns 订单读取与成对 snapshot 请求能力，不发布风险或 ACTIVE
  */
 export function createRefreshHelpers({
   trader,
-  lastState,
-  quoteSubscriptionRuntime,
-  canContinue,
+  snapshot,
 }: {
-  readonly canContinue: () => boolean;
-  readonly trader: Trader;
-  readonly lastState: LastState;
-  readonly quoteSubscriptionRuntime?: Pick<
-    QuoteSubscriptionRuntime,
-    'reconcilePositionHoldFromCurrentTruth'
-  >;
-}): RefreshHelpers {
-  /**
-   * 获取当前席位刷新使用的全量订单事实。
-   * 队列消费期间仍可动态入队并发生独立交易，不能跨任务复用订单快照。
-   *
-   * @returns 当前时点的全量订单列表
-   */
+  readonly trader: Readonly<{
+    orderRecorder: Pick<OrderRecorder, 'fetchAllOrdersFromAPI'>;
+  }>;
+  readonly snapshot: Pick<AccountPositionSnapshot, 'requestRefresh'>;
+}): Readonly<{
+  ensureAllOrders: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
+  requestAccountPositionRefresh: (dayEpoch: number) => SnapshotRefreshHandle;
+}> {
+  /** 当前 activation 的独立订单读取；不跨任务复用。 */
   async function ensureAllOrders(): Promise<ReadonlyArray<RawOrderFromAPI>> {
     return trader.orderRecorder.fetchAllOrdersFromAPI();
   }
 
-  /**
-   * 获取当前席位刷新使用的账户与持仓事实并更新运行态缓存。
-   * 队列消费期间仍可动态入队并发生独立交易，不能跨任务复用账户或持仓快照。
-   *
-   * @returns Promise，无返回值；副作用为更新 lastState.cachedAccount、cachedPositions、positionCache
-   */
-  async function refreshAccountCaches(): Promise<void> {
-    if (!canContinue()) return;
-
-    const accountSnapshot = await trader.getAccountSnapshot();
-    if (!canContinue()) return;
-
-    const positionsSnapshot = await trader.getStockPositions();
-    if (!canContinue()) return;
-
-    lastState.cachedAccount = accountSnapshot;
-    lastState.cachedPositions = [...positionsSnapshot];
-    lastState.positionCache.update(positionsSnapshot);
-    await quoteSubscriptionRuntime?.reconcilePositionHoldFromCurrentTruth();
+  /** 使用原 captured epoch 请求 canonical 成对事实；不重取新 epoch 洗白旧任务。 */
+  function requestAccountPositionRefresh(dayEpoch: number): SnapshotRefreshHandle {
+    return snapshot.requestRefresh({
+      source: 'SEAT_ACTIVATION',
+      dayEpoch,
+      refreshAccount: true,
+      refreshPositions: true,
+    });
   }
 
-  return {
-    ensureAllOrders,
-    refreshAccountCaches,
-  };
+  return { ensureAllOrders, requestAccountPositionRefresh };
 }

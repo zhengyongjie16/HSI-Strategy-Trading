@@ -5,13 +5,11 @@
  * 都不会越过订单副作用边界。
  */
 import { describe, expect, it, setSystemTime } from 'bun:test';
-import { OrderSide, OrderType, type TradeContext } from 'longbridge';
+import { createTradeMutationAdapter } from '../../../../src/infrastructure/longbridge/trade/tradeMutationAdapter.js';
+import { createSellPositionReadAdapter } from '../../../../src/infrastructure/longbridge/trade/sellPositionReadAdapter.js';
 import { TRADING } from '../../../../src/constants/index.js';
 import { createOrderExecutor as createOrderExecutorCore } from '../../../../src/core/trader/orderExecutor/index.js';
-import type {
-  OrderExecutorDeps,
-  TrackOrderParams,
-} from '../../../../src/core/trader/types.js';
+import type { OrderExecutorDeps, TrackOrderParams } from '../../../../src/core/trader/types.js';
 import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
 import type {
   DoomsdayClearanceExecutionResult,
@@ -34,7 +32,6 @@ import {
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
 
 type OrderExecutorTestDeps = Omit<OrderExecutorDeps, 'unrealizedLossBuyGate'> &
@@ -73,7 +70,7 @@ function createRateLimiterDouble(
 /** 构造只服务于最终执行报价读取的行情替身。 */
 function createFinalQuoteMarketDataClient() {
   return createMarketDataClientDouble({
-    getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 5)]]),
+    getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '5')]]),
   });
 }
 
@@ -108,7 +105,8 @@ function createDoomsdayAuthorizationHarness(params: {
   );
 
   const orderExecutor = createOrderExecutor({
-    ctx: createTradeContextDouble(tradeContext),
+    tradeMutationPort: createTradeMutationAdapter(tradeContext),
+    readSellPositions: createSellPositionReadAdapter(tradeContext),
     rateLimiter: createRateLimiterDouble(
       () => {},
       () => {
@@ -125,7 +123,7 @@ function createDoomsdayAuthorizationHarness(params: {
           currentTime = params.timeAfterFinalQuote;
         }
 
-        return new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 5, 100)]));
+        return new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '5', 100)]));
       },
     }),
     cacheManager: {
@@ -192,10 +190,10 @@ describe('orderExecutor protective-liquidation contract', () => {
 
     let executionError: unknown = null;
     try {
-      await harness.orderExecutor.executeDoomsdayClearanceSignals([
-        legalCommand,
-        corruptedBuyCommand,
-      ]);
+      await harness.orderExecutor.executeDoomsdayClearanceSignals(
+        [legalCommand, corruptedBuyCommand],
+        () => true,
+      );
     } catch (error) {
       executionError = error;
     }
@@ -222,11 +220,14 @@ describe('orderExecutor protective-liquidation contract', () => {
   it('rejects a cross-day doomsday command before quote, position, broker, or tracking work', async () => {
     const currentTime = new Date('2026-07-10T07:56:00.000Z');
     const harness = createDoomsdayAuthorizationHarness({ initialTime: currentTime });
-    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals([
-      createDoomsdayAuthorizationCommand({
-        triggerTime: new Date('2026-07-09T07:56:00.000Z'),
-      }),
-    ]);
+    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals(
+      [
+        createDoomsdayAuthorizationCommand({
+          triggerTime: new Date('2026-07-09T07:56:00.000Z'),
+        }),
+      ],
+      () => true,
+    );
 
     expect(result).toEqual({
       executedOrderIds: [],
@@ -254,11 +255,14 @@ describe('orderExecutor protective-liquidation contract', () => {
   it('rejects an invalid-time doomsday command before quote, position, broker, or tracking work', async () => {
     const currentTime = new Date('2026-07-10T07:56:00.000Z');
     const harness = createDoomsdayAuthorizationHarness({ initialTime: currentTime });
-    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals([
-      createDoomsdayAuthorizationCommand({
-        triggerTime: new Date(Number.NaN),
-      }),
-    ]);
+    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals(
+      [
+        createDoomsdayAuthorizationCommand({
+          triggerTime: new Date(Number.NaN),
+        }),
+      ],
+      () => true,
+    );
 
     expect(result).toEqual({
       executedOrderIds: [],
@@ -289,9 +293,10 @@ describe('orderExecutor protective-liquidation contract', () => {
       initialTime: currentTime,
       timeAfterFinalQuote: new Date('2026-07-11T07:56:00.000Z'),
     });
-    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals([
-      createDoomsdayAuthorizationCommand({ triggerTime: currentTime }),
-    ]);
+    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals(
+      [createDoomsdayAuthorizationCommand({ triggerTime: currentTime })],
+      () => true,
+    );
 
     expect(result).toEqual({
       executedOrderIds: [],
@@ -315,12 +320,15 @@ describe('orderExecutor protective-liquidation contract', () => {
   it('continues a valid same-day doomsday command while rejecting only the stale command in the batch', async () => {
     const currentTime = new Date('2026-07-10T07:56:00.000Z');
     const harness = createDoomsdayAuthorizationHarness({ initialTime: currentTime });
-    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals([
-      createDoomsdayAuthorizationCommand({ triggerTime: currentTime }),
-      createDoomsdayAuthorizationCommand({
-        triggerTime: new Date('2026-07-09T07:56:00.000Z'),
-      }),
-    ]);
+    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals(
+      [
+        createDoomsdayAuthorizationCommand({ triggerTime: currentTime }),
+        createDoomsdayAuthorizationCommand({
+          triggerTime: new Date('2026-07-09T07:56:00.000Z'),
+        }),
+      ],
+      () => true,
+    );
 
     expect(result.executedOrderIds).toHaveLength(1);
     expect({
@@ -343,7 +351,8 @@ describe('orderExecutor protective-liquidation contract', () => {
     let trackedOrderCount = 0;
     let localRecordCount = 0;
     const orderExecutorDeps = {
-      ctx: tradeContext as unknown as TradeContext,
+      tradeMutationPort: createTradeMutationAdapter(tradeContext),
+      readSellPositions: createSellPositionReadAdapter(tradeContext),
       rateLimiter: createRateLimiterDouble(() => {
         rateLimiterCalls += 1;
       }),
@@ -358,11 +367,9 @@ describe('orderExecutor protective-liquidation contract', () => {
         },
       }),
       orderRecorder: createOrderRecorderDouble({
-        recordLocalBuy: () => {
+        commitExecutionFact: (...args) => {
           localRecordCount += 1;
-        },
-        recordLocalSell: () => {
-          localRecordCount += 1;
+          return createOrderRecorderDouble().commitExecutionFact(...args);
         },
         submitSellOrder: () => {
           localRecordCount += 1;
@@ -391,7 +398,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let executionError: unknown = null;
     setSystemTime(executionTime);
     try {
-      await createOrderExecutor(orderExecutorDeps).executeSignals([illegalSignal]);
+      await createOrderExecutor(orderExecutorDeps).executeSignals([illegalSignal], () => true);
     } catch (error) {
       executionError = error;
     } finally {
@@ -425,7 +432,8 @@ describe('orderExecutor protective-liquidation contract', () => {
     let cacheClearCalls = 0;
     let trackedOrderCount = 0;
     const orderExecutorDeps = {
-      ctx: tradeContext as unknown as TradeContext,
+      tradeMutationPort: createTradeMutationAdapter(tradeContext),
+      readSellPositions: createSellPositionReadAdapter(tradeContext),
       rateLimiter: createRateLimiterDouble(() => {
         rateLimiterCalls += 1;
       }),
@@ -467,7 +475,7 @@ describe('orderExecutor protective-liquidation contract', () => {
 
     let executionError: unknown = null;
     try {
-      await createOrderExecutor(orderExecutorDeps).executeSignals([illegalSignal]);
+      await createOrderExecutor(orderExecutorDeps).executeSignals([illegalSignal], () => true);
     } catch (error) {
       executionError = error;
     }
@@ -511,7 +519,8 @@ describe('orderExecutor protective-liquidation contract', () => {
     let cacheClearCalls = 0;
     let trackedOrderCount = 0;
     const orderExecutorDeps = {
-      ctx: tradeContext as unknown as TradeContext,
+      tradeMutationPort: createTradeMutationAdapter(tradeContext),
+      readSellPositions: createSellPositionReadAdapter(tradeContext),
       rateLimiter: createRateLimiterDouble(() => {
         rateLimiterCalls += 1;
       }),
@@ -563,10 +572,10 @@ describe('orderExecutor protective-liquidation contract', () => {
 
     let executionError: unknown = null;
     try {
-      await createOrderExecutor(orderExecutorDeps).executeSignals([
-        legalProtectiveSell,
-        illegalProtectiveBuy,
-      ]);
+      await createOrderExecutor(orderExecutorDeps).executeSignals(
+        [legalProtectiveSell, illegalProtectiveBuy],
+        () => true,
+      );
     } catch (error) {
       executionError = error;
     }
@@ -606,7 +615,8 @@ describe('orderExecutor protective-liquidation contract', () => {
       }),
     );
     const orderExecutorDeps = {
-      ctx: tradeContext as unknown as TradeContext,
+      tradeMutationPort: createTradeMutationAdapter(tradeContext),
+      readSellPositions: createSellPositionReadAdapter(tradeContext),
       rateLimiter: createRateLimiterDouble(() => {}),
       marketDataClient: createFinalQuoteMarketDataClient(),
       cacheManager: {
@@ -654,9 +664,10 @@ describe('orderExecutor protective-liquidation contract', () => {
     let result: DoomsdayClearanceExecutionResult | null = null;
     let executionError: unknown = null;
     try {
-      result = await createOrderExecutor(orderExecutorDeps).executeDoomsdayClearanceSignals([
-        command,
-      ]);
+      result = await createOrderExecutor(orderExecutorDeps).executeDoomsdayClearanceSignals(
+        [command],
+        () => true,
+      );
     } catch (error) {
       executionError = error;
     } finally {
@@ -693,7 +704,8 @@ describe('orderExecutor protective-liquidation contract', () => {
     let rateLimiterCalls = 0;
     const trackedOrders: TrackOrderParams[] = [];
     const orderExecutorDeps = {
-      ctx: tradeContext as unknown as TradeContext,
+      tradeMutationPort: createTradeMutationAdapter(tradeContext),
+      readSellPositions: createSellPositionReadAdapter(tradeContext),
       rateLimiter: createRateLimiterDouble(() => {
         rateLimiterCalls += 1;
       }),
@@ -732,7 +744,10 @@ describe('orderExecutor protective-liquidation contract', () => {
     setSystemTime(executionTime);
     let result: ExecuteSignalsResult;
     try {
-      result = await createOrderExecutor(orderExecutorDeps).executeSignals([protectiveSell]);
+      result = await createOrderExecutor(orderExecutorDeps).executeSignals(
+        [protectiveSell],
+        () => true,
+      );
     } finally {
       setSystemTime();
     }
@@ -746,9 +761,9 @@ describe('orderExecutor protective-liquidation contract', () => {
     }
 
     expect(trackedOrder).toMatchObject({
-      side: OrderSide.Sell,
+      side: 'SELL',
       isProtectiveLiquidation: true,
-      orderType: OrderType.MO,
+      orderType: 'MO',
     });
     const [submitCall] = tradeContext.getCalls('submitOrder');
     const submittedOptions = submitCall?.args[0];

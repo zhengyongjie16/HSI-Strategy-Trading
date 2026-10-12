@@ -6,33 +6,40 @@
  * - 防止订单分析能力泄漏不必要的内部实现细节
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import * as orderRecorder from '../../../src/core/orderRecorder/index.js';
+import { getLatestTradedSymbol } from '../../../src/domain/order/orderOwnership.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 
 function createRawOrder(params: {
   readonly orderId: string;
   readonly symbol: string;
   readonly stockName: string;
-  readonly side: OrderSide;
+  readonly side: 'BUY' | 'SELL';
   readonly updatedAt: Date;
-  readonly executedPrice: number;
+  readonly executedPrice: string;
+  readonly executedAmount: string;
   readonly executedQuantity: number;
+  readonly executionTimeMs: number;
 }): RawOrderFromAPI {
   return {
     orderId: params.orderId,
     symbol: params.symbol,
     stockName: params.stockName,
-    side: params.side,
-    status: OrderStatus.Filled,
-    orderType: OrderType.LO,
-    price: String(params.executedPrice),
-    quantity: String(params.executedQuantity),
-    executedPrice: String(params.executedPrice),
-    executedQuantity: String(params.executedQuantity),
-    submittedAt: params.updatedAt,
-    updatedAt: params.updatedAt,
     remark: '',
+    executionSide: params.side,
+    executionStatus: 'FILLED',
+    executionPhase: 'TERMINAL',
+    status: 'FILLED',
+    orderType: 'LO',
+    quantity: params.executedQuantity,
+    executedQuantity: params.executedQuantity,
+    price: params.executedPrice,
+    executedPrice: params.executedPrice,
+    executedAmount: params.executedAmount,
+    submittedAt: params.updatedAt,
+    executionTimeMs: params.executionTimeMs,
+    updatedAtMs: params.updatedAt.getTime(),
+    updatedAt: params.updatedAt,
   };
 }
 
@@ -42,19 +49,23 @@ describe('orderRecorder public analysis boundary', () => {
       orderId: 'BUY-1',
       symbol: '70000.HK',
       stockName: 'HSI RC',
-      side: OrderSide.Buy,
+      side: 'BUY',
       updatedAt: new Date('2026-05-18T01:30:00.000Z'),
-      executedPrice: 1,
+      executedPrice: '1',
+      executedAmount: '100',
       executedQuantity: 100,
+      executionTimeMs: Date.parse('2026-05-18T01:30:00.000Z'),
     });
     const sellOrder = createRawOrder({
       orderId: 'SELL-1',
       symbol: '70000.HK',
       stockName: 'HSI RC',
-      side: OrderSide.Sell,
+      side: 'SELL',
       updatedAt: new Date('2026-05-18T02:30:00.000Z'),
-      executedPrice: 0.9,
+      executedPrice: '0.9',
+      executedAmount: '90',
       executedQuantity: 100,
+      executionTimeMs: Date.parse('2026-05-18T02:30:00.000Z'),
     });
 
     const deps = orderRecorder.createDailyLossOrderAnalysisDeps();
@@ -85,23 +96,25 @@ describe('orderRecorder public analysis boundary', () => {
     expect(orderRecorder).not.toHaveProperty('classifyAndConvertOrders');
   });
 
-  it('exposes ownership resolution and latest symbol lookup as separate public capabilities', () => {
+  it('keeps analysis ownership and parser latest-symbol lookup as separate capabilities', () => {
     const buyOrder = createRawOrder({
       orderId: 'BUY-2',
       symbol: '70000.HK',
       stockName: 'HSI RC',
-      side: OrderSide.Buy,
+      side: 'BUY',
       updatedAt: new Date('2026-05-18T03:30:00.000Z'),
-      executedPrice: 1,
+      executedPrice: '1',
+      executedAmount: '100',
       executedQuantity: 100,
+      executionTimeMs: Date.parse('2026-05-18T03:30:00.000Z'),
     });
 
     expect(
-      orderRecorder.resolveOrderOwnership(buyOrder, {
+      orderRecorder.createDailyLossOrderAnalysisDeps().resolveOrderOwnership(buyOrder, {
         monitorSymbol: 'HSI',
         orderOwnershipMapping: ['HSI'],
       }),
     ).toEqual({ monitorSymbol: 'HSI', direction: 'LONG' });
-    expect(orderRecorder.getLatestTradedSymbol([buyOrder], ['HSI'], 'LONG')).toBe('70000.HK');
+    expect(getLatestTradedSymbol([buyOrder], ['HSI'], 'LONG')).toBe('70000.HK');
   });
 });

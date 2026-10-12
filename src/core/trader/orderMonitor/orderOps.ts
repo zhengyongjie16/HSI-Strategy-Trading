@@ -6,11 +6,12 @@
  * - 封装撤单/改单 API 结果的统一语义
  * - 维护改单阻塞恢复与运行态重置
  */
-import { OrderSide } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
+import { canonicalDecimal } from '../../../utils/numeric/exact.js';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import {
   isExternalApiRequestError,
+  isProgramError,
   wrapExternalApiRequest,
 } from '../../../utils/apiFailure/index.js';
 import type { CancelOrderOutcome, OrderStateCheckResult } from '../../../types/trader.js';
@@ -19,7 +20,6 @@ import {
   ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS,
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
 } from '../../../constants/index.js';
-import { toDecimal } from '../utils.js';
 import type {
   CancelOrderMutationRequest,
   OrderActionAuthorizationStage,
@@ -47,7 +47,6 @@ import {
   isReplaceUnsupportedByTypeError,
   isRetryableOrderApiError,
   isWaitWsOnlyReplaceMode,
-  normalizePriceText,
   resolveInitialTrackedStatus,
 } from './utils.js';
 import { attachTrackedOrder } from './routingIndex.js';
@@ -165,9 +164,11 @@ function applyOpenStateCheckFact(
 
   const rawObservedFact = {
     status: queryResult.status,
+    executionPhase: queryResult.kind,
     executedQuantity: queryResult.executedQuantity,
     executedPrice: queryResult.executedPrice,
-    executedTimeMs: queryResult.updatedAtMs,
+    executedAmount: queryResult.executedAmount,
+    executedTimeMs: queryResult.executionTimeMs,
     updatedAtMs: queryResult.updatedAtMs,
   };
   const previousExecutedQuantity = trackedOrder.executedQuantity;
@@ -181,36 +182,35 @@ function applyOpenStateCheckFact(
       ? {
           factStage: 'OPEN' as const,
           orderId,
-          side: trackedOrder.side === OrderSide.Buy ? 'BUY' : 'SELL',
+          side: trackedOrder.side === 'BUY' ? 'BUY' : 'SELL',
           monitorSymbol: trackedOrder.monitorSymbol,
           symbol: trackedOrder.symbol,
           isLongSymbol: trackedOrder.isLongSymbol,
           isProtectiveLiquidation: trackedOrder.isProtectiveLiquidation,
           executedPrice: mergedFact.executedPrice,
+          executedAmount: mergedFact.executedAmount,
           executedQuantity: mergedFact.executedQuantity,
           executedTimeMs: mergedFact.executedTimeMs,
           orderUpdatedAtMs: mergedFact.updatedAtMs,
         }
       : null;
-  const isProtectiveSell =
-    trackedOrder.side === OrderSide.Sell && trackedOrder.isProtectiveLiquidation;
+  const isProtectiveSell = trackedOrder.side === 'SELL' && trackedOrder.isProtectiveLiquidation;
   if (cumulativeExecutionParams !== null && isProtectiveSell) {
     deps.recordCumulativeExecution(cumulativeExecutionParams);
   }
 
   trackedOrder.status = mergedFact.status;
+  trackedOrder.executionPhase = mergedFact.executionPhase;
   trackedOrder.executedQuantity = mergedFact.executedQuantity;
   trackedOrder.executedPrice = mergedFact.executedPrice;
+  trackedOrder.executedAmount = mergedFact.executedAmount;
   trackedOrder.lastExecutedTimeMs = mergedFact.executedTimeMs;
   trackedOrder.lastOrderUpdateAtMs = mergedFact.updatedAtMs;
   if (mergedFact.executedQuantity <= 0) {
     return;
   }
 
-  if (
-    trackedOrder.side === OrderSide.Sell &&
-    mergedFact.executedQuantity > previousExecutedQuantity
-  ) {
+  if (trackedOrder.side === 'SELL' && mergedFact.executedQuantity > previousExecutedQuantity) {
     deps.orderRecorder.markSellPartialFilled(orderId, mergedFact.executedQuantity);
   }
 
@@ -267,16 +267,16 @@ function isOrderMutationAuthorized(
  * 与 permit.invoke 的不可分割边界。
  *
  * @param permit 当前交易 mutation permit
- * @param ctx 交易 SDK 上下文
+ * @param tradeMutationPort 同一 broker 的中性 mutation 能力
  * @param orderId 待撤销的订单 ID
  * @returns broker 撤单完成后的 Promise
  */
 async function invokeCancelOrderWithPermit(
   permit: TradeMutationPermit,
-  ctx: OrderOpsDeps['ctx'],
+  tradeMutationPort: OrderOpsDeps['tradeMutationPort'],
   orderId: string,
 ): Promise<void> {
-  await permit.invoke(() => ctx.cancelOrder(orderId));
+  await permit.invoke(() => tradeMutationPort.cancelOrder(orderId));
 }
 
 /** 清理单个订单的改单阻塞与查询缓存，进入“可重试”稳态。 */
@@ -345,7 +345,6 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
   const {
     runtime,
     monitorConfig,
-    ctx,
     rateLimiter,
     cacheManager,
     orderHoldRegistry,
@@ -364,6 +363,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       orderId,
       symbol,
       side,
+      executionSide,
       price,
       initialSubmittedPrice,
       quantity,
@@ -380,6 +380,15 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       );
     }
 
+    if (
+      params.initialExecutionPhase !== undefined &&
+      !['OPEN', 'TERMINAL'].includes(params.initialExecutionPhase)
+    )
+      throw new TypeError('[订单监控] invalid initial execution phase');
+
+    if (!['BUY', 'SELL'].includes(executionSide))
+      throw new TypeError('[订单监控] trackOrder 缺少已验证执行方向');
+
     const now = deps.now().getTime();
     const submittedAt =
       typeof submittedAtMs === 'number' && isValidPositiveNumber(submittedAtMs)
@@ -390,6 +399,8 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       orderId,
       symbol,
       side,
+      executionSide,
+      executionPhase: params.initialExecutionPhase ?? null,
       isLongSymbol,
       monitorSymbol,
       isProtectiveLiquidation,
@@ -399,6 +410,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       submittedQuantity: quantity,
       executedQuantity: 0,
       executedPrice: null,
+      executedAmount: '0',
       lastExecutedTimeMs: null,
       lastOrderUpdateAtMs: null,
       status: resolveInitialTrackedStatus(initialStatus),
@@ -426,7 +438,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
 
     logger.debug(
       `[订单监控] 开始追踪订单 ${orderId}，` +
-        `标的=${symbol}，方向=${side === OrderSide.Buy ? '买入' : '卖出'}，` +
+        `标的=${symbol}，方向=${side === 'BUY' ? '买入' : '卖出'}，` +
         `${isLongSymbol ? '做多' : '做空'}标的`,
     );
   }
@@ -444,6 +456,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     request: CancelOrderMutationRequest,
     beforeBrokerCancel?: CancelOrderBeforeBrokerMutation,
   ): Promise<CancelOrderPreflightOutcome> {
+    const isWorkCurrent = deps.captureWorkGuard();
     const pendingTerminalState = peekQueriedTerminalState(runtime, orderId);
     if (pendingTerminalState !== null) {
       return {
@@ -462,6 +475,8 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         operation: 'TradeContext.cancelOrder',
         request: () =>
           rateLimiter.withTradeMutation(async (permit) => {
+            if (!isWorkCurrent()) return { kind: 'AUTHORIZATION_REVOKED' } as const;
+
             if (
               request.kind !== 'DOOMSDAY_WINDOW' &&
               !isOrderMutationAuthorized(request, 'cancelOrder.beforeApi', deps.termination)
@@ -477,7 +492,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
               return { kind: 'CANCEL_NOT_STARTED' } as const;
             }
 
-            await invokeCancelOrderWithPermit(permit, ctx, orderId);
+            await invokeCancelOrderWithPermit(permit, deps.tradeMutationPort, orderId);
             return { kind: 'BROKER_CONFIRMED' } as const;
           }),
         shouldRetry: isRetryableOrderApiError,
@@ -500,7 +515,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         relatedBuyOrderIds: null,
       };
     } catch (error) {
-      if (isExternalApiRequestError(error)) {
+      if (isExternalApiRequestError(error) || isProgramError(error)) {
         throw error;
       }
 
@@ -519,7 +534,11 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         };
       }
 
-      const queryResult = await orderStatusQuery.checkOrderState(orderId);
+      if (!isWorkCurrent()) return { kind: 'UNKNOWN_FAILURE', errorCode: null };
+
+      const queryResult = await orderStatusQuery.checkOrderState(orderId, isWorkCurrent);
+      if (!isWorkCurrent()) return { kind: 'UNKNOWN_FAILURE', errorCode: null };
+
       const currentTrackedOrder = runtime.trackedOrders.get(orderId);
       const stateCheckTrackedOrder =
         currentTrackedOrder === undefined
@@ -545,6 +564,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     orderId: string,
     trackedOrder: OrderMonitorTrackedOrder,
     now: number,
+    isWorkCurrent: () => boolean,
   ): Promise<void> {
     const retryIndex = trackedOrder.replaceTempBlockedCount;
     assertReplaceTempBlockedRetryIndex(retryIndex);
@@ -574,7 +594,11 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       replaceBlockedUntilAt: trackedOrder.replaceBlockedUntilAt,
       lastPriceUpdateAt: trackedOrder.lastPriceUpdateAt,
     };
-    const queryResult = await orderStatusQuery.checkOrderState(orderId);
+    if (!isWorkCurrent()) return;
+
+    const queryResult = await orderStatusQuery.checkOrderState(orderId, isWorkCurrent);
+    if (!isWorkCurrent()) return;
+
     const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
     if (attachedTrackedOrder === null) {
       logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，丢弃过期 602013 恢复结果`);
@@ -624,11 +648,13 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
    */
   async function replaceOrderPriceWithRunner(
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     request: OrderMutationRequest,
     quantity: number | null,
     runWithPermit: ReplacePermitRunner,
+    deferConfirmation: boolean,
   ): Promise<ReplaceOrderPriceOutcome> {
+    const isWorkCurrent = deps.captureWorkGuard();
     if (peekLatestReplaceTerminal(runtime, orderId) !== null) {
       logger.debug(`[订单修改] 订单 ${orderId} 存在未确认终态，拒绝再次改单`);
       return { kind: 'NOT_EXECUTED' };
@@ -668,41 +694,69 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     const executionFactAtPlan = {
       executedQuantity: trackedOrder.executedQuantity,
       executedPrice: trackedOrder.executedPrice,
+      executedAmount: trackedOrder.executedAmount,
       lastExecutedTimeMs: trackedOrder.lastExecutedTimeMs,
       lastOrderUpdateAtMs: trackedOrder.lastOrderUpdateAtMs,
     };
 
-    const normalizedNewPriceText = normalizePriceText(newPrice);
-    const normalizedNewPriceDecimal = toDecimal(normalizedNewPriceText);
-    const normalizedNewPriceNumber = Number(normalizedNewPriceText);
+    const normalizedNewPriceText = canonicalDecimal(newPrice);
     const replacePayload = {
       orderId,
-      price: normalizedNewPriceDecimal,
-      quantity: toDecimal(targetQuantity),
+      price: normalizedNewPriceText,
+      quantity: targetQuantity,
+    };
+    const phase = { remoteIssued: false };
+    const finalAuthorizationAborted = new Error('[订单修改] 原调用授权在SDK序列化后失效');
+    const markRemoteIssued = (): void => {
+      if (
+        !isWorkCurrent() ||
+        resolveAttachedTrackedOrder(runtime, orderId, trackedOrder) === null ||
+        !isOrderMutationAuthorized(request, 'replaceOrder.beforeApi', deps.termination)
+      ) {
+        throw finalAuthorizationAborted;
+      }
+
+      phase.remoteIssued = true;
+    };
+
+    const performMutation = async (permit: TradeMutationPermit) => {
+      const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
+      if (attachedTrackedOrder === null) {
+        return { kind: 'EXECUTION_FACT_CHANGED' } as const;
+      }
+
+      if (
+        attachedTrackedOrder.executedQuantity !== executionFactAtPlan.executedQuantity ||
+        attachedTrackedOrder.executedPrice !== executionFactAtPlan.executedPrice ||
+        attachedTrackedOrder.executedAmount !== executionFactAtPlan.executedAmount ||
+        attachedTrackedOrder.lastExecutedTimeMs !== executionFactAtPlan.lastExecutedTimeMs ||
+        attachedTrackedOrder.lastOrderUpdateAtMs !== executionFactAtPlan.lastOrderUpdateAtMs
+      ) {
+        return { kind: 'EXECUTION_FACT_CHANGED' } as const;
+      }
+
+      if (
+        !isWorkCurrent() ||
+        !isOrderMutationAuthorized(request, 'replaceOrder.beforeApi', deps.termination)
+      ) {
+        return { kind: 'AUTHORIZATION_REVOKED' } as const;
+      }
+
+      await permit.invoke(() =>
+        deps.tradeMutationPort.replaceOrder(replacePayload, markRemoteIssued),
+      );
+      return { kind: 'BROKER_CONFIRMED' } as const;
     };
 
     try {
-      const mutationOutcome = await runWithPermit(async (permit) => {
-        const attachedTrackedOrder = resolveAttachedTrackedOrder(runtime, orderId, trackedOrder);
-        if (attachedTrackedOrder === null) {
-          return { kind: 'EXECUTION_FACT_CHANGED' } as const;
-        }
-
-        if (
-          attachedTrackedOrder.executedQuantity !== executionFactAtPlan.executedQuantity ||
-          attachedTrackedOrder.executedPrice !== executionFactAtPlan.executedPrice ||
-          attachedTrackedOrder.lastExecutedTimeMs !== executionFactAtPlan.lastExecutedTimeMs ||
-          attachedTrackedOrder.lastOrderUpdateAtMs !== executionFactAtPlan.lastOrderUpdateAtMs
-        ) {
-          return { kind: 'EXECUTION_FACT_CHANGED' } as const;
-        }
-
-        if (!isOrderMutationAuthorized(request, 'replaceOrder.beforeApi', deps.termination)) {
-          return { kind: 'AUTHORIZATION_REVOKED' } as const;
-        }
-
-        await permit.invoke(() => ctx.replaceOrder(replacePayload));
-        return { kind: 'BROKER_CONFIRMED' } as const;
+      const mutationOutcome = await wrapExternalApiRequest({
+        operation: 'TradeContext.replaceOrder',
+        request: () => {
+          phase.remoteIssued = false;
+          return runWithPermit(performMutation);
+        },
+        shouldRetry: (error) => phase.remoteIssued && isRetryableOrderApiError(error),
+        ...(deferConfirmation ? { retryConfig: { retries: 0, delayMs: 0 } } : {}),
       });
       if (mutationOutcome.kind !== 'BROKER_CONFIRMED') {
         return { kind: 'NOT_EXECUTED' };
@@ -717,7 +771,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
         return { kind: 'BROKER_CONFIRMED' };
       }
 
-      attachedTrackedOrder.submittedPrice = normalizedNewPriceNumber;
+      attachedTrackedOrder.submittedPrice = normalizedNewPriceText;
       attachedTrackedOrder.submittedQuantity =
         attachedTrackedOrder.executedQuantity + targetQuantity;
       attachedTrackedOrder.lastPriceUpdateAt = now;
@@ -725,7 +779,9 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       logger.debug(`[订单修改成功] 订单ID=${orderId} 新价格=${normalizedNewPriceText}`);
       return { kind: 'BROKER_CONFIRMED' };
     } catch (error) {
-      if (isExternalApiRequestError(error)) {
+      if (error === finalAuthorizationAborted) return { kind: 'NOT_EXECUTED' };
+
+      if (!phase.remoteIssued || isExternalApiRequestError(error) || isProgramError(error)) {
         throw error;
       }
 
@@ -748,8 +804,20 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       }
 
       if (isReplaceTempBlockedError(error)) {
-        await handleReplaceTempBlockedByStatus(orderId, attachedTrackedOrder, now);
-        return { kind: 'NOT_EXECUTED' };
+        const confirmAfterPermitReleased = async (): Promise<ReplaceOrderPriceOutcome> => {
+          if (
+            !isWorkCurrent() ||
+            !isOrderMutationAuthorized(request, 'replaceOrder.beforeApi', deps.termination)
+          ) {
+            return { kind: 'NOT_EXECUTED' };
+          }
+
+          await handleReplaceTempBlockedByStatus(orderId, attachedTrackedOrder, now, isWorkCurrent);
+          return { kind: 'NOT_EXECUTED' };
+        };
+        return deferConfirmation
+          ? { kind: 'POST_FAILURE_CONFIRMATION_REQUIRED', confirmAfterPermitReleased }
+          : confirmAfterPermitReleased();
       }
 
       if (isRetryableOrderApiError(error)) {
@@ -761,39 +829,52 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       }
 
       if (isOrderClosedBusinessError(error)) {
-        const queryResult = await orderStatusQuery.checkOrderState(orderId);
-        const latestAttachedTrackedOrder = resolveAttachedTrackedOrder(
-          runtime,
-          orderId,
-          trackedOrder,
-        );
-        if (latestAttachedTrackedOrder === null) {
-          logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，丢弃过期改单终态查询结果`);
+        const confirmAfterPermitReleased = async (): Promise<ReplaceOrderPriceOutcome> => {
+          if (!isOrderMutationAuthorized(request, 'replaceOrder.beforeApi', deps.termination)) {
+            return { kind: 'NOT_EXECUTED' };
+          }
+
+          if (!isWorkCurrent()) return { kind: 'NOT_EXECUTED' };
+
+          const queryResult = await orderStatusQuery.checkOrderState(orderId, isWorkCurrent);
+          if (!isWorkCurrent()) return { kind: 'NOT_EXECUTED' };
+
+          const latestAttachedTrackedOrder = resolveAttachedTrackedOrder(
+            runtime,
+            orderId,
+            trackedOrder,
+          );
+          if (latestAttachedTrackedOrder === null) {
+            logger.debug(`[订单修改] 订单 ${orderId} 已脱离追踪，丢弃过期改单终态查询结果`);
+            return { kind: 'NOT_EXECUTED' };
+          }
+
+          if (queryResult.kind !== 'QUERY_FAILED') {
+            assertStateCheckRawExecutionFactsReady(latestAttachedTrackedOrder, queryResult);
+          }
+
+          if (queryResult.kind === 'OPEN') {
+            applyOpenStateCheckFact(deps, orderId, queryResult);
+          }
+
+          latestAttachedTrackedOrder.lastPriceUpdateAt = now;
+          if (queryResult.kind === 'TERMINAL') {
+            clearReplaceState(latestAttachedTrackedOrder);
+            runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
+            setReplaceTerminal(runtime, orderId, queryResult);
+            logger.warn(`[订单修改] 订单 ${orderId} 业务失败后确认已终态，停止改单流程`);
+            return { kind: 'NOT_EXECUTED' };
+          }
+
+          if (queryResult.kind === 'OPEN') {
+            return { kind: 'NOT_EXECUTED' };
+          }
+
           return { kind: 'NOT_EXECUTED' };
-        }
-
-        if (queryResult.kind !== 'QUERY_FAILED') {
-          assertStateCheckRawExecutionFactsReady(latestAttachedTrackedOrder, queryResult);
-        }
-
-        if (queryResult.kind === 'OPEN') {
-          applyOpenStateCheckFact(deps, orderId, queryResult);
-        }
-
-        latestAttachedTrackedOrder.lastPriceUpdateAt = now;
-        if (queryResult.kind === 'TERMINAL') {
-          clearReplaceState(latestAttachedTrackedOrder);
-          runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
-          setReplaceTerminal(runtime, orderId, queryResult);
-          logger.warn(`[订单修改] 订单 ${orderId} 业务失败后确认已终态，停止改单流程`);
-          return { kind: 'NOT_EXECUTED' };
-        }
-
-        if (queryResult.kind === 'OPEN') {
-          return { kind: 'NOT_EXECUTED' };
-        }
-
-        return { kind: 'NOT_EXECUTED' };
+        };
+        return deferConfirmation
+          ? { kind: 'POST_FAILURE_CONFIRMATION_REQUIRED', confirmAfterPermitReleased }
+          : confirmAfterPermitReleased();
       }
 
       attachedTrackedOrder.lastPriceUpdateAt = now;
@@ -805,16 +886,17 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
   /** 由 OrderMonitor 自主 owner 发起的改单：每次 SDK retry 都重新取得一个 mutation permit。 */
   async function replaceOrderPrice(
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     request: OrderMutationRequest,
     quantity: number | null = null,
   ): Promise<ReplaceOrderPriceOutcome> {
-    return replaceOrderPriceWithRunner(orderId, newPrice, request, quantity, async (mutation) =>
-      wrapExternalApiRequest({
-        operation: 'TradeContext.replaceOrder',
-        request: () => rateLimiter.withTradeMutation(mutation),
-        shouldRetry: isRetryableOrderApiError,
-      }),
+    return replaceOrderPriceWithRunner(
+      orderId,
+      newPrice,
+      request,
+      quantity,
+      (mutation) => rateLimiter.withTradeMutation(mutation),
+      false,
     );
   }
 
@@ -824,27 +906,18 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
    */
   async function replaceOrderPriceWithPermit(
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     request: OrderMutationRequest,
     permit: TradeMutationPermit,
     quantity: number | null = null,
   ): Promise<ReplaceOrderPriceOutcome> {
-    const singleAttemptPermit: TradeMutationPermit = {
-      invoke: <T>(operation: () => Promise<T>): Promise<T> =>
-        permit.invoke(() =>
-          wrapExternalApiRequest({
-            operation: 'TradeContext.replaceOrder',
-            request: operation,
-            retryConfig: {
-              retries: 0,
-              delayMs: 0,
-            },
-          }),
-        ),
-    };
-
-    return replaceOrderPriceWithRunner(orderId, newPrice, request, quantity, async (mutation) =>
-      mutation(singleAttemptPermit),
+    return replaceOrderPriceWithRunner(
+      orderId,
+      newPrice,
+      request,
+      quantity,
+      (mutation) => mutation(permit),
+      true,
     );
   }
 

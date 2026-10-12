@@ -1,3 +1,6 @@
+import { createSnapshotFixture } from '../../fixtures/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../fixtures/settlementRuntime.js';
+
 /**
  * monitorRecovery 集成测试
  *
@@ -14,6 +17,7 @@ import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monit
 import type { PeriodicSwitchWakeupRuntime } from '../../../../src/main/periodicSwitchWakeupRuntime/types.js';
 import {
   createAutoSymbolManagerDouble,
+  createAccountSnapshotDouble,
   createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
@@ -22,7 +26,7 @@ import {
   createTerminationDouble,
   createTraderDouble,
 } from '../../../helpers/testDoubles.js';
-import { createLastState, createMonitorContext, waitUntil } from '../utils.js';
+import { createMonitorContext, waitUntil } from '../utils.js';
 
 const READY_MS = Date.parse('2026-02-16T01:30:00.000Z');
 
@@ -30,40 +34,42 @@ const READY_MS = Date.parse('2026-02-16T01:30:00.000Z');
  * 构造带真实周期换标 runtime 的午休恢复集成装置。
  * 观察 wrapper 只记录经过 processor 的 mark/replan 调用，行为仍委托真实 runtime。
  */
-function createLunchBreakHarness(): Readonly<{
-  readonly monitorTaskQueue: ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>;
-  readonly processor: ReturnType<typeof createMonitorTaskProcessor>;
-  readonly periodicRuntime: PeriodicSwitchWakeupRuntime;
-  readonly runtimeRecords: Array<string>;
-  readonly evaluationCalls: Array<number>;
-  readonly fatalErrors: Array<unknown>;
-  readonly symbolRegistry: ReturnType<typeof createSymbolRegistryDouble>;
-  readonly setCanTradeNow: (value: boolean) => void;
-  readonly setPeriodicPending: (value: boolean) => void;
-  readonly emitFreshReached: () => void;
-  readonly emitGateOpened: () => void;
-}> {
+async function createLunchBreakHarness(): Promise<
+  Readonly<{
+    readonly monitorTaskQueue: ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>;
+    readonly processor: ReturnType<typeof createMonitorTaskProcessor>;
+    readonly periodicRuntime: PeriodicSwitchWakeupRuntime;
+    readonly runtimeRecords: Array<string>;
+    readonly evaluationCalls: Array<number>;
+    readonly fatalErrors: Array<unknown>;
+    readonly symbolRegistry: ReturnType<typeof createSymbolRegistryDouble>;
+    readonly setCanTradeNow: (value: boolean) => void;
+    readonly setPeriodicPending: (value: boolean) => void;
+    readonly emitFreshReached: () => Promise<void>;
+    readonly stopSettlement: () => Promise<void>;
+    readonly emitGateOpened: () => void;
+  }>
+> {
   let nowMs = READY_MS + 120_000;
   let canTradeNow = true;
   let periodicPending = true;
   const evaluationCalls: Array<number> = [];
   const runtimeRecords: Array<string> = [];
   const fatalErrors: Array<unknown> = [];
-  const freshReachedListeners = new Set<() => void>();
 
   const monitorConfig = createMonitorConfigDouble({
     monitorSymbol: 'HSI.HK',
     autoSearchConfig: {
       autoSearchEnabled: true,
-      autoSearchMinDistancePctBull: 0.35,
-      autoSearchMinDistancePctBear: -0.35,
-      autoSearchMinTurnoverPerMinuteBull: 100_000,
-      autoSearchMinTurnoverPerMinuteBear: 100_000,
+      autoSearchMinDistancePctBull: '0.35',
+      autoSearchMinDistancePctBear: '-0.35',
+      autoSearchMinTurnoverPerMinuteBull: '100000',
+      autoSearchMinTurnoverPerMinuteBear: '100000',
       autoSearchExpiryMinMonths: 3,
       autoSearchOpenDelayMinutes: 0,
       switchIntervalMinutes: 1,
-      switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-      switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+      switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+      switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
     },
   });
   const symbolRegistry = createSymbolRegistryDouble({
@@ -104,20 +110,45 @@ function createLunchBreakHarness(): Readonly<{
   const tradingGateEventRuntime = createTradingGateEventRuntime({ logger: createLoggerDouble() });
   const trader = createTraderDouble();
 
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [],
+  });
+  const termination = createTerminationDouble({
+    reportFatalError: (error) => {
+      fatalErrors.push(error);
+    },
+  });
+  const settlement = createSettlementRuntimeFixture({
+    snapshot,
+    monitorContext,
+    termination,
+    getTrader: () => trader,
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
+        throw new Error('Unexpected stale commit');
+    },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
+  settlement.start();
+  expect(await settlement.completeRebuildBaseline()).toBeTrue();
+  const originalReceipt = await settlement.waitForFresh();
+  expect(originalReceipt.snapshotToken).toBe(snapshot.getView().token);
+
   const realPeriodicRuntime = createPeriodicSwitchWakeupRuntime({
-    termination: createTerminationDouble(),
+    termination,
+    snapshot,
+    getCanTradeNow: () => canTradeNow,
     monitorContext,
     symbolRegistry,
     monitorTaskQueue,
     trader,
-    postTradeConsistencyRuntime: {
-      onFreshReached: (listener) => {
-        freshReachedListeners.add(listener);
-        return () => {
-          freshReachedListeners.delete(listener);
-        };
-      },
-    },
+    postTradeConsistencyRuntime: settlement,
     tradingGateEventRuntime,
     calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
       startMs + switchIntervalMinutes * 60_000,
@@ -154,13 +185,9 @@ function createLunchBreakHarness(): Readonly<{
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
     switchWakeupRuntime: { handoffPendingSwitch: () => {} },
     periodicSwitchWakeupRuntime: periodicRuntime,
-    lastState: createLastState(),
     getCanTradeNow: () => canTradeNow,
-    termination: createTerminationDouble({
-      reportFatalError: (error) => {
-        fatalErrors.push(error);
-      },
-    }),
+    termination,
+    snapshot,
   });
 
   return {
@@ -177,9 +204,11 @@ function createLunchBreakHarness(): Readonly<{
     setPeriodicPending: (value) => {
       periodicPending = value;
     },
-    emitFreshReached: () => {
-      for (const listener of freshReachedListeners) listener();
+    emitFreshReached: async () => {
+      settlement.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
+      await settlement.waitForFresh();
     },
+    stopSettlement: settlement.stopAndDrain,
     emitGateOpened: () => {
       nowMs += 120_000;
       tradingGateEventRuntime.emitGateStateChanged({
@@ -192,7 +221,7 @@ function createLunchBreakHarness(): Readonly<{
 
 describe('monitor recovery integration', () => {
   it('午休 blocked 结果解除 waiting-empty 占用后，门禁恢复能重新推进周期换标', async () => {
-    const harness = createLunchBreakHarness();
+    const harness = await createLunchBreakHarness();
     harness.processor.start();
     harness.periodicRuntime.start();
 
@@ -205,9 +234,12 @@ describe('monitor recovery integration', () => {
       });
 
       // 2) 午休：门禁关闭；pending 已解除，订单变化重派发 waiting-empty route。
-      harness.setCanTradeNow(false);
+      await harness.processor.stopAndDrain();
       harness.setPeriodicPending(false);
-      harness.emitFreshReached();
+      await harness.emitFreshReached();
+      await waitUntil(() => !harness.monitorTaskQueue.isEmpty());
+      harness.setCanTradeNow(false);
+      harness.processor.start();
       await waitUntil(() => harness.runtimeRecords.includes('replan:blocked'));
 
       // blocked 结果已交回 runtime：waiting-empty 占用解除，但仍在午休不推进实际换标。
@@ -229,24 +261,28 @@ describe('monitor recovery integration', () => {
     } finally {
       await harness.processor.stopAndDrain();
       await harness.periodicRuntime.stopAndDrain();
+      await harness.stopSettlement();
     }
   });
 
   it('门禁关闭期间的 blocked 回写不绕过门禁执行实际换标检查', async () => {
-    const harness = createLunchBreakHarness();
+    const harness = await createLunchBreakHarness();
     harness.processor.start();
     harness.periodicRuntime.start();
 
     try {
       await waitUntil(() => harness.runtimeRecords.includes('mark'));
 
-      harness.setCanTradeNow(false);
+      await harness.processor.stopAndDrain();
       harness.setPeriodicPending(false);
-      harness.emitFreshReached();
+      await harness.emitFreshReached();
+      await waitUntil(() => !harness.monitorTaskQueue.isEmpty());
+      harness.setCanTradeNow(false);
+      harness.processor.start();
       await waitUntil(() => harness.runtimeRecords.includes('replan:blocked'));
 
       // 午休中再次触发订单变化：waiting-empty 已解除，不得派发新 tick 或执行策略评估。
-      harness.emitFreshReached();
+      await harness.emitFreshReached();
       await Bun.sleep(50);
 
       expect(harness.evaluationCalls).toHaveLength(1);
@@ -255,6 +291,7 @@ describe('monitor recovery integration', () => {
     } finally {
       await harness.processor.stopAndDrain();
       await harness.periodicRuntime.stopAndDrain();
+      await harness.stopSettlement();
     }
   });
 });

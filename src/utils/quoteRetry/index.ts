@@ -1,4 +1,10 @@
+/**
+ * 行情就绪分类与限次重试计算。
+ * 金融价格仅接受精确十进制文本；非正值保留业务分类，内部格式/类型错误直接拒绝。
+ * 仅证明动作所需字段的有效性，不发起查询、不改写 quote，也不签发交易授权。
+ */
 import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
+import { canonicalDecimal, exactCompare } from '../numeric/exact.js';
 import type {
   IsQuoteReadyForRequirementParams,
   QuoteReadinessStatus,
@@ -9,7 +15,7 @@ import type {
 /**
  * 解析 quote 是否满足指定动作的就绪要求。
  * @param params quote 与字段要求
- * @returns quote 就绪性分类
+ * @returns quote 就绪性分类；非法内部金融契约直接抛错，不降级为可重试报价
  */
 export function resolveQuoteReadinessForRequirement(
   params: IsQuoteReadyForRequirementParams,
@@ -19,7 +25,8 @@ export function resolveQuoteReadinessForRequirement(
     return 'MISSING';
   }
 
-  if (!Number.isFinite(quote.price) || quote.price <= 0) {
+  const price = canonicalDecimal(quote.price);
+  if (exactCompare(price, '0') <= 0) {
     return 'INVALID_PRICE';
   }
 
@@ -32,7 +39,7 @@ export function resolveQuoteReadinessForRequirement(
     return 'MISSING_LOT_SIZE';
   }
 
-  if (!Number.isFinite(lotSize) || lotSize <= 0) {
+  if (!Number.isSafeInteger(lotSize) || lotSize <= 0) {
     return 'INVALID_LOT_SIZE';
   }
 

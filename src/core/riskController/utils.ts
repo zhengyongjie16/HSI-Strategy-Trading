@@ -1,11 +1,5 @@
-import { OrderStatus } from 'longbridge';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
-import {
-  decimalAdd,
-  decimalMul,
-  decimalToNumberValue,
-  toDecimalValue,
-} from '../../utils/numeric/index.js';
+import { exactAdd, exactCompare } from '../../utils/numeric/exact.js';
 import type { MonitorConfig } from '../../types/config.js';
 import type { OrderOwnership } from '../../types/orderRecorder.js';
 import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
@@ -37,23 +31,27 @@ export function resolveHongKongDayKey(
 }
 
 /**
- * 汇总订单成本：各订单成交价 × 成交数量之和，用于当日亏损偏移计算。
- * 价格或数量无效的订单不计入。
+ * 汇总订单保真的累计成本金额，用于当日亏损偏移计算，不从展示均价反算。
+ * 成交数量不是正安全整数或成本金额无效时立即暴露内部契约错误。
  *
  * @param orders 订单记录列表
  * @returns 总成本金额（港币）
  */
-export function sumOrderCost(orders: ReadonlyArray<OrderRecord>): number {
-  let total = toDecimalValue(0);
+export function sumOrderCost(orders: ReadonlyArray<OrderRecord>): string {
+  let total = '0';
   for (const order of orders) {
-    const price = order.executedPrice;
-    const quantity = order.executedQuantity;
-    if (isValidPositiveNumber(price) && isValidPositiveNumber(quantity)) {
-      total = decimalAdd(total, decimalMul(price, quantity));
+    if (
+      !Number.isSafeInteger(order.executedQuantity) ||
+      order.executedQuantity <= 0 ||
+      exactCompare(order.costAmount, '0') <= 0
+    ) {
+      throw new TypeError('[risk] invalid order cost basis');
     }
+
+    total = exactAdd(total, order.costAmount);
   }
 
-  return decimalToNumberValue(total);
+  return total;
 }
 
 /**
@@ -96,15 +94,15 @@ export function collectOrderOwnershipDiagnostics({
   const unmatchedSamples: OrderOwnershipDiagnosticSample[] = [];
 
   for (const order of orders) {
-    if (order.status !== OrderStatus.Filled) {
+    if (order.executionStatus !== 'FILLED') {
       continue;
     }
 
-    if (!(order.updatedAt instanceof Date)) {
+    if (order.executionTimeMs === null) {
       continue;
     }
 
-    const orderDayKey = resolveHongKongDayKey(toHongKongTimeIso, order.updatedAt);
+    const orderDayKey = resolveHongKongDayKey(toHongKongTimeIso, new Date(order.executionTimeMs));
     if (!orderDayKey || orderDayKey !== dayKey) {
       continue;
     }

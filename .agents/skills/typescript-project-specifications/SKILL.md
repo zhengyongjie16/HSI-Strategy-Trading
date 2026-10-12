@@ -36,8 +36,7 @@ export interface UserRepository {
 
 /** 显式表达成功数据或预期内错误，供调用方按 success 分支处理。 */
 export type Result<T, E = Error> =
-  | { readonly success: true; readonly data: T }
-  | { readonly success: false; readonly error: E };
+  { readonly success: true; readonly data: T } | { readonly success: false; readonly error: E };
 
 /** 经构造边界校验的用户标识，避免与其他字符串标识混用。 */
 export type UserId = string & { readonly brand: unique symbol };

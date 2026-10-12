@@ -5,6 +5,7 @@
  * 失效外部结果不得推进席位或写入失败事实，内部错误仍必须暴露。
  */
 import { describe, expect, it } from 'bun:test';
+import { findBestWarrant } from '../../../src/services/autoSymbolFinder/index.js';
 import { createAutoSearch } from '../../../src/services/autoSymbolManager/autoSearch.js';
 import { createSeatStateManager } from '../../../src/services/autoSymbolManager/seatStateManager.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
@@ -18,8 +19,9 @@ import type {
 } from '../../../src/services/autoSymbolFinder/types.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
-import { createMonitorConfigDouble } from '../../helpers/testDoubles.js';
+import { createMonitorConfigDouble, createQuoteContextDouble } from '../../helpers/testDoubles.js';
 import {
+  captureSearchSeatAuthorization,
   createDirectionalAutoSearchPolicy,
   createFindBestWarrantInputDouble,
   createLoggerStub,
@@ -163,6 +165,115 @@ describe('autoSearch stale continuation business flow', () => {
     });
   });
 
+  it('consumes a captured day-epoch closure without reauthorizing the late candidate', async () => {
+    const currentTime = new Date('2026-04-10T01:00:00.000Z');
+    const result = createDeferred<WarrantCandidate | null>();
+    let dayEpoch = 1;
+    const capturedDayEpoch = dayEpoch;
+    const { autoSearch, symbolRegistry } = createAutoSearchHarness({
+      currentTime,
+      findBestWarrant: async () => result.promise,
+    });
+    const search = startLongSearch({
+      autoSearch,
+      currentTime,
+      canContinue: () => capturedDayEpoch === dayEpoch,
+    });
+    await Bun.sleep(0);
+    dayEpoch = 2;
+    result.resolve(createWarrantCandidate('OLD_DAY.HK'));
+    await search;
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'SEARCHING',
+      symbol: null,
+      callPrice: null,
+      searchFailCountToday: 0,
+    });
+  });
+
+  it('uses the real exact finder with a neutral object-request context, retaining threshold and candidate precision', async () => {
+    const currentTime = new Date('2026-04-10T01:00:00.000Z');
+    const symbols: string[] = [];
+    const input = createFindBestWarrantInputDouble();
+    const ctx = createQuoteContextDouble({
+      warrantList: async (request) => {
+        symbols.push(request.symbol);
+        const raw = {
+          name: null,
+          lastDone: null,
+          toCallPrice: '0.003500000000000000001',
+          callPrice: '21000.000000000000000001',
+          turnover: '1000000',
+          warrantType: null,
+          status: 'NORMAL' as const,
+        };
+        return [
+          { ...raw, symbol: 'MISSING_CALL.HK', callPrice: null },
+          { ...raw, symbol: 'EXACT_BULL.HK' },
+        ];
+      },
+    });
+    const { autoSearch, symbolRegistry } = createAutoSearchHarness({
+      currentTime,
+      findBestWarrant,
+      buildFindBestWarrantInput: async () => ({ ...input, ctx }),
+    });
+    const captured = symbolRegistry.getSeatVersion('LONG');
+    await startLongSearch({
+      autoSearch,
+      currentTime,
+      canContinue: () => symbolRegistry.getSeatVersion('LONG') === captured,
+    });
+    expect(symbols).toEqual(['HSI.HK']);
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'ACTIVATING',
+      symbol: 'EXACT_BULL.HK',
+      callPrice: '21000.000000000000000001',
+    });
+  });
+
+  it('does not disguise corrupt neutral financial input as an empty candidate result', async () => {
+    const currentTime = new Date('2026-04-10T01:00:00.000Z');
+    const input = createFindBestWarrantInputDouble();
+    const ctx = createQuoteContextDouble({
+      warrantList: async () => [
+        {
+          symbol: 'CORRUPT.HK',
+          name: null,
+          lastDone: null,
+          toCallPrice: '0.004',
+          callPrice: 'NaN',
+          turnover: '1000000',
+          warrantType: null,
+          status: 'NORMAL',
+        },
+      ],
+    });
+    const { autoSearch, symbolRegistry } = createAutoSearchHarness({
+      currentTime,
+      findBestWarrant,
+      buildFindBestWarrantInput: async () => ({ ...input, ctx }),
+    });
+    const captured = symbolRegistry.getSeatVersion('LONG');
+    let caught: unknown;
+    try {
+      await startLongSearch({
+        autoSearch,
+        currentTime,
+        canContinue: () => symbolRegistry.getSeatVersion('LONG') === captured,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
+      status: 'EMPTY',
+      symbol: null,
+      searchFailCountToday: 1,
+    });
+  });
+
   it('does not count a stale null finder result as a search failure', async () => {
     const currentTime = new Date('2026-04-10T01:00:00.000Z');
     const nullResult = createDeferred<WarrantCandidate | null>();
@@ -297,7 +408,8 @@ describe('autoSearch stale continuation business flow', () => {
 
     expect(inputBuilderStarted).toBe(true);
     canContinue = false;
-    inputResult.reject(new TypeError('input contract broken'));
+    const originalError = new TypeError('input contract broken');
+    inputResult.reject(originalError);
 
     let caught: unknown = null;
     try {
@@ -307,6 +419,7 @@ describe('autoSearch stale continuation business flow', () => {
     }
 
     expect(caught).toMatchObject({ message: 'input contract broken' });
+    expect(caught).toBe(originalError);
     expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
       symbol: null,
       status: 'SEARCHING',
@@ -329,7 +442,7 @@ describe('autoSearch stale continuation business flow', () => {
     const pendingSearch = startLongSearch({
       autoSearch,
       currentTime,
-      canContinue: () => true,
+      canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
     });
     await Bun.sleep(0);
 

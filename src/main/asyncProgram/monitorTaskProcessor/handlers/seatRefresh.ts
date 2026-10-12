@@ -17,20 +17,19 @@ import {
   isExternalApiRequestError,
 } from '../../../../utils/apiFailure/index.js';
 import { formatError } from '../../../../utils/error/index.js';
+import { exactCompare } from '../../../../utils/numeric/exact.js';
 import { isSeatVersionMatch } from '../../../../utils/seat/guards.js';
 
+import type { AccountPositionSnapshot } from '../../../../types/accountPosition.js';
 import type { MarketDataClient } from '../../../../types/services.js';
+import { resolveOrderOwnership } from '../../../../domain/order/orderOwnership.js';
 import type { MonitorContext } from '../../../../types/state.js';
 import type { SeatState } from '../../../../types/seat.js';
 import type { RuntimeClock } from '../../../../types/runtime.js';
 import type { QuoteSubscriptionRuntime } from '../../../quoteSubscriptionRuntime/types.js';
 import type { MonitorTask } from '../../monitorTaskQueue/types.js';
-import type {
-  MonitorTaskDataMap,
-  MonitorTaskStatus,
-  RefreshHelpers,
-  SeatRefreshTaskData,
-} from '../types.js';
+import type { createRefreshHelpers } from '../helpers/refreshHelpers.js';
+import type { MonitorTaskDataMap, MonitorTaskStatus, SeatRefreshTaskData } from '../types.js';
 
 function logSeatRefreshSkipped(params: {
   readonly context: MonitorContext;
@@ -235,6 +234,7 @@ export function createSeatRefreshHandler({
   clock,
   monitorContext,
   marketDataClient,
+  snapshot,
   quoteSubscriptionRuntime,
   canContinue,
 }: {
@@ -242,22 +242,33 @@ export function createSeatRefreshHandler({
   readonly clock: RuntimeClock;
   readonly monitorContext: MonitorContext;
   readonly marketDataClient: MarketDataClient;
+  readonly snapshot: Pick<AccountPositionSnapshot, 'getView' | 'isCurrent'>;
   readonly quoteSubscriptionRuntime: Pick<
     QuoteSubscriptionRuntime,
-    'retainSymbols' | 'waitForAdmission' | 'releaseRetain'
+    'retainSymbols' | 'waitForAdmission' | 'releaseRetain' | 'reconcilePositionHoldFromCurrentTruth'
   >;
 }): (
   task: MonitorTask<MonitorTaskDataMap, 'SEAT_REFRESH'>,
-  helpers: RefreshHelpers,
+  helpers: ReturnType<typeof createRefreshHelpers>,
 ) => Promise<MonitorTaskStatus> {
   return async function handleSeatRefresh(
     task: MonitorTask<MonitorTaskDataMap, 'SEAT_REFRESH'>,
-    helpers: RefreshHelpers,
+    helpers: ReturnType<typeof createRefreshHelpers>,
   ): Promise<MonitorTaskStatus> {
     if (!canContinue()) return 'skipped';
 
     const data: SeatRefreshTaskData = task.data;
     const context = monitorContext;
+    if (!Number.isSafeInteger(data.dayEpoch) || data.dayEpoch < 0) {
+      throw new TypeError('[SEAT_REFRESH] 入队 dayEpoch 必须是非负安全整数');
+    }
+
+    const activationDayEpoch = data.dayEpoch;
+    const canContinueActivation = (): boolean =>
+      canContinue() &&
+      snapshot.getView().token.dayEpoch === activationDayEpoch &&
+      resolveActivatingSeatSnapshot(context, data) !== null;
+    if (!canContinueActivation()) return 'skipped';
 
     const entrySeatState = resolveActivatingSeatSnapshot(context, data);
     if (!entrySeatState) {
@@ -271,11 +282,12 @@ export function createSeatRefreshHandler({
 
     const isLong = data.direction === 'LONG';
 
-    const callPriceValid =
-      data.callPrice !== null &&
-      data.callPrice !== undefined &&
-      Number.isFinite(data.callPrice) &&
-      data.callPrice > 0;
+    const callPrice = data.callPrice;
+    if (callPrice !== null && callPrice !== undefined && typeof callPrice !== 'string') {
+      throw new TypeError('[SEAT_REFRESH] callPrice 必须是金融文本');
+    }
+
+    const callPriceValid = typeof callPrice === 'string' && exactCompare(callPrice, '0') > 0;
 
     if (!callPriceValid) {
       const reason = '未提供有效回收价(callPrice)，无法刷新牛熊证信息';
@@ -305,137 +317,210 @@ export function createSeatRefreshHandler({
         symbols: quoteSymbols,
       });
 
-      if (!canContinue() || !resolveActivatingSeatSnapshot(context, data)) return 'skipped';
+      if (!canContinueActivation()) return 'skipped';
 
       await quoteSubscriptionRuntime.waitForAdmission(quoteSymbols);
-      if (!canContinue() || !resolveActivatingSeatSnapshot(context, data)) return 'skipped';
+      if (!canContinueActivation()) return 'skipped';
 
       const executionQuotes = await marketDataClient.getQuotes(quoteSymbols);
-      if (!canContinue() || !resolveActivatingSeatSnapshot(context, data)) return 'skipped';
+      if (!canContinueActivation()) return 'skipped';
 
       const nextExecutionQuote = executionQuotes.get(data.nextSymbol) ?? null;
 
-      const allOrders = await helpers.ensureAllOrders();
-      const preWriteSeatState = resolveActivatingSeatSnapshot(context, data);
-      if (!canContinue() || !preWriteSeatState) {
-        logSeatRefreshSkipped({
-          context,
-          data,
-          reason: 'seat snapshot changed before shared cache rebuild',
-        });
-        return 'skipped';
-      }
+      // 只追赶尚未提交的订单输入；普通 revision 更新不会使订单读票失效。
+      while (canContinueActivation()) {
+        const orderSourceToken = { ...snapshot.getView().token };
+        if (orderSourceToken.dayEpoch !== activationDayEpoch) return 'skipped';
 
-      const relatedTradingSymbols = collectSeatRefreshRelatedTradingSymbols(context, data);
-      for (const symbol of relatedTradingSymbols) {
-        context.orderRecorder.validateRebuildSnapshot(symbol, allOrders);
-      }
+        const capturedSeats = (['LONG', 'SHORT'] as const).map((direction) => ({
+          direction,
+          symbol: context.symbolRegistry.getSeatState(direction).symbol,
+          status: context.symbolRegistry.getSeatState(direction).status,
+          version: context.symbolRegistry.getSeatVersion(direction),
+        }));
+        const areCapturedSeatsCurrent = (): boolean =>
+          capturedSeats.every(({ direction, symbol, status, version }) => {
+            const currentSeat = context.symbolRegistry.getSeatState(direction);
+            return (
+              isSeatVersionMatch(version, context.symbolRegistry.getSeatVersion(direction)) &&
+              currentSeat.symbol === symbol &&
+              currentSeat.status === status
+            );
+          });
+        const isOrderSourceCurrent = (): boolean =>
+          canContinueActivation() &&
+          areCapturedSeatsCurrent() &&
+          snapshot.isCurrent(orderSourceToken, { account: false, positions: false });
 
-      context.dailyLossTracker.recalculateFromAllOrders(
-        allOrders,
-        context.config,
-        clock.now(),
-        undefined,
-        relatedTradingSymbols,
-      );
+        // epoch/generation 与全部席位身份在第一次订单 await 前固定。
+        const allOrders = await helpers.ensureAllOrders();
+        if (!canContinueActivation()) return 'skipped';
 
-      await (isLong
-        ? context.orderRecorder.refreshOrdersFromAllOrdersForLong(
-            data.nextSymbol,
-            allOrders,
-            nextExecutionQuote,
-          )
-        : context.orderRecorder.refreshOrdersFromAllOrdersForShort(
-            data.nextSymbol,
-            allOrders,
-            nextExecutionQuote,
-          ));
+        if (!isOrderSourceCurrent()) continue;
 
-      const seatStateAfterOrderRefresh = resolveActivatingSeatSnapshot(context, data);
-      if (!canContinue() || !seatStateAfterOrderRefresh) {
-        logSeatRefreshSkipped({
-          context,
-          data,
-          reason: 'seat snapshot changed during order refresh',
-        });
-        return 'skipped';
-      }
+        const relatedTradingSymbols = collectSeatRefreshRelatedTradingSymbols(context, data);
+        const directionBySymbol = new Map<string, boolean>();
+        for (const { direction, symbol } of capturedSeats) {
+          if (symbol === null || symbol === context.config.monitorSymbol) continue;
 
-      await helpers.refreshAccountCaches();
+          const oldDirection = directionBySymbol.get(symbol);
+          const isLongSymbol = direction === 'LONG';
+          if (oldDirection !== undefined && oldDirection !== isLongSymbol) {
+            throw new Error(`[SEAT_REFRESH] LONG/SHORT 标的归属冲突: ${symbol}`);
+          }
 
-      const seatStateAfterAccountCacheRefresh = resolveActivatingSeatSnapshot(context, data);
-      if (!canContinue() || !seatStateAfterAccountCacheRefresh) {
-        logSeatRefreshSkipped({
-          context,
-          data,
-          reason: 'seat snapshot changed during account cache refresh',
-        });
-        return 'skipped';
-      }
-
-      const dailyLossOffset = context.dailyLossTracker.getLossOffset(isLong ? 'LONG' : 'SHORT');
-      await context.riskChecker.refreshUnrealizedLossData(
-        context.orderRecorder,
-        data.nextSymbol,
-        isLong,
-        nextExecutionQuote,
-        dailyLossOffset,
-      );
-
-      const latestSeatState = resolveActivatingSeatSnapshot(context, data);
-      if (!canContinue() || !latestSeatState) {
-        logSeatRefreshSkipped({
-          context,
-          data,
-          reason: 'seat snapshot changed during risk refresh',
-        });
-        return 'skipped';
-      }
-
-      if (data.previousSymbol && data.previousSymbol !== data.nextSymbol) {
-        const previousExecutionQuote = executionQuotes.get(data.previousSymbol) ?? null;
-        const existingSeat = context.symbolRegistry.resolveSeatBySymbol(data.previousSymbol);
-        if (!existingSeat) {
-          context.orderRecorder.clearBuyOrders(data.previousSymbol, isLong, previousExecutionQuote);
+          directionBySymbol.set(symbol, isLongSymbol);
         }
+
+        if (
+          data.previousSymbol !== null &&
+          !directionBySymbol.has(data.previousSymbol) &&
+          data.previousSymbol !== context.config.monitorSymbol
+        ) {
+          directionBySymbol.set(data.previousSymbol, isLong);
+        }
+
+        for (const symbol of relatedTradingSymbols) {
+          context.orderRecorder.validateRebuildSnapshot(symbol, allOrders);
+        }
+
+        for (const order of allOrders) {
+          if (!relatedTradingSymbols.has(order.symbol)) continue;
+
+          if (order.executedQuantity === 0 && order.executionPhase === 'TERMINAL') continue;
+
+          const ownership = resolveOrderOwnership(order, context.config);
+          const expectedDirection = directionBySymbol.get(order.symbol);
+          if (
+            ownership?.monitorSymbol !== context.config.monitorSymbol ||
+            expectedDirection === undefined ||
+            (ownership.direction === 'LONG') !== expectedDirection
+          ) {
+            throw new Error(`[SEAT_REFRESH] 订单归属与 captured 席位冲突: ${order.orderId}`);
+          }
+        }
+
+        const targets = [...directionBySymbol].map(([symbol, isLongSymbol]) => ({
+          symbol,
+          isLongSymbol,
+        }));
+        const preparedDailyLoss = context.dailyLossTracker.prepareRecalculationFromAllOrders(
+          allOrders,
+          context.config,
+          clock.now(),
+          undefined,
+          relatedTradingSymbols,
+        );
+        const isPreparedOrderSourceCurrent = (): boolean =>
+          isOrderSourceCurrent() && preparedDailyLoss.isCurrent();
+        if (!canContinueActivation()) return 'skipped';
+
+        if (!isPreparedOrderSourceCurrent()) continue;
+
+        // 本实例 Daily 完整无写预检后，原 token/全部席位/候选共同授权同步 O→Daily 发布；中间无 await。
+        const commit = context.orderRecorder.commitRebuildSnapshot(
+          targets,
+          allOrders,
+          isPreparedOrderSourceCurrent,
+          'ACTIVATION',
+        );
+        if (commit.status === 'ABORTED') return 'skipped';
+
+        context.dailyLossTracker.publishRecalculation(preparedDailyLoss);
+        break;
       }
 
-      const warrantRefreshResult = context.riskChecker.setWarrantInfoFromCallPrice(
-        data.nextSymbol,
-        data.callPrice,
-        isLong,
-        nextExecutionQuote?.name ?? data.symbolName,
-      );
-      if (warrantRefreshResult.status === 'error') {
-        const reason = `设置牛熊证信息失败：${warrantRefreshResult.reason}`;
-        markSeatAsEmpty(data.direction, reason, context, clock.now().getTime());
+      if (!canContinueActivation()) return 'skipped';
+
+      const handle = helpers.requestAccountPositionRefresh(activationDayEpoch);
+      const receipt = await handle.result.finally(handle.cancel);
+      if (receipt.status === 'ABORTED' || !canContinueActivation()) return 'skipped';
+
+      // O/Daily 已合法提交，不再回到订单重建；新事实由同一订单 owner 更新经济投影。
+      // 后置准备只追赶当前成对 view，字段不足时补读，绝不以新票重新授权旧 allOrders。
+      while (canContinueActivation()) {
+        const currentView = snapshot.getView();
+        const isReceiptCurrent = (): boolean =>
+          canContinueActivation() &&
+          snapshot.isCurrent(currentView.token, {
+            account: true,
+            positions: true,
+            paired: true,
+          });
+        if (!isReceiptCurrent()) {
+          const refresh = helpers.requestAccountPositionRefresh(activationDayEpoch);
+          const refreshed = await refresh.result.finally(refresh.cancel);
+          if (refreshed.status === 'ABORTED' || !canContinueActivation()) return 'skipped';
+
+          continue;
+        }
+
+        await quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth(currentView.token);
+        if (!canContinueActivation()) return 'skipped';
+
+        if (!isReceiptCurrent()) continue;
+
+        const dailyLossOffset = context.dailyLossTracker.getLossOffset(isLong ? 'LONG' : 'SHORT');
+        const prepared = context.riskChecker.prepareUnrealizedLossData(
+          context.orderRecorder,
+          data.nextSymbol,
+          isLong,
+          dailyLossOffset,
+        );
+        if (!isReceiptCurrent()) continue;
+
+        context.riskChecker.publishUnrealizedLossData(prepared);
+        const latestSeatState = resolveActivatingSeatSnapshot(context, data);
+        if (!latestSeatState || !isReceiptCurrent()) continue;
+
+        if (data.previousSymbol && data.previousSymbol !== data.nextSymbol) {
+          const existingSeat = context.symbolRegistry.resolveSeatBySymbol(data.previousSymbol);
+          if (!existingSeat) context.orderRecorder.clearBuyOrders(data.previousSymbol, isLong);
+        }
+
+        const warrantRefreshResult = context.riskChecker.setWarrantInfoFromCallPrice(
+          data.nextSymbol,
+          callPrice,
+          isLong,
+          nextExecutionQuote?.name ?? data.symbolName,
+        );
+        if (!isReceiptCurrent()) continue;
+
+        if (warrantRefreshResult.status === 'error') {
+          const reason = `设置牛熊证信息失败：${warrantRefreshResult.reason}`;
+          markSeatAsEmpty(data.direction, reason, context, clock.now().getTime());
+          logSeatRefreshProcessed({
+            data,
+            result: 'marked_empty',
+            reason,
+          });
+          return 'processed';
+        }
+
+        if (!isReceiptCurrent()) continue;
+
+        setDirectionSymbolName(
+          context,
+          data.direction,
+          nextExecutionQuote?.name ?? data.symbolName ?? data.nextSymbol,
+        );
+
+        context.symbolRegistry.updateSeatState(data.direction, {
+          ...latestSeatState,
+          status: 'ACTIVE',
+          lastSeatActivatedAt: clock.now().getTime(),
+          callPrice,
+        });
+
         logSeatRefreshProcessed({
           data,
-          result: 'marked_empty',
-          reason,
+          result: 'activated',
         });
+
         return 'processed';
       }
 
-      setDirectionSymbolName(
-        context,
-        data.direction,
-        nextExecutionQuote?.name ?? data.symbolName ?? data.nextSymbol,
-      );
-
-      context.symbolRegistry.updateSeatState(data.direction, {
-        ...latestSeatState,
-        status: 'ACTIVE',
-        lastSeatActivatedAt: clock.now().getTime(),
-        callPrice: data.callPrice,
-      });
-
-      logSeatRefreshProcessed({
-        data,
-        result: 'activated',
-      });
-
-      return 'processed';
+      return 'skipped';
     } catch (error) {
       hasBodyFailure = true;
       bodyFailure = error;

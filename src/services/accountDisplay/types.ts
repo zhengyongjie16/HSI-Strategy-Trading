@@ -1,4 +1,4 @@
-import type { LastState } from '../../types/state.js';
+import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { Quote } from '../../types/quote.js';
 
 /**
@@ -8,7 +8,7 @@ import type { Quote } from '../../types/quote.js';
  * 使用范围：accountDisplay 服务及其调用方使用。
  */
 export type DisplayAccountAndPositionsParams = Readonly<{
-  lastState: LastState;
+  snapshot: AccountPositionSnapshotReader;
   quotesMap?: ReadonlyMap<string, Quote | null> | null;
 }>;
 
@@ -20,5 +20,5 @@ export type DisplayAccountAndPositionsParams = Readonly<{
  */
 export type SymbolDisplayInfo = Readonly<{
   name: string | null;
-  price: number | null;
+  price: string | null;
 }>;

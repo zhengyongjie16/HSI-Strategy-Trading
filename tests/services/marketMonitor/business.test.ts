@@ -29,6 +29,7 @@ afterEach(() => {
 import { createMarketMonitor } from '../../../src/services/marketMonitor/index.js';
 import {
   formatPositionDisplay,
+  formatQuoteDisplay,
   formatWarrantDistanceDisplay,
 } from '../../../src/services/marketMonitor/utils.js';
 import { createQuoteDouble, createWarrantDistanceInfoDouble } from '../../helpers/testDoubles.js';
@@ -40,7 +41,8 @@ describe('marketMonitor renderer', () => {
     const bullText = formatWarrantDistanceDisplay(
       createWarrantDistanceInfoDouble({
         warrantType: 'BULL',
-        distanceToStrikePercent: 1.9,
+        distanceNumerator: '1.9',
+        distanceDenominator: '100',
       }),
     );
     expect(bullText).toBe('距回收价=+1.90%');
@@ -48,7 +50,8 @@ describe('marketMonitor renderer', () => {
     const bearText = formatWarrantDistanceDisplay(
       createWarrantDistanceInfoDouble({
         warrantType: 'BEAR',
-        distanceToStrikePercent: -2.35,
+        distanceNumerator: '-2.35',
+        distanceDenominator: '100',
       }),
     );
     expect(bearText).toBe('距回收价=-2.35%');
@@ -56,7 +59,8 @@ describe('marketMonitor renderer', () => {
     const unknownText = formatWarrantDistanceDisplay(
       createWarrantDistanceInfoDouble({
         warrantType: 'BULL',
-        distanceToStrikePercent: null,
+        distanceNumerator: null,
+        distanceDenominator: null,
       }),
     );
     expect(unknownText).toBe('距回收价=未知');
@@ -65,10 +69,10 @@ describe('marketMonitor renderer', () => {
   it('formats position display text with required labels and order', () => {
     const display = formatPositionDisplay(
       {
-        r1: 100,
+        r1: '100',
         n1: 100,
-        r2: 110,
-        unrealizedPnL: 10,
+        r2: '110',
+        unrealizedPnL: '10',
       },
       2,
     );
@@ -89,7 +93,7 @@ describe('marketMonitor renderer', () => {
         { label: 'K', valueText: '51.000' },
         { label: 'MACD', valueText: '10.000' },
       ],
-      monitorQuote: createQuoteDouble('HSI.HK', 20_000),
+      monitorQuote: createQuoteDouble('HSI.HK', '20000'),
       monitorSymbol: 'HSI.HK',
       klineTimestamp: 1_708_000_000_000,
     });
@@ -111,20 +115,21 @@ describe('marketMonitor renderer', () => {
     monitor.renderTradingQuote({
       event: {
         symbol: 'BULL.HK',
-        quote: createQuoteDouble('BULL.HK', 1.23),
+        quote: createQuoteDouble('BULL.HK', '1.23'),
       },
       tradingSymbol: 'BULL.HK',
       direction: 'LONG',
       displayInfo: {
         warrantDistanceInfo: createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
-          distanceToStrikePercent: 0.7,
+          distanceNumerator: '0.7',
+          distanceDenominator: '100',
         }),
         unrealizedLossMetrics: {
-          r1: 100,
+          r1: '100',
           n1: 100,
-          r2: 110,
-          unrealizedPnL: 10,
+          r2: '110',
+          unrealizedPnL: '10',
         },
         orderCount: 2,
       },
@@ -137,6 +142,133 @@ describe('marketMonitor renderer', () => {
     expect(infoLogs[0]).toContain('持仓市值=110.00 持仓盈亏=+10.00 订单数量=2');
   });
 
+  it('formats exact quote amounts and percentage directly at their field scales', () => {
+    const display = formatQuoteDisplay(
+      { ...createQuoteDouble('BULL.HK', '1.010051'), prevClose: '1' },
+      'BULL.HK',
+    );
+    expect(display).toEqual({
+      nameText: 'BULL.HK',
+      codeText: 'BULL.HK',
+      priceText: '1.010',
+      changeAmountText: '+0.010',
+      changePercentText: '+1.01%',
+    });
+
+    expect(formatQuoteDisplay(createQuoteDouble('BULL.HK', '1.2345'), 'BULL.HK')?.priceText).toBe(
+      '1.234',
+    );
+
+    expect(formatQuoteDisplay(createQuoteDouble('BULL.HK', '1.2355'), 'BULL.HK')?.priceText).toBe(
+      '1.236',
+    );
+    expect(formatQuoteDisplay(null, 'BULL.HK')).toBeNull();
+  });
+
+  it('retains native signed rounded zero for quotes and PnL but unsigned zero for warrant distance', () => {
+    const negativeChange = formatQuoteDisplay(
+      { ...createQuoteDouble('BULL.HK', '0.999999'), prevClose: '1' },
+      'BULL.HK',
+    );
+    expect(negativeChange?.changeAmountText).toBe('-0.000');
+    expect(negativeChange?.changePercentText).toBe('-0.00%');
+    expect(
+      formatQuoteDisplay(
+        { ...createQuoteDouble('BULL.HK', '-0.000001'), prevClose: '0' },
+        'BULL.HK',
+      )?.priceText,
+    ).toBe('-0.000');
+
+    expect(
+      formatPositionDisplay({ r1: '1', n1: 1, r2: '0.999999', unrealizedPnL: '-0.000001' }, 1),
+    ).toBe('持仓市值=1.00 持仓盈亏=-0.00 订单数量=1');
+
+    expect(
+      formatWarrantDistanceDisplay({
+        warrantType: 'BEAR',
+        distanceNumerator: '-0.000001',
+        distanceDenominator: '1',
+      }),
+    ).toBe('距回收价=0.00%');
+
+    expect(
+      formatWarrantDistanceDisplay({
+        warrantType: 'BULL',
+        distanceNumerator: '0',
+        distanceDenominator: '1',
+      }),
+    ).toBe('距回收价=+0.00%');
+  });
+
+  it('uses unrounded distance basis, including long exact values beyond number precision', () => {
+    expect(
+      formatWarrantDistanceDisplay({
+        warrantType: 'BULL',
+        distanceNumerator: '1.0051',
+        distanceDenominator: '100',
+      }),
+    ).toBe('距回收价=+1.01%');
+
+    expect(
+      formatWarrantDistanceDisplay({
+        warrantType: 'BULL',
+        distanceNumerator: '1.005',
+        distanceDenominator: '100',
+      }),
+    ).toBe('距回收价=+1.00%');
+
+    expect(
+      formatQuoteDisplay(
+        { ...createQuoteDouble('BULL.HK', '9007199254740993.0001'), prevClose: '9007199254740993' },
+        'BULL.HK',
+      )?.changeAmountText,
+    ).toBe('+0.000');
+
+    expect(
+      formatQuoteDisplay(createQuoteDouble('BULL.HK', '9007199254740993.0001'), 'BULL.HK')
+        ?.priceText,
+    ).toBe('9007199254740993.000');
+  });
+
+  it('fails fast for corrupt distance basis, financial text and integer display counts', () => {
+    expect(() =>
+      formatWarrantDistanceDisplay({
+        warrantType: 'BULL',
+        distanceNumerator: '1',
+        distanceDenominator: null,
+      }),
+    ).toThrow(TypeError);
+
+    expect(() =>
+      formatWarrantDistanceDisplay({
+        warrantType: 'BULL',
+        distanceNumerator: null,
+        distanceDenominator: '1',
+      }),
+    ).toThrow(TypeError);
+
+    expect(() =>
+      formatWarrantDistanceDisplay({
+        warrantType: 'BULL',
+        distanceNumerator: '1',
+        distanceDenominator: '0',
+      }),
+    ).toThrow(RangeError);
+
+    expect(() =>
+      formatWarrantDistanceDisplay({
+        warrantType: 'BULL',
+        distanceNumerator: 'NaN',
+        distanceDenominator: '1',
+      }),
+    ).toThrow(TypeError);
+
+    expect(() => formatQuoteDisplay(createQuoteDouble('BULL.HK', 'NaN'), 'BULL.HK')).toThrow(
+      TypeError,
+    );
+    expect(() => formatPositionDisplay(null, 0.5)).toThrow(RangeError);
+  });
+
   it('warns when trading quote is unavailable', () => {
     infoLogs.length = 0;
     warnLogs.length = 0;
@@ -145,7 +277,7 @@ describe('marketMonitor renderer', () => {
     monitor.renderTradingQuote({
       event: {
         symbol: 'BULL.HK',
-        quote: createQuoteDouble('BULL.HK', 1.23),
+        quote: createQuoteDouble('BULL.HK', '1.23'),
       },
       tradingSymbol: 'OTHER.HK',
       direction: 'LONG',
@@ -168,9 +300,9 @@ describe('marketMonitor neutral strategy projection', () => {
         { label: 'K', valueText: '-' },
       ],
       monitorQuote: {
-        ...createQuoteDouble('HSI.HK', 20_100),
+        ...createQuoteDouble('HSI.HK', '20100'),
         name: '恒生指数',
-        prevClose: 20_000,
+        prevClose: '20000',
         timestamp: Date.UTC(2024, 0, 1, 8, 59),
       },
       monitorSymbol: 'HSI.HK',
@@ -192,7 +324,7 @@ describe('marketMonitor neutral strategy projection', () => {
   it('retains host quote facts and negative change when the strategy projection is empty', () => {
     createMarketMonitor().renderMonitorIndicators({
       items: [],
-      monitorQuote: { ...createQuoteDouble('HSI.HK', 19_900), prevClose: 20_000 },
+      monitorQuote: { ...createQuoteDouble('HSI.HK', '19900'), prevClose: '20000' },
       monitorSymbol: 'HSI.HK',
       klineTimestamp: null,
     });
@@ -211,25 +343,37 @@ describe('marketMonitor neutral strategy projection', () => {
   });
 
   it.each([
-    { price: Number.NaN, prevClose: 20_000, priceText: '-' },
-    { price: Number.POSITIVE_INFINITY, prevClose: 20_000, priceText: '-' },
-    { price: 20_000, prevClose: 0, priceText: '20000.000' },
-    { price: 20_000, prevClose: -1, priceText: '20000.000' },
-    { price: 20_000, prevClose: Number.NaN, priceText: '20000.000' },
-    { price: 20_000, prevClose: Number.POSITIVE_INFINITY, priceText: '20000.000' },
-    { price: 0, prevClose: 20_000, priceText: '0.000' },
-    { price: -1, prevClose: 20_000, priceText: '-1.000' },
+    { price: 'NaN', prevClose: '20000', priceText: '-' },
+    { price: 'Infinity', prevClose: '20000', priceText: '-' },
+    { price: '20000', prevClose: '0', priceText: '20000.000' },
+    { price: '20000', prevClose: '-1', priceText: '20000.000' },
+    { price: '20000', prevClose: 'NaN', priceText: '20000.000' },
+    { price: '20000', prevClose: 'Infinity', priceText: '20000.000' },
+    { price: '0', prevClose: '20000', priceText: '0.000' },
+    { price: '-1', prevClose: '20000', priceText: '-1.000' },
   ])('keeps invalid quote semantics for price=$price prevClose=$prevClose', (scenario) => {
-    createMarketMonitor().renderMonitorIndicators({
-      items: [],
-      monitorQuote: {
-        ...createQuoteDouble('HSI.HK', scenario.price),
-        name: null,
-        prevClose: scenario.prevClose,
-      },
-      monitorSymbol: 'HSI.HK',
-      klineTimestamp: Number.NaN,
-    });
+    const render = () => {
+      createMarketMonitor().renderMonitorIndicators({
+        items: [],
+        monitorQuote: {
+          ...createQuoteDouble('HSI.HK', scenario.price),
+          name: null,
+          prevClose: scenario.prevClose,
+        },
+        monitorSymbol: 'HSI.HK',
+        klineTimestamp: Number.NaN,
+      });
+    };
+
+    if (
+      [scenario.price, scenario.prevClose].some((text) => text === 'NaN' || text === 'Infinity')
+    ) {
+      expect(render).toThrow(TypeError);
+      expect(infoLogs).toEqual([]);
+      return;
+    }
+
+    render();
     expect(infoLogs[0]).toContain(`HSI.HK(HSI.HK) 价格=${scenario.priceText} 涨跌幅=-`);
     expect(infoLogs[0]).not.toContain('[K线时间:');
   });

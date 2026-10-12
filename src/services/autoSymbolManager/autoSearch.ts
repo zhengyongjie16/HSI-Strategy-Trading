@@ -6,6 +6,7 @@
  * 执行流程：maybeSearchOnEvent 检查席位状态与冷却 → 调用 findBestWarrant → 成功则更新为 ACTIVATING，失败则累计失败计数或冻结。
  */
 import type { AutoSearchDeps, AutoSearchManager, SearchOnEventParams } from './types.js';
+import type { WarrantCandidate } from '../autoSymbolFinder/types.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { isSeatFrozenToday, resolveNextSearchFailureState } from './utils.js';
 
@@ -165,7 +166,7 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchManager {
       return;
     }
 
-    let best: { readonly symbol: string; readonly callPrice: number } | null;
+    let best: WarrantCandidate | null;
     try {
       const input = await buildFindBestWarrantInput({
         currentTime,

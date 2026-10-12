@@ -1,88 +1,13 @@
-/**
- * websocket-out-of-order 混沌测试
- *
- * 功能：
- * - 验证 WebSocket 乱序场景下的行为与恢复期望。
- */
+/** WebSocket乱序/重复：私SDK入站与实际Daily/O/H/S经济及资源owner。 */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType, type TradeContext } from 'longbridge';
-
-import { createOrderMonitor } from '../../../../src/core/trader/orderMonitor/index.js';
-import type { OrderMonitorDeps } from '../../../../src/core/trader/types.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
-import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createExecutionFixture } from '../../orderRecorder/executionFixture.js';
+import type { DailyLossCumulativeExecutionResult } from '../../../../src/types/risk.js';
 import {
-  createTerminationDouble,
   createMarketDataClientDouble,
-  createOrderRecorderDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createRateLimiterDouble,
   createSymbolRegistryDouble,
 } from '../../../helpers/testDoubles.js';
-
-function createDeps(params?: {
-  readonly orderRecorder?: ReturnType<typeof createOrderRecorderDouble>;
-}): {
-  deps: OrderMonitorDeps;
-  tradeCtx: ReturnType<typeof createTradeContextMock>;
-} {
-  const tradeCtx = createTradeContextMock();
-  const deps: OrderMonitorDeps = {
-    now: () => new Date(),
-    scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-    clearTimer: (handle) => {
-      clearTimeout(handle);
-    },
-    ctx: tradeCtx as unknown as TradeContext,
-    rateLimiter: createRateLimiterDouble(),
-    cacheManager: {
-      clearCache: () => {},
-      getPendingOrders: async () => [],
-    },
-    marketDataClient: createMarketDataClientDouble(),
-    orderRecorder: params?.orderRecorder ?? createOrderRecorderDouble(),
-    dailyLossTracker: {
-      resetAll: () => {},
-      prepareProtectionBoundary: (boundaryParams) => ({
-        ...boundaryParams,
-        orderBaselines: [],
-      }),
-      commitProtectionBoundary: () => {},
-      restoreExecutionSnapshot: () => {},
-      restoreProtectionBoundary: () => {},
-      recalculateFromAllOrders: () => {},
-      recordCumulativeExecution: () => ({
-        authoritativeFactChanged: false,
-        executionAdvanced: false,
-      }),
-      getLossOffset: () => 0,
-    },
-    orderHoldRegistry: {
-      trackOrder: () => {},
-      markOrderClosed: () => {},
-      seedFromOrders: () => {},
-      getHoldSymbols: () => new Set<string>(),
-      onOrderHoldSymbolsChanged: () => () => {},
-      clear: () => {},
-    },
-    persistProtectiveLiquidationExecutionProgress: () => {},
-    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    postTradeConsistencyRuntime: {
-      recordSettlementRefreshNeed: () => {},
-    },
-    tradingConfig: createTradingConfig(),
-    symbolRegistry: createSymbolRegistryDouble(),
-    isContinuousTradingAllowed: () => true,
-    termination: createTerminationDouble({
-      reportFatalError: (error) => {
-        throw error;
-      },
-    }),
-  };
-
-  return { deps, tradeCtx };
-}
 
 describe('chaos: websocket out-of-order and duplicate pushes', () => {
   it('keeps sell fill side-effects idempotent under out-of-order/duplicate orderChanged events', async () => {
@@ -93,138 +18,188 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       readonly refreshAccount: boolean;
       readonly refreshPositions: boolean;
     }> = [];
-
-    const orderRecorder = createOrderRecorderDouble({
-      recordLocalSell: () => {
-        localSellCount += 1;
+    const admissions: DailyLossCumulativeExecutionResult[] = [];
+    const terminalSettlements = Promise.withResolvers<undefined>();
+    const economic = createExecutionFixture({
+      observeRefresh: (need) => {
+        refreshNeeds.push({
+          refreshAccount: need.refreshAccount,
+          refreshPositions: need.refreshPositions,
+        });
       },
-      markSellFilled: () => {
-        markSellFilledCount += 1;
-        return null;
-      },
-      markSellPartialFilled: () => {
-        markSellPartialCount += 1;
-        return null;
-      },
-    });
-
-    const { deps, tradeCtx } = createDeps({ orderRecorder });
-    const monitor = createOrderMonitor({
-      ...deps,
-      postTradeConsistencyRuntime: {
-        recordSettlementRefreshNeed: (need) => {
-          refreshNeeds.push(need);
+      observeDaily: (owner) => ({
+        ...owner,
+        recordCumulativeExecution: (...args) => {
+          const receipt = owner.recordCumulativeExecution(...args);
+          admissions.push(receipt);
+          return receipt;
         },
-      },
-    });
+      }),
+      observeRecorder: (owner) => ({
+        ...owner,
+        commitExecutionFact: (...args) => {
+          const receipt = owner.commitExecutionFact(...args);
+          if (receipt.economicProjectionChanged) localSellCount += 1;
 
+          return receipt;
+        },
+        markSellFilled: (...args) => {
+          markSellFilledCount += 1;
+          const result = owner.markSellFilled(...args);
+          if (markSellFilledCount === 2) terminalSettlements.resolve();
+
+          return result;
+        },
+        markSellPartialFilled: (...args) => {
+          markSellPartialCount += 1;
+          return owner.markSellPartialFilled(...args);
+        },
+      }),
+    });
+    const frame = (
+      orderId: string,
+      symbol: string,
+      quantity: string,
+      status: 'New' | 'Filled' | 'PartialFilled',
+      revision: number,
+    ) => ({
+      orderId,
+      tradeId: 'EXECUTION-' + orderId,
+      symbol,
+      stockName: symbol === 'BULL.HK' ? 'HSI RC' : 'HSI RP',
+      remark: '',
+      side: 'SELL' as const,
+      orderType: 'ELO' as const,
+      status,
+      quantity: '100',
+      executedQuantity: quantity,
+      submittedPrice: '1',
+      executedPrice: quantity === '0' ? '0' : '1',
+      submittedAtMs: economic.now - 1000,
+      executionTimeMs: quantity === '0' ? null : economic.now - 100,
+      updatedAtMs: revision,
+    });
+    const native = await createBrokerIngressFixture(
+      frame('WS-CHAOS-001', 'BULL.HK', '0', 'New', economic.now),
+    );
+    const monitor = native.createMonitor({
+      now: () => new Date(economic.now),
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+      rateLimiter: economic.rateLimiter,
+      cacheManager: { clearCache() {}, getPendingOrders: async () => [] },
+      marketDataClient: createMarketDataClientDouble(),
+      orderRecorder: economic.recorder,
+      dailyLossTracker: economic.daily,
+      orderHoldRegistry: economic.holds,
+      persistProtectiveLiquidationExecutionProgress() {},
+      protectiveLiquidationEpisodeTracker: economic.episode,
+      postTradeConsistencyRuntime: economic.sink,
+      tradingConfig: createTradingConfig(),
+      symbolRegistry: createSymbolRegistryDouble(),
+      isContinuousTradingAllowed: () => true,
+      termination: economic.termination,
+    });
     await monitor.initialize();
     await monitor.recoverOrderTrackingFromSnapshot([]);
+    for (const [orderId, symbol, isLongSymbol] of [
+      ['WS-CHAOS-001', 'BULL.HK', true],
+      ['WS-CHAOS-002', 'BEAR.HK', false],
+    ] as const) {
+      const metadata = await createBrokerIngressFixture(
+        frame(orderId, symbol, '0', 'New', economic.now),
+      );
+      const fact = metadata.queryObservation;
+      economic.recorder.submitSellOrder(
+        orderId,
+        symbol,
+        isLongSymbol ? 'LONG' : 'SHORT',
+        fact.quantity,
+        [],
+        false,
+        fact.submittedAt.getTime(),
+      );
 
-    monitor.trackOrder({
-      orderId: 'WS-CHAOS-001',
-      symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
-      quantity: 100,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
-    });
+      monitor.trackOrder({
+        orderId,
+        symbol,
+        side: fact.executionSide,
+        executionSide: fact.executionSide,
+        initialExecutionPhase: fact.executionPhase,
+        initialStatus: fact.status,
+        price: fact.price,
+        initialSubmittedPrice: fact.price,
+        quantity: fact.quantity,
+        isLongSymbol,
+        monitorSymbol: 'HSI.HK',
+        isProtectiveLiquidation: false,
+        orderType: fact.orderType,
+      });
+    }
 
-    monitor.trackOrder({
-      orderId: 'WS-CHAOS-002',
-      symbol: 'BEAR.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
-      quantity: 100,
-      isLongSymbol: false,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
-    });
-
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
+    native.setExecutionReplies([
+      {
         orderId: 'WS-CHAOS-001',
+        tradeId: 'BULL-FULL',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
-        orderType: OrderType.ELO,
-        submittedQuantity: 100,
-        executedQuantity: 100,
-        submittedPrice: 1,
-        executedPrice: 1,
-      }),
-      { sequence: 1 },
-    );
-
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
+        quantity: '100',
+        price: '1',
+        tradeDoneAtMs: economic.now - 100,
+      },
+      {
         orderId: 'WS-CHAOS-002',
+        tradeId: 'BEAR-PARTIAL',
         symbol: 'BEAR.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
-        orderType: OrderType.ELO,
-        submittedQuantity: 100,
-        executedQuantity: 100,
-        submittedPrice: 1,
-        executedPrice: 1,
-      }),
-      { sequence: 2 },
-    );
-
-    // 乱序: 更晚才到达的 PartialFilled，不应回写已完成订单状态。
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
+        quantity: '20',
+        price: '1',
+        tradeDoneAtMs: economic.now - 300,
+      },
+      {
         orderId: 'WS-CHAOS-002',
+        tradeId: 'BEAR-REST',
         symbol: 'BEAR.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialFilled,
-        orderType: OrderType.ELO,
-        submittedQuantity: 100,
-        executedQuantity: 20,
-        submittedPrice: 1,
-        executedPrice: 1,
-      }),
-      { sequence: 3 },
-    );
+        quantity: '80',
+        price: '1',
+        tradeDoneAtMs: economic.now - 100,
+      },
+    ]);
+    let dispatched = 0;
+    for (const event of [
+      frame('WS-CHAOS-001', 'BULL.HK', '100', 'Filled', economic.now),
+      frame('WS-CHAOS-002', 'BEAR.HK', '100', 'Filled', economic.now),
+      // Explicit older broker revision arrives late; it cannot replace a completed economic fact.
+      frame('WS-CHAOS-002', 'BEAR.HK', '20', 'PartialFilled', economic.now - 200),
+      frame('WS-CHAOS-001', 'BULL.HK', '100', 'Filled', economic.now + 1),
+    ]) {
+      native.emitOrderChangedFrame(event);
+      dispatched += 1;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    }
 
-    // 重复 Filled 推送。
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
-        orderId: 'WS-CHAOS-001',
-        symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
-        orderType: OrderType.ELO,
-        submittedQuantity: 100,
-        executedQuantity: 100,
-        submittedPrice: 1,
-        executedPrice: 1,
-      }),
-      { sequence: 4 },
-    );
-
-    expect(tradeCtx.flushAllEvents()).toBe(4);
-    expect(tradeCtx.getCalls('orderDetail')).toHaveLength(0);
+    await terminalSettlements.promise;
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(dispatched).toBe(4);
+    expect(native.nativeReadCounts().detail).toBe(0);
     expect(localSellCount).toBe(2);
     expect(markSellFilledCount).toBe(2);
     expect(markSellPartialCount).toBe(0);
     expect(refreshNeeds).toEqual([
-      {
-        refreshAccount: true,
-        refreshPositions: true,
-      },
-      {
-        refreshAccount: true,
-        refreshPositions: true,
-      },
+      { refreshAccount: true, refreshPositions: true },
+      { refreshAccount: true, refreshPositions: true },
     ]);
     expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
     expect(monitor.getPendingSellOrders('BEAR.HK')).toHaveLength(0);
+    expect(admissions.some((receipt) => receipt.admission === 'ADMITTED')).toBeTrue();
+    expect(admissions).toEqual([
+      { admission: 'ADMITTED', authoritativeFactChanged: true, executionAdvanced: true },
+      { admission: 'ADMITTED', authoritativeFactChanged: true, executionAdvanced: true },
+    ]);
+    await monitor.teardown();
   });
 });

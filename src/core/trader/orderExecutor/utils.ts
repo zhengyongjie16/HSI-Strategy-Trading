@@ -1,8 +1,8 @@
-import { OrderType } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import { SIGNAL_ACTION_DESCRIPTIONS } from '../../../constants/index.js';
 import type { OrderTypeConfig, Signal } from '../../../types/signal.js';
-import type { ErrorTypeIdentifier, OrderPayload } from '../types.js';
+import type { ErrorTypeIdentifier } from '../types.js';
+import type { TradeSubmitCommand } from '../../../types/tradeMutationPorts.js';
 import { formatError } from '../../../utils/error/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import { getHKDateKey } from '../../../utils/time/index.js';
@@ -19,23 +19,23 @@ export function getActionDescription(signalAction: Signal['action']): string {
 }
 
 /**
- * 将配置中的订单类型字符串转换为 Longbridge 订单类型枚举。
+ * 验证并保留配置中的中性订单类型；SDK 转换只由 native adapter 执行。
  *
  * @param typeConfig 订单类型配置
- * @returns Longbridge 订单类型枚举
+ * @returns 已验证中性订单类型
  */
-export function getOrderTypeFromConfig(typeConfig: OrderTypeConfig): OrderType {
+export function getOrderTypeFromConfig(typeConfig: OrderTypeConfig): OrderTypeConfig {
   switch (typeConfig) {
     case 'LO': {
-      return OrderType.LO;
+      return 'LO';
     }
 
     case 'ELO': {
-      return OrderType.ELO;
+      return 'ELO';
     }
 
     case 'MO': {
-      return OrderType.MO;
+      return 'MO';
     }
 
     default: {
@@ -106,7 +106,11 @@ function identifyErrorType(errorMessage: string): ErrorTypeIdentifier {
  * @param orderPayload 订单提交载荷
  * @returns 无返回值
  */
-export function handleSubmitError(err: unknown, signal: Signal, orderPayload: OrderPayload): void {
+export function handleSubmitError(
+  err: unknown,
+  signal: Signal,
+  orderPayload: TradeSubmitCommand,
+): void {
   const actionDesc = getActionDescription(signal.action);
   const errorMessage = formatError(err);
   const errorType = identifyErrorType(errorMessage);

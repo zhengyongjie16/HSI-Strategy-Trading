@@ -157,11 +157,16 @@ function wait(delayMs: number): Promise<void> {
  * 这类错误必须 fail-fast，不能降级为外部 API 失败重试或业务拒绝分支。
  *
  * @param error 待判断错误对象
- * @returns true 表示错误属于 TypeError、ContractError 或 InvariantError
+ * @returns true 表示原生程序契约错误（含数值/引用/语法错误）、ContractError 或 InvariantError
  */
 export function isProgramError(error: unknown): boolean {
   return (
     error instanceof TypeError ||
+    error instanceof RangeError ||
+    error instanceof ReferenceError ||
+    error instanceof SyntaxError ||
+    error instanceof EvalError ||
+    error instanceof URIError ||
     (error instanceof Error && (error.name === 'ContractError' || error.name === 'InvariantError'))
   );
 }

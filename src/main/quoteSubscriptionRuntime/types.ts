@@ -1,6 +1,7 @@
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { LastState } from '../../types/state.js';
+import type { AccountPositionSnapshotReader, SnapshotToken } from '../../types/accountPosition.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, Trader } from '../../types/services.js';
 import type { Logger } from '../../utils/logger/types.js';
@@ -44,6 +45,13 @@ export type QuoteSubscriptionRetainOwner = Readonly<{
 }>;
 
 /**
+ * 串行订阅命令可推进的基础投影范围。
+ * 数据来源：启动全量对账、普通事件或 awaited 持仓对账入口；临时 retain 不代管基础投影。
+ * 使用范围：仅 QuoteSubscriptionRuntime 内部，用于保持 mutation 失败归属。
+ */
+export type QuoteSubscriptionTruthProjection = 'ALL' | 'ORDINARY' | 'POSITION_HOLD' | 'NONE';
+
+/**
  * 可变 retain 存储。
  * 类型用途：按 owner 记录当前需要保留订阅的 symbol 集合。
  * 数据来源：QuoteSubscriptionRuntime 在运行期从权威状态和 retain API 投影。
@@ -63,7 +71,8 @@ export type QuoteSubscriptionRuntimeDeps = Readonly<{
   symbolRegistry: SymbolRegistry;
   marketDataClient: Pick<MarketDataClient, 'subscribeSymbols' | 'unsubscribeSymbols'>;
   trader: Pick<Trader, 'getOrderHoldSymbols' | 'onOrderHoldSymbolsChanged'>;
-  lastState: LastState;
+  lastState: Pick<LastState, 'allTradingSymbols'>;
+  snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
 
   /** 运行期订阅 mutation 失败的 fatal 通道。 */
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
@@ -77,7 +86,9 @@ export type QuoteSubscriptionRuntimeDeps = Readonly<{
  */
 export interface QuoteSubscriptionRuntime {
   readonly reconcileFromCurrentTruth: () => Promise<void>;
-  readonly reconcilePositionHoldFromCurrentTruth: () => Promise<void>;
+
+  /** 提交通知只使当前事实对账 dirty；返回不证明传入 token 或 settlement 已 ready。 */
+  readonly reconcilePositionHoldFromCurrentTruth: (token: SnapshotToken) => Promise<void>;
   readonly start: () => void;
   readonly stopAndDrain: () => Promise<void>;
   readonly retainSymbols: (params: QuoteSubscriptionRetainParams) => Promise<void>;

@@ -6,7 +6,7 @@
  * - 维护风险检查冷却与交易频率控制
  * - 轻检查通过后实时拉取账户与持仓
  */
-import { isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { exactCompare, formatDecimal, formatRatio } from '../../utils/numeric/exact.js';
 import { logger } from '../../utils/logger/index.js';
 import { readAccountAndPositionsBothSettled } from '../../utils/accountPositions/index.js';
 import { formatSymbolDisplayFromQuote } from '../utils.js';
@@ -46,7 +46,7 @@ function assertBuySignals(signals: ReadonlyArray<BuySignal>): void {
 
 /** 防御绕过静态类型的内部调用；行情不符合入口准入契约时禁止继续风控。 */
 function assertMonitorQuote(monitorQuote: Quote | null): void {
-  if (!isValidPositiveNumber(monitorQuote?.price)) {
+  if (monitorQuote === null || exactCompare(monitorQuote.price, '0') <= 0) {
     throw new Error('买入风控内部契约错误：monitorQuote 必须包含有效正有限价格');
   }
 }
@@ -133,6 +133,13 @@ export const createRiskCheckPipeline = ({
     } = context;
 
     assertMonitorQuote(monitorQuote);
+    if (longQuote !== null) exactCompare(longQuote.price, '0');
+
+    if (shortQuote !== null) exactCompare(shortQuote.price, '0');
+
+    if (!Number.isSafeInteger(currentTime.getTime()) || currentTime.getTime() < 0) {
+      throw new TypeError('买入风控时间必须为非负安全整数');
+    }
 
     // 在本次调用入口固定当前毫秒时间，供冷却过滤/冷却写入/清仓冷却查询复用
     const currentTimeMs = currentTime.getTime();
@@ -221,22 +228,31 @@ export const createRiskCheckPipeline = ({
         continue;
       }
 
-      const latestBuyPrice = orderRecorder.getLatestBuyOrderPrice(sigSymbol, isLongBuyAction);
+      if (currentPrice === null || exactCompare(currentPrice, '0') <= 0) {
+        logger.warn(`[买入行情无效] ${signalLabel}，跳过买入`);
+        continue;
+      }
+
+      const latestBuyCost = orderRecorder.getLatestBuyOrderCost(sigSymbol, isLongBuyAction);
       if (
-        currentPrice !== null &&
-        latestBuyPrice !== null &&
-        !isBuyPriceWithinLatestOrderLimit(currentPrice, latestBuyPrice)
+        latestBuyCost !== null &&
+        !isBuyPriceWithinLatestOrderLimit(currentPrice, latestBuyCost)
       ) {
-        const currentPriceStr = currentPrice.toFixed(3);
-        const latestBuyPriceStr = latestBuyPrice.toFixed(3);
+        const currentPriceStr = formatDecimal(currentPrice, 3, 'preserve');
+        const latestBuyPriceStr = formatRatio(
+          latestBuyCost.costAmount,
+          String(latestBuyCost.quantity),
+          3,
+          'preserve',
+        );
         const reason = `买入价格限制：当前价格 ${currentPriceStr} 高于或等于最新买入订单价格 ${latestBuyPriceStr}`;
         logger.warn(`[买入价格限制] ${directionDesc} ${reason}，拒绝买入：${signalLabel}`);
         continue;
       }
 
-      if (latestBuyPrice !== null && currentPrice !== null) {
+      if (latestBuyCost !== null) {
         logger.debug(
-          `[买入价格限制] ${directionDesc} 当前价格 ${currentPrice.toFixed(3)} 低于最新买入订单价格 ${latestBuyPrice.toFixed(3)}，允许买入：${signalLabel}`,
+          `[买入价格限制] ${directionDesc} 当前价格 ${formatDecimal(currentPrice, 3, 'preserve')} 低于最新买入订单价格 ${formatRatio(latestBuyCost.costAmount, String(latestBuyCost.quantity), 3, 'preserve')}，允许买入：${signalLabel}`,
         );
       }
 
@@ -263,9 +279,7 @@ export const createRiskCheckPipeline = ({
 
           const symbolDisplay = formatSymbolDisplayFromQuote(signalQuote, sig.symbol);
           logger.debug(
-            `[牛熊证风险检查] ${symbolDisplay} 为${warrantType}，距离回收价百分比：${distancePercent.toFixed(
-              2,
-            )}%，风险检查通过`,
+            `[牛熊证风险检查] ${symbolDisplay} 为${warrantType}，距离回收价百分比：${formatDecimal(distancePercent, 2, 'preserve')}%，风险检查通过`,
           );
         }
       } else {
@@ -274,7 +288,7 @@ export const createRiskCheckPipeline = ({
         continue;
       }
 
-      if (isValidPositiveNumber(currentPrice)) {
+      if (exactCompare(currentPrice, '0') > 0) {
         const unrealizedLossCheck = riskChecker.checkUnrealizedLoss(
           sig.symbol,
           currentPrice,

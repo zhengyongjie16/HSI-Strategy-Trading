@@ -5,10 +5,17 @@ import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTa
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
 import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
-import { createMonitorConfigDouble } from '../../helpers/testDoubles.js';
+import {
+  createAccountSnapshotDouble,
+  createMonitorConfigDouble,
+} from '../../helpers/testDoubles.js';
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
+import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 
 let termination: ReturnType<typeof createTerminationRuntime>;
-beforeEach(() => {
+let snapshot: AccountPositionSnapshot;
+beforeEach(async () => {
+  snapshot = await createSnapshotFixture({ account: createAccountSnapshotDouble('100000') });
   termination = createTerminationRuntime({
     closeTradingGate: () => {},
     closeProducerAdmission: () => {},
@@ -34,6 +41,7 @@ describe('SeatActivationDispatcher', () => {
     const dispatcher = createSeatActivationDispatcher({
       termination,
       symbolRegistry,
+      snapshot,
       monitorTaskQueue,
     });
 
@@ -55,7 +63,7 @@ describe('SeatActivationDispatcher', () => {
       lastSwitchAt: 789,
       lastSearchAt: 790,
       lastSeatActivatedAt: null,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -71,7 +79,8 @@ describe('SeatActivationDispatcher', () => {
     expect(task.data.nextSymbol).toBe('NEW_BULL.HK');
     expect(task.data.previousSymbol).toBe('OLD_BULL.HK');
     expect(task.data.seatVersion).toBe(nextVersion);
-    expect(task.data.callPrice).toBe(20_000);
+    expect(task.data.callPrice).toBe('20000');
+    expect(task.data.dayEpoch).toBe(snapshot.getView().token.dayEpoch);
   });
 
   it('启动时不扫描既存 ACTIVATING seat', () => {
@@ -84,6 +93,7 @@ describe('SeatActivationDispatcher', () => {
     const dispatcher = createSeatActivationDispatcher({
       termination,
       symbolRegistry,
+      snapshot,
       monitorTaskQueue,
     });
 
@@ -93,7 +103,7 @@ describe('SeatActivationDispatcher', () => {
       lastSwitchAt: 123,
       lastSearchAt: 456,
       lastSeatActivatedAt: null,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -114,6 +124,7 @@ describe('SeatActivationDispatcher', () => {
     const dispatcher = createSeatActivationDispatcher({
       termination,
       symbolRegistry,
+      snapshot,
       monitorTaskQueue,
     });
 
@@ -135,7 +146,7 @@ describe('SeatActivationDispatcher', () => {
       lastSwitchAt: 789,
       lastSearchAt: 790,
       lastSeatActivatedAt: null,
-      callPrice: 20_000,
+      callPrice: '20000',
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
@@ -166,22 +177,24 @@ describe('SeatActivationDispatcher', () => {
     const dispatcher = createSeatActivationDispatcher({
       termination,
       symbolRegistry,
+      snapshot,
       monitorTaskQueue,
     });
 
     dispatcher.start();
     let caught: unknown = null;
     try {
-      const invalidActivatingSeat = {
-        symbol: null,
+      const invalidActivatingSeat: RuntimeWritableSeatState = {
+        symbol: 'NEW_BULL.HK',
         status: 'ACTIVATING',
         lastSwitchAt: 123,
         lastSearchAt: 456,
         lastSeatActivatedAt: null,
-        callPrice: 20_000,
+        callPrice: '20000',
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
-      } as unknown as RuntimeWritableSeatState;
+      };
+      Object.defineProperty(invalidActivatingSeat, 'symbol', { get: () => null });
       symbolRegistry.updateSeatStateWithVersionBump('LONG', invalidActivatingSeat);
     } catch (err) {
       caught = err;
@@ -190,7 +203,9 @@ describe('SeatActivationDispatcher', () => {
     }
 
     expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toContain('ACTIVATING 必须绑定标的');
+    if (!(caught instanceof Error)) throw new Error('Expected actual registry rejection');
+
+    expect(caught.message).toContain('ACTIVATING 必须绑定标的');
     expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
     expect(monitorTaskQueue.isEmpty()).toBeTrue();
   });

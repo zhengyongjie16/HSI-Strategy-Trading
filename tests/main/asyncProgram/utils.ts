@@ -5,9 +5,12 @@
  * 场景函数命名：run* / assert*；工厂用 create 前缀。
  */
 import type { LastState, MonitorContext } from '../../../src/types/state.js';
+import type { AccountPositionSnapshotReader } from '../../../src/types/accountPosition.js';
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import {
+  createAccountSnapshotDouble,
+  createAccountPositionSnapshotReaderDouble,
   createMonitorContextDouble,
-  createPositionCacheDouble,
   createPositionDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
@@ -77,9 +80,6 @@ export function createLastState(overrides: Partial<LastState> = {}): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
 
@@ -150,17 +150,26 @@ export function createMonitorContext(overrides: Partial<MonitorContext> = {}): M
 }
 
 /**
- * 构造带 BULL.HK/BEAR.HK 持仓的 LastState，供卖出流程等测试使用。
+ * 用真实 H owner 发布 BULL.HK/BEAR.HK 成对事实，并只暴露显式只读能力。
+ * LastState 不承载金融事实；该初始化 receipt 也不签 settlement ready。
  *
- * @returns 含 positionCache 与 cachedPositions 的 LastState
+ * @returns 真实已初始化事实的 reader，不提供 update、refresh 或默认 current 判定
  */
-export function createLastStateWithPositions(): LastState {
-  const positions = [
-    createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
-    createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 }),
-  ];
-  return createLastState({
-    cachedPositions: positions,
-    positionCache: createPositionCacheDouble(positions),
+export async function createSnapshotWithPositionsFixture(): Promise<AccountPositionSnapshotReader> {
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [
+      createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
+      createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 }),
+    ],
   });
+  const reader = createAccountPositionSnapshotReaderDouble({
+    getView: snapshot.getView,
+    isCurrent: snapshot.isCurrent,
+  });
+  return {
+    ...reader,
+    getAvailablePosition: snapshot.getAvailablePosition,
+    getStatus: snapshot.getStatus,
+  };
 }

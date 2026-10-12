@@ -4,14 +4,13 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { rejects } from 'node:assert/strict';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
+import { captureSwitchSeatAuthorization } from '../services/autoSymbolManager/utils.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createStrategyEmitter } from '../../src/main/businessEventProgram/emissionAdapter.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createOrderRecorder } from '../../src/core/orderRecorder/index.js';
-import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import { createAccountService } from '../../src/core/trader/accountService.js';
-import { createOrderExecutor } from '../../src/core/trader/orderExecutor/index.js';
 import { createUnrealizedLossMonitor } from '../../src/core/riskController/unrealizedLossMonitor.js';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createBuyProcessor } from '../../src/main/asyncProgram/buyProcessor/index.js';
@@ -22,12 +21,7 @@ import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import {
-  createPushOrderChanged,
-  createStockPositionsResponse,
-} from '../../mock/factories/tradeFactory.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
 import {
   prepareFixture,
@@ -42,13 +36,11 @@ import {
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
-  createPositionDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteDouble,
   createRateLimiterDouble,
   createRiskCheckerDouble,
   createTerminationDouble,
-  createTradeContextDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
 
@@ -69,34 +61,141 @@ async function createExecutionFixture(smartCloseEnabled = false) {
       sell: { delaySeconds: 60, indicators: ['K'] },
     },
   }).create(h.deps);
-  const broker = createTradeContextMock({ now: () => h.deps.clock.now().getTime() });
-  const ctx = createTradeContextDouble(broker);
+  const native = await createBrokerIngressFixture({
+    orderId: 'LOCAL-BUY',
+    tradeId: 'LOCAL-BUY-T',
+    symbol: 'BULL.HK',
+    stockName: 'HSI BULL',
+    remark: 'HSI',
+    side: 'BUY',
+    status: 'Filled',
+    quantity: '400',
+    executedQuantity: '400',
+    submittedPrice: '2',
+    executedPrice: '2',
+    submittedAtMs: generatedAtMs - 2000,
+    executionTimeMs: generatedAtMs - 1000,
+    updatedAtMs: generatedAtMs - 500,
+  });
+  native.setAccountBalance({
+    currency: 'HKD',
+    totalCash: '100000',
+    netAssets: '100800',
+    availableCash: '100000',
+  });
+
+  native.setStockPositions([
+    {
+      symbol: 'BULL.HK',
+      symbolName: 'BULL',
+      accountChannel: 'lb_papertrading',
+      currency: 'HKD',
+      quantity: '400',
+      availableQuantity: '400',
+      costPrice: '2',
+    },
+  ]);
+  const callerAuthorizations: Array<Parameters<Trader['executeSignals']>[1]> = [];
+  let submissions = 0;
+  native.setSubmitBehavior(async () => {
+    const originalAuthorization = callerAuthorizations.at(-1);
+    if (originalAuthorization === undefined)
+      throw new Error('native entry requires original caller');
+
+    expect(originalAuthorization()).toBeTrue();
+    submissions += 1;
+    return `STRATEGY-${submissions}`;
+  });
   const rateLimiter = createRateLimiterDouble();
-  const accountService = createAccountService({ ctx, rateLimiter });
-  const orderRecorder = createOrderRecorder({ ctx, rateLimiter });
-  orderRecorder.recordLocalBuy('BULL.HK', 2, 400, true, generatedAtMs - 1000);
-  const config = createMonitorConfigDouble({ smartCloseEnabled });
+  const accountService = native.createAccountService({ rateLimiter });
+  const positionsRelease = Promise.withResolvers<undefined>();
+  let positionsRequested = false;
+  let blockRefresh = false;
+  const snapshot = createAccountPositionSnapshot({
+    dayEpoch: 1,
+    readPort: {
+      getAccountSnapshot: accountService.getAccountSnapshot,
+      getStockPositions: async () => {
+        if (blockRefresh) {
+          positionsRequested = true;
+          await positionsRelease.promise;
+        }
+
+        return accountService.getStockPositions();
+      },
+    },
+    scheduler: { schedule: queueMicrotask },
+    reportFatalError: (error) => {
+      throw error;
+    },
+  });
+  const committed = await snapshot.requestRefresh({
+    source: 'single-active-baseline',
+    dayEpoch: 1,
+    refreshAccount: true,
+    refreshPositions: true,
+  }).result;
+  if (committed.status !== 'COMMITTED') throw new Error('expected paired baseline');
+
+  const lastState = createLastState();
+  const dailyLossTracker = createDailyLossTrackerDouble();
+  let boundTrader: Trader | null = null;
+  const postTrade = createPostTradeConsistencyRuntime({
+    snapshot,
+    termination: createTerminationDouble(),
+    getTrader: () => {
+      if (boundTrader === null) throw new Error('Trader 尚未装配');
+
+      return boundTrader;
+    },
+    scheduler: h.deps.scheduler,
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: false, positions: true }))
+        throw new Error('stale subscription fact');
+    },
+  });
+  const orderRecorder = native.createRecorder({
+    rateLimiter,
+    getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
+    settlementRefreshNeedRecorder: postTrade,
+  });
+
+  const config = createMonitorConfigDouble({ smartCloseEnabled, orderOwnershipMapping: ['HSI'] });
   const tradingConfig = createTradingConfig({ monitor: config });
   const riskChecker = createRiskCheckerDouble({
     checkUnrealizedLoss: () => ({ shouldLiquidate: true, quantity: 400, reason: '离线保护清仓' }),
   });
+  const symbolRegistry = createSymbolRegistry(config);
+  symbolRegistry.updateSeatState('LONG', {
+    symbol: 'BULL.HK',
+    status: 'ACTIVE',
+    lastSwitchAt: null,
+    lastSearchAt: null,
+    lastSeatActivatedAt: generatedAtMs - 1000,
+    searchFailCountToday: 0,
+    frozenTradingDayKey: null,
+    callPrice: null,
+  });
+
+  symbolRegistry.updateSeatState('SHORT', {
+    symbol: 'BEAR.HK',
+    status: 'ACTIVE',
+    lastSwitchAt: null,
+    lastSearchAt: null,
+    lastSeatActivatedAt: generatedAtMs - 1000,
+    searchFailCountToday: 0,
+    frozenTradingDayKey: null,
+    callPrice: null,
+  });
   const monitorContext = createMonitorContextDouble({
+    symbolRegistry,
     config,
     strategy,
     orderRecorder,
     riskChecker,
+    dailyLossTracker,
   });
-  const oldPosition = createPositionDouble({
-    symbol: 'BULL.HK',
-    quantity: 400,
-    availableQuantity: 400,
-  });
-  const lastState = createLastState({ cachedPositions: [oldPosition] });
-  lastState.positionCache.update([oldPosition]);
-  broker.seedStockPositions(
-    createStockPositionsResponse({ symbol: 'BULL.HK', quantity: 400, availableQuantity: 400 }),
-  );
-  let quotePrice = 1;
+  let quotePrice = '1';
   let quoteReads = 0;
   const marketDataClient = createMarketDataClientDouble({
     getQuotes: async (symbols) => {
@@ -107,24 +206,10 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     },
   });
   const termination = createTerminationDouble();
-  const dailyLossTracker = createDailyLossTrackerDouble();
   const liquidationCooldownTracker = createLiquidationCooldownTrackerDouble();
   const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTrackerDouble();
   const cacheManager = { clearCache: () => {}, getPendingOrders: async () => [] };
-  let boundTrader: Trader | null = null;
-  const postTrade = createPostTradeConsistencyRuntime({
-    termination,
-    getTrader: () => {
-      if (boundTrader === null) throw new Error('Trader 尚未装配');
-
-      return boundTrader;
-    },
-    lastState,
-    scheduler: h.deps.scheduler,
-    onPositionsCommitted: async () => {},
-  });
-  const orderMonitor = createOrderMonitor({
-    ctx,
+  const orderMonitor = native.createMonitor({
     rateLimiter,
     cacheManager,
     marketDataClient,
@@ -142,8 +227,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     clearTimer: h.deps.scheduler.clearTimer,
     termination,
   });
-  const executor = createOrderExecutor({
-    ctx,
+  const executor = native.createExecutor({
     rateLimiter,
     cacheManager,
     marketDataClient,
@@ -160,15 +244,19 @@ async function createExecutionFixture(smartCloseEnabled = false) {
       info: { isTradingDay: true, isHalfDay: false },
     }),
   });
-  const positionsRelease = Promise.withResolvers<undefined>();
-  let positionsRequested = false;
   const executedSignals: ExecutableSignal[] = [];
   const trader = createTraderDouble({
     ...executor,
     orderRecorder,
-    executeSignals: async (signals) => {
+    executeSignals: async (signals, callerAuthorization) => {
       executedSignals.push(...signals);
-      return executor.executeSignals(signals);
+      callerAuthorizations.push(callerAuthorization);
+      expect(callerAuthorization()).toBeTrue();
+      return executor.executeSignals(signals, callerAuthorization);
+    },
+    executeDoomsdayClearanceSignals: async (signals, callerAuthorization) => {
+      callerAuthorizations.push(callerAuthorization);
+      return executor.executeDoomsdayClearanceSignals(signals, callerAuthorization);
     },
     getStockPositions: async () => {
       positionsRequested = true;
@@ -209,18 +297,44 @@ async function createExecutionFixture(smartCloseEnabled = false) {
       },
     },
     marketDataClient,
+    snapshot,
     getLastState: () => lastState,
     getCanProcessTask: () => lastState.isTradingEnabled,
     postTradeConsistencyRuntime: postTrade,
   });
   await orderMonitor.initialize();
-  await orderMonitor.recoverOrderTrackingFromSnapshot([]);
+  await orderMonitor.recoverOrderTrackingFromSnapshot([native.queryObservation]);
+  const rebuilt = orderRecorder.commitRebuildSnapshot(
+    [{ symbol: 'BULL.HK', isLongSymbol: true }],
+    [native.queryObservation],
+    () =>
+      snapshot.isCurrent(committed.snapshotToken, { account: true, positions: true, paired: true }),
+    'ACTIVATION',
+  );
+  expect(rebuilt.status).toBe('COMMITTED');
+  const prepared = dailyLossTracker.prepareRecalculationFromAllOrders(
+    [native.queryObservation],
+    config,
+    new Date(generatedAtMs),
+    undefined,
+    new Set(['BULL.HK', 'BEAR.HK']),
+  );
+  dailyLossTracker.publishRecalculation(prepared);
   postTrade.start();
+  expect(await postTrade.completeRebuildBaseline()).toBeTrue();
+  const baselineReceipt = await postTrade.waitForFresh();
+  expect(baselineReceipt.snapshotToken).toEqual(committed.snapshotToken);
+  expect(postTrade.isCurrent(baselineReceipt)).toBeTrue();
+  const baselineReadCounts = native.accountReadCounts();
+  blockRefresh = true;
   return {
     h,
     generatedAtMs,
     strategy,
-    broker,
+    native,
+    snapshot,
+    baselineReadCounts,
+    baselineReceipt,
     orderMonitor,
     orderRecorder,
     monitorContext,
@@ -233,6 +347,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     sellTaskQueue,
     termination,
     executedSignals,
+    callerAuthorizations,
     processedSells,
     positionsRelease,
     tradingConfig,
@@ -241,7 +356,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     dailyLossTracker,
     getPositionsRequested: () => positionsRequested,
     getQuoteReads: () => quoteReads,
-    setQuotePrice: (value: number) => {
+    setQuotePrice: (value: string) => {
       quotePrice = value;
     },
   };
@@ -284,40 +399,73 @@ describe('single active strategy execution integration', () => {
       if (!verificationTimer) throw new Error('策略未创建验证 timer');
 
       expect(f.sellTaskQueue.isEmpty()).toBeTrue();
+      const protectionSeatAuthorization = captureSwitchSeatAuthorization(
+        f.monitorContext.symbolRegistry,
+        'LONG',
+      );
+      const protectionOrigin = () =>
+        f.lastState.isTradingEnabled &&
+        f.lastState.canTrade === true &&
+        f.postTrade.isCurrent(f.baselineReceipt) &&
+        f.snapshot.isCurrent(f.baselineReceipt.snapshotToken, {
+          account: false,
+          positions: true,
+        }) &&
+        protectionSeatAuthorization() &&
+        f.snapshot.getView().token.dayEpoch === f.baselineReceipt.snapshotToken.dayEpoch;
       await createUnrealizedLossMonitor({
-        maxUnrealizedLossPerSymbol: 1,
+        maxUnrealizedLossPerSymbol: '1',
       }).monitorDirectionalUnrealizedLoss({
         symbol: 'BULL.HK',
         isLong: true,
         seatVersion: f.monitorContext.symbolRegistry.getSeatVersion('LONG'),
-        quote: createQuoteDouble('BULL.HK', 1, 100),
+        quote: createQuoteDouble('BULL.HK', '1', 100),
         riskChecker: f.riskChecker,
         trader: f.trader,
         orderRecorder: f.orderRecorder,
         dailyLossTracker: f.dailyLossTracker,
+        isCurrent: protectionOrigin,
       });
-      expect(f.broker.getCalls('submitOrder')).toHaveLength(1);
+      expect(f.native.nativeSubmitObservations()).toHaveLength(1);
       expect(f.executedSignals[0]?.isProtectiveLiquidation).toBeTrue();
+      expect(f.callerAuthorizations[0]).toBe(protectionOrigin);
       expect(f.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual([]);
-      expect(f.lastState.positionCache.get('BULL.HK')?.quantity).toBe(400);
+      expect(
+        f.snapshot.getView().positions.find((position) => position.symbol === 'BULL.HK')?.quantity,
+      ).toBe(400);
       const protectionId = f.orderMonitor.getPendingSellOrders('BULL.HK')[0]?.orderId;
       if (!protectionId) throw new Error('保护清仓未登记真实挂单');
 
       // 真实订单监控根据累计成交事实推进 stale；不直接调用 recordSettlementRefreshNeed。
-      f.broker.emitOrderChanged(
-        createPushOrderChanged({
+      f.native.setExecutionReplies([
+        {
           orderId: protectionId,
+          tradeId: 'PROTECTION-T',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          orderType: OrderType.MO,
-          status: OrderStatus.PartialWithdrawal,
-          submittedQuantity: 400,
-          executedQuantity: 100,
-          executedPrice: 1,
-          updatedAtMs: f.generatedAtMs + 1000,
-        }),
-      );
-      f.broker.flushAllEvents();
+          quantity: '100',
+          price: '1',
+          tradeDoneAtMs: f.generatedAtMs + 1000,
+        },
+      ]);
+
+      f.native.emitOrderChangedFrame({
+        orderId: protectionId,
+        tradeId: 'PROTECTION-T',
+        symbol: 'BULL.HK',
+        stockName: 'HSI BULL',
+        remark: 'HSI',
+        side: 'SELL',
+        orderType: 'MO',
+        status: 'PartialWithdrawal',
+        quantity: '400',
+        executedQuantity: '100',
+        submittedPrice: '1',
+        executedPrice: '1',
+        submittedAtMs: f.generatedAtMs,
+        executionTimeMs: f.generatedAtMs + 1000,
+        updatedAtMs: f.generatedAtMs + 1000,
+      });
+      await Bun.sleep(0);
       for (const timer of f.h.timers) {
         if (timer !== verificationTimer && !timer.cleared && timer.delay === 0) timer.callback();
       }
@@ -349,19 +497,29 @@ describe('single active strategy execution integration', () => {
       f.sellProcessor.start();
       await waitUntil(() => f.sellTaskQueue.isEmpty());
       expect(f.executedSignals).toHaveLength(1);
-      expect(f.broker.getCalls('submitOrder')).toHaveLength(1);
-      expect(f.broker.getCalls('cancelOrder')).toEqual([]);
+      expect(f.native.nativeSubmitObservations()).toHaveLength(1);
+      expect(f.native.nativeReadCounts().cancel).toBe(0);
       expect(f.getQuoteReads()).toBe(quoteReadsBeforeWait);
-      expect(f.lastState.positionCache.get('BULL.HK')?.quantity).toBe(400);
-      f.setQuotePrice(1.23);
-      f.broker.seedStockPositions(
-        createStockPositionsResponse({ symbol: 'BULL.HK', quantity: 300, availableQuantity: 200 }),
-      );
+      expect(
+        f.snapshot.getView().positions.find((position) => position.symbol === 'BULL.HK')?.quantity,
+      ).toBe(400);
+      f.setQuotePrice('1.23');
+      f.native.setStockPositions([
+        {
+          symbol: 'BULL.HK',
+          symbolName: 'BULL',
+          accountChannel: 'lb_papertrading',
+          currency: 'HKD',
+          quantity: '300',
+          availableQuantity: '200',
+          costPrice: '2',
+        },
+      ]);
       f.positionsRelease.resolve();
       await f.postTrade.waitForFresh();
       await waitUntil(() => f.executedSignals.length === 2);
       await f.sellProcessor.stopAndDrain();
-      expect(f.lastState.positionCache.get('BULL.HK')?.availableQuantity).toBe(200);
+      expect(f.snapshot.getAvailablePosition('BULL.HK')?.availableQuantity).toBe(200);
       expect(f.h.errors).toEqual([]);
       expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
       const sell = f.executedSignals[1];
@@ -369,32 +527,37 @@ describe('single active strategy execution integration', () => {
       expect(sell?.triggerTime?.getTime()).toBe(f.generatedAtMs + 60_000);
       expect(sell?.quantity).toBe(200);
       expect(sell?.isProtectiveLiquidation).not.toBeTrue();
-      expect(f.broker.getCalls('submitOrder')).toHaveLength(2);
-      const payload = f.broker.getCalls('submitOrder')[1]?.args[0];
+      expect(f.native.nativeSubmitObservations()).toHaveLength(2);
+      const payload = f.native.nativeSubmitObservations()[1];
       expect(payload).toMatchObject({
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        orderType: OrderType.ELO,
+        side: 'SELL',
+        orderType: 'ELO',
       });
 
-      if (
-        typeof payload !== 'object' ||
-        payload === null ||
-        !('submittedQuantity' in payload) ||
-        !('submittedPrice' in payload)
-      )
-        throw new Error('缺少实际卖出 payload');
+      if (payload === undefined) throw new Error('缺少实际卖出 payload');
 
-      expect(String(payload.submittedQuantity)).toBe('200');
-      expect(String(payload.submittedPrice)).toBe('1.23');
+      expect(payload.quantity).toBe('200');
+      expect(payload.price).toBe('1.23');
+      expect(payload.timeInForce).toBe('DAY');
+      expect(f.orderRecorder.getSellRecordByOrderId(protectionId)?.costAmount).toBe('100');
+      expect(f.orderRecorder.getExecutionFact(protectionId)).toMatchObject({
+        cumulativeQuantity: 100,
+        cumulativeAmount: '100',
+        executionTimeMs: f.generatedAtMs + 1000,
+        phase: 'TERMINAL',
+      });
       expect(f.orderMonitor.getPendingSellOrders('BULL.HK')).toHaveLength(1);
-      expect(f.broker.getCalls('replaceOrder')).toEqual([]);
+      expect(f.native.nativeMutations().filter((mutation) => mutation.kind === 'REPLACE')).toEqual(
+        [],
+      );
       expect(f.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual([]);
     } finally {
       f.positionsRelease.resolve();
       await f.sellProcessor.stopAndDrain();
       await f.postTrade.stopAndDrain();
       await f.orderMonitor.stopRuntimeAndDrain();
+      await f.snapshot.requestClear({ reason: 'STOP', dayEpoch: 1 });
       f.strategy.destroy();
     }
   });
@@ -438,34 +601,53 @@ describe('execution authority at buy and clearance boundaries', () => {
       await f.sellProcessor.stopAndDrain();
       expect(f.processedSells[0]?.action).toBe('HOLD');
       expect(f.processedSells[0]?.triggerTime?.getTime()).toBe(f.generatedAtMs);
-      expect(f.broker.getCalls('submitOrder')).toEqual([]);
+      expect(f.native.nativeSubmitObservations()).toEqual([]);
       expect(f.executedSignals).toEqual([]);
       expect(f.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toHaveLength(1);
       f.h.setNow(Date.parse('2026-02-16T07:56:00.000Z'));
-      f.broker.seedStockPositions(
-        createStockPositionsResponse({ symbol: 'BULL.HK', quantity: 300, availableQuantity: 200 }),
-      );
-      const result = await f.trader.executeDoomsdayClearanceSignals([
+      f.native.setStockPositions([
         {
           symbol: 'BULL.HK',
-          symbolName: null,
-          action: 'SELLCALL',
-          triggerTime: f.h.deps.clock.now(),
-          seatVersion: f.monitorContext.symbolRegistry.getSeatVersion('LONG'),
+          symbolName: 'BULL',
+          accountChannel: 'lb_papertrading',
+          currency: 'HKD',
+          quantity: '300',
+          availableQuantity: '200',
+          costPrice: '2',
         },
       ]);
+      const clearanceReceipt = await f.postTrade.waitForFresh();
+      const originalSeat = f.monitorContext.symbolRegistry.getSeatState('LONG');
+      const result = await f.trader.executeDoomsdayClearanceSignals(
+        [
+          {
+            symbol: 'BULL.HK',
+            symbolName: null,
+            action: 'SELLCALL',
+            triggerTime: f.h.deps.clock.now(),
+            seatVersion: f.monitorContext.symbolRegistry.getSeatVersion('LONG'),
+          },
+        ],
+        () =>
+          f.lastState.isTradingEnabled &&
+          f.postTrade.isCurrent(clearanceReceipt) &&
+          f.snapshot.isCurrent(clearanceReceipt.snapshotToken, {
+            account: false,
+            positions: true,
+          }) &&
+          f.monitorContext.symbolRegistry.getSeatState('LONG') === originalSeat,
+      );
       expect(result.executedOrderIds).toHaveLength(1);
-      const payload = f.broker.getCalls('submitOrder')[0]?.args[0];
+      const payload = f.native.nativeSubmitObservations()[0];
       expect(payload).toMatchObject({
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        orderType: OrderType.ELO,
+        side: 'SELL',
+        orderType: 'ELO',
       });
 
-      if (typeof payload !== 'object' || payload === null || !('submittedQuantity' in payload))
-        throw new Error('缺少 typed 清仓 payload');
+      if (payload === undefined) throw new Error('缺少 typed 清仓 payload');
 
-      expect(String(payload.submittedQuantity)).toBe('200');
+      expect(payload.quantity).toBe('200');
       expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
     } finally {
       f.positionsRelease.resolve();
@@ -476,7 +658,7 @@ describe('execution authority at buy and clearance boundaries', () => {
     }
   });
 
-  it.each([null, 0, Number.NaN, Number.POSITIVE_INFINITY])(
+  it.each([null, '0', Number.NaN, Number.POSITIVE_INFINITY])(
     'rejects invalid monitor quote %s at the actual buy queue without account reads or SDK mutations',
     async (price) => {
       const f = await createExecutionFixture();
@@ -489,12 +671,20 @@ describe('execution authority at buy and clearance boundaries', () => {
         marketDataClient: createMarketDataClientDouble({
           getQuotes: async () => {
             quoteRequested = true;
-            const quotes = new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1, 100)]]);
+            const quotes = new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1', 100)]]);
             if (price !== null)
               quotes.set(
                 f.monitorContext.config.monitorSymbol,
-                createQuoteDouble(f.monitorContext.config.monitorSymbol, price),
+                createQuoteDouble(
+                  f.monitorContext.config.monitorSymbol,
+                  typeof price === 'string' ? price : '1',
+                ),
               );
+
+            if (typeof price === 'number') {
+              const malformed = quotes.get(f.monitorContext.config.monitorSymbol);
+              if (malformed !== undefined) Reflect.set(malformed, 'price', price);
+            }
 
             return quotes;
           },
@@ -502,7 +692,8 @@ describe('execution authority at buy and clearance boundaries', () => {
         doomsdayProtection: createDoomsdayProtectionDouble(),
         getIsHalfDay: () => false,
         now: f.h.deps.clock.now,
-        getCanProcessTask: () => true,
+        snapshot: f.snapshot,
+        getCanProcessTask: () => f.lastState.isTradingEnabled && f.lastState.canTrade === true,
         termination: f.termination,
       });
       try {
@@ -520,10 +711,18 @@ describe('execution authority at buy and clearance boundaries', () => {
         await waitUntil(() => quoteRequested);
         await processor.stopAndDrain();
         expect(f.getPositionsRequested()).toBeFalse();
-        expect(f.broker.getCalls('accountBalance')).toEqual([]);
-        expect(f.broker.getCalls('submitOrder')).toEqual([]);
+        expect(f.native.accountReadCounts().balance).toBe(f.baselineReadCounts.balance);
+        expect(f.native.nativeSubmitObservations()).toEqual([]);
         expect(f.executedSignals).toEqual([]);
-        expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
+        if (typeof price === 'number') {
+          const fatal = f.termination.getFatalState();
+          if (!fatal.hasFatalError) throw new Error('malformed financial input must be fatal');
+
+          expect(fatal.error).toBeInstanceOf(TypeError);
+          expect(fatal.error instanceof Error && fatal.error.message).toBe(
+            'Financial input must be plain decimal text',
+          );
+        } else expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
       } finally {
         f.positionsRelease.resolve();
         await processor.stopAndDrain();
@@ -541,9 +740,9 @@ describe('execution authority at buy and clearance boundaries', () => {
         trader: f.trader,
         riskChecker: f.riskChecker,
         orderRecorder: f.orderRecorder,
-        longQuote: createQuoteDouble('BULL.HK', 1, 100),
+        longQuote: createQuoteDouble('BULL.HK', '1', 100),
         shortQuote: null,
-        monitorQuote: null,
+        monitorQuote: createQuoteDouble(f.monitorContext.config.monitorSymbol, '20000'),
         longSymbol: 'BULL.HK',
         shortSymbol: 'BEAR.HK',
         longSymbolName: null,
@@ -552,7 +751,8 @@ describe('execution authority at buy and clearance boundaries', () => {
         isHalfDay: false,
         doomsdayProtection: createDoomsdayProtectionDouble(),
         config: f.monitorContext.config,
-      } as unknown as BuyRiskCheckContext;
+      } satisfies BuyRiskCheckContext;
+      Reflect.set(invalidContext, 'monitorQuote', null);
       await rejects(
         f.signalProcessor.applyRiskChecks(
           [
@@ -567,7 +767,7 @@ describe('execution authority at buy and clearance boundaries', () => {
         ),
       );
       expect(f.getPositionsRequested()).toBeFalse();
-      expect(f.broker.getCalls('submitOrder')).toEqual([]);
+      expect(f.native.nativeSubmitObservations()).toEqual([]);
     } finally {
       f.positionsRelease.resolve();
       await f.postTrade.stopAndDrain();

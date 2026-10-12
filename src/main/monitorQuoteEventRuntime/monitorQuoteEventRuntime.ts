@@ -14,6 +14,8 @@ import { formatError } from '../../utils/error/index.js';
 import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { StartSwitchOnDistanceResult } from '../../types/monitorContextPorts.js';
+import type { SettlementReadinessReceipt } from '../../types/settlement.js';
+import { exactCompare } from '../../utils/numeric/exact.js';
 import { areStringSetsEqual } from './setUtils.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { QuoteUpdatedEvent } from '../../types/services.js';
@@ -84,10 +86,6 @@ function isExecutionGateOpen(deps: CreateMonitorQuoteEventRuntimeDeps): boolean 
  * @returns baseline ready 时返回 true
  */
 function isBaselineReady(deps: CreateMonitorQuoteEventRuntimeDeps): boolean {
-  if (!deps.postTradeConsistencyRuntime) {
-    return true;
-  }
-
   const status = deps.postTradeConsistencyRuntime.getStatus();
   return status.started && status.currentVersion === status.staleVersion;
 }
@@ -103,6 +101,8 @@ function createRouteState(mode: MonitorQuoteRouteMode): MonitorQuoteRouteState {
     generation: 0,
     monitorQuoteGeneration: 0,
     latestEvent: null,
+    latestDayEpoch: null,
+    blockedOnFreshness: false,
     wakeupSymbols: new Set(),
     retainedQuoteSymbols: new Set(),
     retainNeedsRetry: false,
@@ -150,7 +150,8 @@ function createDefaultStaticLiquidationExecutor(
   return createStaticLiquidationExecutor({
     trader: deps.trader,
     marketDataClient: deps.marketDataClient,
-    lastState: deps.lastState,
+    snapshot: deps.snapshot,
+    postTradeConsistencyRuntime: deps.postTradeConsistencyRuntime,
     now: deps.now,
   });
 }
@@ -162,38 +163,40 @@ function createDefaultStaticLiquidationExecutor(
  * @returns monitor quote 驱动的距离换标启动执行函数
  */
 function createDefaultStartDistanceSwitchExecutor(
-  deps: Pick<CreateDefaultMonitorQuoteEventRuntimeDeps, 'lastState'>,
+  deps: Pick<CreateDefaultMonitorQuoteEventRuntimeDeps, 'snapshot'>,
 ): StartDistanceSwitchExecutor {
   return async function startDistanceSwitchOnMonitorQuote(params: {
     readonly monitorContext: MonitorContext;
     readonly event: QuoteUpdatedEvent;
     readonly canContinue: () => boolean;
+    readonly isDirectionCurrent: (direction: 'LONG' | 'SHORT') => boolean;
   }): Promise<ReadonlyArray<StartSwitchOnDistanceResult>> {
     const { monitorContext, event } = params;
     const longSeat = monitorContext.symbolRegistry.getSeatState('LONG');
     const shortSeat = monitorContext.symbolRegistry.getSeatState('SHORT');
     const monitorPrice = event.quote.price;
-    const positions = deps.lastState.cachedPositions;
     const results: StartSwitchOnDistanceResult[] = [];
 
-    if (isSeatActive(longSeat) && params.canContinue()) {
+    if (isSeatActive(longSeat) && params.canContinue() && params.isDirectionCurrent('LONG')) {
+      const positions = deps.snapshot.getView().positions;
       results.push(
         await monitorContext.autoSymbolManager.startSwitchOnDistance({
           direction: 'LONG',
           monitorPrice,
           positions,
-          canContinue: params.canContinue,
+          canContinue: () => params.canContinue() && params.isDirectionCurrent('LONG'),
         }),
       );
     }
 
-    if (isSeatActive(shortSeat) && params.canContinue()) {
+    if (isSeatActive(shortSeat) && params.canContinue() && params.isDirectionCurrent('SHORT')) {
+      const positions = deps.snapshot.getView().positions;
       results.push(
         await monitorContext.autoSymbolManager.startSwitchOnDistance({
           direction: 'SHORT',
           monitorPrice,
           positions,
-          canContinue: params.canContinue,
+          canContinue: () => params.canContinue() && params.isDirectionCurrent('SHORT'),
         }),
       );
     }
@@ -217,7 +220,7 @@ export function createDefaultMonitorQuoteEventRuntime(
     monitorContext: deps.monitorContext,
     executeStaticLiquidation: createDefaultStaticLiquidationExecutor(deps),
     startDistanceSwitch: createDefaultStartDistanceSwitchExecutor({
-      lastState: deps.lastState,
+      snapshot: deps.snapshot,
     }),
     ...(deps.handoffPendingSwitch ? { handoffPendingSwitch: deps.handoffPendingSwitch } : {}),
     now: deps.now,
@@ -227,6 +230,7 @@ export function createDefaultMonitorQuoteEventRuntime(
       ? { quoteSubscriptionRuntime: deps.quoteSubscriptionRuntime }
       : {}),
     lastState: deps.lastState,
+    snapshot: deps.snapshot,
     postTradeConsistencyRuntime: deps.postTradeConsistencyRuntime,
     doomsdayProtectionEnabled: deps.doomsdayProtectionEnabled,
     termination: deps.termination,
@@ -261,6 +265,7 @@ function createMonitorQuoteEventRuntime(
   let drainPromise: Promise<void> | null = null;
   let draining = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
+  let unsubscribeFreshReached: (() => void) | null = null;
   let routeState: MonitorQuoteRouteState | null = null;
   const staticWakeupSymbols = new Set<string>();
   const activePromises = new Set<Promise<void>>();
@@ -660,28 +665,24 @@ function createMonitorQuoteEventRuntime(
   /**
    * 执行单轮 freshness 门禁等待。
    *
-   * @returns 是否可以继续执行
+   * @returns 真实ready凭据；门禁关闭/生命周期取消时返回null，不制造兼容授权。
    */
-  async function waitForExecutionFreshness(): Promise<boolean> {
-    if (!isExecutionGateOpen(deps) || !isBaselineReady(deps)) {
-      return false;
-    }
+  async function waitForExecutionFreshness(): Promise<SettlementReadinessReceipt | null> {
+    if (!isExecutionGateOpen(deps)) return null;
 
-    if (!deps.postTradeConsistencyRuntime) {
-      return true;
+    if (!isBaselineReady(deps)) {
+      if (routeState !== null) routeState.blockedOnFreshness = true;
+
+      return null;
     }
 
     try {
-      await deps.postTradeConsistencyRuntime.waitForFresh();
+      return await deps.postTradeConsistencyRuntime.waitForFresh();
     } catch (error) {
-      if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) {
-        return false;
-      }
+      if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) return null;
 
       throw error;
     }
-
-    return isExecutionGateOpen(deps) && isBaselineReady(deps);
   }
 
   /**
@@ -708,21 +709,51 @@ function createMonitorQuoteEventRuntime(
           return;
         }
 
+        const dayEpoch = activeRouteState.latestDayEpoch;
+        if (dayEpoch !== deps.snapshot.getView().token.dayEpoch) return;
+
+        const seatSnapshot = captureDistanceSwitchPrecheckSnapshot();
+        const isDirectionCurrent = (direction: 'LONG' | 'SHORT'): boolean => {
+          const captured = seatSnapshot.find((entry) => entry.direction === direction);
+          const seat = monitorContext.symbolRegistry.getSeatState(direction);
+          return (
+            captured?.seatStatus === 'ACTIVE' &&
+            seat.status === 'ACTIVE' &&
+            seat.symbol === captured.seatSymbol &&
+            monitorContext.symbolRegistry.getSeatVersion(direction) === captured.seatVersion
+          );
+        };
         const executionGeneration = activeRouteState.generation;
         const monitorQuoteGeneration = activeRouteState.monitorQuoteGeneration;
+        const receipt = await waitForExecutionFreshness();
+        if (
+          receipt === null ||
+          !isExecutionGateOpen(deps) ||
+          dayEpoch !== deps.snapshot.getView().token.dayEpoch
+        )
+          return;
+
+        activeRouteState.blockedOnFreshness = false;
+        const selectedView = deps.snapshot.getView();
+        const isSnapshotCurrent = (): boolean =>
+          isBaselineReady(deps) &&
+          dayEpoch === deps.snapshot.getView().token.dayEpoch &&
+          deps.postTradeConsistencyRuntime.isCurrent(receipt) &&
+          deps.snapshot.isCurrent(selectedView.token, { account: false, positions: true });
+        if (!isSnapshotCurrent()) {
+          activeRouteState.dirty = true;
+          continue;
+        }
+
         const canContinueDistanceExecution = (): boolean =>
           isExecutionGateOpen(deps) &&
+          isSnapshotCurrent() &&
           isDistanceExecutionCurrent({
             routeState: activeRouteState,
             generation: executionGeneration,
             monitorQuoteGeneration,
             event: snapshotEvent,
           });
-
-        const canExecute = await waitForExecutionFreshness();
-        if (!canExecute) {
-          return;
-        }
 
         if (activeRouteState.mode === 'DISTANCE_SWITCH') {
           if (!canContinueDistanceExecution()) {
@@ -740,13 +771,20 @@ function createMonitorQuoteEventRuntime(
               monitorContext,
               event: snapshotEvent,
               canContinue: canContinueDistanceExecution,
+              isDirectionCurrent,
             });
           } catch (error) {
             if (!isExternalApiRequestError(error)) throw error;
 
-            if (!canContinueDistanceExecution()) {
-              continue;
-            }
+            if (
+              isRuntimeRunning() &&
+              isExecutionGateOpen(deps) &&
+              dayEpoch === deps.snapshot.getView().token.dayEpoch &&
+              !isSnapshotCurrent()
+            )
+              activeRouteState.dirty = true;
+
+            if (!canContinueDistanceExecution()) continue;
 
             if (
               isExternalApiRequestError(error) &&
@@ -765,31 +803,49 @@ function createMonitorQuoteEventRuntime(
             throw error;
           }
 
-          if (!canContinueDistanceExecution()) {
-            continue;
-          }
-
+          // 只接管原epoch内本次真实发布的WAIT；keeper不依赖已经失效的ACTIVE/receipt/purpose票，
+          // 也不补票推进plan。未发布、后继map/seat或跨日结果不得借当前席位挂旧wakeups。
           for (const result of results) {
             assertValidStartedSwitchResult(result);
+            if (!handoffPendingSwitch || !result.started) continue;
+
+            const publishedRoute = result.driveResult.publishedRoute;
             if (
-              isRuntimeRunning() &&
-              canContinueDistanceExecution() &&
-              handoffPendingSwitch &&
-              result.started
-            ) {
-              handoffPendingSwitch({
-                direction: result.direction,
-                monitorContext,
-                driveResult: result.driveResult,
-              });
-            }
+              !isRuntimeRunning() ||
+              dayEpoch !== deps.snapshot.getView().token.dayEpoch ||
+              publishedRoute?.direction !== result.direction ||
+              !publishedRoute.isCurrent()
+            )
+              continue;
+
+            const publishedSeat = monitorContext.symbolRegistry.getSeatState(result.direction);
+            if (
+              publishedSeat.status !== 'SWITCHING' ||
+              publishedSeat.symbol !== publishedRoute.symbol ||
+              monitorContext.symbolRegistry.getSeatVersion(result.direction) !==
+                publishedRoute.seatVersion
+            )
+              continue;
+
+            handoffPendingSwitch({
+              direction: result.direction,
+              monitorContext,
+              driveResult: result.driveResult,
+              originalDayEpoch: dayEpoch,
+            });
           }
+
+          if (isRuntimeRunning() && isExecutionGateOpen(deps) && !isSnapshotCurrent())
+            activeRouteState.dirty = true;
 
           continue;
         }
 
+        // static executor在自己的wait/quote阶段捕获真实receipt；此闭包只取消旧route/epoch/gate。
+        // 不能因父receipt被较新组件取代，禁止真实broker ack的方向登记而导致再次提交。
         const canContinueStaticLiquidation = (): boolean =>
           isExecutionGateOpen(deps) &&
+          dayEpoch === deps.snapshot.getView().token.dayEpoch &&
           isRouteExecutionCurrent({
             routeState: activeRouteState,
             generation: executionGeneration,
@@ -802,20 +858,50 @@ function createMonitorQuoteEventRuntime(
           continue;
         }
 
+        if (!isSnapshotCurrent()) {
+          activeRouteState.dirty = true;
+          continue;
+        }
+
         const executionResult = await executeStaticLiquidation({
           monitorContext,
           event: snapshotEvent,
           retryAttempts: activeRouteState.retryAttempts,
-          excludedDirections: activeRouteState.submittedLiquidationDirections,
+          excludedDirections: new Set([
+            ...activeRouteState.submittedLiquidationDirections,
+            ...seatSnapshot
+              .filter((entry) => !isDirectionCurrent(entry.direction))
+              .map((entry) => entry.direction),
+          ]),
           canContinue: canContinueStaticLiquidation,
           onDirectionSubmitted: (direction) => {
-            if (canContinueStaticLiquidation()) {
+            // 真实ack仅记录仍属于原epoch/seat的已提交方向，不因receipt更新否认远端事实。
+            if (
+              dayEpoch === deps.snapshot.getView().token.dayEpoch &&
+              isDirectionCurrent(direction) &&
+              isRouteExecutionCurrent({
+                routeState: activeRouteState,
+                generation: executionGeneration,
+              })
+            )
               activeRouteState.submittedLiquidationDirections.add(direction);
-            }
           },
         });
 
-        if (!canContinueStaticLiquidation()) {
+        if (!isExecutionGateOpen(deps) || dayEpoch !== deps.snapshot.getView().token.dayEpoch)
+          return;
+
+        if (
+          !isRouteExecutionCurrent({
+            routeState: activeRouteState,
+            generation: executionGeneration,
+          })
+        )
+          continue;
+
+        if (executionResult.kind === 'RE_EVALUATE' || !isSnapshotCurrent()) {
+          // 本地supersession交原latest-only队列重算，不涨行情retry、不建timer、不丢WAIT retain。
+          activeRouteState.dirty = true;
           continue;
         }
 
@@ -853,12 +939,21 @@ function createMonitorQuoteEventRuntime(
       return;
     }
 
+    try {
+      if (exactCompare(event.quote.price, '0') <= 0) return;
+    } catch (error) {
+      deps.termination.reportFatalError(error);
+      stop();
+      return;
+    }
+
     if (event.symbol === runtimeMonitorSymbol) {
       const mode: MonitorQuoteRouteMode = monitorContext.config.autoSearchConfig.autoSearchEnabled
         ? 'DISTANCE_SWITCH'
         : 'STATIC_LIQUIDATION';
       const currentRouteState = getOrCreateRouteState(mode);
       currentRouteState.latestEvent = event;
+      currentRouteState.latestDayEpoch = deps.snapshot.getView().token.dayEpoch;
       currentRouteState.monitorQuoteGeneration += 1;
       if (mode === 'STATIC_LIQUIDATION') {
         clearRouteRetryTimer(currentRouteState);
@@ -879,6 +974,7 @@ function createMonitorQuoteEventRuntime(
     }
 
     routeState.latestEvent = event;
+    routeState.latestDayEpoch = deps.snapshot.getView().token.dayEpoch;
     clearRouteRetryTimer(routeState);
     triggerRoute();
   }
@@ -893,12 +989,20 @@ function createMonitorQuoteEventRuntime(
     drainPromise = null;
     running = true;
     unsubscribeQuoteUpdated = marketDataClient.onQuoteUpdated(handleQuoteUpdated);
+    unsubscribeFreshReached = deps.postTradeConsistencyRuntime.onFreshReached(() => {
+      if (routeState !== null && routeState.blockedOnFreshness && isRuntimeRunning()) {
+        routeState.blockedOnFreshness = false;
+        triggerRoute();
+      }
+    });
   }
 
   function stop(): void {
     running = false;
     unsubscribeQuoteUpdated?.();
     unsubscribeQuoteUpdated = null;
+    unsubscribeFreshReached?.();
+    unsubscribeFreshReached = null;
 
     if (routeState !== null) {
       clearRouteRetryTimer(routeState);

@@ -4,21 +4,20 @@
  * 功能：
  * - 验证卖出流程端到端场景与业务期望。
  */
-import { describe, expect, it, setSystemTime } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
+import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
+import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createOrderStorage } from '../../src/core/orderRecorder/orderStorage.js';
-import { createOrderExecutor as createOrderExecutorCore } from '../../src/core/trader/orderExecutor/index.js';
-import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
-import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import {
-  createOrder,
-  createPushOrderChanged,
-  createStockPositionsResponse,
-} from '../../mock/factories/tradeFactory.js';
-import {
+  createMonitorContextDouble,
+  createTraderDouble,
   createTerminationDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -31,23 +30,31 @@ import {
   createRateLimiterDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTradeContextDouble,
 } from '../helpers/testDoubles.js';
 import type { ProcessedSellSignal } from '../../src/core/signalProcessor/types.js';
 import type {
   ExecutableSellSignal,
   ProtectiveLiquidationSellSignal,
 } from '../../src/types/signal.js';
-import type { OrderRecord } from '../../src/types/services.js';
-import type {
-  OrderExecutorDeps,
-  OrderMonitor,
-  OrderMonitorDeps,
-} from '../../src/core/trader/types.js';
-import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
+import type { OrderRecord, OrderRecorder, RateLimiter } from '../../src/types/services.js';
+import type { OrderStorage } from '../../src/core/orderRecorder/types.js';
+import type { DailyLossTracker } from '../../src/types/risk.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import type { OrderExecutorDeps, OrderMonitor } from '../../src/core/trader/types.js';
+import { waitUntil } from '../main/asyncProgram/utils.js';
+import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
+
+type NativeSellIngress = Awaited<ReturnType<typeof createBrokerIngressFixture>>;
+const ownerCleanups: Array<() => Promise<void>> = [];
+const monitorDailyOwners = new WeakMap<NativeSellIngress, DailyLossTracker>();
+afterEach(async () => {
+  for (const cleanup of ownerCleanups.splice(0)) await cleanup();
+});
 
 type OrderExecutorTestDeps = Omit<
   OrderExecutorDeps,
+  | 'tradeMutationPort'
+  | 'readSellPositions'
   | 'isContinuousTradingAllowed'
   | 'now'
   | 'readCurrentTradingDayInfo'
@@ -55,6 +62,7 @@ type OrderExecutorTestDeps = Omit<
   | 'unrealizedLossBuyGate'
 > & {
   readonly orderMonitor: Partial<OrderMonitor>;
+  readonly ingress: NativeSellIngress;
 } & Partial<
     Pick<
       OrderExecutorDeps,
@@ -62,7 +70,7 @@ type OrderExecutorTestDeps = Omit<
     >
   >;
 
-function createOrderExecutor(deps: OrderExecutorTestDeps) {
+async function createOrderExecutor(deps: OrderExecutorTestDeps) {
   const defaultNow = (): Date => {
     const hongKongDate = new Date(Date.now() + 8 * 60 * 60 * 1000);
     return new Date(
@@ -83,10 +91,76 @@ function createOrderExecutor(deps: OrderExecutorTestDeps) {
     }),
     unrealizedLossBuyGate = createRiskCheckerDouble(),
     orderMonitor,
+    ingress,
     ...remainingDeps
   } = deps;
 
-  return createOrderExecutorCore({
+  const accountService = ingress.createAccountService({ rateLimiter: createRateLimiterDouble() });
+  const snapshot = await createSnapshotFixture({
+    readPort: accountService,
+    account: await accountService.getAccountSnapshot(),
+    positions: await accountService.getStockPositions(),
+  });
+  const dailyLossTracker =
+    monitorDailyOwners.get(ingress) ??
+    createDailyLossTracker({
+      ...createDailyLossOrderAnalysisDeps(),
+      toHongKongTimeIso,
+    });
+  if (!monitorDailyOwners.has(ingress))
+    dailyLossTracker.recalculateFromAllOrders([], deps.tradingConfig.monitor, now(), new Map());
+
+  const monitorContext = createMonitorContextDouble({
+    config: deps.tradingConfig.monitor,
+    symbolRegistry: deps.symbolRegistry,
+    orderRecorder: deps.orderRecorder,
+    dailyLossTracker,
+  });
+  const termination = createTerminationDouble({
+    reportFatalError: (error) => {
+      throw error;
+    },
+  });
+  const settlement = createPostTradeConsistencyRuntime({
+    snapshot,
+    termination,
+    getTrader: () => createTraderDouble(accountService),
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
+        throw new Error('SELL paired commit stale');
+    },
+    scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
+  });
+  settlement.bindBusinessDeps({
+    monitorContext,
+    dailyLossTracker,
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => {
+        throw new Error('SELL completion persistence not configured');
+      },
+    },
+  });
+  settlement.start();
+  expect(await settlement.completeRebuildBaseline()).toBeTrue();
+  const receipt = await settlement.waitForFresh();
+  const seats = (['LONG', 'SHORT'] as const).map((direction) => ({
+    direction,
+    version: deps.symbolRegistry.getSeatVersion(direction),
+    symbol: deps.symbolRegistry.getSeatState(direction).symbol,
+  }));
+  const callerAuthorization = () =>
+    !termination.isTerminated() &&
+    settlement.isCurrent(receipt) &&
+    snapshot.isCurrent(receipt.snapshotToken, { account: true, positions: true, paired: true }) &&
+    seats.every(
+      ({ direction, version, symbol }) =>
+        deps.symbolRegistry.getSeatVersion(direction) === version &&
+        deps.symbolRegistry.getSeatState(direction).symbol === symbol,
+    );
+  ownerCleanups.push(settlement.stopAndDrain);
+  const executor = ingress.createExecutor({
     ...remainingDeps,
     isContinuousTradingAllowed,
     now,
@@ -94,13 +168,149 @@ function createOrderExecutor(deps: OrderExecutorTestDeps) {
     unrealizedLossBuyGate,
     orderMonitor: createOrderMonitorDouble(orderMonitor),
   });
+  return { ...executor, callerAuthorization, snapshot, settlement, receipt };
+}
+
+/** 卖出新增 paired H 前置明确真实主账户零现金；原数量/可卖量不受资金影响。 */
+async function createNativeSellIngress(): Promise<NativeSellIngress> {
+  const nowMs = Date.parse('2026-07-11T03:00:00.000Z');
+  const ingress = await createBrokerIngressFixture({
+    orderId: 'SELL-BASELINE',
+    tradeId: 'SELL-BASELINE-trade',
+    symbol: 'BULL.HK',
+    stockName: 'HSI RC',
+    remark: '',
+    side: 'SELL',
+    status: 'New',
+    quantity: '100',
+    executedQuantity: '0',
+    submittedPrice: '1',
+    executedPrice: '0',
+    submittedAtMs: nowMs,
+    executionTimeMs: null,
+    updatedAtMs: nowMs,
+  });
+  ingress.setAccountBalance({
+    currency: 'HKD',
+    totalCash: '0',
+    netAssets: '0',
+    availableCash: '0',
+  });
+  ingress.setSubmitBehavior(async () => 'MOCK-000001');
+  return ingress;
+}
+
+/** 原私有SDK持仓fixture的明确中性输入，数量才作文本传输。 */
+function nativePositions(params: {
+  readonly symbol: string;
+  readonly quantity: number;
+  readonly availableQuantity: number;
+}) {
+  return [
+    {
+      symbol: params.symbol,
+      symbolName: params.symbol,
+      accountChannel: 'lb_papertrading',
+      currency: 'HKD',
+      costPrice: '1',
+      quantity: String(params.quantity),
+      availableQuantity: String(params.availableQuantity),
+    },
+  ];
+}
+
+/** Pending/track SDK元数据仅从真实mapper观察取得，金融字段不由enum模板伪造。 */
+async function createNativeOrderFact(orderId: string, orderType: 'ELO' | 'MO') {
+  const producer = await createBrokerIngressFixture({
+    orderId,
+    tradeId: orderId + '-trade',
+    symbol: 'BULL.HK',
+    stockName: 'HSI RC',
+    remark: '',
+    side: 'SELL',
+    orderType,
+    status: 'New',
+    quantity: '100',
+    executedQuantity: '0',
+    submittedPrice: '1',
+    executedPrice: '0',
+    submittedAtMs: Date.parse('2026-02-25T03:00:00.000Z'),
+    executionTimeMs: null,
+    updatedAtMs: Date.parse('2026-02-25T03:00:01.000Z'),
+  });
+  return producer.queryObservation;
+}
+
+let seedOrderSequence = 0;
+
+/** 原单价和数量经真实 SDK ledger/mapper 得到成本金额，然后初始化实际 storage。 */
+async function seedStorageFromNative(
+  storage: OrderStorage,
+  symbol: string,
+  price: string,
+  quantity: number,
+  isLong: boolean,
+  executedAtMs: number,
+) {
+  const orderId = `BUY-SEED-${++seedOrderSequence}`;
+  const producer = await createBrokerIngressFixture({
+    orderId,
+    tradeId: `${orderId}-trade`,
+    symbol,
+    stockName: 'HSI RC',
+    remark: 'AUTO',
+    side: 'BUY',
+    status: 'Filled',
+    quantity: String(quantity),
+    executedQuantity: String(quantity),
+    submittedPrice: price,
+    executedPrice: price,
+    submittedAtMs: executedAtMs - 1,
+    executionTimeMs: executedAtMs,
+    updatedAtMs: executedAtMs + 1,
+  });
+  const [order] = await producer.createQueryOrdersReader()();
+  if (order?.executionTimeMs === undefined || order.executionTimeMs === null)
+    throw new Error('BUY native seed missing execution');
+
+  const record: OrderRecord = {
+    orderId,
+    symbol,
+    costAmount: order.executedAmount,
+    executedQuantity: order.executedQuantity,
+    executedTime: order.executionTimeMs,
+    submittedAt: order.submittedAt,
+    updatedAt: order.updatedAt ?? undefined,
+  };
+  const rows = [...storage.getBuyOrdersList(symbol, isLong), record];
+  if (isLong) storage.setBuyOrdersListForLong(symbol, rows);
+  else storage.setBuyOrdersListForShort(symbol, rows);
+}
+
+/** 实际 Monitor 活跃生命周期及同ctx push ACK，硬停止必释放原监听/timer。 */
+async function createSellMonitor(
+  ingress: NativeSellIngress,
+  deps: Parameters<NativeSellIngress['createMonitor']>[0],
+) {
+  deps.dailyLossTracker.recalculateFromAllOrders(
+    [],
+    deps.tradingConfig.monitor,
+    deps.now(),
+    new Map(),
+  );
+  monitorDailyOwners.set(ingress, deps.dailyLossTracker);
+  const monitor = ingress.createMonitor(deps);
+  await monitor.initialize();
+  await monitor.recoverOrderTrackingFromSnapshot([]);
+  ownerCleanups.push(monitor.stopRuntimeAndDrain);
+  return monitor;
 }
 
 /** 创建卖出提交可在 permit 内读取的显式终态行情。 */
 function createExecutableQuoteClient() {
   return createMarketDataClientDouble({
     getQuotes: async (symbols) =>
-      new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, 1.1, 100)])),
+      new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1.1', 100)])),
   });
 }
 
@@ -133,7 +343,7 @@ function createRecordedBuyOrder(
   return {
     orderId,
     symbol,
-    executedPrice: 1,
+    costAmount: String(executedQuantity),
     executedQuantity,
     executedTime: Date.parse('2026-02-25T03:00:00.000Z'),
     submittedAt: undefined,
@@ -162,7 +372,7 @@ describe('sell-flow integration', () => {
         signals: [protectiveSignal],
         longPosition,
         shortPosition: null,
-        longQuote: createQuoteDouble('BULL.HK', 1.05),
+        longQuote: createQuoteDouble('BULL.HK', '1.05'),
         shortQuote: null,
         orderRecorder: createOrderRecorderDouble(),
         smartCloseEnabled: false,
@@ -200,23 +410,19 @@ describe('sell-flow integration', () => {
 
   it('throws ExternalApiRequestError without retry when sell quantity resolution reads stock positions', async () => {
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
       }),
     );
 
-    tradeCtx.setFailureRule('stockPositions', {
-      failAtCalls: [1, 2, 3],
-      maxFailures: 3,
-      errorMessage: 'service unavailable',
-    });
+    const positionFailure = new Error('service unavailable');
 
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -252,9 +458,11 @@ describe('sell-flow integration', () => {
     });
     signal = { ...signal, quantity: 100 };
 
+    const positionsIssuedBaseline = tradeCtx.accountReadCounts().positions;
+    tradeCtx.setStockPositionsFailure(positionFailure);
     let caught: unknown = null;
     try {
-      await orderExecutor.executeSignals([signal]);
+      await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
     } catch (error) {
       caught = error;
     }
@@ -265,9 +473,11 @@ describe('sell-flow integration', () => {
     }
 
     expect(caught.name).toBe('ExternalApiRequestError');
-    expect(Reflect.get(caught, 'operation')).toBe('TradeContext.stockPositions.quantityResolver');
+    expect(Reflect.get(caught, 'operation')).toBe('TradeContext.stockPositions');
     expect(Reflect.get(caught, 'attempts')).toBe(1);
-    expect(tradeCtx.getCalls('stockPositions')).toHaveLength(1);
+    expect(tradeCtx.accountReadCounts().positions - positionsIssuedBaseline).toBe(1);
+    expect(caught).toHaveProperty('cause', positionFailure);
+    tradeCtx.setStockPositionsFailure(null);
   });
 
   it('末日买入截止窗口不影响接管前的 smart-close 卖单提交', async () => {
@@ -287,13 +497,12 @@ describe('sell-flow integration', () => {
     });
 
     const storage = createOrderStorage();
-    storage.addBuyOrder('BULL.HK', 1, 100, true, Date.now() - 1000);
-    storage.addBuyOrder('BULL.HK', 1.2, 200, true, Date.now());
+    await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now() - 1000);
+    await seedStorageFromNative(storage, 'BULL.HK', '1.2', 200, true, Date.now());
 
     const sellOrderLinks: Array<{ orderId: string; related: readonly string[] }> = [];
     const recorder = createOrderRecorderDouble({
-      getCostAveragePrice: (symbol, isLongSymbol) =>
-        storage.getCostAveragePrice(symbol, isLongSymbol),
+      getCostBasis: (symbol, isLongSymbol) => storage.getCostBasis(symbol, isLongSymbol),
       getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
         storage.getBuyOrdersList(symbol, isLongSymbol),
       selectSellableOrders: (params) => storage.selectSellableOrders(params),
@@ -317,7 +526,7 @@ describe('sell-flow integration', () => {
         availableQuantity: 300,
       }),
       shortPosition: null,
-      longQuote: createQuoteDouble('BULL.HK', 1.05),
+      longQuote: createQuoteDouble('BULL.HK', '1.05'),
       shortQuote: null,
       orderRecorder: recorder,
       smartCloseEnabled: true,
@@ -331,18 +540,22 @@ describe('sell-flow integration', () => {
     expect(processed[0]?.quantity).toBe(100);
     expect(processed[0]?.relatedBuyOrderIds?.length).toBe(1);
 
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
       }),
     );
 
-    const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const trackedOrders: Array<{
+      orderId: string;
+      quantity: number;
+      executionSide: 'BUY' | 'SELL';
+    }> = [];
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -351,8 +564,8 @@ describe('sell-flow integration', () => {
       },
       orderMonitor: {
         initialize: async () => {},
-        trackOrder: ({ orderId, quantity, side }) => {
-          trackedOrders.push({ orderId, quantity, side });
+        trackOrder: ({ orderId, quantity, executionSide }) => {
+          trackedOrders.push({ orderId, quantity, executionSide });
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
@@ -378,29 +591,32 @@ describe('sell-flow integration', () => {
     });
 
     const executeResult = await withMockedNow(currentTimeMs, () =>
-      orderExecutor.executeSignals(requireExecutableSellSignals(processed)),
+      orderExecutor.executeSignals(
+        requireExecutableSellSignals(processed),
+        orderExecutor.callerAuthorization,
+      ),
     );
 
     expect(executeResult.executedOrderIds).toHaveLength(1);
     expect(trackedOrders).toHaveLength(1);
-    expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
+    expect(trackedOrders[0]?.executionSide).toBe('SELL');
     expect(trackedOrders[0]?.quantity).toBe(100);
 
-    const submitCall = tradeCtx.getCalls('submitOrder')[0];
-    const payload = submitCall?.args[0];
+    const submitCall = tradeCtx.nativeSubmitObservations()[0];
+    const payload = submitCall;
     if (
       !payload ||
       typeof payload !== 'object' ||
       !('orderType' in payload) ||
       !('side' in payload) ||
-      !('submittedQuantity' in payload)
+      !('quantity' in payload)
     ) {
       throw new TypeError('expected submitted sell payload');
     }
 
-    expect(payload.orderType).toBe(OrderType.ELO);
-    expect(payload.side).toBe(OrderSide.Sell);
-    expect(Number(String(payload.submittedQuantity))).toBe(100);
+    expect(payload.orderType).toBe('ELO');
+    expect(payload.side).toBe('SELL');
+    expect(Number(payload.quantity)).toBe(100);
     expect(sellOrderLinks[0]?.related.length).toBe(1);
   });
 
@@ -419,8 +635,8 @@ describe('sell-flow integration', () => {
       reportFatalError: () => {},
     });
     const storage = createOrderStorage();
-    storage.addBuyOrder('BULL.HK', 1, 100, true, Date.now() - 1_000);
-    storage.addBuyOrder('BULL.HK', 1, 100, true, Date.now());
+    await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now() - 1_000);
+    await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now());
 
     const trackedOrders: Array<{ readonly orderId: string; readonly quantity: number }> = [];
     const submittedSellLinks: Array<{
@@ -429,8 +645,7 @@ describe('sell-flow integration', () => {
       readonly relatedBuyOrderIds: ReadonlyArray<string>;
     }> = [];
     const recorder = createOrderRecorderDouble({
-      getCostAveragePrice: (symbol, isLongSymbol) =>
-        storage.getCostAveragePrice(symbol, isLongSymbol),
+      getCostBasis: (symbol, isLongSymbol) => storage.getCostBasis(symbol, isLongSymbol),
       getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
         storage.getBuyOrdersList(symbol, isLongSymbol),
       selectSellableOrders: (params) => storage.selectSellableOrders(params),
@@ -453,7 +668,7 @@ describe('sell-flow integration', () => {
         availableQuantity: 200,
       }),
       shortPosition: null,
-      longQuote: createQuoteDouble('BULL.HK', 1.1),
+      longQuote: createQuoteDouble('BULL.HK', '1.1'),
       shortQuote: null,
       orderRecorder: recorder,
       smartCloseEnabled: true,
@@ -466,16 +681,16 @@ describe('sell-flow integration', () => {
     expect(processedSignals[0]?.quantity).toBe(200);
     expect(processedSignals[0]?.relatedBuyOrderIds).toHaveLength(2);
 
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 200,
         availableQuantity: 150,
       }),
     );
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
@@ -504,26 +719,27 @@ describe('sell-flow integration', () => {
 
     const result = await orderExecutor.executeSignals(
       requireExecutableSellSignals(processedSignals),
+      orderExecutor.callerAuthorization,
     );
 
     expect(result.executedOrderIds).toEqual([]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
     expect(trackedOrders).toEqual([]);
     expect(submittedSellLinks).toEqual([]);
   });
 
   it('allows an unlinked sell to use the fresh available quantity', async () => {
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 200,
         availableQuantity: 150,
       }),
     );
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
@@ -558,16 +774,16 @@ describe('sell-flow integration', () => {
       relatedBuyOrderIds: [],
     };
 
-    const result = await orderExecutor.executeSignals([signal]);
+    const result = await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
 
     expect(result.executedOrderIds).toHaveLength(1);
-    const submitPayload = tradeCtx.getCalls('submitOrder')[0]?.args[0];
+    const submitPayload = tradeCtx.nativeSubmitObservations()[0];
     if (!submitPayload || typeof submitPayload !== 'object') {
       throw new TypeError('expected submitted sell payload');
     }
 
-    const submittedQuantity = Reflect.get(submitPayload, 'submittedQuantity');
-    expect(Number(String(submittedQuantity))).toBe(150);
+    const submittedQuantity = submitPayload.quantity;
+    expect(Number(submittedQuantity)).toBe(150);
   });
 
   it('runs stage2+stage3 with pending occupancy and submits remaining timeout quantity', async () => {
@@ -587,9 +803,24 @@ describe('sell-flow integration', () => {
 
     const storage = createOrderStorage();
     const occupiedOrderExecutedTimeMs = Date.parse('2026-02-24T01:32:00.000Z');
-    storage.addBuyOrder('BULL.HK', 0.9, 100, true, Date.parse('2026-02-24T01:30:00.000Z'));
-    storage.addBuyOrder('BULL.HK', 1.2, 100, true, Date.parse('2026-02-24T01:31:00.000Z'));
-    storage.addBuyOrder('BULL.HK', 1.3, 100, true, occupiedOrderExecutedTimeMs);
+    await seedStorageFromNative(
+      storage,
+      'BULL.HK',
+      '0.9',
+      100,
+      true,
+      Date.parse('2026-02-24T01:30:00.000Z'),
+    );
+
+    await seedStorageFromNative(
+      storage,
+      'BULL.HK',
+      '1.2',
+      100,
+      true,
+      Date.parse('2026-02-24T01:31:00.000Z'),
+    );
+    await seedStorageFromNative(storage, 'BULL.HK', '1.3', 100, true, occupiedOrderExecutedTimeMs);
 
     const occupiedOrder = storage
       .getBuyOrdersList('BULL.HK', true)
@@ -605,12 +836,12 @@ describe('sell-flow integration', () => {
       submittedQuantity: 100,
       relatedBuyOrderIds: [occupiedOrder.orderId],
       submittedAt: Date.now(),
+      isProtectiveLiquidation: false,
     });
 
     const sellOrderLinks: Array<{ orderId: string; related: readonly string[] }> = [];
     const recorder = createOrderRecorderDouble({
-      getCostAveragePrice: (symbol, isLongSymbol) =>
-        storage.getCostAveragePrice(symbol, isLongSymbol),
+      getCostBasis: (symbol, isLongSymbol) => storage.getCostBasis(symbol, isLongSymbol),
       getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
         storage.getBuyOrdersList(symbol, isLongSymbol),
       selectSellableOrders: (params) => storage.selectSellableOrders(params),
@@ -634,7 +865,7 @@ describe('sell-flow integration', () => {
         availableQuantity: 300,
       }),
       shortPosition: null,
-      longQuote: createQuoteDouble('BULL.HK', 1.05),
+      longQuote: createQuoteDouble('BULL.HK', '1.05'),
       shortQuote: null,
       orderRecorder: recorder,
       smartCloseEnabled: true,
@@ -652,18 +883,22 @@ describe('sell-flow integration', () => {
     expect(processed[0]?.relatedBuyOrderIds?.length).toBe(2);
     expect(processed[0]?.relatedBuyOrderIds).not.toContain(occupiedOrder.orderId);
 
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
       }),
     );
 
-    const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const trackedOrders: Array<{
+      orderId: string;
+      quantity: number;
+      executionSide: 'BUY' | 'SELL';
+    }> = [];
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -672,8 +907,8 @@ describe('sell-flow integration', () => {
       },
       orderMonitor: {
         initialize: async () => {},
-        trackOrder: ({ orderId, quantity, side }) => {
-          trackedOrders.push({ orderId, quantity, side });
+        trackOrder: ({ orderId, quantity, executionSide }) => {
+          trackedOrders.push({ orderId, quantity, executionSide });
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
@@ -695,28 +930,29 @@ describe('sell-flow integration', () => {
 
     const executeResult = await orderExecutor.executeSignals(
       requireExecutableSellSignals(processed),
+      orderExecutor.callerAuthorization,
     );
 
     expect(executeResult.executedOrderIds).toHaveLength(1);
     expect(trackedOrders).toHaveLength(1);
-    expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
+    expect(trackedOrders[0]?.executionSide).toBe('SELL');
     expect(trackedOrders[0]?.quantity).toBe(200);
 
-    const submitCall = tradeCtx.getCalls('submitOrder')[0];
-    const payload = submitCall?.args[0];
+    const submitCall = tradeCtx.nativeSubmitObservations()[0];
+    const payload = submitCall;
     if (
       !payload ||
       typeof payload !== 'object' ||
       !('orderType' in payload) ||
       !('side' in payload) ||
-      !('submittedQuantity' in payload)
+      !('quantity' in payload)
     ) {
       throw new TypeError('expected submitted sell payload');
     }
 
-    expect(payload.orderType).toBe(OrderType.ELO);
-    expect(payload.side).toBe(OrderSide.Sell);
-    expect(Number(String(payload.submittedQuantity))).toBe(200);
+    expect(payload.orderType).toBe('ELO');
+    expect(payload.side).toBe('SELL');
+    expect(Number(payload.quantity)).toBe(200);
     expect(sellOrderLinks[0]?.related.length).toBe(2);
   });
 
@@ -736,13 +972,27 @@ describe('sell-flow integration', () => {
     });
 
     const storage = createOrderStorage();
-    storage.addBuyOrder('BEAR.HK', 0.9, 100, false, Date.parse('2026-02-24T01:30:00.000Z'));
-    storage.addBuyOrder('BEAR.HK', 1.2, 100, false, Date.parse('2026-02-24T01:31:00.000Z'));
+    await seedStorageFromNative(
+      storage,
+      'BEAR.HK',
+      '0.9',
+      100,
+      false,
+      Date.parse('2026-02-24T01:30:00.000Z'),
+    );
+
+    await seedStorageFromNative(
+      storage,
+      'BEAR.HK',
+      '1.2',
+      100,
+      false,
+      Date.parse('2026-02-24T01:31:00.000Z'),
+    );
 
     const sellOrderLinks: Array<{ orderId: string; related: readonly string[] }> = [];
     const recorder = createOrderRecorderDouble({
-      getCostAveragePrice: (symbol, isLongSymbol) =>
-        storage.getCostAveragePrice(symbol, isLongSymbol),
+      getCostBasis: (symbol, isLongSymbol) => storage.getCostBasis(symbol, isLongSymbol),
       getBuyOrdersForSymbol: (symbol, isLongSymbol) =>
         storage.getBuyOrdersList(symbol, isLongSymbol),
       selectSellableOrders: (params) => storage.selectSellableOrders(params),
@@ -767,7 +1017,7 @@ describe('sell-flow integration', () => {
         availableQuantity: 200,
       }),
       longQuote: null,
-      shortQuote: createQuoteDouble('BEAR.HK', 1.05),
+      shortQuote: createQuoteDouble('BEAR.HK', '1.05'),
       orderRecorder: recorder,
       smartCloseEnabled: true,
       smartCloseTimeoutMinutes: 60,
@@ -783,18 +1033,22 @@ describe('sell-flow integration', () => {
     expect(processed[0]?.quantity).toBe(200);
     expect(processed[0]?.relatedBuyOrderIds?.length).toBe(2);
 
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BEAR.HK',
         quantity: 200,
         availableQuantity: 200,
       }),
     );
 
-    const trackedOrders: Array<{ orderId: string; quantity: number; side: OrderSide }> = [];
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const trackedOrders: Array<{
+      orderId: string;
+      quantity: number;
+      executionSide: 'BUY' | 'SELL';
+    }> = [];
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -803,8 +1057,8 @@ describe('sell-flow integration', () => {
       },
       orderMonitor: {
         initialize: async () => {},
-        trackOrder: ({ orderId, quantity, side }) => {
-          trackedOrders.push({ orderId, quantity, side });
+        trackOrder: ({ orderId, quantity, executionSide }) => {
+          trackedOrders.push({ orderId, quantity, executionSide });
         },
         cancelOrder: async () => ({
           kind: 'CANCEL_CONFIRMED',
@@ -826,36 +1080,38 @@ describe('sell-flow integration', () => {
 
     const executeResult = await orderExecutor.executeSignals(
       requireExecutableSellSignals(processed),
+      orderExecutor.callerAuthorization,
     );
 
     expect(executeResult.executedOrderIds).toHaveLength(1);
     expect(trackedOrders).toHaveLength(1);
-    expect(trackedOrders[0]?.side).toBe(OrderSide.Sell);
+    expect(trackedOrders[0]?.executionSide).toBe('SELL');
     expect(trackedOrders[0]?.quantity).toBe(200);
 
-    const submitCall = tradeCtx.getCalls('submitOrder')[0];
-    const payload = submitCall?.args[0];
+    const submitCall = tradeCtx.nativeSubmitObservations()[0];
+    const payload = submitCall;
     if (
       !payload ||
       typeof payload !== 'object' ||
       !('orderType' in payload) ||
       !('side' in payload) ||
-      !('submittedQuantity' in payload)
+      !('quantity' in payload)
     ) {
       throw new TypeError('expected submitted sell payload');
     }
 
-    expect(payload.orderType).toBe(OrderType.ELO);
-    expect(payload.side).toBe(OrderSide.Sell);
-    expect(Number(String(payload.submittedQuantity))).toBe(200);
+    expect(payload.orderType).toBe('ELO');
+    expect(payload.side).toBe('SELL');
+    expect(Number(payload.quantity)).toBe(200);
     expect(sellOrderLinks[0]?.related.length).toBe(2);
   });
 
   it('executor returns the existing order ID for broker-confirmed REPLACE and preserves merged occupancy', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
@@ -864,7 +1120,7 @@ describe('sell-flow integration', () => {
 
     const replaceCalls: Array<{
       orderId: string;
-      price: number;
+      price: string;
       quantity: number | null | undefined;
     }> = [];
     const updatedPendingSells: Array<{
@@ -874,8 +1130,8 @@ describe('sell-flow integration', () => {
     }> = [];
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
 
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -901,10 +1157,11 @@ describe('sell-flow integration', () => {
           {
             orderId: 'SELL-EXISTING',
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
-            orderType: OrderType.ELO,
-            submittedPrice: 1,
+            side: eloFact.executionSide,
+            executionSide: eloFact.executionSide,
+            status: eloFact.status,
+            orderType: eloFact.orderType,
+            submittedPrice: '1',
             submittedQuantity: 100,
             executedQuantity: 0,
             submittedAt,
@@ -928,6 +1185,7 @@ describe('sell-flow integration', () => {
             filledQuantity: 0,
             relatedBuyOrderIds: ['BUY-OLD'],
             status: 'pending',
+            isProtectiveLiquidation: false,
             submittedAt,
           },
         ],
@@ -954,7 +1212,7 @@ describe('sell-flow integration', () => {
     signal = { ...signal, quantity: 50 };
     signal = { ...signal, relatedBuyOrderIds: ['BUY-NEW'] };
 
-    const result = await orderExecutor.executeSignals([signal]);
+    const result = await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
 
     expect(result).toEqual({
       executedOrderIds: ['SELL-EXISTING'],
@@ -963,7 +1221,7 @@ describe('sell-flow integration', () => {
     expect(replaceCalls).toEqual([
       {
         orderId: 'SELL-EXISTING',
-        price: 1.1,
+        price: '1.1',
         quantity: 150,
       },
     ]);
@@ -975,14 +1233,15 @@ describe('sell-flow integration', () => {
         relatedBuyOrderIds: ['BUY-OLD', 'BUY-NEW'],
       },
     ]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
   });
 
   it('fails closed when a partial fill changes smart-close REPLACE facts during rate-limit wait', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 150,
         availableQuantity: 150,
@@ -996,7 +1255,24 @@ describe('sell-flow integration', () => {
       readonly relatedBuyOrderIds: ReadonlyArray<string>;
     }> = [];
     let isExistingPendingSellTracked = false;
-    const orderRecorder = createOrderRecorderDouble({
+    let capturedSettlement: PostTradeConsistencyRuntime | null = null;
+    const settlementNeedRecorder = {
+      recordSettlementRefreshNeed: (
+        need: Parameters<PostTradeConsistencyRuntime['recordSettlementRefreshNeed']>[0],
+      ) => {
+        if (capturedSettlement === null)
+          throw new Error('Partial ingress settlement is not assembled');
+
+        capturedSettlement.recordSettlementRefreshNeed(need);
+      },
+    };
+    const actualRecorder = tradeCtx.createRecorder({
+      rateLimiter: createRateLimiterDouble(),
+      getExecutionTimeEvidence: () => [],
+      settlementRefreshNeedRecorder: settlementNeedRecorder,
+    });
+    const orderRecorder = {
+      ...actualRecorder,
       getBuyOrdersForSymbol: () => [
         createRecordedBuyOrder('BUY-OLD', 100),
         createRecordedBuyOrder('BUY-NEW', 50),
@@ -1012,6 +1288,7 @@ describe('sell-flow integration', () => {
                 filledQuantity: 0,
                 relatedBuyOrderIds: ['BUY-OLD'],
                 status: 'pending',
+                isProtectiveLiquidation: false,
                 submittedAt: submittedAtMs,
               },
             ]
@@ -1024,14 +1301,17 @@ describe('sell-flow integration', () => {
         });
         return null;
       },
-    });
+    } satisfies OrderRecorder;
     let notifyReplaceMutationEntered: (() => void) | undefined;
     let releaseReplaceMutation: (() => void) | undefined;
     const replaceMutationEntered = new Promise<void>((resolve) => {
       notifyReplaceMutationEntered = resolve;
     });
-    const rateLimiter = createRateLimiterDouble({
-      onMutationPermitAcquired: async () => {
+    const mutationRateLimiter = createRateLimiterDouble();
+    // 原场景等待的是 permit 准入，不能已占有同一 FIFO 后再等待需要读取 ledger 的 WS。
+    const rateLimiter: RateLimiter = {
+      throttle: mutationRateLimiter.throttle,
+      withTradeMutation: async (callback) => {
         if (notifyReplaceMutationEntered === undefined) {
           throw new Error('replace mutation entry notifier is unavailable');
         }
@@ -1040,15 +1320,18 @@ describe('sell-flow integration', () => {
         await new Promise<void>((resolve) => {
           releaseReplaceMutation = resolve;
         });
+        return mutationRateLimiter.withTradeMutation(callback);
       },
-    });
-    const orderMonitor = createOrderMonitor({
-      now: () => new Date(),
+    };
+    const ingressFatalErrors: unknown[] = [];
+    const ledgerIssuedBaseline = tradeCtx.readCounts();
+    const orderMonitor = await createSellMonitor(tradeCtx, {
+      now: () => new Date(submittedAtMs),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
-      ctx: createTradeContextDouble(tradeCtx),
+
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
@@ -1075,7 +1358,7 @@ describe('sell-flow integration', () => {
       isContinuousTradingAllowed: () => true,
       termination: createTerminationDouble({
         reportFatalError: (error) => {
-          throw error;
+          ingressFatalErrors.push(error);
         },
       }),
     });
@@ -1084,20 +1367,21 @@ describe('sell-flow integration', () => {
     orderMonitor.trackOrder({
       orderId: 'SELL-EXISTING',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: eloFact.executionSide,
+      executionSide: eloFact.executionSide,
+      price: '1',
+      initialSubmittedPrice: '1',
       quantity: 100,
       submittedAtMs,
-      initialStatus: OrderStatus.New,
+      initialStatus: eloFact.status,
       isLongSymbol: true,
       monitorSymbol: tradingConfig.monitor.monitorSymbol,
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: eloFact.orderType,
     });
     isExistingPendingSellTracked = true;
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
@@ -1106,12 +1390,13 @@ describe('sell-flow integration', () => {
       orderMonitor,
       orderRecorder,
       marketDataClient: createMarketDataClientDouble({
-        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', 1.02)]]),
+        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.02')]]),
       }),
       tradingConfig,
       symbolRegistry,
       isExecutionAllowed: () => true,
     });
+    capturedSettlement = orderExecutor.settlement;
     const signal = {
       ...createSignal({
         symbol: 'BULL.HK',
@@ -1123,23 +1408,70 @@ describe('sell-flow integration', () => {
       relatedBuyOrderIds: ['BUY-NEW'],
     };
 
-    const resultPromise = orderExecutor.executeSignals([signal]);
+    const resultPromise = orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
     await replaceMutationEntered;
-    tradeCtx.emitOrderChanged(
-      createPushOrderChanged({
+    tradeCtx.setExecutionReplies([
+      {
         orderId: 'SELL-EXISTING',
+        tradeId: 'SELL-EXISTING-partial',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialFilled,
-        orderType: OrderType.ELO,
-        submittedQuantity: 100,
-        executedQuantity: 50,
-        submittedPrice: 1,
-        executedPrice: 1.01,
-        updatedAtMs: submittedAtMs + 1_000,
-      }),
-    );
-    expect(tradeCtx.flushAllEvents()).toBe(1);
+        quantity: '50',
+        price: '1.01',
+        tradeDoneAtMs: submittedAtMs + 1_000,
+      },
+    ]);
+
+    tradeCtx.emitOrderChangedFrame({
+      orderId: 'SELL-EXISTING',
+      tradeId: 'SELL-EXISTING-partial',
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC',
+      remark: '',
+      side: 'SELL',
+      status: 'PartialFilled',
+      orderType: 'ELO',
+      quantity: '100',
+      executedQuantity: '50',
+      submittedPrice: '1',
+      executedPrice: '1.01',
+      submittedAtMs,
+      executionTimeMs: submittedAtMs + 1_000,
+      updatedAtMs: submittedAtMs + 1_000,
+    });
+
+    await waitUntil(
+      () =>
+        ingressFatalErrors.length > 0 ||
+        orderMonitor.getPendingSellOrders('BULL.HK')[0]?.executedQuantity === 50,
+    ).catch(async (error: unknown) => {
+      releaseReplaceMutation?.();
+      await resultPromise;
+      throw new Error(
+        `partial ingress stage: ledger=${JSON.stringify(tradeCtx.readCounts())}, fact=${JSON.stringify(actualRecorder.getExecutionFact('SELL-EXISTING'))}, offset=${monitorDailyOwners.get(tradeCtx)?.getLossOffset('LONG') ?? 'UNBOUND'}`,
+        { cause: error },
+      );
+    });
+
+    if (ingressFatalErrors.length > 0) {
+      releaseReplaceMutation?.();
+      await resultPromise;
+      throw ingressFatalErrors[0];
+    }
+
+    expect(orderMonitor.getPendingSellOrders('BULL.HK')[0]?.executedQuantity).toBe(50);
+    expect(ingressFatalErrors).toEqual([]);
+    expect(tradeCtx.readCounts()).toEqual({
+      today: ledgerIssuedBaseline.today + 1,
+      history: ledgerIssuedBaseline.history + 1,
+    });
+
+    expect(actualRecorder.getExecutionFact('SELL-EXISTING')).toMatchObject({
+      cumulativeQuantity: 50,
+      cumulativeAmount: '50.5',
+      executionTimeMs: submittedAtMs + 1_000,
+      updatedAtMs: submittedAtMs + 1_000,
+      phase: 'OPEN',
+    });
 
     if (releaseReplaceMutation === undefined) {
       throw new Error('replace mutation release is unavailable');
@@ -1149,8 +1481,10 @@ describe('sell-flow integration', () => {
     const result = await resultPromise;
 
     expect(result.executedOrderIds).toEqual([]);
-    expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(0);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(
+      tradeCtx.nativeMutations().filter((mutation) => mutation.kind === 'REPLACE'),
+    ).toHaveLength(0);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
     expect(pendingSellUpdates).toEqual([]);
     const [pendingSell] = orderMonitor.getPendingSellOrders('BULL.HK');
     expect(pendingSell?.submittedQuantity).toBe(100);
@@ -1158,10 +1492,11 @@ describe('sell-flow integration', () => {
   });
 
   it('does not REPLACE when merged related buy orders cannot exactly represent target quantity', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
@@ -1173,8 +1508,8 @@ describe('sell-flow integration', () => {
       readonly relatedBuyOrderIds: ReadonlyArray<string>;
     }> = [];
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
@@ -1192,10 +1527,11 @@ describe('sell-flow integration', () => {
           {
             orderId: 'SELL-EXISTING-INEXACT',
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
-            orderType: OrderType.ELO,
-            submittedPrice: 1,
+            side: eloFact.executionSide,
+            executionSide: eloFact.executionSide,
+            status: eloFact.status,
+            orderType: eloFact.orderType,
+            submittedPrice: '1',
             submittedQuantity: 100,
             executedQuantity: 0,
             submittedAt,
@@ -1219,6 +1555,7 @@ describe('sell-flow integration', () => {
             filledQuantity: 0,
             relatedBuyOrderIds: ['BUY-OLD'],
             status: 'pending',
+            isProtectiveLiquidation: false,
             submittedAt,
           },
         ],
@@ -1246,19 +1583,23 @@ describe('sell-flow integration', () => {
       relatedBuyOrderIds: ['BUY-NEW'],
     };
 
-    const result = await orderExecutor.executeSignals([signal]);
+    const result = await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
 
     expect(result.executedOrderIds).toEqual([]);
-    expect(tradeCtx.getCalls('replaceOrder')).toHaveLength(0);
+    expect(
+      tradeCtx.nativeMutations().filter((mutation) => mutation.kind === 'REPLACE'),
+    ).toHaveLength(0);
     expect(pendingUpdates).toEqual([]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
   });
 
   it('does not submit after cancel when merged related buy orders cannot exactly represent replanned quantity', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
+    const marketFact = await createNativeOrderFact('SELL-EXISTING', 'MO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
@@ -1272,8 +1613,8 @@ describe('sell-flow integration', () => {
       readonly relatedBuyOrderIds: ReadonlyArray<string>;
     }> = [];
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
@@ -1298,9 +1639,10 @@ describe('sell-flow integration', () => {
           {
             orderId: 'SELL-NONREPLACEABLE-INEXACT',
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
-            orderType: OrderType.MO,
+            side: eloFact.executionSide,
+            executionSide: eloFact.executionSide,
+            status: eloFact.status,
+            orderType: marketFact.orderType,
             submittedPrice: null,
             submittedQuantity: 100,
             executedQuantity: 0,
@@ -1335,20 +1677,21 @@ describe('sell-flow integration', () => {
       relatedBuyOrderIds: ['BUY-NEW'],
     };
 
-    const result = await orderExecutor.executeSignals([signal]);
+    const result = await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
 
     expect(result.executedOrderIds).toEqual([]);
     expect(cancelCalls).toEqual(['SELL-NONREPLACEABLE-INEXACT']);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
     expect(trackedOrders).toEqual([]);
     expect(submittedSellLinks).toEqual([]);
   });
 
   it('does not update pending sell when REPLACE authorization expires inside the mutation permit', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
@@ -1359,8 +1702,8 @@ describe('sell-flow integration', () => {
     let replaceSdkCallCount = 0;
     let updatePendingSellCallCount = 0;
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -1392,10 +1735,11 @@ describe('sell-flow integration', () => {
           {
             orderId: 'SELL-EXISTING-AUTH-REVOKED',
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
-            orderType: OrderType.ELO,
-            submittedPrice: 1,
+            side: eloFact.executionSide,
+            executionSide: eloFact.executionSide,
+            status: eloFact.status,
+            orderType: eloFact.orderType,
+            submittedPrice: '1',
             submittedQuantity: 100,
             executedQuantity: 0,
             submittedAt,
@@ -1419,6 +1763,7 @@ describe('sell-flow integration', () => {
             filledQuantity: 0,
             relatedBuyOrderIds: ['BUY-OLD'],
             status: 'pending',
+            isProtectiveLiquidation: false,
             submittedAt,
           },
         ],
@@ -1441,17 +1786,22 @@ describe('sell-flow integration', () => {
     signal = { ...signal, quantity: 50 };
     signal = { ...signal, relatedBuyOrderIds: ['BUY-NEW'] };
 
-    await orderExecutor.executeSignals(requireExecutableSellSignals([signal]));
+    await orderExecutor.executeSignals(
+      requireExecutableSellSignals([signal]),
+      orderExecutor.callerAuthorization,
+    );
 
     expect(replaceSdkCallCount).toBe(0);
     expect(updatePendingSellCallCount).toBe(0);
   });
 
   it('does not submit merged sell order before cancel reaches confirmed terminal close', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
+    const marketFact = await createNativeOrderFact('SELL-EXISTING', 'MO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
@@ -1459,8 +1809,8 @@ describe('sell-flow integration', () => {
     );
 
     const cancelCalls: string[] = [];
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -1484,10 +1834,11 @@ describe('sell-flow integration', () => {
           {
             orderId: 'SELL-MARKET-EXISTING',
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
-            orderType: OrderType.MO,
-            submittedPrice: 1,
+            side: eloFact.executionSide,
+            executionSide: eloFact.executionSide,
+            status: eloFact.status,
+            orderType: marketFact.orderType,
+            submittedPrice: '1',
             submittedQuantity: 100,
             executedQuantity: 0,
             submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
@@ -1512,20 +1863,22 @@ describe('sell-flow integration', () => {
     signal = { ...signal, quantity: 50 };
     signal = { ...signal, relatedBuyOrderIds: ['BUY-NEW'] };
 
-    const result = await orderExecutor.executeSignals([signal]);
+    const result = await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
 
     expect(result).toEqual({
       executedOrderIds: [],
     });
     expect(cancelCalls).toEqual(['SELL-MARKET-EXISTING']);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
   });
 
   it('carries original related buy orders into CANCEL_AND_SUBMIT merged sell order', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
+    const marketFact = await createNativeOrderFact('SELL-EXISTING', 'MO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    const tradeCtx = await createNativeSellIngress();
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 300,
         availableQuantity: 300,
@@ -1540,8 +1893,8 @@ describe('sell-flow integration', () => {
       relatedBuyOrderIds: ReadonlyArray<string>;
     }> = [];
 
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -1572,10 +1925,11 @@ describe('sell-flow integration', () => {
           {
             orderId: 'SELL-MARKET-EXISTING',
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            status: OrderStatus.New,
-            orderType: OrderType.MO,
-            submittedPrice: 1,
+            side: eloFact.executionSide,
+            executionSide: eloFact.executionSide,
+            status: eloFact.status,
+            orderType: marketFact.orderType,
+            submittedPrice: '1',
             submittedQuantity: 100,
             executedQuantity: 0,
             submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
@@ -1612,7 +1966,7 @@ describe('sell-flow integration', () => {
     signal = { ...signal, quantity: 50 };
     signal = { ...signal, relatedBuyOrderIds: ['BUY-NEW'] };
 
-    const result = await orderExecutor.executeSignals([signal]);
+    const result = await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
 
     expect(result.executedOrderIds).toHaveLength(1);
     expect(cancelCalls).toEqual(['SELL-MARKET-EXISTING']);
@@ -1622,18 +1976,20 @@ describe('sell-flow integration', () => {
     expect(submittedSellLinks[0]?.quantity).toBe(150);
     expect(submittedSellLinks[0]?.relatedBuyOrderIds).toEqual(['BUY-NEW', 'BUY-OLD']);
 
-    const submitCall = tradeCtx.getCalls('submitOrder')[0];
-    const payload = submitCall?.args[0];
-    if (!payload || typeof payload !== 'object' || !('submittedQuantity' in payload)) {
+    const submitCall = tradeCtx.nativeSubmitObservations()[0];
+    const payload = submitCall;
+    if (!payload || typeof payload !== 'object' || !('quantity' in payload)) {
       throw new TypeError('expected submitted sell payload');
     }
 
-    expect(Number(String(payload.submittedQuantity))).toBe(150);
+    expect(Number(payload.quantity)).toBe(150);
   });
 
   it('fails closed when partial cancel remainder cannot be represented by whole related buy orders', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
+    const marketFact = await createNativeOrderFact('SELL-EXISTING', 'MO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
+    const tradeCtx = await createNativeSellIngress();
     const symbolRegistry = createSymbolRegistryDouble();
     const submittedSellOccupancies: Array<{
       readonly orderId: string;
@@ -1645,53 +2001,64 @@ describe('sell-flow integration', () => {
         submittedSellOccupancies.push({ orderId, quantity });
       },
     });
-    const initialAvailablePositions = createStockPositionsResponse({
+    const initialAvailablePositions = nativePositions({
       symbol: 'BULL.HK',
       quantity: 150,
       availableQuantity: 150,
     });
-    const postCancelAvailablePositions = createStockPositionsResponse({
+    const postCancelAvailablePositions = nativePositions({
       symbol: 'BULL.HK',
       quantity: 110,
       availableQuantity: 110,
     });
-    tradeCtx.seedStockPositions(initialAvailablePositions);
-    tradeCtx.seedTodayOrders([
-      createOrder({
-        orderId: 'SELL-PARTIAL-WITHDRAWAL',
+    tradeCtx.setStockPositions(initialAvailablePositions);
+    const terminalFrame: BrokerIngressInput = {
+      orderId: 'SELL-PARTIAL-WITHDRAWAL',
+      tradeId: 'SELL-PARTIAL-WITHDRAWAL-trade',
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC',
+      remark: '',
+      side: 'SELL',
+      status: 'PartialWithdrawal',
+      orderType: 'MO',
+      quantity: '100',
+      executedQuantity: '40',
+      submittedPrice: '1',
+      executedPrice: '1.02',
+      submittedAtMs: Date.parse('2026-07-11T02:59:00.000Z'),
+      executionTimeMs: Date.now(),
+      updatedAtMs: Date.now() + 1,
+    };
+    tradeCtx.setExecutionReplies([
+      {
+        orderId: terminalFrame.orderId,
+        tradeId: terminalFrame.tradeId,
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialWithdrawal,
-        orderType: OrderType.MO,
-        quantity: 100,
-        executedQuantity: 40,
-        price: 1,
-        executedPrice: 1.02,
-      }),
+        quantity: '40',
+        price: '1.02',
+        tradeDoneAtMs: terminalFrame.executionTimeMs ?? 0,
+      },
     ]);
+    tradeCtx.setOrderDetailReplies([terminalFrame]);
 
-    tradeCtx.setFailureRule('cancelOrder', {
-      failAtCalls: [1],
-      maxFailures: 1,
-      errorMessage: 'openapi error: code=601011: Order has been cancelled',
-    });
+    tradeCtx.setCancelFailure(new Error('openapi error: code=601011: Order has been cancelled'));
 
     let throttleCallCount = 0;
     const rateLimiter = createRateLimiterDouble({
       onThrottle: async () => {
         throttleCallCount += 1;
         if (throttleCallCount === 4) {
-          tradeCtx.seedStockPositions(postCancelAvailablePositions);
+          tradeCtx.setStockPositions(postCancelAvailablePositions);
         }
       },
     });
-    const orderMonitorDeps: OrderMonitorDeps = {
+    const orderMonitorDeps: Parameters<NativeSellIngress['createMonitor']>[0] = {
       now: () => new Date(),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
-      ctx: createTradeContextDouble(tradeCtx),
+
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
@@ -1722,24 +2089,25 @@ describe('sell-flow integration', () => {
         },
       }),
     };
-    const orderMonitor = createOrderMonitor(orderMonitorDeps);
+    const orderMonitor = await createSellMonitor(tradeCtx, orderMonitorDeps);
     orderMonitor.trackOrder({
       orderId: 'SELL-PARTIAL-WITHDRAWAL',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: eloFact.executionSide,
+      executionSide: eloFact.executionSide,
+      price: '1',
+      initialSubmittedPrice: '1',
       quantity: 100,
       submittedAtMs: Date.parse('2026-07-11T02:59:00.000Z'),
-      initialStatus: OrderStatus.New,
+      initialStatus: eloFact.status,
       isLongSymbol: true,
       monitorSymbol: tradingConfig.monitor.monitorSymbol,
       isProtectiveLiquidation: false,
-      orderType: OrderType.MO,
+      orderType: marketFact.orderType,
     });
 
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter,
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
@@ -1760,19 +2128,21 @@ describe('sell-flow integration', () => {
     });
     signal = { ...signal, quantity: 50, relatedBuyOrderIds: ['BUY-NEW'] };
 
-    const result = await orderExecutor.executeSignals([signal]);
+    const result = await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
 
     expect(result.executedOrderIds).toEqual([]);
-    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
-    expect(tradeCtx.getCalls('orderDetail')).toHaveLength(1);
+    expect(tradeCtx.nativeReadCounts().cancel).toBe(1);
+    expect(tradeCtx.nativeReadCounts().detail).toBe(1);
     expect(submittedSellOccupancies).toEqual([]);
-    expect(tradeCtx.getCalls('stockPositions')).toHaveLength(2);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(tradeCtx.accountReadCounts().positions).toBe(4);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
   });
 
   it('fails closed when CANCEL_AND_SUBMIT terminal execution quantity is unavailable', async () => {
+    const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
+    const marketFact = await createNativeOrderFact('SELL-EXISTING', 'MO');
     const tradingConfig = createTradingConfig();
-    const tradeCtx = createTradeContextMock();
+    const tradeCtx = await createNativeSellIngress();
     const symbolRegistry = createSymbolRegistryDouble();
     const submittedSellOccupancies: Array<{
       readonly orderId: string;
@@ -1783,45 +2153,41 @@ describe('sell-flow integration', () => {
         submittedSellOccupancies.push({ orderId, quantity });
       },
     });
-    tradeCtx.seedStockPositions(
-      createStockPositionsResponse({
+    tradeCtx.setStockPositions(
+      nativePositions({
         symbol: 'BULL.HK',
         quantity: 150,
         availableQuantity: 150,
       }),
     );
-    const terminalOrder = createOrder({
+    const terminalFrame: BrokerIngressInput = {
       orderId: 'SELL-PARTIAL-WITHDRAWAL-MISSING-EXECUTION',
+      tradeId: 'SELL-PARTIAL-WITHDRAWAL-MISSING-EXECUTION-trade',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      status: OrderStatus.PartialWithdrawal,
-      orderType: OrderType.MO,
-      quantity: 100,
-      executedQuantity: 0,
-      price: 1,
-      executedPrice: 1.02,
-    });
-    // SDK 运行时可能缺失该字段；仅在测试外部不透明边界注入原始事实。
-    Object.defineProperty(terminalOrder, 'executedQuantity', {
-      value: null,
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-    tradeCtx.seedTodayOrders([terminalOrder]);
-    tradeCtx.setFailureRule('cancelOrder', {
-      failAtCalls: [1],
-      maxFailures: 1,
-      errorMessage: 'openapi error: code=601011: Order has been cancelled',
-    });
+      stockName: 'HSI RC',
+      remark: '',
+      side: 'SELL',
+      status: 'PartialWithdrawal',
+      orderType: 'MO',
+      quantity: '100',
+      executedQuantity: '0',
+      submittedPrice: '1',
+      executedPrice: '1.02',
+      submittedAtMs: Date.parse('2026-07-11T02:59:00.000Z'),
+      executionTimeMs: null,
+      updatedAtMs: Date.parse('2026-07-11T03:00:00.000Z'),
+    };
+    tradeCtx.setOrderDetailReplies([terminalFrame]);
+    tradeCtx.setExecutionReplies([]);
+    tradeCtx.setCancelFailure(new Error('openapi error: code=601011: Order has been cancelled'));
 
     let throttleCallCount = 0;
     const rateLimiter = createRateLimiterDouble({
       onThrottle: async () => {
         throttleCallCount += 1;
         if (throttleCallCount === 4) {
-          tradeCtx.seedStockPositions(
-            createStockPositionsResponse({
+          tradeCtx.setStockPositions(
+            nativePositions({
               symbol: 'BULL.HK',
               quantity: 110,
               availableQuantity: 110,
@@ -1830,13 +2196,13 @@ describe('sell-flow integration', () => {
         }
       },
     });
-    const orderMonitor = createOrderMonitor({
+    const orderMonitor = await createSellMonitor(tradeCtx, {
       now: () => new Date(),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
-      ctx: createTradeContextDouble(tradeCtx),
+
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
@@ -1870,19 +2236,20 @@ describe('sell-flow integration', () => {
     orderMonitor.trackOrder({
       orderId: 'SELL-PARTIAL-WITHDRAWAL-MISSING-EXECUTION',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: eloFact.executionSide,
+      executionSide: eloFact.executionSide,
+      price: '1',
+      initialSubmittedPrice: '1',
       quantity: 100,
       submittedAtMs: Date.parse('2026-07-11T02:59:00.000Z'),
-      initialStatus: OrderStatus.New,
+      initialStatus: eloFact.status,
       isLongSymbol: true,
       monitorSymbol: tradingConfig.monitor.monitorSymbol,
       isProtectiveLiquidation: false,
-      orderType: OrderType.MO,
+      orderType: marketFact.orderType,
     });
-    const orderExecutor = createOrderExecutor({
-      ctx: createTradeContextDouble(tradeCtx),
+    const orderExecutor = await createOrderExecutor({
+      ingress: tradeCtx,
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
@@ -1906,21 +2273,26 @@ describe('sell-flow integration', () => {
       relatedBuyOrderIds: ['BUY-NEW'],
     };
 
+    const issuedLedgerBeforeMissingDetail = tradeCtx.readCounts();
+    tradeCtx.setQueryExecutedQuantityMissing();
     let caughtError: unknown = null;
     try {
-      await orderExecutor.executeSignals([signal]);
+      await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
     } catch (error) {
       caughtError = error;
     }
 
+    expect(caughtError).toBeInstanceOf(TypeError);
+    expect(tradeCtx.readCounts()).toEqual(issuedLedgerBeforeMissingDetail);
+    expect(orderExecutor.settlement.isCurrent(orderExecutor.receipt)).toBeTrue();
     expect(caughtError).toHaveProperty(
       'message',
-      expect.stringMatching(/state-check 收到无效累计成交数量，拒绝推进订单状态/),
+      "null is not an object (evaluating 'order.executedQuantity.toString')",
     );
 
-    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(1);
-    expect(tradeCtx.getCalls('orderDetail')).toHaveLength(1);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(tradeCtx.nativeReadCounts().cancel).toBe(1);
+    expect(tradeCtx.nativeReadCounts().detail).toBe(1);
+    expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
     expect(submittedSellOccupancies).toHaveLength(0);
   });
 });

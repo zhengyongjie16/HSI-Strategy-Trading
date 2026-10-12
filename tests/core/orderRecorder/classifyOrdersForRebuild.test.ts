@@ -6,51 +6,69 @@
  * - 确保 Execution/Pending 与 Buy/Sell 四类输出正确
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-import { PENDING_ORDER_STATUSES } from '../../../src/constants/index.js';
+import {
+  OPEN_ORDER_READ_STATUSES,
+  isOpenOrderReadStatus,
+} from '../../../src/constants/orderReadMetadata.js';
 import { classifyOrdersForRebuild } from '../../../src/core/orderRecorder/utils.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 
-function createRawOrder(overrides: Partial<RawOrderFromAPI>): RawOrderFromAPI {
-  return {
+function createRawOrder(
+  overrides: Partial<RawOrderFromAPI> & Readonly<{ unownedDirection?: true }>,
+): RawOrderFromAPI {
+  const status = overrides.status ?? 'FILLED';
+  let executionStatus: RawOrderFromAPI['executionStatus'] = 'NONE';
+  if (status === 'FILLED') executionStatus = 'FILLED';
+  else if ((overrides.executedQuantity ?? 100) > 0) executionStatus = 'PARTIAL';
+
+  const order: RawOrderFromAPI = {
     orderId: overrides.orderId ?? 'ORDER-1',
     symbol: overrides.symbol ?? 'BULL.HK',
     stockName: overrides.stockName ?? 'HSI RC SAMPLE',
-    side: overrides.side ?? OrderSide.Buy,
-    status: overrides.status ?? OrderStatus.Filled,
-    orderType: overrides.orderType ?? OrderType.ELO,
-    price: overrides.price ?? 1,
+    executionSide: overrides.executionSide ?? 'BUY',
+    executionPhase: isOpenOrderReadStatus(status) ? 'OPEN' : 'TERMINAL',
+    executionStatus,
+    status,
+    orderType: overrides.orderType ?? 'ELO',
+    price: overrides.price ?? '1',
     quantity: overrides.quantity ?? 100,
-    executedPrice: overrides.executedPrice ?? 1,
+    executedPrice: overrides.executedPrice ?? '1',
+    executedAmount: overrides.executedAmount ?? '100',
+    executionTimeMs: overrides.executionTimeMs ?? Date.parse('2026-02-25T03:05:00.000Z'),
+    updatedAtMs: overrides.updatedAtMs ?? Date.parse('2026-02-25T03:05:01.000Z'),
     executedQuantity: overrides.executedQuantity ?? 100,
     submittedAt: overrides.submittedAt ?? new Date('2026-02-25T03:00:00.000Z'),
-    updatedAt: overrides.updatedAt ?? new Date('2026-02-25T03:05:00.000Z'),
+    updatedAt: overrides.updatedAt ?? new Date('2026-02-25T03:05:01.000Z'),
   };
+  // 明确破坏分类器内部观察的方向契约；不是外部SDK Unknown的mapper准入。
+  if (overrides.unownedDirection) Reflect.set(order, 'executionSide', 'UNKNOWN');
+
+  return order;
 }
 
 const executionFactStatuses: ReadonlyArray<{
   readonly label: string;
-  readonly status: OrderStatus;
+  readonly status: RawOrderFromAPI['status'];
 }> = [
-  { label: 'Filled', status: OrderStatus.Filled },
-  { label: 'PartialWithdrawal', status: OrderStatus.PartialWithdrawal },
-  { label: 'PartialFilled', status: OrderStatus.PartialFilled },
+  { label: 'Filled', status: 'FILLED' },
+  { label: 'PartialWithdrawal', status: 'PARTIALLY_CANCELED' },
+  { label: 'PartialFilled', status: 'PARTIALLY_FILLED' },
 ];
 
 const invalidExecutionFactCases: ReadonlyArray<{
   readonly label: string;
   readonly overrides: Readonly<Partial<RawOrderFromAPI>>;
 }> = [
-  { label: 'zero price', overrides: { executedPrice: 0 } },
-  { label: 'negative price', overrides: { executedPrice: -1 } },
-  { label: 'NaN price', overrides: { executedPrice: Number.NaN } },
-  { label: 'infinite price', overrides: { executedPrice: Number.POSITIVE_INFINITY } },
-  { label: 'epoch execution time', overrides: { updatedAt: new Date(0) } },
-  { label: 'negative execution time', overrides: { updatedAt: new Date(-1) } },
-  { label: 'NaN execution time', overrides: { updatedAt: new Date(Number.NaN) } },
+  { label: 'zero price', overrides: { executedPrice: '0', executedAmount: '0' } },
+  { label: 'negative price', overrides: { executedPrice: '-1', executedAmount: '-100' } },
+  { label: 'NaN price', overrides: { executedPrice: 'NaN', executedAmount: 'NaN' } },
+  { label: 'infinite price', overrides: { executedPrice: 'Infinity', executedAmount: 'Infinity' } },
+  { label: 'epoch execution time', overrides: { executionTimeMs: 0 } },
+  { label: 'negative execution time', overrides: { executionTimeMs: -1 } },
+  { label: 'NaN execution time', overrides: { executionTimeMs: Number.NaN } },
   {
     label: 'infinite execution time',
-    overrides: { updatedAt: new Date(Number.POSITIVE_INFINITY) },
+    overrides: { executionTimeMs: Number.POSITIVE_INFINITY },
   },
   { label: 'negative quantity', overrides: { executedQuantity: -1 } },
   { label: 'NaN quantity', overrides: { executedQuantity: Number.NaN } },
@@ -65,33 +83,36 @@ describe('classifyOrdersForRebuild', () => {
     const result = classifyOrdersForRebuild([
       createRawOrder({
         orderId: 'FILLED-BUY',
-        side: OrderSide.Buy,
-        status: OrderStatus.Filled,
+        executionSide: 'BUY',
+        status: 'FILLED',
       }),
       createRawOrder({
         orderId: 'FILLED-SELL',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
+        executionSide: 'SELL',
+        status: 'FILLED',
       }),
       createRawOrder({
         orderId: 'PENDING-BUY',
-        side: OrderSide.Buy,
-        status: OrderStatus.New,
-        executedPrice: 0,
+        executionSide: 'BUY',
+        status: 'WORKING',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
       createRawOrder({
         orderId: 'PENDING-SELL',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialFilled,
-        executedPrice: 1,
+        executionSide: 'SELL',
+        status: 'PARTIALLY_FILLED',
+        executedPrice: '1',
+        executedAmount: '10',
         executedQuantity: 10,
       }),
       createRawOrder({
         orderId: 'CANCELLED-BUY',
-        side: OrderSide.Buy,
-        status: OrderStatus.Canceled,
-        executedPrice: 0,
+        executionSide: 'BUY',
+        status: 'CANCELED',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
     ]);
@@ -100,6 +121,12 @@ describe('classifyOrdersForRebuild', () => {
     expect(result.executedSellOrders.map((order) => order.orderId)).toEqual(['FILLED-SELL']);
     expect(result.pendingBuyOrders.map((order) => order.orderId)).toEqual(['PENDING-BUY']);
     expect(result.pendingSellOrders.map((order) => order.orderId)).toEqual(['PENDING-SELL']);
+    expect(result.executedBuyOrders[0]).toMatchObject({
+      costAmount: '100',
+      executedQuantity: 100,
+      executedTime: Date.parse('2026-02-25T03:05:00.000Z'),
+      updatedAt: new Date('2026-02-25T03:05:01.000Z'),
+    });
   });
 
   it('fails fast before silently skipping a malformed nonzero Unknown-side execution', () => {
@@ -107,13 +134,14 @@ describe('classifyOrdersForRebuild', () => {
       classifyOrdersForRebuild([
         createRawOrder({
           orderId: 'INVALID-UNKNOWN-SIDE-PRICE',
-          side: OrderSide.Unknown,
-          status: OrderStatus.Filled,
-          executedPrice: 0,
+          unownedDirection: true,
+          status: 'FILLED',
+          executedPrice: '0',
+          executedAmount: '0',
           executedQuantity: 100,
         }),
       ]),
-    ).toThrow(/执行事实/);
+    ).toThrow('[订单记录] 金额、数量或执行时间无效');
   });
 
   for (const statusCase of executionFactStatuses) {
@@ -122,9 +150,10 @@ describe('classifyOrdersForRebuild', () => {
         classifyOrdersForRebuild([
           createRawOrder({
             orderId: `VALID-POSITIVE-UNKNOWN-SIDE-${statusCase.label}`,
-            side: OrderSide.Unknown,
+            unownedDirection: true,
             status: statusCase.status,
-            executedPrice: 1,
+            executedPrice: '1',
+            executedAmount: '100',
             executedQuantity: 100,
           }),
         ]),
@@ -132,15 +161,18 @@ describe('classifyOrdersForRebuild', () => {
     });
   }
 
-  for (const status of PENDING_ORDER_STATUSES) {
-    it(`fails fast when a zero-execution Unknown-side order has OPEN status ${String(status)}`, () => {
+  // 后缀仅保留原case标题，不作为方向/状态解码或兼容数据。
+  const originalOpenCaseSuffixes = ['1', '2', '3', '4', '6', '7', '8', '9', '10', '11', '12', '13'];
+  for (const [index, status] of [...OPEN_ORDER_READ_STATUSES].entries()) {
+    it(`fails fast when a zero-execution Unknown-side order has OPEN status ${originalOpenCaseSuffixes[index]}`, () => {
       expect(() =>
         classifyOrdersForRebuild([
           createRawOrder({
-            orderId: `ZERO-EXECUTION-UNKNOWN-OPEN-${String(status)}`,
-            side: OrderSide.Unknown,
+            orderId: `ZERO-EXECUTION-UNKNOWN-OPEN-${originalOpenCaseSuffixes[index]}`,
+            unownedDirection: true,
             status,
-            executedPrice: 0,
+            executedPrice: '0',
+            executedAmount: '0',
             executedQuantity: 0,
           }),
         ]),
@@ -152,16 +184,18 @@ describe('classifyOrdersForRebuild', () => {
     const result = classifyOrdersForRebuild([
       createRawOrder({
         orderId: 'ZERO-EXECUTION-UNKNOWN-FILLED',
-        side: OrderSide.Unknown,
-        status: OrderStatus.Filled,
-        executedPrice: 0,
+        unownedDirection: true,
+        status: 'FILLED',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
       createRawOrder({
         orderId: 'ZERO-EXECUTION-UNKNOWN-PARTIAL-WITHDRAWAL',
-        side: OrderSide.Unknown,
-        status: OrderStatus.PartialWithdrawal,
-        executedPrice: 0,
+        unownedDirection: true,
+        status: 'PARTIALLY_CANCELED',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
     ]);
@@ -181,14 +215,20 @@ describe('classifyOrdersForRebuild', () => {
           classifyOrdersForRebuild([
             createRawOrder({
               orderId: `INVALID-${statusCase.label}-${invalidExecutionFact.label}`,
-              side: OrderSide.Buy,
+              executionSide: 'BUY',
               status: statusCase.status,
-              executedPrice: 1,
+              executedPrice: '1',
+              executedAmount: '100',
               executedQuantity: 100,
               ...invalidExecutionFact.overrides,
             }),
           ]),
-        ).toThrow(/执行事实/);
+        ).toThrow(
+          invalidExecutionFact.label === 'NaN price' ||
+            invalidExecutionFact.label === 'infinite price'
+            ? 'Financial input must be plain decimal text'
+            : '[订单记录] 金额、数量或执行时间无效',
+        );
       });
     }
   }
@@ -197,37 +237,42 @@ describe('classifyOrdersForRebuild', () => {
     const result = classifyOrdersForRebuild([
       createRawOrder({
         orderId: 'PARTIAL-WITHDRAWAL-BUY',
-        side: OrderSide.Buy,
-        status: OrderStatus.PartialWithdrawal,
-        executedPrice: 1.1,
+        executionSide: 'BUY',
+        status: 'PARTIALLY_CANCELED',
+        executedPrice: '1.1',
+        executedAmount: '44',
         executedQuantity: 40,
       }),
       createRawOrder({
         orderId: 'PARTIAL-WITHDRAWAL-SELL',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialWithdrawal,
-        executedPrice: 1.2,
+        executionSide: 'SELL',
+        status: 'PARTIALLY_CANCELED',
+        executedPrice: '1.2',
+        executedAmount: '36',
         executedQuantity: 30,
       }),
       createRawOrder({
         orderId: 'CANCELED-BUY-WITH-EXECUTION',
-        side: OrderSide.Buy,
-        status: OrderStatus.Canceled,
-        executedPrice: 1.3,
+        executionSide: 'BUY',
+        status: 'CANCELED',
+        executedPrice: '1.3',
+        executedAmount: '26',
         executedQuantity: 20,
       }),
       createRawOrder({
         orderId: 'CANCELED-SELL-WITHOUT-EXECUTION',
-        side: OrderSide.Sell,
-        status: OrderStatus.Canceled,
-        executedPrice: 0,
+        executionSide: 'SELL',
+        status: 'CANCELED',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
       createRawOrder({
         orderId: 'OPEN-PARTIAL-SELL-WITH-EXECUTION',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialFilled,
-        executedPrice: 1.4,
+        executionSide: 'SELL',
+        status: 'PARTIALLY_FILLED',
+        executedPrice: '1.4',
+        executedAmount: '14',
         executedQuantity: 10,
       }),
     ]);
@@ -241,6 +286,8 @@ describe('classifyOrdersForRebuild', () => {
       'PARTIAL-WITHDRAWAL-SELL',
     ]);
     expect(result.pendingBuyOrders).toEqual([]);
+    expect(result.executedBuyOrders.map((order) => order.costAmount)).toEqual(['44', '26']);
+    expect(result.executedSellOrders.map((order) => order.costAmount)).toEqual(['36']);
     expect(result.pendingSellOrders.map((order) => order.orderId)).toEqual([
       'OPEN-PARTIAL-SELL-WITH-EXECUTION',
     ]);
@@ -250,30 +297,34 @@ describe('classifyOrdersForRebuild', () => {
     const result = classifyOrdersForRebuild([
       createRawOrder({
         orderId: 'NEW-ZERO-EXECUTION',
-        side: OrderSide.Buy,
-        status: OrderStatus.New,
-        executedPrice: 0,
+        executionSide: 'BUY',
+        status: 'WORKING',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
       createRawOrder({
         orderId: 'CANCELED-ZERO-EXECUTION',
-        side: OrderSide.Buy,
-        status: OrderStatus.Canceled,
-        executedPrice: 0,
+        executionSide: 'BUY',
+        status: 'CANCELED',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
       createRawOrder({
         orderId: 'EXPIRED-ZERO-EXECUTION',
-        side: OrderSide.Sell,
-        status: OrderStatus.Expired,
-        executedPrice: 0,
+        executionSide: 'SELL',
+        status: 'EXPIRED',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
       createRawOrder({
         orderId: 'OPEN-PARTIAL-ZERO-EXECUTION',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialFilled,
-        executedPrice: 0,
+        executionSide: 'SELL',
+        status: 'PARTIALLY_FILLED',
+        executedPrice: '0',
+        executedAmount: '0',
         executedQuantity: 0,
       }),
     ]);

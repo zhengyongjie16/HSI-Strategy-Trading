@@ -1,5 +1,15 @@
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
+import { createIssuedPeriodicTasksFixture } from '../fixtures/issuedPeriodicTasks.js';
+import {
+  createAccountSnapshotDouble,
+  createMonitorContextDouble,
+  createMonitorConfigDouble,
+  createTraderDouble,
+} from '../../helpers/testDoubles.js';
+import { getDefaultAutoSearchConfig } from '../../services/autoSymbolManager/utils.js';
+
 /** 真实 registry mutation 的同步方向取消与队列清理；另一方向及 SEAT_REFRESH 保留。 */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { createSeatRuntimeCleanupDispatcher } from '../../../src/main/seatRuntimeCleanupDispatcher/index.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
@@ -32,11 +42,35 @@ function emptySeat(): RuntimeWritableSeatState {
   };
 }
 
+const issuedFixtures: Awaited<ReturnType<typeof createIssuedPeriodicTasksFixture>>[] = [];
+afterEach(async () => {
+  for (const fixture of issuedFixtures.splice(0)) await fixture.stopAndDrain();
+});
+
 describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
   it.each(['LONG', 'SHORT'] as const)(
     '%s 退场在 registry 返回前取消对应 pending，另一方向保留',
-    (direction) => {
+    async (direction) => {
       const h = createEventHarness();
+      h.symbolRegistry.updateSeatState('LONG', activeSeat('BULL.HK'));
+      h.symbolRegistry.updateSeatState('SHORT', activeSeat('BEAR.HK'));
+      const issued = await createIssuedPeriodicTasksFixture({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
+        monitorContext: createMonitorContextDouble({
+          symbolRegistry: h.symbolRegistry,
+          config: createMonitorConfigDouble({
+            autoSearchConfig: { ...getDefaultAutoSearchConfig(), switchIntervalMinutes: 1 },
+          }),
+        }),
+        trader: createTraderDouble(),
+        termination: h.termination,
+        getCanTradeNow: () => true,
+        nowMs: 200,
+      });
+      issuedFixtures.push(issued);
       const pending = new Set(['LONG', 'SHORT']);
       const order: string[] = [];
       const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
@@ -91,13 +125,7 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
           monitorTaskQueue.scheduleLatest({
             type: 'AUTO_SYMBOL_TICK',
             dedupeKey: `tick:${side}`,
-            data: {
-              direction: side,
-              seatVersion: 1,
-              symbol: side === 'LONG' ? 'BULL.HK' : 'BEAR.HK',
-              lastSeatActivatedAt: 100,
-              currentTimeMs: 200,
-            },
+            data: issued.getTask(side),
           }),
         ).toBeTrue();
       }
@@ -107,11 +135,12 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
           type: 'SEAT_REFRESH',
           dedupeKey: 'refresh',
           data: {
+            dayEpoch: 0,
             direction,
             seatVersion: 2,
             previousSymbol: 'OLD.HK',
             nextSymbol: 'NEW.HK',
-            callPrice: 20_000,
+            callPrice: '20000',
             symbolName: 'new',
           },
         }),

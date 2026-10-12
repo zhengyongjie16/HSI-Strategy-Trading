@@ -1,5 +1,4 @@
 import type { BuySignalAction, SignalType } from '../../types/signal.js';
-import type { DecimalLike } from './types.js';
 
 /**
  * 类型保护：判断 unknown 是否为可索引对象。
@@ -9,26 +8,6 @@ import type { DecimalLike } from './types.js';
  */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-/**
- * 将 Decimal 类型转换为数字。
- *
- * @param decimalLike Decimal 对象、数字、字符串或 null/undefined
- * @returns 转换后的数字，null/undefined 时返回 NaN
- */
-export function decimalToNumber(
-  decimalLike: DecimalLike | number | string | null | undefined,
-): number {
-  if (decimalLike === null || decimalLike === undefined) {
-    return Number.NaN;
-  }
-
-  if (typeof decimalLike === 'object' && 'toNumber' in decimalLike) {
-    return decimalLike.toNumber();
-  }
-
-  return Number(decimalLike);
 }
 
 /**

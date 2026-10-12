@@ -1,4 +1,6 @@
-import type { Decimal, OrderSide, OrderType, TimeInForceType, TradeContext } from 'longbridge';
+import type { TradeMutationPort, TradeSubmitCommand } from '../../../types/tradeMutationPorts.js';
+import type { Position } from '../../../types/account.js';
+import type { SignalCallerAuthorization } from '../../../types/trader.js';
 import type { MonitorConfig, GlobalConfig } from '../../../types/config.js';
 import type {
   BuySignal,
@@ -6,13 +8,9 @@ import type {
   SellSignal,
   Signal,
   SignalType,
+  OrderTypeConfig,
 } from '../../../types/signal.js';
-import type {
-  OrderActionAuthorization,
-  OrderCacheManager,
-  OrderMonitor,
-  OrderPayload,
-} from '../types.js';
+import type { OrderActionAuthorization, OrderCacheManager, OrderMonitor } from '../types.js';
 import type {
   MarketDataClient,
   OrderRecorder,
@@ -35,7 +33,7 @@ export type SubmitTargetOrder = (
 
 /**
  * 普通信号订单命令。
- * 类型用途：把普通买卖信号唯一绑定到席位方向与 SDK side，并限制其只能使用普通执行目的。
+ * 类型用途：把普通买卖信号唯一绑定到席位方向与 中性 side，并限制其只能使用普通执行目的。
  * 数据来源：OrderExecutor 的 executeSignals 入口。
  * 使用范围：orderExecutor 内部的授权、数量计算与提交链路。
  */
@@ -44,28 +42,28 @@ type OrdinaryOrderCommand =
       readonly kind: 'BUY';
       readonly signal: BuySignal & { readonly action: 'BUYCALL' };
       readonly direction: 'LONG';
-      readonly side: OrderSide.Buy;
+      readonly side: 'BUY';
       readonly executionPurpose: 'ORDINARY';
     }
   | {
       readonly kind: 'BUY';
       readonly signal: BuySignal & { readonly action: 'BUYPUT' };
       readonly direction: 'SHORT';
-      readonly side: OrderSide.Buy;
+      readonly side: 'BUY';
       readonly executionPurpose: 'ORDINARY';
     }
   | {
       readonly kind: 'SELL';
       readonly signal: ExecutableSellSignal & { readonly action: 'SELLCALL' };
       readonly direction: 'LONG';
-      readonly side: OrderSide.Sell;
+      readonly side: 'SELL';
       readonly executionPurpose: 'ORDINARY';
     }
   | {
       readonly kind: 'SELL';
       readonly signal: ExecutableSellSignal & { readonly action: 'SELLPUT' };
       readonly direction: 'SHORT';
-      readonly side: OrderSide.Sell;
+      readonly side: 'SELL';
       readonly executionPurpose: 'ORDINARY';
     };
 
@@ -80,20 +78,20 @@ export type DoomsdayClearanceOrderCommand =
       readonly kind: 'SELL';
       readonly signal: SellSignal & { readonly action: 'SELLCALL' };
       readonly direction: 'LONG';
-      readonly side: OrderSide.Sell;
+      readonly side: 'SELL';
       readonly executionPurpose: 'DOOMSDAY_CLEARANCE';
     }
   | {
       readonly kind: 'SELL';
       readonly signal: SellSignal & { readonly action: 'SELLPUT' };
       readonly direction: 'SHORT';
-      readonly side: OrderSide.Sell;
+      readonly side: 'SELL';
       readonly executionPurpose: 'DOOMSDAY_CLEARANCE';
     };
 
 /**
  * 可执行订单命令。
- * 类型用途：在 OrderExecutor 入口把窄信号动作唯一绑定到席位方向、SDK side 与执行目的；标的、席位版本和关联买单身份只从 signal 读取。
+ * 类型用途：在 OrderExecutor 入口把窄信号动作唯一绑定到席位方向、中性 side 与执行目的；标的、席位版本和关联买单身份只从 signal 读取。
  * 数据来源：ExecutableSignal 经运行时动作解析后构造。
  * 使用范围：orderExecutor 的授权、数量计算与提交链路。
  */
@@ -120,11 +118,11 @@ export type OrderActionResult =
  */
 export type BrokerSubmissionStage =
   | { readonly kind: 'PRE_SUBMIT' }
-  | { readonly kind: 'BROKER_SUBMISSION_ATTEMPTED'; readonly orderPayload: OrderPayload }
+  | { readonly kind: 'BROKER_SUBMISSION_ATTEMPTED'; readonly orderPayload: TradeSubmitCommand }
   | {
       readonly kind: 'BROKER_ACCEPTED';
       readonly orderId: string;
-      readonly orderPayload: OrderPayload;
+      readonly orderPayload: TradeSubmitCommand;
     };
 
 /**
@@ -135,7 +133,7 @@ export type BrokerSubmissionStage =
  */
 export type SubmitFailureClassification =
   | { readonly kind: 'PRE_SUBMIT_FAILURE' }
-  | { readonly kind: 'EXPLICIT_BROKER_REJECTION'; readonly orderPayload: OrderPayload }
+  | { readonly kind: 'EXPLICIT_BROKER_REJECTION'; readonly orderPayload: TradeSubmitCommand }
   | { readonly kind: 'UNCONFIRMED_EXTERNAL_SUBMISSION' }
   | { readonly kind: 'UNCONFIRMED_SUBMISSION' }
   | { readonly kind: 'POST_ACCEPTANCE_LOCAL_SYNC_FAILURE' };
@@ -152,8 +150,8 @@ export type AcceptedOrderLocalSyncError = Error & {
 };
 
 /**
- * SDK 下单提交参数。
- * 类型用途：在已解析订单命令上补充数量、订单类型、价格与授权信息。
+ * 域内下单提交计划。
+ * 类型用途：在已解析订单命令上补充安全整数数量、订单类型与授权信息；不传递 SDK 金融对象。
  * 数据来源：submitTargetOrder 完成数量与订单配置解析后构造。
  * 使用范围：仅 submitFlow 内部 submitOrder 使用。
  */
@@ -162,9 +160,8 @@ export type SubmitOrderParams = {
   readonly authorizeOrderAction: OrderActionAuthorization;
 
   /** SELL 在最终报价前已完成的数量计划；BUY 必须为 null 并在 permit 内按 P1 重算。 */
-  readonly submittedQtyDecimal: Decimal | null;
-  readonly orderTypeParam: OrderType;
-  readonly timeInForce: TimeInForceType;
+  readonly submittedQuantity: number | null;
+  readonly orderTypeConfig: OrderTypeConfig;
   readonly remark: string | undefined;
   readonly relatedBuyOrderIds?: ReadonlyArray<string> | null;
 };
@@ -190,7 +187,8 @@ export type RelatedBuyOrderQuantityValidationParams = {
  * 使用范围：仅 orderExecutor/submitFlow.ts 使用。
  */
 export type SubmitTargetOrderDeps = {
-  readonly ctx: TradeContext;
+  readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
+  readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;
   readonly marketDataClient: MarketDataClient;
   readonly cacheManager: OrderCacheManager;
@@ -204,6 +202,9 @@ export type SubmitTargetOrderDeps = {
   readonly canExecuteSignal: (signal: Signal, stage: string) => boolean;
   readonly canTradeNow: (signalAction: SignalType) => TradeCheckResult;
   readonly recordBuyAttempt: (signalAction: SignalType) => void;
+
+  /** 与外层执行器同源的提交时钟；不得以 signal/quote 时间或默认当前时间替代。 */
+  readonly now: () => Date;
 };
 
 /**
@@ -237,27 +238,30 @@ export type BuyThrottleDeps = Readonly<{
  */
 export type SellQuantityResolution = {
   readonly availableQuantity: number;
-  readonly submittedQuantity: Decimal;
+  readonly submittedQuantity: number;
 };
 
 /**
  * 数量解析器接口。
- * 类型用途：统一封装买入/卖出数量计算逻辑，避免 submitFlow 混入数量解析细节。
+ * 类型用途：以金融文本接收预算与最终价格，仅返回已证明的安全整数数量，避免域内持有 SDK Decimal。
  * 数据来源：由 createQuantityResolver 工厂创建。
  * 使用范围：仅 orderExecutor 目录内部使用。
  */
 export interface QuantityResolver {
   calculateSellQuantity: (
-    ctx: TradeContext,
     symbol: string,
     signal: Signal,
+    authorizeOrderAction: SignalCallerAuthorization,
   ) => Promise<SellQuantityResolution>;
-  resolveDoomsdayClearanceQuantity: (ctx: TradeContext, symbol: string) => Promise<Decimal>;
+  resolveDoomsdayClearanceQuantity: (
+    symbol: string,
+    authorizeOrderAction: SignalCallerAuthorization,
+  ) => Promise<number>;
   resolveBuyQuantity: (
     signal: Signal,
     isShortSymbol: boolean,
-    targetNotional: number,
-    finalPrice: number,
+    targetNotional: string,
+    finalPrice: string,
     finalLotSize: number | undefined,
-  ) => Decimal;
+  ) => number;
 }

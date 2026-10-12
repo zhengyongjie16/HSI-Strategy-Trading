@@ -1,4 +1,3 @@
-import type { OrderSide } from 'longbridge';
 import type { MonitorConfig } from './config.js';
 import type { Quote } from './quote.js';
 import type {
@@ -8,7 +7,12 @@ import type {
   RiskChecker,
   Trader,
 } from './services.js';
-import type { OrderFilteringEngine, OrderOwnership } from './orderRecorder.js';
+import type {
+  OrderExecutionAdmission,
+  OrderExecutionTimeEvidence,
+  OrderFilteringEngine,
+  OrderOwnership,
+} from './orderRecorder.js';
 
 /**
  * 累计成交事实输入。
@@ -20,8 +24,8 @@ export type DailyLossCumulativeExecutionInput = {
   readonly factStage: 'OPEN' | 'TERMINAL';
   readonly direction: 'LONG' | 'SHORT';
   readonly symbol: string;
-  readonly side: OrderSide.Buy | OrderSide.Sell;
-  readonly executedPrice: number;
+  readonly side: 'BUY' | 'SELL';
+  readonly executedPrice: string;
   readonly executedQuantity: number;
   readonly executedTimeMs: number;
   readonly orderUpdatedAtMs: number;
@@ -52,7 +56,7 @@ type RestoreDailyLossExecutionSnapshotParams = Readonly<{
   factStage: 'OPEN' | 'TERMINAL';
   direction: 'LONG' | 'SHORT';
   symbol: string;
-  side: OrderSide.Buy | OrderSide.Sell;
+  side: 'BUY' | 'SELL';
   orderId: string;
   cumulativeQuantity: string;
   cumulativeAmount: string;
@@ -85,6 +89,8 @@ export type ProtectiveLiquidationExecutionProgressInput = Readonly<{
  * 使用范围：订单监控成交入口，用于推进保护性 episode 与刷新需求。
  */
 export type DailyLossCumulativeExecutionResult = {
+  /** SUPPRESSED 禁止下游经济提交；DUPLICATE 不阻挡 O 首次合法 phase/投影。 */
+  readonly admission: OrderExecutionAdmission;
   readonly authoritativeFactChanged: boolean;
   readonly executionAdvanced: boolean;
 };
@@ -125,6 +131,16 @@ export type PreparedDailyLossProtectionBoundary = Readonly<{
 }>;
 
 /**
+ * 同一 DailyLoss owner 发行的全量重算同步发布能力。
+ * 候选事实、边界、baseline 与双方向状态仅保存在发行者闭包内，不接受外部构造的状态。
+ * prepare 不写运行态；发行后任一运行态写入会使此能力失效，重复 publish 同样拒绝。
+ * 使用范围：启动恢复与席位激活的完整预检后同步提交段，不跨 await 使用。
+ */
+export interface PreparedDailyLossRecalculation {
+  readonly isCurrent: () => boolean;
+}
+
+/**
  * 当日亏损追踪器接口。
  * 类型用途：按唯一 monitor 的 LONG/SHORT 方向维护已实现盈亏偏移，供浮亏刷新、成交处理与生命周期重建共享。
  * 数据来源：由 riskController 模块实现并注入。
@@ -134,7 +150,19 @@ export interface DailyLossTracker {
   /** 显式重置 dayKey 与 states（含分段元数据） */
   resetAll: (now: Date) => void;
 
-  /** 使用完整订单列表全量重算当日状态，供启动恢复或 SEAT_REFRESH 纠偏使用。 */
+  /** 按本实例真实依赖完整预检全部订单与双方向财务候选，不修改任何运行态。 */
+  prepareRecalculationFromAllOrders: (
+    allOrders: ReadonlyArray<RawOrderFromAPI>,
+    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    now: Date,
+    protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
+    relatedTradingSymbols?: ReadonlySet<string>,
+  ) => PreparedDailyLossRecalculation;
+
+  /** 仅接受本实例发行且仍 current 的候选，同步发布全部运行态；伪造、跨实例与重用均拒绝。 */
+  publishRecalculation: (prepared: PreparedDailyLossRecalculation) => void;
+
+  /** 完整 prepare 后立即同步 publish，供仅需单 owner 重算的调用方使用。 */
   recalculateFromAllOrders: (
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
@@ -152,8 +180,11 @@ export interface DailyLossTracker {
   /** 启动时把正式 progress record 恢复为精确历史 execution snapshot。 */
   restoreExecutionSnapshot: (params: RestoreDailyLossExecutionSnapshotParams) => void;
 
-  /** 获取指定方向的当日亏损偏移（仅亏损，<=0），未初始化时返回 0 */
-  getLossOffset: (direction: 'LONG' | 'SHORT') => number;
+  /** 已成功提交的真实执行时间/revision 只读证据；恢复方与 API 输入匹配，不把 revision 当 T。 */
+  getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence>;
+
+  /** 获取指定方向的当日亏损偏移（仅亏损，<=0），未初始化时返回规范文本 0 */
+  getLossOffset: (direction: 'LONG' | 'SHORT') => string;
 
   /** 冻结保护边界基线，不修改当前边界与偏移。 */
   prepareProtectionBoundary: (
@@ -177,6 +208,9 @@ export type DirectionalUnrealizedLossMonitorContext = {
   readonly symbol: string;
   readonly isLong: boolean;
   readonly seatVersion: number;
+
+  /** 调用方提供真实 seat/token/freshness 授权；每次 await 后和 mutation/cleanup 前复核。 */
+  readonly isCurrent: () => boolean;
   readonly quote: Quote;
   readonly riskChecker: RiskChecker;
   readonly trader: Trader;
@@ -194,10 +228,11 @@ export interface UnrealizedLossMonitor {
   /**
    * 监控单方向标的的浮亏。
    * @param context 单方向浮亏监控上下文
+   * @returns broker 已确认订单时为 true；供原 owner 区分未提交的失效工作与不可重提的真实提交
    */
   monitorDirectionalUnrealizedLoss: (
     context: DirectionalUnrealizedLossMonitorContext,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 }
 
 /**

@@ -1,11 +1,19 @@
-import type { TradeContext } from 'longbridge';
+import type { OrderSnapshotReadPort } from '../../types/orderSnapshotReadPorts.js';
 import type { Quote } from '../../types/quote.js';
+import type { SettlementRefreshNeedRecorder } from '../../types/settlement.js';
 import type { MonitorConfig } from '../../types/config.js';
-import type { OrderFilteringEngine, OrderOwnership } from '../../types/orderRecorder.js';
+import type {
+  BrokerOrderExecutionFact,
+  OrderFilteringEngine,
+  OrderOwnership,
+  OrderCostBasis,
+  OrderExecutionTimeEvidence,
+  OrderExecutionRecordObservation,
+  OrderFactCommitReceipt,
+} from '../../types/orderRecorder.js';
 import type {
   OrderRecord,
   PendingSellInfo,
-  RateLimiter,
   RawOrderFromAPI,
   SellableOrderResult,
   SellableOrderSelectParams,
@@ -19,7 +27,7 @@ import type {
  */
 export type OrderStatistics = {
   readonly totalQuantity: number;
-  readonly averagePrice: number;
+  readonly costAmount: string;
 };
 
 /**
@@ -28,39 +36,11 @@ export type OrderStatistics = {
  * 数据来源：由 classifyOrdersForRebuild 从 RawOrderFromAPI 转换得到。
  * 使用范围：orderRecorder 重建链路内部使用。
  */
-export type OrderRebuildClassification = {
+export type OrderRebuildClassification<T extends OrderExecutionRecordObservation> = {
   readonly executedBuyOrders: ReadonlyArray<OrderRecord>;
   readonly executedSellOrders: ReadonlyArray<OrderRecord>;
-  readonly pendingBuyOrders: ReadonlyArray<RawOrderFromAPI>;
-  readonly pendingSellOrders: ReadonlyArray<RawOrderFromAPI>;
-};
-
-/**
- * 订单重建中的待成交分类（仅买/卖两类）。
- * 类型用途：在刷新日志与重建流程中传递待成交买卖订单集合。
- * 数据来源：由 classifyOrdersForRebuild 结果派生。
- * 使用范围：orderRecorder 重建链路内部使用。
- */
-export type PendingOrderClassificationForRebuild = {
-  readonly pendingBuyOrders: ReadonlyArray<RawOrderFromAPI>;
-  readonly pendingSellOrders: ReadonlyArray<RawOrderFromAPI>;
-};
-
-/**
- * 订单刷新结果日志参数。
- * 类型用途：统一记录刷新前后数量与待成交分类信息，避免实现文件内联类型膨胀。
- * 数据来源：由 orderRecorder 刷新流程构造。
- * 使用范围：orderRecorder 模块内部使用。
- */
-export type OrderRefreshResultLogParams = {
-  readonly symbol: string;
-  readonly isLongSymbol: boolean;
-  readonly originalBuyCount: number;
-  readonly sellCount: number;
-  readonly recordedCount: number;
-  readonly pendingClassification?: PendingOrderClassificationForRebuild;
-  readonly extraInfo?: string;
-  readonly quote?: Quote | null | undefined;
+  readonly pendingBuyOrders: ReadonlyArray<T>;
+  readonly pendingSellOrders: ReadonlyArray<T>;
 };
 
 /**
@@ -82,17 +62,6 @@ export type MergedOrderEntry = {
   readonly order: RawOrderFromAPI;
 };
 
-/**
- * 订单过滤算法的中间状态类型。
- * 类型用途：OrderFilteringEngine 过滤算法中的中间结构（m0Orders 保留，candidateOrders 待过滤）。
- * 数据来源：模块内部在 applyFilteringAlgorithm 中构造。
- * 使用范围：仅 orderRecorder 模块内部使用。
- */
-export type FilteringState = {
-  readonly m0Orders: ReadonlyArray<OrderRecord>;
-  readonly candidateOrders: ReadonlyArray<OrderRecord>;
-};
-
 // ==================== 服务接口定义 ====================
 
 /**
@@ -105,24 +74,9 @@ export interface OrderStorage {
   getBuyOrdersList: (symbol: string, isLongSymbol: boolean) => ReadonlyArray<OrderRecord>;
   setBuyOrdersListForLong: (symbol: string, newList: ReadonlyArray<OrderRecord>) => void;
   setBuyOrdersListForShort: (symbol: string, newList: ReadonlyArray<OrderRecord>) => void;
-  addBuyOrder: (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
-    isLongSymbol: boolean,
-    executedTimeMs: number,
-  ) => void;
-  updateAfterSell: (
-    symbol: string,
-    executedPrice: number,
-    executedQuantity: number,
-    isLongSymbol: boolean,
-    executedTimeMs: number,
-    orderId?: string | null,
-    relatedBuyOrderIds?: ReadonlyArray<string> | null,
-  ) => void;
+  setSellRecord: (record: OrderRecord) => void;
   clearBuyOrders: (symbol: string, isLongSymbol: boolean, quote?: Quote | null) => void;
-  getLatestBuyOrderPrice: (symbol: string, isLongSymbol: boolean) => number | null;
+  getLatestBuyOrderCost: (symbol: string, isLongSymbol: boolean) => OrderCostBasis | null;
   getSellRecordByOrderId: (orderId: string) => OrderRecord | null;
 
   /** 添加待成交卖出订单（提交时调用） */
@@ -157,7 +111,7 @@ export interface OrderStorage {
   ) => readonly string[];
 
   /** 获取指定标的的成本均价（实时计算，无缓存） */
-  getCostAveragePrice: (symbol: string, isLongSymbol: boolean) => number | null;
+  getCostBasis: (symbol: string, isLongSymbol: boolean) => OrderCostBasis | null;
 
   /** 按策略筛选可卖订单（统一处理占用过滤、整笔截断与可选额外排除） */
   selectSellableOrders: (params: SellableOrderSelectParams) => SellableOrderResult;
@@ -185,19 +139,19 @@ export interface OrderAPIManager {
  * 使用范围：仅 orderRecorder 模块内部使用。
  */
 export type OrderAPIManagerDeps = {
-  readonly ctx: TradeContext;
-  readonly rateLimiter: RateLimiter;
+  readonly orderSnapshotReadPort: OrderSnapshotReadPort;
 };
 
 /**
  * 订单记录器正式工厂依赖。
- * 类型用途：创建 OrderRecorder 时注入外部交易上下文与 API 限流器。
+ * 类型用途：创建 OrderRecorder 时注入同context已装配的实际快照IO能力。
  * 数据来源：由 Trader 装配层创建后传入。
  * 使用范围：仅 orderRecorder 对外工厂使用。
  */
 export type OrderRecorderFactoryDeps = {
-  readonly ctx: TradeContext;
-  readonly rateLimiter: RateLimiter;
+  readonly orderSnapshotReadPort: OrderSnapshotReadPort;
+  readonly getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence>;
+  readonly settlementRefreshNeedRecorder: SettlementRefreshNeedRecorder;
 };
 
 /**
@@ -227,5 +181,36 @@ export type OrderDailyLossAnalysisDeps = {
 export type OrderRecorderDeps = {
   readonly storage: OrderStorage;
   readonly apiManager: OrderAPIManager;
-  readonly filteringEngine: OrderFilteringEngine;
+  readonly getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence>;
+  readonly settlementRefreshNeedRecorder: SettlementRefreshNeedRecorder;
+};
+
+/** 同 broker identity 的已消费增量范围；主动 clear 仅作用于当时实际存活的范围。 */
+export type ExecutionProjectionSlice = {
+  readonly quantity: number;
+  readonly executionTimeMs: number;
+  readonly admittedSequence: number;
+  readonly clearedAtSequence: number | null;
+};
+
+/** 唯一 broker fact 条目的经济消费证明；OPEN partial 不建立 slice，不从 survivor 推造覆盖。 */
+export type OwnedExecutionFact = {
+  readonly fact: BrokerOrderExecutionFact;
+  readonly isLongSymbol: boolean;
+  readonly economicQuantity: number;
+  readonly projectionSlices: ReadonlyArray<ExecutionProjectionSlice>;
+  readonly relatedBuyOrderIds: ReadonlyArray<string>;
+};
+
+/** 纯重算中的私有 slice 引用；同 broker ID 保留，不生成 LOCAL identity。 */
+export type ProjectionSliceInput = {
+  readonly brokerOrderId: string;
+  readonly entry: OwnedExecutionFact;
+  readonly slice: ExecutionProjectionSlice;
+};
+
+/** 同步预检后待发布的经济变化；失败前不修改任何事实或列表。 */
+export type PreparedExecutionCommit = {
+  readonly entry: OwnedExecutionFact;
+  readonly receipt: OrderFactCommitReceipt;
 };

@@ -14,10 +14,9 @@
  * - orderExecutor: 信号执行和订单提交
  *
  * 初始化顺序：
- * 1. ctx → 2. rateLimiter/cacheManager/accountService
+ * 1. brokerAccess → 2. rateLimiter/cacheManager/accountService
  * 3. orderRecorder → 4. orderMonitor → 5. orderExecutor
  */
-import { TradeContext } from 'longbridge';
 import { createOrderRecorder } from '../orderRecorder/index.js';
 import type { DoomsdayClearanceCommand, ExecutableSignal } from '../../types/signal.js';
 import type {
@@ -26,6 +25,8 @@ import type {
   DoomsdayCancelOrderRequest,
   DoomsdayClearanceExecutionResult,
   ExecuteSignalsResult,
+  SignalCallerAuthorization,
+  TraderCancelOrderRequest,
 } from '../../types/trader.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { Trader, PendingOrder, RawOrderFromAPI } from '../../types/services.js';
@@ -34,7 +35,7 @@ import type { TraderDeps } from './types.js';
 
 // 导入子模块工厂函数
 import { createRateLimiter } from './rateLimiter.js';
-import { createAccountService } from './accountService.js';
+import { createAccountService } from '../../application/accountQuery/index.js';
 import { createOrderCacheManager } from './orderCacheManager.js';
 import { createOrderMonitor } from './orderMonitor/index.js';
 import { createOrderExecutor } from './orderExecutor/index.js';
@@ -45,13 +46,12 @@ import { createOrderHoldRegistry } from './orderHoldRegistry.js';
  * 按固定顺序创建 rateLimiter、accountService、orderCacheManager、orderRecorder、orderMonitor、orderExecutor 等子模块并组装为 Trader 接口。
  * createTrader 仅负责依赖装配，不执行运行期副作用（如 WebSocket 初始化、订单恢复），由上层显式调用。
  * 交易能力由多子模块协同完成，门面统一初始化顺序与依赖注入，保证 orderMonitor 依赖 orderRecorder、orderExecutor 依赖 orderMonitor 等约束。
- * @param deps 依赖（config、tradingConfig、unrealizedLossBuyGate、symbolRegistry、dailyLossTracker、postTradeConsistencyRuntime、isExecutionAllowed 等）
+ * @param deps 依赖（brokerAccess、tradingConfig、unrealizedLossBuyGate、symbolRegistry、dailyLossTracker、postTradeConsistencyRuntime、isExecutionAllowed 等）
  * @returns 实现 Trader 接口的实例（含 canTradeNow、executeSignals、getPendingOrders 等）
  */
 export function createTrader(deps: TraderDeps): Promise<Trader> {
   try {
     const {
-      config,
       tradingConfig,
       marketDataClient,
       unrealizedLossBuyGate,
@@ -75,20 +75,34 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       !termination.isTerminated() && isLifecycleContinuousTradingAllowed();
 
     // ========== 1. 创建基础依赖 ==========
-    const ctx = TradeContext.new(config);
+    const brokerAccess = deps.brokerAccess();
+    const tradeMutationPort = brokerAccess.createTradeMutationPort();
 
     // ========== 2. 创建无依赖的基础模块 ==========
     const rateLimiterConfig = deps.rateLimiterConfig ?? { maxCalls: 30, windowMs: 30000 };
     const rateLimiter = createRateLimiter({ config: rateLimiterConfig });
 
-    const cacheManager = createOrderCacheManager({ ctx, rateLimiter, now });
+    const cacheManager = createOrderCacheManager({
+      ctx: brokerAccess.createPendingOrdersReader(),
+      rateLimiter,
+      now,
+    });
 
-    const accountService = createAccountService({ ctx, rateLimiter });
+    const accountService = createAccountService({
+      accountReadPort: brokerAccess.createAccountReadPort(),
+      rateLimiter,
+    });
 
     // ========== 3. 创建 orderRecorder（边界内组装内部子模块） ==========
+    const executionLedgerPort = brokerAccess.createExecutionLedgerPort();
+    const orderPushPort = brokerAccess.createOrderPushPort();
     const orderRecorder = createOrderRecorder({
-      ctx,
-      rateLimiter,
+      orderSnapshotReadPort: brokerAccess.createOrderSnapshotReadPort({
+        rateLimiter,
+        executionLedgerPort,
+      }),
+      getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
+      settlementRefreshNeedRecorder: postTradeConsistencyRuntime,
     });
 
     // ========== 4. 创建 orderHoldRegistry ==========
@@ -96,7 +110,10 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
     // ========== 5. 创建 orderMonitor（依赖 orderRecorder） ==========
     const orderMonitor = createOrderMonitor({
-      ctx,
+      orderDetailReadPort: brokerAccess.createOrderDetailReadPort(),
+      executionLedgerPort,
+      orderPushPort,
+      tradeMutationPort,
       rateLimiter,
       marketDataClient,
       cacheManager,
@@ -117,7 +134,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
 
     // ========== 6. 创建 orderExecutor ==========
     const orderExecutor = createOrderExecutor({
-      ctx,
+      readSellPositions: brokerAccess.createSellPositionReader(),
+      tradeMutationPort,
       rateLimiter,
       marketDataClient,
       cacheManager,
@@ -132,8 +150,11 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       readCurrentTradingDayInfo,
     });
 
-    function cancelOrder(orderId: string): Promise<CancelOrderOutcome> {
-      return orderMonitor.cancelOrder(orderId, { kind: 'ORDER_FACT' });
+    function cancelOrder(
+      orderId: string,
+      request: TraderCancelOrderRequest,
+    ): Promise<CancelOrderOutcome> {
+      return orderMonitor.cancelOrder(orderId, request);
     }
 
     function cancelDoomsdayOrder(
@@ -232,14 +253,18 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
         return orderMonitor.recoverOrderTrackingFromSnapshot(allOrders);
       },
 
-      executeSignals(signals: ReadonlyArray<ExecutableSignal>): Promise<ExecuteSignalsResult> {
-        return orderExecutor.executeSignals(signals);
+      executeSignals(
+        signals: ReadonlyArray<ExecutableSignal>,
+        callerAuthorization: SignalCallerAuthorization,
+      ): Promise<ExecuteSignalsResult> {
+        return orderExecutor.executeSignals(signals, callerAuthorization);
       },
 
       executeDoomsdayClearanceSignals(
         commands: ReadonlyArray<DoomsdayClearanceCommand>,
+        callerAuthorization: SignalCallerAuthorization,
       ): Promise<DoomsdayClearanceExecutionResult> {
-        return orderExecutor.executeDoomsdayClearanceSignals(commands);
+        return orderExecutor.executeDoomsdayClearanceSignals(commands, callerAuthorization);
       },
     };
 

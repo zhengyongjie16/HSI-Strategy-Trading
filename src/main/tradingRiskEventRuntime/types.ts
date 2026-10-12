@@ -1,4 +1,6 @@
 import type { RuntimeTermination } from '../../types/runtime.js';
+import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
+import type { SettlementFreshnessReader } from '../../types/settlement.js';
 import type { MonitorContext, LastState } from '../../types/state.js';
 import type { MarketDataClient, QuoteUpdatedEvent, Trader } from '../../types/services.js';
 import type { SymbolRegistry } from '../../types/seat.js';
@@ -38,6 +40,8 @@ export type RouteExecutionState = {
   dirty: boolean;
   latestRoute: TradingRiskRoute | null;
   latestEvent: QuoteUpdatedEvent | null;
+  latestDayEpoch: number | null;
+  blockedOnFreshness: boolean;
 };
 
 /**
@@ -58,10 +62,7 @@ type TradingRiskConsistencyStatus = Readonly<{
  * 数据来源：由 app 层成交后一致性 runtime 实现并注入。
  * 使用范围：仅 tradingRiskEventRuntime 模块内部使用。
  */
-interface TradingRiskConsistencyPort {
-  /** 等待当前 freshness 追平 staleVersion。 */
-  waitForFresh: () => Promise<void>;
-
+interface TradingRiskConsistencyPort extends SettlementFreshnessReader {
   /** 获取当前 runtime 的 baseline / freshness 状态。 */
   getStatus: () => TradingRiskConsistencyStatus;
 }
@@ -80,6 +81,7 @@ export type TradingRiskEventRuntimeDeps = Readonly<{
   readonly monitorContext: MonitorContext;
   readonly lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
   readonly postTradeConsistencyRuntime: TradingRiskConsistencyPort;
+  readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
   readonly doomsdayProtectionEnabled: boolean;
   readonly now: () => Date;
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;

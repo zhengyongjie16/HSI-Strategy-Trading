@@ -1,3 +1,4 @@
+import type { AccountPositionSnapshotReader } from '../../../types/accountPosition.js';
 import type { MonitorContext } from '../../../types/state.js';
 import type { MarketDataClient, Trader } from '../../../types/services.js';
 import type { TaskQueue, BuyTaskType } from '../tradeTaskQueue/types.js';
@@ -37,7 +38,10 @@ export type BuyProcessorDeps = {
   readonly now: RuntimeClock['now'];
 
   /** 生命周期门禁：false 时跳过任务执行 */
-  readonly getCanProcessTask?: () => boolean;
+  readonly getCanProcessTask: () => boolean;
+
+  /** 原交易日身份，只验证 epoch；BUY 临时风险读取不纳入 settlement policy。 */
+  readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView'>;
 
   /** 非 API 程序错误进入 fatal 通道 */
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;

@@ -14,23 +14,29 @@ import {
 } from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
 import type { LastState } from '../../src/types/state.js';
 import type { Position } from '../../src/types/account.js';
 import type { Processor } from '../../src/main/asyncProgram/types.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import {
+  createDailyLossOrderAnalysisDeps,
+  createOrderRecorder,
+} from '../../src/core/orderRecorder/index.js';
+import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { createHarness } from '../core/strategy/intradayRegression/fixtures.js';
 import { waitUntil } from '../main/asyncProgram/utils.js';
 import {
   createAccountSnapshotDouble,
   createAutoSearchWakeupRuntimeDouble,
-  createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
   createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
-  createPositionCacheDouble,
   createPositionDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
   createSeatActivationDispatcherDouble,
   createSeatRuntimeCleanupDispatcherDouble,
   createTraderDouble,
@@ -49,7 +55,12 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       const positions = Promise.withResolvers<ReadonlyArray<Position>>();
       let requested = false;
       const trace: string[] = [];
-      const monitorContext = createMonitorContextDouble();
+      const daily = createDailyLossTracker({
+        ...createDailyLossOrderAnalysisDeps(),
+        toHongKongTimeIso,
+      });
+      daily.resetAll(new Date('2026-02-16T01:31:00.000Z'));
+      const episode = createProtectiveLiquidationEpisodeTracker();
       const lastState: LastState = {
         canTrade: true,
         isHalfDay: false,
@@ -58,9 +69,6 @@ describe('PostTrade drain and Quote lifetime integration', () => {
         lifecycleState: 'ACTIVE',
         pendingOpenRebuild: false,
         isTradingEnabled: true,
-        cachedAccount: null,
-        cachedPositions: [],
-        positionCache: createPositionCacheDouble(),
         cachedTradingDayInfo: null,
         tradingCalendarSnapshot: new Map(),
         allTradingSymbols: new Set(),
@@ -75,8 +83,44 @@ describe('PostTrade drain and Quote lifetime integration', () => {
           throw error;
         },
       });
+      let delayedRead = false;
+      const snapshot = createAccountPositionSnapshot({
+        dayEpoch: 1,
+        scheduler: { schedule: queueMicrotask },
+        reportFatalError: termination.reportFatalError,
+        readPort: {
+          getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+          getStockPositions: () => {
+            if (!delayedRead) return Promise.resolve([]);
+
+            requested = true;
+            return positions.promise;
+          },
+        },
+      });
+      let recordNeedOwner: PostTradeConsistencyRuntime | null = null;
+      const recorder = createOrderRecorder({
+        orderSnapshotReadPort: {
+          fetchSnapshots: async () => {
+            throw new Error('Drain case does not authorize order IO');
+          },
+        },
+        getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
+        settlementRefreshNeedRecorder: {
+          recordSettlementRefreshNeed: (need) => {
+            if (recordNeedOwner === null) throw new Error('PostTrade owner not yet assembled');
+
+            recordNeedOwner.recordSettlementRefreshNeed(need);
+          },
+        },
+      });
+      const monitorContext = createMonitorContextDouble({
+        orderRecorder: recorder,
+        dailyLossTracker: daily,
+      });
       const trader = createTraderDouble({
-        getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+        orderRecorder: recorder,
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
         getStockPositions: () => {
           requested = true;
           return positions.promise;
@@ -94,30 +138,51 @@ describe('PostTrade drain and Quote lifetime integration', () => {
         marketDataClient,
         trader,
         lastState,
+        snapshot,
         termination,
       });
+      const baseline = await snapshot.requestRefresh({
+        source: 'DRAIN_BASELINE',
+        dayEpoch: 1,
+        refreshAccount: true,
+        refreshPositions: true,
+      }).result;
+      if (baseline.status !== 'COMMITTED') throw new Error('Drain paired H baseline aborted');
+
       // 启动前的显式 reconcile 必须可用；此处建立基线以辨认后续持仓订阅。
       await quotes.reconcileFromCurrentTruth();
       quotes.start();
-      trace.length = 0;
       const postTrade = createPostTradeConsistencyRuntime({
         termination,
         getTrader: () => trader,
-        lastState,
+        snapshot,
         scheduler: h.deps.scheduler,
-        onPositionsCommitted: async () => {
-          await quotes.reconcilePositionHoldFromCurrentTruth();
+        onPositionsCommitted: async (token) => {
+          await quotes.reconcilePositionHoldFromCurrentTruth(token);
           trace.push('positions-callback-complete');
         },
       });
       postTrade.bindBusinessDeps({
         monitorContext,
-        dailyLossTracker: createDailyLossTrackerDouble(),
+        dailyLossTracker: daily,
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-        protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+        protectiveLiquidationEpisodeTracker: episode,
         mixedTradeLogRepository: { appendCompletionIdempotent: () => {} },
       });
+      recordNeedOwner = postTrade;
+      expect(
+        snapshot.isCurrent(baseline.snapshotToken, {
+          account: true,
+          positions: true,
+          paired: true,
+        }),
+      ).toBeTrue();
       postTrade.start();
+      expect(await postTrade.completeRebuildBaseline()).toBeTrue();
+      const receipt = await postTrade.waitForFresh();
+      expect(postTrade.isCurrent(receipt)).toBeTrue();
+      trace.length = 0;
+      delayedRead = true;
       postTrade.recordSettlementRefreshNeed({ refreshAccount: false, refreshPositions: true });
       for (const timer of h.timers) timer.callback();
 
@@ -202,7 +267,7 @@ describe('PostTrade drain and Quote lifetime integration', () => {
         'post-trade-drain-complete',
         'quote-stop-complete',
       ]);
-      expect(lastState.cachedPositions).toEqual([held]);
+      expect(snapshot.getView().positions).toEqual([held]);
       const finishedTrace = [...trace];
       postTrade.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
       for (const timer of h.timers) timer.callback();

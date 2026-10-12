@@ -1,3 +1,5 @@
+import type { MarketQuoteContext } from '../../../src/types/services.js';
+
 /**
  * recovery/seatPreparation 业务测试
  *
@@ -5,13 +7,10 @@
  * - 验证席位解析与就绪状态的场景与边界。
  */
 import { describe, expect, it } from 'bun:test';
-import { WarrantStatus, WarrantType } from 'longbridge';
 
 import { prepareSeatsForRuntime } from '../../../src/main/recovery/seatPreparation.js';
 import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../../src/constants/index.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
-import { createQuoteContextMock } from '../../../mock/longbridge/quoteContextMock.js';
-import { toMockDecimal } from '../../../mock/longbridge/decimal.js';
 import {
   createMarketDataClientDouble,
   createMonitorConfigDouble,
@@ -31,28 +30,49 @@ function createLoggerStub(): Logger {
   };
 }
 
-function createWarrantInfo(params: {
-  readonly symbol: string;
-  readonly warrantType: WarrantType;
-  readonly apiDistanceRatio: number;
-  readonly turnover: number;
-  readonly callPrice: number;
-}): Parameters<ReturnType<typeof createQuoteContextMock>['seedWarrantList']>[1][number] {
-  const warrantType = params.warrantType === WarrantType.Bull ? 'Bull' : 'Bear';
+function createWarrantInfo(
+  params: Readonly<{
+    symbol: string;
+    warrantType: 'BULL' | 'BEAR';
+    apiDistanceRatio: string;
+    turnover: string;
+    callPrice: string;
+  }>,
+): Awaited<ReturnType<MarketQuoteContext['warrantList']>>[number] {
   return {
     symbol: params.symbol,
     name: params.symbol,
-    lastDone: toMockDecimal(0.1),
-    toCallPrice: toMockDecimal(params.apiDistanceRatio),
-    turnover: toMockDecimal(params.turnover),
-    callPrice: toMockDecimal(params.callPrice),
-    warrantType,
-    status: WarrantStatus.Normal,
+    lastDone: '0.1',
+    toCallPrice: params.apiDistanceRatio,
+    turnover: params.turnover,
+    callPrice: params.callPrice,
+    warrantType: params.warrantType === 'BULL' ? 'Bull' : 'Bear',
+    status: 'NORMAL',
   };
 }
 
-function toApiDistanceRatio(percentValue: number): number {
-  return percentValue / 100;
+/** 中性查询端口，只记录实际 finder request，不制造 SDK monetary DTO。 */
+function createWarrantQuoteHarness() {
+  const lists = new Map<string, Awaited<ReturnType<MarketQuoteContext['warrantList']>>>();
+  const calls: Parameters<MarketQuoteContext['warrantList']>[0][] = [];
+  const port: MarketQuoteContext = createQuoteContextDouble({
+    warrantList: async (request) => {
+      calls.push(request);
+      return (lists.get(request.symbol) ?? []).filter((item) =>
+        request.types.includes(item.warrantType === 'Bull' ? 'BULL' : 'BEAR'),
+      );
+    },
+  });
+  return {
+    port,
+    seedWarrantList: (
+      symbol: string,
+      items: Awaited<ReturnType<MarketQuoteContext['warrantList']>>,
+    ) => {
+      lists.set(symbol, items);
+    },
+    getCalls: (_method: 'warrantList') => calls,
+  };
 }
 
 function createAutoSearchMonitor() {
@@ -60,15 +80,15 @@ function createAutoSearchMonitor() {
     monitorSymbol: 'HSI.HK',
     autoSearchConfig: {
       autoSearchEnabled: true,
-      autoSearchMinDistancePctBull: 0.35,
-      autoSearchMinDistancePctBear: -0.35,
-      autoSearchMinTurnoverPerMinuteBull: 100_000,
-      autoSearchMinTurnoverPerMinuteBear: 100_000,
+      autoSearchMinDistancePctBull: '0.35',
+      autoSearchMinDistancePctBear: '-0.35',
+      autoSearchMinTurnoverPerMinuteBull: '100000',
+      autoSearchMinTurnoverPerMinuteBear: '100000',
       autoSearchExpiryMinMonths: 3,
       autoSearchOpenDelayMinutes: 5,
       switchIntervalMinutes: 0,
-      switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-      switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+      switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+      switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
     },
   });
 }
@@ -96,21 +116,21 @@ function createEmptySymbolRegistry() {
   });
 }
 
-function seedAutoSearchCandidates(quoteCtx: ReturnType<typeof createQuoteContextMock>): void {
+function seedAutoSearchCandidates(quoteCtx: ReturnType<typeof createWarrantQuoteHarness>): void {
   quoteCtx.seedWarrantList('HSI.HK', [
     createWarrantInfo({
       symbol: 'AUTO_BULL.HK',
-      warrantType: WarrantType.Bull,
-      apiDistanceRatio: toApiDistanceRatio(0.55),
-      turnover: 30_000_000,
-      callPrice: 20_500,
+      warrantType: 'BULL',
+      apiDistanceRatio: '0.0055',
+      turnover: '30000000',
+      callPrice: '20500',
     }),
     createWarrantInfo({
       symbol: 'AUTO_BEAR.HK',
-      warrantType: WarrantType.Bear,
-      apiDistanceRatio: toApiDistanceRatio(-0.55),
-      turnover: 30_000_000,
-      callPrice: 19_500,
+      warrantType: 'BEAR',
+      apiDistanceRatio: '-0.0055',
+      turnover: '30000000',
+      callPrice: '19500',
     }),
   ]);
 }
@@ -156,7 +176,7 @@ describe('recovery seat preparation business flow', () => {
       },
     });
 
-    const quoteCtx = createQuoteContextMock();
+    const quoteCtx = createWarrantQuoteHarness();
 
     let quoteContextCalls = 0;
     await prepareSeatsForRuntime({
@@ -167,7 +187,7 @@ describe('recovery seat preparation business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuoteContext: async () => {
           quoteContextCalls += 1;
-          return createQuoteContextDouble(quoteCtx);
+          return quoteCtx.port;
         },
       }),
       now: () => new Date(startupTime),
@@ -188,15 +208,15 @@ describe('recovery seat preparation business flow', () => {
     const monitor = createMonitorConfigDouble({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
       orderOwnershipMapping: ['A'],
     });
@@ -222,7 +242,7 @@ describe('recovery seat preparation business flow', () => {
       },
     });
 
-    const quoteCtx = createQuoteContextMock();
+    const quoteCtx = createWarrantQuoteHarness();
 
     await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor }),
@@ -230,7 +250,7 @@ describe('recovery seat preparation business flow', () => {
       positions: [],
       orders: [],
       marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createQuoteContextDouble(quoteCtx),
+        getQuoteContext: async () => quoteCtx.port,
       }),
       now: () => new Date('2026-02-16T01:00:00.000Z'),
       logger: createLoggerStub(),
@@ -436,7 +456,7 @@ describe('recovery seat preparation business flow', () => {
       positions: [],
       orders: [],
       marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createQuoteContextDouble(createQuoteContextMock()),
+        getQuoteContext: async () => createWarrantQuoteHarness().port,
       }),
       now: () => currentTime,
       logger: createLoggerStub(),
@@ -454,15 +474,15 @@ describe('recovery seat preparation business flow', () => {
     const monitor = createMonitorConfigDouble({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 5,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
 
@@ -487,21 +507,21 @@ describe('recovery seat preparation business flow', () => {
       },
     });
 
-    const quoteCtx = createQuoteContextMock();
+    const quoteCtx = createWarrantQuoteHarness();
     quoteCtx.seedWarrantList('HSI.HK', [
       createWarrantInfo({
         symbol: 'AUTO_BULL.HK',
-        warrantType: WarrantType.Bull,
-        apiDistanceRatio: toApiDistanceRatio(0.55),
-        turnover: 30_000_000,
-        callPrice: 20_500,
+        warrantType: 'BULL',
+        apiDistanceRatio: '0.0055',
+        turnover: '30000000',
+        callPrice: '20500',
       }),
       createWarrantInfo({
         symbol: 'AUTO_BEAR.HK',
-        warrantType: WarrantType.Bear,
-        apiDistanceRatio: toApiDistanceRatio(-0.55),
-        turnover: 30_000_000,
-        callPrice: 19_500,
+        warrantType: 'BEAR',
+        apiDistanceRatio: '-0.0055',
+        turnover: '30000000',
+        callPrice: '19500',
       }),
     ]);
 
@@ -511,7 +531,7 @@ describe('recovery seat preparation business flow', () => {
       positions: [],
       orders: [],
       marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createQuoteContextDouble(quoteCtx),
+        getQuoteContext: async () => quoteCtx.port,
       }),
       now: () => new Date('2026-02-16T01:01:00.000Z'),
       logger: createLoggerStub(),
@@ -530,7 +550,7 @@ describe('recovery seat preparation business flow', () => {
   ])('skips startup auto-search %s', async (_caseName, currentTime) => {
     const monitor = createAutoSearchMonitor();
     const symbolRegistry = createEmptySymbolRegistry();
-    const quoteCtx = createQuoteContextMock();
+    const quoteCtx = createWarrantQuoteHarness();
     seedAutoSearchCandidates(quoteCtx);
 
     await prepareSeatsForRuntime({
@@ -539,7 +559,7 @@ describe('recovery seat preparation business flow', () => {
       positions: [],
       orders: [],
       marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createQuoteContextDouble(quoteCtx),
+        getQuoteContext: async () => quoteCtx.port,
       }),
       now: () => new Date(currentTime),
       logger: createLoggerStub(),
@@ -555,7 +575,7 @@ describe('recovery seat preparation business flow', () => {
   it('runs startup auto-search after morning open delay ends', async () => {
     const monitor = createAutoSearchMonitor();
     const symbolRegistry = createEmptySymbolRegistry();
-    const quoteCtx = createQuoteContextMock();
+    const quoteCtx = createWarrantQuoteHarness();
     seedAutoSearchCandidates(quoteCtx);
 
     await prepareSeatsForRuntime({
@@ -564,7 +584,7 @@ describe('recovery seat preparation business flow', () => {
       positions: [],
       orders: [],
       marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createQuoteContextDouble(quoteCtx),
+        getQuoteContext: async () => quoteCtx.port,
       }),
       now: () => new Date('2026-02-16T01:35:00.000Z'),
       logger: createLoggerStub(),
@@ -584,7 +604,7 @@ describe('recovery seat preparation business flow', () => {
   it('runs startup auto-search in afternoon continuous session', async () => {
     const monitor = createAutoSearchMonitor();
     const symbolRegistry = createEmptySymbolRegistry();
-    const quoteCtx = createQuoteContextMock();
+    const quoteCtx = createWarrantQuoteHarness();
     seedAutoSearchCandidates(quoteCtx);
 
     await prepareSeatsForRuntime({
@@ -593,7 +613,7 @@ describe('recovery seat preparation business flow', () => {
       positions: [],
       orders: [],
       marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createQuoteContextDouble(quoteCtx),
+        getQuoteContext: async () => quoteCtx.port,
       }),
       now: () => new Date('2026-02-16T05:00:00.000Z'),
       logger: createLoggerStub(),
@@ -612,15 +632,15 @@ describe('recovery seat preparation business flow', () => {
     const monitor = createMonitorConfigDouble({
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
       orderOwnershipMapping: ['HSI'],
     });
@@ -646,21 +666,21 @@ describe('recovery seat preparation business flow', () => {
       },
     });
 
-    const quoteCtx = createQuoteContextMock();
+    const quoteCtx = createWarrantQuoteHarness();
     quoteCtx.seedWarrantList('HSI.HK', [
       createWarrantInfo({
         symbol: 'AUTO_BEAR_1.HK',
-        warrantType: WarrantType.Bear,
-        apiDistanceRatio: toApiDistanceRatio(-0.22),
-        turnover: 1_500_000,
-        callPrice: 19_300,
+        warrantType: 'BEAR',
+        apiDistanceRatio: '-0.0022',
+        turnover: '1500000',
+        callPrice: '19300',
       }),
       createWarrantInfo({
         symbol: 'AUTO_BEAR_BEST.HK',
-        warrantType: WarrantType.Bear,
-        apiDistanceRatio: toApiDistanceRatio(-0.3499),
-        turnover: 1_800_000,
-        callPrice: 19_500,
+        warrantType: 'BEAR',
+        apiDistanceRatio: '-0.003499',
+        turnover: '1800000',
+        callPrice: '19500',
       }),
     ]);
 
@@ -670,7 +690,7 @@ describe('recovery seat preparation business flow', () => {
       positions: [],
       orders: [],
       marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createQuoteContextDouble(quoteCtx),
+        getQuoteContext: async () => quoteCtx.port,
       }),
       now: () => new Date('2026-02-16T01:00:00.000Z'),
       logger: createLoggerStub(),
@@ -681,6 +701,6 @@ describe('recovery seat preparation business flow', () => {
     const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(shortSeat.status).toBe('ACTIVATING');
     expect(shortSeat.symbol).toBe('AUTO_BEAR_BEST.HK');
-    expect(shortSeat.callPrice).toBe(19_500);
+    expect(shortSeat.callPrice).toBe('19500');
   });
 });

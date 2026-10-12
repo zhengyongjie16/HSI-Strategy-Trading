@@ -21,7 +21,7 @@ mock.module('../../../src/utils/logger/index.js', () => ({
 
 function makeOrder(
   orderId: string,
-  price: number,
+  costAmount: string,
   quantity: number,
   executedTime: number,
   symbol = 'TEST.HK',
@@ -29,7 +29,7 @@ function makeOrder(
   return {
     orderId,
     symbol,
-    executedPrice: price,
+    costAmount,
     executedQuantity: quantity,
     executedTime,
     submittedAt: undefined,
@@ -46,16 +46,16 @@ describe('selectSellableOrders', () => {
 
   it('PROFIT_ONLY 仅返回买入价小于当前价的订单', () => {
     storage.setBuyOrdersListForLong('TEST.HK', [
-      makeOrder('O1', 1, 100, 1),
-      makeOrder('O2', 1.2, 100, 2),
-      makeOrder('O3', 0.8, 100, 3),
+      makeOrder('O1', '100', 100, 1),
+      makeOrder('O2', '120', 100, 2),
+      makeOrder('O3', '80', 100, 3),
     ]);
 
     const result = storage.selectSellableOrders({
       symbol: 'TEST.HK',
       direction: 'LONG',
       strategy: 'PROFIT_ONLY',
-      currentPrice: 1.1,
+      currentPrice: '1.1',
     });
 
     expect(result.totalQuantity).toBe(200);
@@ -64,16 +64,16 @@ describe('selectSellableOrders', () => {
 
   it('ALL 返回全部订单（按卖出优先级排序）', () => {
     storage.setBuyOrdersListForLong('TEST.HK', [
-      makeOrder('O1', 1.2, 100, 2),
-      makeOrder('O2', 0.8, 100, 3),
-      makeOrder('O3', 1, 100, 1),
+      makeOrder('O1', '120', 100, 2),
+      makeOrder('O2', '80', 100, 3),
+      makeOrder('O3', '100', 100, 1),
     ]);
 
     const result = storage.selectSellableOrders({
       symbol: 'TEST.HK',
       direction: 'LONG',
       strategy: 'ALL',
-      currentPrice: 1,
+      currentPrice: '1',
     });
 
     expect(result.totalQuantity).toBe(300);
@@ -82,9 +82,9 @@ describe('selectSellableOrders', () => {
 
   it('同价智能平仓按成交时间与 orderId 排序且输入反转结果一致', () => {
     const orders = [
-      makeOrder('BUY-C', 1, 100, 100),
-      makeOrder('BUY-B', 1, 100, 100),
-      makeOrder('BUY-D', 1, 100, 200),
+      makeOrder('BUY-C', '100', 100, 100),
+      makeOrder('BUY-B', '100', 100, 100),
+      makeOrder('BUY-D', '100', 100, 200),
     ];
     storage.setBuyOrdersListForLong('TEST.HK', [orders[2]!, orders[1]!, orders[0]!]);
 
@@ -92,7 +92,7 @@ describe('selectSellableOrders', () => {
       symbol: 'TEST.HK',
       direction: 'LONG',
       strategy: 'ALL',
-      currentPrice: 1,
+      currentPrice: '1',
     });
 
     expect(result.orders.map((order) => order.orderId)).toEqual(['BUY-B', 'BUY-C', 'BUY-D']);
@@ -100,9 +100,9 @@ describe('selectSellableOrders', () => {
 
   it('恢复待成交卖单关联按与智能平仓相同的三键顺序分配', () => {
     storage.setBuyOrdersListForLong('TEST.HK', [
-      makeOrder('BUY-LATER', 1, 100, 200),
-      makeOrder('BUY-ID-C', 1, 100, 100),
-      makeOrder('BUY-ID-B', 1, 100, 100),
+      makeOrder('BUY-LATER', '100', 100, 200),
+      makeOrder('BUY-ID-C', '100', 100, 100),
+      makeOrder('BUY-ID-B', '100', 100, 100),
     ]);
 
     const relatedIds = storage.allocateRelatedBuyOrderIdsForRecovery('TEST.HK', 'LONG', 200);
@@ -112,15 +112,15 @@ describe('selectSellableOrders', () => {
 
   it('TIMEOUT_ONLY 在严格交易时段累计超过阈值时返回超时订单', () => {
     storage.setBuyOrdersListForLong('TEST.HK', [
-      makeOrder('OLD', 1, 100, Date.parse('2026-02-24T01:30:00.000Z')),
-      makeOrder('NEW', 1, 100, Date.parse('2026-02-24T02:10:00.000Z')),
+      makeOrder('OLD', '100', 100, Date.parse('2026-02-24T01:30:00.000Z')),
+      makeOrder('NEW', '100', 100, Date.parse('2026-02-24T02:10:00.000Z')),
     ]);
 
     const result = storage.selectSellableOrders({
       symbol: 'TEST.HK',
       direction: 'LONG',
       strategy: 'TIMEOUT_ONLY',
-      currentPrice: 1,
+      currentPrice: '1',
       timeoutMinutes: 60,
       nowMs: Date.parse('2026-02-24T02:31:00.000Z'),
       calendarSnapshot: new Map([
@@ -140,9 +140,9 @@ describe('selectSellableOrders', () => {
 
   it('会排除 pending 占用订单与 excludeOrderIds', () => {
     storage.setBuyOrdersListForLong('TEST.HK', [
-      makeOrder('O1', 0.8, 100, 1),
-      makeOrder('O2', 0.9, 100, 2),
-      makeOrder('O3', 1, 100, 3),
+      makeOrder('O1', '80', 100, 1),
+      makeOrder('O2', '90', 100, 2),
+      makeOrder('O3', '100', 100, 3),
     ]);
 
     storage.addPendingSell({
@@ -151,6 +151,7 @@ describe('selectSellableOrders', () => {
       direction: 'LONG',
       submittedQuantity: 100,
       relatedBuyOrderIds: ['O1'],
+      isProtectiveLiquidation: false,
       submittedAt: Date.now(),
     });
 
@@ -158,7 +159,7 @@ describe('selectSellableOrders', () => {
       symbol: 'TEST.HK',
       direction: 'LONG',
       strategy: 'ALL',
-      currentPrice: 1,
+      currentPrice: '1',
       excludeOrderIds: new Set(['O2']),
     });
 
@@ -168,15 +169,15 @@ describe('selectSellableOrders', () => {
 
   it('maxSellQuantity 触发整笔截断', () => {
     storage.setBuyOrdersListForLong('TEST.HK', [
-      makeOrder('O1', 0.8, 150, 1),
-      makeOrder('O2', 0.9, 100, 2),
+      makeOrder('O1', '120', 150, 1),
+      makeOrder('O2', '90', 100, 2),
     ]);
 
     const result = storage.selectSellableOrders({
       symbol: 'TEST.HK',
       direction: 'LONG',
       strategy: 'ALL',
-      currentPrice: 1,
+      currentPrice: '1',
       maxSellQuantity: 200,
     });
 
@@ -186,15 +187,15 @@ describe('selectSellableOrders', () => {
 
   it('SHORT 方向同样适用策略筛选', () => {
     storage.setBuyOrdersListForShort('TEST.HK', [
-      makeOrder('S1', 1, 100, 1),
-      makeOrder('S2', 1.5, 100, 2),
+      makeOrder('S1', '100', 100, 1),
+      makeOrder('S2', '150', 100, 2),
     ]);
 
     const result = storage.selectSellableOrders({
       symbol: 'TEST.HK',
       direction: 'SHORT',
       strategy: 'PROFIT_ONLY',
-      currentPrice: 1.2,
+      currentPrice: '1.2',
     });
 
     expect(result.totalQuantity).toBe(100);

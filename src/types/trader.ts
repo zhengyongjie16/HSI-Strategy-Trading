@@ -1,4 +1,24 @@
-import type { OrderStatus } from 'longbridge';
+import type { OrderReadStatus } from './orderReadMetadata.js';
+
+/**
+ * PUBLIC caller 保存的原工作授权：闭包捕获真实入队 epoch、readiness、席位及持仓基线。
+ * executor 每次 await 后及最终 broker 副作用前复核；不得替换为当下新票或默认放行。
+ * 数据来源：普通买卖、风险、静态清仓及换标的实际业务入口。
+ */
+export type SignalCallerAuthorization = () => boolean;
+
+/**
+ * Trader 公共撤单请求。
+ * 类型用途：保留订单事实与业务派生撤单的授权来源，禁止门面将原业务授权改成订单事实授权。
+ * 数据来源：订单 owner 或换标 owner 捕获的 epoch/readiness/席位/持仓授权。
+ * 使用范围：Trader.cancelOrder 及其到 OrderMonitor mutation permit 的透传链路。
+ */
+export type TraderCancelOrderRequest =
+  | { readonly kind: 'ORDER_FACT' }
+  | {
+      readonly kind: 'SIGNAL_AUTHORIZED';
+      readonly authorize: SignalCallerAuthorization;
+    };
 
 /**
  * 批量信号执行结果。
@@ -41,28 +61,28 @@ export type OrderClosedReason = 'FILLED' | 'CANCELED' | 'REJECTED';
 export type OrderStateCheckResult =
   | {
       readonly kind: 'TERMINAL';
+      readonly executionStatus: 'NONE' | 'PARTIAL' | 'FILLED';
       readonly closedReason: OrderClosedReason;
-      readonly executedPrice: number | null;
+      readonly executedPrice: string | null;
       readonly executedQuantity: number | null;
+      readonly executedAmount: string;
+      readonly executionTimeMs: number | null;
       readonly submittedQuantity: number | null;
 
-      /**
-       * SDK `updatedAt`（Last updated）映射的经纪商观察/revision 时间；累计成交量增加时才可派生为本地执行账务时间，
-       * 绝不能解释为交易所成交时间。
-       */
+      /** 独立 broker revision，绝不作为真实 execution 时间的替代。 */
       readonly orderUpdatedAtMs: number | null;
-      readonly status: OrderStatus;
+      readonly status: OrderReadStatus;
     }
   | {
       readonly kind: 'OPEN';
-      readonly status: OrderStatus;
-      readonly executedPrice: number | null;
+      readonly executionStatus: 'NONE' | 'PARTIAL' | 'FILLED';
+      readonly status: OrderReadStatus;
+      readonly executedPrice: string | null;
       readonly executedQuantity: number | null;
+      readonly executedAmount: string;
+      readonly executionTimeMs: number | null;
 
-      /**
-       * SDK `updatedAt`（Last updated）映射的经纪商观察/revision 时间；累计成交量增加时才可派生为本地执行账务时间，
-       * 绝不能解释为交易所成交时间。
-       */
+      /** 独立 broker revision，绝不作为真实 execution 时间的替代。 */
       readonly updatedAtMs: number | null;
     }
   | {

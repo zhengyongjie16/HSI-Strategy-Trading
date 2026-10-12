@@ -35,6 +35,7 @@ import type { BuyProcessorDeps } from './types.js';
 import type { Task, BuyTaskType } from '../tradeTaskQueue/types.js';
 import type { BuyRiskCheckContext } from '../../../types/services.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
+import { exactCompare } from '../../../utils/numeric/exact.js';
 
 /**
  * 创建买入处理器。
@@ -58,6 +59,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     getIsHalfDay,
     now,
     getCanProcessTask,
+    snapshot,
     termination,
   } = deps;
 
@@ -69,6 +71,12 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     const signal = task.data;
     const monitorSymbol = monitorContext.config.monitorSymbol;
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
+    const dayEpoch = snapshot.getView().token.dayEpoch;
+    const callerAuthorization = (): boolean =>
+      !termination.isTerminated() &&
+      getCanProcessTask() &&
+      snapshot.getView().token.dayEpoch === dayEpoch &&
+      validateSignalSeat({ signal, symbolRegistry: monitorContext.symbolRegistry }).valid;
     try {
       const ctx = monitorContext;
       const { config, orderRecorder, riskChecker } = ctx;
@@ -102,7 +110,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       }
 
       const riskQuotes = await marketDataClient.getQuotes(quoteSymbols);
-      if (termination.isTerminated() || (getCanProcessTask && !getCanProcessTask())) return;
+      if (!callerAuthorization()) return;
 
       if (!validateSignalSeat({ signal, symbolRegistry: ctx.symbolRegistry }).valid) return;
 
@@ -115,7 +123,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         return;
       }
 
-      if (!monitorQuote || !Number.isFinite(monitorQuote.price) || monitorQuote.price <= 0) {
+      if (!monitorQuote || exactCompare(monitorQuote.price, '0') <= 0) {
         logger.warn(
           `[BuyProcessor] 监控标的行情缺失或价格无效，跳过: ${formatSymbolDisplay(monitorSymbol, ctx.monitorSymbolName)}`,
         );
@@ -139,7 +147,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
         config,
       };
       const checkedSignals = await signalProcessor.applyRiskChecks([signal], riskCheckContext);
-      if (termination.isTerminated() || (getCanProcessTask && !getCanProcessTask())) return;
+      if (!callerAuthorization()) return;
 
       // 如果信号被风险检查拦截，跳过执行
       if (checkedSignals.length === 0) {
@@ -163,7 +171,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
       }
 
       await executeSignalsWithLifecycleGate({
-        getCanProcessTask,
+        callerAuthorization,
         trader,
         signal,
         symbolDisplay,
@@ -188,7 +196,7 @@ export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
     loggerPrefix: 'BuyProcessor',
     taskQueue,
     processTask,
-    ...(getCanProcessTask ? { getCanProcessTask } : {}),
+    getCanProcessTask,
     termination,
   });
 }

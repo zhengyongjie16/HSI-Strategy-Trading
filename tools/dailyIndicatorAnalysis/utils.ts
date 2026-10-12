@@ -1,5 +1,5 @@
 import type { Candlestick } from 'longbridge';
-import { decimalToNumber } from '../../src/utils/helpers/index.js';
+import { canonicalDecimal } from '../../src/utils/numeric/exact.js';
 import { toHongKongTimeLog } from '../../src/utils/time/index.js';
 import {
   calculateEMA,
@@ -31,20 +31,6 @@ const ROW_COLOR_KEYS: ReadonlyArray<RowColorIndicatorKey> = [
 ];
 
 /**
- * 判断值是否包含 `toNumber` 方法。默认行为：仅对象且方法存在时返回 true。
- *
- * @param value 待判断值
- * @returns 是否为可调用 `toNumber` 的对象
- */
-function hasToNumberMethod(value: unknown): value is { readonly toNumber: () => number } {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-
-  return 'toNumber' in value && typeof value.toNumber === 'function';
-}
-
-/**
  * 将未知输入转换为 number。默认行为：无法解析时返回 `NaN`。
  *
  * @param value 待转换值
@@ -59,10 +45,6 @@ function toNumberFromUnknown(value: unknown): number {
     return Number(value);
   }
 
-  if (hasToNumberMethod(value)) {
-    return decimalToNumber(value);
-  }
-
   return Number.NaN;
 }
 
@@ -74,11 +56,12 @@ function toNumberFromUnknown(value: unknown): number {
  */
 function toCandle(candlestick: Candlestick): CandleData {
   return {
-    high: toNumberFromUnknown(candlestick.high),
-    low: toNumberFromUnknown(candlestick.low),
-    close: toNumberFromUnknown(candlestick.close),
-    open: toNumberFromUnknown(candlestick.open),
-    volume: toNumberFromUnknown(candlestick.volume),
+    // 原SDK OHLC先保真文本校验，number投影仅供本工具近似技术指标，不发布交易金融事实。
+    high: Number(canonicalDecimal(candlestick.high.toString())),
+    low: Number(canonicalDecimal(candlestick.low.toString())),
+    close: Number(canonicalDecimal(candlestick.close.toString())),
+    open: Number(canonicalDecimal(candlestick.open.toString())),
+    volume: candlestick.volume,
   };
 }
 

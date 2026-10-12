@@ -1,3 +1,7 @@
+import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
+import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
+import { executeTradingDayOpenRebuild } from '../../../src/app/lifecycle/rebuild.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 
 /**
@@ -8,12 +12,11 @@ import { createTerminationRuntime } from '../../../src/app/runtime/createTermina
  * - globalState domain 的 openRebuild 统一委托 executeTradingDayOpenRebuild
  * - createLifecycleRuntime 将固定顺序的 cache domains 交给 dayLifecycleManager
  */
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createLifecycleRuntime } from '../../../src/app/lifecycle/createLifecycleRuntime.js';
 import type {
   LifecycleRuntimeFactories,
   LifecycleRuntimeFactoryDeps,
-  PostTradeConsistencyRuntime,
 } from '../../../src/app/types.js';
 import type { SignalProcessor } from '../../../src/core/signalProcessor/types.js';
 import type { CacheDomain } from '../../../src/main/lifecycle/types.js';
@@ -25,6 +28,7 @@ import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/u
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
   createDailyLossTrackerDouble,
+  createAccountSnapshotDouble,
   createLoggerDouble,
   createAutoSearchWakeupRuntimeDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
@@ -40,6 +44,12 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import type { CreateDayLifecycleManagerCall, ExecuteOpenRebuildCall } from './types.js';
+
+let activeSnapshot: AccountPositionSnapshot;
+const fixtureCleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const cleanup of fixtureCleanups.splice(0)) await cleanup();
+});
 
 const factoryCalls: string[] = [];
 const executeOpenRebuildCalls: ExecuteOpenRebuildCall[] = [];
@@ -125,35 +135,6 @@ function createTradingQuoteDisplayRuntimeDouble() {
   };
 }
 
-function createPostTradeConsistencyRuntimeDouble(): PostTradeConsistencyRuntime {
-  return {
-    bindBusinessDeps: () => {},
-    recordSettlementRefreshNeed: () => {},
-    getStatus: () => ({
-      started: false,
-      currentVersion: 0,
-      staleVersion: 0,
-    }),
-    waitForFresh: async () => {},
-    onFreshReached: () => () => {},
-    stopScheduling: () => {},
-    abortWaiting: () => {
-      factoryCalls.push('postTradeConsistencyRuntime.abortWaiting');
-    },
-    resetAbort: () => {
-      factoryCalls.push('postTradeConsistencyRuntime.resetAbort');
-    },
-    start: () => {
-      factoryCalls.push('postTradeConsistencyRuntime.start');
-    },
-    stopAndDrain: async () => {},
-    midnightClear: () => {},
-    completeRebuildBaseline: () => {
-      factoryCalls.push('postTradeConsistencyRuntime.completeRebuildBaseline');
-    },
-  };
-}
-
 function createSignalProcessorDouble(): SignalProcessor {
   return {
     processSellSignals: ({ signals }) => signals,
@@ -171,31 +152,49 @@ function createLastState(): LastState {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: {
-      update: () => {},
-      get: () => null,
-    },
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set(),
   };
 }
 
-function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
+async function createLifecycleDeps(): Promise<LifecycleRuntimeFactoryDeps> {
   const lastState = createLastState();
   const tradingConfig = createTradingConfig();
   const warrantListCache = createWarrantListCache();
   const monitorContext = createMonitorContextDouble();
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [],
+  });
+  const trader = createTraderDouble();
+  const termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+  const settlement = createSettlementRuntimeFixture({
+    snapshot,
+    monitorContext,
+    termination,
+    getTrader: () => trader,
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
+        throw new Error('Unexpected stale commit');
+    },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
+  fixtureCleanups.push(settlement.stopAndDrain);
+  activeSnapshot = snapshot;
 
   return {
-    termination: createTerminationRuntime({
-      closeTradingGate: () => {},
-      closeProducerAdmission: () => {},
-      stopProducers: [],
-      onSecondaryError: () => {},
-    }),
+    termination,
     logger: createLoggerDouble(),
     preGateRuntime: {
       config: createSdkConfigDouble(),
@@ -221,6 +220,7 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
       stopAndDrain: async () => {},
     },
     postGateRuntime: {
+      snapshot,
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
@@ -243,13 +243,21 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
       monitorDisplayRuntime: createMonitorDisplayRuntimeDouble(),
       tradingQuoteDisplayRuntime: createTradingQuoteDisplayRuntimeDouble(),
       switchWakeupRuntime: createSwitchWakeupRuntimeDouble(),
-      postTradeConsistencyRuntime: createPostTradeConsistencyRuntimeDouble(),
+      postTradeConsistencyRuntime: settlement,
       lastState,
-      trader: createTraderDouble(),
-      loadTradingDayRuntimeSnapshot: async () => ({
-        allOrders: [],
-        quotesMap: new Map(),
-      }),
+      trader,
+      loadTradingDayRuntimeSnapshot: async () => {
+        const captured = snapshot.getView().token;
+        if (!snapshot.isCurrent(captured, { account: true, positions: true, paired: true }))
+          return { status: 'ABORTED' };
+
+        return {
+          status: 'COMMITTED',
+          snapshotToken: captured,
+          allOrders: [],
+          quotesMap: new Map(),
+        };
+      },
       doomsdayProtection: {
         isBuyCutoffWindowActive: () => false,
         executeClearance: async () => ({
@@ -296,7 +304,16 @@ function createLifecycleDeps(): LifecycleRuntimeFactoryDeps {
       buyProcessor: createNamedProcessor('buyProcessor'),
       sellProcessor: createNamedProcessor('sellProcessor'),
     },
-    rebuildTradingDayState: async () => {},
+    rebuildTradingDayState: async (input) => {
+      expect(input.allOrders).toEqual([]);
+      expect(input.quotesMap).toEqual(new Map());
+      if (
+        !snapshot.isCurrent(input.snapshotToken, { account: true, positions: true, paired: true })
+      )
+        return { status: 'ABORTED' };
+
+      return { status: 'COMMITTED', snapshotToken: input.snapshotToken };
+    },
   };
 }
 
@@ -305,8 +322,19 @@ function createDomain(name: string): CacheDomain {
     midnightClear: async () => {
       factoryCalls.push(`${name}.midnightClear`);
     },
-    openRebuild: async () => {
+    openRebuild: async (ctx) => {
       factoryCalls.push(`${name}.openRebuild`);
+      if (
+        !ctx.isCurrent() ||
+        !activeSnapshot.isCurrent(ctx.snapshotToken, {
+          account: true,
+          positions: true,
+          paired: true,
+        })
+      )
+        return { status: 'ABORTED' };
+
+      return { status: 'COMMITTED', snapshotToken: ctx.snapshotToken };
     },
   };
 }
@@ -341,19 +369,21 @@ function createLifecycleRuntimeFactories(): LifecycleRuntimeFactories {
     },
     createGlobalStateDomain: (deps) => {
       factoryCalls.push('globalState.factory');
-      globalStateDomain = {
+      const domain: CacheDomain = {
         midnightClear: async () => {
           factoryCalls.push('globalState.midnightClear');
         },
         openRebuild: async (ctx) => {
           factoryCalls.push('globalState.openRebuild');
-          await deps.runTradingDayOpenRebuild(ctx.now);
+          return deps.runTradingDayOpenRebuild(ctx.now);
         },
       };
-      return globalStateDomain;
+      globalStateDomain = domain;
+      return domain;
     },
     executeTradingDayOpenRebuild: async (params) => {
       executeOpenRebuildCalls.push(params);
+      return executeTradingDayOpenRebuild(params);
     },
     createDayLifecycleManager: (deps) => {
       createDayLifecycleManagerCalls.push(deps);
@@ -379,7 +409,7 @@ describe('app createLifecycleRuntime wiring', () => {
   });
 
   it('creates cache domains in the declared order and delegates global open rebuild centrally', async () => {
-    const deps = createLifecycleDeps();
+    const deps = await createLifecycleDeps();
     const factories = createLifecycleRuntimeFactories();
     createLifecycleRuntime(deps, factories);
     const domains = createDayLifecycleManagerCalls[0]?.cacheDomains;
@@ -407,6 +437,18 @@ describe('app createLifecycleRuntime wiring', () => {
     expect(createSignalRuntimeDomainCalls[0]?.trader).toBe(deps.postGateRuntime.trader);
 
     await domains.at(-1)?.openRebuild({
+      dayEpoch: deps.postGateRuntime.snapshot.getView().token.dayEpoch,
+      snapshotToken: deps.postGateRuntime.snapshot.getView().token,
+      isCurrent: (() => {
+        const token = deps.postGateRuntime.snapshot.getView().token;
+        return () =>
+          !deps.termination.isTerminated() &&
+          deps.postGateRuntime.snapshot.isCurrent(token, {
+            account: true,
+            positions: true,
+            paired: true,
+          });
+      })(),
       now: new Date('2026-03-09T09:30:00.000Z'),
       runtime: {
         dayKey: '2026-03-09',
@@ -423,8 +465,8 @@ describe('app createLifecycleRuntime wiring', () => {
     expect(executeOpenRebuildCalls[0]?.rebuildTradingDayState).toBe(deps.rebuildTradingDayState);
   });
 
-  it('passes the ordered cache domains into createDayLifecycleManager', () => {
-    const deps = createLifecycleDeps();
+  it('passes the ordered cache domains into createDayLifecycleManager', async () => {
+    const deps = await createLifecycleDeps();
     const factories = createLifecycleRuntimeFactories();
     const dayLifecycleManager = createLifecycleRuntime(deps, factories);
     const cacheDomains = createDayLifecycleManagerCalls[0]?.cacheDomains;
@@ -457,8 +499,8 @@ describe('app createLifecycleRuntime wiring', () => {
     expect(cacheDomains[5]).toBe(globalStateDomain);
   });
 
-  it('passes the same monitorQuoteEventRuntime object into signal runtime domain deps', () => {
-    const deps = createLifecycleDeps();
+  it('passes the same monitorQuoteEventRuntime object into signal runtime domain deps', async () => {
+    const deps = await createLifecycleDeps();
     const factories = createLifecycleRuntimeFactories();
 
     createLifecycleRuntime(deps, factories);

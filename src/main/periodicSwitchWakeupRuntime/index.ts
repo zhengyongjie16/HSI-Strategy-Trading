@@ -8,12 +8,18 @@
  */
 import { TRADING } from '../../constants/index.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
+import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import type { SeatTruthChangedListener } from '../../types/seat.js';
 import type { MonitorTaskInput } from '../asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
   PeriodicSwitchRouteBaseline,
+  PeriodicSwitchTaskAuthorization,
+  PeriodicSwitchTaskData,
+} from '../../types/periodicSwitch.js';
+import type {
   PeriodicSwitchRouteState,
   PeriodicSwitchWakeupRuntime,
   PeriodicSwitchWakeupRuntimeDeps,
@@ -24,6 +30,7 @@ function baselineMatches(
   right: PeriodicSwitchRouteBaseline,
 ): boolean {
   return (
+    left.dayEpoch === right.dayEpoch &&
     left.direction === right.direction &&
     left.symbol === right.symbol &&
     left.seatVersion === right.seatVersion &&
@@ -58,6 +65,9 @@ export function createPeriodicSwitchWakeupRuntime(
   deps: PeriodicSwitchWakeupRuntimeDeps,
 ): PeriodicSwitchWakeupRuntime {
   let running = false;
+  let draining = false;
+  let drainPromise: Promise<void> | null = null;
+  const dispatchPromises = new Set<Promise<void>>();
   let unsubscribeSeatTruthChanged: (() => void) | null = null;
   let unsubscribeOrderStateChanged: (() => void) | null = null;
   let unsubscribeFreshReached: (() => void) | null = null;
@@ -75,6 +85,12 @@ export function createPeriodicSwitchWakeupRuntime(
       timerHandle: null,
       waitingEmpty: null,
       failureReevaluationAtMs: null,
+      dispatchBaseline: null,
+      inFlight: false,
+      dirty: false,
+      blockedOnFreshness: false,
+      blockedOnGate: false,
+      dispatchedCanContinue: null,
     };
     routeStates.set(direction, nextState);
     return nextState;
@@ -113,6 +129,7 @@ export function createPeriodicSwitchWakeupRuntime(
       symbol: seatState.symbol,
       seatVersion,
       lastSeatActivatedAt: seatState.lastSeatActivatedAt,
+      dayEpoch: deps.snapshot.getView().token.dayEpoch,
     };
   }
 
@@ -125,28 +142,174 @@ export function createPeriodicSwitchWakeupRuntime(
     return switchIntervalMinutes;
   }
 
-  function dispatchAutoSymbolTick(baseline: PeriodicSwitchRouteBaseline): void {
-    if (!running || deps.termination.isTerminated()) return;
+  /** 跨await读取真实运行态，停止后不能由旧回调继续派发。 */
+  function isRuntimeActive(): boolean {
+    return running && !deps.termination.isTerminated();
+  }
 
-    const currentTimeMs = deps.now().getTime();
-    const data: MonitorTaskDataMap['AUTO_SYMBOL_TICK'] = {
-      direction: baseline.direction,
-      seatVersion: baseline.seatVersion,
-      symbol: baseline.symbol,
-      lastSeatActivatedAt: baseline.lastSeatActivatedAt,
-      currentTimeMs,
-    };
-    const task: MonitorTaskInput<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'> = {
-      type: 'AUTO_SYMBOL_TICK',
-      dedupeKey: `AUTO_SYMBOL_TICK:${baseline.direction}`,
-      data,
-    };
+  function isBaselineCurrent(baseline: PeriodicSwitchRouteBaseline): boolean {
+    const currentBaseline = readCurrentBaseline(baseline.direction);
+    return currentBaseline !== null && baselineMatches(currentBaseline, baseline);
+  }
 
-    if (!deps.monitorTaskQueue.scheduleLatest(task) && !deps.termination.isTerminated()) {
-      deps.termination.reportFatalError(
-        new Error('[PeriodicSwitchWakeupRuntime] 非终态队列拒绝换标任务'),
-      );
+  function isBaselineReady(): boolean {
+    const status = deps.postTradeConsistencyRuntime.getStatus();
+    return status.started && status.currentVersion === status.staleVersion;
+  }
+
+  /** 原route身份与业务授权分开；真实WAIT接管不因receipt/交易时段失效被拒绝。 */
+  function createRouteCurrent(baseline: PeriodicSwitchRouteBaseline): () => boolean {
+    const ownerState = routeStates.get(baseline.direction);
+    return () =>
+      ownerState !== undefined &&
+      routeStates.get(baseline.direction) === ownerState &&
+      isRuntimeActive() &&
+      isBaselineCurrent(baseline);
+  }
+
+  /** 原票跨manager quote/broker await传递；本owner不创建第二份持仓或主动失效canonical事实。 */
+  function createTaskCanContinue(
+    receipt: SettlementReadinessReceipt,
+    isRouteCurrent: () => boolean,
+  ): () => boolean {
+    const selectedView = deps.snapshot.getView();
+    return () =>
+      isRouteCurrent() &&
+      deps.getCanTradeNow() &&
+      deps.postTradeConsistencyRuntime.isCurrent(receipt) &&
+      deps.snapshot.isCurrent(selectedView.token, { account: false, positions: true });
+  }
+
+  /** 保存原due/WAIT需求；组件有效时只追最新水位，否则由真实fresh事件重驱。 */
+  function blockOnFreshness(state: PeriodicSwitchRouteState): void {
+    state.blockedOnFreshness = true;
+    const view = deps.snapshot.getView();
+    state.dirty =
+      isBaselineReady() && deps.snapshot.isCurrent(view.token, { account: false, positions: true });
+  }
+
+  /** 已有任务迟到：不能改plan/waiting-empty；只让原route读取当前授权重新派发。 */
+  function isTaskAuthorizationCurrent(authorization: PeriodicSwitchTaskAuthorization): boolean {
+    if (!authorization.isRouteCurrent()) return false;
+
+    const state = routeStates.get(authorization.direction);
+    if (state?.dispatchedCanContinue !== authorization.canContinue) return false;
+
+    if (isFailureReevaluationPending(state, authorization)) return false;
+
+    if (!deps.getCanTradeNow()) {
+      state.blockedOnGate = true;
+      return false;
     }
+
+    if (authorization.canContinue()) return true;
+
+    dispatchAutoSymbolTick(authorization);
+    return false;
+  }
+
+  /** 原latest-only需求在single-flight中消费真实receipt，不把新组件视为外部quote retry。 */
+  async function processDispatchQueue(
+    direction: 'LONG' | 'SHORT',
+    state: PeriodicSwitchRouteState,
+  ): Promise<void> {
+    try {
+      while (isRuntimeActive() && routeStates.get(direction) === state && state.dirty) {
+        state.dirty = false;
+        const baseline = state.dispatchBaseline;
+        if (baseline === null || !isBaselineCurrent(baseline)) return;
+
+        if (!deps.getCanTradeNow()) {
+          state.blockedOnGate = true;
+          return;
+        }
+
+        state.blockedOnGate = false;
+
+        if (!isBaselineReady()) {
+          state.blockedOnFreshness = true;
+          return;
+        }
+
+        state.blockedOnFreshness = false;
+        let receipt: SettlementReadinessReceipt;
+        try {
+          receipt = await deps.postTradeConsistencyRuntime.waitForFresh();
+        } catch (error) {
+          if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) return;
+
+          throw error;
+        }
+
+        if (!isRuntimeActive() || routeStates.get(direction) !== state) return;
+
+        if (!deps.getCanTradeNow()) {
+          state.blockedOnGate = true;
+          return;
+        }
+
+        if (!isBaselineCurrent(baseline)) continue;
+
+        const isRouteCurrent = createRouteCurrent(baseline);
+        const canContinue = createTaskCanContinue(receipt, isRouteCurrent);
+        if (!canContinue()) {
+          blockOnFreshness(state);
+          continue;
+        }
+
+        const data: PeriodicSwitchTaskData = {
+          ...baseline,
+          currentTimeMs: deps.now().getTime(),
+          readinessReceipt: receipt,
+          canContinue,
+          isRouteCurrent,
+        };
+        const task: MonitorTaskInput<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'> = {
+          type: 'AUTO_SYMBOL_TICK',
+          dedupeKey: `AUTO_SYMBOL_TICK:${baseline.direction}`,
+          data,
+        };
+        // 无await的最终授权→派发；消费端必须保持同一closure，不得用当前票重新授权旧任务。
+        if (!canContinue()) {
+          blockOnFreshness(state);
+          continue;
+        }
+
+        state.dispatchedCanContinue = canContinue;
+        if (!deps.monitorTaskQueue.scheduleLatest(task) && !deps.termination.isTerminated()) {
+          deps.termination.reportFatalError(
+            new Error('[PeriodicSwitchWakeupRuntime] 非终态队列拒绝换标任务'),
+          );
+        }
+
+        if (state.dispatchBaseline === baseline) state.dispatchBaseline = null;
+      }
+    } finally {
+      state.inFlight = false;
+    }
+  }
+
+  function dispatchAutoSymbolTick(baseline: PeriodicSwitchRouteBaseline): void {
+    if (!running || deps.termination.isTerminated() || !isBaselineCurrent(baseline)) return;
+
+    const state = getRouteState(baseline.direction);
+    state.dispatchBaseline = baseline;
+    state.dirty = true;
+    if (state.inFlight) return;
+
+    state.inFlight = true;
+    const work = processDispatchQueue(baseline.direction, state).catch((error: unknown) => {
+      deps.termination.reportFatalError(error);
+    });
+    dispatchPromises.add(work);
+    void work.then(
+      () => {
+        dispatchPromises.delete(work);
+      },
+      () => {
+        dispatchPromises.delete(work);
+      },
+    );
   }
 
   function invalidateRouteIfBaselineChanged(
@@ -163,6 +326,11 @@ export function createPeriodicSwitchWakeupRuntime(
       clearRouteTimer(direction);
       state.waitingEmpty = null;
       state.failureReevaluationAtMs = null;
+      state.dispatchBaseline = null;
+      state.dirty = false;
+      state.blockedOnFreshness = false;
+      state.blockedOnGate = false;
+      state.dispatchedCanContinue = null;
     }
 
     state.baseline = nextBaseline;
@@ -272,7 +440,17 @@ export function createPeriodicSwitchWakeupRuntime(
 
     for (const direction of PERIODIC_SWITCH_DIRECTIONS) {
       const state = routeStates.get(direction);
-      if (state !== undefined && state.waitingEmpty !== null) {
+      if (state?.waitingEmpty !== null && state?.waitingEmpty !== undefined) {
+        if (state.blockedOnGate) {
+          state.blockedOnGate = false;
+          dispatchAutoSymbolTick(state.waitingEmpty);
+        }
+
+        continue;
+      }
+
+      if (state?.dispatchBaseline !== null && state?.dispatchBaseline !== undefined) {
+        dispatchAutoSymbolTick(state.dispatchBaseline);
         continue;
       }
 
@@ -280,10 +458,10 @@ export function createPeriodicSwitchWakeupRuntime(
     }
   }
 
-  function markWaitingEmpty(baseline: PeriodicSwitchRouteBaseline): void {
-    if (!running || deps.termination.isTerminated()) {
-      return;
-    }
+  function markWaitingEmpty(baseline: PeriodicSwitchTaskAuthorization): void {
+    if (!baseline.isRouteCurrent()) return;
+
+    if (!deps.getCanTradeNow()) getRouteState(baseline.direction).blockedOnGate = true;
 
     const currentBaseline = readCurrentBaseline(baseline.direction);
     if (currentBaseline === null || !baselineMatches(currentBaseline, baseline)) {
@@ -291,16 +469,17 @@ export function createPeriodicSwitchWakeupRuntime(
     }
 
     const state = getRouteState(baseline.direction);
-    if (isFailureReevaluationPending(state, baseline)) {
-      return;
-    }
+    // 真WAIT不因原receipt/gate失效被拒绝；已归明确外部失败owner的旧回写仍按原规则忽略。
+    if (isFailureReevaluationPending(state, baseline)) return;
 
     clearRouteTimer(baseline.direction);
     state.baseline = baseline;
     state.waitingEmpty = baseline;
   }
 
-  function clearWaitingEmpty(baseline: PeriodicSwitchRouteBaseline): void {
+  function clearWaitingEmpty(baseline: PeriodicSwitchTaskAuthorization): void {
+    if (!isTaskAuthorizationCurrent(baseline)) return;
+
     const currentBaseline = readCurrentBaseline(baseline.direction);
     if (currentBaseline === null || !baselineMatches(currentBaseline, baseline)) {
       return;
@@ -328,11 +507,14 @@ export function createPeriodicSwitchWakeupRuntime(
       return;
     }
 
+    if (!isTaskAuthorizationCurrent(params)) return;
+
     const baseline: PeriodicSwitchRouteBaseline = {
       direction: params.direction,
       symbol: params.symbol,
       seatVersion: params.seatVersion,
       lastSeatActivatedAt: params.lastSeatActivatedAt,
+      dayEpoch: params.dayEpoch,
     };
     const currentBaseline = readCurrentBaseline(baseline.direction);
     if (currentBaseline === null || !baselineMatches(currentBaseline, baseline)) {
@@ -355,7 +537,12 @@ export function createPeriodicSwitchWakeupRuntime(
       return;
     }
 
-    if (params.status === 'skipped' || params.status === 'blocked') {
+    if (params.status === 'blocked') {
+      state.blockedOnGate = true;
+      return;
+    }
+
+    if (params.status === 'skipped') {
       clearRouteTimer(baseline.direction);
       state.waitingEmpty = null;
       state.failureReevaluationAtMs = null;
@@ -429,16 +616,21 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function start(): void {
-    if (running || deps.termination.isTerminated()) {
+    if (running || draining || deps.termination.isTerminated()) {
       return;
     }
 
+    drainPromise = null;
     running = true;
     unsubscribeSeatTruthChanged = deps.symbolRegistry.onSeatTruthChanged(handleSeatTruthChanged);
     unsubscribeOrderStateChanged = deps.trader.onOrderStateChanged(redispatchWaitingEmptyRoutes);
-    unsubscribeFreshReached = deps.postTradeConsistencyRuntime.onFreshReached(
-      redispatchWaitingEmptyRoutes,
-    );
+    unsubscribeFreshReached = deps.postTradeConsistencyRuntime.onFreshReached(() => {
+      redispatchWaitingEmptyRoutes();
+      for (const state of routeStates.values()) {
+        if (state.blockedOnFreshness && state.dispatchBaseline !== null)
+          dispatchAutoSymbolTick(state.dispatchBaseline);
+      }
+    });
 
     unsubscribeGateStateChanged =
       deps.tradingGateEventRuntime.onGateStateChanged(handleGateStateChanged);
@@ -466,8 +658,14 @@ export function createPeriodicSwitchWakeupRuntime(
   }
 
   function stopAndDrain(): Promise<void> {
+    if (drainPromise !== null) return drainPromise;
+
+    draining = true;
     stop();
-    return Promise.resolve();
+    drainPromise = Promise.allSettled(dispatchPromises).then(() => {
+      draining = false;
+    });
+    return drainPromise;
   }
 
   return {

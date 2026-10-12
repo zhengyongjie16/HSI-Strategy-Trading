@@ -1,7 +1,14 @@
+import { canonicalDecimal, exactCompare } from '../../utils/numeric/exact.js';
+import { AMOUNT_CONFIG_TEXT_PATTERN } from '../../constants/financialConfig.js';
 import { logger } from '../../utils/logger/index.js';
-import type { LiquidationCooldownConfig, MonitorConfig, NumberRange } from '../../types/config.js';
+import type { LiquidationCooldownConfig, MonitorConfig, DecimalRange } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
-import { getBooleanConfig, getStringConfig, isSymbolWithRegion } from '../utils.js';
+import {
+  getBooleanConfig,
+  getFinancialConfig,
+  getStringConfig,
+  isSymbolWithRegion,
+} from '../utils.js';
 import { validateLongbridgeConfig } from '../auth/utils.js';
 import type { SymbolValidationContext, ValidationResult } from './types.js';
 
@@ -72,11 +79,11 @@ function validateRequiredSymbol({
 function validateDegradedRangeRelationship(params: {
   readonly prefix: string;
   readonly direction: 'LONG' | 'SHORT';
-  readonly primaryThreshold: number;
-  readonly switchDistanceRange: NumberRange;
+  readonly primaryThreshold: string;
+  readonly switchDistanceRange: DecimalRange;
 }): string | null {
   if (params.direction === 'LONG') {
-    if (params.switchDistanceRange.min >= params.primaryThreshold) {
+    if (exactCompare(params.switchDistanceRange.min, params.primaryThreshold) >= 0) {
       return (
         `${params.prefix}: SWITCH_DISTANCE_RANGE_BULL 无效（降级区间必须满足 ` +
         `SWITCH_DISTANCE_RANGE_BULL.min < ` +
@@ -85,7 +92,7 @@ function validateDegradedRangeRelationship(params: {
       );
     }
 
-    if (params.primaryThreshold >= params.switchDistanceRange.max) {
+    if (exactCompare(params.primaryThreshold, params.switchDistanceRange.max) >= 0) {
       return (
         `${params.prefix}: SWITCH_DISTANCE_RANGE_BULL 无效（主阈值必须满足 ` +
         `AUTO_SEARCH_MIN_DISTANCE_PCT_BULL < ` +
@@ -97,7 +104,7 @@ function validateDegradedRangeRelationship(params: {
     return null;
   }
 
-  if (params.switchDistanceRange.min >= params.primaryThreshold) {
+  if (exactCompare(params.switchDistanceRange.min, params.primaryThreshold) >= 0) {
     return (
       `${params.prefix}: SWITCH_DISTANCE_RANGE_BEAR 无效（主阈值必须满足 ` +
       `SWITCH_DISTANCE_RANGE_BEAR.min < ` +
@@ -106,7 +113,7 @@ function validateDegradedRangeRelationship(params: {
     );
   }
 
-  if (params.primaryThreshold >= params.switchDistanceRange.max) {
+  if (exactCompare(params.primaryThreshold, params.switchDistanceRange.max) >= 0) {
     return (
       `${params.prefix}: SWITCH_DISTANCE_RANGE_BEAR 无效（降级区间必须满足 ` +
       `AUTO_SEARCH_MIN_DISTANCE_PCT_BEAR < ` +
@@ -165,26 +172,53 @@ export function validateCriticalBoundedNumberConfig({
  * @param options 校验参数
  * @returns 缺失时返回 null；显式配置但非法时返回错误信息
  */
-function validateCriticalMinimumNumberConfig({
+function validateCriticalMinimumAmountConfig({
   env,
   envKey,
   min,
 }: {
   readonly env: NodeJS.ProcessEnv;
   readonly envKey: string;
-  readonly min: number;
+  readonly min: string;
 }): string | null {
-  const raw = env[envKey];
-  if (raw === undefined || raw.trim() === '') {
+  try {
+    getFinancialConfig(env, envKey, min, true);
     return null;
+  } catch {
+    return `${envKey} 无效（金额为最多 10 位整数、3 位小数的普通十进制文本且 >= ${min}）`;
+  }
+}
+
+/**
+ * 判断金融配置文本是否合法，避免用 number 校验文本状态。
+ * @param value 配置文本
+ * @returns 是否为有效普通十进制文本
+ */
+function isFinancialText(value: string | null): value is string {
+  if (typeof value !== 'string') {
+    return false;
   }
 
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < min) {
-    return `${envKey} 无效（必须为数字且 >= ${min}）`;
+  try {
+    canonicalDecimal(value);
+    return true;
+  } catch {
+    return false;
   }
+}
 
-  return null;
+/**
+ * 校验配置对象内的金额文本及其原业务下界。
+ * @param value 金额配置
+ * @param minimum 金额下界
+ * @returns 是否满足配置文本范围与业务下界
+ */
+function isAmountConfig(value: string, minimum: string): boolean {
+  return (
+    typeof value === 'string' &&
+    AMOUNT_CONFIG_TEXT_PATTERN.test(value) &&
+    exactCompare(value, minimum) >= 0
+  );
 }
 
 /**
@@ -312,47 +346,44 @@ export function validateMonitorConfig(
   }
 
   const targetNotionalEnvKey = 'TARGET_NOTIONAL';
-  const targetNotionalValidationError = validateCriticalMinimumNumberConfig({
+  const targetNotionalValidationError = validateCriticalMinimumAmountConfig({
     env,
     envKey: targetNotionalEnvKey,
-    min: 1,
+    min: '1',
   });
   if (targetNotionalValidationError !== null) {
     errors = [...errors, `${prefix}: ${targetNotionalValidationError}`];
   }
 
-  if (!Number.isFinite(config.targetNotional) || config.targetNotional <= 0) {
+  if (!isAmountConfig(config.targetNotional, '1')) {
     errors = [...errors, `${prefix}: ${targetNotionalEnvKey} 未配置或无效（必须为正数）`];
   }
 
   const maxPositionNotionalEnvKey = 'MAX_POSITION_NOTIONAL';
-  const maxPositionNotionalValidationError = validateCriticalMinimumNumberConfig({
+  const maxPositionNotionalValidationError = validateCriticalMinimumAmountConfig({
     env,
     envKey: maxPositionNotionalEnvKey,
-    min: 1,
+    min: '1',
   });
   if (maxPositionNotionalValidationError !== null) {
     errors = [...errors, `${prefix}: ${maxPositionNotionalValidationError}`];
   }
 
-  if (!Number.isFinite(config.maxPositionNotional) || config.maxPositionNotional <= 0) {
+  if (!isAmountConfig(config.maxPositionNotional, '1')) {
     errors = [...errors, `${prefix}: ${maxPositionNotionalEnvKey} 未配置或无效（必须为正数）`];
   }
 
   const maxUnrealizedLossEnvKey = 'MAX_UNREALIZED_LOSS_PER_SYMBOL';
-  const maxUnrealizedLossValidationError = validateCriticalMinimumNumberConfig({
+  const maxUnrealizedLossValidationError = validateCriticalMinimumAmountConfig({
     env,
     envKey: maxUnrealizedLossEnvKey,
-    min: 0,
+    min: '0',
   });
   if (maxUnrealizedLossValidationError !== null) {
     errors = [...errors, `${prefix}: ${maxUnrealizedLossValidationError}`];
   }
 
-  if (
-    !Number.isFinite(config.maxUnrealizedLossPerSymbol) ||
-    config.maxUnrealizedLossPerSymbol < 0
-  ) {
+  if (!isAmountConfig(config.maxUnrealizedLossPerSymbol, '0')) {
     errors = [...errors, `${prefix}: ${maxUnrealizedLossEnvKey} 无效（必须为非负数）`];
   }
 
@@ -488,7 +519,7 @@ export function validateMonitorConfig(
     ] as const;
 
     for (const field of requiredNumberFields) {
-      if (field.value === null || !Number.isFinite(field.value)) {
+      if (!isFinancialText(field.value)) {
         errors = [...errors, `${prefix}: ${field.envKey} 未配置或无效`];
       }
     }
@@ -514,9 +545,9 @@ export function validateMonitorConfig(
     const bullRange = autoSearchConfig.switchDistanceRangeBull;
     if (
       !bullRange ||
-      !Number.isFinite(bullRange.min) ||
-      !Number.isFinite(bullRange.max) ||
-      bullRange.min > bullRange.max
+      !isFinancialText(bullRange.min) ||
+      !isFinancialText(bullRange.max) ||
+      exactCompare(bullRange.min, bullRange.max) > 0
     ) {
       errors = [
         ...errors,
@@ -524,7 +555,7 @@ export function validateMonitorConfig(
       ];
     } else if (
       autoSearchConfig.autoSearchMinDistancePctBull !== null &&
-      Number.isFinite(autoSearchConfig.autoSearchMinDistancePctBull)
+      isFinancialText(autoSearchConfig.autoSearchMinDistancePctBull)
     ) {
       const bullRangeRelationshipError = validateDegradedRangeRelationship({
         prefix,
@@ -540,9 +571,9 @@ export function validateMonitorConfig(
     const bearRange = autoSearchConfig.switchDistanceRangeBear;
     if (
       !bearRange ||
-      !Number.isFinite(bearRange.min) ||
-      !Number.isFinite(bearRange.max) ||
-      bearRange.min > bearRange.max
+      !isFinancialText(bearRange.min) ||
+      !isFinancialText(bearRange.max) ||
+      exactCompare(bearRange.min, bearRange.max) > 0
     ) {
       errors = [
         ...errors,
@@ -550,7 +581,7 @@ export function validateMonitorConfig(
       ];
     } else if (
       autoSearchConfig.autoSearchMinDistancePctBear !== null &&
-      Number.isFinite(autoSearchConfig.autoSearchMinDistancePctBear)
+      isFinancialText(autoSearchConfig.autoSearchMinDistancePctBear)
     ) {
       const bearRangeRelationshipError = validateDegradedRangeRelationship({
         prefix,

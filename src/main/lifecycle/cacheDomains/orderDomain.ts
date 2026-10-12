@@ -9,7 +9,7 @@
  * - 订单数据在统一 rebuildTradingDayState 中从 API 重新加载和重建
  * - 本域不再直接持有订单监控 runtime owner
  */
-import type { CacheDomain } from '../types.js';
+import type { CacheDomain, CacheDomainOpenRebuildResult } from '../types.js';
 import type { OrderDomainDeps } from './types.js';
 
 /**
@@ -34,8 +34,11 @@ export function createOrderDomain(deps: OrderDomainDeps): CacheDomain {
     /**
      * 开盘重建：订单数据由统一 rebuildTradingDayState 负责重建，订单监控 runtime 由 signalRuntimeDomain 启动。
      */
-    openRebuild(): void {
+    openRebuild(ctx): CacheDomainOpenRebuildResult {
+      if (!ctx.isCurrent()) return { status: 'ABORTED' };
+
       logger.debug('[Lifecycle][order] 开盘重建跳过 runtime 启停，等待 signalRuntimeDomain 接管');
+      return { status: 'COMMITTED', snapshotToken: ctx.snapshotToken };
     },
   };
 }

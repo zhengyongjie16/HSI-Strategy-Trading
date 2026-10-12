@@ -7,7 +7,6 @@
  * - 协调订单提交流程与追踪登记
  */
 import { logger } from '../../../utils/logger/index.js';
-import { OrderSide } from 'longbridge';
 import { LOG_COLORS } from '../../../constants/index.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
 import { isSeatVersionMatch } from '../../../utils/seat/guards.js';
@@ -25,6 +24,7 @@ import type {
 import type {
   DoomsdayClearanceExecutionResult,
   ExecuteSignalsResult,
+  SignalCallerAuthorization,
 } from '../../../types/trader.js';
 import type { OrderActionAuthorization, OrderExecutor, OrderExecutorDeps } from '../types.js';
 import type { ExecutableOrderCommand } from './types.js';
@@ -129,7 +129,7 @@ function assertDoomsdayClearanceSellContract(command: DoomsdayClearanceCommand):
  * 末日命令已在专用入口转换为非保护性 SellSignal；最终下单边界仍独立校验方向，避免失效席位污染订单与风控状态。
  *
  * @param signal 末日清仓内部卖出信号
- * @returns DoomsdayClearanceOrderCommand，包含唯一的卖出方向、SDK side 与末日执行目的
+ * @returns DoomsdayClearanceOrderCommand，包含唯一的卖出方向、中性 side 与末日执行目的
  */
 function resolveDoomsdayClearanceOrderCommand(signal: SellSignal): ExecutableOrderCommand {
   const runtimeAction: unknown = signal.action;
@@ -144,7 +144,7 @@ function resolveDoomsdayClearanceOrderCommand(signal: SellSignal): ExecutableOrd
         kind: 'SELL',
         signal: { ...signal, action: 'SELLCALL' },
         direction: 'LONG',
-        side: OrderSide.Sell,
+        side: 'SELL',
         executionPurpose: 'DOOMSDAY_CLEARANCE',
       };
     }
@@ -154,7 +154,7 @@ function resolveDoomsdayClearanceOrderCommand(signal: SellSignal): ExecutableOrd
         kind: 'SELL',
         signal: { ...signal, action: 'SELLPUT' },
         direction: 'SHORT',
-        side: OrderSide.Sell,
+        side: 'SELL',
         executionPurpose: 'DOOMSDAY_CLEARANCE',
       };
     }
@@ -170,7 +170,7 @@ function resolveDoomsdayClearanceOrderCommand(signal: SellSignal): ExecutableOrd
  * 最终下单边界必须独立校验该方向，避免上游已失效或被错误构造的信号污染另一方向的订单与风控状态。
  *
  * @param signal 已通过执行入口类型约束的普通交易信号
- * @returns ExecutableOrderCommand，包含唯一的订单类型、席位方向、SDK side 与普通执行目的
+ * @returns ExecutableOrderCommand，包含唯一的订单类型、席位方向、中性 side 与普通执行目的
  */
 function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderCommand {
   const runtimeAction: unknown = signal.action;
@@ -185,7 +185,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         kind: 'BUY',
         signal: { ...signal, action: 'BUYCALL' },
         direction: 'LONG',
-        side: OrderSide.Buy,
+        side: 'BUY',
         executionPurpose: 'ORDINARY',
       };
     }
@@ -195,7 +195,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         kind: 'BUY',
         signal: { ...signal, action: 'BUYPUT' },
         direction: 'SHORT',
-        side: OrderSide.Buy,
+        side: 'BUY',
         executionPurpose: 'ORDINARY',
       };
     }
@@ -205,7 +205,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         kind: 'SELL',
         signal: { ...signal, action: 'SELLCALL' },
         direction: 'LONG',
-        side: OrderSide.Sell,
+        side: 'SELL',
         executionPurpose: 'ORDINARY',
       };
     }
@@ -215,7 +215,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         kind: 'SELL',
         signal: { ...signal, action: 'SELLPUT' },
         direction: 'SHORT',
-        side: OrderSide.Sell,
+        side: 'SELL',
         executionPurpose: 'ORDINARY',
       };
     }
@@ -234,7 +234,8 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
  */
 export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
   const {
-    ctx,
+    readSellPositions,
+    tradeMutationPort,
     rateLimiter,
     marketDataClient,
     cacheManager,
@@ -366,11 +367,12 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
    */
   function createSignalOrderAuthorization(
     command: ExecutableOrderCommand,
+    callerAuthorization: SignalCallerAuthorization,
   ): OrderActionAuthorization {
     const { signal } = command;
 
     return (stage) => {
-      if (!canExecuteSignal(signal, stage)) {
+      if (!callerAuthorization() || !canExecuteSignal(signal, stage)) {
         return false;
       }
 
@@ -413,7 +415,8 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
   });
 
   const submitTargetOrder = createSubmitTargetOrder({
-    ctx,
+    readSellPositions,
+    tradeMutationPort,
     rateLimiter,
     marketDataClient,
     cacheManager,
@@ -425,6 +428,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     canExecuteSignal,
     canTradeNow: buyThrottle.canTradeNow,
     recordBuyAttempt: buyThrottle.recordBuyAttempt,
+    now,
   });
 
   /**
@@ -435,8 +439,9 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
    */
   async function executeSignalsForPurpose(
     commands: ReadonlyArray<ExecutableOrderCommand>,
+    callerAuthorization: SignalCallerAuthorization,
   ): Promise<DoomsdayClearanceExecutionResult> {
-    if (!isExecutionAllowed()) {
+    if (!callerAuthorization() || !isExecutionAllowed()) {
       logger.debug('[执行门禁] 门禁关闭，跳过本次下单，不提交任何订单');
       return {
         executedOrderIds: [],
@@ -470,7 +475,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         continue;
       }
 
-      const authorizeOrderAction = createSignalOrderAuthorization(command);
+      const authorizeOrderAction = createSignalOrderAuthorization(command, callerAuthorization);
       if (!authorizeOrderAction('executeSignals')) {
         continue;
       }
@@ -505,6 +510,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
   /** 执行普通信号；末日接管窗口内会在最终订单副作用边界被拒绝。 */
   async function executeSignals(
     signals: ReadonlyArray<ExecutableSignal>,
+    callerAuthorization: SignalCallerAuthorization,
   ): Promise<ExecuteSignalsResult> {
     // 批量预检必须先于任何解析、门禁和执行步骤，禁止后续非法载荷让前序信号产生副作用。
     for (const signal of signals) {
@@ -512,22 +518,27 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     }
 
     const commands = signals.map(resolveOrdinaryOrderCommand);
-    const result = await executeSignalsForPurpose(commands);
+    if (typeof callerAuthorization !== 'function') throw new TypeError('原 caller 授权闭包必填');
+
+    const result = await executeSignalsForPurpose(commands, callerAuthorization);
     return { executedOrderIds: result.executedOrderIds };
   }
 
   /** 执行末日清仓信号；仅在当前末日清仓接管窗口内允许最终订单副作用。 */
   function executeDoomsdayClearanceSignals(
     commands: ReadonlyArray<DoomsdayClearanceCommand>,
+    callerAuthorization: SignalCallerAuthorization,
   ): Promise<DoomsdayClearanceExecutionResult> {
     // 批量预检必须先于任何内部信号构造与执行步骤，禁止受损 action 让前序命令产生副作用。
     for (const command of commands) {
       assertDoomsdayClearanceSellContract(command);
     }
 
+    if (typeof callerAuthorization !== 'function') throw new TypeError('原 caller 授权闭包必填');
+
     const signals = commands.map(createDoomsdayClearanceSellSignal);
     const doomsdayCommands = signals.map(resolveDoomsdayClearanceOrderCommand);
-    return executeSignalsForPurpose(doomsdayCommands);
+    return executeSignalsForPurpose(doomsdayCommands, callerAuthorization);
   }
 
   return {

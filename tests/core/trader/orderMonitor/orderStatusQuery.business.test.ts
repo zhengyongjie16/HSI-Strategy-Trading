@@ -1,157 +1,120 @@
-/**
- * orderMonitor/orderStatusQuery 业务测试
- *
- * 覆盖：
- * - orderDetail 权威查询对终态、开放态与失败态的映射
- * - Expired、PartialWithdrawal、603001 等关键边界语义
- */
+/** 单订单权威查询：原23例经实际 SDK 读取与 mapper；查询任务的 abort owner 跨 await 保持不变。 */
 import { describe, expect, it } from 'bun:test';
-import { Decimal, OrderSide, OrderType, type OrderDetail, type TradeContext } from 'longbridge';
-import { createOrderStatusQuery } from '../../../../src/core/trader/orderMonitor/orderStatusQuery.js';
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { BrokerIngressInput } from '../../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createRateLimiterDouble } from '../../../helpers/testDoubles.js';
 
-const OPEN_API_ORDER_STATUS_FILLED = 5;
-const OPEN_API_ORDER_STATUS_REJECTED = 14;
-const OPEN_API_ORDER_STATUS_CANCELED = 15;
-const OPEN_API_ORDER_STATUS_EXPIRED = 16;
-const OPEN_API_ORDER_STATUS_PARTIAL_WITHDRAWAL = 17;
-const OPEN_API_ORDER_STATUS_PENDING_CANCEL = 12;
+const SUBMITTED_MS = Date.parse('2026-02-25T03:00:00.000Z');
+const REVISION_MS = Date.parse('2026-02-25T03:00:10.000Z');
 
-function createOrderSnapshot(params: {
-  readonly orderId: string;
-  readonly status: number;
-  readonly executedQuantity?: number;
-  readonly executedPrice?: number;
-}): OrderDetail {
-  const executedQuantity = params.executedQuantity ?? 0;
-  const executedPrice = params.executedPrice ?? 0;
+function frame(
+  orderId: string,
+  status: BrokerIngressInput['status'],
+  executedQuantity = '0',
+  executedPrice = '0',
+): BrokerIngressInput {
   return {
-    orderId: params.orderId,
-    status: params.status,
-    stockName: 'BULL',
-    quantity: new Decimal(100),
-    executedQuantity: new Decimal(executedQuantity),
-    price: new Decimal(1),
-    executedPrice: new Decimal(executedPrice),
-    submittedAt: new Date('2026-02-25T03:00:00.000Z'),
-    side: OrderSide.Buy,
+    orderId,
+    tradeId: orderId + '-trade',
     symbol: 'BULL.HK',
-    orderType: OrderType.ELO,
-    updatedAt: new Date('2026-02-25T03:00:10.000Z'),
-  } as unknown as OrderDetail;
-}
-
-/**
- * 在测试中构造 SDK 运行时边界可能返回的损坏字段，不把错误载荷伪装成静态 OrderDetail 契约。
- */
-function overwriteUpdatedAtAtRuntimeBoundary(snapshot: OrderDetail, updatedAt: unknown): void {
-  Reflect.set(snapshot, 'updatedAt', updatedAt);
-}
-
-function createOrderNotFoundError(orderId: string): Error {
-  return new Error(`openapi error: code=603001: Order not found, orderId=${orderId}`);
-}
-
-function createQueryContext(params?: {
-  readonly orderDetail?: (orderId: string) => Promise<OrderDetail>;
-}) {
-  const ctx: Pick<TradeContext, 'orderDetail'> = {
-    orderDetail:
-      params?.orderDetail ??
-      (async (orderId: string) => {
-        throw createOrderNotFoundError(orderId);
-      }),
+    stockName: 'BULL',
+    remark: '',
+    side: 'BUY',
+    status,
+    orderType: 'ELO',
+    quantity: '100',
+    executedQuantity,
+    submittedPrice: '1',
+    executedPrice,
+    submittedAtMs: SUBMITTED_MS,
+    executionTimeMs: null,
+    updatedAtMs: REVISION_MS,
   };
-  const orderStatusQuery = createOrderStatusQuery({
-    ctx: ctx as unknown as TradeContext,
+}
+
+/** 初始 setup 合法；原坏字段仅在已 issued 的 native DETAIL 入口进入 mapper。 */
+async function createQueryContext(frames: ReadonlyArray<BrokerIngressInput>) {
+  const native = await createBrokerIngressFixture(frame('QUERY-SETUP', 'New'));
+  native.setOrderDetailReplies(frames);
+  native.setExecutionReplies([]);
+  const abortOwner = new AbortController();
+  const query = native.createStateQuery({
     rateLimiter: createRateLimiterDouble(),
+    getExecutionTimeEvidence: () => [],
   });
+  const initialLedgerReads = native.readCounts();
   return {
-    orderStatusQuery,
+    native,
+    abortOwner,
+    initialLedgerReads,
+    check: (orderId: string) => query.checkOrderState(orderId, () => !abortOwner.signal.aborted),
   };
+}
+
+async function rejection(operation: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await operation();
+  } catch (error) {
+    return error;
+  }
+
+  return null;
+}
+
+function expectMapperFailure(error: unknown, message: string): void {
+  expect(error).toBeInstanceOf(TypeError);
+  expect(error).toHaveProperty('message', message);
 }
 
 describe('orderStatusQuery business flow', () => {
   it('maps terminal order statuses to terminal state check result', async () => {
-    const terminalCases: ReadonlyArray<{
-      readonly status: number;
+    const cases: ReadonlyArray<{
+      readonly status: BrokerIngressInput['status'];
       readonly expectedReason: 'FILLED' | 'CANCELED' | 'REJECTED';
     }> = [
-      { status: OPEN_API_ORDER_STATUS_FILLED, expectedReason: 'FILLED' },
-      { status: OPEN_API_ORDER_STATUS_CANCELED, expectedReason: 'CANCELED' },
-      { status: OPEN_API_ORDER_STATUS_REJECTED, expectedReason: 'REJECTED' },
+      { status: 'Filled', expectedReason: 'FILLED' },
+      { status: 'Canceled', expectedReason: 'CANCELED' },
+      { status: 'Rejected', expectedReason: 'REJECTED' },
     ];
-
-    for (const testCase of terminalCases) {
-      const orderId = `ORDER-${testCase.status}`;
-      const snapshot = createOrderSnapshot({
-        orderId,
-        status: testCase.status,
-        executedQuantity: 100,
-        executedPrice: 1.01,
-      });
-      const { orderStatusQuery } = createQueryContext({
-        orderDetail: async (requestedOrderId) => {
-          if (requestedOrderId !== orderId) {
-            throw createOrderNotFoundError(requestedOrderId);
-          }
-
-          return snapshot;
-        },
-      });
-
-      const result = await orderStatusQuery.checkOrderState(orderId);
+    for (const testCase of cases) {
+      const orderId = 'ORDER-' + testCase.status;
+      const f = await createQueryContext([frame(orderId, testCase.status, '100', '1.01')]);
+      const result = await f.check(orderId);
       expect(result.kind).toBe('TERMINAL');
       if (result.kind === 'TERMINAL') {
         expect(result.closedReason).toBe(testCase.expectedReason);
+        expect(result.executedQuantity).toBe(100);
+        expect(result.executedAmount).toBe('101');
+        expect(result.executionTimeMs).toBeNull();
+        expect(result.orderUpdatedAtMs).toBe(REVISION_MS);
       }
+
+      expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+      expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(1);
+      f.abortOwner.abort();
     }
   });
 
   it('maps Expired and PartialWithdrawal to TERMINAL CANCELED', async () => {
-    const snapshots = new Map<string, OrderDetail>([
-      [
-        'ORDER-EXPIRED',
-        createOrderSnapshot({
-          orderId: 'ORDER-EXPIRED',
-          status: OPEN_API_ORDER_STATUS_EXPIRED,
-        }),
-      ],
-      [
-        'ORDER-PARTIAL-WITHDRAWAL',
-        createOrderSnapshot({
-          orderId: 'ORDER-PARTIAL-WITHDRAWAL',
-          status: OPEN_API_ORDER_STATUS_PARTIAL_WITHDRAWAL,
-          executedQuantity: 20,
-          executedPrice: 1.02,
-        }),
-      ],
+    const f = await createQueryContext([
+      frame('ORDER-EXPIRED', 'Expired'),
+      frame('ORDER-PARTIAL-WITHDRAWAL', 'PartialWithdrawal', '20', '1.02'),
     ]);
-    const { orderStatusQuery } = createQueryContext({
-      orderDetail: async (orderId) => {
-        const snapshot = snapshots.get(orderId);
-        if (snapshot) {
-          return snapshot;
-        }
+    const expired = await f.check('ORDER-EXPIRED');
+    expect(expired.kind).toBe('TERMINAL');
+    if (expired.kind === 'TERMINAL') expect(expired.closedReason).toBe('CANCELED');
 
-        throw createOrderNotFoundError(orderId);
-      },
-    });
-
-    const expiredResult = await orderStatusQuery.checkOrderState('ORDER-EXPIRED');
-    expect(expiredResult.kind).toBe('TERMINAL');
-    if (expiredResult.kind === 'TERMINAL') {
-      expect(expiredResult.closedReason).toBe('CANCELED');
+    const withdrawal = await f.check('ORDER-PARTIAL-WITHDRAWAL');
+    expect(withdrawal.kind).toBe('TERMINAL');
+    if (withdrawal.kind === 'TERMINAL') {
+      expect(withdrawal.closedReason).toBe('CANCELED');
+      expect(withdrawal.executedQuantity).toBe(20);
+      expect(withdrawal.executedAmount).toBe('20.4');
+      expect(withdrawal.executionTimeMs).toBeNull();
     }
 
-    const partialWithdrawalResult = await orderStatusQuery.checkOrderState(
-      'ORDER-PARTIAL-WITHDRAWAL',
-    );
-    expect(partialWithdrawalResult.kind).toBe('TERMINAL');
-    if (partialWithdrawalResult.kind === 'TERMINAL') {
-      expect(partialWithdrawalResult.closedReason).toBe('CANCELED');
-      expect(partialWithdrawalResult.executedQuantity).toBe(20);
-    }
+    expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 2 });
+    f.abortOwner.abort();
   });
 
   it.each([
@@ -167,178 +130,202 @@ describe('orderStatusQuery business flow', () => {
     ['invalid string', 'not-a-date', null],
     ['null', null, null],
     ['undefined', undefined, null],
-    ['positive Date', new Date('2026-02-25T03:00:10.000Z'), 1_771_988_410_000],
-    ['positive number', 1_771_988_410_000, null],
+    ['positive Date', new Date('2026-02-25T03:00:10.000Z'), 1771988410000],
+    ['positive number', 1771988410000, null],
     ['positive ISO string', '2026-02-25T03:00:10.000Z', null],
   ] as const)(
     'accepts only a valid Date for orderDetail updatedAt in both OPEN and TERMINAL state checks',
     async (_description, updatedAt, expectedUpdatedAtMs) => {
-      const openOrderId = 'ORDER-OPEN-UPDATED-AT';
-      const terminalOrderId = 'ORDER-TERMINAL-UPDATED-AT';
-      const openSnapshot = createOrderSnapshot({
-        orderId: openOrderId,
-        status: OPEN_API_ORDER_STATUS_PENDING_CANCEL,
-      });
-      const terminalSnapshot = createOrderSnapshot({
-        orderId: terminalOrderId,
-        status: OPEN_API_ORDER_STATUS_FILLED,
-        executedQuantity: 100,
-        executedPrice: 1.01,
-      });
-      overwriteUpdatedAtAtRuntimeBoundary(openSnapshot, updatedAt);
-      overwriteUpdatedAtAtRuntimeBoundary(terminalSnapshot, updatedAt);
-      const { orderStatusQuery } = createQueryContext({
-        orderDetail: async (orderId) => {
-          if (orderId === openOrderId) {
-            return openSnapshot;
-          }
+      const f = await createQueryContext([
+        frame('ORDER-OPEN-UPDATED-AT', 'PendingCancel'),
+        frame('ORDER-TERMINAL-UPDATED-AT', 'Filled', '100', '1.01'),
+      ]);
+      f.native.setQueryUpdatedAt(updatedAt);
+      if (expectedUpdatedAtMs !== null) {
+        expect(await f.check('ORDER-OPEN-UPDATED-AT')).toMatchObject({
+          kind: 'OPEN',
+          updatedAtMs: expectedUpdatedAtMs,
+          executionTimeMs: null,
+        });
 
-          if (orderId === terminalOrderId) {
-            return terminalSnapshot;
-          }
+        expect(await f.check('ORDER-TERMINAL-UPDATED-AT')).toMatchObject({
+          kind: 'TERMINAL',
+          orderUpdatedAtMs: expectedUpdatedAtMs,
+          executionTimeMs: null,
+        });
+        expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(2);
+      } else if (updatedAt === null) {
+        // 仅零成交的 null revision 可使用提交版本；执行 T 仍未知。正成交没有 revision 必须先拒绝。
+        expect(await f.check('ORDER-OPEN-UPDATED-AT')).toMatchObject({
+          kind: 'OPEN',
+          updatedAtMs: SUBMITTED_MS,
+          executionTimeMs: null,
+        });
 
-          throw createOrderNotFoundError(orderId);
-        },
-      });
+        expectMapperFailure(
+          await rejection(() => f.check('ORDER-TERMINAL-UPDATED-AT')),
+          '[orderMapper] executed order lacks independent broker revision',
+        );
+        expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(1);
+      } else {
+        expectMapperFailure(
+          await rejection(() => f.check('ORDER-OPEN-UPDATED-AT')),
+          '[orderMapper] invalid updatedAt',
+        );
 
-      const openResult = await orderStatusQuery.checkOrderState(openOrderId);
-      const terminalResult = await orderStatusQuery.checkOrderState(terminalOrderId);
+        expectMapperFailure(
+          await rejection(() => f.check('ORDER-TERMINAL-UPDATED-AT')),
+          '[orderMapper] invalid updatedAt',
+        );
+        expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
+      }
 
-      expect(openResult).toMatchObject({
-        kind: 'OPEN',
-        updatedAtMs: expectedUpdatedAtMs,
-      });
-
-      expect(terminalResult).toMatchObject({
-        kind: 'TERMINAL',
-        orderUpdatedAtMs: expectedUpdatedAtMs,
-      });
+      expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 2 });
+      f.abortOwner.abort();
     },
   );
 
   it('retries orderDetail request failures before mapping the authoritative state', async () => {
-    let attempts = 0;
     const orderId = 'ORDER-RETRY-THEN-FILLED';
-    const { orderStatusQuery } = createQueryContext({
-      orderDetail: async () => {
-        attempts += 1;
-        if (attempts === 1) {
-          throw new Error('network unavailable');
-        }
+    const f = await createQueryContext([frame(orderId, 'Filled', '100', '1.01')]);
+    const original = new Error('network unavailable');
+    let attempts = 0;
+    f.native.setOrderDetailBeforeReply(async () => {
+      attempts++;
+      if (attempts === 1) throw original;
+    });
+    let result: Awaited<ReturnType<typeof f.check>> | null = null;
+    const error = await rejection(async () => {
+      result = await f.check(orderId);
+    });
+    expect(attempts).toBe(2);
+    expect(f.native.nativeReadCounts().detail).toBe(2);
+    if (error instanceof Error) throw error;
 
-        return createOrderSnapshot({
-          orderId,
-          status: OPEN_API_ORDER_STATUS_FILLED,
-          executedQuantity: 100,
-        });
-      },
+    expect(error).toBeNull();
+
+    expect(result).toMatchObject({
+      kind: 'TERMINAL',
+      closedReason: 'FILLED',
+      executedQuantity: 100,
+      executedAmount: '101',
+      executionTimeMs: null,
+      orderUpdatedAtMs: REVISION_MS,
     });
 
-    const result = await orderStatusQuery.checkOrderState(orderId);
-
-    expect(attempts).toBe(2);
-    expect(result.kind).toBe('TERMINAL');
-    if (result.kind === 'TERMINAL') {
-      expect(result.closedReason).toBe('FILLED');
-    }
+    expect(f.native.readCounts()).toEqual({
+      today: f.initialLedgerReads.today + 1,
+      history: f.initialLedgerReads.history,
+    });
+    f.abortOwner.abort();
   });
 
   it('retries coded transient orderDetail errors before mapping state', async () => {
-    let attempts = 0;
     const orderId = 'ORDER-CODED-TRANSIENT-THEN-FILLED';
-    const { orderStatusQuery } = createQueryContext({
-      orderDetail: async () => {
-        attempts += 1;
-        if (attempts === 1) {
-          throw new Error('openapi error: code=503: service unavailable');
-        }
+    const f = await createQueryContext([frame(orderId, 'Filled', '100', '1.01')]);
+    const original = new Error('openapi error: code=503: service unavailable');
+    let attempts = 0;
+    f.native.setOrderDetailBeforeReply(async () => {
+      attempts++;
+      if (attempts === 1) throw original;
+    });
+    let result: Awaited<ReturnType<typeof f.check>> | null = null;
+    const error = await rejection(async () => {
+      result = await f.check(orderId);
+    });
+    expect(attempts).toBe(2);
+    expect(f.native.nativeReadCounts().detail).toBe(2);
+    if (error instanceof Error) throw error;
 
-        return createOrderSnapshot({
-          orderId,
-          status: OPEN_API_ORDER_STATUS_FILLED,
-          executedQuantity: 100,
-        });
-      },
+    expect(error).toBeNull();
+
+    expect(result).toMatchObject({
+      kind: 'TERMINAL',
+      closedReason: 'FILLED',
+      executedQuantity: 100,
+      executedAmount: '101',
+      executionTimeMs: null,
+      orderUpdatedAtMs: REVISION_MS,
     });
 
-    const result = await orderStatusQuery.checkOrderState(orderId);
-
-    expect(attempts).toBe(2);
-    expect(result.kind).toBe('TERMINAL');
+    expect(f.native.readCounts()).toEqual({
+      today: f.initialLedgerReads.today + 1,
+      history: f.initialLedgerReads.history,
+    });
+    f.abortOwner.abort();
   });
 
   it('maps 603001 to QUERY_FAILED NOT_FOUND', async () => {
-    const { orderStatusQuery } = createQueryContext();
-    const result = await orderStatusQuery.checkOrderState('ORDER-NOT-EXIST');
-    expect(result).toEqual({
-      kind: 'QUERY_FAILED',
-      errorCode: '603001',
+    const f = await createQueryContext([]);
+    const original = new Error(
+      'openapi error: code=603001: Order not found, orderId=ORDER-NOT-EXIST',
+    );
+    f.native.setOrderDetailBeforeReply(async () => {
+      throw original;
     });
+    expect(await f.check('ORDER-NOT-EXIST')).toEqual({ kind: 'QUERY_FAILED', errorCode: '603001' });
+    expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+    expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
+    f.abortOwner.abort();
   });
 
   it('rethrows ExternalApiRequestError from repeated orderDetail request failures', async () => {
+    const f = await createQueryContext([]);
+    const original = new Error('network unavailable');
     let attempts = 0;
-    const { orderStatusQuery } = createQueryContext({
-      orderDetail: async () => {
-        attempts += 1;
-        throw new Error('network unavailable');
-      },
+    f.native.setOrderDetailBeforeReply(async () => {
+      attempts++;
+      throw original;
+    });
+    const caught = await rejection(() => f.check('ORDER-API-FAILURE'));
+    expect(caught).toMatchObject({
+      name: 'ExternalApiRequestError',
+      operation: 'TradeContext.orderDetail',
+      attempts,
     });
 
-    try {
-      await orderStatusQuery.checkOrderState('ORDER-API-FAILURE');
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toMatchObject({
-        name: 'ExternalApiRequestError',
-        operation: 'TradeContext.orderDetail',
-      });
-      expect(attempts).toBeGreaterThan(1);
-    }
+    if (!(caught instanceof Error)) throw new Error('Missing native external request error');
+
+    expect(caught.cause).toBe(original);
+    expect(attempts).toBeGreaterThan(1);
+    expect(f.native.nativeReadCounts().detail).toBe(attempts);
+    expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
+    f.abortOwner.abort();
   });
 
   it('rethrows non-603001 business errors without wrapping them', async () => {
-    const { orderStatusQuery } = createQueryContext({
-      orderDetail: async () => {
-        throw new Error('openapi error: code=500001: unknown upstream error');
-      },
+    const f = await createQueryContext([]);
+    const original = new Error('openapi error: code=500001: unknown upstream error');
+    f.native.setOrderDetailBeforeReply(async () => {
+      throw original;
     });
+    const caught = await rejection(() => f.check('ORDER-BUSINESS-ERROR'));
+    expect(caught).toBe(original);
+    if (!(caught instanceof Error)) throw new Error('Missing native business error');
 
-    try {
-      await orderStatusQuery.checkOrderState('ORDER-BUSINESS-ERROR');
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      if (error instanceof Error) {
-        expect(error.name).not.toBe('ExternalApiRequestError');
-        expect(error.message).toContain('500001');
-      }
-    }
+    expect(caught.name).not.toBe('ExternalApiRequestError');
+    expect(caught.message).toContain('500001');
+    expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+    expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
+    f.abortOwner.abort();
   });
 
   it('keeps pending status as OPEN instead of terminal', async () => {
-    const orderId = 'ORDER-PENDING-CANCEL';
-    const snapshot = createOrderSnapshot({
-      orderId,
-      status: OPEN_API_ORDER_STATUS_PENDING_CANCEL,
-      executedQuantity: 20,
-      executedPrice: 1.01,
-    });
-    const { orderStatusQuery } = createQueryContext({
-      orderDetail: async (requestedOrderId) => {
-        if (requestedOrderId !== orderId) {
-          throw createOrderNotFoundError(requestedOrderId);
-        }
-
-        return snapshot;
-      },
-    });
-
-    const result = await orderStatusQuery.checkOrderState(orderId);
+    const f = await createQueryContext([
+      frame('ORDER-PENDING-CANCEL', 'PendingCancel', '20', '1.01'),
+    ]);
+    const result = await f.check('ORDER-PENDING-CANCEL');
     expect(result.kind).toBe('OPEN');
     if (result.kind === 'OPEN') {
-      expect(result.status).toBe(OPEN_API_ORDER_STATUS_PENDING_CANCEL);
+      expect(result.status).toBe('CANCELLATION_PENDING');
       expect(result.executedQuantity).toBe(20);
+      expect(result.executedAmount).toBe('20.2');
+      expect(result.executionTimeMs).toBeNull();
+      expect(result.updatedAtMs).toBe(REVISION_MS);
     }
+
+    expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+    expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(1);
+    f.abortOwner.abort();
   });
 });

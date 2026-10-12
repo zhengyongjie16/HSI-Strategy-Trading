@@ -6,28 +6,25 @@
  * - 构造订单载荷并提交到 Trade API
  * - 在提交成功后注册 orderMonitor 追踪与卖单防重占用
  */
-import { OrderSide, OrderType, TimeInForceType, type TradeContext } from 'longbridge';
 import { logger } from '../../../utils/logger/index.js';
 import {
   isProgramError,
+  isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
-  wrapExternalApiRequest,
 } from '../../../utils/apiFailure/index.js';
-import { decimalToNumber, isRecord, isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import { formatSymbolDisplay } from '../../../utils/display/index.js';
-import { isBuyPriceWithinLatestOrderLimit } from '../../signalProcessor/utils.js';
-import type { Signal } from '../../../types/signal.js';
-import type { CancelOrderOutcome } from '../../../types/trader.js';
-import type { OrderActionAuthorization, OrderPayload, SellMergeDecision } from '../types.js';
+import { isRecord } from '../../../utils/helpers/index.js';
 import {
-  buildOrderRemark,
-  extractOrderId,
-  formatOrderTypeLabel,
-  getOrderTypeCode,
-  resolveOrderTypeConfig,
-  resolveSellMergeDecision,
-  toDecimal,
-} from '../utils.js';
+  compareRatios,
+  exactAdd,
+  exactCompare,
+  safeQuantityNumber,
+} from '../../../utils/numeric/exact.js';
+import { formatSymbolDisplay } from '../../../utils/display/index.js';
+import type { TradeSubmitCommand } from '../../../types/tradeMutationPorts.js';
+import type { Signal, OrderTypeConfig } from '../../../types/signal.js';
+import type { CancelOrderOutcome } from '../../../types/trader.js';
+import type { OrderActionAuthorization, SellMergeDecision } from '../types.js';
+import { buildOrderRemark, resolveOrderTypeConfig, resolveSellMergeDecision } from '../utils.js';
 import {
   formatCancelOutcomeTag,
   isTerminalNonFilledCloseConfirmed,
@@ -112,24 +109,6 @@ function createAcceptedOrderLocalSyncError(
 }
 
 /**
- * 在不重试下单边界执行唯一一次 broker submit。
- *
- * @param ctx TradeContext SDK 上下文
- * @param orderPayload 已在最终行情和授权后构造的订单载荷
- * @returns broker 原始提交响应
- */
-function submitOrderToBroker(ctx: TradeContext, orderPayload: OrderPayload) {
-  return wrapExternalApiRequest({
-    operation: 'TradeContext.submitOrder',
-    request: () => ctx.submitOrder(orderPayload),
-    retryConfig: {
-      retries: 0,
-      delayMs: 0,
-    },
-  });
-}
-
-/**
  * 按真实下单阶段分类错误，只有已尝试 SDK submit 且携带结构化业务码的
  * 拒绝可以降级为跳过；其余场景都必须交给上层错误通道处理。
  *
@@ -162,6 +141,23 @@ function classifySubmitFailure(
   }
 
   return { kind: 'UNCONFIRMED_SUBMISSION' };
+}
+
+/** 已发出的撤单/查询全部落定后才返回或抛错；内部错误优先，保留原错误身份。 */
+async function settleCancelFanout(
+  requests: ReadonlyArray<Promise<CancelOrderOutcome>>,
+): Promise<ReadonlyArray<CancelOrderOutcome>> {
+  const settled = await Promise.allSettled(requests);
+  const failures = settled.filter((result) => result.status === 'rejected');
+  const failure =
+    failures.find((result) => !isExternalApiRequestError(result.reason)) ?? failures[0];
+  if (failure) throw failure.reason;
+
+  return settled.map((result) => {
+    if (result.status !== 'fulfilled') throw new TypeError('撤单 settled 结果不变量失效');
+
+    return result.value;
+  });
 }
 
 function isFilledCancelOutcome(outcome: CancelOrderOutcome): boolean {
@@ -217,17 +213,17 @@ function getOutcomeRelatedBuyOrderIds(outcome: CancelOrderOutcome): ReadonlyArra
  * 显式传入 null 表示受控路径（如末日清仓）要求彻底取消智能平仓关联，
  * 只有调用方未提供该字段时才允许使用信号携带的普通关联集合。
  *
- * @param side SDK 订单方向
+ * @param side 中性订单方向
  * @param signal 当前交易信号
  * @param relatedBuyOrderIds 调用方显式提供的关联集合或未提供标记
  * @returns 最终卖单关联集合；买单始终返回 null
  */
 function resolveSellRelatedBuyOrderIds(
-  side: OrderSide,
+  side: 'BUY' | 'SELL',
   signal: Signal,
   relatedBuyOrderIds: ReadonlyArray<string> | null | undefined,
 ): ReadonlyArray<string> | null {
-  if (side !== OrderSide.Sell) {
+  if (side !== 'SELL') {
     return null;
   }
 
@@ -254,7 +250,7 @@ function hasExactRelatedBuyOrderQuantity(params: RelatedBuyOrderQuantityValidati
     return true;
   }
 
-  if (!isValidPositiveNumber(submittedQuantity)) {
+  if (!Number.isSafeInteger(submittedQuantity) || submittedQuantity <= 0) {
     return false;
   }
 
@@ -268,17 +264,17 @@ function hasExactRelatedBuyOrderQuantity(params: RelatedBuyOrderQuantityValidati
       .getBuyOrdersForSymbol(symbol, isLongSymbol)
       .map((order) => [order.orderId, order] as const),
   );
-  let relatedQuantity = 0;
+  let relatedQuantity = '0';
   for (const orderId of relatedBuyOrderIds) {
     const order = buyOrdersById.get(orderId);
-    if (!order || !isValidPositiveNumber(order.executedQuantity)) {
+    if (!order || !Number.isSafeInteger(order.executedQuantity) || order.executedQuantity <= 0) {
       return false;
     }
 
-    relatedQuantity += order.executedQuantity;
+    relatedQuantity = exactAdd(relatedQuantity, String(order.executedQuantity));
   }
 
-  return relatedQuantity === submittedQuantity;
+  return exactCompare(relatedQuantity, String(submittedQuantity)) === 0;
 }
 
 /**
@@ -304,10 +300,10 @@ function createRelatedBuyOrderReplaceAuthorization(
  * 判断终态数量是否可作为重规划事实。
  *
  * @param quantity 经纪商终态或账户快照中的数量
- * @returns 数量为有限非负值时返回 true
+ * @returns 数量为非负安全整数时返回 true
  */
 function isValidNonNegativeQuantity(quantity: number | null): quantity is number {
-  return quantity !== null && Number.isFinite(quantity) && quantity >= 0;
+  return quantity !== null && Number.isSafeInteger(quantity) && quantity >= 0;
 }
 
 /**
@@ -324,13 +320,15 @@ function resolveReplannedSellQuantity(
   freshSignalQuantity: number,
 ): number | null {
   if (
-    !isValidPositiveNumber(freshAvailableQuantity) ||
-    !isValidPositiveNumber(freshSignalQuantity)
+    !Number.isSafeInteger(freshAvailableQuantity) ||
+    freshAvailableQuantity <= 0 ||
+    !Number.isSafeInteger(freshSignalQuantity) ||
+    freshSignalQuantity <= 0
   ) {
     return null;
   }
 
-  let remainingCancelledQuantity = 0;
+  let remainingCancelledQuantity = '0';
   for (const outcome of cancelOutcomes) {
     if (outcome.kind !== 'ALREADY_CLOSED') {
       return null;
@@ -345,15 +343,16 @@ function resolveReplannedSellQuantity(
       return null;
     }
 
-    remainingCancelledQuantity += submittedQuantity - executedQuantity;
+    remainingCancelledQuantity = exactAdd(
+      remainingCancelledQuantity,
+      String(submittedQuantity - executedQuantity),
+    );
   }
 
-  const replannedQuantity = remainingCancelledQuantity + freshSignalQuantity;
-  if (!isValidPositiveNumber(replannedQuantity)) {
-    return null;
-  }
-
-  return Math.min(replannedQuantity, freshAvailableQuantity);
+  const replannedQuantity = exactAdd(remainingCancelledQuantity, String(freshSignalQuantity));
+  return exactCompare(replannedQuantity, String(freshAvailableQuantity)) > 0
+    ? freshAvailableQuantity
+    : safeQuantityNumber(replannedQuantity);
 }
 
 /**
@@ -369,15 +368,17 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     orderMonitor,
     orderRecorder,
     globalConfig,
-    ctx,
+    readSellPositions,
+    tradeMutationPort,
     marketDataClient,
     monitorConfig,
     unrealizedLossBuyGate,
     canExecuteSignal,
     canTradeNow,
     recordBuyAttempt,
+    now,
   } = deps;
-  const quantityResolver = createQuantityResolver({ rateLimiter });
+  const quantityResolver = createQuantityResolver({ rateLimiter, readSellPositions });
   const doomsdayAwaitingTerminalOrderIdsBySymbol = new Map<string, ReadonlySet<string>>();
 
   /**
@@ -386,9 +387,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
    * @param signal 交易信号
    * @returns Longbridge 订单类型
    */
-  function resolveOrderType(signal: Signal): OrderType {
-    const orderTypeConfig = resolveOrderTypeConfig(signal, globalConfig);
-    return getOrderTypeFromConfig(orderTypeConfig);
+  function resolveOrderType(signal: Signal): OrderTypeConfig {
+    return resolveOrderTypeConfig(signal, globalConfig);
   }
 
   /**
@@ -402,13 +402,13 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     const {
       command,
       authorizeOrderAction,
-      submittedQtyDecimal,
-      orderTypeParam,
-      timeInForce,
+      submittedQuantity,
+      orderTypeConfig,
       remark,
       relatedBuyOrderIds,
     } = params;
     const { signal, side } = command;
+    const orderTypeParam = getOrderTypeFromConfig(orderTypeConfig);
     const symbol = signal.symbol;
     const sellRelatedBuyOrderIds = resolveSellRelatedBuyOrderIds(side, signal, relatedBuyOrderIds);
 
@@ -418,12 +418,15 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
     const symbolDisplayForLog = formatSymbolDisplay(symbol, signal.symbolName ?? null);
     let brokerSubmissionStage: BrokerSubmissionStage = { kind: 'PRE_SUBMIT' };
+    const finalAuthorizationAborted = new Error('原 caller 最终提交授权失效');
 
     try {
       return await rateLimiter.withTradeMutation(async (permit) => {
+        if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
+
         const finalQuotes = await marketDataClient.getQuotes([symbol]);
         const finalQuote = finalQuotes.get(symbol) ?? null;
-        if (!finalQuote || !isValidPositiveNumber(finalQuote.price)) {
+        if (!finalQuote || exactCompare(finalQuote.price, '0') <= 0) {
           logger.warn(`[订单提交] 最终执行行情缺失或无效，跳过: ${symbolDisplayForLog}`);
           if (command.executionPurpose === 'DOOMSDAY_CLEARANCE') {
             return { kind: 'QUOTE_UNAVAILABLE', symbol };
@@ -450,23 +453,38 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           }
         }
 
-        let finalSubmittedQtyDecimal = submittedQtyDecimal;
-        if (side === OrderSide.Buy) {
+        let finalSubmittedQuantity = submittedQuantity;
+        if (side === 'BUY') {
           if (!canTradeNow(signal.action).canTrade) {
             logger.debug(`[订单提交] 最终买入频率检查未通过，跳过: ${symbol}`);
             return { kind: 'SKIPPED' };
           }
 
-          const latestBuyPrice = orderRecorder.getLatestBuyOrderPrice(
+          const latestBuyCost = orderRecorder.getLatestBuyOrderCost(
             symbol,
             command.direction === 'LONG',
           );
-          if (!isBuyPriceWithinLatestOrderLimit(finalQuote.price, latestBuyPrice)) {
+          if (
+            latestBuyCost !== null &&
+            (!Number.isSafeInteger(latestBuyCost.quantity) || latestBuyCost.quantity <= 0)
+          ) {
+            throw new RangeError('[订单提交] 最新买单成本数量必须是正安全整数');
+          }
+
+          if (
+            latestBuyCost !== null &&
+            compareRatios(
+              finalQuote.price,
+              '1',
+              latestBuyCost.costAmount,
+              String(latestBuyCost.quantity),
+            ) >= 0
+          ) {
             logger.warn(`[订单提交] 最终买入价格触及最新买入价，跳过: ${symbol}`);
             return { kind: 'SKIPPED' };
           }
 
-          finalSubmittedQtyDecimal = quantityResolver.resolveBuyQuantity(
+          finalSubmittedQuantity = quantityResolver.resolveBuyQuantity(
             signal,
             command.direction === 'SHORT',
             monitorConfig.targetNotional,
@@ -475,14 +493,12 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           );
         }
 
-        if (finalSubmittedQtyDecimal === null || finalSubmittedQtyDecimal.isZero()) {
+        if (finalSubmittedQuantity === null || finalSubmittedQuantity === 0) {
           return { kind: 'SKIPPED' };
         }
 
-        const submittedQuantityNum = decimalToNumber(finalSubmittedQtyDecimal);
-        if (!isValidPositiveNumber(submittedQuantityNum)) {
-          logger.warn(`[订单提交] 最终订单数量无效，跳过: ${symbol}`);
-          return { kind: 'SKIPPED' };
+        if (!Number.isSafeInteger(finalSubmittedQuantity) || finalSubmittedQuantity <= 0) {
+          throw new RangeError('[订单提交] 最终订单数量必须是正安全整数');
         }
 
         if (
@@ -491,7 +507,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
             orderRecorder,
             symbol,
             isLongSymbol: command.direction === 'LONG',
-            submittedQuantity: submittedQuantityNum,
+            submittedQuantity: finalSubmittedQuantity,
             relatedBuyOrderIds: sellRelatedBuyOrderIds,
           })
         ) {
@@ -499,40 +515,54 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           return { kind: 'SKIPPED' };
         }
 
-        if (orderTypeParam === OrderType.MO) {
+        if (orderTypeParam === 'MO') {
           logger.debug(`[订单类型] 使用市价单(MO)，标的=${symbolDisplayForLog}`);
-        } else if (orderTypeParam === OrderType.LO || orderTypeParam === OrderType.ELO) {
-          const orderTypeLabel = formatOrderTypeLabel(orderTypeParam);
-          const orderTypeCode = getOrderTypeCode(orderTypeParam);
+        } else {
+          const orderTypeLabel = orderTypeParam === 'LO' ? '限价单' : '增强限价单';
+          const orderTypeCode = orderTypeParam;
           logger.debug(
             `[订单类型] 使用${orderTypeLabel}(${orderTypeCode})，标的=${symbolDisplayForLog}，价格=${finalQuote.price}`,
           );
         }
 
-        const orderPayload: OrderPayload = {
+        const neutralType = orderTypeConfig;
+        const orderPayload: TradeSubmitCommand = {
           symbol,
-          orderType: orderTypeParam,
-          side,
-          timeInForce,
-          submittedQuantity: finalSubmittedQtyDecimal,
-          ...(orderTypeParam === OrderType.MO
-            ? {}
-            : { submittedPrice: toDecimal(finalQuote.price) }),
-          ...(remark && { remark: remark.slice(0, 60) }),
+          side: command.kind,
+          timeInForce: 'DAY',
+          submittedQuantity: finalSubmittedQuantity,
+          ...(neutralType === 'MO'
+            ? ({ orderType: 'MO' } as const)
+            : { orderType: neutralType, submittedPrice: finalQuote.price }),
+          ...(remark ? { remark: remark.slice(0, 60) } : {}),
         };
 
-        if (side === OrderSide.Buy) {
-          recordBuyAttempt(signal.action);
+        const submittedAtMs = now().getTime();
+        if (!Number.isSafeInteger(submittedAtMs)) {
+          throw new TypeError('[订单提交] 提交时钟必须返回有效毫秒时间');
         }
 
-        const response = await permit.invoke(() => {
-          brokerSubmissionStage = {
-            kind: 'BROKER_SUBMISSION_ATTEMPTED',
-            orderPayload,
-          };
-          return submitOrderToBroker(ctx, orderPayload);
+        if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
+
+        const onRemoteIssued = (): void => {
+          if (!authorizeOrderAction('submitOrder.beforeApi')) throw finalAuthorizationAborted;
+
+          // adapter 已完成序列化/容量证明，才登记真实提交尝试；PRE_SUBMIT 拒绝不占买入频率。
+          if (command.kind === 'BUY') recordBuyAttempt(signal.action);
+
+          brokerSubmissionStage = { kind: 'BROKER_SUBMISSION_ATTEMPTED', orderPayload };
+        };
+        const response = await permit.invoke(async () => {
+          if (!authorizeOrderAction('submitOrder.beforeApi')) return null;
+
+          return tradeMutationPort.submitOrder(orderPayload, onRemoteIssued);
         });
-        const orderId = extractOrderId(response);
+        if (response === null) return { kind: 'SKIPPED' };
+
+        const { orderId } = response;
+        if (typeof orderId !== 'string' || orderId.length === 0)
+          throw new TypeError('broker 返回无效 orderId');
+
         brokerSubmissionStage = {
           kind: 'BROKER_ACCEPTED',
           orderId,
@@ -547,23 +577,27 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
             orderId,
             symbol,
             side,
-            price: orderTypeParam === OrderType.MO ? null : finalQuote.price,
-            initialSubmittedPrice: orderTypeParam === OrderType.MO ? null : finalQuote.price,
-            quantity: submittedQuantityNum,
+            executionSide: command.kind,
+            price: orderTypeParam === 'MO' ? null : finalQuote.price,
+            initialSubmittedPrice: orderTypeParam === 'MO' ? null : finalQuote.price,
+            quantity: finalSubmittedQuantity,
+            submittedAtMs,
             isLongSymbol,
             monitorSymbol: monitorConfig.monitorSymbol,
             isProtectiveLiquidation,
             orderType: orderTypeParam,
           });
 
-          if (side === OrderSide.Sell && sellRelatedBuyOrderIds) {
+          if (side === 'SELL' && sellRelatedBuyOrderIds) {
             const direction: 'LONG' | 'SHORT' = isLongSymbol ? 'LONG' : 'SHORT';
             orderRecorder.submitSellOrder(
               orderId,
               symbol,
               direction,
-              submittedQuantityNum,
+              finalSubmittedQuantity,
               sellRelatedBuyOrderIds,
+              isProtectiveLiquidation,
+              submittedAtMs,
             );
           }
         } catch (error) {
@@ -572,11 +606,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
         const actionDesc = getActionDescription(signal.action);
         logger.info(
-          `[订单提交成功] ${actionDesc} ${orderPayload.symbol} 数量=${orderPayload.submittedQuantity.toString()} 订单ID=${orderId}`,
+          `[订单提交成功] ${actionDesc} ${orderPayload.symbol} 数量=${orderPayload.submittedQuantity} 订单ID=${orderId}`,
         );
         return { kind: 'SUBMITTED', orderId };
       });
     } catch (err) {
+      // 只接收本轮私有取消身份；任何内部/SDK 错误即使原授权过期仍原样暴露。
+      if (err === finalAuthorizationAborted) return { kind: 'SKIPPED' };
+
       const failure = classifySubmitFailure(err, brokerSubmissionStage);
       if (failure.kind === 'EXPLICIT_BROKER_REJECTION') {
         handleSubmitError(err, signal, failure.orderPayload);
@@ -624,14 +661,16 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         return { kind: 'SKIPPED' };
       }
 
-      const cancelOutcomes = await Promise.all(
-        pendingOrderIds.map((orderId) =>
+      const cancelOutcomes = await settleCancelFanout(
+        pendingOrderIds.map(async (orderId) =>
           orderMonitor.cancelOrder(orderId, {
             kind: 'SIGNAL_AUTHORIZED',
             authorize: authorizeOrderAction,
           }),
         ),
       );
+      if (!authorizeOrderAction('cancelOrder.beforeApi')) return { kind: 'SKIPPED' };
+
       const nonTerminalOutcome = cancelOutcomes.find(
         (outcome) => outcome.kind !== 'ALREADY_CLOSED',
       );
@@ -660,19 +699,20 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     }
 
     const freshSubmittedQuantity = await quantityResolver.resolveDoomsdayClearanceQuantity(
-      ctx,
       symbol,
+      () => authorizeOrderAction('executeSignals'),
     );
-    if (freshSubmittedQuantity.isZero()) {
+    if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
+
+    if (freshSubmittedQuantity === 0) {
       return { kind: 'SKIPPED' };
     }
 
     return submitOrder({
       command,
       authorizeOrderAction,
-      submittedQtyDecimal: freshSubmittedQuantity,
-      orderTypeParam: getOrderTypeFromConfig(globalConfig.tradingOrderType),
-      timeInForce: TimeInForceType.Day,
+      submittedQuantity: freshSubmittedQuantity,
+      orderTypeConfig: globalConfig.tradingOrderType,
       remark: buildOrderRemark(false),
       relatedBuyOrderIds: null,
     });
@@ -692,7 +732,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     const { signal, side } = command;
     const symbol = signal.symbol;
 
-    if (!canExecuteSignal(signal, 'submitTargetOrder')) {
+    if (!authorizeOrderAction('executeSignals') || !canExecuteSignal(signal, 'submitTargetOrder')) {
       return { kind: 'SKIPPED' };
     }
 
@@ -700,23 +740,19 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       return submitDoomsdayClearanceSell(command, authorizeOrderAction);
     }
 
-    const orderType = resolveOrderType(signal);
-    const timeInForce = TimeInForceType.Day;
+    const orderTypeConfig = resolveOrderType(signal);
+    const orderType = getOrderTypeFromConfig(orderTypeConfig);
     const isProtectiveLiquidation = isLiquidationSignal(signal);
     const remark = buildOrderRemark(isProtectiveLiquidation);
 
-    if (side === OrderSide.Sell) {
-      const initialSellQuantity = await quantityResolver.calculateSellQuantity(ctx, symbol, signal);
-      const submittedQtyDecimal = initialSellQuantity.submittedQuantity;
-      if (submittedQtyDecimal.isZero()) {
-        return { kind: 'SKIPPED' };
-      }
+    if (side === 'SELL') {
+      const initialSellQuantity = await quantityResolver.calculateSellQuantity(symbol, signal, () =>
+        authorizeOrderAction('executeSignals'),
+      );
+      if (!authorizeOrderAction('executeSignals')) return { kind: 'SKIPPED' };
 
-      const submittedQtyNumber = decimalToNumber(submittedQtyDecimal);
-      if (!isValidPositiveNumber(submittedQtyNumber)) {
-        logger.warn(
-          `[跳过订单] 卖出数量无效，无法合并卖单: ${submittedQtyDecimal.toString()}, symbol=${symbol}`,
-        );
+      const submittedQuantity = initialSellQuantity.submittedQuantity;
+      if (submittedQuantity === 0) {
         return { kind: 'SKIPPED' };
       }
 
@@ -724,10 +760,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       const decision = resolveSellMergeDecision({
         symbol,
         pendingOrders: pendingSellOrders,
-        newOrderQuantity: submittedQtyNumber,
+        newOrderQuantity: submittedQuantity,
         newOrderType: orderType,
         isProtectiveLiquidation,
       });
+
+      if (!Number.isSafeInteger(decision.mergedQuantity) || decision.mergedQuantity < 0) {
+        throw new RangeError('[订单合并] 提交或改单数量必须是非负安全整数');
+      }
 
       const replaceTargetOrderId = decision.targetOrderId;
       if (decision.action === 'REPLACE' && replaceTargetOrderId !== null) {
@@ -736,9 +776,17 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         }
 
         const replaceResult = await rateLimiter.withTradeMutation(async (permit) => {
+          if (!authorizeOrderAction('replaceOrder.beforeApi')) {
+            return {
+              outcome: { kind: 'NOT_EXECUTED' } as const,
+              existingPendingSell: null,
+              mergedRelatedBuyOrderIds: null,
+            };
+          }
+
           const finalQuotes = await marketDataClient.getQuotes([symbol]);
           const finalQuote = finalQuotes.get(symbol) ?? null;
-          if (!finalQuote || !isValidPositiveNumber(finalQuote.price)) {
+          if (!finalQuote || exactCompare(finalQuote.price, '0') <= 0) {
             logger.warn(`[订单合并] 最终改单行情缺失或无效，跳过: ${symbol}`);
             return {
               outcome: { kind: 'NOT_EXECUTED' } as const,
@@ -750,7 +798,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           const currentDecision = resolveSellMergeDecision({
             symbol,
             pendingOrders: orderMonitor.getPendingSellOrders(symbol),
-            newOrderQuantity: submittedQtyNumber,
+            newOrderQuantity: submittedQuantity,
             newOrderType: orderType,
             isProtectiveLiquidation,
           });
@@ -819,7 +867,16 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
             mergedRelatedBuyOrderIds: currentMergedRelatedBuyOrderIds,
           };
         });
-        if (replaceResult.outcome.kind !== 'BROKER_CONFIRMED') {
+        // 最外 FIFO callback 已完整退出并释放额度，失败确认才可排 query/throttle。
+        const replaceOutcome =
+          replaceResult.outcome.kind === 'POST_FAILURE_CONFIRMATION_REQUIRED'
+            ? await replaceResult.outcome.confirmAfterPermitReleased()
+            : replaceResult.outcome;
+        if (replaceOutcome.kind === 'POST_FAILURE_CONFIRMATION_REQUIRED') {
+          throw new TypeError('改单失败确认不得再次要求持 permit 确认');
+        }
+
+        if (replaceOutcome.kind !== 'BROKER_CONFIRMED') {
           return { kind: 'SKIPPED' };
         }
 
@@ -840,14 +897,16 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           return { kind: 'SKIPPED' };
         }
 
-        cancelOutcomes = await Promise.all(
-          decision.pendingOrderIds.map((orderId) =>
+        cancelOutcomes = await settleCancelFanout(
+          decision.pendingOrderIds.map(async (orderId) =>
             orderMonitor.cancelOrder(orderId, {
               kind: 'SIGNAL_AUTHORIZED',
               authorize: authorizeOrderAction,
             }),
           ),
         );
+
+        if (!authorizeOrderAction('cancelOrder.beforeApi')) return { kind: 'SKIPPED' };
 
         if (cancelOutcomes.some(isFilledCancelOutcome)) {
           logger.warn(`[订单合并] 检测到已成交卖单，禁止重复提交: ${symbol}`);
@@ -864,8 +923,12 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           return { kind: 'SKIPPED' };
         }
 
-        const freshSellQuantity = await quantityResolver.calculateSellQuantity(ctx, symbol, signal);
-        const freshSignalQuantity = decimalToNumber(freshSellQuantity.submittedQuantity);
+        const freshSellQuantity = await quantityResolver.calculateSellQuantity(symbol, signal, () =>
+          authorizeOrderAction('executeSignals'),
+        );
+        if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
+
+        const freshSignalQuantity = freshSellQuantity.submittedQuantity;
         const replannedQuantity = resolveReplannedSellQuantity(
           cancelOutcomes,
           freshSellQuantity.availableQuantity,
@@ -885,7 +948,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       }
 
       if (decision.action === 'SUBMIT' || decision.action === 'CANCEL_AND_SUBMIT') {
-        const mergedQtyDecimal = toDecimal(finalSubmitQuantity);
         const mergedRelatedBuyOrderIds =
           decision.action === 'CANCEL_AND_SUBMIT'
             ? mergeRelatedBuyOrderIds(
@@ -896,9 +958,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         return submitOrder({
           command,
           authorizeOrderAction,
-          submittedQtyDecimal: mergedQtyDecimal,
-          orderTypeParam: orderType,
-          timeInForce,
+          submittedQuantity: finalSubmitQuantity,
+          orderTypeConfig,
           remark,
           relatedBuyOrderIds: mergedRelatedBuyOrderIds,
         });
@@ -910,9 +971,8 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     return submitOrder({
       command,
       authorizeOrderAction,
-      submittedQtyDecimal: null,
-      orderTypeParam: orderType,
-      timeInForce,
+      submittedQuantity: null,
+      orderTypeConfig,
       remark,
     });
   };

@@ -68,9 +68,9 @@ function createRiskContext(params: {
     trader: params.trader,
     riskChecker: params.riskChecker,
     orderRecorder: params.orderRecorder,
-    longQuote: createQuoteDouble(params.monitorConfig.longSymbol, 5, 100),
-    shortQuote: createQuoteDouble(params.monitorConfig.shortSymbol, 5, 100),
-    monitorQuote: createQuoteDouble(params.monitorConfig.monitorSymbol, 20_000),
+    longQuote: createQuoteDouble(params.monitorConfig.longSymbol, '5', 100),
+    shortQuote: createQuoteDouble(params.monitorConfig.shortSymbol, '5', 100),
+    monitorQuote: createQuoteDouble(params.monitorConfig.monitorSymbol, '20000'),
 
     longSymbol: params.monitorConfig.longSymbol,
     shortSymbol: params.monitorConfig.shortSymbol,
@@ -131,7 +131,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
   ).toBeGreaterThan(0);
 
   const trader = createTraderDouble({
-    getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+    getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
     getStockPositions: async () => [],
     canTradeNow: () => ({ canTrade: true }),
   });
@@ -275,7 +275,7 @@ describe('liquidation-cooldown-recovery integration', () => {
     hydrator.hydrate();
 
     const trader = createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble(100_000),
+      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
       getStockPositions: async () => [],
       canTradeNow: () => ({ canTrade: true }),
     });

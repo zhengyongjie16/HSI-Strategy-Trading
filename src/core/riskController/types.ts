@@ -1,7 +1,5 @@
 import type { Position } from '../../types/account.js';
-import type { OrderSide } from 'longbridge';
 import type { BuySignal, SignalType } from '../../types/signal.js';
-import type { Quote } from '../../types/quote.js';
 import type {
   MarketDataClient,
   OrderRecorder,
@@ -12,6 +10,7 @@ import type {
   WarrantDistanceLiquidationResult,
   WarrantRefreshResult,
   UnrealizedLossData,
+  PreparedUnrealizedLossData,
   UnrealizedLossCheckResult,
 } from '../../types/services.js';
 
@@ -26,7 +25,7 @@ export type WarrantInfo =
   | {
       readonly isWarrant: true;
       readonly warrantType: BullBearWarrantType;
-      readonly callPrice: number | null;
+      readonly callPrice: string | null;
       readonly symbol: string;
     };
 
@@ -41,7 +40,7 @@ export type WarrantInfo =
 export interface WarrantRiskChecker {
   setWarrantInfoFromCallPrice: (
     symbol: string,
-    callPrice: number,
+    callPrice: string,
     isLongSymbol: boolean,
     symbolName?: string | null,
   ) => WarrantRefreshResult;
@@ -54,17 +53,17 @@ export interface WarrantRiskChecker {
   checkRisk: (
     symbol: string,
     signalType: SignalType,
-    monitorCurrentPrice: number,
+    monitorCurrentPrice: string,
   ) => RiskCheckResult;
   checkWarrantDistanceLiquidation: (
     symbol: string,
     isLongSymbol: boolean,
-    monitorCurrentPrice: number,
+    monitorCurrentPrice: string,
   ) => WarrantDistanceLiquidationResult;
   getWarrantDistanceInfo: (
     isLongSymbol: boolean,
     seatSymbol: string,
-    monitorCurrentPrice: number | null,
+    monitorCurrentPrice: string | null,
   ) => WarrantDistanceInfo | null;
   clearLongWarrantInfo: () => void;
   clearShortWarrantInfo: () => void;
@@ -80,7 +79,7 @@ export interface PositionLimitChecker {
   checkLimit: (
     signal: BuySignal,
     positions: ReadonlyArray<Position> | null,
-    orderNotional: number,
+    orderNotional: string,
   ) => RiskCheckResult;
 }
 
@@ -95,14 +94,14 @@ export interface UnrealizedLossChecker {
 
   /** 清空浮亏数据，symbol 为空时清空全部 */
   clearUnrealizedLossData: (symbol?: string | null) => void;
-  refresh: (
+  prepare: (
     orderRecorder: OrderRecorder,
     symbol: string,
     isLongSymbol: boolean,
-    quote?: Quote | null,
-    dailyLossOffset?: number,
-  ) => Promise<void>;
-  check: (symbol: string, currentPrice: number, isLongSymbol: boolean) => UnrealizedLossCheckResult;
+    dailyLossOffset: string,
+  ) => PreparedUnrealizedLossData;
+  publish: (prepared: PreparedUnrealizedLossData) => void;
+  check: (symbol: string, currentPrice: string, isLongSymbol: boolean) => UnrealizedLossCheckResult;
 }
 
 // ==================== 依赖类型定义 ====================
@@ -114,7 +113,7 @@ export interface UnrealizedLossChecker {
  * 使用范围：仅 riskController 模块内部使用。
  */
 export type PositionLimitCheckerDeps = {
-  readonly maxPositionNotional: number | null;
+  readonly maxPositionNotional: string | null;
 };
 
 /**
@@ -124,7 +123,7 @@ export type PositionLimitCheckerDeps = {
  * 使用范围：仅 riskController 模块内部使用。
  */
 export type UnrealizedLossCheckerDeps = {
-  readonly maxUnrealizedLossPerSymbol: number | null;
+  readonly maxUnrealizedLossPerSymbol: string | null;
 };
 
 /**
@@ -149,7 +148,7 @@ export type RiskCheckerDeps = {
  */
 export type DailyLossState = {
   /** 当日偏移仅记录亏损，盈利按 0 处理，因此该值始终 <= 0 */
-  readonly dailyLossOffset: number;
+  readonly dailyLossOffset: string;
 };
 
 /**
@@ -180,7 +179,7 @@ export type DailyLossOwnedInDayExecution = {
 export type DailyLossExecutionSnapshot = {
   readonly factStage: 'OPEN' | 'TERMINAL';
   readonly cumulativeQuantity: number;
-  readonly cumulativeAmount: number;
+  readonly cumulativeAmount: string;
   readonly lastExecutionTimeMs: number;
   readonly orderUpdatedAtMs: number;
 };
@@ -195,13 +194,13 @@ export type DailyLossOrderFact = {
   readonly orderId: string;
   readonly direction: DailyLossDirection;
   readonly symbol: string;
-  readonly side: OrderSide.Buy | OrderSide.Sell;
+  readonly side: 'BUY' | 'SELL';
 
   /** 原始 API submittedAt 的可信毫秒值；null 表示不能证明订单在保护边界后才创建。 */
   readonly submittedAtMs: number | null;
   readonly factStage: 'OPEN' | 'TERMINAL';
   readonly cumulativeQuantity: number;
-  readonly cumulativeAmount: number;
+  readonly cumulativeAmount: string;
   readonly lastExecutionTimeMs: number;
   readonly orderUpdatedAtMs: number;
   readonly executionSnapshots: ReadonlyArray<DailyLossExecutionSnapshot>;
@@ -216,7 +215,7 @@ export type DailyLossOrderFact = {
  */
 export type DailyLossOrderBaseline = {
   readonly cumulativeQuantity: number;
-  readonly cumulativeAmount: number;
+  readonly cumulativeAmount: string;
 };
 
 /**
@@ -261,5 +260,5 @@ export type OrderOwnershipDiagnostics = {
  */
 export type UnrealizedLossMonitorDeps = {
   /** 单标的最大浮亏阈值（港币），<=0 表示禁用浮亏监控 */
-  readonly maxUnrealizedLossPerSymbol: number;
+  readonly maxUnrealizedLossPerSymbol: string;
 };

@@ -58,6 +58,14 @@ export type SwitchDriveResult =
   | Readonly<{
       kind: 'WAIT';
       wakeups: NonEmptyReadonlyArray<SwitchWakeupRequirement>;
+
+      /** 首次WAIT已经发布的实际SWITCHING route见证，仅复核owner状态，不授予交易许可。 */
+      publishedRoute?: Readonly<{
+        direction: 'LONG' | 'SHORT';
+        symbol: string;
+        seatVersion: number;
+        isCurrent: () => boolean;
+      }>;
     }>;
 
 /**
@@ -146,7 +154,7 @@ export interface AutoSymbolManagerPort {
   }) => Promise<SwitchDriveResult>;
   startSwitchOnDistance: (params: {
     readonly direction: 'LONG' | 'SHORT';
-    readonly monitorPrice: number | null;
+    readonly monitorPrice: string | null;
     readonly positions: ReadonlyArray<Position>;
 
     /** 必须在每个异步边界后重新读取的普通交易授权。 */

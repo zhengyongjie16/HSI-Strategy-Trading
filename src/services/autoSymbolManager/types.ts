@@ -1,4 +1,3 @@
-import type { OrderStatus } from 'longbridge';
 import type { AutoSearchConfig, MonitorConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
@@ -57,7 +56,7 @@ export type SeatStateCandidate = Readonly<{
   lastSwitchAt: number | null;
   lastSearchAt: number | null;
   lastSeatActivatedAt: number | null;
-  callPrice?: number | null;
+  callPrice?: string | null;
   searchFailCountToday: number;
   frozenTradingDayKey: string | null;
 }>;
@@ -119,7 +118,7 @@ export type SearchOnEventParams = {
  */
 export type StartSwitchOnDistanceParams = {
   readonly direction: 'LONG' | 'SHORT';
-  readonly monitorPrice: number | null;
+  readonly monitorPrice: string | null;
   readonly positions: ReadonlyArray<Position>;
 
   /** 每个异步边界后都必须重新读取的普通交易授权。 */
@@ -185,10 +184,10 @@ export type SwitchState = {
   stage: SwitchStage;
   oldSymbol: string;
   nextSymbol: string | null;
-  nextCallPrice: number | null;
+  nextCallPrice: string | null;
   sellSubmitted: boolean;
   sellOrderId: string | null;
-  sellNotional: number | null;
+  sellNotional: string | null;
   shouldRebuy: boolean;
   quoteRetryAttempts: number;
   quoteRetryNextAt: number | null;
@@ -584,12 +583,12 @@ export type SwitchStateMachineDeps = {
     readonly sellAction: 'SELLCALL' | 'SELLPUT';
   };
   readonly calculateBuyQuantityByNotional: (
-    notional: number,
-    price: number,
+    notional: string,
+    price: string,
     lotSize: number,
   ) => number | null;
   readonly buildOrderSignal: OrderSignalBuilder;
-  readonly pendingOrderStatuses: ReadonlySet<OrderStatus>;
+  readonly pendingOrderStatuses: ReadonlySet<PendingOrder['status']>;
   readonly buySide: PendingOrder['side'];
   readonly logger: Logger;
   readonly maxSearchFailuresPerDay: number;

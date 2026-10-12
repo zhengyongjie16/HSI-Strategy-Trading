@@ -24,7 +24,6 @@ import { createSeatRefreshHandler } from './handlers/seatRefresh.js';
 import type { MonitorTask } from '../monitorTaskQueue/types.js';
 import { formatError } from '../../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
-import type { PeriodicSwitchRouteBaseline } from '../../periodicSwitchWakeupRuntime/types.js';
 import type {
   MonitorTaskDataMap,
   MonitorTaskProcessor,
@@ -42,18 +41,6 @@ import type {
  */
 function assertNeverTask(_task: never): never {
   throw new Error('[MonitorTaskProcessor] 存在未处理的任务分派分支');
-}
-
-function buildPeriodicBaseline(
-  task: MonitorTask<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>,
-): PeriodicSwitchRouteBaseline {
-  const data = task.data;
-  return {
-    direction: data.direction,
-    symbol: data.symbol,
-    seatVersion: data.seatVersion,
-    lastSeatActivatedAt: data.lastSeatActivatedAt,
-  };
 }
 
 /**
@@ -74,7 +61,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     quoteSubscriptionRuntime,
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,
-    lastState,
+    snapshot,
     getCanProcessTask,
     getCanTradeNow,
     termination,
@@ -91,11 +78,14 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,
     getCanTradeNow,
+    snapshot,
+    canOwnTask: canRun,
   });
   const handleSeatRefresh = createSeatRefreshHandler({
     clock,
     monitorContext,
     marketDataClient,
+    snapshot,
     quoteSubscriptionRuntime,
     canContinue: () => running && !termination.isTerminated() && (getCanProcessTask?.() ?? true),
   });
@@ -116,11 +106,11 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
       return;
     }
 
-    if (!running || termination.isTerminated()) {
+    if (!running || termination.isTerminated() || !task.data.isRouteCurrent()) {
       return;
     }
 
-    const baseline = buildPeriodicBaseline(task);
+    const baseline = task.data;
     periodicSwitchWakeupRuntime.replanRouteAfterTask({
       ...baseline,
       taskTimeMs: task.data.currentTimeMs,
@@ -141,7 +131,12 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
   function retrySeatRefreshOnce(
     task: MonitorTask<MonitorTaskDataMap, 'SEAT_REFRESH'>,
   ): SeatRefreshRetryOutcome {
-    if (!running || termination.isTerminated() || (getCanProcessTask && !getCanProcessTask())) {
+    if (
+      !running ||
+      termination.isTerminated() ||
+      snapshot.getView().token.dayEpoch !== task.data.dayEpoch ||
+      (getCanProcessTask && !getCanProcessTask())
+    ) {
       return 'canceled';
     }
 
@@ -153,6 +148,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     const pendingTimer = seatRefreshRetryTimers.get(task.dedupeKey);
     if (
       pendingTimer?.direction === task.data.direction &&
+      pendingTimer.dayEpoch === task.data.dayEpoch &&
       pendingTimer.seatVersion === task.data.seatVersion &&
       pendingTimer.nextSymbol === task.data.nextSymbol
     ) {
@@ -169,7 +165,12 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
         if (seatRefreshRetryTimers.get(task.dedupeKey)?.handle !== retryTimer) return;
 
         seatRefreshRetryTimers.delete(task.dedupeKey);
-        if (!running || termination.isTerminated() || (getCanProcessTask && !getCanProcessTask()))
+        if (
+          !running ||
+          termination.isTerminated() ||
+          snapshot.getView().token.dayEpoch !== task.data.dayEpoch ||
+          (getCanProcessTask && !getCanProcessTask())
+        )
           return;
 
         const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
@@ -202,6 +203,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
 
     const retryEntry: SeatRefreshRetryTimer = {
       handle: retryTimer,
+      dayEpoch: task.data.dayEpoch,
       direction: task.data.direction,
       seatVersion: task.data.seatVersion,
       nextSymbol: task.data.nextSymbol,
@@ -216,6 +218,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
     const currentSeat = monitorContext.symbolRegistry.getSeatState(task.data.direction);
     const currentSeatVersion = monitorContext.symbolRegistry.getSeatVersion(task.data.direction);
     if (
+      snapshot.getView().token.dayEpoch !== task.data.dayEpoch ||
       currentSeatVersion !== task.data.seatVersion ||
       currentSeat.symbol !== task.data.nextSymbol ||
       currentSeat.status !== 'ACTIVATING'
@@ -250,7 +253,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
    * 由外层队列区分可有限重试的外部请求失败与必须进入 fatal 通道的内部错误。
    *
    * @param task 当前出队的监控任务
-   * @param helpers 账户、持仓与风险缓存刷新助手
+   * @param helpers 独立订单读取与保留 captured epoch 的 canonical 成对刷新能力
    * @returns 任务实际处理状态
    */
   async function processTask(
@@ -274,12 +277,7 @@ export function createMonitorTaskProcessor(deps: MonitorTaskProcessorDeps): Moni
 
   /** 循环消费监控任务队列直至为空；生命周期门禁关闭时跳过，处理结果按实际 status 通知 owner。 */
   async function processQueue(): Promise<void> {
-    const helpers = createRefreshHelpers({
-      trader,
-      lastState,
-      quoteSubscriptionRuntime,
-      canContinue: () => running && !termination.isTerminated() && (getCanProcessTask?.() ?? true),
-    });
+    const helpers = createRefreshHelpers({ trader, snapshot });
     while (running && !termination.isTerminated() && !monitorTaskQueue.isEmpty()) {
       const task = monitorTaskQueue.pop();
       if (!task) {

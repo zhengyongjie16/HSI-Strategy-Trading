@@ -1,9 +1,9 @@
 import type { DoomsdayProtection } from '../../core/doomsdayProtection/types.js';
+import type { AccountPositionSnapshot } from '../../types/accountPosition.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { MarketDataClient, Trader } from '../../types/services.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { DayLifecycleManager } from '../lifecycle/types.js';
-import type { QuoteSubscriptionRuntime } from '../quoteSubscriptionRuntime/types.js';
 import type { TimeWakeupPlan } from '../timeWakeupPlanner/types.js';
 import type { TradingGateEventRuntime } from '../tradingGateEventRuntime/types.js';
 import type { Logger } from '../../utils/logger/types.js';
@@ -29,6 +29,9 @@ export type TimeWakeupEvaluationContext = Readonly<{
   marketDataClient: MarketDataClient;
   trader: Trader;
   lastState: LastState;
+
+  /** 唯一 canonical owner；持仓只读，账户失效由 doomsday 原 all-success/live 分支授权。 */
+  snapshot: Pick<AccountPositionSnapshot, 'getView' | 'invalidateAccount'>;
   doomsdayProtection: DoomsdayProtection;
   tradingConfig: TradingConfig;
   monitorContext: MonitorContext;
@@ -36,7 +39,6 @@ export type TimeWakeupEvaluationContext = Readonly<{
     TradingGateEventRuntime,
     'emitGateStateChanged' | 'emitAutoSearchAuthorizationChanged'
   >;
-  quoteSubscriptionRuntime: Pick<QuoteSubscriptionRuntime, 'reconcilePositionHoldFromCurrentTruth'>;
   dayLifecycleManager: DayLifecycleManager;
   now: () => Date;
 }>;

@@ -19,7 +19,7 @@
  * - 程序启动时的首次初始化
  * - 开盘重建流程中由 globalStateDomain 调用
  */
-import { OrderSide, TradeSessions } from 'longbridge';
+import { TradeSessions } from 'longbridge';
 import { TRADING } from '../../constants/index.js';
 import {
   getHKDateKey,
@@ -30,16 +30,18 @@ import {
 import { logger } from '../../utils/logger/index.js';
 import { prepareSeatsForRuntime } from '../recovery/seatPreparation.js';
 import { collectRuntimeQuoteSymbols } from '../utils.js';
-import { readAccountAndPositionsBothSettled } from '../../utils/accountPositions/index.js';
-import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
-import { resolveOrderOwnership } from '../../core/orderRecorder/index.js';
-import { classifyOrderStatusLifecycle } from '../../core/orderStatusLifecycle/index.js';
+import { isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { exactCompare, safeQuantityNumber } from '../../utils/numeric/exact.js';
+import { withTrustedOrderExecutionTimes } from '../../domain/order/executionFact.js';
+import type { OrderExecutionTimeEvidence } from '../../types/orderRecorder.js';
+import { resolveOrderOwnership } from '../../domain/order/orderOwnership.js';
 import { hasProtectiveLiquidationRemark } from '../../core/trader/utils.js';
-import { decimalGt, toDecimalValue } from '../../utils/numeric/index.js';
+import { decimalGt } from '../../utils/numeric/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
   LoadTradingDayRuntimeSnapshotResult,
+  TradingDayRuntimeInvalidationResult,
 } from './types.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { RawOrderFromAPI } from '../../types/services.js';
@@ -65,7 +67,7 @@ function compareExecutionProgressFacts(
   return (
     left.orderId.localeCompare(right.orderId) ||
     left.orderRevisionMs - right.orderRevisionMs ||
-    toDecimalValue(left.cumulativeQuantity).comparedTo(toDecimalValue(right.cumulativeQuantity)) ||
+    exactCompare(left.cumulativeQuantity, right.cumulativeQuantity) ||
     compareFactStage(left.factStage, right.factStage)
   );
 }
@@ -78,7 +80,7 @@ function compareExecutionProgressRecency(
   return (
     left.lastExecutionTimeMs - right.lastExecutionTimeMs ||
     left.orderRevisionMs - right.orderRevisionMs ||
-    toDecimalValue(left.cumulativeQuantity).comparedTo(toDecimalValue(right.cumulativeQuantity)) ||
+    exactCompare(left.cumulativeQuantity, right.cumulativeQuantity) ||
     compareFactStage(left.factStage, right.factStage) ||
     left.orderId.localeCompare(right.orderId)
   );
@@ -105,7 +107,7 @@ function collectRawProtectiveSellOrdersById(
 ): ReadonlyMap<string, RawOrderFromAPI> {
   const rawProtectiveSellOrdersById = new Map<string, RawOrderFromAPI>();
   for (const order of allOrders) {
-    if (order.side !== OrderSide.Sell || !hasProtectiveLiquidationRemark(order.remark)) {
+    if (order.executionSide !== 'SELL' || !hasProtectiveLiquidationRemark(order.remark)) {
       continue;
     }
 
@@ -133,7 +135,7 @@ function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
     }
 
     const rawOrder = rawProtectiveSellOrdersById.get(progress.orderId);
-    if (rawOrder?.side !== OrderSide.Sell || !hasProtectiveLiquidationRemark(rawOrder.remark)) {
+    if (rawOrder?.executionSide !== 'SELL' || !hasProtectiveLiquidationRemark(rawOrder.remark)) {
       throw new Error(
         `[loadTradingDayRuntimeSnapshot] progress 无法锚定到保护性清仓 SELL 原始订单: ` +
           progress.orderId,
@@ -165,38 +167,6 @@ function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
 }
 
 /**
- * 刷新生命周期加载器使用的账户与持仓缓存。
- * 默认行为：仅当 lastState.cachedAccount 为空时双读取账户和持仓；两项请求均成功后才依次提交
- * cachedAccount、cachedPositions 与 positionCache，任一读取失败不提交。
- *
- * 失败语义：非外部 API 失败在观察点立即经 reportFatalError 上报，两个请求全部落定后抛出原始错误
- * （内部错误优先、保留原始身份）；纯外部失败保持原样，交由上层恢复/重试策略处理。
- *
- * @param trader Trader 实例，用于拉取账户与持仓
- * @param lastState 状态对象，用于读取/更新账户与持仓缓存
- * @param reportFatalError 运行时 fatal 上报入口，必须由调用方注入真实 termination 回调
- * @returns Promise<void>，无返回值；任一读取失败时抛出原始错误
- */
-async function refreshAccountAndPositions(
-  trader: LoadTradingDayRuntimeSnapshotDeps['trader'],
-  lastState: LoadTradingDayRuntimeSnapshotDeps['lastState'],
-  reportFatalError: LoadTradingDayRuntimeSnapshotDeps['reportFatalError'],
-): Promise<void> {
-  if (lastState.cachedAccount !== null) {
-    return;
-  }
-
-  const { account, positions } = await readAccountAndPositionsBothSettled({
-    trader,
-    reportFatalError,
-  });
-
-  lastState.cachedAccount = account;
-  lastState.cachedPositions = positions;
-  lastState.positionCache.update(positions);
-}
-
-/**
  * 创建交易日运行时快照加载函数（工厂）。
  * 注入依赖后返回 loadTradingDayRuntimeSnapshot，用于启动初始化与开盘重建时加载账户、持仓、订单、席位与行情快照。
  *
@@ -218,7 +188,7 @@ export function createLoadTradingDayRuntimeSnapshot(
     mixedTradeLogRepository,
     warrantListCacheConfig,
     seatActivationDispatcher,
-    reportFatalError,
+    snapshot,
   } = deps;
 
   /**
@@ -231,12 +201,31 @@ export function createLoadTradingDayRuntimeSnapshot(
   ): Promise<LoadTradingDayRuntimeSnapshotResult> {
     const { now, requireTradingDay, resetRuntimeSubscriptions, hydrateCooldownFromTradeLog } =
       params;
+    const originToken = { ...snapshot.getView().token };
+    const resolveOriginInvalidation = (): TradingDayRuntimeInvalidationResult | null => {
+      if (
+        snapshot.getView().token.dayEpoch !== originToken.dayEpoch ||
+        snapshot.getStatus().admission === 'CLOSED'
+      ) {
+        return { status: 'ABORTED' };
+      }
+
+      return snapshot.isCurrent(originToken, { account: false, positions: false })
+        ? null
+        : { status: 'SUPERSEDED' };
+    };
+    let invalidation = resolveOriginInvalidation();
+    if (invalidation !== null) return invalidation;
+
     const expectedMonitorSymbol = tradingConfig.monitor.monitorSymbol;
     if (requireTradingDay) {
       const tradingDayInfo = await marketDataClient.isTradingDay(now);
       if (!tradingDayInfo.isTradingDay) {
         throw new Error('重建触发时交易日信息无效');
       }
+
+      invalidation = resolveOriginInvalidation();
+      if (invalidation !== null) return invalidation;
 
       lastState.cachedTradingDayInfo = {
         dateKey: getHKDateKey(now) ?? '',
@@ -246,23 +235,156 @@ export function createLoadTradingDayRuntimeSnapshot(
     }
 
     await trader.initializeOrderMonitor();
-    await refreshAccountAndPositions(trader, lastState, reportFatalError);
-    if (!lastState.cachedAccount) {
-      throw new Error('无法获取账户信息');
-    }
+    invalidation = resolveOriginInvalidation();
+    if (invalidation !== null) return invalidation;
 
-    if (!Array.isArray(lastState.cachedPositions)) {
-      throw new TypeError('无法获取持仓信息');
-    }
+    const handle = snapshot.requestRefresh({
+      source: params.source === 'OPEN_REBUILD' ? 'LIFECYCLE_REBUILD' : 'STARTUP',
+      dayEpoch: originToken.dayEpoch,
+      refreshAccount: true,
+      refreshPositions: true,
+    });
+    const accountPositionReceipt = await handle.result.finally(handle.cancel);
+    if (accountPositionReceipt.status === 'ABORTED') return { status: 'ABORTED' };
+
+    const canonicalView = accountPositionReceipt.view;
+    const capturedSnapshotToken = accountPositionReceipt.snapshotToken;
+    const resolveReceiptInvalidation = (): TradingDayRuntimeInvalidationResult | null => {
+      const originInvalidation = resolveOriginInvalidation();
+      if (originInvalidation !== null) return originInvalidation;
+
+      return capturedSnapshotToken.dayEpoch === originToken.dayEpoch &&
+        capturedSnapshotToken.snapshotGeneration === originToken.snapshotGeneration &&
+        snapshot.isCurrent(capturedSnapshotToken, { account: true, positions: true, paired: true })
+        ? null
+        : { status: 'SUPERSEDED' };
+    };
+    invalidation = resolveReceiptInvalidation();
+    if (invalidation !== null) return invalidation;
 
     logger.debug('账户和持仓信息获取成功，开始解析席位');
-    const allOrders = await trader.fetchAllOrdersFromAPI();
+    const rawOrders = await trader.fetchAllOrdersFromAPI();
+    const currentDayKey = getHKDateKey(now);
+    if (hydrateCooldownFromTradeLog && currentDayKey === null)
+      throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
+
+    const completionRecords =
+      hydrateCooldownFromTradeLog && currentDayKey !== null
+        ? [...mixedTradeLogRepository.loadCompletionRecords(currentDayKey)]
+        : [];
+    const executionProgressRecords =
+      hydrateCooldownFromTradeLog && currentDayKey !== null
+        ? [...mixedTradeLogRepository.loadExecutionProgressRecords(currentDayKey)]
+        : [];
+    // durable 来源/唯一归属先预检，再补真实 T；首轮 daily 全量重算不能先消费 API revision 伪 T。
+    assertCompletionRecordsMatchExpectedMonitor(completionRecords, expectedMonitorSymbol);
+    assertExecutionProgressRecordsHaveRawProtectiveProvenance(
+      executionProgressRecords,
+      collectRawProtectiveSellOrdersById(rawOrders),
+      tradingConfig.monitor,
+      expectedMonitorSymbol,
+    );
+    const trustedEvidence: OrderExecutionTimeEvidence[] = executionProgressRecords.map(
+      (progress) => ({
+        brokerOrderId: progress.orderId,
+        symbol: progress.symbol,
+        side: 'SELL',
+        phase: progress.factStage,
+        cumulativeQuantity: safeQuantityNumber(progress.cumulativeQuantity),
+        cumulativeAmount: progress.cumulativeAmount,
+        lastExecutionTimeMs: progress.lastExecutionTimeMs,
+        orderRevisionMs: progress.orderRevisionMs,
+      }),
+    );
+    for (const completion of completionRecords)
+      for (const baseline of completion.orderBaselines) {
+        const order = rawOrders.find((entry) => entry.orderId === baseline.orderId);
+        if (order?.symbol !== baseline.symbol || order.executionSide !== baseline.side)
+          throw new Error('[loadTradingDayRuntimeSnapshot] completion baseline 原始订单归属冲突');
+
+        const ownership = resolveOrderOwnership(order, tradingConfig.monitor);
+        if (
+          ownership?.monitorSymbol !== expectedMonitorSymbol ||
+          ownership.direction !== completion.direction
+        )
+          throw new Error(
+            '[loadTradingDayRuntimeSnapshot] completion baseline monitor/direction 归属冲突',
+          );
+        // V1 baseline 只证明累计载荷和执行时间，不加入要求 phase 的 progress 事实序列。
+        // durable 边界仍由 dailyLoss 的原恢复规则消费，不替它编造 OPEN/TERMINAL。
+      }
+
+    const completionBaselines = completionRecords.flatMap(
+      (completion) => completion.orderBaselines,
+    );
+    const ordersWithBaselineTimes = rawOrders.map((order) => {
+      if (order.executionTimeMs !== null || order.executedQuantity === 0) return order;
+
+      const matching = completionBaselines.filter(
+        (baseline) =>
+          baseline.orderId === order.orderId &&
+          baseline.symbol === order.symbol &&
+          baseline.side === order.executionSide &&
+          safeQuantityNumber(baseline.cumulativeQuantity) === order.executedQuantity &&
+          baseline.orderRevisionMs <= order.updatedAtMs,
+      );
+      const latest = [...matching].sort(
+        (left, right) => right.orderRevisionMs - left.orderRevisionMs,
+      )[0];
+      if (latest === undefined) return order;
+
+      for (const baseline of matching) {
+        if (
+          baseline.orderRevisionMs === latest.orderRevisionMs &&
+          (baseline.lastExecutionTimeMs !== latest.lastExecutionTimeMs ||
+            exactCompare(baseline.cumulativeAmount, latest.cumulativeAmount) !== 0)
+        ) {
+          throw new Error(
+            '[loadTradingDayRuntimeSnapshot] 同 revision completion baseline 事实冲突',
+          );
+        }
+      }
+
+      // 只补已证明的 T；API 的 quantity/amount/revision/status 原样交 O owner 裁决。
+      return Object.freeze({ ...order, executionTimeMs: latest.lastExecutionTimeMs });
+    });
+    const executionTimeFacts = ordersWithBaselineTimes.map((order) =>
+      Object.freeze({
+        orderId: order.orderId,
+        symbol: order.symbol,
+        executionSide: order.executionSide,
+        executedQuantity: order.executedQuantity,
+        executedAmount: order.executedAmount,
+        executionTimeMs: order.executionTimeMs,
+        updatedAtMs: order.updatedAtMs,
+        executionPhase: order.executionPhase,
+      }),
+    );
+    const trustedTimeFacts = withTrustedOrderExecutionTimes(executionTimeFacts, trustedEvidence);
+    const allOrders = ordersWithBaselineTimes.map((order, index) => {
+      const fact = trustedTimeFacts[index];
+      if (
+        fact?.orderId !== order.orderId ||
+        fact.symbol !== order.symbol ||
+        fact.executionSide !== order.executionSide
+      ) {
+        throw new TypeError(
+          '[loadTradingDayRuntimeSnapshot] trusted execution fact identity changed',
+        );
+      }
+
+      return fact.executionTimeMs === order.executionTimeMs
+        ? order
+        : Object.freeze({ ...order, executionTimeMs: fact.executionTimeMs });
+    });
+    invalidation = resolveReceiptInvalidation();
+    if (invalidation !== null) return invalidation;
 
     trader.seedOrderHoldSymbols(allOrders);
     await prepareSeatsForRuntime({
       tradingConfig,
       symbolRegistry,
-      positions: lastState.cachedPositions,
+      positions: canonicalView.positions,
       orders: allOrders,
       marketDataClient,
       now: () => now,
@@ -282,17 +404,15 @@ export function createLoadTradingDayRuntimeSnapshot(
       },
       warrantListCacheConfig,
     });
-    seatActivationDispatcher.dispatchCurrentActivatingSeats();
-    const currentDayKey = getHKDateKey(now);
-    if (hydrateCooldownFromTradeLog && currentDayKey === null) {
-      throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
-    }
+    invalidation = resolveReceiptInvalidation();
+    if (invalidation !== null) return invalidation;
 
+    seatActivationDispatcher.dispatchCurrentActivatingSeats();
     const orderHoldSymbols = trader.getOrderHoldSymbols();
     const allTradingSymbols = collectRuntimeQuoteSymbols(
       tradingConfig.monitor,
       symbolRegistry,
-      lastState.cachedPositions,
+      canonicalView.positions,
       orderHoldSymbols,
     );
     const relatedTradingSymbols = new Set(allTradingSymbols);
@@ -306,24 +426,6 @@ export function createLoadTradingDayRuntimeSnapshot(
     );
 
     protectiveLiquidationEpisodeTracker.resetAll();
-
-    const completionRecords =
-      hydrateCooldownFromTradeLog && currentDayKey !== null
-        ? [...mixedTradeLogRepository.loadCompletionRecords(currentDayKey)]
-        : [];
-    const executionProgressRecords =
-      hydrateCooldownFromTradeLog && currentDayKey !== null
-        ? [...mixedTradeLogRepository.loadExecutionProgressRecords(currentDayKey)]
-        : [];
-    assertCompletionRecordsMatchExpectedMonitor(completionRecords, expectedMonitorSymbol);
-    if (executionProgressRecords.length > 0) {
-      assertExecutionProgressRecordsHaveRawProtectiveProvenance(
-        executionProgressRecords,
-        collectRawProtectiveSellOrdersById(allOrders),
-        tradingConfig.monitor,
-        expectedMonitorSymbol,
-      );
-    }
 
     const completedBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
     for (const record of completionRecords) {
@@ -368,10 +470,10 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
 
       const direction = ownership.direction;
-      const executedQuantity = decimalToNumber(order.executedQuantity);
+      const executedQuantity = order.executedQuantity;
       const hasProtectiveExecution =
-        order.side === OrderSide.Sell && isValidPositiveNumber(executedQuantity);
-      if (order.side === OrderSide.Sell && classifyOrderStatusLifecycle(order.status) === 'OPEN') {
+        order.executionSide === 'SELL' && isValidPositiveNumber(executedQuantity);
+      if (order.executionSide === 'SELL' && order.executionPhase === 'OPEN') {
         pendingProtectiveDirections.add(direction);
       }
 
@@ -397,7 +499,7 @@ export function createLoadTradingDayRuntimeSnapshot(
         factStage: progress.factStage,
         direction: progress.direction,
         symbol: progress.symbol,
-        side: OrderSide.Sell,
+        side: 'SELL',
         orderId: progress.orderId,
         cumulativeQuantity: progress.cumulativeQuantity,
         cumulativeAmount: progress.cumulativeAmount,
@@ -499,9 +601,9 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
 
       for (const progress of latestProgressByDirection.values()) {
-        const position = lastState.positionCache.get(progress.symbol);
-        const hasPosition =
-          position !== null && Number.isFinite(position.quantity) && position.quantity > 0;
+        const hasPosition = canonicalView.positions.some(
+          (position) => position.symbol === progress.symbol && position.quantity > 0,
+        );
         const hasPendingProtectiveOrders = pendingProtectiveDirections.has(progress.direction);
 
         protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
@@ -544,13 +646,20 @@ export function createLoadTradingDayRuntimeSnapshot(
       tradeLogHydrator.hydrate();
     }
 
+    invalidation = resolveReceiptInvalidation();
+    if (invalidation !== null) return invalidation;
+
     if (resetRuntimeSubscriptions) {
       await marketDataClient.resetRuntimeSubscriptionsAndCaches();
+      invalidation = resolveReceiptInvalidation();
+      if (invalidation !== null) return invalidation;
     }
 
     lastState.allTradingSymbols = allTradingSymbols;
     if (allTradingSymbols.size > 0) {
       await marketDataClient.subscribeSymbols([...allTradingSymbols]);
+      invalidation = resolveReceiptInvalidation();
+      if (invalidation !== null) return invalidation;
     }
 
     await marketDataClient.subscribeCandlesticks(
@@ -558,9 +667,16 @@ export function createLoadTradingDayRuntimeSnapshot(
       TRADING.CANDLE_PERIOD,
       TradeSessions.Intraday,
     );
+    invalidation = resolveReceiptInvalidation();
+    if (invalidation !== null) return invalidation;
 
     const quotesMap = await marketDataClient.getQuotes(allTradingSymbols);
+    invalidation = resolveReceiptInvalidation();
+    if (invalidation !== null) return invalidation;
+
     return {
+      status: 'COMMITTED',
+      snapshotToken: capturedSnapshotToken,
       allOrders,
       quotesMap,
     };

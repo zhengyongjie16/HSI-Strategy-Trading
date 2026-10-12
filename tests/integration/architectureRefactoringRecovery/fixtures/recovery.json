@@ -1,0 +1,39 @@
+{
+  "dayKey": "2026-03-13",
+  "now": "2026-03-13T02:31:00.000Z",
+  "boundaryMs": 1773369000000,
+  "revisionMs": 1773369030000,
+  "orders": [
+    {
+      "orderId": "OFFLINE-BUY",
+      "symbol": "BULL.HK",
+      "stockName": "HSI BULL",
+      "side": 1,
+      "status": 5,
+      "orderType": 2,
+      "remark": "",
+      "quantity": "5",
+      "price": "10",
+      "executedQuantity": "5",
+      "executedPrice": "10",
+      "submittedAt": "2026-03-13T02:00:00.000Z",
+      "updatedAt": "2026-03-13T02:00:00.000Z"
+    },
+    {
+      "orderId": "OFFLINE-SELL",
+      "symbol": "BULL.HK",
+      "stockName": "HSI BULL",
+      "side": 2,
+      "status": 15,
+      "orderType": 2,
+      "remark": "offline|PL",
+      "quantity": "10",
+      "price": "9",
+      "executedQuantity": "5",
+      "executedPrice": "9",
+      "submittedAt": "2026-03-13T02:20:00.000Z",
+      "updatedAt": "2026-03-13T02:30:30.000Z"
+    }
+  ],
+  "oracle": { "initialLoss": -5, "segmentLoss": -20, "cooldownRemainingMs": 240000 }
+}

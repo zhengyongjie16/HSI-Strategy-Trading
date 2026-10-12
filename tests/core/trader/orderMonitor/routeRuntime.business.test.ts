@@ -5,7 +5,6 @@
  * - 验证按 symbol 路由的 quote 唤醒、dirty collapse 与 stopAndDrain 行为。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import {
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
   TIME,
@@ -39,7 +38,7 @@ const routeConfig: RouteRuntimeDeps['config'] = {
   buyTimeout: { enabled: true, timeoutMs: 0 },
   sellTimeout: { enabled: true, timeoutMs: 0 },
   priceUpdateIntervalMs: 0,
-  priceDiffThreshold: 0.001,
+  priceDiffThreshold: '0.001',
   allowBuyOrderTrackingAboveInitialPrice: true,
 };
 
@@ -186,27 +185,40 @@ function createRuntimeStore(): OrderMonitorRuntimeStore {
   };
 }
 
+/** 路由测试直接给出追踪事实；不经 SDK 映射或按价格推算累计金额。 */
 function createTrackedOrder(
   params: Partial<OrderMonitorTrackedOrder> &
-    Pick<OrderMonitorTrackedOrder, 'orderId' | 'symbol' | 'side'>,
+    Pick<
+      OrderMonitorTrackedOrder,
+      | 'orderId'
+      | 'symbol'
+      | 'side'
+      | 'executionPhase'
+      | 'status'
+      | 'executedQuantity'
+      | 'executedAmount'
+    >,
 ): OrderMonitorTrackedOrder {
   const now = Date.now();
   return {
     orderId: params.orderId,
     symbol: params.symbol,
     side: params.side,
+    executionSide: params.side,
+    executionPhase: params.executionPhase,
     isLongSymbol: params.isLongSymbol ?? true,
     monitorSymbol: params.monitorSymbol ?? 'HSI.HK',
     isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
-    orderType: params.orderType ?? OrderType.ELO,
-    submittedPrice: params.submittedPrice ?? 1,
-    initialSubmittedPrice: params.initialSubmittedPrice ?? 1,
+    orderType: params.orderType ?? 'ELO',
+    submittedPrice: params.submittedPrice ?? '1',
+    initialSubmittedPrice: params.initialSubmittedPrice ?? '1',
     submittedQuantity: params.submittedQuantity ?? 100,
-    executedQuantity: params.executedQuantity ?? 0,
+    executedQuantity: params.executedQuantity,
     executedPrice: params.executedPrice ?? null,
+    executedAmount: params.executedAmount,
     lastExecutedTimeMs: params.lastExecutedTimeMs ?? null,
     lastOrderUpdateAtMs: params.lastOrderUpdateAtMs ?? null,
-    status: params.status ?? OrderStatus.New,
+    status: params.status,
     submittedAt: params.submittedAt ?? now - 5_000,
     lastPriceUpdateAt: params.lastPriceUpdateAt ?? now - 5_000,
     convertedToMarket: params.convertedToMarket ?? false,
@@ -276,13 +288,13 @@ describe('orderMonitor route runtime', () => {
     routeRuntime.start();
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await flushMicrotasks();
 
     expect(processedSymbols).toEqual(['BULL.HK']);
     expect(
-      Object.is(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price, 1.01),
+      Object.is(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price, '1.01'),
     ).toBeTrue();
     expect(runtime.routeStatesBySymbol.get('BEAR.HK')?.latestQuote).toBeNull();
   });
@@ -303,7 +315,7 @@ describe('orderMonitor route runtime', () => {
     routeRuntime.start();
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await flushMicrotasks();
 
@@ -333,25 +345,25 @@ describe('orderMonitor route runtime', () => {
     routeRuntime.start();
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await firstPassEntered.promise;
 
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.02),
+      quote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.03),
+      quote: createQuoteDouble('BULL.HK', '1.03'),
     });
     await flushMicrotasks();
 
     expect(processCount).toBe(1);
     expect(runtime.routeStatesBySymbol.get('BULL.HK')?.dirty).toBe(true);
     expect(
-      Object.is(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price, 1.03),
+      Object.is(runtime.routeStatesBySymbol.get('BULL.HK')?.latestQuote?.price, '1.03'),
     ).toBeTrue();
 
     releaseFirstPass.resolve();
@@ -400,7 +412,11 @@ describe('orderMonitor route runtime', () => {
       createTrackedOrder({
         orderId: 'RECOVERED-START-1',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
+        executionPhase: 'OPEN',
+        status: 'WORKING',
+        executedQuantity: 0,
+        executedAmount: '0',
         nextCancelAttemptAt: ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
       }),
     );
@@ -457,7 +473,11 @@ describe('orderMonitor route runtime', () => {
       createTrackedOrder({
         orderId: 'BOOTSTRAPPING-QUOTE-IGNORED',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
+        executionPhase: 'OPEN',
+        status: 'WORKING',
+        executedQuantity: 0,
+        executedAmount: '0',
       }),
     );
     const wakeupKinds: string[] = [];
@@ -474,7 +494,7 @@ describe('orderMonitor route runtime', () => {
     routeRuntime.start();
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await flushMicrotasks();
 
@@ -500,7 +520,7 @@ describe('orderMonitor route runtime', () => {
     await routeRuntime.stopAndDrain();
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.01),
+      quote: createQuoteDouble('BULL.HK', '1.01'),
     });
     await flushMicrotasks();
 
@@ -513,7 +533,7 @@ describe('orderMonitor route runtime', () => {
     const runtime = createRuntimeStore();
     runtime.routeStatesBySymbol.set('BULL.HK', {
       ...createRouteState('BULL.HK'),
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
@@ -570,7 +590,11 @@ describe('orderMonitor route runtime', () => {
       createTrackedOrder({
         orderId: 'SELL-CANCEL-RETRY-TIMER',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
+        executionPhase: 'OPEN',
+        status: 'WORKING',
+        executedQuantity: 0,
+        executedAmount: '0',
         submittedAt: now - 1_000,
         nextCancelAttemptAt: now + 5_000,
       }),
@@ -602,7 +626,11 @@ describe('orderMonitor route runtime', () => {
       createTrackedOrder({
         orderId: 'SELL-QUOTE-RETRY-TIMER',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
+        executionPhase: 'OPEN',
+        status: 'WORKING',
+        executedQuantity: 0,
+        executedAmount: '0',
         submittedAt: now - 1_000,
         quoteRetryAttempts: 1,
         quoteRetryNextAt: now + 5_000,
@@ -638,7 +666,11 @@ describe('orderMonitor route runtime', () => {
         createTrackedOrder({
           orderId: 'SELL-CANCEL-RETRY-LONG-TIMER',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
+          side: 'SELL',
+          executionPhase: 'OPEN',
+          status: 'WORKING',
+          executedQuantity: 0,
+          executedAmount: '0',
           submittedAt: initialNowMs - 1_000,
           nextCancelAttemptAt: initialNowMs + TIME.MAX_TIMER_DELAY_MS + 5,
         }),
@@ -686,7 +718,11 @@ describe('orderMonitor route runtime', () => {
       createTrackedOrder({
         orderId: 'SELL-QUOTE-RETRY-EXHAUSTED-TIMER',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
+        executionPhase: 'OPEN',
+        status: 'WORKING',
+        executedQuantity: 0,
+        executedAmount: '0',
         submittedAt: now - 1_000,
         quoteRetryAttempts: 5,
         quoteRetryNextAt: now + 5_000,
@@ -723,7 +759,11 @@ describe('orderMonitor route runtime', () => {
         createTrackedOrder({
           orderId: 'SELL-OVERDUE-CANCEL-RETRY',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
+          side: 'SELL',
+          executionPhase: 'OPEN',
+          status: 'WORKING',
+          executedQuantity: 0,
+          executedAmount: '0',
           submittedAt: now - 1_000,
           nextCancelAttemptAt: now - 1,
         }),
@@ -766,7 +806,11 @@ describe('orderMonitor route runtime', () => {
       const trackedOrder = createTrackedOrder({
         orderId: 'SELL-CANCEL-RETRY-RESCHEDULE',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
+        executionPhase: 'OPEN',
+        status: 'WORKING',
+        executedQuantity: 0,
+        executedAmount: '0',
         submittedAt: now - 1_000,
         nextCancelAttemptAt: now + 120,
       });
@@ -919,7 +963,7 @@ describe('orderMonitor route runtime', () => {
 
     emitQuote({
       symbol: 'BULL.HK',
-      quote: createQuoteDouble('BULL.HK', 1.06),
+      quote: createQuoteDouble('BULL.HK', '1.06'),
     });
     releaseFirstPass.resolve();
     await flushMicrotasks();

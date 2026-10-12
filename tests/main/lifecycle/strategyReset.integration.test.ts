@@ -6,6 +6,7 @@ import { createTerminationRuntime } from '../../../src/app/runtime/createTermina
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
+import { createEmptySnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
@@ -31,7 +32,6 @@ import {
   createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
-  createPositionCacheDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 
@@ -50,9 +50,6 @@ function lifecycleHarness(
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [],
-    positionCache: createPositionCacheDouble(),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set(),
@@ -67,7 +64,14 @@ function lifecycleHarness(
   });
   const context = createMonitorContextDouble({ strategy });
   const trader = createTraderDouble({ getStockPositions: getPositions });
+  const snapshot = createEmptySnapshotFixture({
+    readPort: {
+      getAccountSnapshot: () => trader.getAccountSnapshot(),
+      getStockPositions: () => trader.getStockPositions(),
+    },
+  });
   const quotes = createQuoteSubscriptionRuntime({
+    snapshot,
     logger: createLoggerDouble(),
     tradingConfig: createTradingConfig(),
     symbolRegistry: context.symbolRegistry,
@@ -79,9 +83,9 @@ function lifecycleHarness(
   const postTrade = createPostTradeConsistencyRuntime({
     termination,
     getTrader: () => trader,
-    lastState: state,
+    snapshot,
     scheduler: h.deps.scheduler,
-    onPositionsCommitted: () => quotes.reconcilePositionHoldFromCurrentTruth(),
+    onPositionsCommitted: (token) => quotes.reconcilePositionHoldFromCurrentTruth(token),
   });
   postTrade.bindBusinessDeps({
     monitorContext: context,
@@ -117,6 +121,7 @@ function lifecycleHarness(
   };
   const domain = createSignalRuntimeDomain(deps);
   const manager = createDayLifecycleManager({
+    snapshot,
     termination,
     mutableState: state,
     logger: createLoggerDouble(),
@@ -126,8 +131,18 @@ function lifecycleHarness(
         midnightClear: () => {
           trace.push('later-midnight-domain');
         },
-        openRebuild: () => {
+        openRebuild: async (ctx) => {
           trace.push('later-open-domain');
+          const receipt = await snapshot.requestRefresh({
+            source: 'LIFECYCLE_REBUILD',
+            dayEpoch: ctx.dayEpoch,
+            refreshAccount: true,
+            refreshPositions: true,
+          }).result;
+          if (receipt.status === 'ABORTED' || !ctx.isCurrent()) return { status: 'ABORTED' };
+
+          expect(receipt.snapshotToken.dayEpoch).toBe(ctx.dayEpoch);
+          return { status: 'COMMITTED', snapshotToken: receipt.snapshotToken };
         },
       },
     ],

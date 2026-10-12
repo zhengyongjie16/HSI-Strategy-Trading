@@ -5,14 +5,17 @@
  * - 锁定 quoteFlow 迁移到 routeProcessor 后必须保持的超时与动作选择语义。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
+import type { OrderReadStatus } from '../../../../src/types/orderReadMetadata.js';
 import {
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
   ORDER_QUOTE_RETRY,
 } from '../../../../src/constants/index.js';
-import { createOrderStorage } from '../../../../src/core/orderRecorder/orderStorage.js';
-import { createRouteProcessor } from '../../../../src/core/trader/orderMonitor/routeProcessor.js';
-import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
+import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
+import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
+import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createExecutionFixture } from '../../orderRecorder/executionFixture.js';
+import type { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
 import type {
   FinalizeOrderSettlementParams,
   OrderMonitorRuntimeStore,
@@ -21,15 +24,12 @@ import type {
   RouteProcessorDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderMonitorConfig, TrackOrderParams } from '../../../../src/core/trader/types.js';
-import type { OrderRecord, TradeMutationPermit } from '../../../../src/types/services.js';
-import { toDecimal } from '../../../../src/core/trader/utils.js';
-import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
+import type { OrderRecorder, TradeMutationPermit } from '../../../../src/types/services.js';
+import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
 import {
   createOrderRecorderDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
   createRateLimiterDouble,
   createQuoteDouble,
-  createTradeContextDouble,
 } from '../../../helpers/testDoubles.js';
 
 function createRuntimeStore(): OrderMonitorRuntimeStore {
@@ -66,32 +66,78 @@ function createConfig(params?: {
       timeoutMs: params?.sellTimeoutMs ?? 0,
     },
     priceUpdateIntervalMs: params?.priceUpdateIntervalMs ?? 0,
-    priceDiffThreshold: 0.001,
+    priceDiffThreshold: '0.001',
     allowBuyOrderTrackingAboveInitialPrice: params?.allowBuyOrderTrackingAboveInitialPrice ?? true,
   };
 }
 
-function createTrackedOrder(
+async function createTrackedOrder(
   params: Partial<OrderMonitorTrackedOrder> &
     Pick<OrderMonitorTrackedOrder, 'orderId' | 'symbol' | 'side'>,
-): OrderMonitorTrackedOrder {
+): Promise<OrderMonitorTrackedOrder> {
   const now = Date.now();
+  if (!['BUY', 'SELL'].includes(params.side)) {
+    throw new TypeError('tracked fixture requires a validated BUY or SELL side');
+  }
+
+  const fixtureStatusNames: ReadonlyMap<
+    OrderReadStatus,
+    Parameters<typeof createBrokerIngressFixture>[0]['status']
+  > = new Map([
+    ['WORKING', 'New'],
+    ['CANCELED', 'Canceled'],
+    ['FILLED', 'Filled'],
+    ['PARTIALLY_FILLED', 'PartialFilled'],
+  ]);
+  const fixtureStatus = fixtureStatusNames.get(params.status ?? 'WORKING');
+  if (fixtureStatus === undefined)
+    throw new TypeError('route fixture requires an explicit supported broker status');
+
+  const frameOrderType = params.orderType ?? 'ELO';
+  if (frameOrderType !== 'ELO' && frameOrderType !== 'LO' && frameOrderType !== 'MO') {
+    throw new TypeError('route fixture requires an explicit supported native order type');
+  }
+
+  const native = await createBrokerIngressFixture({
+    orderId: params.orderId,
+    tradeId: 'TRACKED-' + params.orderId,
+    symbol: params.symbol,
+    stockName: params.symbol,
+    remark: '',
+    side: params.side,
+    orderType: frameOrderType,
+    status: fixtureStatus,
+    quantity: String(params.submittedQuantity ?? 100),
+    executedQuantity: String(params.executedQuantity ?? 0),
+    submittedPrice: params.submittedPrice ?? '1',
+    executedPrice: params.executedPrice ?? ((params.executedQuantity ?? 0) > 0 ? '1' : '0'),
+    submittedAtMs: params.submittedAt ?? now - 5000,
+    executionTimeMs: params.lastExecutedTimeMs ?? now,
+    updatedAtMs: params.lastOrderUpdateAtMs ?? params.lastExecutedTimeMs ?? now,
+  });
+  const fact = native.queryObservation;
+
   return {
     orderId: params.orderId,
     symbol: params.symbol,
-    side: params.side,
+    side: fact.executionSide,
+    executionSide: fact.executionSide,
+    executionPhase: fact.executionPhase,
     isLongSymbol: params.isLongSymbol ?? true,
     monitorSymbol: params.monitorSymbol ?? 'HSI.HK',
     isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
-    orderType: params.orderType ?? OrderType.ELO,
-    submittedPrice: params.submittedPrice ?? 1,
-    initialSubmittedPrice: params.initialSubmittedPrice ?? 1,
+    orderType: fact.orderType,
+    submittedPrice: params.submittedPrice ?? '1',
+    initialSubmittedPrice: params.initialSubmittedPrice ?? '1',
     submittedQuantity: params.submittedQuantity ?? 100,
     executedQuantity: params.executedQuantity ?? 0,
     executedPrice: params.executedPrice ?? null,
+    executedAmount:
+      params.executedAmount ??
+      exactMultiply(params.executedPrice ?? '0', String(params.executedQuantity ?? 0)),
     lastExecutedTimeMs: params.lastExecutedTimeMs ?? null,
     lastOrderUpdateAtMs: params.lastOrderUpdateAtMs ?? null,
-    status: params.status ?? OrderStatus.New,
+    status: fact.status,
     submittedAt: params.submittedAt ?? now - 5_000,
     lastPriceUpdateAt: params.lastPriceUpdateAt ?? now - 5_000,
     convertedToMarket: params.convertedToMarket ?? false,
@@ -142,24 +188,6 @@ function attachTrackedOrders(
   runtime.latestRouteGenerationBySymbol.set(symbol, 1);
 }
 
-function makeOrderRecord(
-  orderId: string,
-  executedPrice: number,
-  executedQuantity: number,
-  executedTime: number,
-  symbol = 'BULL.HK',
-): OrderRecord {
-  return {
-    orderId,
-    symbol,
-    executedPrice,
-    executedQuantity,
-    executedTime,
-    submittedAt: undefined,
-    updatedAt: undefined,
-  };
-}
-
 function createDeferredValue<T>(): {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -179,101 +207,41 @@ function createDeferredValue<T>(): {
   };
 }
 
-function createStorageBackedOrderRecorder(
-  storage: ReturnType<typeof createOrderStorage>,
-): RouteProcessorDeps['orderRecorder'] {
-  return createOrderRecorderDouble({
-    recordLocalSell: (
-      symbol,
-      executedPrice,
-      executedQuantity,
-      isLongSymbol,
-      executedTimeMs,
-      orderId,
-      relatedBuyOrderIds,
-    ) => {
-      storage.updateAfterSell(
-        symbol,
-        executedPrice,
-        executedQuantity,
-        isLongSymbol,
-        executedTimeMs,
-        orderId,
-        relatedBuyOrderIds,
-      );
-    },
-    getBuyOrdersForSymbol: (symbol, isLongSymbol) => storage.getBuyOrdersList(symbol, isLongSymbol),
-    submitSellOrder: (orderId, symbol, direction, quantity, relatedBuyOrderIds, submittedAtMs) => {
-      storage.addPendingSell({
-        orderId,
-        symbol,
-        direction,
-        submittedQuantity: quantity,
-        relatedBuyOrderIds,
-        submittedAt: submittedAtMs ?? Date.now(),
-      });
-    },
-    markSellCancelled: (orderId) => storage.markSellCancelled(orderId),
-    allocateRelatedBuyOrderIdsForRecovery: (symbol, direction, quantity) =>
-      storage.allocateRelatedBuyOrderIdsForRecovery(symbol, direction, quantity),
-    getPendingSellSnapshot: () => storage.getPendingSellSnapshot(),
-    selectSellableOrders: (params) => storage.selectSellableOrders(params),
+function createActualDailyTracker(now = new Date('2026-04-08T09:00:00.000Z')) {
+  const daily = createDailyLossTracker({
+    ...createDailyLossOrderAnalysisDeps(),
+    toHongKongTimeIso,
   });
+  daily.recalculateFromAllOrders(
+    [],
+    { monitorSymbol: 'HSI.HK', orderOwnershipMapping: ['HSI'] },
+    now,
+    new Map(),
+    new Set(['BULL.HK']),
+  );
+  return daily;
 }
 
-function createSettlementFlowForRouteProcessor(params: {
+async function createTimeoutSellHandoffHarness(orderId: string): Promise<{
   readonly runtime: OrderMonitorRuntimeStore;
-  readonly orderRecorder: RouteProcessorDeps['orderRecorder'];
-}): ReturnType<typeof createSettlementFlow> {
-  return createSettlementFlow({
-    runtime: params.runtime,
-    orderHoldRegistry: {
-      trackOrder: () => {},
-      markOrderClosed: () => {},
-      seedFromOrders: () => {},
-      getHoldSymbols: () => new Set<string>(),
-      onOrderHoldSymbolsChanged: () => () => {},
-      clear: () => {},
-    },
-    orderRecorder: params.orderRecorder,
-    dailyLossTracker: {
-      resetAll: () => {},
-      prepareProtectionBoundary: (boundaryParams) => ({
-        ...boundaryParams,
-        orderBaselines: [],
-      }),
-      commitProtectionBoundary: () => {},
-      restoreExecutionSnapshot: () => {},
-      restoreProtectionBoundary: () => {},
-      recalculateFromAllOrders: () => {},
-      recordCumulativeExecution: () => ({
-        authoritativeFactChanged: false,
-        executionAdvanced: false,
-      }),
-      getLossOffset: () => 0,
-    },
-    persistProtectiveLiquidationExecutionProgress: () => {},
-    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    postTradeConsistencyRuntime: {
-      recordSettlementRefreshNeed: () => {},
-    },
-    emitOrderStateChanged: () => {},
-  });
-}
-
-function createTimeoutSellHandoffHarness(orderId: string): {
-  readonly runtime: OrderMonitorRuntimeStore;
-  readonly storage: ReturnType<typeof createOrderStorage>;
+  readonly storage: OrderRecorder;
   readonly orderRecorder: RouteProcessorDeps['orderRecorder'];
   readonly settlementFlow: ReturnType<typeof createSettlementFlow>;
-} {
-  const runtime = createRuntimeStore();
+}> {
+  const native = await createNativeFixture();
+  const economic = createExecutionFixture({
+    nowMs: Date.parse('2026-04-08T09:00:00.000Z'),
+    createRecorder: native.createRecorder,
+  });
+  const runtime = economic.runtime;
+  runtime.running = true;
+  runtime.runtimeState = 'ACTIVE';
   attachTrackedOrders(runtime, 'BULL.HK', [
-    createTrackedOrder({
+    await createTrackedOrder({
       orderId,
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      status: OrderStatus.Canceled,
+      side: 'SELL',
+      status: 'CANCELED',
       submittedQuantity: 200,
       executedQuantity: 0,
       submittedAt: Date.now() - 10_000,
@@ -281,31 +249,67 @@ function createTimeoutSellHandoffHarness(orderId: string): {
       timeoutMarketConversionTerminalState: {
         closedReason: 'CANCELED',
         source: 'WS',
-        executedPrice: 0,
+        executedPrice: '0',
+        executedAmount: exactMultiply('0', String(0)),
         executedQuantity: 0,
-        executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
+        executedTimeMs: null,
         orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
       },
     }),
   ]);
 
-  const storage = createOrderStorage();
-  storage.setBuyOrdersListForLong('BULL.HK', [
-    makeOrderRecord('BUY-1', 1, 100, Date.parse('2026-04-08T08:30:00.000Z')),
-    makeOrderRecord('BUY-2', 1.1, 100, Date.parse('2026-04-08T08:31:00.000Z')),
-  ]);
+  const orderRecorder = economic.recorder;
+  for (const [brokerOrderId, price, executionTimeMs] of [
+    ['BUY-1', '1', Date.parse('2026-04-08T08:30:00.000Z')],
+    ['BUY-2', '1.1', Date.parse('2026-04-08T08:31:00.000Z')],
+  ] as const) {
+    const ingress = await createBrokerIngressFixture({
+      orderId: brokerOrderId,
+      tradeId: 'T-' + brokerOrderId,
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC',
+      remark: '',
+      side: 'BUY',
+      status: 'Filled',
+      quantity: '100',
+      executedQuantity: '100',
+      submittedPrice: price,
+      executedPrice: price,
+      submittedAtMs: executionTimeMs - 1000,
+      executionTimeMs,
+      updatedAtMs: executionTimeMs + 100,
+    });
+    const raw = ingress.queryObservation;
+    if (raw.executionTimeMs === null)
+      throw new Error('fixture executions must prove independent T');
 
-  storage.addPendingSell({
+    economic.flow.recordCumulativeExecution({
+      factStage: 'TERMINAL',
+      orderId: raw.orderId,
+      symbol: raw.symbol,
+      side: raw.executionSide,
+      monitorSymbol: 'HSI.HK',
+      isLongSymbol: true,
+      isProtectiveLiquidation: false,
+      executedPrice: price,
+      executedQuantity: raw.executedQuantity,
+      executedAmount: raw.executedAmount,
+      executedTimeMs: raw.executionTimeMs,
+      orderUpdatedAtMs: raw.updatedAtMs,
+    });
+  }
+
+  orderRecorder.submitSellOrder(
     orderId,
-    symbol: 'BULL.HK',
-    direction: 'LONG',
-    submittedQuantity: 200,
-    relatedBuyOrderIds: ['BUY-1', 'BUY-2'],
-    submittedAt: Date.parse('2026-04-08T09:00:00.000Z'),
-  });
-
-  const orderRecorder = createStorageBackedOrderRecorder(storage);
-  const settlementFlow = createSettlementFlowForRouteProcessor({ runtime, orderRecorder });
+    'BULL.HK',
+    'LONG',
+    200,
+    ['BUY-1', 'BUY-2'],
+    false,
+    Date.parse('2026-04-08T09:00:00.000Z'),
+  );
+  const storage = orderRecorder;
+  const settlementFlow = economic.flow;
 
   return {
     runtime,
@@ -315,7 +319,59 @@ function createTimeoutSellHandoffHarness(orderId: string): {
   };
 }
 
-function createDeps(params?: {
+type TestRouteDeps = Omit<RouteProcessorDeps, 'ctx' | 'tradeMutationPort'> &
+  Readonly<{ native: Awaited<ReturnType<typeof createBrokerIngressFixture>> }>;
+function createRouteProcessor(deps: TestRouteDeps) {
+  return deps.native.createRoute(deps);
+}
+
+async function readTerminalExecutionStatus(
+  status: 'Canceled' | 'Filled',
+  quantity: number,
+  price: string,
+) {
+  const frame = await createBrokerIngressFixture({
+    orderId: 'TERMINAL-METADATA',
+    tradeId: 'TERMINAL-METADATA-EXECUTION',
+    symbol: 'BULL.HK',
+    stockName: 'BULL.HK',
+    remark: '',
+    side: 'SELL',
+    status,
+    quantity: '100',
+    executedQuantity: String(quantity),
+    submittedPrice: '1',
+    executedPrice: price,
+    submittedAtMs: 100,
+    executionTimeMs: 150,
+    updatedAtMs: 200,
+  });
+  return Object.freeze({
+    executionStatus: frame.queryObservation.executionStatus,
+    status: frame.queryObservation.status,
+  });
+}
+
+async function createNativeFixture() {
+  return createBrokerIngressFixture({
+    orderId: 'ROUTE-OBSERVATION',
+    tradeId: 'NO-FILL',
+    symbol: 'BULL.HK',
+    stockName: 'BULL',
+    remark: '',
+    side: 'SELL',
+    status: 'New',
+    quantity: '100',
+    executedQuantity: '0',
+    submittedPrice: '1',
+    executedPrice: '0',
+    submittedAtMs: Date.parse('2026-04-08T09:00:00.000Z'),
+    executionTimeMs: Date.parse('2026-04-08T09:00:00.100Z'),
+    updatedAtMs: Date.parse('2026-04-08T09:00:00.200Z'),
+  });
+}
+
+async function createDeps(params?: {
   readonly runtime?: OrderMonitorRuntimeStore;
   readonly config?: OrderMonitorConfig;
   readonly cancelOrder?: RouteProcessorDeps['cancelOrder'];
@@ -324,24 +380,23 @@ function createDeps(params?: {
   readonly trackOrder?: RouteProcessorDeps['trackOrder'];
   readonly isContinuousTradingAllowed?: () => boolean;
   readonly orderRecorder?: RouteProcessorDeps['orderRecorder'];
-  readonly ctx?: RouteProcessorDeps['ctx'];
+  readonly native?: Awaited<ReturnType<typeof createBrokerIngressFixture>>;
   readonly rateLimiter?: RouteProcessorDeps['rateLimiter'];
   readonly now?: RouteProcessorDeps['now'];
-}): {
+}): Promise<{
   readonly runtime: OrderMonitorRuntimeStore;
-  readonly tradeCtx: ReturnType<typeof createTradeContextMock>;
-  readonly deps: RouteProcessorDeps;
-} {
+  readonly native: Awaited<ReturnType<typeof createBrokerIngressFixture>>;
+  readonly deps: TestRouteDeps;
+}> {
   const runtime = params?.runtime ?? createRuntimeStore();
   const config = params?.config ?? createConfig();
-  const tradeCtx = createTradeContextMock();
-  const deps: RouteProcessorDeps = {
+  const native = params?.native ?? (await createNativeFixture());
+  const deps: TestRouteDeps = {
+    native,
     now: params?.now ?? (() => new Date(Date.now())),
     runtime,
     config,
-    thresholdDecimal: toDecimal(config.priceDiffThreshold),
     orderRecorder: params?.orderRecorder ?? createOrderRecorderDouble(),
-    ctx: params?.ctx ?? createTradeContextDouble(tradeCtx),
     rateLimiter: params?.rateLimiter ?? createRateLimiterDouble(),
     isContinuousTradingAllowed: params?.isContinuousTradingAllowed ?? (() => true),
     trackOrder:
@@ -357,7 +412,7 @@ function createDeps(params?: {
       })),
     replaceOrderPrice:
       params?.replaceOrderPrice ??
-      (async (_orderId: string, _newPrice: number, _quantity?: number | null) => {}),
+      (async (_orderId: string, _newPrice: string, _quantity?: number | null) => {}),
     settleOrder:
       params?.settleOrder ??
       ((_params) => ({
@@ -368,12 +423,12 @@ function createDeps(params?: {
 
   return {
     runtime,
-    tradeCtx,
+    native,
     deps,
   };
 }
 
-async function captureTimeoutMarketRouteError(deps: RouteProcessorDeps): Promise<string> {
+async function captureTimeoutMarketRouteError(deps: TestRouteDeps): Promise<string> {
   const routeProcessor = createRouteProcessor(deps);
   try {
     await routeProcessor.processRoute({
@@ -389,13 +444,13 @@ async function captureTimeoutMarketRouteError(deps: RouteProcessorDeps): Promise
   return '';
 }
 
-function expectTimeoutSellOccupancyReleased(storage: ReturnType<typeof createOrderStorage>): void {
+function expectTimeoutSellOccupancyReleased(storage: OrderRecorder): void {
   expect(storage.getPendingSellSnapshot()).toEqual([]);
   const sellableOrders = storage.selectSellableOrders({
     symbol: 'BULL.HK',
     direction: 'LONG',
     strategy: 'ALL',
-    currentPrice: 1.2,
+    currentPrice: '1.2',
   });
   expect(sellableOrders.orders.map((order) => order.orderId)).toEqual(['BUY-1', 'BUY-2']);
   expect(sellableOrders.totalQuantity).toBe(200);
@@ -404,25 +459,37 @@ function expectTimeoutSellOccupancyReleased(storage: ReturnType<typeof createOrd
 describe('orderMonitor routeProcessor', () => {
   it('将 timeout snapshot 已准备的保护性 progress 原样传入终态结算', async () => {
     const runtime = createRuntimeStore();
-    const preparedExecution = {
-      authoritativeFactChanged: true,
-      executionAdvanced: true,
-    };
+    const preparedTime = Date.parse('2026-07-13T05:00:00.000Z');
+    const preparedExecution = createActualDailyTracker(
+      new Date(preparedTime),
+    ).recordCumulativeExecution({
+      factStage: 'TERMINAL',
+      direction: 'LONG',
+      symbol: 'BULL.HK',
+      side: 'SELL',
+      executedPrice: '1.02',
+      executedQuantity: 40,
+      executedTimeMs: preparedTime,
+      orderUpdatedAtMs: preparedTime + 100,
+      orderId: 'SELL-TIMEOUT-PREPARED-PROGRESS',
+    });
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-TIMEOUT-PREPARED-PROGRESS',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
+        side: 'SELL',
+        status: 'FILLED',
         submittedQuantity: 40,
         executedQuantity: 40,
-        executedPrice: 1.02,
+        executedPrice: '1.02',
+        executedAmount: exactMultiply('1.02', String(40)),
         isProtectiveLiquidation: true,
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'FILLED',
           source: 'WS',
-          executedPrice: 1.02,
+          executedPrice: '1.02',
+          executedAmount: exactMultiply('1.02', String(40)),
           executedQuantity: 40,
           executedTimeMs: Date.parse('2026-07-13T05:00:00.000Z'),
           orderUpdatedAtMs: Date.parse('2026-07-13T05:00:00.000Z'),
@@ -431,7 +498,7 @@ describe('orderMonitor routeProcessor', () => {
       }),
     ]);
     const settlementInputs: FinalizeOrderSettlementParams[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       settleOrder: (params) => {
         settlementInputs.push(params);
@@ -458,18 +525,19 @@ describe('orderMonitor routeProcessor', () => {
   it('submits timeout market conversion through a callback permit instead of read throttle', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-TIMEOUT-PERMIT',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Canceled,
+        side: 'SELL',
+        status: 'CANCELED',
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'CANCELED',
           source: 'WS',
-          executedPrice: 0,
+          executedPrice: '0',
+          executedAmount: exactMultiply('0', String(0)),
           executedQuantity: 0,
-          executedTimeMs: Date.now(),
+          executedTimeMs: null,
           orderUpdatedAtMs: Date.now(),
         },
       }),
@@ -500,7 +568,7 @@ describe('orderMonitor routeProcessor', () => {
       },
     };
     const trackedOrders: TrackOrderParams[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       rateLimiter,
       settleOrder: () => ({
@@ -519,7 +587,7 @@ describe('orderMonitor routeProcessor', () => {
       latestQuote: null,
     });
 
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(1);
     expect(trackedOrders).toHaveLength(1);
     expect(events).toEqual(['permit', 'invoke']);
   });
@@ -527,14 +595,14 @@ describe('orderMonitor routeProcessor', () => {
   it('买单超时只触发 cancel，不转市价', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-TIMEOUT-1',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
       }),
     ]);
     const cancelOrderIds: string[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       cancelOrder: async (orderId) => {
         cancelOrderIds.push(orderId);
@@ -554,7 +622,7 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(cancelOrderIds).toEqual(['BUY-TIMEOUT-1']);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
     const trackedOrder = runtime.trackedOrders.get('BUY-TIMEOUT-1');
     expect(trackedOrder?.nextCancelAttemptAt).toBe(ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS);
   });
@@ -562,15 +630,15 @@ describe('orderMonitor routeProcessor', () => {
   it('普通终态订单不会再次进入 timeout 处理', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-CLOSED-SHOULD-SKIP-TIMEOUT',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        status: OrderStatus.Filled,
+        side: 'BUY',
+        status: 'FILLED',
       }),
     ]);
     const cancelOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async (orderId) => {
         cancelOrderIds.push(orderId);
@@ -595,18 +663,19 @@ describe('orderMonitor routeProcessor', () => {
   it('超时等待中的完整成交卖单即使剩余数量为零也会消费终态快照完成 settlement', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-TIMEOUT-FILLED-SETTLEMENT',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Filled,
+        side: 'SELL',
+        status: 'FILLED',
         submittedQuantity: 100,
         executedQuantity: 100,
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'FILLED',
           source: 'WS',
-          executedPrice: 1.02,
+          executedPrice: '1.02',
+          executedAmount: exactMultiply('1.02', String(100)),
           executedQuantity: 100,
           executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
           orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
@@ -614,7 +683,7 @@ describe('orderMonitor routeProcessor', () => {
       }),
     ]);
     const settlementOrderIds: string[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       settleOrder: (params) => {
         settlementOrderIds.push(params.orderId);
@@ -634,20 +703,20 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(settlementOrderIds).toEqual(['SELL-TIMEOUT-FILLED-SETTLEMENT']);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
   });
 
   it('卖单超时撤单请求成功后进入等待 WS，不立即转市价', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-TIMEOUT-1',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
       }),
     ]);
     const cancelOrderIds: string[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       cancelOrder: async (orderId, beforeBrokerCancel?: () => boolean) => {
         cancelOrderIds.push(orderId);
@@ -672,7 +741,7 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(cancelOrderIds).toEqual(['SELL-TIMEOUT-1']);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
     const trackedOrder = runtime.trackedOrders.get('SELL-TIMEOUT-1');
     expect(trackedOrder?.timeoutMarketConversionPending).toBe(true);
     expect(trackedOrder?.nextCancelAttemptAt).toBe(ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS);
@@ -681,25 +750,26 @@ describe('orderMonitor routeProcessor', () => {
   it('卖单等待终态快照时会先 settlement，再转 MO', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-CONVERT-1',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Canceled,
+        side: 'SELL',
+        status: 'CANCELED',
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'CANCELED',
           source: 'WS',
-          executedPrice: 0,
+          executedPrice: '0',
+          executedAmount: exactMultiply('0', String(0)),
           executedQuantity: 0,
-          executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
+          executedTimeMs: null,
           orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
         },
       }),
     ]);
     const callSequence: string[] = [];
     const trackedOrders: TrackOrderParams[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       settleOrder: (_params) => {
         callSequence.push('settle');
@@ -713,11 +783,10 @@ describe('orderMonitor routeProcessor', () => {
         trackedOrders.push(params);
       },
     });
-    const originalSubmitOrder = tradeCtx.submitOrder.bind(tradeCtx);
-    tradeCtx.submitOrder = async (options) => {
+    native.setSubmitBehavior(async () => {
       callSequence.push('submit');
-      return originalSubmitOrder(options);
-    };
+      return 'FOLLOW-UP';
+    });
     const routeProcessor = createRouteProcessor(deps);
 
     await routeProcessor.processRoute({
@@ -728,34 +797,35 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(callSequence).toEqual(['settle', 'submit', 'track']);
-    expect(tradeCtx.getCalls('cancelOrder')).toHaveLength(0);
+    expect(callSequence).not.toContain('cancel');
     expect(trackedOrders).toHaveLength(1);
-    expect(trackedOrders[0]?.orderId).toBe('MOCK-000001');
-    expect(trackedOrders[0]?.orderType).toBe(OrderType.MO);
+    expect(trackedOrders[0]?.orderId).toBe('FOLLOW-UP');
+    expect(trackedOrders[0]?.orderType).toBe('MO');
     expect(trackedOrders[0]?.quantity).toBe(100);
   });
 
   it('连续交易关闭时仍结算超时卖单终态，但不提交新的市价单', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-CONVERT-CLOSED-CONTINUOUS-SESSION',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Canceled,
+        side: 'SELL',
+        status: 'CANCELED',
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'CANCELED',
           source: 'WS',
-          executedPrice: 0,
+          executedPrice: '0',
+          executedAmount: exactMultiply('0', String(0)),
           executedQuantity: 0,
-          executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
+          executedTimeMs: null,
           orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
         },
       }),
     ]);
     const settlementOrderIds: string[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       isContinuousTradingAllowed: () => false,
       settleOrder: (params) => {
@@ -776,23 +846,24 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(settlementOrderIds).toEqual(['SELL-CONVERT-CLOSED-CONTINUOUS-SESSION']);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
   });
 
   it('卖单 timeout 结算为无剩余量后，同轮仍允许后续订单基于 quote 继续 replace', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-TIMEOUT-NO-REMAINDER',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Canceled,
+        side: 'SELL',
+        status: 'CANCELED',
         submittedAt: Date.now() - 10_000,
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'CANCELED',
           source: 'WS',
-          executedPrice: 0,
+          executedPrice: '0',
+          executedAmount: exactMultiply('0', String(100)),
           executedQuantity: 100,
           executedTimeMs: Date.now(),
           orderUpdatedAtMs: Date.now(),
@@ -800,18 +871,18 @@ describe('orderMonitor routeProcessor', () => {
         submittedQuantity: 100,
         executedQuantity: 0,
       }),
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-REPLACE-AFTER-NO-REMAINDER',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
       }),
     ]);
     const replaceOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({
         buyTimeoutMs: 60_000,
@@ -837,7 +908,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'ORDER_EVENT',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(replaceOrderIds).toEqual(['SELL-REPLACE-AFTER-NO-REMAINDER']);
@@ -846,21 +917,21 @@ describe('orderMonitor routeProcessor', () => {
   it('单次 pass 最多只执行一个 broker mutation', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-TIMEOUT-OLDER',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
         submittedAt: Date.parse('2026-04-08T08:59:00.000Z'),
       }),
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-TIMEOUT-NEWER',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
         submittedAt: Date.parse('2026-04-08T08:59:30.000Z'),
       }),
     ]);
     const cancelOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async (orderId) => {
         cancelOrderIds.push(orderId);
@@ -885,18 +956,18 @@ describe('orderMonitor routeProcessor', () => {
   it('同一订单同时满足 timeout 与 replace 时优先走 timeout', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-TIMEOUT-AND-REPLACE',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        side: 'BUY',
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
       }),
     ]);
     const cancelOrderIds: string[] = [];
     const replaceOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async (orderId) => {
         cancelOrderIds.push(orderId);
@@ -915,7 +986,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(cancelOrderIds).toEqual(['BUY-TIMEOUT-AND-REPLACE']);
@@ -925,25 +996,25 @@ describe('orderMonitor routeProcessor', () => {
   it('前序 timeout 订单处于 WAIT_WS_ONLY 时不会饿死后续可改价订单', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-WAIT-WS-ONLY',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
         nextCancelAttemptAt: ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
         submittedAt: Date.now() - 10_000,
       }),
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-REPLACE-AFTER-WAIT-WS',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 5_000,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
       }),
     ]);
     const replaceOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({
         buyTimeoutMs: 0,
@@ -959,7 +1030,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(replaceOrderIds).toEqual(['SELL-REPLACE-AFTER-WAIT-WS']);
@@ -968,24 +1039,25 @@ describe('orderMonitor routeProcessor', () => {
   it('超时转出的 MO 新订单不会再次进入 timeout 路径', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-CONVERT-MO-SKIP-TIMEOUT',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'CANCELED',
           source: 'WS',
-          executedPrice: 0,
+          executedPrice: '0',
+          executedAmount: exactMultiply('0', String(0)),
           executedQuantity: 0,
-          executedTimeMs: Date.now(),
+          executedTimeMs: null,
           orderUpdatedAtMs: Date.now(),
         },
       }),
     ]);
     const trackedOrders: TrackOrderParams[] = [];
     const cancelOrderIds: string[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       settleOrder: () => ({
         handled: true,
@@ -1002,8 +1074,7 @@ describe('orderMonitor routeProcessor', () => {
         };
       },
     });
-    const originalSubmitOrder = tradeCtx.submitOrder.bind(tradeCtx);
-    tradeCtx.submitOrder = async (options) => originalSubmitOrder(options);
+    native.setSubmitBehavior(async () => 'FOLLOW-UP');
     const routeProcessor = createRouteProcessor(deps);
 
     await routeProcessor.processRoute({
@@ -1014,11 +1085,11 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(trackedOrders).toHaveLength(1);
-    const convertedOrder = createTrackedOrder({
-      orderId: 'MOCK-000001',
+    const convertedOrder = await createTrackedOrder({
+      orderId: 'FOLLOW-UP',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      orderType: OrderType.MO,
+      side: 'SELL',
+      orderType: 'MO',
       submittedPrice: null,
       initialSubmittedPrice: null,
       submittedAt: Date.now() - 10_000,
@@ -1033,7 +1104,7 @@ describe('orderMonitor routeProcessor', () => {
     });
 
     expect(cancelOrderIds).toEqual([]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(1);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(1);
   });
 
   it('卖单等待阶段遇到非法终态快照时会阻断本轮后续动作', async () => {
@@ -1042,30 +1113,31 @@ describe('orderMonitor routeProcessor', () => {
       closedReason: 'UNKNOWN',
       source: 'WS',
       executedPrice: null,
+      executedAmount: '0',
       executedQuantity: null,
       executedTimeMs: null,
     } as unknown as NonNullable<OrderMonitorTrackedOrder['timeoutMarketConversionTerminalState']>;
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-PENDING-INVALID-TERMINAL',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 10_000,
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: invalidTerminalState,
       }),
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-SHOULD-NOT-REPLACE-AFTER-INVALID-TERMINAL',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
       }),
     ]);
     const replaceOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({
         buyTimeoutMs: 60_000,
@@ -1081,7 +1153,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(replaceOrderIds).toEqual([]);
@@ -1091,17 +1163,18 @@ describe('orderMonitor routeProcessor', () => {
   it('卖单 timeout 在剩余数量不明确时会保留 timeout conversion owner 并继续等待或重试', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-PENDING-UNKNOWN-REMAINING',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Canceled,
+        side: 'SELL',
+        status: 'CANCELED',
         submittedAt: Date.now() - 10_000,
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'CANCELED',
           source: 'WS',
-          executedPrice: 0,
+          executedPrice: '0',
+          executedAmount: '0',
           executedQuantity: null,
           executedTimeMs: Date.now(),
           orderUpdatedAtMs: Date.now(),
@@ -1116,7 +1189,7 @@ describe('orderMonitor routeProcessor', () => {
     trackedOrder.cancelRetryCount = 3;
     trackedOrder.nextCancelAttemptAt = Date.now() - 1;
 
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       settleOrder: () => ({
         handled: true,
@@ -1135,7 +1208,7 @@ describe('orderMonitor routeProcessor', () => {
       latestQuote: null,
     });
 
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
     expect(trackedOrder.timeoutMarketConversionPending).toBe(true);
     expect(trackedOrder.timeoutMarketConversionTerminalState).not.toBeNull();
     expect(trackedOrder.cancelRetryCount).toBeGreaterThanOrEqual(3);
@@ -1143,22 +1216,21 @@ describe('orderMonitor routeProcessor', () => {
 
   it('卖单 timeout 转市价在 broker submit 返回前保持 related buy orders 占用连续', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
-      createTimeoutSellHandoffHarness('SELL-TIMEOUT-CONTINUOUS');
-    const tradeCtx = createTradeContextMock();
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-CONTINUOUS');
+    const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
     const submitFinished = createDeferredValue<null>();
-    const originalSubmitOrder = tradeCtx.submitOrder.bind(tradeCtx);
-    tradeCtx.submitOrder = async (options) => {
+    native.setSubmitBehavior(async () => {
       submitStarted.resolve(null);
       await submitFinished.promise;
-      return originalSubmitOrder(options);
-    };
+      return 'FOLLOW-UP';
+    });
     const trackedOrders: TrackOrderParams[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
-      ctx: createTradeContextDouble(tradeCtx),
+      native,
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
@@ -1178,7 +1250,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       direction: 'LONG',
       strategy: 'ALL',
-      currentPrice: 1.2,
+      currentPrice: '1.2',
     });
     expect(inFlightSellableOrders.orders).toEqual([]);
     expect(inFlightSellableOrders.totalQuantity).toBe(0);
@@ -1192,7 +1264,7 @@ describe('orderMonitor routeProcessor', () => {
     const pendingSellSnapshot = storage.getPendingSellSnapshot();
     expect(pendingSellSnapshot).toHaveLength(1);
     expect(pendingSellSnapshot[0]).toMatchObject({
-      orderId: 'MOCK-000001',
+      orderId: 'FOLLOW-UP',
       submittedQuantity: 200,
       relatedBuyOrderIds: ['BUY-1', 'BUY-2'],
     });
@@ -1200,22 +1272,21 @@ describe('orderMonitor routeProcessor', () => {
   });
 
   it('卖单 timeout 转市价在 submitOrder 已发起后 reject 时保留 follow-up placeholder', async () => {
-    const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
-      'SELL-TIMEOUT-SUBMIT-RESULT-UNKNOWN',
-    );
-    const tradeCtx = createTradeContextMock();
+    const { runtime, storage, orderRecorder, settlementFlow } =
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-SUBMIT-RESULT-UNKNOWN');
+    const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
-    const submitResult = createDeferredValue<Awaited<ReturnType<typeof tradeCtx.submitOrder>>>();
-    tradeCtx.submitOrder = async () => {
+    const submitResult = createDeferredValue<string>();
+    native.setSubmitBehavior(async () => {
       submitStarted.resolve(null);
       return submitResult.promise;
-    };
+    });
     const trackedOrders: TrackOrderParams[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
-      ctx: createTradeContextDouble(tradeCtx),
+      native,
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
@@ -1249,7 +1320,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       direction: 'LONG',
       strategy: 'ALL',
-      currentPrice: 1.2,
+      currentPrice: '1.2',
     });
     expect(sellableOrders.orders).toEqual([]);
     expect(sellableOrders.totalQuantity).toBe(0);
@@ -1257,11 +1328,10 @@ describe('orderMonitor routeProcessor', () => {
   });
 
   it('卖单 timeout 转市价在 mutation permit 抛错时释放 follow-up placeholder', async () => {
-    const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
-      'SELL-TIMEOUT-RATE-LIMITER-FAIL',
-    );
+    const { runtime, storage, orderRecorder, settlementFlow } =
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-RATE-LIMITER-FAIL');
     const trackedOrders: TrackOrderParams[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
@@ -1281,15 +1351,14 @@ describe('orderMonitor routeProcessor', () => {
     const errorMessage = await captureTimeoutMarketRouteError(deps);
     expect(errorMessage).toContain('rate limiter failed before broker accept');
     expectTimeoutSellOccupancyReleased(storage);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
     expect(trackedOrders).toEqual([]);
   });
 
   it('卖单 timeout 转市价在取得 mutation permit 后 route generation 失效时释放 follow-up placeholder 且不调用 SDK', async () => {
-    const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
-      'SELL-TIMEOUT-ROUTE-STALE-BEFORE-SUBMIT',
-    );
-    const { deps, tradeCtx } = createDeps({
+    const { runtime, storage, orderRecorder, settlementFlow } =
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-ROUTE-STALE-BEFORE-SUBMIT');
+    const { deps, native } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
@@ -1312,15 +1381,14 @@ describe('orderMonitor routeProcessor', () => {
 
     expect(errorMessage).toBe('');
     expectTimeoutSellOccupancyReleased(storage);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
   });
 
   it('卖单 timeout 转市价在取得 mutation permit 后连续交易关闭时释放 follow-up placeholder 且不调用 SDK', async () => {
-    const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
-      'SELL-TIMEOUT-CONTINUOUS-CLOSED-BEFORE-SUBMIT',
-    );
+    const { runtime, storage, orderRecorder, settlementFlow } =
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-CONTINUOUS-CLOSED-BEFORE-SUBMIT');
     let isContinuousTradingAllowed = true;
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
@@ -1344,28 +1412,26 @@ describe('orderMonitor routeProcessor', () => {
 
     expect(errorMessage).toBe('');
     expectTimeoutSellOccupancyReleased(storage);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
   });
 
   it('卖单 timeout 转市价在 broker 已接受后即使 runtime 停止也承认远端订单事实', async () => {
-    const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
-      'SELL-TIMEOUT-STOPPED-AFTER-SUBMIT',
-    );
-    const tradeCtx = createTradeContextMock();
+    const { runtime, storage, orderRecorder, settlementFlow } =
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-STOPPED-AFTER-SUBMIT');
+    const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
     const submitFinished = createDeferredValue<null>();
     const trackedOrders: TrackOrderParams[] = [];
-    const originalSubmitOrder = tradeCtx.submitOrder.bind(tradeCtx);
-    tradeCtx.submitOrder = async (options) => {
+    native.setSubmitBehavior(async () => {
       submitStarted.resolve(null);
       await submitFinished.promise;
-      return originalSubmitOrder(options);
-    };
-    const { deps } = createDeps({
+      return 'FOLLOW-UP';
+    });
+    const { deps } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
-      ctx: createTradeContextDouble(tradeCtx),
+      native,
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
@@ -1385,31 +1451,29 @@ describe('orderMonitor routeProcessor', () => {
     submitFinished.resolve(null);
 
     await processPromise;
-    expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['MOCK-000001']);
+    expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['FOLLOW-UP']);
     expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
-      'MOCK-000001',
+      'FOLLOW-UP',
     ]);
   });
 
   it('卖单 timeout 转市价在 broker 已接受后即使 route generation 变化也承认远端订单事实', async () => {
-    const { runtime, storage, orderRecorder, settlementFlow } = createTimeoutSellHandoffHarness(
-      'SELL-TIMEOUT-GENERATION-CHANGED',
-    );
-    const tradeCtx = createTradeContextMock();
+    const { runtime, storage, orderRecorder, settlementFlow } =
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-GENERATION-CHANGED');
+    const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
     const submitFinished = createDeferredValue<null>();
     const trackedOrders: TrackOrderParams[] = [];
-    const originalSubmitOrder = tradeCtx.submitOrder.bind(tradeCtx);
-    tradeCtx.submitOrder = async (options) => {
+    native.setSubmitBehavior(async () => {
       submitStarted.resolve(null);
       await submitFinished.promise;
-      return originalSubmitOrder(options);
-    };
-    const { deps } = createDeps({
+      return 'FOLLOW-UP';
+    });
+    const { deps } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
-      ctx: createTradeContextDouble(tradeCtx),
+      native,
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
@@ -1433,17 +1497,17 @@ describe('orderMonitor routeProcessor', () => {
     submitFinished.resolve(null);
 
     await processPromise;
-    expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['MOCK-000001']);
+    expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['FOLLOW-UP']);
     expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
-      'MOCK-000001',
+      'FOLLOW-UP',
     ]);
   });
 
   it('broker ack 后 trackOrder 抛错仍保留旧 placeholder 且错误携带 newOrderId', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
-      createTimeoutSellHandoffHarness('SELL-TIMEOUT-TRACK-FAIL');
+      await createTimeoutSellHandoffHarness('SELL-TIMEOUT-TRACK-FAIL');
     const trackAttempts: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
@@ -1455,8 +1519,8 @@ describe('orderMonitor routeProcessor', () => {
 
     const errorMessage = await captureTimeoutMarketRouteError(deps);
 
-    expect(trackAttempts).toEqual(['MOCK-000001']);
-    expect(errorMessage).toContain('order submitted but local sync failed: MOCK-000001');
+    expect(trackAttempts).toEqual(['FOLLOW-UP']);
+    expect(errorMessage).toContain('order submitted but local sync failed: FOLLOW-UP');
     expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
       'SELL-TIMEOUT-TRACK-FAIL',
     ]);
@@ -1465,18 +1529,18 @@ describe('orderMonitor routeProcessor', () => {
   it('ORDER_EVENT 唤醒会基于 latestQuote 继续推进 replace', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-ORDER-EVENT-REPLACE',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
       }),
     ]);
     const replaceOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({
         buyTimeoutMs: 60_000,
@@ -1492,7 +1556,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'ORDER_EVENT',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(replaceOrderIds).toEqual(['SELL-ORDER-EVENT-REPLACE']);
@@ -1501,18 +1565,18 @@ describe('orderMonitor routeProcessor', () => {
   it('TRACKED 唤醒即使带有 latestQuote 也不会触发普通 replace', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-TRACKED-NO-REPLACE',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
       }),
     ]);
     const replaceOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({
         buyTimeoutMs: 60_000,
@@ -1528,7 +1592,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'TRACKED',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(replaceOrderIds).toEqual([]);
@@ -1537,13 +1601,13 @@ describe('orderMonitor routeProcessor', () => {
   it('TIMER 唤醒会在 replace backoff 到期后基于缓存 latestQuote 补跑 replace', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-REPLACE-RETRY-TIMER',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
         replaceCapability: 'TEMP_BLOCKED_BY_STATUS',
         replaceBlockedUntilAt: Date.now() - 1,
@@ -1552,7 +1616,7 @@ describe('orderMonitor routeProcessor', () => {
       }),
     ]);
     const replaceOrderIds: string[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({
         buyTimeoutMs: 60_000,
@@ -1568,7 +1632,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'TIMER',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(replaceOrderIds).toEqual(['SELL-REPLACE-RETRY-TIMER']);
@@ -1582,13 +1646,13 @@ describe('orderMonitor routeProcessor', () => {
     try {
       const runtime = createRuntimeStore();
       attachTrackedOrders(runtime, 'BULL.HK', [
-        createTrackedOrder({
+        await createTrackedOrder({
           orderId: 'SELL-QUOTE-RETRY-STATE',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
+          side: 'SELL',
           submittedAt: nowMs - 1_000,
-          submittedPrice: 1,
-          initialSubmittedPrice: 1,
+          submittedPrice: '1',
+          initialSubmittedPrice: '1',
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 0,
           quoteRetryNextAt: null,
@@ -1596,7 +1660,7 @@ describe('orderMonitor routeProcessor', () => {
         }),
       ]);
       const replaceOrderIds: string[] = [];
-      const { deps } = createDeps({
+      const { deps } = await createDeps({
         runtime,
         now: () => new Date(nowMs),
         config: createConfig({
@@ -1634,13 +1698,13 @@ describe('orderMonitor routeProcessor', () => {
     try {
       const runtime = createRuntimeStore();
       attachTrackedOrders(runtime, 'BULL.HK', [
-        createTrackedOrder({
+        await createTrackedOrder({
           orderId: 'SELL-INVALID-QUOTE-NO-RETRY',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
+          side: 'SELL',
           submittedAt: nowMs - 1_000,
-          submittedPrice: 1,
-          initialSubmittedPrice: 1,
+          submittedPrice: '1',
+          initialSubmittedPrice: '1',
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 0,
           quoteRetryNextAt: null,
@@ -1648,7 +1712,7 @@ describe('orderMonitor routeProcessor', () => {
         }),
       ]);
       const replaceOrderIds: string[] = [];
-      const { deps } = createDeps({
+      const { deps } = await createDeps({
         runtime,
         config: createConfig({
           buyTimeoutMs: 60_000,
@@ -1664,7 +1728,7 @@ describe('orderMonitor routeProcessor', () => {
         symbol: 'BULL.HK',
         generation: 1,
         wakeupKind: 'QUOTE',
-        latestQuote: createQuoteDouble('BULL.HK', 0),
+        latestQuote: createQuoteDouble('BULL.HK', '0'),
       });
 
       expect(replaceOrderIds).toEqual([]);
@@ -1685,13 +1749,13 @@ describe('orderMonitor routeProcessor', () => {
     try {
       const runtime = createRuntimeStore();
       attachTrackedOrders(runtime, 'BULL.HK', [
-        createTrackedOrder({
+        await createTrackedOrder({
           orderId: 'SELL-QUOTE-RETRY-TIMER',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
+          side: 'SELL',
           submittedAt: nowMs - 1_000,
-          submittedPrice: 1,
-          initialSubmittedPrice: 1,
+          submittedPrice: '1',
+          initialSubmittedPrice: '1',
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 1,
           quoteRetryNextAt: nowMs - 1,
@@ -1699,7 +1763,7 @@ describe('orderMonitor routeProcessor', () => {
         }),
       ]);
       const replaceOrderIds: string[] = [];
-      const { deps } = createDeps({
+      const { deps } = await createDeps({
         runtime,
         config: createConfig({
           buyTimeoutMs: 60_000,
@@ -1736,13 +1800,13 @@ describe('orderMonitor routeProcessor', () => {
     try {
       const runtime = createRuntimeStore();
       attachTrackedOrders(runtime, 'BULL.HK', [
-        createTrackedOrder({
+        await createTrackedOrder({
           orderId: 'SELL-QUOTE-RETRY-RESET',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
+          side: 'SELL',
           submittedAt: nowMs - 1_000,
-          submittedPrice: 1,
-          initialSubmittedPrice: 1,
+          submittedPrice: '1',
+          initialSubmittedPrice: '1',
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 2,
           quoteRetryNextAt: nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS,
@@ -1750,7 +1814,7 @@ describe('orderMonitor routeProcessor', () => {
         }),
       ]);
       const replaceOrderIds: string[] = [];
-      const { deps } = createDeps({
+      const { deps } = await createDeps({
         runtime,
         config: createConfig({
           buyTimeoutMs: 60_000,
@@ -1766,7 +1830,7 @@ describe('orderMonitor routeProcessor', () => {
         symbol: 'BULL.HK',
         generation: 1,
         wakeupKind: 'QUOTE',
-        latestQuote: createQuoteDouble('BULL.HK', 1.02),
+        latestQuote: createQuoteDouble('BULL.HK', '1.02'),
       });
 
       expect(replaceOrderIds).toEqual(['SELL-QUOTE-RETRY-RESET']);
@@ -1787,13 +1851,13 @@ describe('orderMonitor routeProcessor', () => {
     try {
       const runtime = createRuntimeStore();
       attachTrackedOrders(runtime, 'BULL.HK', [
-        createTrackedOrder({
+        await createTrackedOrder({
           orderId: 'BUY-QUOTE-RETRY-GUARD-RESET',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
+          side: 'BUY',
           submittedAt: nowMs - 1_000,
-          submittedPrice: 1,
-          initialSubmittedPrice: 1,
+          submittedPrice: '1',
+          initialSubmittedPrice: '1',
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 2,
           quoteRetryNextAt: nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS,
@@ -1801,7 +1865,7 @@ describe('orderMonitor routeProcessor', () => {
         }),
       ]);
       const replaceOrderIds: string[] = [];
-      const { deps } = createDeps({
+      const { deps } = await createDeps({
         runtime,
         config: createConfig({
           buyTimeoutMs: 60_000,
@@ -1818,7 +1882,7 @@ describe('orderMonitor routeProcessor', () => {
         symbol: 'BULL.HK',
         generation: 1,
         wakeupKind: 'QUOTE',
-        latestQuote: createQuoteDouble('BULL.HK', 1.02),
+        latestQuote: createQuoteDouble('BULL.HK', '1.02'),
       });
 
       expect(replaceOrderIds).toEqual([]);
@@ -1833,31 +1897,35 @@ describe('orderMonitor routeProcessor', () => {
 
   it('replace await 内确认 terminal 后订单脱离 route 时保留 evidence，重建后只结算一次', async () => {
     const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-REPLACE-TERMINAL-DETACHED',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
+      submittedPrice: '1',
+      initialSubmittedPrice: '1',
       lastPriceUpdateAt: 0,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus1 = await readTerminalExecutionStatus('Canceled', 0, '0');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus1.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'CANCELED' as const,
       executedPrice: null,
+      executedAmount: '0',
       executedQuantity: 0,
+      executionTimeMs: null,
       submittedQuantity: 100,
       orderUpdatedAtMs: Date.now(),
-      status: OrderStatus.Canceled,
+      status: terminalExecutionStatus1.status,
     };
     const terminalOutcome: TerminalStateSnapshot = rawTerminal;
     const replaceStateWritten = createDeferredValue<null>();
     const allowReplaceToFinish = createDeferredValue<null>();
     const settlementOrderIds: string[] = [];
     let replaceAttempts = 0;
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async (orderId) => {
@@ -1882,7 +1950,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
     await replaceStateWritten.promise;
     runtime.closedOrderIds.add(trackedOrder.orderId);
@@ -1898,7 +1966,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'ORDER_EVENT',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(settlementOrderIds).toEqual([trackedOrder.orderId]);
@@ -1909,7 +1977,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'ORDER_EVENT',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(settlementOrderIds).toEqual([trackedOrder.orderId]);
@@ -1917,27 +1985,31 @@ describe('orderMonitor routeProcessor', () => {
 
   it('replace terminal 未被 gateway 处理时保留 identity-bound evidence', async () => {
     const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-REPLACE-TERMINAL-UNHANDLED',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       submittedAt: Date.now() - 1_000,
-      submittedPrice: 1,
-      initialSubmittedPrice: 1,
+      submittedPrice: '1',
+      initialSubmittedPrice: '1',
       lastPriceUpdateAt: 0,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus2 = await readTerminalExecutionStatus('Canceled', 0, '0');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus2.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'CANCELED' as const,
       executedPrice: null,
+      executedAmount: '0',
       executedQuantity: 0,
+      executionTimeMs: null,
       submittedQuantity: 100,
       orderUpdatedAtMs: Date.now(),
-      status: OrderStatus.Canceled,
+      status: terminalExecutionStatus2.status,
     };
     const terminalOutcome: TerminalStateSnapshot = rawTerminal;
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async (orderId) => {
@@ -1952,7 +2024,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(runtime.latestReplaceTerminalByOrderId.get(trackedOrder.orderId)).toBe(terminalOutcome);
@@ -1962,32 +2034,36 @@ describe('orderMonitor routeProcessor', () => {
   it('replace 确认 TERMINAL_CONFIRMED 时会立即结算并消费 outcome', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-REPLACE-TERMINAL',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
-        submittedPrice: 1,
-        initialSubmittedPrice: 1,
+        submittedPrice: '1',
+        initialSubmittedPrice: '1',
         lastPriceUpdateAt: 0,
       }),
     ]);
     const settlementCalls: Array<{ readonly orderId: string; readonly closedReason: string }> = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({
         buyTimeoutMs: 60_000,
         sellTimeoutMs: 60_000,
       }),
       replaceOrderPrice: async (orderId) => {
+        const terminalExecutionStatus3 = await readTerminalExecutionStatus('Canceled', 0, '0');
         const rawTerminal = {
+          executionStatus: terminalExecutionStatus3.executionStatus,
           kind: 'TERMINAL' as const,
           closedReason: 'CANCELED' as const,
           executedPrice: null,
+          executedAmount: '0',
           executedQuantity: 0,
+          executionTimeMs: null,
           submittedQuantity: 100,
           orderUpdatedAtMs: Date.now(),
-          status: OrderStatus.Canceled,
+          status: terminalExecutionStatus3.status,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
         setLatestReplaceTerminal(runtime, orderId, rawTerminal);
@@ -2009,7 +2085,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(settlementCalls).toMatchObject([
@@ -2025,39 +2101,44 @@ describe('orderMonitor routeProcessor', () => {
     const runtime = createRuntimeStore();
     const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-REPLACE-STALE-TERMINAL',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
         lastPriceUpdateAt: 0,
         executedQuantity: 50,
-        executedPrice: 1.05,
+        executedPrice: '1.05',
+        executedAmount: exactMultiply('1.05', String(50)),
         lastExecutedTimeMs: trackedExecutedAtMs,
         lastOrderUpdateAtMs: trackedExecutedAtMs,
-        status: OrderStatus.PartialFilled,
+        status: 'PARTIALLY_FILLED',
       }),
     ]);
     const settlementCalls: Array<
       Readonly<{
-        executedPrice?: number | null;
+        executedPrice?: string | null;
         executedQuantity?: number | null;
         executedTimeMs?: number | null;
         orderUpdatedAtMs?: number | null;
       }>
     > = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async (orderId) => {
+        const terminalExecutionStatus4 = await readTerminalExecutionStatus('Canceled', 20, '0.9');
         const rawTerminal = {
+          executionStatus: terminalExecutionStatus4.executionStatus,
           kind: 'TERMINAL' as const,
           closedReason: 'CANCELED' as const,
-          executedPrice: 0.9,
+          executedPrice: '0.9',
+          executedAmount: exactMultiply('0.9', String(20)),
           executedQuantity: 20,
+          executionTimeMs: trackedExecutedAtMs - 200,
           submittedQuantity: 100,
           orderUpdatedAtMs: trackedExecutedAtMs - 100,
-          status: OrderStatus.Canceled,
+          status: terminalExecutionStatus4.status,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
         setLatestReplaceTerminal(runtime, orderId, rawTerminal);
@@ -2072,12 +2153,13 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(settlementCalls).toMatchObject([
       {
-        executedPrice: 1.05,
+        executedPrice: '1.05',
+        executedAmount: exactMultiply('1.05', String(50)),
         executedQuantity: 50,
         executedTimeMs: trackedExecutedAtMs,
         orderUpdatedAtMs: trackedExecutedAtMs,
@@ -2090,32 +2172,37 @@ describe('orderMonitor routeProcessor', () => {
     const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.100Z');
     const terminalRevisionAtMs = Date.parse('2026-04-08T09:00:00.200Z');
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-REPLACE-EQUAL-QTY-PRICE-REVISION',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
         lastPriceUpdateAt: 0,
         executedQuantity: 40,
-        executedPrice: 1,
+        executedPrice: '1',
+        executedAmount: exactMultiply('1', String(40)),
         lastExecutedTimeMs: trackedExecutedAtMs,
         lastOrderUpdateAtMs: trackedExecutedAtMs,
-        status: OrderStatus.PartialFilled,
+        status: 'PARTIALLY_FILLED',
       }),
     ]);
     const settlementCalls: FinalizeOrderSettlementParams[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async (orderId) => {
+        const terminalExecutionStatus5 = await readTerminalExecutionStatus('Canceled', 40, '1.1');
         const rawTerminal = {
+          executionStatus: terminalExecutionStatus5.executionStatus,
           kind: 'TERMINAL' as const,
           closedReason: 'CANCELED' as const,
-          executedPrice: 1.1,
+          executedPrice: '1.1',
+          executedAmount: exactMultiply('1.1', String(40)),
           executedQuantity: 40,
+          executionTimeMs: trackedExecutedAtMs,
           submittedQuantity: 100,
           orderUpdatedAtMs: terminalRevisionAtMs,
-          status: OrderStatus.Canceled,
+          status: terminalExecutionStatus5.status,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
         setLatestReplaceTerminal(runtime, orderId, rawTerminal);
@@ -2130,12 +2217,13 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(settlementCalls).toMatchObject([
       {
-        executedPrice: 1.1,
+        executedPrice: '1.1',
+        executedAmount: exactMultiply('1.1', String(40)),
         executedQuantity: 40,
         executedTimeMs: trackedExecutedAtMs,
         orderUpdatedAtMs: terminalRevisionAtMs,
@@ -2147,39 +2235,44 @@ describe('orderMonitor routeProcessor', () => {
     const runtime = createRuntimeStore();
     const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-REPLACE-NEW-QTY-OLD-REVISION',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedAt: Date.now() - 1_000,
         lastPriceUpdateAt: 0,
         executedQuantity: 50,
-        executedPrice: 1.05,
+        executedPrice: '1.05',
+        executedAmount: exactMultiply('1.05', String(50)),
         lastExecutedTimeMs: trackedExecutedAtMs,
         lastOrderUpdateAtMs: trackedExecutedAtMs,
-        status: OrderStatus.PartialFilled,
+        status: 'PARTIALLY_FILLED',
       }),
     ]);
     const settlementCalls: Array<
       Readonly<{
-        executedPrice?: number | null;
+        executedPrice?: string | null;
         executedQuantity?: number | null;
         executedTimeMs?: number | null;
         orderUpdatedAtMs?: number | null;
       }>
     > = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async (orderId) => {
+        const terminalExecutionStatus6 = await readTerminalExecutionStatus('Canceled', 80, '0.9');
         const rawTerminal = {
+          executionStatus: terminalExecutionStatus6.executionStatus,
           kind: 'TERMINAL' as const,
           closedReason: 'CANCELED' as const,
-          executedPrice: 0.9,
+          executedPrice: '0.9',
+          executedAmount: exactMultiply('0.9', String(80)),
           executedQuantity: 80,
+          executionTimeMs: trackedExecutedAtMs - 200,
           submittedQuantity: 100,
           orderUpdatedAtMs: trackedExecutedAtMs - 100,
-          status: OrderStatus.Canceled,
+          status: terminalExecutionStatus6.status,
         };
         runtime.queriedTerminalStateByOrderId.set(orderId, rawTerminal);
         setLatestReplaceTerminal(runtime, orderId, rawTerminal);
@@ -2196,21 +2289,19 @@ describe('orderMonitor routeProcessor', () => {
         symbol: 'BULL.HK',
         generation: 1,
         wakeupKind: 'QUOTE',
-        latestQuote: createQuoteDouble('BULL.HK', 1.02),
+        latestQuote: createQuoteDouble('BULL.HK', '1.02'),
       });
     } catch (error) {
       caughtError = error;
     }
 
-    expect(caughtError).toHaveProperty(
-      'message',
-      expect.stringMatching(/累计成交数量推进但原始执行时间倒退/),
-    );
+    expect(caughtError).toHaveProperty('message', '[订单监控] 累计成交推进但 broker revision 倒退');
     expect(settlementCalls).toEqual([]);
     expect(runtime.closedOrderIds.has('SELL-REPLACE-NEW-QTY-OLD-REVISION')).toBe(false);
     expect(runtime.trackedOrders.get('SELL-REPLACE-NEW-QTY-OLD-REVISION')).toMatchObject({
       executedQuantity: 50,
-      executedPrice: 1.05,
+      executedPrice: '1.05',
+      executedAmount: exactMultiply('1.05', String(50)),
       lastExecutedTimeMs: trackedExecutedAtMs,
       lastOrderUpdateAtMs: trackedExecutedAtMs,
     });
@@ -2219,24 +2310,28 @@ describe('orderMonitor routeProcessor', () => {
   it('买单 timeout 在 cancel 返回 ALREADY_CLOSED 时会立即结算', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-TIMEOUT-ALREADY-CLOSED',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
       }),
     ]);
 
+    const terminalExecutionStatus7 = await readTerminalExecutionStatus('Canceled', 0, '0');
     runtime.queriedTerminalStateByOrderId.set('BUY-TIMEOUT-ALREADY-CLOSED', {
+      executionStatus: terminalExecutionStatus7.executionStatus,
       kind: 'TERMINAL',
       closedReason: 'CANCELED',
       executedPrice: null,
+      executedAmount: '0',
       executedQuantity: 0,
+      executionTimeMs: null,
       submittedQuantity: 100,
       orderUpdatedAtMs: Date.now(),
-      status: OrderStatus.Canceled,
+      status: terminalExecutionStatus7.status,
     });
     const settlementCalls: Array<{ readonly orderId: string; readonly closedReason: string }> = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
@@ -2279,36 +2374,41 @@ describe('orderMonitor routeProcessor', () => {
     const runtime = createRuntimeStore();
     const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'BUY-TIMEOUT-STALE-TERMINAL',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
+        side: 'BUY',
         executedQuantity: 50,
-        executedPrice: 1.05,
+        executedPrice: '1.05',
+        executedAmount: exactMultiply('1.05', String(50)),
         lastExecutedTimeMs: trackedExecutedAtMs,
         lastOrderUpdateAtMs: trackedExecutedAtMs,
-        status: OrderStatus.PartialFilled,
+        status: 'PARTIALLY_FILLED',
       }),
     ]);
 
+    const terminalExecutionStatus8 = await readTerminalExecutionStatus('Canceled', 20, '0.9');
     runtime.queriedTerminalStateByOrderId.set('BUY-TIMEOUT-STALE-TERMINAL', {
+      executionStatus: terminalExecutionStatus8.executionStatus,
       kind: 'TERMINAL',
       closedReason: 'CANCELED',
-      executedPrice: 0.9,
+      executedPrice: '0.9',
+      executedAmount: exactMultiply('0.9', String(20)),
       executedQuantity: 20,
+      executionTimeMs: trackedExecutedAtMs - 200,
       submittedQuantity: 100,
       orderUpdatedAtMs: trackedExecutedAtMs - 100,
-      status: OrderStatus.Canceled,
+      status: terminalExecutionStatus8.status,
     });
     const settlementCalls: Array<
       Readonly<{
-        executedPrice?: number | null;
+        executedPrice?: string | null;
         executedQuantity?: number | null;
         executedTimeMs?: number | null;
         orderUpdatedAtMs?: number | null;
       }>
     > = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
@@ -2334,7 +2434,8 @@ describe('orderMonitor routeProcessor', () => {
 
     expect(settlementCalls).toMatchObject([
       {
-        executedPrice: 1.05,
+        executedPrice: '1.05',
+        executedAmount: exactMultiply('1.05', String(50)),
         executedQuantity: 50,
         executedTimeMs: trackedExecutedAtMs,
         orderUpdatedAtMs: trackedExecutedAtMs,
@@ -2345,31 +2446,36 @@ describe('orderMonitor routeProcessor', () => {
   it('保护性 SELL timeout state-check 的原始 executedQuantity 为 null 时不得由 tracked 部分成交收口', async () => {
     const runtime = createRuntimeStore();
     const trackedExecutionMs = Date.parse('2026-04-08T09:00:00.200Z');
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-PROTECTIVE-STATE-CHECK-NULL-QUANTITY',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       isProtectiveLiquidation: true,
       submittedAt: Date.now() - 1_000,
       submittedQuantity: 100,
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', String(40)),
       lastExecutedTimeMs: trackedExecutionMs,
       lastOrderUpdateAtMs: trackedExecutionMs,
-      status: OrderStatus.PartialFilled,
+      status: 'PARTIALLY_FILLED',
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus9 = await readTerminalExecutionStatus('Canceled', 0, '1.02');
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, {
+      executionStatus: terminalExecutionStatus9.executionStatus,
       kind: 'TERMINAL',
       closedReason: 'CANCELED',
-      executedPrice: 1.02,
+      executedPrice: '1.02',
+      executedAmount: '0',
       executedQuantity: null,
+      executionTimeMs: null,
       submittedQuantity: 100,
       orderUpdatedAtMs: trackedExecutionMs + 1_000,
-      status: OrderStatus.Canceled,
+      status: terminalExecutionStatus9.status,
     });
     let settlementCalls = 0;
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
@@ -2399,14 +2505,15 @@ describe('orderMonitor routeProcessor', () => {
     }
 
     expect(caughtError).toBeInstanceOf(Error);
-    expect(caughtError).toHaveProperty('message', expect.stringMatching(/保护性 SELL/));
+    expect(caughtError).toHaveProperty('message', '[订单监控] 无效累计成交数量');
 
     expect(settlementCalls).toBe(0);
     expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(false);
     expect(runtime.trackedOrders.get(trackedOrder.orderId)).toMatchObject({
-      status: OrderStatus.PartialFilled,
+      status: 'PARTIALLY_FILLED',
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', String(40)),
       lastExecutedTimeMs: trackedExecutionMs,
       lastOrderUpdateAtMs: trackedExecutionMs,
     });
@@ -2415,33 +2522,38 @@ describe('orderMonitor routeProcessor', () => {
   it('保护性 SELL state-check 的等量终态可用已确认事实完成结算', async () => {
     const runtime = createRuntimeStore();
     const trackedExecutionMs = Date.parse('2026-04-08T09:00:00.200Z');
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-PROTECTIVE-STATE-CHECK-EQUAL-QUANTITY',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       isProtectiveLiquidation: true,
       submittedAt: Date.now() - 1_000,
       submittedQuantity: 40,
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', String(40)),
       lastExecutedTimeMs: trackedExecutionMs,
       lastOrderUpdateAtMs: trackedExecutionMs,
-      status: OrderStatus.PartialFilled,
+      status: 'PARTIALLY_FILLED',
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus10 = await readTerminalExecutionStatus('Canceled', 40, '1.02');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus10.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'CANCELED' as const,
       executedPrice: null,
+      executedAmount: '0',
       executedQuantity: 40,
+      executionTimeMs: 190,
       submittedQuantity: 40,
       orderUpdatedAtMs: null,
-      status: OrderStatus.Canceled,
+      status: terminalExecutionStatus10.status,
     };
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
     setLatestReplaceTerminal(runtime, trackedOrder.orderId, rawTerminal);
     const settlementCalls: FinalizeOrderSettlementParams[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
@@ -2462,7 +2574,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE',
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     });
 
     expect(settlementCalls).toEqual([
@@ -2470,7 +2582,8 @@ describe('orderMonitor routeProcessor', () => {
         orderId: trackedOrder.orderId,
         closedReason: 'CANCELED',
         source: 'STATE_CHECK',
-        executedPrice: 1.02,
+        executedPrice: '1.02',
+        executedAmount: exactMultiply('1.02', String(40)),
         executedQuantity: 40,
         executedTimeMs: trackedExecutionMs,
         orderUpdatedAtMs: trackedExecutionMs,
@@ -2483,30 +2596,35 @@ describe('orderMonitor routeProcessor', () => {
     const runtime = createRuntimeStore();
     const trackedExecutedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-TIMEOUT-NORMALIZED-REMAINDER',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
+        side: 'SELL',
         submittedQuantity: 100,
         executedQuantity: 50,
-        executedPrice: 1.05,
+        executedPrice: '1.05',
+        executedAmount: exactMultiply('1.05', String(50)),
         lastExecutedTimeMs: trackedExecutedAtMs,
         lastOrderUpdateAtMs: trackedExecutedAtMs,
-        status: OrderStatus.PartialFilled,
+        status: 'PARTIALLY_FILLED',
       }),
     ]);
 
+    const terminalExecutionStatus11 = await readTerminalExecutionStatus('Canceled', 20, '0.9');
     runtime.queriedTerminalStateByOrderId.set('SELL-TIMEOUT-NORMALIZED-REMAINDER', {
+      executionStatus: terminalExecutionStatus11.executionStatus,
       kind: 'TERMINAL',
       closedReason: 'CANCELED',
-      executedPrice: 0.9,
+      executedPrice: '0.9',
+      executedAmount: exactMultiply('0.9', String(20)),
       executedQuantity: 20,
+      executionTimeMs: trackedExecutedAtMs - 200,
       submittedQuantity: 100,
       orderUpdatedAtMs: trackedExecutedAtMs - 100,
-      status: OrderStatus.Canceled,
+      status: terminalExecutionStatus11.status,
     });
     const trackedOrders: TrackOrderParams[] = [];
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
@@ -2537,29 +2655,36 @@ describe('orderMonitor routeProcessor', () => {
   it('route generation 已推进时，旧的 timeout->market continuation 不会再提交 MO', async () => {
     const runtime = createRuntimeStore();
     attachTrackedOrders(runtime, 'BULL.HK', [
-      createTrackedOrder({
+      await createTrackedOrder({
         orderId: 'SELL-STALE-CONVERT',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.Canceled,
+        side: 'SELL',
+        status: 'CANCELED',
         timeoutMarketConversionPending: true,
         timeoutMarketConversionTerminalState: {
           closedReason: 'CANCELED',
           source: 'WS',
-          executedPrice: 0,
+          executedPrice: '0',
+          executedAmount: exactMultiply('0', String(0)),
           executedQuantity: 0,
-          executedTimeMs: Date.parse('2026-04-08T09:00:01.000Z'),
+          executedTimeMs: null,
           orderUpdatedAtMs: Date.parse('2026-04-08T09:00:01.000Z'),
         },
       }),
     ]);
 
-    const tradeCtx = createTradeContextMock();
+    const native = await createNativeFixture();
     const deferredPermit = createDeferredValue<null>();
     const trackedOrders: TrackOrderParams[] = [];
-    const { deps } = createDeps({
+    const nextOrder = await createTrackedOrder({
+      orderId: 'SELL-NEWER-GENERATION',
+      symbol: 'BULL.HK',
+      side: 'SELL',
+      submittedAt: Date.now(),
+    });
+    const { deps } = await createDeps({
       runtime,
-      ctx: createTradeContextDouble(tradeCtx),
+      native,
       rateLimiter: {
         throttle: async () => {},
         withTradeMutation: async <T>(
@@ -2582,12 +2707,6 @@ describe('orderMonitor routeProcessor', () => {
         runtime.trackedOrderIdsBySymbol.delete('BULL.HK');
         runtime.routeStatesBySymbol.delete('BULL.HK');
 
-        const nextOrder = createTrackedOrder({
-          orderId: 'SELL-NEWER-GENERATION',
-          symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          submittedAt: Date.now(),
-        });
         runtime.trackedOrders.set(nextOrder.orderId, nextOrder);
         runtime.trackedOrderLifecycles.set(nextOrder.orderId, 'OPEN');
         runtime.trackedOrderIdsBySymbol.set('BULL.HK', new Set([nextOrder.orderId]));
@@ -2620,7 +2739,7 @@ describe('orderMonitor routeProcessor', () => {
     deferredPermit.resolve(null);
     await processPromise;
 
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
     expect(trackedOrders).toEqual([]);
   });
 
@@ -2628,25 +2747,26 @@ describe('orderMonitor routeProcessor', () => {
     '保护性 SELL timeout 收到 ALREADY_CLOSED/%s 但无 raw terminal snapshot 时阻断 route',
     async (closedReason) => {
       const runtime = createRuntimeStore();
-      const trackedOrder = createTrackedOrder({
+      const trackedOrder = await createTrackedOrder({
         orderId: `SELL-PROTECTIVE-NO-RAW-${closedReason}`,
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        status: OrderStatus.PartialFilled,
+        side: 'SELL',
+        status: 'PARTIALLY_FILLED',
         submittedAt: Date.now() - 10_000,
         isProtectiveLiquidation: true,
         executedQuantity: 40,
-        executedPrice: 1.02,
+        executedPrice: '1.02',
+        executedAmount: exactMultiply('1.02', String(40)),
         lastExecutedTimeMs: 190,
         lastOrderUpdateAtMs: 200,
       });
       attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-      const tradeCtx = createTradeContextMock();
+      const native = await createNativeFixture();
       let cancelCalls = 0;
       let settlementCalls = 0;
-      const { deps } = createDeps({
+      const { deps } = await createDeps({
         runtime,
-        ctx: createTradeContextDouble(tradeCtx),
+        native,
         cancelOrder: async () => {
           cancelCalls += 1;
           return {
@@ -2680,7 +2800,7 @@ describe('orderMonitor routeProcessor', () => {
       expect(caughtError).toBeInstanceOf(Error);
       expect(caughtError).toHaveProperty('message', expect.stringMatching(/raw terminal snapshot/));
       expect(settlementCalls).toBe(0);
-      expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+      expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
       expect(cancelCalls).toBe(1);
       expect(trackedOrder.nextCancelAttemptAt).toBe(ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS);
       expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(false);
@@ -2689,31 +2809,36 @@ describe('orderMonitor routeProcessor', () => {
 
   it('保护性 SELL terminal raw 校验失败后保留 terminal snapshot，不允许用 tracked 事实改写', async () => {
     const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-PROTECTIVE-INVALID-RAW-RETAINED',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      status: OrderStatus.PartialFilled,
+      side: 'SELL',
+      status: 'PARTIALLY_FILLED',
       submittedAt: Date.now() - 10_000,
       isProtectiveLiquidation: true,
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', String(40)),
       lastExecutedTimeMs: 190,
       lastOrderUpdateAtMs: 200,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus12 = await readTerminalExecutionStatus('Filled', 0, '1.02');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus12.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'FILLED' as const,
-      status: OrderStatus.Filled,
+      status: terminalExecutionStatus12.status,
       submittedQuantity: 100,
       executedQuantity: null,
-      executedPrice: 1.02,
+      executionTimeMs: null,
+      executedPrice: '1.02',
+      executedAmount: '0',
       orderUpdatedAtMs: 300,
     };
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
     let settlementCalls = 0;
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
@@ -2743,7 +2868,7 @@ describe('orderMonitor routeProcessor', () => {
     }
 
     expect(caughtError).toBeInstanceOf(Error);
-    expect(caughtError).toHaveProperty('message', expect.stringMatching(/保护性 SELL/));
+    expect(caughtError).toHaveProperty('message', '[订单监控] 无效累计成交数量');
     expect(runtime.queriedTerminalStateByOrderId.get(trackedOrder.orderId)).toBe(rawTerminal);
     expect(settlementCalls).toBe(0);
     expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(false);
@@ -2751,33 +2876,38 @@ describe('orderMonitor routeProcessor', () => {
 
   it('保护性 SELL terminal 本地结算失败后保留同一 raw snapshot，重试成功只确认一次', async () => {
     const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-PROTECTIVE-SETTLEMENT-RETRY',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      status: OrderStatus.PartialFilled,
+      side: 'SELL',
+      status: 'PARTIALLY_FILLED',
       submittedAt: Date.now() - 10_000,
       isProtectiveLiquidation: true,
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', String(40)),
       lastExecutedTimeMs: 190,
       lastOrderUpdateAtMs: 200,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus13 = await readTerminalExecutionStatus('Filled', 80, '1.01');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus13.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'FILLED' as const,
-      status: OrderStatus.Filled,
+      status: terminalExecutionStatus13.status,
       submittedQuantity: 100,
       executedQuantity: 80,
-      executedPrice: 1.01,
+      executionTimeMs: 250,
+      executedPrice: '1.01',
+      executedAmount: exactMultiply('1.01', String(80)),
       orderUpdatedAtMs: 300,
     };
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
     const settlementError = new Error('local settlement failed');
     let settlementAttempts = 0;
     let settledCount = 0;
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       cancelOrder: async () => ({
         kind: 'ALREADY_CLOSED',
@@ -2830,34 +2960,39 @@ describe('orderMonitor routeProcessor', () => {
 
   it('保护性 SELL replace terminal 的本地结算失败后保留 outcome 与 raw snapshot', async () => {
     const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-PROTECTIVE-REPLACE-OUTCOME-RETRY',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      status: OrderStatus.New,
+      side: 'SELL',
+      status: 'WORKING',
       submittedAt: Date.now(),
       lastPriceUpdateAt: Date.now() - 10_000,
       isProtectiveLiquidation: true,
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', String(40)),
       lastExecutedTimeMs: 190,
       lastOrderUpdateAtMs: 200,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus14 = await readTerminalExecutionStatus('Filled', 80, '1.01');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus14.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'FILLED' as const,
-      status: OrderStatus.Filled,
+      status: terminalExecutionStatus14.status,
       submittedQuantity: 100,
       executedQuantity: 80,
-      executedPrice: 1.01,
+      executionTimeMs: 250,
+      executedPrice: '1.01',
+      executedAmount: exactMultiply('1.01', String(80)),
       orderUpdatedAtMs: 300,
     };
     const terminalOutcome: TerminalStateSnapshot = rawTerminal;
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
     const settlementError = new Error('replace local settlement failed');
     let settlementAttempts = 0;
-    const { deps } = createDeps({
+    const { deps } = await createDeps({
       runtime,
       config: createConfig({ sellTimeoutMs: 60_000 }),
       replaceOrderPrice: async () => {
@@ -2877,7 +3012,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE' as const,
-      latestQuote: createQuoteDouble('BULL.HK', 1.1),
+      latestQuote: createQuoteDouble('BULL.HK', '1.1'),
     };
 
     let caughtError: unknown = null;
@@ -2900,27 +3035,31 @@ describe('orderMonitor routeProcessor', () => {
 
   it('cancel ALREADY_CLOSED 后 route generation 失效时保留未 ack raw terminal，后续 gateway 只结算一次', async () => {
     const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-CANCEL-TERMINAL-GENERATION-STALE',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       submittedAt: Date.now() - 10_000,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus15 = await readTerminalExecutionStatus('Filled', 100, '1.01');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus15.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'FILLED' as const,
-      status: OrderStatus.Filled,
+      status: terminalExecutionStatus15.status,
       submittedQuantity: 100,
       executedQuantity: 100,
-      executedPrice: 1.01,
+      executionTimeMs: Date.parse('2026-07-13T05:09:59.500Z'),
+      executedPrice: '1.01',
+      executedAmount: exactMultiply('1.01', String(100)),
       orderUpdatedAtMs: Date.parse('2026-07-13T05:10:00.000Z'),
     };
     let cancelCalls = 0;
     let settlementCalls = 0;
     const marketOrderTracks: TrackOrderParams[] = [];
     const pendingSellReleaseOrderIds: string[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 0 }),
       orderRecorder: createOrderRecorderDouble({
@@ -2964,7 +3103,7 @@ describe('orderMonitor routeProcessor', () => {
     expect(settlementCalls).toBe(0);
     expect(pendingSellReleaseOrderIds).toEqual([]);
     expect(marketOrderTracks).toEqual([]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
     expect(cancelCalls).toBe(1);
 
     runtime.routeStatesBySymbol.get('BULL.HK')!.generation = 2;
@@ -2980,26 +3119,30 @@ describe('orderMonitor routeProcessor', () => {
     expect(runtime.queriedTerminalStateByOrderId.has(trackedOrder.orderId)).toBe(false);
     expect(pendingSellReleaseOrderIds).toEqual([]);
     expect(marketOrderTracks).toEqual([]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
   });
 
   it('replace TERMINAL_CONFIRMED 后 runtime stop 时保留未 ack outcome 与 raw terminal，重启 gateway 只结算一次', async () => {
     const runtime = createRuntimeStore();
-    const trackedOrder = createTrackedOrder({
+    const trackedOrder = await createTrackedOrder({
       orderId: 'SELL-REPLACE-TERMINAL-RUNTIME-STOPPED',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
+      side: 'SELL',
       submittedAt: Date.now() - 1_000,
       lastPriceUpdateAt: 0,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
+    const terminalExecutionStatus16 = await readTerminalExecutionStatus('Filled', 100, '1.01');
     const rawTerminal = {
+      executionStatus: terminalExecutionStatus16.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'FILLED' as const,
-      status: OrderStatus.Filled,
+      status: terminalExecutionStatus16.status,
       submittedQuantity: 100,
       executedQuantity: 100,
-      executedPrice: 1.01,
+      executionTimeMs: Date.parse('2026-07-13T05:10:59.500Z'),
+      executedPrice: '1.01',
+      executedAmount: exactMultiply('1.01', String(100)),
       orderUpdatedAtMs: Date.parse('2026-07-13T05:11:00.000Z'),
     };
     const terminalOutcome: TerminalStateSnapshot = rawTerminal;
@@ -3007,7 +3150,7 @@ describe('orderMonitor routeProcessor', () => {
     let settlementCalls = 0;
     const marketOrderTracks: TrackOrderParams[] = [];
     const pendingSellReleaseOrderIds: string[] = [];
-    const { deps, tradeCtx } = createDeps({
+    const { deps, native } = await createDeps({
       runtime,
       config: createConfig({ buyTimeoutMs: 60_000, sellTimeoutMs: 60_000 }),
       orderRecorder: createOrderRecorderDouble({
@@ -3035,7 +3178,7 @@ describe('orderMonitor routeProcessor', () => {
       symbol: 'BULL.HK',
       generation: 1,
       wakeupKind: 'QUOTE' as const,
-      latestQuote: createQuoteDouble('BULL.HK', 1.02),
+      latestQuote: createQuoteDouble('BULL.HK', '1.02'),
     };
 
     await routeProcessor.processRoute(routeParams);
@@ -3045,7 +3188,7 @@ describe('orderMonitor routeProcessor', () => {
     expect(settlementCalls).toBe(0);
     expect(pendingSellReleaseOrderIds).toEqual([]);
     expect(marketOrderTracks).toEqual([]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
     expect(replaceCalls).toBe(1);
 
     runtime.running = true;
@@ -3057,6 +3200,6 @@ describe('orderMonitor routeProcessor', () => {
     expect(runtime.queriedTerminalStateByOrderId.has(trackedOrder.orderId)).toBe(false);
     expect(pendingSellReleaseOrderIds).toEqual([]);
     expect(marketOrderTracks).toEqual([]);
-    expect(tradeCtx.getCalls('submitOrder')).toHaveLength(0);
+    expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(0);
   });
 });

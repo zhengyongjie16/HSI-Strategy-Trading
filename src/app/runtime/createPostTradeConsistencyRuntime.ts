@@ -10,11 +10,17 @@
 import { API } from '../../constants/index.js';
 import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
 import type { MonitorContext } from '../../types/state.js';
-import type { PostTradeConsistencyRefreshNeed, Trader } from '../../types/services.js';
+import type { Trader } from '../../types/services.js';
+import type {
+  AccountPositionSnapshotView,
+  SnapshotRefreshHandle,
+  SnapshotToken,
+} from '../../types/accountPosition.js';
+import type { SettlementRefreshNeed, SettlementReadinessReceipt } from '../../types/settlement.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { logger } from '../../utils/logger/index.js';
-import { createRefreshGate } from '../../utils/refreshGate/index.js';
+import { createSettlementReadinessGate } from '../../application/postTradeSettlement/readinessGate.js';
 import { isSeatActive } from '../../utils/seat/guards.js';
 import type {
   PostTradeConsistencyRuntime,
@@ -31,9 +37,9 @@ import type {
  * @returns 合并后的刷新需求
  */
 function mergeRefreshNeed(
-  current: PostTradeConsistencyRefreshNeed,
-  incoming: PostTradeConsistencyRefreshNeed,
-): PostTradeConsistencyRefreshNeed {
+  current: SettlementRefreshNeed,
+  incoming: SettlementRefreshNeed,
+): SettlementRefreshNeed {
   return {
     refreshAccount: current.refreshAccount || incoming.refreshAccount,
     refreshPositions: current.refreshPositions || incoming.refreshPositions,
@@ -45,7 +51,7 @@ function mergeRefreshNeed(
  *
  * @returns 不要求刷新账户也不要求刷新持仓的空需求
  */
-function createEmptyRefreshNeed(): PostTradeConsistencyRefreshNeed {
+function createEmptyRefreshNeed(): SettlementRefreshNeed {
   return {
     refreshAccount: false,
     refreshPositions: false,
@@ -58,7 +64,7 @@ function createEmptyRefreshNeed(): PostTradeConsistencyRefreshNeed {
  * @param need 待判断的刷新需求
  * @returns 只要账户或持仓任一维度需要刷新即返回 true
  */
-function hasRefreshNeed(need: PostTradeConsistencyRefreshNeed): boolean {
+function hasRefreshNeed(need: SettlementRefreshNeed): boolean {
   return need.refreshAccount || need.refreshPositions;
 }
 
@@ -87,10 +93,10 @@ function mergePendingVersion(
  * 判断指定交易标的在最新持仓缓存下是否已空仓。
  *
  * @param symbol 需要判定的原始保护性清仓标的
- * @param getQuantityBySymbol 从 positionCache 读取数量的函数
+ * @param getQuantityBySymbol 从 snapshot 读取数量的函数
  * @returns 对应标的无持仓或数量小于等于 0 时返回 true
  */
-function isSymbolFlatByPositionCache(
+function isSymbolFlatBySnapshot(
   symbol: string,
   getQuantityBySymbol: (symbol: string) => { quantity: number } | null,
 ): boolean {
@@ -184,16 +190,17 @@ function buildAttributedSeatSymbols(monitorContext: MonitorContext): ReadonlyArr
  *
  * @param trader Trader 实例，用于判定是否仍有未完成保护性卖单
  * @param businessDeps 已绑定的业务协作者
- * @param getQuantityBySymbol 从最新 positionCache 读取数量的函数
+ * @param getQuantityBySymbol 从最新 snapshot 读取数量的函数
  */
 function settleProtectiveLiquidationEpisodes(
   trader: Trader,
   businessDeps: PostTradeConsistencyRuntimeBusinessDeps,
   getQuantityBySymbol: (symbol: string) => { quantity: number } | null,
+  isCurrent: () => boolean,
 ): void {
   for (const episode of businessDeps.protectiveLiquidationEpisodeTracker.getInProgressEpisodes()) {
     const monitorContext = businessDeps.monitorContext;
-    const isDirectionFlat = isSymbolFlatByPositionCache(episode.symbol, getQuantityBySymbol);
+    const isDirectionFlat = isSymbolFlatBySnapshot(episode.symbol, getQuantityBySymbol);
     const hasPendingProtectiveOrders = trader.hasPendingProtectiveLiquidationOrders(
       episode.direction,
     );
@@ -211,6 +218,9 @@ function settleProtectiveLiquidationEpisodes(
       boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
     });
     const monitorSymbol = monitorContext.config.monitorSymbol;
+    // 无 await 的最后事实验证→同步 durable append→内存边界/冷却/episode 提交。
+    if (!isCurrent()) return;
+
     businessDeps.mixedTradeLogRepository.appendCompletionIdempotent({
       monitorSymbol,
       direction: preparedEpisode.direction,
@@ -238,36 +248,16 @@ function settleProtectiveLiquidationEpisodes(
  * @param monitorContext 唯一监控上下文
  * @returns 是否全部刷新成功
  */
-async function refreshAttributedUnrealizedLossData(
-  monitorContext: MonitorContext,
-): Promise<boolean> {
-  const attributedSymbols = buildAttributedSeatSymbols(monitorContext);
-  let refreshOk = true;
-
-  for (const attributedSymbol of attributedSymbols) {
-    const { symbol, direction } = attributedSymbol;
-    const isLongSymbol = direction === 'LONG';
-    const dailyLossOffset = monitorContext.dailyLossTracker.getLossOffset(direction);
-
-    try {
-      await monitorContext.riskChecker.refreshUnrealizedLossData(
-        monitorContext.orderRecorder,
-        symbol,
-        isLongSymbol,
-        null,
-        dailyLossOffset,
-      );
-    } catch (error) {
-      if (!isExternalApiRequestError(error)) {
-        throw error;
-      }
-
-      refreshOk = false;
-      logger.warn(`[PostTradeConsistencyRuntime] 刷新浮亏缓存失败: ${symbol}`, formatError(error));
-    }
-  }
-
-  return refreshOk;
+function refreshAttributedUnrealizedLossData(monitorContext: MonitorContext): void {
+  const prepared = buildAttributedSeatSymbols(monitorContext).map(({ symbol, direction }) =>
+    monitorContext.riskChecker.prepareUnrealizedLossData(
+      monitorContext.orderRecorder,
+      symbol,
+      direction === 'LONG',
+      monitorContext.dailyLossTracker.getLossOffset(direction),
+    ),
+  );
+  for (const result of prepared) monitorContext.riskChecker.publishUnrealizedLossData(result);
 }
 
 /**
@@ -278,16 +268,38 @@ async function refreshAttributedUnrealizedLossData(
  * @param businessDeps 已绑定的业务协作者
  * @returns 所有后置业务都成功时返回 true
  */
-async function runPostRefreshBusinessFlow(
+function runPostRefreshBusinessFlow(
   trader: Trader,
-  lastState: PostTradeConsistencyRuntimeDeps['lastState'],
+  view: AccountPositionSnapshotView,
   businessDeps: PostTradeConsistencyRuntimeBusinessDeps,
-): Promise<boolean> {
-  settleProtectiveLiquidationEpisodes(trader, businessDeps, (symbol) =>
-    lastState.positionCache.get(symbol),
+  isCurrent: () => boolean,
+): boolean {
+  if (!isCurrent()) return false;
+
+  settleProtectiveLiquidationEpisodes(
+    trader,
+    businessDeps,
+    (symbol) => {
+      let quantity = 0;
+      for (const position of view.positions) {
+        if (position.symbol !== symbol) continue;
+
+        const next = quantity + position.quantity;
+        if (!Number.isSafeInteger(next))
+          throw new RangeError('[settlement] position quantity overflow');
+
+        quantity = next;
+      }
+
+      return { quantity };
+    },
+    isCurrent,
   );
 
-  return refreshAttributedUnrealizedLossData(businessDeps.monitorContext);
+  if (!isCurrent()) return false;
+
+  refreshAttributedUnrealizedLossData(businessDeps.monitorContext);
+  return true;
 }
 
 /**
@@ -299,14 +311,15 @@ async function runPostRefreshBusinessFlow(
 export function createPostTradeConsistencyRuntime(
   deps: PostTradeConsistencyRuntimeDeps,
 ): PostTradeConsistencyRuntime {
-  const { getTrader, lastState, scheduler, termination } = deps;
-  const refreshGate = createRefreshGate();
+  const { getTrader, snapshot, scheduler, termination } = deps;
+  const refreshGate = createSettlementReadinessGate({ snapshot });
 
   let businessDeps: PostTradeConsistencyRuntimeBusinessDeps | null = null;
   let started = false;
   let inFlight = false;
   let pendingNeed = createEmptyRefreshNeed();
   let pendingVersion: number | null = null;
+  let businessDirty = false;
   let runTimerHandle: ReturnType<typeof setTimeout> | null = null;
   let retryTimerHandle: ReturnType<typeof setTimeout> | null = null;
   let runTimerToken: symbol | null = null;
@@ -314,6 +327,7 @@ export function createPostTradeConsistencyRuntime(
   let inFlightPromise: Promise<void> | null = null;
   let drainPromise: Promise<void> | null = null;
   const freshReachedListeners = new Set<() => void>();
+  let currentRefreshHandle: SnapshotRefreshHandle | null = null;
 
   /**
    * 获取已绑定的业务依赖；缺失时立即失败。
@@ -337,9 +351,10 @@ export function createPostTradeConsistencyRuntime(
     if (
       termination.isTerminated() ||
       !started ||
+      snapshot.getStatus().admission !== 'OPEN' ||
       inFlight ||
       runTimerHandle !== null ||
-      !hasRefreshNeed(pendingNeed)
+      (!hasRefreshNeed(pendingNeed) && !businessDirty)
     ) {
       return;
     }
@@ -358,7 +373,13 @@ export function createPostTradeConsistencyRuntime(
 
       runTimerToken = null;
       runTimerHandle = null;
-      if (termination.isTerminated() || !started || inFlight || !hasRefreshNeed(pendingNeed)) {
+      if (
+        termination.isTerminated() ||
+        !started ||
+        snapshot.getStatus().admission !== 'OPEN' ||
+        inFlight ||
+        (!hasRefreshNeed(pendingNeed) && !businessDirty)
+      ) {
         return;
       }
 
@@ -379,9 +400,10 @@ export function createPostTradeConsistencyRuntime(
     if (
       termination.isTerminated() ||
       !started ||
+      snapshot.getStatus().admission !== 'OPEN' ||
       inFlight ||
       retryTimerHandle !== null ||
-      !hasRefreshNeed(pendingNeed)
+      (!hasRefreshNeed(pendingNeed) && !businessDirty)
     ) {
       return;
     }
@@ -397,70 +419,109 @@ export function createPostTradeConsistencyRuntime(
     }, API.DEFAULT_RETRY_DELAY_MS);
   }
 
-  /** 请求内部错误立即关闭全局授权，但本批次仍等待其余请求落定。 */
-  function observeRefreshRequest<T>(request: Promise<T>): Promise<T> {
-    return request.catch((error: unknown) => {
-      if (!isExternalApiRequestError(error)) termination.reportFatalError(error);
-
-      throw error;
-    });
-  }
-
   /**
    * 执行一次成交后刷新。
    *
-   * 固定顺序：账户/持仓刷新 -> positionCache.update -> 保护性清仓完成判定与冷却推进 -> R1/N1 刷新 -> markFresh。
+   * 固定顺序：账户/持仓刷新 -> canonical snapshot commit -> 保护性清仓完成判定与冷却推进 -> R1/N1 刷新 -> markFresh。
    * 外部失败保留 pending 版本并进入重试；程序内部契约/不变量错误则立即 fail-fast。
    */
-  async function runRefresh(): Promise<void> {
-    if (termination.isTerminated() || !started || inFlight || !hasRefreshNeed(pendingNeed)) {
+  async function runRefresh(rebuildToken?: SnapshotToken): Promise<void> {
+    if (
+      termination.isTerminated() ||
+      !started ||
+      inFlight ||
+      (rebuildToken === undefined &&
+        (snapshot.getStatus().admission !== 'OPEN' ||
+          (!hasRefreshNeed(pendingNeed) && !businessDirty))) ||
+      (rebuildToken !== undefined &&
+        !snapshot.isCurrent(rebuildToken, { account: true, positions: true, paired: true }))
+    ) {
       return;
     }
 
     const need = pendingNeed;
+    businessDirty = false;
     const targetVersion = pendingVersion ?? refreshGate.getStatus().staleVersion;
     pendingNeed = createEmptyRefreshNeed();
     pendingVersion = null;
     inFlight = true;
     let refreshOk = false;
+    let readyToken: SnapshotToken | null = null;
     let fatalInvariantDetected = false;
+    let retryRequired = false;
+    const workDayEpoch = rebuildToken?.dayEpoch ?? snapshot.getView().token.dayEpoch;
+    // 普通 S 只在 OPEN 推进；受控 baseline 不发读，也不得跨日/停止后继续业务发布。
+    const workAdmitted = (): boolean => {
+      const status = snapshot.getStatus();
+      return (
+        started &&
+        !termination.isTerminated() &&
+        status.token.dayEpoch === workDayEpoch &&
+        (rebuildToken === undefined ? status.admission === 'OPEN' : status.admission !== 'CLOSED')
+      );
+    };
 
     try {
       const resolvedBusinessDeps = getBusinessDepsOrThrow();
       const trader = getTrader();
-      // 任一请求失败仍须等待另一请求结束，不能让 Promise.all 的提前拒绝伪造排空完成。
-      const [accountResult, positionsResult] = await Promise.allSettled([
-        need.refreshAccount
-          ? observeRefreshRequest(trader.getAccountSnapshot())
-          : Promise.resolve(null),
-        need.refreshPositions
-          ? observeRefreshRequest(trader.getStockPositions())
-          : Promise.resolve(null),
-      ]);
-      if (
-        positionsResult.status === 'rejected' &&
-        !isExternalApiRequestError(positionsResult.reason)
-      )
-        throw positionsResult.reason;
+      let readRequired = rebuildToken === undefined && hasRefreshNeed(need);
+      while (workAdmitted()) {
+        // 受控 baseline 只消费已重建的原 paired 事实；失效交回 open owner 重载，不冒充 lifecycle 发读。
+        if (
+          rebuildToken !== undefined &&
+          !snapshot.isCurrent(rebuildToken, { account: true, positions: true, paired: true })
+        )
+          return;
 
-      if (accountResult.status === 'rejected') throw accountResult.reason;
+        let view = snapshot.getView();
+        const paired = snapshot.isCurrent(view.token, {
+          account: true,
+          positions: true,
+          paired: true,
+        });
+        if (readRequired || !paired) {
+          if (rebuildToken !== undefined || snapshot.getStatus().admission !== 'OPEN') return;
 
-      if (positionsResult.status === 'rejected') throw positionsResult.reason;
+          currentRefreshHandle = snapshot.requestRefresh({
+            source: 'POST_TRADE_SETTLEMENT',
+            dayEpoch: view.token.dayEpoch,
+            refreshAccount: need.refreshAccount || !paired,
+            refreshPositions: need.refreshPositions || !paired,
+          });
+          const receipt = await currentRefreshHandle.result;
+          currentRefreshHandle = null;
+          if (receipt.status === 'ABORTED') return;
 
-      const accountSnapshot = accountResult.value;
-      const positions = positionsResult.value;
+          view = receipt.view;
+          readRequired = false;
+        }
 
-      if (accountSnapshot !== null) {
-        lastState.cachedAccount = accountSnapshot;
+        const token = view.token;
+        const registry = resolvedBusinessDeps.monitorContext.symbolRegistry;
+        const longVersion = registry.getSeatVersion('LONG');
+        const shortVersion = registry.getSeatVersion('SHORT');
+        const current = (): boolean =>
+          workAdmitted() &&
+          registry.getSeatVersion('LONG') === longVersion &&
+          registry.getSeatVersion('SHORT') === shortVersion &&
+          refreshGate.getStatus().staleVersion === targetVersion &&
+          snapshot.isCurrent(token, { account: true, positions: true, paired: true });
+        // 通知只让订阅 owner 在串行链按当前真相对账，绝不传迟到 view 期望集合。
+        await deps.onPositionsCommitted(token);
+        if (refreshGate.getStatus().staleVersion !== targetVersion || !workAdmitted()) return;
+
+        if (!current()) {
+          if (rebuildToken !== undefined) return;
+
+          continue;
+        }
+
+        refreshOk = runPostRefreshBusinessFlow(trader, view, resolvedBusinessDeps, current);
+        if (refreshOk && current()) {
+          readyToken = token;
+          break;
+        }
       }
-
-      if (positions !== null) {
-        lastState.cachedPositions = positions;
-        lastState.positionCache.update(positions);
-        await deps.onPositionsCommitted();
-      }
-
-      refreshOk = await runPostRefreshBusinessFlow(trader, lastState, resolvedBusinessDeps);
     } catch (error) {
       if (!isExternalApiRequestError(error)) {
         fatalInvariantDetected = true;
@@ -475,25 +536,36 @@ export function createPostTradeConsistencyRuntime(
         throw error;
       }
 
+      retryRequired = true;
       logger.warn('[PostTradeConsistencyRuntime] 刷新失败，准备重试', formatError(error));
+      // 受控开盘工作由 lifecycle 的原重试 owner 接管；普通 S 仍沿用自身退避。
+      if (rebuildToken !== undefined) throw error;
     } finally {
       if (fatalInvariantDetected) {
         // fatal invariant 已在 catch 中升级为异常，这里只负责阻止重试与版本回滚。
       } else if (refreshOk) {
         const gateStatus = refreshGate.getStatus();
-        if (!termination.isTerminated() && gateStatus.abortReason !== 'STOP_AND_DRAIN') {
-          refreshGate.markFresh(targetVersion);
+        if (
+          !termination.isTerminated() &&
+          gateStatus.abortReason !== 'STOP_AND_DRAIN' &&
+          readyToken !== null &&
+          refreshGate.markFresh(targetVersion, readyToken)
+        )
           emitFreshReached();
-        }
       } else {
         pendingNeed = mergeRefreshNeed(need, pendingNeed);
         pendingVersion = mergePendingVersion(pendingVersion, targetVersion);
+        businessDirty = true;
       }
 
       inFlight = false;
 
-      if (!fatalInvariantDetected && hasRefreshNeed(pendingNeed)) {
-        if (refreshOk) {
+      if (
+        rebuildToken === undefined &&
+        !fatalInvariantDetected &&
+        (hasRefreshNeed(pendingNeed) || businessDirty)
+      ) {
+        if (refreshOk || !retryRequired) {
           scheduleRun();
         } else {
           scheduleRetry();
@@ -535,11 +607,13 @@ export function createPostTradeConsistencyRuntime(
    *
    * @param need 本次成交产生的刷新意图
    */
-  function recordSettlementRefreshNeed(need: PostTradeConsistencyRefreshNeed): void {
+  function recordSettlementRefreshNeed(need: SettlementRefreshNeed): void {
     if (termination.isTerminated() || !hasRefreshNeed(need)) {
       return;
     }
 
+    // 权威订单事实成功提交的同一同步段同时失效 canonical 代次与登记 settlement 水位。
+    snapshot.invalidate();
     pendingNeed = mergeRefreshNeed(pendingNeed, need);
     pendingVersion = refreshGate.markStale();
     if (started) {
@@ -567,8 +641,19 @@ export function createPostTradeConsistencyRuntime(
    *
    * @returns 当 currentVersion 追上 staleVersion 时 resolve
    */
-  function waitForFresh(): Promise<void> {
+  function waitForFresh(): Promise<SettlementReadinessReceipt> {
+    // 仅未完成/已失效的 settlement 追当前 token；普通 commit 后沿用完成水位，由消费 owner 重选持仓。
+    if (!refreshGate.getStatus().ready && !inFlight) {
+      businessDirty = true;
+      scheduleRun();
+    }
+
     return refreshGate.waitForFresh();
+  }
+
+  /** reader 在 await 返回后及真正发布/提交前复核的业务授权。 */
+  function isCurrent(receipt: SettlementReadinessReceipt): boolean {
+    return !termination.isTerminated() && refreshGate.isCurrent(receipt);
   }
 
   /**
@@ -624,9 +709,8 @@ export function createPostTradeConsistencyRuntime(
     scheduleRun();
   }
 
-  /** 同步停止后续刷新调度，不抢先启动异步排空。 */
-  function stopScheduling(): void {
-    started = false;
+  /** 撤销普通 S 的 timer 及回调身份，受控 baseline 与 stop 共用，不取消已 issued 的 IO。 */
+  function cancelScheduledTimers(): void {
     const runHandle = runTimerHandle;
     const retryHandle = retryTimerHandle;
     runTimerToken = null;
@@ -640,6 +724,12 @@ export function createPostTradeConsistencyRuntime(
     }
   }
 
+  /** 同步停止后续刷新调度，不抢先启动异步排空，也不清除待处理 need/dirty。 */
+  function stopScheduling(): void {
+    started = false;
+    cancelScheduledTimers();
+  }
+
   /**
    * 同一停止周期复用同一 Promise，包含账户/持仓请求及订阅提交回调。
    * stop 期间已开始的事实提交继续收口；Quote 必须等待本排空成功后才能停止。
@@ -647,8 +737,16 @@ export function createPostTradeConsistencyRuntime(
   function stopAndDrain(): Promise<void> {
     if (drainPromise !== null) return drainPromise;
 
+    abortWaiting();
     stopScheduling();
-    drainPromise = inFlightPromise ?? Promise.resolve();
+    // 撤去尚未issued的本参与者，不把已issued结果/真实提交回调提前裁成ABORTED。
+    currentRefreshHandle?.cancelIfNotIssued();
+    drainPromise = Promise.allSettled([
+      inFlightPromise ?? Promise.resolve(),
+      snapshot.waitForIssuedDrain(),
+    ]).then((results) => {
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+    });
     return drainPromise;
   }
 
@@ -662,21 +760,62 @@ export function createPostTradeConsistencyRuntime(
 
     pendingNeed = createEmptyRefreshNeed();
     pendingVersion = null;
+    businessDirty = false;
+  }
+
+  /** 读取可变运行态，受控 await 后不能沿用进入时的静态判断。 */
+  function canCompleteRebuildBaseline(): boolean {
+    return started && !termination.isTerminated() && snapshot.getStatus().admission !== 'CLOSED';
   }
 
   /**
-   * 在重建链路确认无积压、无在途时补齐 freshness 基线。
-   *
-   * 若仍存在 pending 或 in-flight，则不得提前推进 fresh，避免向等待方暴露伪 fresh 状态。
+   * 由开盘 owner 消费已完成重建的 paired 基线，真实完成订阅与所有积压/dirty 业务后才签 fresh。
+   * 原 token 在 await 中失效则保留 need，返回 false 交回开盘 owner 重载；不新增读取准入。
+   * 外部失败沿 lifecycle 原重试通道抛出，内部错误继续 fail-fast；停止排空持有真实在途 Promise。
    */
-  function completeRebuildBaseline(): void {
-    if (termination.isTerminated() || inFlight || hasRefreshNeed(pendingNeed)) {
-      return;
-    }
+  async function completeRebuildBaseline(): Promise<boolean> {
+    // start() 可能已为积压安排 0ms；受控 owner 接手前必须撤销，不能让 OPEN startup 出现第二个重试 owner。
+    cancelScheduledTimers();
+    try {
+      if (!canCompleteRebuildBaseline()) {
+        stopScheduling();
+        return false;
+      }
 
-    const { staleVersion } = refreshGate.getStatus();
-    refreshGate.markFresh(staleVersion);
-    emitFreshReached();
+      const token = snapshot.getView().token;
+      if (inFlight) await inFlightPromise;
+
+      // 已在途普通批的 finally 也可能留下 timer，排空后再次收回尚未 issued 的调度。
+      cancelScheduledTimers();
+      if (
+        !canCompleteRebuildBaseline() ||
+        !snapshot.isCurrent(token, { account: true, positions: true, paired: true })
+      ) {
+        stopScheduling();
+        return false;
+      }
+
+      const completing = runRefresh(token);
+      // 外部 baseline 失败由 await 调用方进入 lifecycle 重试；真实 IO 已 settled，drain 不重复升级该已处理外错。
+      // 内部错误仍保留在 drain 通道，且立即观察防止等待原 caller 收口前产生未处理拒绝。
+      inFlightPromise = completing.catch((error: unknown) => {
+        if (!isExternalApiRequestError(error)) throw error;
+      });
+      void inFlightPromise.catch(termination.reportFatalError);
+      await completing;
+      const ready =
+        !businessDirty &&
+        !hasRefreshNeed(pendingNeed) &&
+        refreshGate.getStatus().ready &&
+        snapshot.isCurrent(token, { account: true, positions: true, paired: true });
+      if (!ready) stopScheduling();
+
+      return ready;
+    } catch (error) {
+      // 失败与失效只交回原 lifecycle/startup owner；保留 need/dirty，不由普通 S 自行补签 ready。
+      stopScheduling();
+      throw error;
+    }
   }
 
   return {
@@ -684,6 +823,7 @@ export function createPostTradeConsistencyRuntime(
     recordSettlementRefreshNeed,
     getStatus,
     waitForFresh,
+    isCurrent,
     onFreshReached,
     stopScheduling,
     abortWaiting,

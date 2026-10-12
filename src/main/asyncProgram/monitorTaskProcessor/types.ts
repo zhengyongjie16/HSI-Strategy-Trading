@@ -1,7 +1,12 @@
+import type { PeriodicSwitchTaskData } from '../../../types/periodicSwitch.js';
 import type { PeriodicSwitchWakeupRuntime } from '../../periodicSwitchWakeupRuntime/types.js';
 import type { SwitchWakeupRuntime } from '../../monitorQuoteEventRuntime/types.js';
 import type { MonitorTaskQueue } from '../monitorTaskQueue/types.js';
-import type { LastState, MonitorContext } from '../../../types/state.js';
+import type { MonitorContext } from '../../../types/state.js';
+import type {
+  AccountPositionSnapshot,
+  SnapshotRefreshHandle,
+} from '../../../types/accountPosition.js';
 import type { RawOrderFromAPI, Trader, MarketDataClient } from '../../../types/services.js';
 import type { QuoteSubscriptionRuntime } from '../../quoteSubscriptionRuntime/types.js';
 import type { RuntimeClock, RuntimeScheduler, RuntimeTermination } from '../../../types/runtime.js';
@@ -19,31 +24,18 @@ export type SeatSnapshot = Readonly<{
 }>;
 
 /**
- * 自动换标 Tick 任务数据。
- * 类型用途：周期换标检查任务数据，携带入队时席位快照与时间信息；不携带交易时段快照。
- * 数据来源：由 PeriodicSwitchWakeupRuntime 基于当前席位 baseline 组装并入队。
- * 使用范围：仅 monitorTaskProcessor 与周期换标任务 owner 内部使用。
- */
-export type AutoSymbolTickTaskData = Readonly<{
-  direction: 'LONG' | 'SHORT';
-  seatVersion: number;
-  symbol: string;
-  lastSeatActivatedAt: number;
-  currentTimeMs: number;
-}>;
-
-/**
  * 席位刷新任务数据。
- * 类型用途：seat 进入 ACTIVATING 后触发的激活屏障任务数据，仅携带席位校验与标的信息；行情统一在执行时获取，避免入队快照与执行态双真相。
+ * 类型用途：seat 进入 ACTIVATING 后触发的激活屏障任务数据，固定入队 dayEpoch 与席位身份；行情统一在执行时获取。
  * 数据来源：由 SeatActivationDispatcher 在 seat 进入 ACTIVATING 时组装并入队。
  * 使用范围：仅 monitorTaskProcessor、SeatActivationDispatcher 内部使用。
  */
 export type SeatRefreshTaskData = Readonly<{
+  dayEpoch: number;
   direction: 'LONG' | 'SHORT';
   seatVersion: number;
   previousSymbol: string | null;
   nextSymbol: string;
-  callPrice?: number | null;
+  callPrice?: string | null;
   symbolName: string | null;
   apiRetryAttempt?: number;
 }>;
@@ -56,6 +48,7 @@ export type SeatRefreshTaskData = Readonly<{
  */
 export type SeatRefreshRetryTimer = Readonly<{
   handle: ReturnType<typeof setTimeout>;
+  dayEpoch: number;
   direction: 'LONG' | 'SHORT';
   seatVersion: number;
   nextSymbol: string;
@@ -68,7 +61,7 @@ export type SeatRefreshRetryTimer = Readonly<{
  * 使用范围：monitorTaskProcessor、monitorTaskQueue、各任务 owner、app/runtime 装配层与相关测试共享使用。
  */
 export type MonitorTaskDataMap = Readonly<{
-  AUTO_SYMBOL_TICK: AutoSymbolTickTaskData;
+  AUTO_SYMBOL_TICK: PeriodicSwitchTaskData;
   SEAT_REFRESH: SeatRefreshTaskData;
 }>;
 
@@ -91,13 +84,13 @@ export type MonitorTaskStatus = 'processed' | 'skipped' | 'failed' | 'blocked';
 
 /**
  * 刷新辅助函数集合（席位刷新任务用工具）。
- * 类型用途：封装席位刷新任务所需的订单拉取与账户缓存刷新，供 MonitorTaskProcessor 内部调用。
+ * 类型用途：提供独立订单读取与使用 captured dayEpoch 的 canonical 成对请求，保留 receipt/cancel；不写 LastState 缓存。
  * 数据来源：由 MonitorTaskProcessor 实现模块注入或闭包提供。
  * 使用范围：仅 MonitorTaskProcessor 内部使用。
  */
 export type RefreshHelpers = Readonly<{
   ensureAllOrders: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
-  refreshAccountCaches: () => Promise<void>;
+  requestAccountPositionRefresh: (dayEpoch: number) => SnapshotRefreshHandle;
 }>;
 
 /**
@@ -113,6 +106,9 @@ export type MonitorTaskProcessorDeps = Readonly<{
   monitorContext: MonitorContext;
   trader: Trader;
   marketDataClient: MarketDataClient;
+
+  /** 同一 canonical owner 的最小读取与受控刷新能力；不授权本消费者 invalidate。 */
+  snapshot: Pick<AccountPositionSnapshot, 'getView' | 'isCurrent' | 'requestRefresh'>;
   quoteSubscriptionRuntime: Pick<
     QuoteSubscriptionRuntime,
     'retainSymbols' | 'releaseRetain' | 'waitForAdmission' | 'reconcilePositionHoldFromCurrentTruth'
@@ -122,7 +118,6 @@ export type MonitorTaskProcessorDeps = Readonly<{
     PeriodicSwitchWakeupRuntime,
     'markWaitingEmpty' | 'clearWaitingEmpty' | 'replanRouteAfterTask'
   >;
-  lastState: LastState;
 
   /** 生命周期门禁：false 时任务直接跳过 */
   getCanProcessTask?: () => boolean;

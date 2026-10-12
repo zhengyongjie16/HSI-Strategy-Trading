@@ -1,5 +1,6 @@
 /** 有状态替代策略验收：验证宿主 delayed emitter 与策略生命周期公共契约。 */
 import { describe, expect, it } from 'bun:test';
+import { createOpenRebuildContextFixture } from '../fixtures/openRebuildContext.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createSelectedStrategy } from '../../../src/app/startup/createSelectedStrategy.js';
 import { createSignalRuntimeDomain } from '../../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
@@ -83,7 +84,7 @@ function createSignalDomain(h: EventHarness) {
     start: () => {},
     stopAndDrain: async () => {},
     midnightClear: () => {},
-    completeRebuildBaseline: () => {},
+    completeRebuildBaseline: async () => true,
   };
   const monitorContext = createMonitorContextDouble({ strategy: h.strategy });
   const deps: SignalRuntimeDomainDeps = {
@@ -198,10 +199,16 @@ describe('stateful replacement strategy public contract', () => {
 
     h.lastState.currentDayKey = '2026-07-16';
     h.mutable.nowMs = Date.parse('2026-07-16T02:00:00.000Z');
-    await domain.openRebuild({
+    const ctx = await createOpenRebuildContextFixture({
       now: new Date(h.mutable.nowMs),
       runtime: { dayKey: '2026-07-16', canTradeNow: true, isTradingDay: true },
+      termination: h.termination,
     });
+    const result = await domain.openRebuild(ctx);
+    expect(result.status).toBe('COMMITTED');
+    if (result.status !== 'COMMITTED') throw new Error('Stateful strategy restart did not commit');
+
+    expect(result.snapshotToken).toBe(ctx.snapshotToken);
     h.publish();
     await Promise.resolve();
     const nextTimers = scheduler.timers.slice(firstTimers.length);

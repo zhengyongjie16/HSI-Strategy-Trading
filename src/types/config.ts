@@ -6,9 +6,9 @@ import type { OrderTypeConfig } from './signal.js';
  * 数据来源：配置解析。
  * 使用范围：AutoSearchConfig、自动寻标等；全项目可引用。
  */
-export type NumberRange = {
-  readonly min: number;
-  readonly max: number;
+export type DecimalRange = {
+  readonly min: string;
+  readonly max: string;
 };
 
 /**
@@ -22,16 +22,16 @@ export type AutoSearchConfig = {
   readonly autoSearchEnabled: boolean;
 
   /** 牛证最低距回收价百分比阈值（内部百分比值，正值；0.35 表示 0.35%；warrantList 原始值会在边界先做单位转换） */
-  readonly autoSearchMinDistancePctBull: number | null;
+  readonly autoSearchMinDistancePctBull: string | null;
 
   /** 熊证最低距回收价百分比阈值（内部百分比值，负值；-0.35 表示 -0.35%；warrantList 原始值会在边界先做单位转换） */
-  readonly autoSearchMinDistancePctBear: number | null;
+  readonly autoSearchMinDistancePctBear: string | null;
 
   /** 牛证分均成交额阈值 */
-  readonly autoSearchMinTurnoverPerMinuteBull: number | null;
+  readonly autoSearchMinTurnoverPerMinuteBull: string | null;
 
   /** 熊证分均成交额阈值 */
-  readonly autoSearchMinTurnoverPerMinuteBear: number | null;
+  readonly autoSearchMinTurnoverPerMinuteBear: string | null;
 
   /** 到期日最小月份 */
   readonly autoSearchExpiryMinMonths: number;
@@ -43,10 +43,10 @@ export type AutoSearchConfig = {
   readonly switchIntervalMinutes: number;
 
   /** 牛证距回收价换标阈值范围（内部百分比值，含边界触发） */
-  readonly switchDistanceRangeBull: NumberRange | null;
+  readonly switchDistanceRangeBull: DecimalRange | null;
 
   /** 熊证距回收价换标阈值范围（内部百分比值，含边界触发） */
-  readonly switchDistanceRangeBear: NumberRange | null;
+  readonly switchDistanceRangeBear: DecimalRange | null;
 };
 
 /**
@@ -90,13 +90,13 @@ export type MonitorConfig = {
   readonly orderOwnershipMapping: ReadonlyArray<string>;
 
   /** 单次目标交易金额 */
-  readonly targetNotional: number;
+  readonly targetNotional: string;
 
   /** 单标的最大持仓市值 */
-  readonly maxPositionNotional: number;
+  readonly maxPositionNotional: string;
 
   /** 单标的最大浮亏 */
-  readonly maxUnrealizedLossPerSymbol: number;
+  readonly maxUnrealizedLossPerSymbol: string;
 
   /** 买入间隔时间（秒） */
   readonly buyIntervalSeconds: number;

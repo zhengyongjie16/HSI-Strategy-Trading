@@ -1,4 +1,5 @@
 import type { RuntimeTermination } from '../../types/runtime.js';
+import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
@@ -31,6 +32,7 @@ export type PendingSeatActivation = Readonly<{
 export type SeatActivationDispatcherDeps = Readonly<{
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   symbolRegistry: SymbolRegistry;
+  snapshot: Pick<AccountPositionSnapshotReader, 'getView'>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
 }>;
 

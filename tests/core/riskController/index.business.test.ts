@@ -9,8 +9,6 @@ import { createRiskChecker } from '../../../src/core/riskController/index.js';
 import { createUnrealizedLossChecker } from '../../../src/core/riskController/unrealizedLossChecker.js';
 import { createUnrealizedLossMonitor } from '../../../src/core/riskController/unrealizedLossMonitor.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import type { DailyLossTracker } from '../../../src/types/risk.js';
-import type { OrderRecorder, RiskChecker, Trader } from '../../../src/types/services.js';
 import type {
   PositionLimitChecker,
   UnrealizedLossChecker,
@@ -48,7 +46,8 @@ function createUnrealizedLossCheckerStub(
   const base: UnrealizedLossChecker = {
     getUnrealizedLossData: getMissingUnrealizedLossData,
     clearUnrealizedLossData: () => {},
-    refresh: async () => {},
+    prepare: (_orderRecorder, symbol) => ({ symbol, data: { r1: '0', n1: 0 } }),
+    publish: () => {},
     check: () => ({ shouldLiquidate: false }),
   };
   return { ...base, ...overrides };
@@ -72,10 +71,10 @@ describe('riskController(index) business flow', () => {
     });
 
     const result = checker.checkBeforeOrder({
-      account: createAccountSnapshotDouble(500),
+      account: createAccountSnapshotDouble('500'),
       positions: [],
       signal: createSignalDouble('BUYCALL', 'BULL.HK'),
-      orderNotional: 5_000,
+      orderNotional: '5000',
     });
 
     expect(result.allowed).toBeFalse();
@@ -99,7 +98,7 @@ describe('riskController(index) business flow', () => {
       account: null,
       positions: [],
       signal: createSignalDouble('BUYCALL', 'BULL.HK'),
-      orderNotional: 5_000,
+      orderNotional: '5000',
     });
 
     expect(result.allowed).toBeFalse();
@@ -122,109 +121,128 @@ describe('riskController(index) business flow', () => {
     });
 
     const result = checker.checkBeforeOrder({
-      account: createAccountSnapshotDouble(100_000),
+      account: createAccountSnapshotDouble('100000'),
       positions: [],
       signal: createSignalDouble('BUYCALL', 'BULL.HK'),
-      orderNotional: 5_000,
+      orderNotional: '5000',
     });
 
     expect(result.allowed).toBeFalse();
     expect(result.reason).toBe('持仓市值超过限制');
   });
 
-  it('rethrows internal errors during unrealized loss refresh', () => {
-    const checker = createUnrealizedLossChecker({
-      maxUnrealizedLossPerSymbol: 1_000,
-    });
+  it('rethrows internal errors during unrealized loss preparation', () => {
+    const checker = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: '1000' });
     const internalError = new Error('order recorder broken');
-    const orderRecorder = {
-      getBuyOrdersForSymbol: () => {
+    const orderRecorder = createOrderRecorderDouble({
+      getCostBasis: () => {
         throw internalError;
       },
-    } as unknown as OrderRecorder;
+    });
 
-    expect(() => checker.refresh(orderRecorder, 'BULL.HK', true)).toThrow(internalError);
+    expect(() => checker.prepare(orderRecorder, 'BULL.HK', true, '0')).toThrow(internalError);
   });
 
-  it('calculates unrealized loss from refreshed R1/N1 and daily loss offset', async () => {
-    const checker = createUnrealizedLossChecker({
-      maxUnrealizedLossPerSymbol: 499,
-    });
-    const orderRecorder = {
-      getBuyOrdersForSymbol: () => [
-        { executedPrice: 10, executedQuantity: 80 },
-        { executedPrice: '20', executedQuantity: '10' },
-        { executedPrice: 0, executedQuantity: 100 },
-      ],
-    } as unknown as OrderRecorder;
-
-    await checker.refresh(orderRecorder, 'BULL.HK', true, null, -200);
-    const result = checker.check('BULL.HK', 7, true);
-
-    expect(checker.getUnrealizedLossData('BULL.HK')).toMatchObject({
-      r1: 1200,
-      n1: 90,
+  it('prepares exact R1/N1 without publishing and applies the daily loss offset synchronously', () => {
+    const checker = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: '499' });
+    const orderRecorder = createOrderRecorderDouble({
+      getCostBasis: () => ({ costAmount: '1000', quantity: 90 }),
     });
 
-    expect(result).toMatchObject({
-      shouldLiquidate: true,
-      quantity: 90,
-    });
-  });
+    const dailyLossTracker = createDailyLossTrackerDouble();
+    const now = new Date('2026-02-16T02:00:00.000Z');
+    const dailyPrepared = dailyLossTracker.prepareRecalculationFromAllOrders(
+      [],
+      { monitorSymbol: 'HSI.HK', orderOwnershipMapping: ['HSI'] },
+      now,
+      undefined,
+      new Set(['BULL.HK']),
+    );
+    expect(dailyPrepared.isCurrent()).toBeTrue();
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    dailyLossTracker.publishRecalculation(dailyPrepared);
+    expect(dailyPrepared.isCurrent()).toBeFalse();
+    expect(
+      dailyLossTracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        executedPrice: '10',
+        executedQuantity: 100,
+        executedTimeMs: now.getTime() - 2,
+        orderUpdatedAtMs: now.getTime() - 2,
+        orderId: 'DAILY-LOSS-BUY',
+      }).admission,
+    ).toBe('ADMITTED');
 
-  it('keeps the buy gate open when unrealized-loss cache is missing or the threshold is disabled', async () => {
-    const cacheMissingChecker = createUnrealizedLossChecker({
-      maxUnrealizedLossPerSymbol: 100,
-    });
-    expect(cacheMissingChecker.check('BULL.HK', 1, true)).toEqual({ shouldLiquidate: false });
-
-    const disabledChecker = createUnrealizedLossChecker({
-      maxUnrealizedLossPerSymbol: 0,
-    });
-    await disabledChecker.refresh(
-      createOrderRecorderDouble({
-        getBuyOrdersForSymbol: () => [
-          {
-            orderId: 'BULL-OPEN-1',
-            symbol: 'BULL.HK',
-            executedPrice: 10,
-            executedQuantity: 100,
-            executedTime: Date.now(),
-            submittedAt: new Date(),
-            updatedAt: new Date(),
-          },
-        ],
-      }),
+    expect(
+      dailyLossTracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        side: 'SELL',
+        executedPrice: '8',
+        executedQuantity: 100,
+        executedTimeMs: now.getTime() - 1,
+        orderUpdatedAtMs: now.getTime() - 1,
+        orderId: 'DAILY-LOSS-SELL',
+      }).admission,
+    ).toBe('ADMITTED');
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('-200');
+    const prepared = checker.prepare(
+      orderRecorder,
       'BULL.HK',
       true,
+      dailyLossTracker.getLossOffset('LONG'),
     );
+    expect(checker.getUnrealizedLossData('BULL.HK')).toBeUndefined();
+    expect(prepared).toEqual({ symbol: 'BULL.HK', data: { r1: '1200', n1: 90 } });
+    checker.publish(prepared);
+    const result = checker.check('BULL.HK', '7', true);
+    expect(checker.getUnrealizedLossData('BULL.HK')).toEqual({ r1: '1200', n1: 90 });
+    expect(result).toMatchObject({ shouldLiquidate: true, quantity: 90 });
+  });
 
-    expect(disabledChecker.check('BULL.HK', 1, true)).toEqual({ shouldLiquidate: false });
+  it('keeps the buy gate open when unrealized-loss cache is missing or the threshold is disabled', () => {
+    const cacheMissingChecker = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: '100' });
+    expect(cacheMissingChecker.check('BULL.HK', '1', true)).toEqual({ shouldLiquidate: false });
+    const disabledChecker = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: '0' });
+    disabledChecker.publish(
+      disabledChecker.prepare(
+        createOrderRecorderDouble({ getCostBasis: () => ({ costAmount: '1000', quantity: 100 }) }),
+        'BULL.HK',
+        true,
+        '0',
+      ),
+    );
+    expect(disabledChecker.check('BULL.HK', '1', true)).toEqual({ shouldLiquidate: false });
   });
 
   it('rethrows submitOrder API failure during protective liquidation', async () => {
+    const authorization = { revision: 1 };
+    const capturedRevision = authorization.revision;
+    const isCurrent = () => authorization.revision === capturedRevision;
     const monitor = createUnrealizedLossMonitor({
-      maxUnrealizedLossPerSymbol: 1_000,
+      maxUnrealizedLossPerSymbol: '1000',
     });
     const submitError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
       cause: new Error('submit timeout'),
     });
-    const riskChecker = {
+    const riskChecker = createRiskCheckerDouble({
       checkUnrealizedLoss: () => ({ shouldLiquidate: true, reason: 'loss limit', quantity: 100 }),
-    } as unknown as RiskChecker;
-    const trader = {
-      executeSignals: async () => {
+    });
+    const trader = createTraderDouble({
+      executeSignals: async (_signals, callerAuthorization) => {
+        expect(callerAuthorization).toBe(isCurrent);
+        expect(callerAuthorization()).toBeTrue();
         throw submitError;
       },
-    } as unknown as Trader;
-    const orderRecorder = {
-      clearBuyOrders: () => {},
-    } as unknown as OrderRecorder;
-    const dailyLossTracker = {
-      getLossOffset: () => 0,
-    } as unknown as DailyLossTracker;
+    });
+    const orderRecorder = createOrderRecorderDouble();
+    const dailyLossTracker = createDailyLossTrackerDouble();
 
     let caught: unknown = null;
     try {
@@ -232,11 +250,12 @@ describe('riskController(index) business flow', () => {
         symbol: 'BULL.HK',
         isLong: true,
         seatVersion: 2,
-        quote: createQuoteDouble('BULL.HK', 1.1, 100),
+        quote: createQuoteDouble('BULL.HK', '1.1', 100),
         riskChecker,
         trader,
         orderRecorder,
         dailyLossTracker,
+        isCurrent,
       });
     } catch (error) {
       caught = error;
@@ -246,8 +265,11 @@ describe('riskController(index) business flow', () => {
   });
 
   it('rethrows internal trader execution errors during protective liquidation', async () => {
+    const authorization = { revision: 1 };
+    const capturedRevision = authorization.revision;
+    const isCurrent = () => authorization.revision === capturedRevision;
     const monitor = createUnrealizedLossMonitor({
-      maxUnrealizedLossPerSymbol: 1_000,
+      maxUnrealizedLossPerSymbol: '1000',
     });
     const internalError = new TypeError('trader execution invariant broken');
 
@@ -255,7 +277,7 @@ describe('riskController(index) business flow', () => {
       symbol: 'BULL.HK',
       isLong: true,
       seatVersion: 2,
-      quote: createQuoteDouble('BULL.HK', 1.1, 100),
+      quote: createQuoteDouble('BULL.HK', '1.1', 100),
       riskChecker: createRiskCheckerDouble({
         checkUnrealizedLoss: () => ({
           shouldLiquidate: true,
@@ -264,12 +286,15 @@ describe('riskController(index) business flow', () => {
         }),
       }),
       trader: createTraderDouble({
-        executeSignals: async () => {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(callerAuthorization).toBe(isCurrent);
+          expect(callerAuthorization()).toBeTrue();
           throw internalError;
         },
       }),
       orderRecorder: createOrderRecorderDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
+      isCurrent,
     });
 
     let caught: unknown = null;
@@ -283,8 +308,11 @@ describe('riskController(index) business flow', () => {
   });
 
   it('records branded non-submit API failures without local liquidation mutations', async () => {
+    const authorization = { revision: 1 };
+    const capturedRevision = authorization.revision;
+    const isCurrent = () => authorization.revision === capturedRevision;
     const monitor = createUnrealizedLossMonitor({
-      maxUnrealizedLossPerSymbol: 1_000,
+      maxUnrealizedLossPerSymbol: '1000',
     });
     const externalError = await createExternalApiRequestError({
       operation: 'QuoteContext.realtimeQuote',
@@ -299,19 +327,21 @@ describe('riskController(index) business flow', () => {
       symbol: 'BULL.HK',
       isLong: true,
       seatVersion: 2,
-      quote: createQuoteDouble('BULL.HK', 1.1, 100),
+      quote: createQuoteDouble('BULL.HK', '1.1', 100),
       riskChecker: createRiskCheckerDouble({
         checkUnrealizedLoss: () => ({
           shouldLiquidate: true,
           reason: 'loss limit',
           quantity: 100,
         }),
-        refreshUnrealizedLossData: async () => {
+        publishUnrealizedLossData: () => {
           refreshedUnrealizedLoss = true;
         },
       }),
       trader: createTraderDouble({
-        executeSignals: async () => {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(callerAuthorization).toBe(isCurrent);
+          expect(callerAuthorization()).toBeTrue();
           executionAttempts += 1;
           throw externalError;
         },
@@ -322,6 +352,7 @@ describe('riskController(index) business flow', () => {
         },
       }),
       dailyLossTracker: createDailyLossTrackerDouble(),
+      isCurrent,
     });
 
     await execution;
@@ -331,25 +362,28 @@ describe('riskController(index) business flow', () => {
   });
 
   it('rethrows local cleanup errors after protective liquidation is submitted', async () => {
+    const authorization = { revision: 1 };
+    const capturedRevision = authorization.revision;
+    const isCurrent = () => authorization.revision === capturedRevision;
     const monitor = createUnrealizedLossMonitor({
-      maxUnrealizedLossPerSymbol: 1_000,
+      maxUnrealizedLossPerSymbol: '1000',
     });
     const cleanupError = new Error('refresh failed after liquidation submitted');
-    const riskChecker = {
+    const riskChecker = createRiskCheckerDouble({
       checkUnrealizedLoss: () => ({ shouldLiquidate: true, reason: 'loss limit', quantity: 100 }),
-      refreshUnrealizedLossData: async () => {
+      prepareUnrealizedLossData: () => {
         throw cleanupError;
       },
-    } as unknown as RiskChecker;
-    const trader = {
-      executeSignals: async () => ({ executedOrderIds: ['order-1'] }),
-    } as unknown as Trader;
-    const orderRecorder = {
-      clearBuyOrders: () => {},
-    } as unknown as OrderRecorder;
-    const dailyLossTracker = {
-      getLossOffset: () => 0,
-    } as unknown as DailyLossTracker;
+    });
+    const trader = createTraderDouble({
+      executeSignals: async (_signals, callerAuthorization) => {
+        expect(callerAuthorization).toBe(isCurrent);
+        expect(callerAuthorization()).toBeTrue();
+        return { executedOrderIds: ['order-1'] };
+      },
+    });
+    const orderRecorder = createOrderRecorderDouble();
+    const dailyLossTracker = createDailyLossTrackerDouble();
 
     let caught: unknown = null;
     try {
@@ -357,11 +391,12 @@ describe('riskController(index) business flow', () => {
         symbol: 'BULL.HK',
         isLong: true,
         seatVersion: 2,
-        quote: createQuoteDouble('BULL.HK', 1.1, 100),
+        quote: createQuoteDouble('BULL.HK', '1.1', 100),
         riskChecker,
         trader,
         orderRecorder,
         dailyLossTracker,
+        isCurrent,
       });
     } catch (error) {
       caught = error;
@@ -371,27 +406,28 @@ describe('riskController(index) business flow', () => {
   });
 
   it('rethrows local sync failure after protective liquidation order is submitted remotely', async () => {
+    const authorization = { revision: 1 };
+    const capturedRevision = authorization.revision;
+    const isCurrent = () => authorization.revision === capturedRevision;
     const monitor = createUnrealizedLossMonitor({
-      maxUnrealizedLossPerSymbol: 1_000,
+      maxUnrealizedLossPerSymbol: '1000',
     });
     const localSyncError = new Error('order monitor track failed');
     const syncFailure = new Error('order submitted but local sync failed: order-1', {
       cause: localSyncError,
     });
-    const riskChecker = {
+    const riskChecker = createRiskCheckerDouble({
       checkUnrealizedLoss: () => ({ shouldLiquidate: true, reason: 'loss limit', quantity: 100 }),
-    } as unknown as RiskChecker;
-    const trader = {
-      executeSignals: async () => {
+    });
+    const trader = createTraderDouble({
+      executeSignals: async (_signals, callerAuthorization) => {
+        expect(callerAuthorization).toBe(isCurrent);
+        expect(callerAuthorization()).toBeTrue();
         throw syncFailure;
       },
-    } as unknown as Trader;
-    const orderRecorder = {
-      clearBuyOrders: () => {},
-    } as unknown as OrderRecorder;
-    const dailyLossTracker = {
-      getLossOffset: () => 0,
-    } as unknown as DailyLossTracker;
+    });
+    const orderRecorder = createOrderRecorderDouble();
+    const dailyLossTracker = createDailyLossTrackerDouble();
 
     let caught: unknown = null;
     try {
@@ -399,11 +435,12 @@ describe('riskController(index) business flow', () => {
         symbol: 'BULL.HK',
         isLong: true,
         seatVersion: 2,
-        quote: createQuoteDouble('BULL.HK', 1.1, 100),
+        quote: createQuoteDouble('BULL.HK', '1.1', 100),
         riskChecker,
         trader,
         orderRecorder,
         dailyLossTracker,
+        isCurrent,
       });
     } catch (error) {
       caught = error;
@@ -412,24 +449,105 @@ describe('riskController(index) business flow', () => {
     expect(caught).toBe(syncFailure);
   });
 
+  it('keeps a real protective broker ID after authorization expires without clearing buys or publishing risk', async () => {
+    const authorization = { revision: 1 };
+    const capturedRevision = authorization.revision;
+    const isCurrent = () => authorization.revision === capturedRevision;
+    let releaseAcknowledgement: () => void = () => {
+      throw new Error('Acknowledgement release not initialized');
+    };
+
+    let confirmSubmission: () => void = () => {
+      throw new Error('Submission observation not initialized');
+    };
+    const acknowledgement = new Promise<void>((resolve) => {
+      releaseAcknowledgement = resolve;
+    });
+    const submissionStarted = new Promise<void>((resolve) => {
+      confirmSubmission = resolve;
+    });
+    let submitAttempts = 0;
+    let clearedBuyOrders = 0;
+    let publishedRisk = 0;
+    const acknowledgedOrderIds: string[] = [];
+    const orderRecorder = createOrderRecorderDouble({
+      getCostBasis: () => ({ costAmount: '200', quantity: 100 }),
+      clearBuyOrders: () => {
+        clearedBuyOrders += 1;
+      },
+    });
+    const unrealizedLossChecker = createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: '10',
+    });
+    unrealizedLossChecker.publish(
+      unrealizedLossChecker.prepare(orderRecorder, 'BULL.HK', true, '0'),
+    );
+    const riskChecker = createRiskChecker({
+      warrantRiskChecker: createWarrantCheckerStub(),
+      positionLimitChecker: createPositionLimitCheckerStub(),
+      unrealizedLossChecker: {
+        ...unrealizedLossChecker,
+        publish: (prepared) => {
+          publishedRisk += 1;
+          unrealizedLossChecker.publish(prepared);
+        },
+      },
+    });
+    const monitor = createUnrealizedLossMonitor({ maxUnrealizedLossPerSymbol: '10' });
+    const execution = monitor.monitorDirectionalUnrealizedLoss({
+      symbol: 'BULL.HK',
+      isLong: true,
+      seatVersion: 2,
+      quote: createQuoteDouble('BULL.HK', '1', 100),
+      riskChecker,
+      orderRecorder,
+      dailyLossTracker: createDailyLossTrackerDouble(),
+      isCurrent,
+      trader: createTraderDouble({
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(callerAuthorization).toBe(isCurrent);
+          expect(callerAuthorization()).toBeTrue();
+          submitAttempts += 1;
+          expect(signals[0]?.isProtectiveLiquidation).toBeTrue();
+          expect(signals[0]?.seatVersion).toBe(2);
+          confirmSubmission();
+          await acknowledgement;
+          expect(callerAuthorization()).toBeFalse();
+          acknowledgedOrderIds.push('BROKER-PROTECTIVE-1');
+          return { executedOrderIds: ['BROKER-PROTECTIVE-1'] };
+        },
+      }),
+    });
+    await submissionStarted;
+    authorization.revision += 1;
+    releaseAcknowledgement();
+    await execution;
+
+    expect(acknowledgedOrderIds).toEqual(['BROKER-PROTECTIVE-1']);
+    expect(submitAttempts).toBe(1);
+    expect(clearedBuyOrders).toBe(0);
+    expect(publishedRisk).toBe(0);
+    expect(unrealizedLossChecker.getUnrealizedLossData('BULL.HK')).toEqual({ r1: '200', n1: 100 });
+  });
+
   it('builds unrealized-loss metrics from cached R1/N1 and current price', () => {
     const checker = createRiskChecker({
       warrantRiskChecker: createWarrantCheckerStub(),
       unrealizedLossChecker: createUnrealizedLossCheckerStub({
         getUnrealizedLossData: () => ({
-          r1: 1_000,
+          r1: '1000',
           n1: 100,
         }),
       }),
       positionLimitChecker: createPositionLimitCheckerStub(),
     });
 
-    const metrics = checker.getUnrealizedLossMetrics('BULL.HK', 12);
+    const metrics = checker.getUnrealizedLossMetrics('BULL.HK', '12');
     expect(metrics).toEqual({
-      r1: 1_000,
+      r1: '1000',
       n1: 100,
-      r2: 1_200,
-      unrealizedPnL: 200,
+      r2: '1200',
+      unrealizedPnL: '200',
     });
   });
 });

@@ -6,6 +6,7 @@
  * openRebuild 按 runtime owner 顺序恢复处理器并完成 rebuild baseline
  */
 import { describe, expect, it } from 'bun:test';
+import { createOpenRebuildContextFixture } from '../../fixtures/openRebuildContext.js';
 import { createSignalRuntimeDomain } from '../../../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import type { SignalRuntimeDomainDeps } from '../../../../src/main/lifecycle/cacheDomains/types.js';
 import type {
@@ -168,8 +169,9 @@ describe('createSignalRuntimeDomain', () => {
       midnightClear: () => {
         globalCalls.push('postTradeConsistencyRuntime.midnightClear');
       },
-      completeRebuildBaseline: () => {
+      completeRebuildBaseline: async () => {
         globalCalls.push('postTradeConsistencyRuntime.completeRebuildBaseline');
+        return true;
       },
     };
     const trader = {
@@ -319,7 +321,7 @@ describe('createSignalRuntimeDomain', () => {
     expect(cancelAllCount).toBe(1);
   });
 
-  it('openRebuild 按全局顺序先恢复 postTradeConsistencyRuntime，再启动 runtime 与处理器', async () => {
+  it('openRebuild 先完成 quote 与 postTrade 业务 baseline，再启动 runtime 与处理器', async () => {
     const globalCalls: string[] = [];
     const buyProcessor = createOrderedProcessor('buyProcessor', globalCalls);
     const sellProcessor = createOrderedProcessor('sellProcessor', globalCalls);
@@ -461,8 +463,9 @@ describe('createSignalRuntimeDomain', () => {
         midnightClear: () => {
           globalCalls.push('postTradeConsistencyRuntime.midnightClear');
         },
-        completeRebuildBaseline: () => {
+        completeRebuildBaseline: async () => {
           globalCalls.push('postTradeConsistencyRuntime.completeRebuildBaseline');
+          return true;
         },
       },
       buyTaskQueue: createTaskQueueDouble<BuyTaskType>([], () => {
@@ -477,16 +480,22 @@ describe('createSignalRuntimeDomain', () => {
     };
 
     const domain = createSignalRuntimeDomain(deps);
-    await domain.openRebuild({
+    const ctx = await createOpenRebuildContextFixture({
       now: new Date(),
       runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
+      termination: deps.termination,
     });
+    const result = await domain.openRebuild(ctx);
+    expect(result.status).toBe('COMMITTED');
+    if (result.status !== 'COMMITTED') throw new Error('Signal domain work did not commit');
+
+    expect(result.snapshotToken).toBe(ctx.snapshotToken);
 
     expect(globalCalls).toEqual([
+      'quoteSubscriptionRuntime.reconcileFromCurrentTruth',
       'postTradeConsistencyRuntime.resetAbort',
       'postTradeConsistencyRuntime.start',
       'postTradeConsistencyRuntime.completeRebuildBaseline',
-      'quoteSubscriptionRuntime.reconcileFromCurrentTruth',
       'tradingQuoteDisplayRuntime.start',
       'quoteSubscriptionRuntime.start',
       'seatRuntimeCleanupDispatcher.start',

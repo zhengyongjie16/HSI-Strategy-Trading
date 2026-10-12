@@ -100,15 +100,6 @@ function appendApiRetryCandidate(candidates: Array<TimeWakeupCandidate>, current
   appendFutureCandidate(candidates, currentMs + TRADING.INTERVAL_MS, currentMs);
 }
 
-async function refreshDoomsdayPositionFacts(params: {
-  readonly trader: TimeWakeupEvaluationContext['trader'];
-  readonly lastState: TimeWakeupEvaluationContext['lastState'];
-}): Promise<void> {
-  const positions = await params.trader.getStockPositions();
-  params.lastState.cachedPositions = positions;
-  params.lastState.positionCache.update(positions);
-}
-
 function resolveDayBoundaryMs(date: Date, minuteOfDay: number): number | null {
   const dayStartMs = resolveHKDayStartUtcMs(getRequiredHKDateKey(date));
   if (dayStartMs === null) {
@@ -218,16 +209,18 @@ export async function timeWakeupEvaluationProgram({
   marketDataClient,
   trader,
   lastState,
+  snapshot,
   doomsdayProtection,
   tradingConfig,
   monitorContext,
   tradingGateEventRuntime,
-  quoteSubscriptionRuntime,
   dayLifecycleManager,
   now,
 }: TimeWakeupEvaluationContext): Promise<TimeWakeupEvaluationResult> {
   const currentTime = now();
   const currentMs = currentTime.getTime();
+  // 首个 await 前固定 origin epoch，不能让日切后的新 view 洗白旧时间评估。
+  const dayEpoch = snapshot.getView().token.dayEpoch;
   const previousCanTrade = lastState.canTrade;
   const previousTakeoverActive = takeoverStateByLastState.get(lastState) ?? false;
   const candidates: Array<TimeWakeupCandidate> = [];
@@ -403,10 +396,10 @@ export async function timeWakeupEvaluationProgram({
   }
 
   const tradeActionEnabled = canTradeNow;
-  const positions = lastState.cachedPositions;
   const isDoomsdayActionLive = (): boolean => {
     const liveTime = now();
     return (
+      snapshot.getView().token.dayEpoch === dayEpoch &&
       lastState.isTradingEnabled &&
       isInContinuousHKSession(liveTime, isHalfDayToday) &&
       (isWithinDoomsdayBuyCutoffWindow(liveTime, isHalfDayToday) ||
@@ -430,17 +423,22 @@ export async function timeWakeupEvaluationProgram({
         );
       }
 
+      if (!isDoomsdayActionLive()) return createEvaluationResult(currentTime, candidates);
+
+      const clearanceView = snapshot.getView();
+      if (clearanceView.token.dayEpoch !== dayEpoch)
+        return createEvaluationResult(currentTime, candidates);
+
       const clearanceResult = await doomsdayProtection.executeClearance({
         currentTime,
         isHalfDay: isHalfDayToday,
         isLive: isDoomsdayActionLive,
-        positions,
+        positions: clearanceView.positions,
         monitorContext,
         trader,
         marketDataClient,
         lastState,
-        onPositionsCommitted: () =>
-          quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth(),
+        snapshot,
       });
       appendFutureCandidate(candidates, clearanceResult.nextRetryAtMs, currentMs);
       if (
@@ -451,49 +449,9 @@ export async function timeWakeupEvaluationProgram({
         return createEvaluationResult(currentTime, candidates);
       }
     } catch (error) {
-      if (!isExternalApiRequestError(error)) {
+      // UNKNOWN 无法证明远端没有执行，必须保留原错误进入顶层 fatal/cleanup，不能刷新或重提。
+      if (isUnconfirmedOrderSubmissionError(error) || !isExternalApiRequestError(error)) {
         throw error;
-      }
-
-      if (isUnconfirmedOrderSubmissionError(error)) {
-        let positionFactsRefreshed = false;
-        let positionSubscriptionReconciled = false;
-        try {
-          await refreshDoomsdayPositionFacts({
-            trader,
-            lastState,
-          });
-          positionFactsRefreshed = true;
-          await quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth();
-          positionSubscriptionReconciled = true;
-        } catch (refreshError) {
-          if (!isExternalApiRequestError(refreshError)) {
-            throw refreshError;
-          }
-
-          logger.warn(
-            positionFactsRefreshed
-              ? '[TimeWakeupEvaluation] 末日清仓提交结果未知后的持仓事实已刷新，但持仓订阅协调失败，等待系统级重评估'
-              : '[TimeWakeupEvaluation] 末日清仓提交结果未知后的持仓事实刷新失败，等待系统级重评估',
-            refreshError.message,
-          );
-        }
-
-        let outcomeMessage: string;
-        if (positionFactsRefreshed && positionSubscriptionReconciled) {
-          outcomeMessage =
-            '[TimeWakeupEvaluation] 末日清仓下单结果未知，已刷新持仓事实，等待系统级重评估';
-        } else if (positionFactsRefreshed) {
-          outcomeMessage =
-            '[TimeWakeupEvaluation] 末日清仓下单结果未知，已刷新持仓事实，但持仓订阅协调尚未完成，等待系统级重评估';
-        } else {
-          outcomeMessage =
-            '[TimeWakeupEvaluation] 末日清仓下单结果未知，持仓事实尚未刷新，等待系统级重评估';
-        }
-
-        logger.warn(outcomeMessage, error.message);
-        appendApiRetryCandidate(candidates, currentMs);
-        return createEvaluationResult(currentTime, candidates);
       }
 
       logger.warn(

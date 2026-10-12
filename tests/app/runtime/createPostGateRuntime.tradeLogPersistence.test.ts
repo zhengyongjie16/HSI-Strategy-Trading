@@ -147,7 +147,7 @@ function configurePostGateRuntimeTrader(): void {
 function configurePostGateRuntimeTraderWithPositionRefresh(): void {
   createTraderForTest = async () =>
     createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble(88_000),
+      getAccountSnapshot: async () => createAccountSnapshotDouble('88000'),
       getStockPositions: async () => [
         createPositionDouble({
           symbol: 'POS.HK',
@@ -306,7 +306,7 @@ describe('createPostGateRuntime trade log persistence', () => {
       monitorSymbol: 'HSI.HK',
       isLongSymbol: true,
       isProtectiveLiquidation: false,
-      executedPrice: 1.23,
+      executedPrice: '1.23',
       executedQuantity: 100,
       executedTimeMs,
     };
@@ -401,7 +401,7 @@ describe('createPostGateRuntime trade log persistence', () => {
       monitorSymbol: 'HSI.HK',
       isLongSymbol: true,
       isProtectiveLiquidation: true,
-      executedPrice: 1.01,
+      executedPrice: '1.01',
       executedQuantity: 200,
       executedTimeMs,
     };
@@ -457,6 +457,7 @@ describe('createPostGateRuntime trade log persistence', () => {
         requireTradingDay: false,
         resetRuntimeSubscriptions: false,
         hydrateCooldownFromTradeLog: false,
+        source: 'STARTUP',
       });
     } catch (error) {
       caught = error;

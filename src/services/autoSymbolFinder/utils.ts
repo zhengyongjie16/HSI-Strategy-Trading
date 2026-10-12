@@ -1,17 +1,14 @@
-import { WarrantStatus, type FilterWarrantExpiryDate } from 'longbridge';
+/** 自动寻标精确筛选：金融事实只接收普通文本，阈值和流动性判断不使用显示舍入。 */
+import type { MarketWarrantExpiryRange } from '../../types/marketPorts.js';
 import { EXPIRY_DATE_FILTERS } from '../../constants/index.js';
 import {
-  decimalAbs,
-  decimalDiv,
-  decimalEq,
-  decimalGt,
-  decimalLt,
-  decimalMul,
-  decimalSub,
-  decimalToNumberValue,
-  toDecimalValue,
-  toDecimalStrict,
-} from '../../utils/numeric/index.js';
+  canonicalDecimal,
+  compareRatios,
+  exactCompare,
+  exactMultiply,
+  exactSubtract,
+  formatRatio,
+} from '../../utils/numeric/exact.js';
 import type {
   DirectionalAutoSearchPolicy,
   EvaluatedWarrantCandidate,
@@ -25,96 +22,34 @@ import type {
   WarrantSelectionStage,
 } from './types.js';
 
-const DISTANCE_RATIO_TO_PERCENT_MULTIPLIER = 100;
-
-/**
- * 检查牛熊证状态是否为正常。
- * @param status 牛熊证状态枚举值
- * @returns true 表示状态为 Normal，可以交易
- */
-function isNormalStatus(status: WarrantListItem['status']): boolean {
-  return status === WarrantStatus.Normal;
-}
-
-/**
- * 判断共享策略方向是否为牛证方向。
- * @param policy 方向化自动寻标策略
- * @returns LONG 时返回 true，否则返回 false
- */
-function isBullPolicy(policy: DirectionalAutoSearchPolicy): boolean {
-  return policy.direction === 'LONG';
-}
-
-/**
- * 将 Longbridge warrantList.toCallPrice 原始小数比值转换为内部百分比值。
- * 默认行为：仅接受可解析的 Decimal / number / string；转换后返回百分比值，
- * 例如 `0.0036` 转为 `0.36`，表示 `0.36%`。
- *
- * @param rawDistanceRatio warrantList.toCallPrice 原始值（小数比值）
- * @returns 内部百分比值；无法解析时返回 null
- */
-function normalizeWarrantDistancePercentFromApiRatio(
-  rawDistanceRatio: WarrantListItem['toCallPrice'],
-): ReturnType<typeof toDecimalStrict> {
-  const distanceRatio = toDecimalStrict(rawDistanceRatio);
-  if (distanceRatio === null) {
+/** 解析中性金融事实；空缺可过滤，非法内部文本直接失败。 */
+function resolveEvaluatedWarrantCandidate(
+  warrant: WarrantListItem,
+  tradingMinutes: number,
+  minimum: string,
+): EvaluatedWarrantCandidate | null {
+  if (
+    !warrant.symbol ||
+    warrant.status !== 'NORMAL' ||
+    warrant.callPrice === null ||
+    warrant.callPrice === undefined ||
+    warrant.toCallPrice === null ||
+    warrant.toCallPrice === undefined ||
+    warrant.turnover === null ||
+    warrant.turnover === undefined
+  )
     return null;
-  }
 
-  return decimalMul(distanceRatio, DISTANCE_RATIO_TO_PERCENT_MULTIPLIER);
-}
+  const callPrice = canonicalDecimal(warrant.callPrice);
+  const turnover = canonicalDecimal(warrant.turnover);
+  const distancePct = exactMultiply(warrant.toCallPrice, '100');
+  if (exactCompare(callPrice, '0') <= 0 || exactCompare(turnover, '0') <= 0) return null;
 
-/**
- * 解析通过基础校验与流动性校验的候选快照。
- * 判定阶段保留 Decimal 精度，避免在进入双层候选带前降为 number。
- *
- * @param params 候选解析参数
- * @returns 合法候选快照，或 null
- */
-function resolveEvaluatedWarrantCandidate(params: {
-  readonly warrant: WarrantListItem;
-  readonly tradingMinutes: number;
-  readonly minTurnoverPerMinute: number;
-}): EvaluatedWarrantCandidate | null {
-  const { warrant, tradingMinutes, minTurnoverPerMinute } = params;
-  if (!warrant.symbol || !isNormalStatus(warrant.status)) {
-    return null;
-  }
+  const minutes = canonicalDecimal(String(tradingMinutes));
+  const hasMinutes = exactCompare(minutes, '0') > 0;
+  if (!hasMinutes && exactCompare(minimum, '0') > 0) return null;
 
-  const callPrice = toDecimalStrict(warrant.callPrice);
-  if (callPrice === null || !decimalGt(callPrice, 0)) {
-    return null;
-  }
-
-  const distancePct = normalizeWarrantDistancePercentFromApiRatio(warrant.toCallPrice);
-  if (distancePct === null) {
-    return null;
-  }
-
-  const turnover = toDecimalStrict(warrant.turnover);
-  if (turnover === null || !decimalGt(turnover, 0)) {
-    return null;
-  }
-
-  const hasTradingMinutes = tradingMinutes > 0;
-  const shouldFilterTurnover = hasTradingMinutes || minTurnoverPerMinute > 0;
-  if (shouldFilterTurnover) {
-    if (!hasTradingMinutes) {
-      return null;
-    }
-
-    const minTurnover = decimalMul(minTurnoverPerMinute, tradingMinutes);
-    if (decimalLt(turnover, minTurnover)) {
-      return null;
-    }
-  }
-
-  const turnoverPerMinute = hasTradingMinutes
-    ? decimalDiv(turnover, tradingMinutes)
-    : toDecimalValue(0);
-  if (decimalLt(turnoverPerMinute, minTurnoverPerMinute)) {
-    return null;
-  }
+  if (hasMinutes && exactCompare(turnover, exactMultiply(minimum, minutes)) < 0) return null;
 
   return {
     symbol: warrant.symbol,
@@ -122,210 +57,132 @@ function resolveEvaluatedWarrantCandidate(params: {
     callPrice,
     distancePct,
     turnover,
-    turnoverPerMinute,
+    tradingMinutes: hasMinutes ? minutes : '0',
   };
 }
 
-/**
- * 根据共享策略判断候选命中的候选带。
- *
- * @param distancePct 候选距回收价百分比
- * @param policy 方向化自动寻标策略
- * @returns 命中阶段；两层都不命中时返回 null
- */
+/** 主带/降级带均按精确文本严格比较，保留旧开区间政策。 */
 function resolveSelectionStage(
-  distancePct: EvaluatedWarrantCandidate['distancePct'],
+  distance: string,
   policy: DirectionalAutoSearchPolicy,
 ): WarrantSelectionStage | null {
-  const matchesPrimary = isBullPolicy(policy)
-    ? decimalGt(distancePct, policy.primaryThreshold)
-    : decimalLt(distancePct, policy.primaryThreshold);
-  if (matchesPrimary) {
-    return 'PRIMARY';
-  }
+  const primary = exactCompare(distance, policy.primaryThreshold);
+  if (policy.direction === 'LONG' ? primary > 0 : primary < 0) return 'PRIMARY';
 
-  const matchesDegraded =
-    decimalGt(distancePct, policy.degradedRange.min) &&
-    decimalLt(distancePct, policy.degradedRange.max);
-  return matchesDegraded ? 'DEGRADED' : null;
+  return exactCompare(distance, policy.degradedRange.min) > 0 &&
+    exactCompare(distance, policy.degradedRange.max) < 0
+    ? 'DEGRADED'
+    : null;
 }
 
-/**
- * 为已通过基础校验的候选附加命中阶段与距阈值差值。
- *
- * @param candidate 高精度候选快照
- * @param selectionStage 命中阶段
- * @param policy 方向化自动寻标策略
- * @returns 可参与排序的高精度候选
- */
-function buildRankedCandidate(
-  candidate: EvaluatedWarrantCandidate,
-  selectionStage: WarrantSelectionStage,
-  policy: DirectionalAutoSearchPolicy,
-): RankedWarrantCandidate {
-  return {
-    ...candidate,
-    selectionStage,
-    distanceDeltaToThreshold: decimalAbs(
-      decimalSub(candidate.distancePct, policy.primaryThreshold),
-    ),
-  };
-}
-
-/**
- * 判断候选是否应替换当前最佳候选。
- * 规则：距主阈值差值更小优先；若差值相同，分均成交额更高者优先；完全相同则保持原列表顺序。
- *
- * @param currentBest 当前最佳候选
- * @param nextCandidate 新候选
- * @returns 需要替换时返回 true
- */
+/** 先比精确距离差，再以原成交额/分钟数比率选优；完全相同时保持列表顺序。 */
 function shouldReplaceBestCandidate(
-  currentBest: RankedWarrantCandidate | null,
-  nextCandidate: RankedWarrantCandidate,
+  best: RankedWarrantCandidate | null,
+  next: RankedWarrantCandidate,
 ): boolean {
-  if (currentBest === null) {
-    return true;
-  }
+  if (best === null) return true;
 
-  const deltaComparison = decimalLt(
-    nextCandidate.distanceDeltaToThreshold,
-    currentBest.distanceDeltaToThreshold,
-  );
-  if (deltaComparison) {
-    return true;
-  }
+  const comparison = exactCompare(next.distanceDeltaToThreshold, best.distanceDeltaToThreshold);
+  if (comparison !== 0) return comparison < 0;
 
-  const deltaEqual = decimalEq(
-    nextCandidate.distanceDeltaToThreshold,
-    currentBest.distanceDeltaToThreshold,
-  );
-  return deltaEqual && decimalGt(nextCandidate.turnoverPerMinute, currentBest.turnoverPerMinute);
+  if (next.tradingMinutes === '0' || best.tradingMinutes === '0') return false;
+
+  return compareRatios(next.turnover, next.tradingMinutes, best.turnover, best.tradingMinutes) > 0;
 }
 
-/**
- * 将高精度候选转换为对外返回的 number 结构。
- *
- * @param candidate 高精度候选
- * @returns 对外返回的最佳候选
- */
+/** 分均成交额仅在对外日志投影处按既有零位政策舍入；不回流筛选和排序。 */
 function toWarrantCandidate(candidate: RankedWarrantCandidate): WarrantCandidate {
   return {
     symbol: candidate.symbol,
     name: candidate.name,
-    callPrice: decimalToNumberValue(candidate.callPrice),
-    distancePct: decimalToNumberValue(candidate.distancePct),
-    turnover: decimalToNumberValue(candidate.turnover),
-    turnoverPerMinute: decimalToNumberValue(candidate.turnoverPerMinute),
+    callPrice: candidate.callPrice,
+    distancePct: candidate.distancePct,
+    turnover: candidate.turnover,
+    turnoverPerMinute:
+      candidate.tradingMinutes === '0'
+        ? '0'
+        : formatRatio(candidate.turnover, candidate.tradingMinutes, 0, 'unsigned'),
     selectionStage: candidate.selectionStage,
-    distanceDeltaToThreshold: decimalToNumberValue(candidate.distanceDeltaToThreshold),
+    distanceDeltaToThreshold: candidate.distanceDeltaToThreshold,
   };
 }
 
-/**
- * 创建牛熊证列表缓存实例，用于避免频繁调用 API，支持 TTL 缓存和请求去重。
- * @returns 实现了 WarrantListCache 接口的缓存对象
- */
+/** 创建仅保存事实和在途查询的单缓存，clear 同时取消旧缓存可见性。 */
 export function createWarrantListCache(): WarrantListCache {
   const entries = new Map<string, WarrantListCacheEntry>();
   const inFlight = new Map<string, Promise<ReadonlyArray<WarrantListItem>>>();
-
   return {
-    getEntry(key: string): WarrantListCacheEntry | undefined {
-      return entries.get(key);
-    },
-    setEntry(key: string, entry: WarrantListCacheEntry): void {
+    getEntry: (key) => entries.get(key),
+    setEntry: (key, entry) => {
       entries.set(key, entry);
     },
-    getInFlight(key: string): Promise<ReadonlyArray<WarrantListItem>> | undefined {
-      return inFlight.get(key);
-    },
-    setInFlight(key: string, request: Promise<ReadonlyArray<WarrantListItem>>): void {
+    getInFlight: (key) => inFlight.get(key),
+    setInFlight: (key, request) => {
       inFlight.set(key, request);
     },
-    deleteInFlight(key: string): void {
+    deleteInFlight: (key) => {
       inFlight.delete(key);
     },
-    clear(): void {
+    clear: () => {
       entries.clear();
       inFlight.clear();
     },
   };
 }
 
-/**
- * 根据最小到期月数生成到期日筛选条件，避免选入临近到期标的。
- * @param expiryMinMonths 最小到期月数
- * @returns 对应的到期日筛选条件数组
- */
+/** 最小到期月数沿用旧技术整数分组，不把期限配置当金融金额。 */
 export function buildExpiryDateFilters(
   expiryMinMonths: number,
-): ReadonlyArray<FilterWarrantExpiryDate> {
-  if (!Number.isFinite(expiryMinMonths) || expiryMinMonths <= 3) {
-    return EXPIRY_DATE_FILTERS;
-  }
+): ReadonlyArray<MarketWarrantExpiryRange> {
+  if (!Number.isFinite(expiryMinMonths) || expiryMinMonths <= 3) return EXPIRY_DATE_FILTERS;
 
-  if (expiryMinMonths <= 6) {
-    return EXPIRY_DATE_FILTERS.slice(1);
-  }
-
-  return EXPIRY_DATE_FILTERS.slice(2);
+  return expiryMinMonths <= 6 ? EXPIRY_DATE_FILTERS.slice(1) : EXPIRY_DATE_FILTERS.slice(2);
 }
 
-/**
- * 从候选列表中选取最佳牛熊证标的。
- * - 主条件命中时，仅在主条件候选带内按"距主阈值最近"选优
- * - 只有主条件完全无候选时，才会进入降级候选带
- * - 判定阶段全程使用 Decimal，避免阈值邻域内的精度漂移
- * @param warrants 候选牛熊证列表
- * @param tradingMinutes 当日已交易分钟数，用于计算分均成交额
- * @param policy 方向化自动寻标策略
- * @returns 最佳候选与主层/降级层命中数量
- */
+/** 精确主带优先、降级带次之；不在判断前计算近似商或显示舍入。 */
 export function selectBestWarrant({
   warrants,
   tradingMinutes,
   policy,
 }: SelectBestWarrantInput): WarrantSelectionResult {
-  let bestPrimaryCandidate: RankedWarrantCandidate | null = null;
-  let bestDegradedCandidate: RankedWarrantCandidate | null = null;
+  if (!Number.isFinite(tradingMinutes)) throw new TypeError('Trading minutes must be finite');
+
+  if (exactCompare(policy.minTurnoverPerMinute, '0') < 0)
+    throw new RangeError('Minimum turnover must be nonnegative');
+
+  let bestPrimary: RankedWarrantCandidate | null = null;
+  let bestDegraded: RankedWarrantCandidate | null = null;
   let primaryCandidateCount = 0;
   let degradedCandidateCount = 0;
   for (const warrant of warrants) {
-    const evaluatedCandidate = resolveEvaluatedWarrantCandidate({
+    const candidate = resolveEvaluatedWarrantCandidate(
       warrant,
       tradingMinutes,
-      minTurnoverPerMinute: policy.minTurnoverPerMinute,
-    });
-    if (evaluatedCandidate === null) {
-      continue;
-    }
+      policy.minTurnoverPerMinute,
+    );
+    if (candidate === null) continue;
 
-    const selectionStage = resolveSelectionStage(evaluatedCandidate.distancePct, policy);
-    if (selectionStage === null) {
-      continue;
-    }
+    const stage = resolveSelectionStage(candidate.distancePct, policy);
+    if (stage === null) continue;
 
-    const rankedCandidate = buildRankedCandidate(evaluatedCandidate, selectionStage, policy);
-    if (selectionStage === 'PRIMARY') {
+    const delta = exactSubtract(candidate.distancePct, policy.primaryThreshold);
+    const ranked: RankedWarrantCandidate = {
+      ...candidate,
+      selectionStage: stage,
+      distanceDeltaToThreshold: exactCompare(delta, '0') < 0 ? exactSubtract('0', delta) : delta,
+    };
+    if (stage === 'PRIMARY') {
       primaryCandidateCount += 1;
-      if (shouldReplaceBestCandidate(bestPrimaryCandidate, rankedCandidate)) {
-        bestPrimaryCandidate = rankedCandidate;
-      }
-
-      continue;
-    }
-
-    degradedCandidateCount += 1;
-    if (shouldReplaceBestCandidate(bestDegradedCandidate, rankedCandidate)) {
-      bestDegradedCandidate = rankedCandidate;
+      if (shouldReplaceBestCandidate(bestPrimary, ranked)) bestPrimary = ranked;
+    } else {
+      degradedCandidateCount += 1;
+      if (shouldReplaceBestCandidate(bestDegraded, ranked)) bestDegraded = ranked;
     }
   }
 
-  const selectedCandidate = bestPrimaryCandidate ?? bestDegradedCandidate;
-
+  const selected = bestPrimary ?? bestDegraded;
   return {
-    candidate: selectedCandidate === null ? null : toWarrantCandidate(selectedCandidate),
+    candidate: selected === null ? null : toWarrantCandidate(selected),
     primaryCandidateCount,
     degradedCandidateCount,
   };

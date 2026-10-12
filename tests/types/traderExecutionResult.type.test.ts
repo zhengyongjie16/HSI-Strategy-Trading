@@ -4,8 +4,8 @@
  * 验证执行结果只有订单 ID 单一真相，不允许重新构造 count + ids 双字段。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide } from 'longbridge';
-import type { ExecuteSignalsResult } from '../../src/types/trader.js';
+import type { Trader } from '../../src/types/services.js';
+import type { ExecuteSignalsResult, SignalCallerAuthorization } from '../../src/types/trader.js';
 import type { BuySignal } from '../../src/types/signal.js';
 import type { ExecutableOrderCommand } from '../../src/core/trader/orderExecutor/types.js';
 
@@ -32,7 +32,8 @@ const mismatchedCommand: ExecutableOrderCommand = {
   kind: 'BUY',
   signal: longBuySignal,
   direction: 'SHORT',
-  side: OrderSide.Buy,
+  side: 'BUY',
+  executionPurpose: 'ORDINARY',
 };
 void mismatchedCommand;
 
@@ -48,7 +49,8 @@ const symmetricMismatchedCommand: ExecutableOrderCommand = {
   kind: 'BUY',
   signal: shortBuySignal,
   direction: 'LONG',
-  side: OrderSide.Buy,
+  side: 'BUY',
+  executionPurpose: 'ORDINARY',
 };
 void symmetricMismatchedCommand;
 
@@ -58,6 +60,24 @@ const duplicatedSymbolIdentity: ExecutableOrderCommand = {
   // @ts-expect-error 命令不得再声明独立 symbol 身份，必须读取窄 signal.symbol。
   symbol: 'OTHER.HK',
   direction: 'LONG',
-  side: OrderSide.Buy,
+  side: 'BUY',
+  executionPurpose: 'ORDINARY',
 };
 void duplicatedSymbolIdentity;
+
+/** 仅编译期验证实际Trader入口，未调用，不伪造SDK或默认授权。 */
+function assertTraderAuthorizationContract(
+  trader: Trader,
+  originalAuthorization: SignalCallerAuthorization,
+): void {
+  const result: Promise<ExecuteSignalsResult> = trader.executeSignals(
+    [longBuySignal],
+    originalAuthorization,
+  );
+  void result;
+  // @ts-expect-error 实际Trader入口必须携带原始工作授权，不能省略。
+  void trader.executeSignals([longBuySignal]);
+  // @ts-expect-error 布尔值不能代替可在await后重新核验的原始授权闭包。
+  void trader.executeSignals([longBuySignal], true);
+}
+void assertTraderAuthorizationContract;

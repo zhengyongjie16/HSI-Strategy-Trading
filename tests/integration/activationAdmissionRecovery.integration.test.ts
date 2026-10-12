@@ -6,6 +6,7 @@
  * 不可交易窗口、仅一次延迟重试、内部错误 fatal、普通事件 external fatal、旧排队命令隔离与订阅接棒。
  */
 import { describe, expect, it } from 'bun:test';
+import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
 import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
@@ -16,12 +17,12 @@ import { isSeatActive } from '../../src/utils/seat/guards.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import {
+  createAccountSnapshotDouble,
   createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createOrderRecorderDouble,
-  createPositionCacheDouble,
   createPositionDouble,
   createQuoteDouble,
   createTraderDouble,
@@ -75,7 +76,7 @@ function createOrderHoldSource(initialSymbols: ReadonlyArray<string>) {
   };
 }
 
-type ActivationHarness = ReturnType<typeof createActivationHarness>;
+type ActivationHarness = Awaited<ReturnType<typeof createActivationHarness>>;
 
 /**
  * 组装激活链路的真实组件：registry、quote runtime、seat activation dispatcher、监控任务处理器与 termination。
@@ -83,7 +84,7 @@ type ActivationHarness = ReturnType<typeof createActivationHarness>;
  * @param params 行情订阅替身、初始持仓与初始 order hold
  * @returns 集成测试使用的组件集合
  */
-function createActivationHarness(params: {
+async function createActivationHarness(params: {
   readonly marketDataClient: MarketDataClient;
   readonly orderHoldSymbols?: ReadonlyArray<string>;
   readonly positions?: ReadonlyArray<Position>;
@@ -99,9 +100,6 @@ function createActivationHarness(params: {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: null,
-    cachedPositions: [...initialPositions],
-    positionCache: createPositionCacheDouble(initialPositions),
     cachedTradingDayInfo: null,
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set(),
@@ -113,11 +111,21 @@ function createActivationHarness(params: {
     symbolRegistry,
     orderRecorder,
   });
+  let positions = [...initialPositions];
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions,
+    readPort: {
+      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+      getStockPositions: async () => positions,
+    },
+  });
   const trader = createTraderDouble({
     orderRecorder,
     getOrderHoldSymbols: orderHoldSource.getOrderHoldSymbols,
     onOrderHoldSymbolsChanged: orderHoldSource.onOrderHoldSymbolsChanged,
-    getStockPositions: async () => lastState.cachedPositions,
+    getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+    getStockPositions: async () => positions,
   });
   const termination = createTerminationRuntime({
     closeTradingGate: () => {},
@@ -132,12 +140,14 @@ function createActivationHarness(params: {
     marketDataClient: params.marketDataClient,
     trader,
     lastState,
+    snapshot,
     termination,
   });
   const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
   const seatActivationDispatcher = createSeatActivationDispatcher({
     termination,
     symbolRegistry,
+    snapshot,
     monitorTaskQueue,
   });
   const monitorTaskProcessor = createMonitorTaskProcessor({
@@ -159,13 +169,23 @@ function createActivationHarness(params: {
       clearWaitingEmpty: () => {},
       replanRouteAfterTask: () => {},
     },
-    lastState,
+    snapshot,
     getCanProcessTask: () => true,
     getCanTradeNow: () => true,
     termination,
   });
 
   return {
+    setPositions: (next: ReadonlyArray<Position>) => {
+      positions = [...next];
+      return snapshot.requestRefresh({
+        source: 'ACTIVATION_POSITIONS',
+        dayEpoch: snapshot.getView().token.dayEpoch,
+        refreshAccount: true,
+        refreshPositions: true,
+      }).result;
+    },
+    snapshot,
     monitorConfig,
     symbolRegistry,
     lastState,
@@ -183,7 +203,7 @@ function createActivationHarness(params: {
 const readQuotesForAll = async (symbols: Iterable<string>): Promise<Map<string, Quote | null>> => {
   const quotes = new Map<string, Quote | null>();
   for (const symbol of symbols) {
-    quotes.set(symbol, createQuoteDouble(symbol, 1, 100));
+    quotes.set(symbol, createQuoteDouble(symbol, '1', 100));
   }
 
   return quotes;
@@ -207,7 +227,7 @@ function activateLongSeat(symbolRegistry: SymbolRegistry, symbol: string): void 
 function markLongSeatActivating(
   symbolRegistry: SymbolRegistry,
   nextSymbol: string,
-  callPrice: number,
+  callPrice: string,
 ): void {
   symbolRegistry.updateSeatStateWithVersionBump('LONG', {
     symbol: nextSymbol,
@@ -241,7 +261,7 @@ describe('激活准入恢复集成', () => {
     const nextAttemptStarted = Promise.withResolvers<undefined>();
     const nextGate = Promise.withResolvers<undefined>();
     let nextAttempts = 0;
-    const harness = createActivationHarness({
+    const harness = await createActivationHarness({
       positions: [
         createPositionDouble({ symbol: OLD_SYMBOL, quantity: 100, availableQuantity: 100 }),
       ],
@@ -275,7 +295,7 @@ describe('激活准入恢复集成', () => {
     try {
       expect(subscribeCalls).toEqual([[MONITOR_SYMBOL, OLD_SYMBOL, BEAR_SYMBOL, ORDER_SYMBOL]]);
 
-      markLongSeatActivating(harness.symbolRegistry, NEXT_SYMBOL, 20_000);
+      markLongSeatActivating(harness.symbolRegistry, NEXT_SYMBOL, '20000');
       await nextAttemptStarted.promise;
 
       // 首次 admission 卡在外部请求中时排队一个无关 order hold 命令，验证失败回滚后它不会偷重试。
@@ -316,9 +336,12 @@ describe('激活准入恢复集成', () => {
       expect(harness.termination.getFatalState()).toEqual({ hasFatalError: false });
 
       // ACTIVE 后由 SEAT_BOUND 接棒；旧标的仅由持仓保留，清仓后立即释放。
-      harness.lastState.cachedPositions = [];
-      harness.lastState.positionCache.update([]);
-      await harness.quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth();
+      const receipt = await harness.setPositions([]);
+      if (receipt.status !== 'COMMITTED') throw new Error('Activation positions refresh aborted');
+
+      await harness.quoteSubscriptionRuntime.reconcilePositionHoldFromCurrentTruth(
+        receipt.snapshotToken,
+      );
 
       expect(harness.lastState.allTradingSymbols.has(OLD_SYMBOL)).toBe(false);
       expect(unsubscribeCalls.flat()).toContain(OLD_SYMBOL);
@@ -337,7 +360,7 @@ describe('激活准入恢复集成', () => {
     const subscribeCalls: string[][] = [];
     const gateEntered = Promise.withResolvers<undefined>();
     const gateRelease = Promise.withResolvers<undefined>();
-    const harness = createActivationHarness({
+    const harness = await createActivationHarness({
       positions: [
         createPositionDouble({ symbol: OLD_SYMBOL, quantity: 100, availableQuantity: 100 }),
       ],
@@ -369,7 +392,7 @@ describe('激活准入恢复集成', () => {
 
       // 旧命令占住串行链：先排队第二个旧命令，再让 activation retain 进入队列。
       harness.orderHoldSource.add('ORDER2.HK');
-      markLongSeatActivating(harness.symbolRegistry, NEXT_SYMBOL, 20_000);
+      markLongSeatActivating(harness.symbolRegistry, NEXT_SYMBOL, '20000');
       await waitUntil(() => harness.monitorTaskQueue.isEmpty());
       await Bun.sleep(20);
       gateRelease.resolve();
@@ -392,7 +415,7 @@ describe('激活准入恢复集成', () => {
   it('内部 mutation 错误进入 fatal，且不安排延迟重试也不回落 EMPTY', async () => {
     const internalError = new TypeError('subscribe invariant broken');
     let nextAttempts = 0;
-    const harness = createActivationHarness({
+    const harness = await createActivationHarness({
       marketDataClient: createMarketDataClientDouble({
         subscribeSymbols: async (symbols) => {
           if ([...symbols].includes(NEXT_SYMBOL)) {
@@ -412,7 +435,7 @@ describe('激活准入恢复集成', () => {
     harness.monitorTaskProcessor.start();
 
     try {
-      markLongSeatActivating(harness.symbolRegistry, NEXT_SYMBOL, 20_000);
+      markLongSeatActivating(harness.symbolRegistry, NEXT_SYMBOL, '20000');
       await waitUntil(() => harness.termination.getFatalState().hasFatalError);
 
       expect(harness.termination.getFatalState()).toEqual({
@@ -436,7 +459,7 @@ describe('激活准入恢复集成', () => {
       attempts: 1,
       cause: new Error('network unavailable'),
     });
-    const harness = createActivationHarness({
+    const harness = await createActivationHarness({
       marketDataClient: createMarketDataClientDouble({
         subscribeSymbols: async (symbols) => {
           if ([...symbols].includes('ORDER_FAIL.HK')) throw orderError;

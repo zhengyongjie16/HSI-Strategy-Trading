@@ -21,24 +21,24 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
 
 function createAutoSearchMonitorConfig(
   overrides: {
-    readonly autoSearchMinDistancePctBull?: number;
-    readonly autoSearchMinDistancePctBear?: number;
-    readonly switchDistanceRangeBull?: { readonly min: number; readonly max: number };
-    readonly switchDistanceRangeBear?: { readonly min: number; readonly max: number };
+    readonly autoSearchMinDistancePctBull?: string;
+    readonly autoSearchMinDistancePctBear?: string;
+    readonly switchDistanceRangeBull?: { readonly min: string; readonly max: string };
+    readonly switchDistanceRangeBear?: { readonly min: string; readonly max: string };
   } = {},
 ) {
   return createMonitorConfig({
     autoSearchConfig: {
       autoSearchEnabled: true,
-      autoSearchMinDistancePctBull: overrides.autoSearchMinDistancePctBull ?? 0.35,
-      autoSearchMinDistancePctBear: overrides.autoSearchMinDistancePctBear ?? -0.35,
-      autoSearchMinTurnoverPerMinuteBull: 100_000,
-      autoSearchMinTurnoverPerMinuteBear: 100_000,
+      autoSearchMinDistancePctBull: overrides.autoSearchMinDistancePctBull ?? '0.35',
+      autoSearchMinDistancePctBear: overrides.autoSearchMinDistancePctBear ?? '-0.35',
+      autoSearchMinTurnoverPerMinuteBull: '100000',
+      autoSearchMinTurnoverPerMinuteBear: '100000',
       autoSearchExpiryMinMonths: 3,
       autoSearchOpenDelayMinutes: 0,
       switchIntervalMinutes: 0,
-      switchDistanceRangeBull: overrides.switchDistanceRangeBull ?? { min: 0.2, max: 1.5 },
-      switchDistanceRangeBear: overrides.switchDistanceRangeBear ?? { min: -1.5, max: -0.2 },
+      switchDistanceRangeBull: overrides.switchDistanceRangeBull ?? { min: '0.2', max: '1.5' },
+      switchDistanceRangeBear: overrides.switchDistanceRangeBear ?? { min: '-1.5', max: '-0.2' },
     },
     orderOwnershipMapping: ['HSI'],
   });
@@ -77,21 +77,21 @@ describe('auto search distance config business flow', () => {
     });
 
     expect(
-      Object.is(config.monitor.autoSearchConfig.autoSearchMinDistancePctBull, 0.35),
+      Object.is(config.monitor.autoSearchConfig.autoSearchMinDistancePctBull, '0.35'),
     ).toBeTrue();
 
     expect(
-      Object.is(config.monitor.autoSearchConfig.autoSearchMinDistancePctBear, -0.35),
+      Object.is(config.monitor.autoSearchConfig.autoSearchMinDistancePctBear, '-0.35'),
     ).toBeTrue();
 
     expect(config.monitor.autoSearchConfig.switchDistanceRangeBull).toEqual({
-      min: 0.2,
-      max: 1.5,
+      min: '0.2',
+      max: '1.5',
     });
 
     expect(config.monitor.autoSearchConfig.switchDistanceRangeBear).toEqual({
-      min: -1.5,
-      max: -0.2,
+      min: '-1.5',
+      max: '-0.2',
     });
   });
 
@@ -103,14 +103,14 @@ describe('auto search distance config business flow', () => {
   it('rejects bull degraded range when switchDistanceRange.min is equal to or above the primary threshold', async () => {
     const invalidEqual = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBull: 0.35,
-        switchDistanceRangeBull: { min: 0.35, max: 1.5 },
+        autoSearchMinDistancePctBull: '0.35',
+        switchDistanceRangeBull: { min: '0.35', max: '1.5' },
       }),
     );
     const invalidGreater = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBull: 0.35,
-        switchDistanceRangeBull: { min: 0.36, max: 1.5 },
+        autoSearchMinDistancePctBull: '0.35',
+        switchDistanceRangeBull: { min: '0.36', max: '1.5' },
       }),
     );
 
@@ -121,14 +121,14 @@ describe('auto search distance config business flow', () => {
   it('rejects bull degraded range when primary threshold is equal to or above switchDistanceRange.max', async () => {
     const invalidEqual = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBull: 0.35,
-        switchDistanceRangeBull: { min: 0.2, max: 0.35 },
+        autoSearchMinDistancePctBull: '0.35',
+        switchDistanceRangeBull: { min: '0.2', max: '0.35' },
       }),
     );
     const invalidGreater = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBull: 0.35,
-        switchDistanceRangeBull: { min: 0.2, max: 0.34 },
+        autoSearchMinDistancePctBull: '0.35',
+        switchDistanceRangeBull: { min: '0.2', max: '0.34' },
       }),
     );
 
@@ -139,14 +139,14 @@ describe('auto search distance config business flow', () => {
   it('rejects bear degraded range when switchDistanceRange.max is equal to or below the primary threshold', async () => {
     const invalidEqual = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBear: -0.35,
-        switchDistanceRangeBear: { min: -1.5, max: -0.35 },
+        autoSearchMinDistancePctBear: '-0.35',
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.35' },
       }),
     );
     const invalidLower = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBear: -0.35,
-        switchDistanceRangeBear: { min: -1.5, max: -0.36 },
+        autoSearchMinDistancePctBear: '-0.35',
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.36' },
       }),
     );
 
@@ -157,14 +157,14 @@ describe('auto search distance config business flow', () => {
   it('rejects bear degraded range when switchDistanceRange.min is equal to or above the primary threshold', async () => {
     const invalidEqual = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBear: -0.35,
-        switchDistanceRangeBear: { min: -0.35, max: -0.2 },
+        autoSearchMinDistancePctBear: '-0.35',
+        switchDistanceRangeBear: { min: '-0.35', max: '-0.2' },
       }),
     );
     const invalidGreater = await validateMonitorConfig(
       createAutoSearchMonitorConfig({
-        autoSearchMinDistancePctBear: -0.35,
-        switchDistanceRangeBear: { min: -0.34, max: -0.2 },
+        autoSearchMinDistancePctBear: '-0.35',
+        switchDistanceRangeBear: { min: '-0.34', max: '-0.2' },
       }),
     );
 

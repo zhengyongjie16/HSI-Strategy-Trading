@@ -1,85 +1,103 @@
-/** T28 离线恢复链：真实 orderOps、权威查询、recoveryFlow、settlement 与订单记录共用运行态。 */
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-import { createOrder } from '../../../mock/factories/tradeFactory.js';
+/** T28 real same-context recovery admission, authority query, O/Daily/H/S and resource close. */
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
 import { createRecoveryFlow } from '../../../src/core/trader/orderMonitor/recoveryFlow.js';
-import { createOrderOps } from '../../../src/core/trader/orderMonitor/orderOps.js';
 import { createSettlementFlow } from '../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createOrderStatusQuery } from '../../../src/core/trader/orderMonitor/orderStatusQuery.js';
-import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
-import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
-import type { OrderMonitorRuntimeStore } from '../../../src/core/trader/orderMonitor/types.js';
-import type { RawOrderFromAPI, OrderStateChangedEvent } from '../../../src/types/services.js';
-import {
-  createDailyLossTrackerDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createRateLimiterDouble,
-  createSymbolRegistryDouble,
-  createTerminationDouble,
-  createTradeContextDouble,
-} from '../../helpers/testDoubles.js';
+import { createRateLimiter } from '../../../src/core/trader/rateLimiter.js';
+import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createExecutionFixture } from '../../core/orderRecorder/executionFixture.js';
+import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
 import type { RecoveryScenario, RecoveryHarness } from './types.js';
+import type { OrderStateChangedEvent } from '../../../src/types/services.js';
+import type { PostGateRuntime } from '../../../src/app/types.js';
 
-/** 可控 broker 撤单结束前不允许恢复提交；撤单接受与权威终态保持独立。 */
-export function createRecoveryHarness(
+/** Issued cancellation completion and canonical terminal confirmation remain independent. */
+export async function createRecoveryHarness(
   scenario: RecoveryScenario,
+  getAppRuntime: () => Pick<PostGateRuntime, 'trader' | 'quoteSubscriptionRuntime'>,
   externalError?: unknown,
-): RecoveryHarness {
+): Promise<RecoveryHarness> {
   const entered = Promise.withResolvers<undefined>();
   const completion = Promise.withResolvers<undefined>();
   const steps: string[] = [];
-  const events: OrderStateChangedEvent[] = [];
-  const broker = createTradeContextMock();
   const now = new Date('2026-04-29T01:31:00Z');
-  const runtime: OrderMonitorRuntimeStore = {
-    trackedOrders: new Map(),
-    trackedOrderLifecycles: new Map(),
-    bootstrappingOrderEvents: new Map(),
-    closedOrderIds: new Set(),
-    queriedTerminalStateByOrderId: new Map(),
-    latestReplaceTerminalByOrderId: new Map(),
-    orderStateChangedListeners: new Set(),
-    trackedOrderIdsBySymbol: new Map(),
-    routeStatesBySymbol: new Map(),
-    latestRouteGenerationBySymbol: new Map(),
-    runtimeState: 'STOPPED',
-    running: false,
-    unsubscribeQuoteUpdated: null,
-  };
-  let mode = scenario;
-  const ctx = createTradeContextDouble({
-    ...broker,
-    cancelOrder: async () => {
-      steps.push('cancel.enter');
-      entered.resolve();
-      await completion.promise;
-      steps.push('cancel.complete');
-      if (mode === 'external') throw externalError;
-
-      if (mode !== 'accepted')
-        throw Object.assign(new Error('order already closed'), { code: '601011' });
-    },
-  });
-  const terminal = createOrder({
+  const frame = {
     orderId: 'T28-BUY',
+    tradeId: 'T28-BUY-EXECUTION',
     symbol: 'OLD.HK',
-    status: OrderStatus.Canceled,
+    stockName: 'UNOWNED RC',
+    remark: '',
+    side: 'BUY' as const,
+    status: 'New' as const,
+    orderType: 'ELO' as const,
+    quantity: '100',
+    executedQuantity: scenario === 'conflict' ? '10' : '0',
+    submittedPrice: '1',
+    executedPrice: scenario === 'conflict' ? '1' : '0',
+    submittedAtMs: now.getTime(),
+    executionTimeMs: null,
+    updatedAtMs: now.getTime(),
+  };
+  const broker = await createBrokerIngressFixture(frame);
+  broker.setAccountBalance({
+    currency: 'HKD',
+    totalCash: '100000',
+    netAssets: '100000',
+    availableCash: '100000',
   });
-  broker.seedTodayOrders([terminal]);
-  const rateLimiter = createRateLimiterDouble();
-  const orderRecorder = createOrderRecorder({ ctx, rateLimiter });
-  const orderHoldRegistry = createOrderHoldRegistry();
+  broker.setStockPositions([]);
+  const rateLimiter = createRateLimiter();
+  const f = createExecutionFixture({
+    nowMs: now.getTime(),
+    rateLimiter,
+    readPort: broker.createAccountService({ rateLimiter }),
+    createRecorder: broker.createRecorder,
+    // 同一 app 已组装的 collaborator 接续异步 baseline，不能复用 economic-only 的禁止 IO 默认值。
+    getTrader: () => getAppRuntime().trader,
+    onPositionsCommitted: () =>
+      getAppRuntime().quoteSubscriptionRuntime.reconcileFromCurrentTruth(),
+  });
+  const { runtime, recorder: orderRecorder, holds: orderHoldRegistry } = f;
+  const events: OrderStateChangedEvent[] = [];
   orderHoldRegistry.trackOrder('T28-BUY', 'OLD.HK');
+  let mode = scenario;
+  broker.setCancelBeforeReply(async () => {
+    steps.push('cancel.enter');
+    entered.resolve();
+    await completion.promise;
+    steps.push('cancel.complete');
+    if (mode === 'external') throw externalError;
+
+    if (mode !== 'accepted')
+      throw Object.assign(new Error('order already closed'), { code: '601011' });
+  });
+
+  broker.setOrderDetailReplies([
+    {
+      ...frame,
+      status: 'Canceled',
+      stockName: frame.symbol,
+      submittedAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      // Conflict is the original q10/price1 basis, not a default q0 regression.
+      // No independent execution row exists: strict normalization must reject missing T.
+      executedQuantity: scenario === 'conflict' ? '10' : '0',
+      executedPrice: scenario === 'conflict' ? '1' : '0',
+      executionTimeMs: null,
+    },
+  ]);
   const settlement = createSettlementFlow({
     runtime,
     orderRecorder,
     orderHoldRegistry,
-    dailyLossTracker: createDailyLossTrackerDouble(),
-    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
-    persistProtectiveLiquidationExecutionProgress: () => {},
+    dailyLossTracker: f.daily,
+    protectiveLiquidationEpisodeTracker: f.episode,
+    persistProtectiveLiquidationExecutionProgress: () => {
+      throw new Error('ordinary recovery cannot persist protective execution');
+    },
     postTradeConsistencyRuntime: {
-      recordSettlementRefreshNeed: () => {
+      ...f.sink,
+      recordSettlementRefreshNeed: (need) => {
+        f.sink.recordSettlementRefreshNeed(need);
         steps.push('refresh');
       },
     },
@@ -89,16 +107,27 @@ export function createRecoveryHarness(
     },
   });
   const tradingConfig = createTradingConfig();
-  const termination = createTerminationDouble();
-  const orderOps = createOrderOps({
+  const termination = f.termination;
+  const orderOps = broker.createOperations({
     runtime,
-    ctx,
-    rateLimiter,
+    rateLimiter: f.rateLimiter,
     orderRecorder,
     orderHoldRegistry,
     monitorConfig: tradingConfig.monitor,
-    cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
-    orderStatusQuery: createOrderStatusQuery({ ctx, rateLimiter }),
+    cacheManager: {
+      clearCache: () => {},
+      getPendingOrders: async () => {
+        throw new Error('recovery cannot fetch replacement pending cache');
+      },
+    },
+    getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
+    captureWorkGuard: () => {
+      const captured = f.snapshot.getView().token;
+      return () =>
+        captured === f.snapshot.getView().token &&
+        !termination.isTerminated() &&
+        runtime.runtimeState !== 'STOPPED';
+    },
     recordCumulativeExecution: (params) => {
       settlement.recordCumulativeExecution(params);
     },
@@ -128,25 +157,12 @@ export function createRecoveryHarness(
       throw new Error('no WS fixture events');
     },
   });
-  const snapshot: RawOrderFromAPI = {
-    orderId: 'T28-BUY',
-    symbol: 'OLD.HK',
-    stockName: 'UNOWNED RC',
-    side: OrderSide.Buy,
-    status: OrderStatus.New,
-    orderType: OrderType.ELO,
-    remark: '',
-    quantity: '100',
-    price: '1',
-    executedQuantity: scenario === 'conflict' ? '10' : '0',
-    executedPrice: scenario === 'conflict' ? '1' : '0',
-    submittedAt: now,
-    updatedAt: now,
-  };
+  const snapshot = broker.queryObservation;
   let recoveryError: unknown;
   return {
     runtime,
     broker,
+    executionOwner: f,
     orderRecorder,
     orderHoldRegistry,
     events,
@@ -157,6 +173,16 @@ export function createRecoveryHarness(
     },
     useTrustedZero: () => {
       mode = 'zero';
+      broker.setExecutionReplies([]);
+      broker.setOrderDetailReplies([
+        {
+          ...frame,
+          status: 'Canceled',
+          executedQuantity: '0',
+          executedPrice: '0',
+          executionTimeMs: null,
+        },
+      ]);
     },
     error: () => recoveryError,
     recover: async () => {

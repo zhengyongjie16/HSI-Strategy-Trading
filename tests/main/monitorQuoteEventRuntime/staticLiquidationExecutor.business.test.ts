@@ -6,6 +6,9 @@
  * - 复用历史清仓执行态的业务契约
  */
 import { describe, expect, it } from 'bun:test';
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 
 import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
 import { createStaticLiquidationExecutor } from '../../../src/main/monitorQuoteEventRuntime/staticLiquidationExecutor.js';
@@ -14,6 +17,10 @@ import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import type { RuntimeWritableSeatState, SeatState } from '../../../src/types/seat.js';
 import type { MarketDataClient } from '../../../src/types/services.js';
 import {
+  createAccountSnapshotDouble,
+  createDailyLossTrackerDouble,
+  createLiquidationCooldownTrackerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
   createOrderRecorderDouble,
@@ -29,13 +36,6 @@ const EXECUTION_TIME_MS = new Date(EXECUTION_TIME_ISO).getTime();
 const WAIT_RESOLVED_TIME_MS = EXECUTION_TIME_MS + 750;
 const EXPECTED_RETRY_AT_MS = EXECUTION_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
 const EXPECTED_WAIT_RESOLVED_RETRY_AT_MS = WAIT_RESOLVED_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
-
-type TestStaticLiquidationParams = Omit<
-  Parameters<ReturnType<typeof createStaticLiquidationExecutor>>[0],
-  'canContinue'
-> & {
-  readonly canContinue?: () => boolean;
-};
 
 function createDeferred<T = void>(): {
   readonly promise: Promise<T>;
@@ -88,7 +88,7 @@ function createLongSeatState(status: SeatState['status']): RuntimeWritableSeatSt
   };
 }
 
-function createExecutorHarness(
+async function createExecutorHarness(
   params: {
     readonly executeSignalsExecutedCount?: number;
     readonly executeSignalsExecutedCounts?: ReadonlyArray<number>;
@@ -100,7 +100,7 @@ function createExecutorHarness(
     readonly longQuoteAvailable?: boolean;
     readonly shortQuoteAvailable?: boolean;
     readonly monitorQuoteAvailable?: boolean;
-    readonly executionMonitorPrice?: number;
+    readonly executionMonitorPrice?: string;
     readonly waitResolvedTimeMs?: number;
     readonly getQuotes?: MarketDataClient['getQuotes'];
     readonly onExecuteSignalsStarted?: () => void;
@@ -108,8 +108,9 @@ function createExecutorHarness(
   } = {},
 ) {
   const submittedActions: string[] = [];
+  const acceptedOrderIds: string[] = [];
   const submittedTriggerTimes: number[] = [];
-  const liquidationMonitorPrices: number[] = [];
+  const liquidationMonitorPrices: string[] = [];
   const clearedOrderSymbols: string[] = [];
   const refreshedSymbols: string[] = [];
   let clearedOrders = 0;
@@ -138,7 +139,7 @@ function createExecutorHarness(
       frozenTradingDayKey: null,
     },
   });
-  let shouldBumpLongSeatVersionOnNextRead = params.bumpLongSeatVersionAfterSignalBuild ?? false;
+  let shouldBumpLongSeatVersionOnNextRead = false;
   const symbolRegistryWithVersionRace = {
     ...symbolRegistry,
     getSeatVersion: (direction: 'LONG' | 'SHORT') => {
@@ -194,7 +195,7 @@ function createExecutorHarness(
           shouldLiquidate: false,
         };
       },
-      refreshUnrealizedLossData: async (_orderRecorder, symbol) => {
+      publishUnrealizedLossData: ({ symbol }) => {
         refreshUnrealizedCalls += 1;
         refreshedSymbols.push(symbol);
       },
@@ -202,7 +203,8 @@ function createExecutorHarness(
   });
 
   const trader = createTraderDouble({
-    executeSignals: async (signals) => {
+    executeSignals: async (signals, callerAuthorization) => {
+      expect(callerAuthorization()).toBe(true);
       for (const signal of signals) {
         submittedActions.push(signal.action);
         if (signal.triggerTime instanceof Date) {
@@ -226,17 +228,87 @@ function createExecutorHarness(
         params.executeSignalsExecutedCounts?.[executeSignalsCallIndex++] ??
         params.executeSignalsExecutedCount ??
         signals.length;
-      return {
-        executedOrderIds: Array.from(
-          { length: executedCount },
-          (_, index) => `STATIC-LIQUIDATION-${executeSignalsCallIndex}-${index}`,
-        ),
-      };
+      const executedOrderIds = Array.from(
+        { length: executedCount },
+        (_, index) => `STATIC-LIQUIDATION-${executeSignalsCallIndex}-${index}`,
+      );
+      acceptedOrderIds.push(...executedOrderIds);
+      return { executedOrderIds };
     },
   });
 
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [
+      createPositionDouble({ symbol: 'BULL.HK', quantity: 200, availableQuantity: 200 }),
+      ...(params.shouldLiquidateShort
+        ? [createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 })]
+        : []),
+    ],
+  });
+  const termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: (error) => {
+      throw error;
+    },
+  });
+  const settlement = createPostTradeConsistencyRuntime({
+    snapshot,
+    termination,
+    getTrader: () => trader,
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
+        throw new Error('Stale static liquidation positions callback');
+    },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
+  settlement.bindBusinessDeps({
+    monitorContext,
+    dailyLossTracker: createDailyLossTrackerDouble(),
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => {
+        throw new Error('unexpected completion');
+      },
+    },
+  });
+  settlement.start();
+  expect(await settlement.completeRebuildBaseline()).toBeTrue();
+  const receipt = await settlement.waitForFresh();
+  // 父 quote owner 在普通 commit 后捕获新选单 token，settlement 仍是原完成凭据。
+  for (const refreshAccount of [true, false]) {
+    await snapshot.requestRefresh({
+      source: 'SEAT_ACTIVATION',
+      dayEpoch: receipt.snapshotToken.dayEpoch,
+      refreshAccount,
+      refreshPositions: true,
+    }).result;
+    expect(settlement.isCurrent(receipt)).toBe(true);
+    expect(await settlement.waitForFresh()).toBe(receipt);
+  }
+
+  // paired baseline 已真实完成 R1/N1；后续观测只记录静态清仓的发布与席位竞争。
+  refreshUnrealizedCalls = 0;
+  refreshedSymbols.length = 0;
+  shouldBumpLongSeatVersionOnNextRead = params.bumpLongSeatVersionAfterSignalBuild ?? false;
+  const token = snapshot.getView().token;
+  const canContinue = () =>
+    !termination.isTerminated() &&
+    snapshot.isCurrent(token, { account: false, positions: true }) &&
+    settlement.isCurrent(receipt);
+
   const productionExecutor = createStaticLiquidationExecutor({
     trader,
+    snapshot,
+    postTradeConsistencyRuntime: settlement,
     marketDataClient: createMarketDataClientDouble({
       getQuotes:
         params.getQuotes ??
@@ -250,49 +322,21 @@ function createExecutorHarness(
               'HSI.HK',
               params.monitorQuoteAvailable === false
                 ? null
-                : createQuoteDouble('HSI.HK', params.executionMonitorPrice ?? 20_000, 100),
+                : createQuoteDouble('HSI.HK', params.executionMonitorPrice ?? '20000', 100),
             ],
-            ['BULL.HK', longQuoteAvailable ? createQuoteDouble('BULL.HK', 1, 100) : null],
-            ['BEAR.HK', shortQuoteAvailable ? createQuoteDouble('BEAR.HK', 1, 100) : null],
+            ['BULL.HK', longQuoteAvailable ? createQuoteDouble('BULL.HK', '1', 100) : null],
+            ['BEAR.HK', shortQuoteAvailable ? createQuoteDouble('BEAR.HK', '1', 100) : null],
           ]);
         }),
     }),
-    lastState: {
-      positionCache: {
-        update: () => {},
-        get: (symbol) => {
-          if (symbol === 'BULL.HK') {
-            return createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 200,
-              availableQuantity: 200,
-            });
-          }
-
-          if (symbol === 'BEAR.HK' && params.shouldLiquidateShort) {
-            return createPositionDouble({
-              symbol: 'BEAR.HK',
-              quantity: 300,
-              availableQuantity: 300,
-            });
-          }
-
-          return null;
-        },
-      },
-    },
     now: () => new Date(currentNowMs),
   });
-  const executor = (executionParams: TestStaticLiquidationParams) =>
-    productionExecutor({
-      ...executionParams,
-      canContinue: executionParams.canContinue ?? (() => true),
-    });
-
   return {
-    executor,
+    executor: productionExecutor,
+    canContinue,
     monitorContext,
     submittedActions,
+    getAcceptedOrderIds: () => [...acceptedOrderIds],
     getSubmittedTriggerTimes: () => [...submittedTriggerTimes],
     getLiquidationMonitorPrices: () => [...liquidationMonitorPrices],
     getClearedOrderSymbols: () => [...clearedOrderSymbols],
@@ -307,17 +351,19 @@ function createExecutorHarness(
 
 describe('staticLiquidationExecutor', () => {
   it('executes static liquidation with fresh execution monitor quote', async () => {
-    const harness = createExecutorHarness({
-      executionMonitorPrice: 19_500,
+    const harness = await createExecutorHarness({
+      executionMonitorPrice: '19500',
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
 
     expect(result).toEqual({ kind: 'COMPLETED' });
-    expect(harness.getLiquidationMonitorPrices()).toEqual([19_500]);
+    // 候选计算与最终 broker 前重检都必须消费同一精确执行报价。
+    expect(harness.getLiquidationMonitorPrices()).toEqual(['19500', '19500']);
     expect(harness.submittedActions).toEqual(['SELLCALL']);
     expect(harness.getSubmittedTriggerTimes()).toEqual([EXECUTION_TIME_MS]);
     expect(harness.getClearedOrders()).toBe(1);
@@ -325,11 +371,12 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('returns WAIT with monitor and trading wakeup symbols when execution monitor quote is unavailable', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       monitorQuoteAvailable: false,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -352,13 +399,14 @@ describe('staticLiquidationExecutor', () => {
       attempts: 1,
       cause: new Error('quotes unavailable'),
     });
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       getQuotes: async () => {
         throw externalFailure;
       },
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -374,12 +422,13 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('anchors WAIT retry time to when the wait decision finishes instead of execution start', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       monitorQuoteAvailable: false,
       waitResolvedTimeMs: WAIT_RESOLVED_TIME_MS,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -393,11 +442,12 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('exhausts static liquidation retry scheduling at the configured limit', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       monitorQuoteAvailable: false,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: ORDER_QUOTE_RETRY.MAX_ATTEMPTS,
     });
@@ -410,11 +460,12 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('returns WAIT with monitor and trading wakeup symbols when long trading quote is unavailable', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       longQuoteAvailable: false,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -432,13 +483,14 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('still executes the short-side liquidation candidate when long trading quote is unavailable', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       longQuoteAvailable: false,
       shouldLiquidateLong: false,
       shouldLiquidateShort: true,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -452,13 +504,14 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('keeps WAIT ownership after submitting short-side liquidation when long side still needs a quote', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       longQuoteAvailable: false,
       shouldLiquidateLong: true,
       shouldLiquidateShort: true,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -478,13 +531,14 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('keeps WAIT ownership after submitting long-side liquidation when short side still needs a quote', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       shortQuoteAvailable: false,
       shouldLiquidateLong: true,
       shouldLiquidateShort: true,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -504,7 +558,7 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('retries only the unresolved direction after a mixed submit and WAIT result', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       longQuoteAvailable: false,
       shouldLiquidateLong: true,
       shouldLiquidateShort: true,
@@ -512,6 +566,7 @@ describe('staticLiquidationExecutor', () => {
     const submittedDirections = new Set<'LONG' | 'SHORT'>();
 
     const firstResult = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
       onDirectionSubmitted: (direction) => {
@@ -525,6 +580,7 @@ describe('staticLiquidationExecutor', () => {
 
     harness.setLongQuoteAvailable(true);
     const secondResult = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 1,
       excludedDirections: submittedDirections,
@@ -540,11 +596,12 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('returns NOOP instead of WAIT when long side has position but liquidation is not triggered', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       shouldLiquidateLong: false,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -556,12 +613,13 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('keeps clearing the successfully submitted candidate when later candidate only partially submits', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       executeSignalsExecutedCounts: [1, 0],
       shouldLiquidateShort: true,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -575,12 +633,13 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('keeps evaluating later candidates when earlier candidate is not submitted', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       executeSignalsExecutedCounts: [0, 1],
       shouldLiquidateShort: true,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -594,11 +653,12 @@ describe('staticLiquidationExecutor', () => {
   });
 
   it('does not clear caches when long seatVersion changes before submission settles', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       bumpLongSeatVersionAfterSignalBuild: true,
     });
 
     await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -608,30 +668,33 @@ describe('staticLiquidationExecutor', () => {
     expect(harness.getRefreshUnrealizedCalls()).toBe(0);
   });
 
-  it('still clears local state when long seatVersion changes after submission returns', async () => {
-    const harness = createExecutorHarness({
+  it('preserves the accepted broker ID but does not publish into a changed seat after submission returns', async () => {
+    const harness = await createExecutorHarness({
       bumpLongSeatVersionAfterSubmission: true,
     });
 
     const result = await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
 
     expect(result).toEqual({ kind: 'COMPLETED' });
     expect(harness.submittedActions).toEqual(['SELLCALL']);
-    expect(harness.getClearedOrderSymbols()).toEqual(['BULL.HK']);
-    expect(harness.getRefreshedSymbols()).toEqual(['BULL.HK']);
-    expect(harness.getClearedOrders()).toBe(1);
-    expect(harness.getRefreshUnrealizedCalls()).toBe(1);
+    expect(harness.getAcceptedOrderIds()).toEqual(['STATIC-LIQUIDATION-0-0']);
+    expect(harness.getClearedOrderSymbols()).toEqual([]);
+    expect(harness.getRefreshedSymbols()).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
   });
 
   it('skips cache mutation when long seat is no longer active at execution time', async () => {
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       longSeatStatus: 'SWITCHING',
     });
 
     await harness.executor({
+      canContinue: harness.canContinue,
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
     });
@@ -646,7 +709,7 @@ describe('staticLiquidationExecutor', () => {
     const releaseSubmission = createDeferred();
     let canContinue = true;
     const submittedDirections: Array<'LONG' | 'SHORT'> = [];
-    const harness = createExecutorHarness({
+    const harness = await createExecutorHarness({
       onExecuteSignalsStarted: () => {
         submissionStarted.resolve();
       },
@@ -656,7 +719,7 @@ describe('staticLiquidationExecutor', () => {
     const executionPromise = harness.executor({
       monitorContext: harness.monitorContext,
       retryAttempts: 0,
-      canContinue: () => canContinue,
+      canContinue: () => canContinue && harness.canContinue(),
       onDirectionSubmitted: (direction) => {
         submittedDirections.push(direction);
       },
@@ -670,6 +733,7 @@ describe('staticLiquidationExecutor', () => {
 
     expect(result).toEqual({ kind: 'COMPLETED' });
     expect(harness.submittedActions).toEqual(['SELLCALL']);
+    expect(harness.getAcceptedOrderIds()).toEqual(['STATIC-LIQUIDATION-0-0']);
     expect(submittedDirections).toEqual([]);
     expect(harness.getClearedOrders()).toBe(0);
     expect(harness.getRefreshUnrealizedCalls()).toBe(0);

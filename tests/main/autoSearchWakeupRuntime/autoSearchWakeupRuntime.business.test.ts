@@ -563,7 +563,7 @@ describe('AutoSearchWakeupRuntime', () => {
               lastSwitchAt: timers.now().getTime(),
               lastSearchAt: params.currentTime.getTime(),
               lastSeatActivatedAt: null,
-              callPrice: 20_000,
+              callPrice: '20000',
               searchFailCountToday: 0,
               frozenTradingDayKey: null,
             });
@@ -653,7 +653,7 @@ describe('AutoSearchWakeupRuntime', () => {
             lastSwitchAt: timers.now().getTime(),
             lastSearchAt: params.currentTime.getTime(),
             lastSeatActivatedAt: null,
-            callPrice: 20_000,
+            callPrice: '20000',
             searchFailCountToday: 0,
             frozenTradingDayKey: null,
           });

@@ -1,3 +1,4 @@
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { beforeEach, describe, it, expect } from 'bun:test';
 import type { Logger } from '../../../src/utils/logger/types.js';
@@ -6,15 +7,72 @@ import type {
   LifecycleContext,
   LifecycleMutableState,
   LifecycleRuntimeFlags,
+  DayLifecycleManagerDeps,
+  OpenRebuildContext,
+  CacheDomainOpenRebuildResult,
 } from '../../../src/main/lifecycle/types.js';
-import { createDayLifecycleManager } from '../../../src/main/lifecycle/dayLifecycleManager.js';
+import { createDayLifecycleManager as createDayLifecycleManagerImpl } from '../../../src/main/lifecycle/dayLifecycleManager.js';
 import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createMonitorContextDouble,
+  createAccountSnapshotDouble,
+  createMarketDataClientDouble,
+  createTraderDouble,
+  createDailyLossTrackerDouble,
+  createRiskCheckerDouble,
   createQuoteDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
+
+import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
+import { createLastState } from '../asyncProgram/utils.js';
+
+const domainOwners = new WeakMap<OpenRebuildContext, AccountPositionSnapshot>();
+function createDayLifecycleManager(
+  deps: Omit<DayLifecycleManagerDeps, 'snapshot'> & { readonly snapshot: AccountPositionSnapshot },
+) {
+  return createDayLifecycleManagerImpl({
+    ...deps,
+    cacheDomains: deps.cacheDomains.map((domain) => ({
+      midnightClear: domain.midnightClear,
+      openRebuild: (ctx) => {
+        domainOwners.set(ctx, deps.snapshot);
+        return domain.openRebuild(ctx);
+      },
+    })),
+  });
+}
+
+/** Unit ordering collaborators commit only after their actual work and original-owner H evidence. */
+async function completeOpenDomainWork(
+  ctx: OpenRebuildContext,
+): Promise<CacheDomainOpenRebuildResult> {
+  const snapshot = domainOwners.get(ctx);
+  if (snapshot === undefined) throw new Error('Open domain has no original H owner');
+
+  if (!ctx.isCurrent()) return { status: 'ABORTED' };
+
+  if (snapshot.isCurrent(ctx.snapshotToken, { account: true, positions: true, paired: true })) {
+    return { status: 'COMMITTED', snapshotToken: ctx.snapshotToken };
+  }
+
+  if (ctx.snapshotToken !== snapshot.getStatus().token) return { status: 'ABORTED' };
+
+  const receipt = await snapshot.requestRefresh({
+    source: 'LIFECYCLE_REBUILD',
+    dayEpoch: ctx.dayEpoch,
+    refreshAccount: true,
+    refreshPositions: true,
+  }).result;
+  if (receipt.status === 'ABORTED' || !ctx.isCurrent()) return { status: 'ABORTED' };
+
+  expect(receipt.snapshotToken.dayEpoch).toBe(ctx.dayEpoch);
+  expect(
+    snapshot.isCurrent(receipt.snapshotToken, { account: true, positions: true, paired: true }),
+  ).toBe(true);
+  return { status: 'COMMITTED', snapshotToken: receipt.snapshotToken };
+}
 
 let termination: ReturnType<typeof createTerminationRuntime>;
 beforeEach(() => {
@@ -70,12 +128,18 @@ describe('createDayLifecycleManager', () => {
           midnightClear: () => {
             order.push('A-midnight');
           },
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('A-open');
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -99,20 +163,28 @@ describe('createDayLifecycleManager', () => {
           midnightClear: (ctx: LifecycleContext) => {
             order.push(`1-${ctx.runtime.dayKey}`);
           },
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('1-open');
+
+            return completeOpenDomainWork(ctx);
           },
         },
         {
           midnightClear: (ctx: LifecycleContext) => {
             order.push(`2-${ctx.runtime.dayKey}`);
           },
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('2-open');
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -136,10 +208,16 @@ describe('createDayLifecycleManager', () => {
           midnightClear: () => {
             order.push('midnight');
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -160,7 +238,9 @@ describe('createDayLifecycleManager', () => {
           midnightClear: () => {
             order.push('1');
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
         {
           midnightClear: async () => {
@@ -171,10 +251,16 @@ describe('createDayLifecycleManager', () => {
               cause: new Error('midnight clear fail'),
             });
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -206,10 +292,16 @@ describe('createDayLifecycleManager', () => {
               cause: new Error('fail'),
             });
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -239,10 +331,16 @@ describe('createDayLifecycleManager', () => {
           midnightClear: (ctx: LifecycleContext) => {
             flags.push(ctx.invalidateSeatActivationCarryover === true);
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -280,16 +378,24 @@ describe('createDayLifecycleManager', () => {
               });
             }
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
         {
           midnightClear: (ctx: LifecycleContext) => {
             flags.push(ctx.invalidateSeatActivationCarryover === true);
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -328,12 +434,18 @@ describe('createDayLifecycleManager', () => {
       const domains: ReadonlyArray<CacheDomain> = [
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('open');
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -359,12 +471,18 @@ describe('createDayLifecycleManager', () => {
       const domains: ReadonlyArray<CacheDomain> = [
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('open');
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -389,24 +507,34 @@ describe('createDayLifecycleManager', () => {
       const domains: ReadonlyArray<CacheDomain> = [
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('A');
+
+            return completeOpenDomainWork(ctx);
           },
         },
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('B');
+
+            return completeOpenDomainWork(ctx);
           },
         },
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('C');
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -432,8 +560,10 @@ describe('createDayLifecycleManager', () => {
       const domains: ReadonlyArray<CacheDomain> = [
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             order.push('A');
+
+            return completeOpenDomainWork(ctx);
           },
         },
         {
@@ -449,6 +579,10 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -476,10 +610,14 @@ describe('createDayLifecycleManager', () => {
         isTradingEnabled: false,
       });
       let warrantRefreshCalls = 0;
+      const snapshot = await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      });
       const symbolRegistry = createSymbolRegistryDouble({});
       const monitorContext = createMonitorContextDouble({
         symbolRegistry,
-        riskChecker: {
+        riskChecker: createRiskCheckerDouble({
           setWarrantInfoFromCallPrice: () => ({ status: 'ok', isWarrant: true }),
           refreshWarrantInfoForSymbol: async () => {
             warrantRefreshCalls += 1;
@@ -489,47 +627,48 @@ describe('createDayLifecycleManager', () => {
               cause: new Error('warrant quote api down'),
             });
           },
-          refreshUnrealizedLossData: async () => {},
-        } as never,
+        }),
       });
       const rebuildTradingDayState = createRebuildTradingDayState({
         termination,
-        marketDataClient: {
+        snapshot,
+        marketDataClient: createMarketDataClientDouble({
           getTradingDays: async () => ({
             tradingDays: ['2025-02-15'],
             halfTradingDays: [],
           }),
-        } as never,
-        trader: {
-          recoverOrderTrackingFromSnapshot: async () => {},
-        } as never,
-        lastState: {
-          tradingCalendarSnapshot: new Map(),
-          cachedTradingDayInfo: null,
-        } as never,
+        }),
+        trader: createTraderDouble(),
+        lastState: createLastState(),
         symbolRegistry,
         monitorContext,
-        dailyLossTracker: {
-          getLossOffset: () => 0,
-        } as never,
+        dailyLossTracker: createDailyLossTrackerDouble(),
         displayAccountAndPositions: () => {},
       });
       const domains: ReadonlyArray<CacheDomain> = [
         {
           midnightClear: () => {},
-          openRebuild: async () => {
-            await rebuildTradingDayState({
+          openRebuild: async (ctx) => {
+            const baseline = await completeOpenDomainWork(ctx);
+            if (baseline.status === 'ABORTED') return baseline;
+
+            const result = await rebuildTradingDayState({
+              snapshotToken: baseline.snapshotToken,
               allOrders: [],
               quotesMap: new Map([
-                ['HSI.HK', createQuoteDouble('HSI.HK', 20000)],
-                ['BULL.HK', createQuoteDouble('BULL.HK', 1)],
+                ['HSI.HK', createQuoteDouble('HSI.HK', '20000')],
+                ['BULL.HK', createQuoteDouble('BULL.HK', '1')],
               ]),
               now: new Date('2026-02-16T01:31:00.000Z'),
             });
+            if (result.status !== 'COMMITTED') return { status: 'ABORTED' };
+
+            return result;
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: snapshot,
         termination,
         mutableState,
         cacheDomains: domains,
@@ -569,6 +708,10 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -601,6 +744,10 @@ describe('createDayLifecycleManager', () => {
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -646,7 +793,7 @@ describe('createDayLifecycleManager', () => {
           midnightClear: () => {
             order.push('midnight');
           },
-          openRebuild: async () => {
+          openRebuild: async (ctx) => {
             openRebuildCallCount += 1;
             order.push('open');
             if (openRebuildCallCount === 1) {
@@ -656,10 +803,16 @@ describe('createDayLifecycleManager', () => {
                 cause: new Error('open rebuild fail'),
               });
             }
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -700,6 +853,10 @@ describe('createDayLifecycleManager', () => {
     it('午夜清理失败时返回下一次重试时间且不恢复交易门禁', async () => {
       const mutableState = createMutableState({ currentDayKey: '2026-04-28' });
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         rebuildRetryDelayMs: 1_000,
@@ -712,7 +869,9 @@ describe('createDayLifecycleManager', () => {
                 cause: new Error('clear failed'),
               });
             },
-            openRebuild: () => {},
+            openRebuild: async (ctx) => {
+              return completeOpenDomainWork(ctx);
+            },
           },
         ],
         logger: createSilentLifecycleLogger(),
@@ -738,6 +897,10 @@ describe('createDayLifecycleManager', () => {
         isTradingEnabled: false,
       });
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         rebuildRetryDelayMs: 2_000,
@@ -777,6 +940,10 @@ describe('createDayLifecycleManager', () => {
         isTradingEnabled: false,
       });
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         rebuildRetryDelayMs: 1_000,
@@ -798,9 +965,13 @@ describe('createDayLifecycleManager', () => {
   });
 
   describe('边界', () => {
-    it('domains 为空数组时午夜清理与开盘重建均不抛错', async () => {
+    it('domains 为空时不抛错，但无实际 COMMITTED 工作不得恢复交易门禁', async () => {
       const mutableState = createMutableState({ currentDayKey: '2025-02-14' });
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: [],
@@ -812,8 +983,11 @@ describe('createDayLifecycleManager', () => {
       expect(mutableState.pendingOpenRebuild).toBe(true);
 
       mutableState.currentDayKey = '2025-02-15';
-      await manager.tick(new Date(), createRuntime());
-      expect(mutableState.lifecycleState).toBe('ACTIVE');
+      const result = await manager.tick(new Date(), createRuntime());
+      expect(mutableState.lifecycleState).toBe('MIDNIGHT_CLEANED');
+      expect(mutableState.pendingOpenRebuild).toBe(true);
+      expect(mutableState.isTradingEnabled).toBe(false);
+      expect(result.nextRetryAtMs).toBeNull();
     });
 
     it('支持 async midnightClear', async () => {
@@ -825,10 +999,16 @@ describe('createDayLifecycleManager', () => {
             await Promise.resolve();
             resolved = true;
           },
-          openRebuild: () => {},
+          openRebuild: async (ctx) => {
+            return completeOpenDomainWork(ctx);
+          },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -851,13 +1031,19 @@ describe('createDayLifecycleManager', () => {
       const domains: ReadonlyArray<CacheDomain> = [
         {
           midnightClear: () => {},
-          openRebuild: async () => {
+          openRebuild: async (ctx) => {
             await Promise.resolve();
             resolved = true;
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ];
       const manager = createDayLifecycleManager({
+        snapshot: await createSnapshotFixture({
+          account: createAccountSnapshotDouble('100000'),
+          positions: [],
+        }),
         termination,
         mutableState,
         cacheDomains: domains,
@@ -881,21 +1067,29 @@ describe('lifecycle terminal authorization', () => {
     const pending = Promise.withResolvers<null>();
     const events: string[] = [];
     const manager = createDayLifecycleManager({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       termination,
       mutableState,
       logger: createSilentLifecycleLogger(),
       cacheDomains: [
         {
           midnightClear: () => {},
-          openRebuild: () => {
+          openRebuild: async (ctx) => {
             events.push('later');
+
+            return completeOpenDomainWork(ctx);
           },
         },
         {
           midnightClear: () => {},
-          openRebuild: async () => {
+          openRebuild: async (ctx) => {
             events.push('started');
             await pending.promise;
+
+            return completeOpenDomainWork(ctx);
           },
         },
       ],

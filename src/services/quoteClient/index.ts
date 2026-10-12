@@ -31,13 +31,18 @@ import {
   type Candlestick,
   type Period,
 } from 'longbridge';
-import { decimalToNumber, isRecord, isValidPositiveNumber } from '../../utils/helpers/index.js';
+import { isRecord } from '../../utils/helpers/index.js';
+import { exactCompare } from '../../utils/numeric/exact.js';
+import { createWarrantListReadAdapter } from '../../infrastructure/longbridge/market/warrantListReadAdapter.js';
+import {
+  mapQuoteDecimal,
+  mapWarrantQuote,
+} from '../../infrastructure/longbridge/market/quoteFinancialMapper.js';
 import {
   createExternalApiAggregateRequestError,
   isAllExternalApiRequestErrors,
   wrapExternalApiRequest,
 } from '../../utils/apiFailure/index.js';
-import type { DecimalLike } from '../../utils/helpers/types.js';
 import { logger } from '../../utils/logger/index.js';
 import { API, TRADING } from '../../constants/index.js';
 import type { Quote } from '../../types/quote.js';
@@ -95,26 +100,6 @@ function normalizeSymbols(symbols: ReadonlyArray<string>): ReadonlyArray<string>
   }
 
   return [...uniqueSymbols];
-}
-
-function isDecimalLikeValue(value: unknown): value is DecimalLike {
-  return isRecord(value) && typeof value['toNumber'] === 'function';
-}
-
-function normalizeDecimalLikeInput(
-  value: unknown,
-): DecimalLike | number | string | null | undefined {
-  if (
-    value === null ||
-    value === undefined ||
-    typeof value === 'number' ||
-    typeof value === 'string' ||
-    isDecimalLikeValue(value)
-  ) {
-    return value;
-  }
-
-  return undefined;
 }
 
 /**
@@ -292,15 +277,15 @@ function buildQuoteFromRealtime(params: {
   readonly symbol: string;
   readonly realtimeQuote: unknown;
   readonly staticInfo: unknown;
-  readonly prevClose: number;
+  readonly prevClose: string;
 }): Quote | null {
   const { symbol, realtimeQuote, staticInfo, prevClose } = params;
   if (!isRecord(realtimeQuote)) {
     return null;
   }
 
-  const lastDone = decimalToNumber(normalizeDecimalLikeInput(realtimeQuote['lastDone']));
-  if (!isValidPositiveNumber(lastDone)) {
+  const lastDone = mapQuoteDecimal(realtimeQuote['lastDone']);
+  if (lastDone === null || exactCompare(lastDone, '0') <= 0) {
     return null;
   }
 
@@ -330,11 +315,11 @@ function buildQuoteFromPushEvent(params: {
   readonly symbol: string;
   readonly pushEvent: PushQuoteEventLike;
   readonly staticInfo: unknown;
-  readonly prevClose: number;
+  readonly prevClose: string;
 }): Quote | null {
   const { symbol, pushEvent, staticInfo, prevClose } = params;
-  const lastDone = decimalToNumber(normalizeDecimalLikeInput(pushEvent.data.lastDone));
-  if (!isValidPositiveNumber(lastDone)) {
+  const lastDone = mapQuoteDecimal(pushEvent.data.lastDone);
+  if (lastDone === null || exactCompare(lastDone, '0') <= 0) {
     return null;
   }
 
@@ -367,7 +352,17 @@ export async function createMarketDataClient(
   const tradingDayCache = createTradingDayCache();
 
   // 昨收价缓存（用于 realtime quote 组装 prevClose）
-  const prevCloseCache = new Map<string, number>();
+  const prevCloseCache = new Map<string, string>();
+
+  /** 订阅准入已建立昨收事实；缺失表示内部状态失配，不伪造零价。 */
+  function requirePrevClose(symbol: string): string {
+    const value = prevCloseCache.get(symbol);
+    if (value === undefined) {
+      throw new TypeError(`Subscribed quote missing previous close: ${symbol}`);
+    }
+
+    return value;
+  }
 
   // 静态信息缓存
   const staticInfoCache = new Map<string, unknown>();
@@ -448,7 +443,7 @@ export async function createMarketDataClient(
       symbol,
       pushEvent: event,
       staticInfo: staticInfoCache.get(symbol),
-      prevClose: prevCloseCache.get(symbol) ?? 0,
+      prevClose: requirePrevClose(symbol),
     });
     if (quote === null) {
       return;
@@ -516,7 +511,7 @@ export async function createMarketDataClient(
         symbol: reqSymbol,
         realtimeQuote,
         staticInfo: staticInfoCache.get(reqSymbol),
-        prevClose: prevCloseCache.get(reqSymbol) ?? 0,
+        prevClose: requirePrevClose(reqSymbol),
       });
       result.set(reqSymbol, quote);
     }
@@ -559,7 +554,7 @@ export async function createMarketDataClient(
         const initialQuotes = await withRetry('QuoteContext.quote', () =>
           ctx.quote(symbolsNeedingPrevClose),
         );
-        const initializedPrevCloseBySymbol = new Map<string, number>();
+        const initializedPrevCloseBySymbol = new Map<string, string>();
         for (const quote of initialQuotes) {
           if (!isRecord(quote)) {
             continue;
@@ -570,8 +565,8 @@ export async function createMarketDataClient(
             continue;
           }
 
-          const prevCloseValue = decimalToNumber(normalizeDecimalLikeInput(quote['prevClose']));
-          if (!Number.isFinite(prevCloseValue)) {
+          const prevCloseValue = mapQuoteDecimal(quote['prevClose']);
+          if (prevCloseValue === null) {
             continue;
           }
 
@@ -687,22 +682,17 @@ export async function createMarketDataClient(
    * @returns Promise<MarketQuoteContext> 当前行情上下文的业务边界
    */
   function getQuoteContext(): Promise<MarketQuoteContext> {
+    const warrantListReader = createWarrantListReadAdapter(ctx, (request) =>
+      withRetry('QuoteContext.warrantList', request),
+    );
     return Promise.resolve({
-      warrantQuote: (symbols) =>
-        withRetry('QuoteContext.warrantQuote', () => ctx.warrantQuote([...symbols])),
-      warrantList: async (request) =>
-        withRetry('QuoteContext.warrantList', () =>
-          ctx.warrantList(
-            request.symbol,
-            request.sortBy,
-            request.sortOrder,
-            [...request.types],
-            request.issuerIds ? [...request.issuerIds] : request.issuerIds,
-            request.expiryFilters ? [...request.expiryFilters] : request.expiryFilters,
-            request.inOutBoundsTypes ? [...request.inOutBoundsTypes] : request.inOutBoundsTypes,
-            request.status ? [...request.status] : request.status,
-          ),
-        ),
+      warrantQuote: async (symbols) => {
+        const quotes = await withRetry('QuoteContext.warrantQuote', () =>
+          ctx.warrantQuote([...symbols]),
+        );
+        return quotes.map(mapWarrantQuote);
+      },
+      warrantList: warrantListReader.warrantList,
     });
   }
 

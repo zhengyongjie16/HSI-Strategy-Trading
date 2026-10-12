@@ -1,3 +1,4 @@
+import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { TIME } from '../../../src/constants/index.js';
@@ -13,7 +14,7 @@ import {
   createLoggerDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
-  createQuoteSubscriptionRuntimeDouble,
+  createAccountSnapshotDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import { createLastState } from '../asyncProgram/utils.js';
@@ -67,7 +68,7 @@ function createPlan(nextWakeupAtMs: number | null): TimeWakeupPlan {
   };
 }
 
-function createGateIntegrationContext(
+async function createGateIntegrationContext(
   params: Readonly<{
     currentTime: () => Date;
     gateEvents: Array<{
@@ -77,7 +78,7 @@ function createGateIntegrationContext(
     cachedTradingDayInfo?: TimeWakeupEvaluationContext['lastState']['cachedTradingDayInfo'];
     isTradingDay?: (date: Date) => Promise<TradingDayInfo>;
   }>,
-): TimeWakeupEvaluationContext {
+): Promise<TimeWakeupEvaluationContext> {
   const monitorConfig = createMonitorConfigDouble({ monitorSymbol: '700.HK' });
   const monitorContext = createMonitorContextDouble({ config: monitorConfig });
 
@@ -106,7 +107,10 @@ function createGateIntegrationContext(
       },
       emitAutoSearchAuthorizationChanged: () => {},
     },
-    quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
+    snapshot: await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    }),
     dayLifecycleManager: {
       tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
     },
@@ -305,7 +309,7 @@ describe('TimeWakeupRuntime', () => {
 
   it('交易日 API 失败经评估链路向上进入 time wakeup fatal，不生成恢复性 retry', async () => {
     const timers: TimerRecord[] = [];
-    const context = createGateIntegrationContext({
+    const context = await createGateIntegrationContext({
       currentTime: () => new Date('2026-04-29T09:30:00.000+08:00'),
       gateEvents: [],
       cachedTradingDayInfo: {
@@ -449,7 +453,7 @@ describe('TimeWakeupRuntime', () => {
       readonly previousCanTrade: boolean | null;
       readonly nextCanTrade: boolean | null;
     }> = [];
-    const context = createGateIntegrationContext({
+    const context = await createGateIntegrationContext({
       currentTime: () => new Date(nowMs),
       gateEvents,
     });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { createSnapshotFixture } from '../../fixtures/accountPositionSnapshot.js';
 import { createBuyTaskQueue } from '../../../../src/main/asyncProgram/tradeTaskQueue/index.js';
 import { createBuyProcessor as createProductionBuyProcessor } from '../../../../src/main/asyncProgram/buyProcessor/index.js';
 import { createSignalProcessor } from '../../../../src/core/signalProcessor/index.js';
@@ -7,6 +8,7 @@ import { createTradingConfig } from '../../../../mock/factories/configFactory.js
 import type { BuySignal, Signal } from '../../../../src/types/signal.js';
 import type { BuyProcessorDeps } from '../../../../src/main/asyncProgram/buyProcessor/types.js';
 import {
+  createAccountSnapshotDouble,
   createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
@@ -34,14 +36,14 @@ function createBuyProcessor(deps: TestBuyProcessorDeps) {
   });
 }
 
-async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
+async function runBuyRiskQuoteScenario(riskQuotePrice: string): Promise<{
   readonly executeCalls: number;
   readonly quoteRequests: ReadonlyArray<ReadonlyArray<string>>;
 }> {
   const queue = createBuyTaskQueue();
   const tradingConfig = createTradingConfig();
   const orderRecorder = createOrderRecorderDouble({
-    getLatestBuyOrderPrice: () => 1,
+    getLatestBuyOrderCost: () => ({ costAmount: '100', quantity: 100 }),
   });
   const monitorContext = createMonitorContext({
     config: tradingConfig.monitor,
@@ -62,6 +64,10 @@ async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
   });
   const quoteRequests: string[][] = [];
   const processor = createBuyProcessor({
+    snapshot: await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+    }),
     taskQueue: queue,
     monitorContext,
     signalProcessor,
@@ -70,9 +76,9 @@ async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
       getQuotes: async (symbols) => {
         quoteRequests.push([...symbols]);
         return new Map([
-          ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
+          ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
           ['BULL.HK', createQuoteDouble('BULL.HK', riskQuotePrice, 100)],
-          ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+          ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
         ]);
       },
     }),
@@ -102,14 +108,14 @@ async function runBuyRiskQuoteScenario(riskQuotePrice: number): Promise<{
 
 describe('buyProcessor business flow', () => {
   it('rejects a risk-time buy quote that reaches the latest buy price', async () => {
-    const result = await runBuyRiskQuoteScenario(1.01);
+    const result = await runBuyRiskQuoteScenario('1.01');
 
     expect(result.quoteRequests).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK']]);
     expect(result.executeCalls).toBe(0);
   });
 
   it('submits a risk-approved buy signal without a second processor quote read', async () => {
-    const result = await runBuyRiskQuoteScenario(0.99);
+    const result = await runBuyRiskQuoteScenario('0.99');
 
     expect(result.quoteRequests).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK']]);
     expect(result.executeCalls).toBe(1);
@@ -147,15 +153,19 @@ describe('buyProcessor business flow', () => {
       getQuotes: async (symbols) => {
         quoteRequests.push([...symbols]);
         return new Map([
-          ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-          ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-          ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+          ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
+          ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+          ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
         ]);
       },
     });
 
     const injectedNow = new Date('2031-01-02T03:04:05.000Z');
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext,
       signalProcessor: signalProcessor,
@@ -211,6 +221,10 @@ describe('buyProcessor business flow', () => {
     });
 
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -218,9 +232,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
+            ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
             ['BULL.HK', null],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -268,6 +282,10 @@ describe('buyProcessor business flow', () => {
     });
 
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -275,9 +293,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -324,6 +342,10 @@ describe('buyProcessor business flow', () => {
     });
 
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -331,9 +353,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -384,6 +406,10 @@ describe('buyProcessor business flow', () => {
     });
 
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext,
       signalProcessor: signalProcessor,
@@ -391,9 +417,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -435,6 +461,10 @@ describe('buyProcessor business flow', () => {
     };
 
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor,
@@ -447,9 +477,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -499,6 +529,10 @@ describe('buyProcessor business flow', () => {
     };
 
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor,
@@ -511,9 +545,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),
@@ -555,6 +589,10 @@ describe('buyProcessor business flow', () => {
     };
 
     const processor = createBuyProcessor({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
       taskQueue: queue,
       monitorContext: createMonitorContext(),
       signalProcessor: signalProcessor,
@@ -562,9 +600,9 @@ describe('buyProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['HSI.HK', createQuoteDouble('HSI.HK', 20_000, 1)],
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['HSI.HK', createQuoteDouble('HSI.HK', '20000', 1)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       doomsdayProtection: createDoomsdayProtectionDouble(),

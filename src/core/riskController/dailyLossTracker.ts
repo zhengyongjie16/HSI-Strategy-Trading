@@ -4,8 +4,8 @@
  * 功能/职责：按唯一监控标的的 LONG/SHORT 方向累计已实现亏损偏移；内部基于当日成交订单与过滤算法（filteringEngine）计算未平仓买入成本。
  * 执行流程：调用方通过 recalculateFromAllOrders 或 recordCumulativeExecution 提供累计订单事实，通过 getLossOffset(direction) 获取当日亏损偏移；内部只维护唯一 monitor 的方向级状态。
  */
-import { OrderSide } from 'longbridge';
-import { classifyOrderStatusLifecycle } from '../orderStatusLifecycle/index.js';
+import { mergeBrokerOrderExecutionFact } from '../../domain/order/executionFact.js';
+import type { BrokerOrderExecutionFact } from '../../types/orderRecorder.js';
 import { logger } from '../../utils/logger/index.js';
 import type { MonitorConfig } from '../../types/config.js';
 import type {
@@ -16,19 +16,17 @@ import type {
   DailyLossTrackerDeps,
   StartNewProtectionEpisodeParams,
   PreparedDailyLossProtectionBoundary,
+  PreparedDailyLossRecalculation,
 } from '../../types/risk.js';
 import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
 import {
-  decimalAdd,
-  decimalDiv,
-  decimalEq,
-  decimalGt,
-  decimalMul,
-  decimalSub,
-  decimalToNumberValue,
-  toDecimalValue,
-} from '../../utils/numeric/index.js';
-import { decimalToNumber, isValidPositiveNumber } from '../../utils/helpers/index.js';
+  canonicalDecimal,
+  exactAdd,
+  exactCompare,
+  exactMultiply,
+  exactSubtract,
+  safeQuantityNumber,
+} from '../../utils/numeric/exact.js';
 import type {
   DailyLossDirection,
   DailyLossDirectionStates,
@@ -105,7 +103,7 @@ function resolveTrustedSubmittedAtMs(submittedAt: Date | null | undefined): numb
  */
 function createEmptyState(): DailyLossState {
   return {
-    dailyLossOffset: 0,
+    dailyLossOffset: '0',
   };
 }
 
@@ -147,28 +145,24 @@ function calculateLossOffsetFromRecords(
   buyOrders: ReadonlyArray<OrderRecord>,
   sellOrders: ReadonlyArray<OrderRecord>,
   filteringEngine: DailyLossTrackerDeps['filteringEngine'],
-): number {
+): string {
   if (buyOrders.length === 0 && sellOrders.length === 0) {
-    return 0;
+    return '0';
   }
 
-  const totalBuy = toDecimalValue(sumOrderCost(buyOrders));
-  const totalSell = toDecimalValue(sumOrderCost(sellOrders));
-  if (totalBuy.isZero() && totalSell.isZero()) {
-    return 0;
+  const totalBuy = sumOrderCost(buyOrders);
+  const totalSell = sumOrderCost(sellOrders);
+  if (exactCompare(totalBuy, '0') === 0 && exactCompare(totalSell, '0') === 0) {
+    return '0';
   }
 
   const openBuyOrders =
     buyOrders.length > 0
       ? filteringEngine.applyFilteringAlgorithm([...buyOrders], [...sellOrders])
       : [];
-  const openBuyCost = toDecimalValue(sumOrderCost(openBuyOrders));
-  const realizedPnL = decimalAdd(decimalSub(totalSell, totalBuy), openBuyCost);
-  if (decimalGt(realizedPnL, 0)) {
-    return 0;
-  }
-
-  return decimalToNumberValue(realizedPnL);
+  const openBuyCost = sumOrderCost(openBuyOrders);
+  const realizedPnL = exactAdd(exactSubtract(totalSell, totalBuy), openBuyCost);
+  return exactCompare(realizedPnL, '0') > 0 ? '0' : realizedPnL;
 }
 
 /**
@@ -194,16 +188,17 @@ function buildStateFromFacts(
 
     const baseline = baselines.get(fact.orderId);
     const baselineQuantity = baseline?.cumulativeQuantity ?? 0;
-    const baselineAmount = baseline?.cumulativeAmount ?? 0;
-    const segmentQuantity = decimalToNumberValue(
-      decimalSub(fact.cumulativeQuantity, baselineQuantity),
-    );
-    const segmentAmount = decimalToNumberValue(decimalSub(fact.cumulativeAmount, baselineAmount));
+    const baselineAmount = baseline?.cumulativeAmount ?? '0';
+    const segmentQuantity = fact.cumulativeQuantity - baselineQuantity;
+    if (!Number.isSafeInteger(segmentQuantity))
+      throw new RangeError('[DailyLossTracker] segment quantity overflow');
+
+    const segmentAmount = exactSubtract(fact.cumulativeAmount, baselineAmount);
     if (segmentQuantity <= 0) {
       continue;
     }
 
-    if (segmentAmount <= 0) {
+    if (exactCompare(segmentAmount, '0') <= 0) {
       throw new Error(
         `[DailyLossTracker] orderId=${fact.orderId} segment amount 非法: quantity=${segmentQuantity} amount=${segmentAmount}`,
       );
@@ -212,13 +207,13 @@ function buildStateFromFacts(
     const record: OrderRecord = {
       orderId: fact.orderId,
       symbol: fact.symbol,
-      executedPrice: decimalToNumberValue(decimalDiv(segmentAmount, segmentQuantity)),
+      costAmount: segmentAmount,
       executedQuantity: segmentQuantity,
       executedTime: fact.lastExecutionTimeMs,
       submittedAt: undefined,
       updatedAt: new Date(fact.orderUpdatedAtMs),
     };
-    if (fact.side === OrderSide.Buy) {
+    if (fact.side === 'BUY') {
       buyOrders.push(record);
     } else {
       sellOrders.push(record);
@@ -279,20 +274,19 @@ function createOrderFactFromFill(
   const executedTime = input.executedTimeMs;
   const orderUpdatedAtMs = input.orderUpdatedAtMs;
   if (
-    !Number.isFinite(executedPrice) ||
-    executedPrice <= 0 ||
-    !Number.isFinite(executedQuantity) ||
+    exactCompare(executedPrice, '0') <= 0 ||
+    !Number.isSafeInteger(executedQuantity) ||
     executedQuantity <= 0 ||
-    !Number.isFinite(executedTime) ||
+    !Number.isSafeInteger(executedTime) ||
     executedTime <= 0 ||
-    !Number.isFinite(orderUpdatedAtMs) ||
+    !Number.isSafeInteger(orderUpdatedAtMs) ||
     orderUpdatedAtMs <= 0 ||
     executedTime > orderUpdatedAtMs
   ) {
     return null;
   }
 
-  const cumulativeAmount = decimalToNumberValue(decimalMul(executedPrice, executedQuantity));
+  const cumulativeAmount = exactMultiply(executedPrice, String(executedQuantity));
   return {
     orderId: input.orderId,
     symbol: input.symbol,
@@ -330,7 +324,7 @@ function createOrderFactFromRawOrder(
   direction: DailyLossDirection,
   classifyAndConvertOrders: DailyLossTrackerDeps['classifyAndConvertOrders'],
 ): DailyLossOrderFact | null {
-  if (order.side !== OrderSide.Buy && order.side !== OrderSide.Sell) {
+  if (!['BUY', 'SELL'].includes(order.executionSide)) {
     return null;
   }
 
@@ -339,29 +333,27 @@ function createOrderFactFromRawOrder(
   }
 
   const converted = classifyAndConvertOrders([order]);
-  const record = order.side === OrderSide.Buy ? converted.buyOrders[0] : converted.sellOrders[0];
+  const record = order.executionSide === 'BUY' ? converted.buyOrders[0] : converted.sellOrders[0];
   if (!record) {
     return null;
   }
 
-  const cumulativeAmount = decimalToNumberValue(
-    decimalMul(record.executedPrice, record.executedQuantity),
-  );
-  const orderUpdatedAtMs = order.updatedAt.getTime();
+  const cumulativeAmount = record.costAmount;
+  const orderUpdatedAtMs = order.updatedAtMs;
   return {
     orderId: record.orderId,
     direction,
     symbol: record.symbol,
-    side: order.side,
+    side: order.executionSide,
     submittedAtMs: resolveTrustedSubmittedAtMs(order.submittedAt),
-    factStage: classifyOrderStatusLifecycle(order.status),
+    factStage: order.executionPhase,
     cumulativeQuantity: record.executedQuantity,
     cumulativeAmount,
     lastExecutionTimeMs: record.executedTime,
     orderUpdatedAtMs,
     executionSnapshots: [
       {
-        factStage: classifyOrderStatusLifecycle(order.status),
+        factStage: order.executionPhase,
         cumulativeQuantity: record.executedQuantity,
         cumulativeAmount,
         lastExecutionTimeMs: record.executedTime,
@@ -387,8 +379,8 @@ function assertMatchingOrderIdentity(
 
   throw new Error(
     `[DailyLossTracker] orderId=${incoming.orderId} identity mismatch: ` +
-      `current=${current.direction}/${String(current.side)}/${current.symbol} ` +
-      `incoming=${incoming.direction}/${String(incoming.side)}/${incoming.symbol}`,
+      `current=${current.direction}/${current.side}/${current.symbol} ` +
+      `incoming=${incoming.direction}/${incoming.side}/${incoming.symbol}`,
   );
 }
 
@@ -396,6 +388,20 @@ function assertMatchingOrderIdentity(
  * 按“订单更新时间 + 累计成交进度”合并权威事实。
  * 同一更新时间仍可能连续收到更大的累计成交量；只有等量且金额一致才幂等，等量金额冲突或累计事实倒退必须阻断。
  */
+/** 将已归属日损事实交给共享累计量/revision/phase 裁决，不维护第二套合并政策。 */
+function dailyLossFactToBroker(fact: DailyLossOrderFact): BrokerOrderExecutionFact {
+  return {
+    brokerOrderId: fact.orderId,
+    symbol: fact.symbol,
+    side: fact.side,
+    cumulativeQuantity: fact.cumulativeQuantity,
+    cumulativeAmount: fact.cumulativeAmount,
+    executionTimeMs: fact.lastExecutionTimeMs,
+    updatedAtMs: fact.orderUpdatedAtMs,
+    phase: fact.factStage,
+  };
+}
+
 function resolveAuthoritativeOrderFactMerge(
   current: DailyLossOrderFact | undefined,
   incoming: DailyLossOrderFact,
@@ -403,169 +409,50 @@ function resolveAuthoritativeOrderFactMerge(
   result: DailyLossCumulativeExecutionResult;
   nextFact: DailyLossOrderFact | null;
 }> {
-  const orderId = incoming.orderId;
-  if (!current) {
-    return {
-      result: { authoritativeFactChanged: true, executionAdvanced: true },
-      nextFact: incoming,
-    };
-  }
+  if (current !== undefined) assertMatchingOrderIdentity(current, incoming);
 
-  assertMatchingOrderIdentity(current, incoming);
-  if (incoming.orderUpdatedAtMs < current.orderUpdatedAtMs) {
+  const previous = current === undefined ? undefined : dailyLossFactToBroker(current);
+  const merged = mergeBrokerOrderExecutionFact(previous, dailyLossFactToBroker(incoming));
+  if (merged === previous) {
     return {
-      result: { authoritativeFactChanged: false, executionAdvanced: false },
+      result: { admission: 'DUPLICATE', authoritativeFactChanged: false, executionAdvanced: false },
       nextFact: null,
     };
   }
 
-  if (current.factStage === 'TERMINAL' && incoming.factStage === 'OPEN') {
-    throw new Error(
-      `[DailyLossTracker] orderId=${orderId} fact stage regression: TERMINAL -> OPEN`,
+  const executionAdvanced =
+    current === undefined || merged.cumulativeQuantity > current.cumulativeQuantity;
+  if (merged.executionTimeMs === null) {
+    throw new Error('[DailyLossTracker] admitted execution is missing trusted time');
+  }
+
+  const snapshot: DailyLossExecutionSnapshot = {
+    factStage: merged.phase,
+    cumulativeQuantity: merged.cumulativeQuantity,
+    cumulativeAmount: merged.cumulativeAmount,
+    lastExecutionTimeMs: merged.executionTimeMs,
+    orderUpdatedAtMs: merged.updatedAtMs,
+  };
+  let snapshots: ReadonlyArray<DailyLossExecutionSnapshot>;
+  if (current === undefined) {
+    snapshots = [snapshot];
+  } else if (executionAdvanced) {
+    snapshots = [...current.executionSnapshots, snapshot];
+  } else {
+    snapshots = current.executionSnapshots.map((item, index, items) =>
+      index === items.length - 1 ? snapshot : item,
     );
-  }
-
-  if (incoming.orderUpdatedAtMs === current.orderUpdatedAtMs) {
-    if (
-      incoming.cumulativeQuantity === current.cumulativeQuantity &&
-      decimalEq(incoming.cumulativeAmount, current.cumulativeAmount)
-    ) {
-      if (current.factStage === incoming.factStage) {
-        return {
-          result: { authoritativeFactChanged: false, executionAdvanced: false },
-          nextFact: null,
-        };
-      }
-
-      const revisedSnapshots = current.executionSnapshots.map((snapshot, index, snapshots) =>
-        index === snapshots.length - 1 ? { ...snapshot, factStage: incoming.factStage } : snapshot,
-      );
-      return {
-        result: { authoritativeFactChanged: true, executionAdvanced: false },
-        nextFact: {
-          ...current,
-          factStage: incoming.factStage,
-          executionSnapshots: revisedSnapshots,
-        },
-      };
-    }
-
-    if (incoming.cumulativeQuantity === current.cumulativeQuantity) {
-      if (current.factStage !== 'OPEN' || incoming.factStage !== 'TERMINAL') {
-        throw new Error(
-          `[DailyLossTracker] orderId=${orderId} revision conflict: revision=${incoming.orderUpdatedAtMs}`,
-        );
-      }
-
-      const revisedSnapshots = current.executionSnapshots.map((snapshot, index, snapshots) =>
-        index === snapshots.length - 1
-          ? {
-              ...snapshot,
-              factStage: 'TERMINAL' as const,
-              cumulativeAmount: incoming.cumulativeAmount,
-            }
-          : snapshot,
-      );
-      return {
-        result: { authoritativeFactChanged: true, executionAdvanced: false },
-        nextFact: {
-          ...current,
-          factStage: 'TERMINAL',
-          cumulativeAmount: incoming.cumulativeAmount,
-          executionSnapshots: revisedSnapshots,
-        },
-      };
-    }
-
-    if (incoming.cumulativeQuantity < current.cumulativeQuantity) {
-      throw new Error(
-        `[DailyLossTracker] orderId=${orderId} revision conflict: revision=${incoming.orderUpdatedAtMs}`,
-      );
-    }
-
-    if (
-      incoming.lastExecutionTimeMs < current.lastExecutionTimeMs ||
-      !decimalGt(incoming.cumulativeAmount, current.cumulativeAmount)
-    ) {
-      throw new Error(`[DailyLossTracker] orderId=${orderId} cumulative execution fact 非单调`);
-    }
-
-    return {
-      result: { authoritativeFactChanged: true, executionAdvanced: true },
-      nextFact: {
-        ...incoming,
-        executionSnapshots: [
-          ...current.executionSnapshots,
-          {
-            factStage: incoming.factStage,
-            cumulativeQuantity: incoming.cumulativeQuantity,
-            cumulativeAmount: incoming.cumulativeAmount,
-            lastExecutionTimeMs: incoming.lastExecutionTimeMs,
-            orderUpdatedAtMs: incoming.orderUpdatedAtMs,
-          },
-        ],
-      },
-    };
-  }
-
-  if (incoming.cumulativeQuantity < current.cumulativeQuantity) {
-    throw new Error(
-      `[DailyLossTracker] orderId=${orderId} cumulative quantity regression: current=${current.cumulativeQuantity} incoming=${incoming.cumulativeQuantity}`,
-    );
-  }
-
-  if (incoming.cumulativeQuantity === current.cumulativeQuantity) {
-    const revisedSnapshots = current.executionSnapshots.map((snapshot, index, snapshots) => {
-      if (
-        index !== snapshots.length - 1 ||
-        snapshot.cumulativeQuantity !== current.cumulativeQuantity
-      ) {
-        return snapshot;
-      }
-
-      return {
-        ...snapshot,
-        cumulativeAmount: incoming.cumulativeAmount,
-        orderUpdatedAtMs: incoming.orderUpdatedAtMs,
-      };
-    });
-    return {
-      result: { authoritativeFactChanged: true, executionAdvanced: false },
-      nextFact: {
-        ...current,
-        factStage: incoming.factStage,
-        cumulativeAmount: incoming.cumulativeAmount,
-        orderUpdatedAtMs: incoming.orderUpdatedAtMs,
-        executionSnapshots: revisedSnapshots.map((snapshot, index, snapshots) =>
-          index === snapshots.length - 1
-            ? { ...snapshot, factStage: incoming.factStage }
-            : snapshot,
-        ),
-      },
-    };
-  }
-
-  if (
-    incoming.lastExecutionTimeMs < current.lastExecutionTimeMs ||
-    !decimalGt(incoming.cumulativeAmount, current.cumulativeAmount)
-  ) {
-    throw new Error(`[DailyLossTracker] orderId=${orderId} cumulative execution fact 非单调`);
   }
 
   return {
-    result: { authoritativeFactChanged: true, executionAdvanced: true },
+    result: { admission: 'ADMITTED', authoritativeFactChanged: true, executionAdvanced },
     nextFact: {
       ...incoming,
-      executionSnapshots: [
-        ...current.executionSnapshots,
-        {
-          factStage: incoming.factStage,
-          cumulativeQuantity: incoming.cumulativeQuantity,
-          cumulativeAmount: incoming.cumulativeAmount,
-          lastExecutionTimeMs: incoming.lastExecutionTimeMs,
-          orderUpdatedAtMs: incoming.orderUpdatedAtMs,
-        },
-      ],
+      cumulativeAmount: merged.cumulativeAmount,
+      factStage: merged.phase,
+      lastExecutionTimeMs: merged.executionTimeMs,
+      orderUpdatedAtMs: merged.updatedAtMs,
+      executionSnapshots: snapshots,
     },
   };
 }
@@ -577,8 +464,9 @@ function resolveAuthoritativeOrderFactMerge(
  */
 function hasValidExecution(order: RawOrderFromAPI): boolean {
   return (
-    isValidPositiveNumber(decimalToNumber(order.executedPrice)) &&
-    isValidPositiveNumber(decimalToNumber(order.executedQuantity))
+    Number.isSafeInteger(order.executedQuantity) &&
+    order.executedQuantity > 0 &&
+    exactCompare(order.executedAmount, '0') > 0
   );
 }
 
@@ -646,10 +534,7 @@ function collectOwnedInDayExecutionsForRecalculation(params: {
   const ownedInDayExecutions: DailyLossOwnedInDayExecution[] = [];
 
   for (const order of allOrders) {
-    if (
-      (order.side !== OrderSide.Buy && order.side !== OrderSide.Sell) ||
-      !hasValidExecution(order)
-    ) {
+    if (!['BUY', 'SELL'].includes(order.executionSide) || !hasValidExecution(order)) {
       continue;
     }
 
@@ -681,7 +566,16 @@ function collectOwnedInDayExecutionsForRecalculation(params: {
       throw new Error('[DailyLossTracker] 当前交易日无法解析，无法重算已成交订单');
     }
 
-    const orderDayKey = resolveHongKongDayKey(toHongKongTimeIso, trustedUpdatedAt);
+    if (
+      order.executionTimeMs === null ||
+      !Number.isSafeInteger(order.executionTimeMs) ||
+      order.executionTimeMs <= 0 ||
+      order.executionTimeMs > order.updatedAtMs
+    ) {
+      throw new Error(`[DailyLossTracker] 已成交订单缺少可信真实 execution time: ${order.orderId}`);
+    }
+
+    const orderDayKey = resolveHongKongDayKey(toHongKongTimeIso, new Date(order.executionTimeMs));
     if (orderDayKey === null) {
       throw new Error(
         `[DailyLossTracker] 已成交订单无法解析香港交易日: ` +
@@ -718,11 +612,16 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
   /** 最新已完成保护性清仓边界：仅计入 executedTimeMs > boundary 的成交。 */
   let latestProtectionBoundaryByDirection = new Map<DailyLossDirection, number>();
 
+  // 仅用于候选的新鲜度与发行者校验；不暴露或复制金融状态。
+  let stateIdentity = {};
+  const preparedPublishers = new WeakMap<PreparedDailyLossRecalculation, () => void>();
+
   /**
    * 显式重置 dayKey、states 与分段元数据。
    */
   function resetAll(now: Date): void {
     const nextKey = resolveHongKongDayKey(deps.toHongKongTimeIso, now);
+    stateIdentity = {};
     dayKey = nextKey;
     statesByDirection = createEmptyDirectionStates();
     filledOrderFactsById = new Map<string, DailyLossOrderFact>();
@@ -739,38 +638,20 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     return direction === 'LONG' ? baselinesByDirection.long : baselinesByDirection.short;
   }
 
-  /** 以最近一次不晚于边界的执行推进快照建立单方向 per-order baseline。 */
-  function rebuildDirectionBaselines(direction: DailyLossDirection, boundaryMs: number): void {
-    const nextBaselines = buildDirectionBaselines(filledOrderFactsById, direction, boundaryMs);
-
-    if (direction === 'LONG') {
-      baselinesByDirection = {
-        long: nextBaselines,
-        short: baselinesByDirection.short,
-      };
-      return;
-    }
-
-    baselinesByDirection = {
-      long: baselinesByDirection.long,
-      short: nextBaselines,
-    };
-  }
-
   /**
-   * 全量重算时根据历史成交订单初始化当日状态。
-   * RawOrderFromAPI 只有 updatedAt 可用，因此首次快照将其同时视为该累计成交的 revision 与最后已知执行时点；
-   * 后续等量终态 revision 由累计数量自行判定为非执行推进，不得推进执行时点。
+   * 全量重算使用真实 executionTimeMs 与独立 updatedAtMs；缺可信执行时间直接拒绝。
+   * 可信 execution 流水/durable 匹配由输入 owner 完成，不能以订单 revision 洗白旧执行事实。
    * protectionBoundaryByDirection 可选：按方向键恢复唯一 monitor 的方向级保护性边界。
    * 订单事实合并、边界基线、诊断与双方向状态均先在局部 candidate 完成；任一失败不得改写现有运行态。
    */
-  function initializeFromOrders(
+  function prepareRecalculationFromAllOrders(
     allOrders: ReadonlyArray<RawOrderFromAPI>,
     monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
-  ): void {
+  ): PreparedDailyLossRecalculation {
+    const sourceStateIdentity = stateIdentity;
     const nextKey = resolveHongKongDayKey(deps.toHongKongTimeIso, now);
     const ownedInDayExecutions = collectOwnedInDayExecutionsForRecalculation({
       allOrders,
@@ -791,6 +672,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       short: baselinesByDirection.short,
     };
     let nextStatesByDirection = createEmptyDirectionStates();
+    let ownershipWarning: string | null = null;
 
     // 边界来源优先级：
     // 1) 显式传入（启动恢复）；
@@ -858,10 +740,9 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         const sampleText = diagnostics.unmatchedSamples
           .map((sample) => `${sample.symbol}:${sample.stockName}`)
           .join(' | ');
-        logger.warn(
+        ownershipWarning =
           `[日内亏损追踪] 未归属订单: 当日成交${diagnostics.inDayFilled}笔, ` +
-            `未归属${diagnostics.unmatchedFilled}笔, 样例=${sampleText}`,
-        );
+          `未归属${diagnostics.unmatchedFilled}笔, 样例=${sampleText}`;
       }
 
       nextStatesByDirection = {
@@ -880,11 +761,36 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       };
     }
 
-    dayKey = nextKey;
-    filledOrderFactsById = nextFactsById;
-    latestProtectionBoundaryByDirection = nextProtectionBoundaryByDirection;
-    baselinesByDirection = nextBaselinesByDirection;
-    statesByDirection = nextStatesByDirection;
+    if (ownershipWarning !== null) {
+      logger.warn(ownershipWarning);
+    }
+
+    const prepared: PreparedDailyLossRecalculation = Object.freeze({
+      isCurrent: () => stateIdentity === sourceStateIdentity,
+    });
+    preparedPublishers.set(prepared, () => {
+      if (stateIdentity !== sourceStateIdentity) {
+        throw new Error('[DailyLossTracker] recalculation candidate is stale or already published');
+      }
+
+      stateIdentity = {};
+      dayKey = nextKey;
+      filledOrderFactsById = nextFactsById;
+      latestProtectionBoundaryByDirection = nextProtectionBoundaryByDirection;
+      baselinesByDirection = nextBaselinesByDirection;
+      statesByDirection = nextStatesByDirection;
+    });
+    return prepared;
+  }
+
+  /** 仅本实例发行的候选可以进入同步发布段；不调用外部提供的授权或发布函数。 */
+  function publishRecalculation(prepared: PreparedDailyLossRecalculation): void {
+    const publish = preparedPublishers.get(prepared);
+    if (publish === undefined) {
+      throw new Error('[DailyLossTracker] recalculation candidate was not issued by this owner');
+    }
+
+    publish();
   }
 
   function setDirectionState(direction: DailyLossDirection, nextState: DailyLossState): void {
@@ -925,26 +831,28 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
   ): void {
-    initializeFromOrders(
+    const prepared = prepareRecalculationFromAllOrders(
       allOrders,
       monitor,
       now,
       protectionBoundaryByDirection,
       relatedTradingSymbols,
     );
+    publishRecalculation(prepared);
   }
 
   /**
    * 按 orderId 幂等合并累计成交事实并更新亏损偏移。
    * dayKey 由 lifecycle riskDomain.midnightClear 通过 resetAll 统一驱动，此处只接纳当日累计事实。
    * 已存在保护边界时，合并后按执行快照刷新 per-order baseline，再投影新段增量。
+   * 未封存的重复事实仍执行 durable 回调；经济去重不能证明保护性进度已经落盘。
    */
   function recordCumulativeExecution(
     input: DailyLossCumulativeExecutionInput,
     beforeAuthoritativeFactCommit?: (snapshot: DailyLossAuthoritativeFactSnapshot) => void,
   ): DailyLossCumulativeExecutionResult {
     if (!dayKey) {
-      return { authoritativeFactChanged: false, executionAdvanced: false };
+      return { admission: 'SUPPRESSED', authoritativeFactChanged: false, executionAdvanced: false };
     }
 
     const fillDayKey = resolveHongKongDayKey(
@@ -952,13 +860,18 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       new Date(input.executedTimeMs),
     );
     if (fillDayKey !== dayKey) {
-      return { authoritativeFactChanged: false, executionAdvanced: false };
+      return { admission: 'SUPPRESSED', authoritativeFactChanged: false, executionAdvanced: false };
     }
 
     const directionKey = input.direction;
     const incomingFact = createOrderFactFromFill(input);
     if (!incomingFact) {
-      return { authoritativeFactChanged: false, executionAdvanced: false };
+      return { admission: 'SUPPRESSED', authoritativeFactChanged: false, executionAdvanced: false };
+    }
+
+    const currentBoundary = latestProtectionBoundaryByDirection.get(directionKey);
+    if (currentBoundary !== undefined && incomingFact.lastExecutionTimeMs <= currentBoundary) {
+      return { admission: 'SUPPRESSED', authoritativeFactChanged: false, executionAdvanced: false };
     }
 
     const currentFact = filledOrderFactsById.get(input.orderId);
@@ -968,29 +881,55 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
 
     const merge = resolveAuthoritativeOrderFactMerge(currentFact, incomingFact);
     if (!merge.result.authoritativeFactChanged || merge.nextFact === null) {
+      if (currentFact !== undefined)
+        beforeAuthoritativeFactCommit?.({
+          factStage: currentFact.factStage,
+          cumulativeQuantity: String(currentFact.cumulativeQuantity),
+          cumulativeAmount: currentFact.cumulativeAmount,
+          lastExecutionTimeMs: currentFact.lastExecutionTimeMs,
+          orderRevisionMs: currentFact.orderUpdatedAtMs,
+        });
+
       return merge.result;
     }
 
-    const currentBoundary = latestProtectionBoundaryByDirection.get(directionKey);
     if (currentBoundary !== undefined && merge.nextFact.lastExecutionTimeMs <= currentBoundary) {
-      return { authoritativeFactChanged: false, executionAdvanced: false };
+      return { admission: 'SUPPRESSED', authoritativeFactChanged: false, executionAdvanced: false };
     }
 
+    const economicInputChanged =
+      merge.nextFact.cumulativeQuantity !== currentFact?.cumulativeQuantity ||
+      exactCompare(merge.nextFact.cumulativeAmount, currentFact.cumulativeAmount) !== 0 ||
+      merge.nextFact.lastExecutionTimeMs !== currentFact.lastExecutionTimeMs ||
+      merge.nextFact.factStage !== currentFact.factStage;
+    const candidateFacts = new Map(filledOrderFactsById);
+    candidateFacts.set(input.orderId, merge.nextFact);
+    const candidateBaselines =
+      currentBoundary === undefined || !economicInputChanged
+        ? getDirectionBaselines(directionKey)
+        : buildDirectionBaselines(candidateFacts, directionKey, currentBoundary);
+    // revision-only 只抬高权威冲突水位，不重新过滤或发布亏损投影。
+    const candidateState = economicInputChanged
+      ? buildStateFromFacts(candidateFacts, candidateBaselines, directionKey, deps.filteringEngine)
+      : null;
     beforeAuthoritativeFactCommit?.({
       factStage: merge.nextFact.factStage,
-      cumulativeQuantity: toDecimalValue(merge.nextFact.cumulativeQuantity).toString(),
-      cumulativeAmount: toDecimalValue(merge.nextFact.cumulativeAmount).toString(),
+      cumulativeQuantity: String(merge.nextFact.cumulativeQuantity),
+      cumulativeAmount: merge.nextFact.cumulativeAmount,
       lastExecutionTimeMs: merge.nextFact.lastExecutionTimeMs,
       orderRevisionMs: merge.nextFact.orderUpdatedAtMs,
     });
-
-    filledOrderFactsById.set(input.orderId, merge.nextFact);
-
+    stateIdentity = {};
+    filledOrderFactsById = candidateFacts;
     if (currentBoundary !== undefined) {
-      rebuildDirectionBaselines(directionKey, currentBoundary);
+      baselinesByDirection =
+        directionKey === 'LONG'
+          ? { long: candidateBaselines, short: baselinesByDirection.short }
+          : { long: baselinesByDirection.long, short: candidateBaselines };
     }
 
-    recalculateDirectionState(directionKey);
+    if (candidateState !== null) setDirectionState(directionKey, candidateState);
+
     return merge.result;
   }
 
@@ -1011,11 +950,11 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       throw new Error(`[DailyLossTracker] execution progress identity conflict: ${params.orderId}`);
     }
 
-    const cumulativeQuantity = decimalToNumberValue(toDecimalValue(params.cumulativeQuantity));
-    const cumulativeAmount = decimalToNumberValue(toDecimalValue(params.cumulativeAmount));
+    const cumulativeQuantity = safeQuantityNumber(params.cumulativeQuantity);
+    const cumulativeAmount = canonicalDecimal(params.cumulativeAmount);
     if (
       cumulativeQuantity > fact.cumulativeQuantity ||
-      cumulativeAmount > fact.cumulativeAmount ||
+      exactCompare(cumulativeAmount, fact.cumulativeAmount) > 0 ||
       params.orderRevisionMs > fact.orderUpdatedAtMs ||
       params.lastExecutionTimeMs > params.orderRevisionMs
     ) {
@@ -1032,7 +971,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         snapshot.lastExecutionTimeMs === params.lastExecutionTimeMs,
     );
     if (sameIdentity !== undefined) {
-      if (!decimalEq(sameIdentity.cumulativeAmount, cumulativeAmount)) {
+      if (exactCompare(sameIdentity.cumulativeAmount, cumulativeAmount) !== 0) {
         throw new Error(
           `[DailyLossTracker] execution progress snapshot conflict: ${params.orderId}`,
         );
@@ -1057,13 +996,14 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         left.cumulativeQuantity - right.cumulativeQuantity ||
         compareFactStage(left.factStage, right.factStage),
     );
+    stateIdentity = {};
     filledOrderFactsById.set(params.orderId, { ...fact, executionSnapshots });
   }
 
   /**
    * 获取指定标的与方向的当日亏损偏移。
    */
-  function getLossOffset(direction: 'LONG' | 'SHORT'): number {
+  function getLossOffset(direction: 'LONG' | 'SHORT'): string {
     return direction === 'LONG'
       ? statesByDirection.long.dailyLossOffset
       : statesByDirection.short.dailyLossOffset;
@@ -1107,9 +1047,9 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       orderBaselines.push({
         orderId: fact.orderId,
         symbol: fact.symbol,
-        side: fact.side === OrderSide.Buy ? 'BUY' : 'SELL',
-        cumulativeQuantity: toDecimalValue(boundarySnapshot.cumulativeQuantity).toString(),
-        cumulativeAmount: toDecimalValue(boundarySnapshot.cumulativeAmount).toString(),
+        side: fact.side,
+        cumulativeQuantity: String(boundarySnapshot.cumulativeQuantity),
+        cumulativeAmount: boundarySnapshot.cumulativeAmount,
         lastExecutionTimeMs: boundarySnapshot.lastExecutionTimeMs,
         orderRevisionMs: boundarySnapshot.orderUpdatedAtMs,
       });
@@ -1121,12 +1061,13 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
 
   /** 提交已持久化的保护边界。 */
   function commitProtectionBoundary(prepared: PreparedDailyLossProtectionBoundary): void {
+    stateIdentity = {};
     latestProtectionBoundaryByDirection.set(prepared.direction, prepared.boundaryExecutedTimeMs);
     const nextBaselines = new Map<string, DailyLossOrderBaseline>();
     for (const baseline of prepared.orderBaselines) {
       nextBaselines.set(baseline.orderId, {
-        cumulativeQuantity: decimalToNumberValue(toDecimalValue(baseline.cumulativeQuantity)),
-        cumulativeAmount: decimalToNumberValue(toDecimalValue(baseline.cumulativeAmount)),
+        cumulativeQuantity: safeQuantityNumber(baseline.cumulativeQuantity),
+        cumulativeAmount: canonicalDecimal(baseline.cumulativeAmount),
       });
     }
 
@@ -1186,8 +1127,8 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       }
 
       if (
-        !decimalEq(persisted.cumulativeQuantity, boundarySnapshot.cumulativeQuantity) ||
-        !decimalEq(persisted.cumulativeAmount, boundarySnapshot.cumulativeAmount) ||
+        safeQuantityNumber(persisted.cumulativeQuantity) !== boundarySnapshot.cumulativeQuantity ||
+        exactCompare(persisted.cumulativeAmount, boundarySnapshot.cumulativeAmount) !== 0 ||
         persisted.lastExecutionTimeMs !== boundarySnapshot.lastExecutionTimeMs ||
         persisted.orderRevisionMs !== boundarySnapshot.orderUpdatedAtMs
       ) {
@@ -1209,7 +1150,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         throw new Error(`[DailyLossTracker] persisted baseline order missing: ${baseline.orderId}`);
       }
 
-      const side = fact.side === OrderSide.Buy ? 'BUY' : 'SELL';
+      const side = fact.side;
       if (
         fact.direction !== prepared.direction ||
         fact.symbol !== baseline.symbol ||
@@ -1220,11 +1161,11 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
         );
       }
 
-      const baselineQuantity = decimalToNumberValue(toDecimalValue(baseline.cumulativeQuantity));
-      const baselineAmount = decimalToNumberValue(toDecimalValue(baseline.cumulativeAmount));
+      const baselineQuantity = safeQuantityNumber(baseline.cumulativeQuantity);
+      const baselineAmount = canonicalDecimal(baseline.cumulativeAmount);
       if (
         fact.cumulativeQuantity < baselineQuantity ||
-        fact.cumulativeAmount < baselineAmount ||
+        exactCompare(fact.cumulativeAmount, baselineAmount) < 0 ||
         fact.lastExecutionTimeMs < baseline.lastExecutionTimeMs ||
         fact.orderUpdatedAtMs < baseline.orderRevisionMs
       ) {
@@ -1239,9 +1180,24 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
 
   return {
     resetAll,
+    prepareRecalculationFromAllOrders,
+    publishRecalculation,
     recalculateFromAllOrders,
     recordCumulativeExecution,
     restoreExecutionSnapshot,
+    getExecutionTimeEvidence: () =>
+      [...filledOrderFactsById.values()].map((fact) =>
+        Object.freeze({
+          brokerOrderId: fact.orderId,
+          symbol: fact.symbol,
+          side: fact.side,
+          cumulativeQuantity: fact.cumulativeQuantity,
+          cumulativeAmount: fact.cumulativeAmount,
+          lastExecutionTimeMs: fact.lastExecutionTimeMs,
+          orderRevisionMs: fact.orderUpdatedAtMs,
+          phase: fact.factStage,
+        }),
+      ),
     getLossOffset,
     prepareProtectionBoundary,
     commitProtectionBoundary,

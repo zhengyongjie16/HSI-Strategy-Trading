@@ -41,9 +41,9 @@ describe('seat snapshots business flow', () => {
       symbolRegistry,
       monitorSymbol: 'HSI.HK',
       quotesMap: new Map([
-        ['LONG_READY.HK', { ...createQuoteDouble('LONG_READY.HK', 1.1), name: 'LongReady' }],
-        ['SHORT_READY.HK', { ...createQuoteDouble('SHORT_READY.HK', 0.9), name: 'ShortReady' }],
-        ['HSI.HK', { ...createQuoteDouble('HSI.HK', 20_100), name: 'HangSeng' }],
+        ['LONG_READY.HK', { ...createQuoteDouble('LONG_READY.HK', '1.1'), name: 'LongReady' }],
+        ['SHORT_READY.HK', { ...createQuoteDouble('SHORT_READY.HK', '0.9'), name: 'ShortReady' }],
+        ['HSI.HK', { ...createQuoteDouble('HSI.HK', '20100'), name: 'HangSeng' }],
       ]),
     });
 
@@ -82,7 +82,7 @@ describe('seat snapshots business flow', () => {
       symbolRegistry,
       monitorSymbol: 'HSI.HK',
       quotesMap: new Map([
-        ['SHORT_READY.HK', { ...createQuoteDouble('SHORT_READY.HK', 0.9), name: 'ShortReady' }],
+        ['SHORT_READY.HK', { ...createQuoteDouble('SHORT_READY.HK', '0.9'), name: 'ShortReady' }],
       ]),
     });
 
@@ -121,9 +121,12 @@ describe('seat snapshots business flow', () => {
       quotesMap: new Map([
         [
           'LONG_ACTIVATING.HK',
-          { ...createQuoteDouble('LONG_ACTIVATING.HK', 1.1), name: 'LongActivating' },
+          { ...createQuoteDouble('LONG_ACTIVATING.HK', '1.1'), name: 'LongActivating' },
         ],
-        ['SHORT_ACTIVE.HK', { ...createQuoteDouble('SHORT_ACTIVE.HK', 0.9), name: 'ShortActive' }],
+        [
+          'SHORT_ACTIVE.HK',
+          { ...createQuoteDouble('SHORT_ACTIVE.HK', '0.9'), name: 'ShortActive' },
+        ],
       ]),
     });
 

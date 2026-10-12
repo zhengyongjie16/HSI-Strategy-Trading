@@ -1,4 +1,5 @@
 import type { RuntimeTermination } from '../../types/runtime.js';
+import type { AccountPositionSnapshot, SnapshotToken } from '../../types/accountPosition.js';
 import type { Logger } from '../../utils/logger/types.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import type { TradeLogHydrator } from '../../services/liquidationCooldown/types.js';
@@ -50,6 +51,24 @@ export type LifecycleContext = Readonly<{
 }>;
 
 /**
+ * 单次开盘域调用的原 owner 授权。
+ * 由 manager 在首个 await 前固定 dayEpoch 与 owner 身份；下游只读取，不重新绑定当前输入。
+ */
+export type OpenRebuildContext = LifecycleContext & {
+  readonly dayEpoch: number;
+  readonly snapshotToken: SnapshotToken;
+  readonly isCurrent: () => boolean;
+};
+
+/**
+ * 开盘域回调结果。COMMITTED 仅在域内实际工作完成后返回，ABORTED 阻断后续域与 ACTIVE。
+ * 不把旧 void/undefined 回调当成功，内部与外部失败继续抛原异常。
+ */
+export type CacheDomainOpenRebuildResult =
+  | { readonly status: 'COMMITTED'; readonly snapshotToken: SnapshotToken }
+  | { readonly status: 'ABORTED' };
+
+/**
  * 缓存域接口，每个域负责自身数据的午夜清理与开盘重建。
  * 类型用途：依赖注入给 DayLifecycleManager，在跨日与开盘时被调用；midnightClear 按注册顺序、openRebuild 按逆序执行。
  * 数据来源：由主程序注册各 CacheDomain 实现（如 globalStateDomain、orderDomain 等）。
@@ -57,7 +76,9 @@ export type LifecycleContext = Readonly<{
  */
 export interface CacheDomain {
   readonly midnightClear: (ctx: LifecycleContext) => Promise<void> | void;
-  readonly openRebuild: (ctx: LifecycleContext) => Promise<void> | void;
+  readonly openRebuild: (
+    ctx: OpenRebuildContext,
+  ) => Promise<CacheDomainOpenRebuildResult> | CacheDomainOpenRebuildResult;
 }
 
 /**
@@ -91,6 +112,10 @@ export type DayLifecycleManagerDeps = Readonly<{
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   mutableState: LifecycleMutableState;
   cacheDomains: ReadonlyArray<CacheDomain>;
+  snapshot: Pick<
+    AccountPositionSnapshot,
+    'getStatus' | 'requestClear' | 'beginRebuild' | 'openAdmission' | 'isCurrent'
+  >;
   logger: Pick<Logger, 'info' | 'warn' | 'error'>;
   rebuildRetryDelayMs?: number;
 }>;
@@ -105,12 +130,13 @@ export type RebuildTradingDayStateDeps = Readonly<{
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   marketDataClient: MarketDataClient;
   trader: Trader;
+  snapshot: AccountPositionSnapshot;
   lastState: LastState;
   symbolRegistry: SymbolRegistry;
   monitorContext: MonitorContext;
   dailyLossTracker: DailyLossTracker;
   displayAccountAndPositions: (params: {
-    readonly lastState: LastState;
+    readonly snapshot: AccountPositionSnapshot;
     readonly quotesMap: ReadonlyMap<string, Quote | null>;
   }) => void;
 }>;
@@ -122,10 +148,28 @@ export type RebuildTradingDayStateDeps = Readonly<{
  * 使用范围：仅 lifecycle 内部使用。
  */
 export type RebuildTradingDayStateParams = Readonly<{
+  snapshotToken: SnapshotToken;
   allOrders: ReadonlyArray<RawOrderFromAPI>;
   quotesMap: ReadonlyMap<string, Quote | null>;
   now: Date;
 }>;
+
+/**
+ * 单次生命周期尝试的授权失效结果。
+ * 同日原 token 或席位身份过期返回 SUPERSEDED，由原 owner 整轮重新加载；
+ * 原 dayEpoch 失效、停止或 H admission 关闭返回 ABORTED，不代表重建成功。
+ * 仅真实授权失效使用此结果，财经、归属、配置与外部请求错误仍通过异常通道传播。
+ */
+export type TradingDayRuntimeInvalidationResult =
+  { readonly status: 'SUPERSEDED' } | { readonly status: 'ABORTED' };
+
+/**
+ * 重建阶段结果；COMMITTED 仅证明本轮重建完成，不签发 settlement readiness 或交易放行。
+ * 成功 token 是调用方原样传入的加载 receipt token，不能以最新 view 洗白旧输入。
+ */
+export type RebuildTradingDayStateResult =
+  | { readonly status: 'COMMITTED'; readonly snapshotToken: SnapshotToken }
+  | TradingDayRuntimeInvalidationResult;
 
 /**
  * loadTradingDayRuntimeSnapshot 的调用参数。
@@ -138,18 +182,23 @@ export type LoadTradingDayRuntimeSnapshotParams = Readonly<{
   requireTradingDay: boolean;
   resetRuntimeSubscriptions: boolean;
   hydrateCooldownFromTradeLog: boolean;
+  source: 'STARTUP' | 'OPEN_REBUILD';
 }>;
 
 /**
  * loadTradingDayRuntimeSnapshot 的返回结果。
- * 类型用途：包含当日订单列表与行情快照，供后续重建状态与展示使用。
- * 数据来源：由 loadTradingDayRuntimeSnapshot 内部拉取订单与行情后返回。
- * 使用范围：仅 lifecycle 内部使用。
+ * 类型用途：COMMITTED 携带真实 captured snapshot token、订单与行情；授权失效不携带空事实。
+ * 数据来源：本轮原 dayEpoch/generation 仍有效时收到的真实 H receipt，供原 owner 整轮 load→rebuild。
+ * 使用范围：startup/open rebuild 必须显式区分结果；COMMITTED 不代表 settlement ready 或门禁开放。
  */
-export type LoadTradingDayRuntimeSnapshotResult = Readonly<{
-  allOrders: ReadonlyArray<RawOrderFromAPI>;
-  quotesMap: ReadonlyMap<string, Quote | null>;
-}>;
+export type LoadTradingDayRuntimeSnapshotResult =
+  | {
+      readonly status: 'COMMITTED';
+      readonly snapshotToken: SnapshotToken;
+      readonly allOrders: ReadonlyArray<RawOrderFromAPI>;
+      readonly quotesMap: ReadonlyMap<string, Quote | null>;
+    }
+  | TradingDayRuntimeInvalidationResult;
 
 /**
  * loadTradingDayRuntimeSnapshot 的外部依赖。
@@ -158,6 +207,7 @@ export type LoadTradingDayRuntimeSnapshotResult = Readonly<{
  * 使用范围：仅 lifecycle 内部使用。
  */
 export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
+  snapshot: AccountPositionSnapshot;
   marketDataClient: MarketDataClient;
   trader: Trader;
   lastState: LastState;

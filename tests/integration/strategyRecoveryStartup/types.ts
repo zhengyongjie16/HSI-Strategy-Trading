@@ -4,11 +4,13 @@ import type { RuntimeTermination } from '../../../src/types/runtime.js';
 import type { OrderMonitorRuntimeStore } from '../../../src/core/trader/orderMonitor/types.js';
 import type { OrderRecorder, OrderStateChangedEvent } from '../../../src/types/services.js';
 import type { OrderHoldRegistry } from '../../../src/core/trader/types.js';
-import type { createTradeContextMock } from '../../../mock/longbridge/tradeContextMock.js';
+import type { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { createExecutionFixture } from '../../core/orderRecorder/executionFixture.js';
 
 /** 启动装配中注入真实恢复入口，供独立 T28 集成使用。 */
 export type StartupRecoveryHarnessParams = {
   readonly recover: () => Promise<void>;
+  readonly executionOwner: ReturnType<typeof createExecutionFixture>;
 };
 
 /** 四种 broker/启动快照输入，仅用于离线恢复验收。 */
@@ -29,7 +31,8 @@ export type StartupRecoveryHarness = {
 /** 真实恢复子流程共用的运行态与可控 broker 请求边界。 */
 export type RecoveryHarness = {
   readonly runtime: OrderMonitorRuntimeStore;
-  readonly broker: ReturnType<typeof createTradeContextMock>;
+  readonly broker: Awaited<ReturnType<typeof createBrokerIngressFixture>>;
+  readonly executionOwner: ReturnType<typeof createExecutionFixture>;
   readonly orderRecorder: OrderRecorder;
   readonly orderHoldRegistry: OrderHoldRegistry;
   readonly events: OrderStateChangedEvent[];

@@ -1,6 +1,8 @@
 import type { OrderType } from 'longbridge';
 import { ORDER_TYPE_CONFIG_TO_OPEN_API, SYMBOL_WITH_REGION_REGEX } from '../constants/index.js';
-import type { LiquidationCooldownConfig, NumberRange } from '../types/config.js';
+import type { LiquidationCooldownConfig, DecimalRange } from '../types/config.js';
+import { AMOUNT_CONFIG_TEXT_PATTERN } from '../constants/financialConfig.js';
+import { canonicalDecimal, exactCompare } from '../utils/numeric/exact.js';
 import type { OrderTypeConfig } from '../types/signal.js';
 import { logger } from '../utils/logger/index.js';
 import type { ConfigValidationError } from './types.js';
@@ -71,6 +73,46 @@ export function getNumberConfig(
   }
 
   return num;
+}
+
+/**
+ * 读取金融配置文本，不经 number；金额类额外校验 10 位整数与 3 位小数。
+ * @param env 原始环境对象
+ * @param envKey 配置项名称
+ * @param minimum 文本下界
+ * @param amount 是否为金额配置
+ * @returns 规范十进制文本；未配置返回 null，非法显式值立即拒绝
+ */
+export function getFinancialConfig(
+  env: NodeJS.ProcessEnv,
+  envKey: string,
+  minimum: string,
+  amount: boolean,
+): string | null {
+  const raw = env[envKey];
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+
+  const text = raw.trim();
+  if (amount && !AMOUNT_CONFIG_TEXT_PATTERN.test(text)) {
+    throw createConfigValidationError(
+      `[配置错误] ${envKey} 无效（金额必须为普通十进制文本，整数最多 10 位、小数最多 3 位）`,
+    );
+  }
+
+  let value: string;
+  try {
+    value = canonicalDecimal(text);
+  } catch {
+    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须为普通十进制文本）`);
+  }
+
+  if (exactCompare(value, minimum) < 0) {
+    throw createConfigValidationError(`[配置错误] ${envKey} 无效（必须 >= ${minimum}）`);
+  }
+
+  return value;
 }
 
 /**
@@ -170,9 +212,12 @@ export function parseSmartCloseTimeoutMinutesConfig(
  * 解析数值范围配置，格式为 "min,max"。
  * @param env - 进程环境变量对象
  * @param envKey - 环境变量键名
- * @returns 解析后的 NumberRange 对象，格式无效或未设置时返回 null
+ * @returns 解析后的 DecimalRange 对象，格式无效或未设置时返回 null
  */
-export function parseNumberRangeConfig(env: NodeJS.ProcessEnv, envKey: string): NumberRange | null {
+export function parseDecimalRangeConfig(
+  env: NodeJS.ProcessEnv,
+  envKey: string,
+): DecimalRange | null {
   const value = getStringConfig(env, envKey);
   if (!value) {
     return null;
@@ -187,15 +232,17 @@ export function parseNumberRangeConfig(env: NodeJS.ProcessEnv, envKey: string): 
     return null;
   }
 
-  const min = Number(parts[0]);
-  const max = Number(parts[1]);
-
-  if (!Number.isFinite(min) || !Number.isFinite(max)) {
-    logger.warn(`[配置警告] ${envKey} 格式无效，min/max 必须为数字`);
+  let min: string;
+  let max: string;
+  try {
+    min = canonicalDecimal(parts[0] ?? '');
+    max = canonicalDecimal(parts[1] ?? '');
+  } catch {
+    logger.warn(`[配置警告] ${envKey} 格式无效，min/max 必须为普通十进制文本`);
     return null;
   }
 
-  if (min > max) {
+  if (exactCompare(min, max) > 0) {
     logger.warn(`[配置警告] ${envKey} 格式无效，min 不能大于 max`);
     return null;
   }

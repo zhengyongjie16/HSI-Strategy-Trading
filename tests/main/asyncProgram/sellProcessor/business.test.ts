@@ -1,5 +1,16 @@
+import { createIssuedPeriodicTasksFixture } from '../../fixtures/issuedPeriodicTasks.js';
+import { createSettlementRuntimeFixture } from '../../fixtures/settlementRuntime.js';
+import { getDefaultAutoSearchConfig } from '../../../services/autoSymbolManager/utils.js';
 import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
-import { describe, expect, it } from 'bun:test';
+import {
+  createEmptySnapshotFixture,
+  createSnapshotFixture,
+} from '../../fixtures/accountPositionSnapshot.js';
+import type { AccountPositionSnapshot } from '../../../../src/types/accountPosition.js';
+import type { SellProcessorDeps } from '../../../../src/main/asyncProgram/sellProcessor/types.js';
+import type { Processor } from '../../../../src/main/asyncProgram/types.js';
+import type { PostTradeConsistencyRuntime } from '../../../../src/app/types.js';
+import { afterEach, describe, expect, it } from 'bun:test';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
@@ -12,6 +23,9 @@ import { createExternalApiRequestError } from '../../../helpers/createExternalAp
 import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import type { ExecutableSellSignal, Signal } from '../../../../src/types/signal.js';
 import {
+  createAccountSnapshotDouble,
+  createDailyLossTrackerDouble,
+  createPositionDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createQuoteDouble,
@@ -21,7 +35,6 @@ import {
 } from '../../../helpers/testDoubles.js';
 import {
   createLastState,
-  createLastStateWithPositions,
   createMonitorContext,
   rethrowFatalError,
   runProcessorFlow,
@@ -43,6 +56,14 @@ function requireSignal(signal: Signal | null): Signal {
   return signal;
 }
 
+const issuedTaskFixtures: Awaited<ReturnType<typeof createIssuedPeriodicTasksFixture>>[] = [];
+const baselineOwners: PostTradeConsistencyRuntime[] = [];
+afterEach(async () => {
+  for (const fixture of issuedTaskFixtures.splice(0)) await fixture.stopAndDrain();
+
+  for (const baseline of baselineOwners.splice(0)) await baseline.stopAndDrain();
+});
+
 const SELL_PROCESSOR_NOW_MS = Date.parse('2026-02-16T01:31:00.000Z');
 const SELL_PROCESSOR_RUNTIME = {
   clock: {
@@ -56,12 +77,119 @@ const SELL_PROCESSOR_RUNTIME = {
   },
 };
 
+/** 由同一真实 H 初始化事实，并由真实 S 完成 paired 基线业务收尾后取得 receipt。 */
+async function createSellProcessorHarness(
+  params: Omit<SellProcessorDeps, 'snapshot' | 'postTradeConsistencyRuntime'> & {
+    readonly snapshot?: AccountPositionSnapshot;
+    readonly postTradeConsistencyRuntime?: SellProcessorDeps['postTradeConsistencyRuntime'];
+    readonly onWaitForFresh?: () => void;
+    readonly abortBeforeWait?: 'STOP_AND_DRAIN';
+  },
+): Promise<
+  Processor & {
+    readonly snapshot: AccountPositionSnapshot;
+    readonly baseline: PostTradeConsistencyRuntime | null;
+  }
+> {
+  const snapshot =
+    params.snapshot ??
+    (await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 500,
+          availableQuantity: 500,
+          costPrice: '1',
+        }),
+        createPositionDouble({
+          symbol: 'BEAR.HK',
+          quantity: 300,
+          availableQuantity: 300,
+          costPrice: '1',
+        }),
+      ],
+    }));
+  let consistency = params.postTradeConsistencyRuntime;
+  let baseline: PostTradeConsistencyRuntime | null = null;
+  if (consistency === undefined) {
+    baseline = createSettlementRuntimeFixture({
+      monitorContext: params.monitorContext,
+      termination: createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      }),
+      snapshot,
+      getTrader: () => params.trader,
+      // S 刷新唤醒与 SELL 的 quote retry timer 属于不同 owner，分别观测。
+      scheduler: SELL_PROCESSOR_RUNTIME.scheduler,
+      onPositionsCommitted: async (token) => {
+        expect(
+          snapshot.isCurrent(token, { account: true, positions: true, paired: true }),
+        ).toBeTrue();
+      },
+    });
+    baselineOwners.push(baseline);
+    baseline.start();
+    expect(await baseline.completeRebuildBaseline()).toBeTrue();
+    if (params.abortBeforeWait !== undefined) {
+      baseline.abortWaiting();
+    }
+
+    consistency = baseline;
+  }
+
+  const reader = consistency;
+  const processor = createSellProcessor({
+    ...params,
+    snapshot,
+    postTradeConsistencyRuntime: {
+      waitForFresh: async () => {
+        params.onWaitForFresh?.();
+        return reader.waitForFresh();
+      },
+      isCurrent: reader.isCurrent,
+    },
+  });
+  return { ...processor, snapshot, baseline };
+}
+
 describe('sellProcessor business flow', () => {
-  it('queueCleanup 在 trade task 不携带 monitorSymbol 时仍按 direction 清理 buy/sell task', () => {
+  it('queueCleanup 在 trade task 不携带 monitorSymbol 时仍按 direction 清理 buy/sell task', async () => {
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
     const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
 
+    const context = createMonitorContext({
+      config: createMonitorConfigDouble({
+        autoSearchConfig: { ...getDefaultAutoSearchConfig(), switchIntervalMinutes: 1 },
+      }),
+    });
+    for (const direction of ['LONG', 'SHORT'] as const)
+      context.symbolRegistry.updateSeatState(direction, {
+        ...context.symbolRegistry.getSeatState(direction),
+        lastSeatActivatedAt: 12000,
+      });
+
+    const issued = await createIssuedPeriodicTasksFixture({
+      snapshot: await createSnapshotFixture({
+        account: createAccountSnapshotDouble('100000'),
+        positions: [],
+      }),
+      monitorContext: context,
+      trader: createTraderDouble(),
+      termination: createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      }),
+      getCanTradeNow: () => true,
+      nowMs: 13000,
+    });
+    issuedTaskFixtures.push(issued);
     for (const task of [
       {
         type: 'STRATEGY_BUY' as const,
@@ -91,25 +219,13 @@ describe('sellProcessor business flow', () => {
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'AUTO_SYMBOL_TICK:LONG',
-      data: {
-        direction: 'LONG',
-        seatVersion: 2,
-        symbol: 'BULL.HK',
-        lastSeatActivatedAt: 12_000,
-        currentTimeMs: 123,
-      },
+      data: issued.getTask('LONG'),
     });
 
     monitorTaskQueue.scheduleLatest({
       type: 'AUTO_SYMBOL_TICK',
       dedupeKey: 'AUTO_SYMBOL_TICK:SHORT',
-      data: {
-        direction: 'SHORT',
-        seatVersion: 2,
-        symbol: 'BEAR.HK',
-        lastSeatActivatedAt: 12_000,
-        currentTimeMs: 123,
-      },
+      data: issued.getTask('SHORT'),
     });
 
     const result = clearMonitorDirectionQueues({
@@ -133,12 +249,460 @@ describe('sellProcessor business flow', () => {
     });
   });
 
+  it('keeps total holdings visible when available quantity is zero instead of synthesizing flat', async () => {
+    const queue = createSellTaskQueue();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 500,
+          availableQuantity: 0,
+          costPrice: '1',
+        }),
+      ],
+    });
+    const originalPositions = snapshot.getView().positions;
+    let processCalls = 0;
+    let executeCalls = 0;
+    const processor = await createSellProcessorHarness({
+      ...SELL_PROCESSOR_RUNTIME,
+      snapshot,
+      taskQueue: queue,
+      monitorContext: createMonitorContext(),
+      getLastState: () => createLastState(),
+      signalProcessor: {
+        applyRiskChecks: async () => [],
+        resetRiskCheckCooldown: () => {},
+        processSellSignals: ({ signals, longPosition }) => {
+          processCalls += 1;
+          expect(snapshot.getAvailablePosition('BULL.HK')).toBeNull();
+          expect(longPosition).toBe(originalPositions[0] ?? null);
+          expect(longPosition?.quantity).toBe(500);
+          expect(longPosition?.availableQuantity).toBe(0);
+          const signal = signals[0];
+          if (signal === undefined) throw new Error('expected SELL signal at quantity stage');
+
+          return [
+            {
+              ...signal,
+              action: 'HOLD' as const,
+              isProtectiveLiquidation: false as const,
+              reason: 'no currently available quantity',
+            },
+          ];
+        },
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]),
+      }),
+      trader: createTraderDouble({
+        executeSignals: async () => {
+          executeCalls += 1;
+          return { executedOrderIds: ['UNEXPECTED'] };
+        },
+      }),
+      getCanProcessTask: () => true,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
+    });
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.push({
+          type: 'STRATEGY_SELL',
+          data: {
+            ...createSignalDouble('SELLCALL', 'BULL.HK'),
+            seatVersion: 2,
+            triggerTime: new Date(SELL_PROCESSOR_NOW_MS),
+          },
+        });
+      },
+      waitCondition: () => processCalls === 1,
+    });
+    expect(executeCalls).toBe(0);
+    expect(snapshot.getView().positions).toBe(originalPositions);
+    expect(snapshot.getView().positions[0]?.quantity).toBe(500);
+  });
+
+  it('reselects current positions locally after quote-await supersession without a timer or old quantity submission', async () => {
+    const queue = createSellTaskQueue();
+    let quantity = 500;
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+      readPort: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [
+          createPositionDouble({
+            symbol: 'BULL.HK',
+            quantity,
+            availableQuantity: quantity,
+            costPrice: '1',
+          }),
+        ],
+      },
+    });
+    const origin = snapshot.getView().token;
+    let quoteCalls = 0;
+    let waitCalls = 0;
+    let timerCalls = 0;
+    let executeCalls = 0;
+    const selectedQuantities: number[] = [];
+    const processor = await createSellProcessorHarness({
+      ...SELL_PROCESSOR_RUNTIME,
+      snapshot,
+      taskQueue: queue,
+      monitorContext: createMonitorContext(),
+      getLastState: () => createLastState(),
+      onWaitForFresh: () => {
+        waitCalls += 1;
+      },
+      signalProcessor: {
+        applyRiskChecks: async () => [],
+        resetRiskCheckCooldown: () => {},
+        processSellSignals: ({ signals, longPosition }) => {
+          const signal = signals[0];
+          if (signal === undefined || longPosition === null)
+            throw new Error('expected current quantity facts');
+
+          selectedQuantities.push(longPosition.availableQuantity);
+          return [{ ...signal, quantity: longPosition.availableQuantity }];
+        },
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          quoteCalls += 1;
+          if (quoteCalls === 1) {
+            quantity = 200;
+            const receipt = await snapshot.requestRefresh({
+              source: 'TEST_CURRENT_POSITIONS',
+              dayEpoch: origin.dayEpoch,
+              refreshAccount: true,
+              refreshPositions: true,
+            }).result;
+            expect(receipt.status).toBe('COMMITTED');
+            // 普通 commit 不重建 settlement；本 SELL owner 用原完成水位重选当前 position。
+          }
+
+          return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]);
+        },
+      }),
+      trader: createTraderDouble({
+        executeSignals: async (signals, callerAuthorization) => {
+          executeCalls += 1;
+          expect(callerAuthorization()).toBe(true);
+          if (executeCalls === 1) {
+            expect(signals[0]?.quantity).toBe(200);
+            quantity = 100;
+            await snapshot.requestRefresh({
+              source: 'SEAT_ACTIVATION',
+              dayEpoch: origin.dayEpoch,
+              refreshAccount: false,
+              refreshPositions: true,
+            }).result;
+            expect(callerAuthorization()).toBe(false);
+            return { executedOrderIds: [] };
+          }
+
+          expect(signals[0]?.quantity).toBe(100);
+          return { executedOrderIds: ['CURRENT-100'] };
+        },
+      }),
+      scheduler: {
+        scheduleTimer: (callback, delay) => {
+          timerCalls += 1;
+          return setTimeout(callback, delay);
+        },
+        clearTimer: (handle) => {
+          clearTimeout(handle);
+        },
+      },
+      getCanProcessTask: () => true,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
+    });
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.push({
+          type: 'STRATEGY_SELL',
+          data: {
+            ...createSignalDouble('SELLCALL', 'BULL.HK'),
+            seatVersion: 2,
+            triggerTime: new Date(SELL_PROCESSOR_NOW_MS),
+          },
+        });
+      },
+      waitCondition: () => executeCalls === 2,
+    });
+    expect(quoteCalls).toBe(3);
+    expect(waitCalls).toBe(3);
+    expect(executeCalls).toBe(2);
+    expect(selectedQuantities).toEqual([200, 100]);
+    expect(timerCalls).toBe(0);
+    expect(snapshot.getView().token.dayEpoch).toBe(origin.dayEpoch);
+    expect(snapshot.getView().token.positionRevision).toBeGreaterThan(origin.positionRevision);
+  });
+
+  it('blocks the old SELL epoch after a day cut during quote await', async () => {
+    const queue = createSellTaskQueue();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 500,
+          availableQuantity: 500,
+          costPrice: '1',
+        }),
+      ],
+    });
+    const origin = snapshot.getView().token;
+    let quoteCalls = 0;
+    let processCalls = 0;
+    let executeCalls = 0;
+    const processor = await createSellProcessorHarness({
+      ...SELL_PROCESSOR_RUNTIME,
+      snapshot,
+      taskQueue: queue,
+      monitorContext: createMonitorContext(),
+      getLastState: () => createLastState(),
+      signalProcessor: {
+        applyRiskChecks: async () => [],
+        resetRiskCheckCooldown: () => {},
+        processSellSignals: ({ signals }) => {
+          processCalls += 1;
+          return signals;
+        },
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          quoteCalls += 1;
+          await snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: origin.dayEpoch + 1 });
+          return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]);
+        },
+      }),
+      trader: createTraderDouble({
+        executeSignals: async () => {
+          executeCalls += 1;
+          return { executedOrderIds: ['UNEXPECTED'] };
+        },
+      }),
+      getCanProcessTask: () => true,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
+    });
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.push({
+          type: 'STRATEGY_SELL',
+          data: {
+            ...createSignalDouble('SELLCALL', 'BULL.HK'),
+            seatVersion: 2,
+            triggerTime: new Date(SELL_PROCESSOR_NOW_MS),
+          },
+        });
+      },
+      waitCondition: () => quoteCalls === 1 && queue.isEmpty(),
+    });
+    expect(processCalls).toBe(0);
+    expect(executeCalls).toBe(0);
+    expect(snapshot.getView().token.dayEpoch).toBe(origin.dayEpoch + 1);
+  });
+
+  it('reselects after quantity-stage invalidation and never hands the stale candidate to execution', async () => {
+    const queue = createSellTaskQueue();
+    let quantity = 500;
+    let holdReselectionRead = false;
+    const reselectionRead = Promise.withResolvers<null>();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [],
+      readPort: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => {
+          if (holdReselectionRead) await reselectionRead.promise;
+
+          return [
+            createPositionDouble({
+              symbol: 'BULL.HK',
+              quantity,
+              availableQuantity: quantity,
+              costPrice: '1',
+            }),
+          ];
+        },
+      },
+    });
+    const origin = snapshot.getView().token;
+    let processCalls = 0;
+    let executeCalls = 0;
+    let timerCalls = 0;
+    const selectedQuantities: number[] = [];
+    const processor = await createSellProcessorHarness({
+      ...SELL_PROCESSOR_RUNTIME,
+      snapshot,
+      taskQueue: queue,
+      monitorContext: createMonitorContext(),
+      getLastState: () => createLastState(),
+      signalProcessor: {
+        applyRiskChecks: async () => [],
+        resetRiskCheckCooldown: () => {},
+        processSellSignals: ({ signals, longPosition }) => {
+          processCalls += 1;
+          const signal = signals[0];
+          if (signal === undefined || longPosition === null)
+            throw new Error('expected quantity stage');
+
+          selectedQuantities.push(longPosition.availableQuantity);
+          if (processCalls === 1) {
+            holdReselectionRead = true;
+            snapshot.invalidate();
+          }
+
+          return [{ ...signal, quantity: longPosition.availableQuantity }];
+        },
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]),
+      }),
+      trader: createTraderDouble({
+        executeSignals: async (signals) => {
+          executeCalls += 1;
+          expect(signals[0]?.quantity).toBe(150);
+          return { executedOrderIds: ['CURRENT-150'] };
+        },
+      }),
+      scheduler: {
+        scheduleTimer: (callback, delay) => {
+          timerCalls += 1;
+          return setTimeout(callback, delay);
+        },
+        clearTimer: (handle) => {
+          clearTimeout(handle);
+        },
+      },
+      getCanProcessTask: () => true,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
+    });
+    processor.start();
+    queue.push({
+      type: 'STRATEGY_SELL',
+      data: {
+        ...createSignalDouble('SELLCALL', 'BULL.HK'),
+        seatVersion: 2,
+        triggerTime: new Date(SELL_PROCESSOR_NOW_MS),
+      },
+    });
+    await waitUntil(() => processCalls === 1);
+    expect(executeCalls).toBe(0);
+    quantity = 150;
+    holdReselectionRead = false;
+    reselectionRead.resolve(null);
+    const receipt = await snapshot.requestRefresh({
+      source: 'TEST_RESELECT_QUANTITY',
+      dayEpoch: origin.dayEpoch,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    expect(receipt.status).toBe('COMMITTED');
+    if (processor.baseline === null) throw new Error('expected real settlement baseline owner');
+
+    expect(await processor.baseline.completeRebuildBaseline()).toBeTrue();
+    await waitUntil(() => executeCalls === 1);
+    await processor.stopAndDrain();
+    expect(selectedQuantities).toEqual([500, 150]);
+    expect(timerCalls).toBe(0);
+  });
+
+  it('does not deny or resubmit an accepted order when its receipt becomes obsolete during execution', async () => {
+    const queue = createSellTaskQueue();
+    const snapshot = await createSnapshotFixture({
+      account: createAccountSnapshotDouble('100000'),
+      positions: [
+        createPositionDouble({
+          symbol: 'BULL.HK',
+          quantity: 500,
+          availableQuantity: 500,
+          costPrice: '1',
+        }),
+      ],
+    });
+    const originalPositions = snapshot.getView().positions;
+    const origin = snapshot.getView().token;
+    const accepted = { executedOrderIds: ['ACCEPTED-SELL-1'] };
+    let executeCalls = 0;
+    let waitCalls = 0;
+    let timerCalls = 0;
+    const processor = await createSellProcessorHarness({
+      ...SELL_PROCESSOR_RUNTIME,
+      snapshot,
+      taskQueue: queue,
+      monitorContext: createMonitorContext(),
+      getLastState: () => createLastState(),
+      onWaitForFresh: () => {
+        waitCalls += 1;
+      },
+      signalProcessor: {
+        applyRiskChecks: async () => [],
+        resetRiskCheckCooldown: () => {},
+        processSellSignals: ({ signals }) => signals,
+      },
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]),
+      }),
+      trader: createTraderDouble({
+        executeSignals: async () => {
+          executeCalls += 1;
+          snapshot.invalidate();
+          return accepted;
+        },
+        getStockPositions: async () => {
+          throw new Error('unexpected position takeover');
+        },
+        getAccountSnapshot: async () => {
+          throw new Error('unexpected account takeover');
+        },
+      }),
+      scheduler: {
+        scheduleTimer: (callback, delay) => {
+          timerCalls += 1;
+          return setTimeout(callback, delay);
+        },
+        clearTimer: (handle) => {
+          clearTimeout(handle);
+        },
+      },
+      getCanProcessTask: () => true,
+      termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
+    });
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.push({
+          type: 'STRATEGY_SELL',
+          data: {
+            ...createSignalDouble('SELLCALL', 'BULL.HK'),
+            seatVersion: 2,
+            triggerTime: new Date(SELL_PROCESSOR_NOW_MS),
+          },
+        });
+      },
+      waitCondition: () => executeCalls === 1,
+    });
+    expect(accepted.executedOrderIds).toEqual(['ACCEPTED-SELL-1']);
+    expect(waitCalls).toBe(1);
+    expect(timerCalls).toBe(0);
+    expect(snapshot.getView().positions).toBe(originalPositions);
+    expect(snapshot.getView().token.snapshotGeneration).toBe(origin.snapshotGeneration + 1);
+    expect(snapshot.getView().token.positionRevision).toBe(origin.positionRevision);
+  });
+
   it('passes timeout and trading-calendar context into processSellSignals', async () => {
     const queue = createSellTaskQueue();
     const tradingCalendarSnapshot = new Map([
       ['2026-02-16', { isTradingDay: true, isHalfDay: true }],
     ]);
-    const lastState = createLastStateWithPositions();
+    const lastState = createLastState();
     lastState.isHalfDay = true;
     lastState.tradingCalendarSnapshot = tradingCalendarSnapshot;
 
@@ -186,13 +750,13 @@ describe('sellProcessor business flow', () => {
       getQuotes: async (symbols) => {
         quoteRequest = symbols;
         return new Map([
-          ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-          ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+          ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+          ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
         ]);
       },
     });
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext,
@@ -200,10 +764,6 @@ describe('sellProcessor business flow', () => {
       trader,
       marketDataClient,
       getLastState: () => lastState,
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
@@ -276,7 +836,7 @@ describe('sellProcessor business flow', () => {
       },
     });
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -285,15 +845,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
-      getLastState: () => createLastStateWithPositions(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
+      getLastState: () => createLastState(),
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
@@ -329,6 +885,12 @@ describe('sellProcessor business flow', () => {
       },
     });
 
+    const snapshot = createEmptySnapshotFixture({
+      readPort: {
+        getAccountSnapshot: () => trader.getAccountSnapshot(),
+        getStockPositions: () => trader.getStockPositions(),
+      },
+    });
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
       termination: createTerminationRuntime({
         closeTradingGate: () => {},
@@ -337,29 +899,19 @@ describe('sellProcessor business flow', () => {
         onSecondaryError: () => {},
       }),
       getTrader: () => trader,
-      lastState,
-      onPositionsCommitted: async () => {},
+      snapshot,
+      onPositionsCommitted: async (token) => {
+        expect(
+          snapshot.isCurrent(token, { account: true, positions: true, paired: true }),
+        ).toBeTrue();
+      },
       scheduler: SELL_PROCESSOR_RUNTIME.scheduler,
     });
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext: createMonitorContext({
-        riskChecker: createRiskCheckerDouble({
-          refreshUnrealizedLossData: async () => {},
-        }),
+        riskChecker: createRiskCheckerDouble(),
       }),
-      dailyLossTracker: {
-        resetAll: () => {},
-        recalculateFromAllOrders: () => {},
-        recordCumulativeExecution: () => ({
-          authoritativeFactChanged: false,
-          executionAdvanced: false,
-        }),
-        getLossOffset: () => 0,
-        prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
-        commitProtectionBoundary: () => {},
-        restoreExecutionSnapshot: () => {},
-        restoreProtectionBoundary: () => {},
-      },
+      dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => {},
         recordCooldown: () => {},
@@ -397,7 +949,7 @@ describe('sellProcessor business flow', () => {
       resetRiskCheckCooldown: () => {},
     };
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -406,11 +958,12 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => lastState,
+      snapshot,
       postTradeConsistencyRuntime,
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
@@ -439,7 +992,7 @@ describe('sellProcessor business flow', () => {
     let waitForFreshCalls = 0;
     let processSellCalls = 0;
     let executeCalls = 0;
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -460,17 +1013,14 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {
-          waitForFreshCalls += 1;
-          throw new Error('[postTradeConsistencyRuntime] freshness wait aborted: STOP_AND_DRAIN');
-        },
-        onFreshReached: () => () => {},
+      abortBeforeWait: 'STOP_AND_DRAIN',
+      onWaitForFresh: () => {
+        waitForFreshCalls += 1;
       },
       getCanProcessTask: () => true,
       termination: {
@@ -516,7 +1066,7 @@ describe('sellProcessor business flow', () => {
       },
     });
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -525,15 +1075,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
@@ -579,7 +1125,7 @@ describe('sellProcessor business flow', () => {
       },
     });
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext,
@@ -588,15 +1134,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
@@ -640,7 +1182,7 @@ describe('sellProcessor business flow', () => {
 
     const scheduledRetries: Array<() => void> = [];
     let clearedRetryHandles = 0;
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -649,15 +1191,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', 1.1, 100) : null],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', '1.1', 100) : null],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
@@ -707,7 +1245,7 @@ describe('sellProcessor business flow', () => {
 
     let executeCalls = 0;
     const scheduledRetries: Array<() => void> = [];
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -721,15 +1259,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 0, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '0', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
@@ -778,7 +1312,7 @@ describe('sellProcessor business flow', () => {
 
     const scheduledRetries: Array<() => void> = [];
     let clearedRetryHandles = 0;
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -787,15 +1321,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', 1.1, 100) : null],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', '1.1', 100) : null],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
@@ -849,7 +1379,7 @@ describe('sellProcessor business flow', () => {
     let executeCalls = 0;
     let clearedRetryHandles = 0;
     const scheduledRetries: Array<() => void> = [];
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -863,15 +1393,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', 1.1, 100) : null],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', '1.1', 100) : null],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
@@ -934,7 +1460,7 @@ describe('sellProcessor business flow', () => {
         return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
       },
     });
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -943,15 +1469,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', 1.1, 100) : null],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', quoteReady ? createQuoteDouble('BULL.HK', '1.1', 100) : null],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
@@ -1004,7 +1526,7 @@ describe('sellProcessor business flow', () => {
     };
 
     const scheduledRetries: Array<() => void> = [];
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -1017,10 +1539,6 @@ describe('sellProcessor business flow', () => {
           }),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
       scheduler: {
@@ -1045,7 +1563,7 @@ describe('sellProcessor business flow', () => {
     resolveQuotes(
       new Map([
         ['BULL.HK', null],
-        ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+        ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
       ]),
     );
     await drainPromise;
@@ -1079,7 +1597,7 @@ describe('sellProcessor business flow', () => {
       },
     });
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -1088,15 +1606,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });
@@ -1132,7 +1646,7 @@ describe('sellProcessor business flow', () => {
       resetRiskCheckCooldown: () => {},
     };
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -1145,15 +1659,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: () => true,
       termination: {
         isTerminated: () => false,
@@ -1193,7 +1703,7 @@ describe('sellProcessor business flow', () => {
       resetRiskCheckCooldown: () => {},
     };
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -1207,15 +1717,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
-      getLastState: () => createLastStateWithPositions(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
+      getLastState: () => createLastState(),
       getCanProcessTask: () => true,
       termination: {
         isTerminated: () => false,
@@ -1245,7 +1751,7 @@ describe('sellProcessor business flow', () => {
     let waitForFreshCalls = 0;
     let processSellCalls = 0;
     let executeCalls = 0;
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -1266,16 +1772,13 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {
-          waitForFreshCalls += 1;
-        },
-        onFreshReached: () => () => {},
+      onWaitForFresh: () => {
+        waitForFreshCalls += 1;
       },
       getCanProcessTask: () => false,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
@@ -1320,7 +1823,7 @@ describe('sellProcessor business flow', () => {
 
     const dynamicGate = () => authorized;
 
-    const processor = createSellProcessor({
+    const processor = await createSellProcessorHarness({
       ...SELL_PROCESSOR_RUNTIME,
       taskQueue: queue,
       monitorContext: createMonitorContext(),
@@ -1329,15 +1832,11 @@ describe('sellProcessor business flow', () => {
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
-            ['BULL.HK', createQuoteDouble('BULL.HK', 1.1, 100)],
-            ['BEAR.HK', createQuoteDouble('BEAR.HK', 0.9, 100)],
+            ['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)],
+            ['BEAR.HK', createQuoteDouble('BEAR.HK', '0.9', 100)],
           ]),
       }),
       getLastState: () => createLastState(),
-      postTradeConsistencyRuntime: {
-        waitForFresh: async () => {},
-        onFreshReached: () => () => {},
-      },
       getCanProcessTask: dynamicGate,
       termination: { isTerminated: () => false, reportFatalError: rethrowFatalError },
     });

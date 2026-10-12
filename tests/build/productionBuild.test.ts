@@ -17,6 +17,7 @@ import {
 import nodePath from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createChildEnv } from '../setup/childEnv.js';
 import { createEventHarness } from '../main/businessEventProgram/fixtures.js';
 import type { createBusinessEventProgram } from '../../src/main/businessEventProgram/index.js';
 import type {
@@ -94,7 +95,7 @@ async function fixture() {
   const cwd = nodePath.join(root, 'empty cwd');
   await mkdir(cwd);
   async function build() {
-    return run([process.execPath, 'run', 'build'], root);
+    return run(['build'], root, root);
   }
 
   async function add(name: string, config: unknown = asset) {
@@ -285,14 +286,24 @@ export const strategyDefinition: StrategyDefinition = Object.freeze({
   `,
   );
   async function load(id: string) {
-    return run([process.execPath, runner, id], cwd);
+    return run([runner, id], cwd, root);
   }
   return { root, add, addReplaceabilityStrategies, build, load };
 }
 
 /** 同时收集两个管道，避免大编译诊断堵塞子进程。 */
-async function run(command: string[], cwd: string) {
-  const child = Bun.spawn(command, { cwd, stdout: 'pipe', stderr: 'pipe' });
+async function run(command: ReadonlyArray<string>, cwd: string, isolationRoot: string) {
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      'run',
+      '--no-env-file',
+      '--preload',
+      fileURLToPath(new URL('../setup/testRuntime.ts', import.meta.url)),
+      ...command,
+    ],
+    { cwd, env: createChildEnv(isolationRoot), stdout: 'pipe', stderr: 'pipe' },
+  );
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),

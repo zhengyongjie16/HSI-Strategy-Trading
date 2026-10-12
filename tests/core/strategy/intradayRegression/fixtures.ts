@@ -1,7 +1,6 @@
 /** 策略对象配置与依赖离线 fixture。 */
 import { parseStrategyConfig } from '../../../../src/core/strategy/intradayRegression/config.js';
 import { createIntradayRegressionStrategy } from '../../../../src/core/strategy/intradayRegression/index.js';
-import { Period } from 'longbridge';
 import type {
   PreparedStrategy,
   StrategyDeps,
@@ -110,7 +109,7 @@ export function marketContext(
   return {
     candlesticks: {
       symbol: 'HSI.HK',
-      period: Period.Min_1,
+      period: 1, // 一分钟 fixture 周期值。
       version,
       initialized: true,
       lastBarTimestamp: 1200000,

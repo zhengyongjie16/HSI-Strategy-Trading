@@ -16,7 +16,7 @@ import { createExternalApiRequestError } from '../../helpers/createExternalApiRe
 
 describe('readAccountAndPositionsBothSettled', () => {
   it('returns both reads and forwards the retry config only when both requests succeed', async () => {
-    const account = createAccountSnapshotDouble(88_000);
+    const account = createAccountSnapshotDouble('88000');
     const positions = [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
     ];
@@ -175,7 +175,7 @@ describe('readAccountAndPositionsBothSettled', () => {
   it('still starts and drains the sibling request when one read throws synchronously', async () => {
     const syncError = new Error('positions getter threw synchronously');
     const accountRelease = Promise.withResolvers<undefined>();
-    const account = createAccountSnapshotDouble(66_000);
+    const account = createAccountSnapshotDouble('66000');
     const fatalErrors: unknown[] = [];
     let accountStarted = 0;
     const trader = createTraderDouble({

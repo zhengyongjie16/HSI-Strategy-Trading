@@ -10,7 +10,7 @@
  * - 席位在统一开盘重建流水线（loadTradingDayRuntimeSnapshot）中重建，此处为空操作
  */
 import type { RuntimeWritableSeatState, SeatState, SymbolRegistry } from '../../../types/seat.js';
-import type { CacheDomain, LifecycleContext } from '../types.js';
+import type { CacheDomain, CacheDomainOpenRebuildResult, LifecycleContext } from '../types.js';
 import {
   captureSeatActivationCarryover,
   clearSeatActivationCarryover,
@@ -67,8 +67,11 @@ export function createSeatDomain(deps: SeatDomainDeps): CacheDomain {
 
       logger.debug(`[Lifecycle][seat] 午夜清理完成: seats=${changedSeats}`);
     },
-    openRebuild(): void {
-      // 席位在统一开盘重建流水线中重建
+    openRebuild(ctx): CacheDomainOpenRebuildResult {
+      // 席位已由统一流水线重建，只确认本轮原授权。
+      return ctx.isCurrent()
+        ? { status: 'COMMITTED', snapshotToken: ctx.snapshotToken }
+        : { status: 'ABORTED' };
     },
   };
 }

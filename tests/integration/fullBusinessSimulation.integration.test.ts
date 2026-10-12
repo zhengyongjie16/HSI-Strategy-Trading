@@ -4,8 +4,24 @@
  * 功能：
  * - 验证完整业务仿真端到端场景与业务期望。
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
+import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { toHongKongTimeIso } from '../../src/utils/time/index.js';
+import type { Position } from '../../src/types/account.js';
+import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
+import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
+import type { OrderExecutor } from '../../src/core/trader/types.js';
+import type { SymbolRegistry } from '../../src/types/seat.js';
+import type {
+  PostTradeConsistencyRuntime,
+  PostTradeConsistencyRuntimeDeps,
+} from '../../src/app/types.js';
 import { timeWakeupEvaluationProgram } from '../../src/main/timeWakeupEvaluationProgram/index.js';
 import { createBusinessEventProgram } from '../../src/main/businessEventProgram/index.js';
 import { createBuyProcessor } from '../../src/main/asyncProgram/buyProcessor/index.js';
@@ -31,7 +47,7 @@ import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { Period } from 'longbridge';
 import type { NormalizedCandle } from '../../src/types/data.js';
-import type { LastState } from '../../src/types/state.js';
+import type { LastState, MonitorContext } from '../../src/types/state.js';
 import type { MonitorConfig, TradingConfig } from '../../src/types/config.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
 import type {
@@ -39,6 +55,11 @@ import type {
   CandlestickCacheSnapshot,
   OrderStateChangedEvent,
   QuoteUpdatedEvent,
+  Trader,
+  OrderRecorder,
+  RiskChecker,
+  MarketDataClient,
+  RawOrderFromAPI,
 } from '../../src/types/services.js';
 
 function rethrowFatalError(error: unknown): never {
@@ -57,20 +78,20 @@ const ASYNC_PROCESSOR_RUNTIME = {
 
 import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
 import {
-  createAccountSnapshotDouble,
   createStrategyDouble,
   createTerminationDouble,
   createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
-  createOrderRecorderDouble,
   createLoggerDouble,
-  createPositionCacheDouble,
   createPositionDouble,
   createAutoSearchWakeupRuntimeDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
   createQuoteSubscriptionRuntimeDouble,
   createQuoteDouble,
+  createRateLimiterDouble,
+  createLiquidationCooldownTrackerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
   createRiskCheckerDouble,
   createSeatActivationDispatcherDouble,
   createSeatRuntimeCleanupDispatcherDouble,
@@ -123,7 +144,7 @@ function createCandlestickSnapshot(
       : null;
   return {
     symbol,
-    period: Period.Min_1,
+    period: 1, // 一分钟 fixture 周期值。
     version,
     candles,
     lastBarTimestamp,
@@ -132,25 +153,295 @@ function createCandlestickSnapshot(
   };
 }
 
-function createNoopDailyLossTracker(): DailyLossTracker {
-  return {
-    resetAll: () => {},
-    prepareProtectionBoundary: (params) => ({ ...params, orderBaselines: [] }),
-    commitProtectionBoundary: () => {},
-    restoreExecutionSnapshot: () => {},
-    restoreProtectionBoundary: () => {},
-    recalculateFromAllOrders: () => {},
-    recordCumulativeExecution: () => ({
-      authoritativeFactChanged: false,
-      executionAdvanced: false,
-    }),
-    getLossOffset: () => 0,
+/** 原累计金额/数量与独立成交 T 从 actual native mapper 进入唯一 O，不再注入均价 getter。 */
+async function createSimulationOrderRecorder(
+  ingress: Awaited<ReturnType<typeof createBrokerIngressFixture>>,
+  snapshot: AccountPositionSnapshot,
+  monitorConfig: MonitorConfig,
+  dailyLossTracker: DailyLossTracker,
+  frames: ReadonlyArray<BrokerIngressInput>,
+) {
+  ingress.setOrderDetailReplies(frames);
+  ingress.setExecutionReplies(
+    frames.flatMap((frame) =>
+      frame.executionTimeMs === null
+        ? []
+        : [
+            {
+              orderId: frame.orderId,
+              tradeId: frame.tradeId,
+              symbol: frame.symbol,
+              quantity: frame.executedQuantity,
+              price: frame.executedPrice,
+              tradeDoneAtMs: frame.executionTimeMs,
+            },
+          ],
+    ),
+  );
+  const orders: RawOrderFromAPI[] = [];
+  for (const frame of frames) {
+    const [order] = await ingress.createQueryOrdersReader(frame.orderId)();
+    if (order === undefined) throw new Error('Simulation native observation missing');
+
+    expect(order.executionTimeMs).toBe(frame.executionTimeMs);
+    expect(order.updatedAtMs).toBe(frame.updatedAtMs);
+    orders.push(order);
+  }
+
+  let settlement: PostTradeConsistencyRuntime | null = null;
+  const orderRecorder = ingress.createRecorder({
+    rateLimiter: createRateLimiterDouble(),
+    getExecutionTimeEvidence: () => [],
+    settlementRefreshNeedRecorder: {
+      recordSettlementRefreshNeed: (need) => {
+        if (settlement === null) throw new Error('Simulation settlement is not bound');
+
+        settlement.recordSettlementRefreshNeed(need);
+      },
+    },
+  });
+  const bindSettlement = (runtime: PostTradeConsistencyRuntime) => {
+    settlement = runtime;
   };
+
+  const hydrate = (now: Date) => {
+    const token = snapshot.getView().token;
+    const isCurrent = () =>
+      snapshot.isCurrent(token, { account: true, positions: true, paired: true });
+    if (!isCurrent()) throw new Error('Simulation O baseline requires paired H');
+
+    dailyLossTracker.recalculateFromAllOrders(orders, monitorConfig, now, new Map());
+    const targets = [...new Set(orders.map((order) => order.symbol))].map((symbol) => ({
+      symbol,
+      isLongSymbol: symbol !== 'BEAR.HK',
+    }));
+    const result = orderRecorder.commitRebuildSnapshot(targets, orders, isCurrent, 'REBUILD');
+    if (result.status !== 'COMMITTED') throw new Error('Simulation O baseline aborted');
+
+    return token;
+  };
+  return { orderRecorder, hydrate, bindSettlement };
+}
+
+function simulationExecutionFrame(
+  orderId: string,
+  symbol: string,
+  side: 'BUY' | 'SELL',
+  price: string,
+  executionTimeMs: number,
+): BrokerIngressInput {
+  return {
+    orderId,
+    tradeId: `${orderId}-trade`,
+    symbol,
+    stockName: 'HSI RC',
+    remark: 'AUTO',
+    side,
+    status: 'Filled',
+    quantity: '100',
+    executedQuantity: '100',
+    submittedPrice: price,
+    executedPrice: price,
+    submittedAtMs: executionTimeMs === 1 ? 1 : executionTimeMs - 1,
+    executionTimeMs,
+    updatedAtMs: executionTimeMs + 1,
+  };
+}
+
+function createSimulationDailyLossTracker(): DailyLossTracker {
+  return createDailyLossTracker({
+    ...createDailyLossOrderAnalysisDeps(),
+    toHongKongTimeIso,
+  });
+}
+
+/** 原账户与持仓数据经同 ctx adapter 成对刷新 H；这里不启动 S 或签发 readiness。 */
+async function createSimulationSnapshot(positions: ReadonlyArray<Position>) {
+  const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
+  const ingress = await createBrokerIngressFixture({
+    orderId: 'SIMULATION-BOOTSTRAP',
+    tradeId: 'SIMULATION-BOOTSTRAP-TRADE',
+    symbol: 'BULL.HK',
+    stockName: 'BULL.HK',
+    remark: '',
+    side: 'BUY',
+    status: 'New',
+    quantity: '100',
+    executedQuantity: '0',
+    submittedPrice: '1',
+    executedPrice: '0',
+    submittedAtMs: nowMs,
+    executionTimeMs: null,
+    updatedAtMs: nowMs,
+  });
+  ingress.setAccountBalance({
+    currency: 'HKD',
+    totalCash: '200000',
+    netAssets: '200000',
+    availableCash: '200000',
+  });
+  const setPositions = (rows: ReadonlyArray<Position>) => {
+    ingress.setStockPositions(
+      rows.map((position) => ({
+        symbol: position.symbol,
+        symbolName: position.symbolName,
+        accountChannel: position.accountChannel,
+        currency: position.currency,
+        quantity: String(position.quantity),
+        availableQuantity: String(position.availableQuantity),
+        costPrice: position.costPrice,
+      })),
+    );
+  };
+  setPositions(positions);
+  const accountService = ingress.createAccountService({ rateLimiter: createRateLimiterDouble() });
+  const snapshot = await createSnapshotFixture({
+    readPort: accountService,
+    account: await accountService.getAccountSnapshot(),
+    positions: await accountService.getStockPositions(),
+  });
+  const refreshPositions = async (
+    rows: ReadonlyArray<Position>,
+    source: 'TEST_SETUP' | 'LIFECYCLE_REBUILD' = 'TEST_SETUP',
+  ) => {
+    setPositions(rows);
+    const dayEpoch = snapshot.getView().token.dayEpoch;
+    const result = await snapshot.requestRefresh({
+      source,
+      dayEpoch,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
+    if (result.status !== 'COMMITTED') throw new Error('Simulation paired refresh aborted');
+
+    return result;
+  };
+  return { ingress, accountService, snapshot, refreshPositions };
+}
+
+const settlementCleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const cleanup of settlementCleanups.splice(0)) await cleanup();
+});
+
+/** S 与业务使用同一个 H、monitorContext 和 Daily；不自动预热、start 或签发 READY。 */
+function createSimulationSettlement(
+  params: Pick<PostTradeConsistencyRuntimeDeps, 'snapshot' | 'termination'> & {
+    readonly trader: Trader;
+    readonly monitorContext: MonitorContext;
+  },
+) {
+  const runtime = createPostTradeConsistencyRuntime({
+    snapshot: params.snapshot,
+    termination: params.termination,
+    getTrader: () => params.trader,
+    onPositionsCommitted: async (token) => {
+      if (!params.snapshot.isCurrent(token, { account: true, positions: true, paired: true })) {
+        throw new Error('Simulation positions commit is stale');
+      }
+    },
+    scheduler: ASYNC_PROCESSOR_RUNTIME.scheduler,
+  });
+  runtime.bindBusinessDeps({
+    monitorContext: params.monitorContext,
+    dailyLossTracker: params.monitorContext.dailyLossTracker,
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => {
+        throw new Error('Simulation protective completion persistence is not configured');
+      },
+    },
+  });
+  settlementCleanups.push(runtime.stopAndDrain);
+  return runtime;
+}
+
+/** 实际 submit/Monitor 共享 native ctx；调用者的原授权直接交给 executor，ACK 由 native reply 给出。 */
+async function createSimulationExecutor(params: {
+  readonly ingress: Awaited<ReturnType<typeof createBrokerIngressFixture>>;
+  readonly tradingConfig: TradingConfig;
+  readonly symbolRegistry: SymbolRegistry;
+  readonly orderRecorder: OrderRecorder;
+  readonly dailyLossTracker: DailyLossTracker;
+  readonly riskChecker: RiskChecker;
+  readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntime;
+  readonly marketDataClient: MarketDataClient;
+  readonly now: () => Date;
+  readonly isExecutionAllowed: () => boolean;
+  readonly onOrderStateChanged?: (event: OrderStateChangedEvent) => void;
+}) {
+  const rateLimiter = createRateLimiterDouble();
+  const cacheManager = { clearCache: () => {}, getPendingOrders: async () => [] };
+  const orderMonitor = params.ingress.createMonitor({
+    rateLimiter,
+    cacheManager,
+    marketDataClient: params.marketDataClient,
+    orderRecorder: params.orderRecorder,
+    dailyLossTracker: params.dailyLossTracker,
+    orderHoldRegistry: createOrderHoldRegistry(),
+    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    persistProtectiveLiquidationExecutionProgress: () => {
+      throw new Error('Simulation protective progress persistence is not configured');
+    },
+    postTradeConsistencyRuntime: params.postTradeConsistencyRuntime,
+    tradingConfig: params.tradingConfig,
+    symbolRegistry: params.symbolRegistry,
+    isContinuousTradingAllowed: params.isExecutionAllowed,
+    now: params.now,
+    scheduleTimer: ASYNC_PROCESSOR_RUNTIME.scheduler.scheduleTimer,
+    clearTimer: ASYNC_PROCESSOR_RUNTIME.scheduler.clearTimer,
+    termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+  });
+  await orderMonitor.initialize();
+  await orderMonitor.recoverOrderTrackingFromSnapshot([]);
+  if (params.onOrderStateChanged !== undefined) {
+    const unsubscribe = orderMonitor.onOrderStateChanged(params.onOrderStateChanged);
+    settlementCleanups.push(async () => {
+      unsubscribe();
+    });
+  }
+
+  settlementCleanups.push(orderMonitor.stopRuntimeAndDrain);
+  return params.ingress.createExecutor({
+    rateLimiter,
+    cacheManager,
+    marketDataClient: params.marketDataClient,
+    orderMonitor,
+    orderRecorder: params.orderRecorder,
+    unrealizedLossBuyGate: params.riskChecker,
+    tradingConfig: params.tradingConfig,
+    symbolRegistry: params.symbolRegistry,
+    isExecutionAllowed: params.isExecutionAllowed,
+    isContinuousTradingAllowed: params.isExecutionAllowed,
+    now: params.now,
+    readCurrentTradingDayInfo: () => ({
+      dateKey: '2026-02-16',
+      info: { isTradingDay: true, isHalfDay: false },
+    }),
+  });
+}
+
+/** 保持原模拟终态行情：金额文本与技术/整手字段分离。 */
+function createSimulationQuoteClient() {
+  return createMarketDataClientDouble({
+    getQuotes: async (symbols) => {
+      const quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>();
+      for (const symbol of symbols) {
+        if (symbol === 'HSI.HK') quotes.set(symbol, createQuoteDouble(symbol, '20000', 1));
+        else if (symbol === 'BULL.HK') quotes.set(symbol, createQuoteDouble(symbol, '1.05', 100));
+        else if (symbol === 'BEAR.HK') quotes.set(symbol, createQuoteDouble(symbol, '0.95', 100));
+        else quotes.set(symbol, null);
+      }
+
+      return quotes;
+    },
+  });
 }
 
 function createNoopUnrealizedLossMonitor(): UnrealizedLossMonitor {
   return {
-    monitorDirectionalUnrealizedLoss: async () => {},
+    monitorDirectionalUnrealizedLoss: async () => false,
   };
 }
 
@@ -178,9 +469,6 @@ function createSimulationLastState(params: {
     lifecycleState: 'ACTIVE',
     pendingOpenRebuild: false,
     isTradingEnabled: true,
-    cachedAccount: createAccountSnapshotDouble(200_000),
-    cachedPositions: params.positions,
-    positionCache: createPositionCacheDouble(params.positions),
     cachedTradingDayInfo: {
       dateKey: params.currentDayKey,
       info: {
@@ -259,6 +547,8 @@ describe('full business simulation integration', () => {
       positions,
       currentDayKey: '2026-02-16',
     });
+    const { ingress, accountService, snapshot } = await createSimulationSnapshot(positions);
+    const dailyLossTracker = createSimulationDailyLossTracker();
 
     const riskChecker = createRiskCheckerDouble({
       checkBeforeOrder: ({ signal }) =>
@@ -267,34 +557,16 @@ describe('full business simulation integration', () => {
           : { allowed: true },
     });
 
-    const orderRecorder = createOrderRecorderDouble({
-      getBuyOrdersForSymbol: () => [
-        {
-          orderId: 'BUY-ORIGIN',
-          symbol: 'BULL.HK',
-          executedPrice: 1,
-          executedQuantity: 100,
-          executedTime: 1,
-          submittedAt: undefined,
-          updatedAt: undefined,
-        },
+    const { orderRecorder, hydrate, bindSettlement } = await createSimulationOrderRecorder(
+      ingress,
+      snapshot,
+      monitorConfig,
+      dailyLossTracker,
+      [
+        simulationExecutionFrame('BUY-ORIGIN', 'BULL.HK', 'BUY', '1', 1),
+        simulationExecutionFrame('BUY-001', 'BULL.HK', 'BUY', '1', Date.now()),
       ],
-      getCostAveragePrice: () => 1.2,
-      selectSellableOrders: () => ({
-        orders: [
-          {
-            orderId: 'BUY-001',
-            symbol: 'BULL.HK',
-            executedPrice: 1,
-            executedQuantity: 100,
-            executedTime: Date.now(),
-            submittedAt: undefined,
-            updatedAt: undefined,
-          },
-        ],
-        totalQuantity: 100,
-      }),
-    });
+    );
 
     const strategy = createStrategyDouble({
       onCandlestick: (context, emit) => {
@@ -318,7 +590,7 @@ describe('full business simulation integration', () => {
       symbolRegistry,
       strategy,
       orderRecorder,
-      dailyLossTracker: createNoopDailyLossTracker(),
+      dailyLossTracker: dailyLossTracker,
       riskChecker,
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
       autoSymbolManager: {
@@ -349,15 +621,17 @@ describe('full business simulation integration', () => {
       },
     });
     const submittedActions: string[] = [];
+    let executor: OrderExecutor | null = null;
     const trader = createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble(200_000),
-      getStockPositions: async () => positions,
-      executeSignals: async (signals) => {
-        for (const signal of signals) {
-          submittedActions.push(signal.action);
-        }
+      ...accountService,
+      executeSignals: async (signals, callerAuthorization) => {
+        if (executor === null) throw new Error('Simulation executor not assembled');
 
-        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
+        const result = await executor.executeSignals(signals, callerAuthorization);
+        if (result.executedOrderIds.length > 0)
+          for (const signal of signals) submittedActions.push(signal.action);
+
+        return result;
       },
     });
 
@@ -374,11 +648,39 @@ describe('full business simulation integration', () => {
       reportFatalError: () => {},
     });
 
-    const postTradeConsistencyRuntime = {
-      waitForFresh: async () => {},
-      onFreshReached: () => () => {},
-    };
+    const postTradeConsistencyRuntime = createSimulationSettlement({
+      snapshot,
+      trader,
+      monitorContext,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+    });
+    bindSettlement(postTradeConsistencyRuntime);
+    hydrate(ASYNC_PROCESSOR_RUNTIME.clock.now());
+    expect(orderRecorder.getCostBasis('BULL.HK', true)).toEqual({
+      costAmount: '200',
+      quantity: 200,
+    });
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    postTradeConsistencyRuntime.start();
+    expect(await postTradeConsistencyRuntime.completeRebuildBaseline()).toBeTrue();
+    const originalReceipt = await postTradeConsistencyRuntime.waitForFresh();
+    expect(postTradeConsistencyRuntime.isCurrent(originalReceipt)).toBeTrue();
+    expect(originalReceipt.snapshotToken).toBe(snapshot.getView().token);
+    ingress.setSubmitBehavior(async () => 'EXECUTED-ORDER');
+    executor = await createSimulationExecutor({
+      ingress,
+      tradingConfig,
+      symbolRegistry,
+      orderRecorder,
+      dailyLossTracker,
+      riskChecker: monitorContext.riskChecker,
+      postTradeConsistencyRuntime,
+      marketDataClient: createSimulationQuoteClient(),
+      now: ASYNC_PROCESSOR_RUNTIME.clock.now,
+      isExecutionAllowed: () => lastState.canTrade === true && lastState.isTradingEnabled,
+    });
     const buyProcessor = createBuyProcessor({
+      snapshot,
       now: () => new Date(Date.now()),
       taskQueue: buyTaskQueue,
       monitorContext,
@@ -389,11 +691,11 @@ describe('full business simulation integration', () => {
           const quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>();
           for (const symbol of symbols) {
             if (symbol === 'HSI.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 20_000, 1));
+              quotes.set(symbol, createQuoteDouble(symbol, '20000', 1));
             } else if (symbol === 'BULL.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 1.05, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '1.05', 100));
             } else if (symbol === 'BEAR.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 0.95, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '0.95', 100));
             } else {
               quotes.set(symbol, null);
             }
@@ -408,6 +710,7 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
+      snapshot,
       ...ASYNC_PROCESSOR_RUNTIME,
       taskQueue: sellTaskQueue,
       monitorContext,
@@ -418,11 +721,11 @@ describe('full business simulation integration', () => {
           const quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>();
           for (const symbol of symbols) {
             if (symbol === 'HSI.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 20_000, 1));
+              quotes.set(symbol, createQuoteDouble(symbol, '20000', 1));
             } else if (symbol === 'BULL.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 1.05, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '1.05', 100));
             } else if (symbol === 'BEAR.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 0.95, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '0.95', 100));
             } else {
               quotes.set(symbol, null);
             }
@@ -481,6 +784,7 @@ describe('full business simulation integration', () => {
 
       expect(submittedActions).toEqual(['SELLCALL']);
     } finally {
+      await postTradeConsistencyRuntime.stopAndDrain();
       await businessEventProgram.stopAndDrain();
       await Promise.all([buyProcessor.stopAndDrain(), sellProcessor.stopAndDrain()]);
     }
@@ -488,27 +792,27 @@ describe('full business simulation integration', () => {
 
   it('simulates event-driven auto-search and auto-switch end to end', async () => {
     autoSymbolCandidates = [
-      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: 20_000 }),
+      createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
       null,
-      createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: 21_000 }),
+      createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' }),
     ];
 
     const monitorConfig = createMonitorConfigDouble({
       monitorSymbol: 'HSI.HK',
       longSymbol: 'BULL.HK',
       shortSymbol: 'BEAR.HK',
-      targetNotional: 5_000,
+      targetNotional: '5000',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 100_000,
-        autoSearchMinTurnoverPerMinuteBear: 100_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '100000',
+        autoSearchMinTurnoverPerMinuteBear: '100000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
     });
     const tradingConfig = createTradingConfigForMonitor(monitorConfig);
@@ -543,24 +847,37 @@ describe('full business simulation integration', () => {
       positions: [],
       currentDayKey: '2026-02-16',
     });
+    const { ingress, accountService, snapshot, refreshPositions } = await createSimulationSnapshot(
+      [],
+    );
+    const dailyLossTracker = createSimulationDailyLossTracker();
 
     const executedActions: Array<{ action: string; symbol: string }> = [];
+    const executionAttempts: Array<{
+      readonly originalAuthorization: boolean;
+      readonly acceptedIds: ReadonlyArray<string>;
+      readonly nativeIssued: number;
+    }> = [];
     const orderStateChangedEvents = createSingleListenerEventSource<OrderStateChangedEvent>();
+    let executor: OrderExecutor | null = null;
     const trader = createTraderDouble({
-      executeSignals: async (signals) => {
-        for (const signal of signals) {
-          executedActions.push({
-            action: signal.action,
-            symbol: signal.symbol,
-          });
-        }
+      ...accountService,
+      executeSignals: async (signals, callerAuthorization) => {
+        if (executor === null) throw new Error('Simulation executor not assembled');
 
-        const firstSignal = signals[0];
-        if (firstSignal?.action === 'SELLCALL' && firstSignal.symbol === 'OLD_BULL.HK') {
-          return { executedOrderIds: ['SELL-1'] };
-        }
+        const originalAuthorization = callerAuthorization();
+        const result = await executor.executeSignals(signals, callerAuthorization);
+        executionAttempts.push({
+          originalAuthorization,
+          acceptedIds: result.executedOrderIds,
+          nativeIssued: ingress.nativeSubmitObservations().length,
+        });
 
-        return { executedOrderIds: ['BUY-1'] };
+        if (result.executedOrderIds.length > 0)
+          for (const signal of signals)
+            executedActions.push({ action: signal.action, symbol: signal.symbol });
+
+        return result;
       },
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
@@ -570,20 +887,13 @@ describe('full business simulation integration', () => {
       onOrderStateChanged: orderStateChangedEvents.subscribe,
     });
 
-    const orderRecorder = createOrderRecorderDouble({
-      getSellRecordByOrderId: (orderId) =>
-        orderId === 'SELL-1'
-          ? {
-              orderId: 'SELL-1',
-              symbol: 'OLD_BULL.HK',
-              executedPrice: 2,
-              executedQuantity: 100,
-              executedTime: 9_999_999_999_999,
-              submittedAt: undefined,
-              updatedAt: undefined,
-            }
-          : null,
-    });
+    const { orderRecorder, hydrate, bindSettlement } = await createSimulationOrderRecorder(
+      ingress,
+      snapshot,
+      monitorConfig,
+      dailyLossTracker,
+      [simulationExecutionFrame('SELL-1', 'OLD_BULL.HK', 'SELL', '2', 9_999_999_999_999)],
+    );
 
     const riskChecker = createRiskCheckerDouble({
       getWarrantDistanceInfo: (isLongSymbol, seatSymbol) => {
@@ -593,7 +903,8 @@ describe('full business simulation integration', () => {
 
         return createWarrantDistanceInfoDouble({
           warrantType: 'BULL',
-          distanceToStrikePercent: 0.1,
+          distanceNumerator: '1',
+          distanceDenominator: '1000',
         });
       },
     });
@@ -603,11 +914,11 @@ describe('full business simulation integration', () => {
         const quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>();
         for (const symbol of symbols) {
           if (symbol === 'HSI.HK') {
-            quotes.set(symbol, createQuoteDouble(symbol, 20_000, 1));
+            quotes.set(symbol, createQuoteDouble(symbol, '20000', 1));
             continue;
           }
 
-          quotes.set(symbol, createQuoteDouble(symbol, 1, 100));
+          quotes.set(symbol, createQuoteDouble(symbol, '1', 100));
         }
 
         return quotes;
@@ -615,6 +926,8 @@ describe('full business simulation integration', () => {
       onQuoteUpdated: quoteUpdatedEvents.subscribe,
     });
 
+    let simulationNowMs = Date.parse('2026-02-16T01:00:00.000Z');
+    const runtimeNow = () => new Date(simulationNowMs);
     const autoSymbolManager = createAutoSymbolManager({
       monitorConfig,
       symbolRegistry,
@@ -623,32 +936,59 @@ describe('full business simulation integration', () => {
       orderRecorder,
       riskChecker,
       findBestWarrant: async () => autoSymbolCandidates.shift() ?? null,
-      clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
+      clock: { now: runtimeNow },
       getTradingCalendarSnapshot: () => lastState.tradingCalendarSnapshot,
     });
-    const runtimeNow = () => new Date('2026-02-16T01:00:00.000Z');
 
     const monitorContext = createMonitorContextDouble({
       config: monitorConfig,
       symbolRegistry,
       strategy: createStrategyDouble(),
       orderRecorder,
-      dailyLossTracker: createNoopDailyLossTracker(),
+      dailyLossTracker: dailyLossTracker,
       riskChecker,
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
       autoSymbolManager,
     });
-    const postTradeConsistencyRuntime = {
-      waitForFresh: async () => {},
-      getStatus: () => ({
-        started: true,
-        currentVersion: 1,
-        staleVersion: 1,
-      }),
-      onFreshReached: () => () => {},
-    };
+    const postTradeConsistencyRuntime = createSimulationSettlement({
+      snapshot,
+      trader,
+      monitorContext,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+    });
+    bindSettlement(postTradeConsistencyRuntime);
+    hydrate(ASYNC_PROCESSOR_RUNTIME.clock.now());
+    expect(orderRecorder.getSellRecordByOrderId('SELL-1')).toMatchObject({
+      costAmount: '200',
+      executedQuantity: 100,
+      executedTime: 9_999_999_999_999,
+    });
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    postTradeConsistencyRuntime.start();
+    expect(await postTradeConsistencyRuntime.completeRebuildBaseline()).toBeTrue();
+    const originalReceipt = await postTradeConsistencyRuntime.waitForFresh();
+    expect(postTradeConsistencyRuntime.isCurrent(originalReceipt)).toBeTrue();
+    expect(originalReceipt.snapshotToken).toBe(snapshot.getView().token);
+    ingress.setSubmitBehavior(async () =>
+      ingress.nativeSubmitObservations().at(-1)?.side === 'SELL' ? 'SELL-1' : 'BUY-1',
+    );
+
+    executor = await createSimulationExecutor({
+      ingress,
+      tradingConfig,
+      symbolRegistry,
+      orderRecorder,
+      dailyLossTracker,
+      riskChecker: monitorContext.riskChecker,
+      postTradeConsistencyRuntime,
+      marketDataClient: autoSwitchMarketDataClient,
+      now: runtimeNow,
+      isExecutionAllowed: () => lastState.canTrade === true && lastState.isTradingEnabled,
+      onOrderStateChanged: orderStateChangedEvents.emit,
+    });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const quoteSubscriptionRuntime = createQuoteSubscriptionRuntime({
+      snapshot,
       logger: createLoggerDouble(),
       tradingConfig,
       symbolRegistry,
@@ -658,6 +998,7 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const switchWakeupRuntime = createSwitchWakeupRuntime({
+      snapshot,
       logger: { error: () => {} },
       marketDataClient: autoSwitchMarketDataClient,
       trader,
@@ -693,6 +1034,8 @@ describe('full business simulation integration', () => {
       },
     });
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
+      getCanTradeNow: () => lastState.canTrade === true && lastState.isTradingEnabled,
+      snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       monitorContext,
       symbolRegistry,
@@ -713,9 +1056,11 @@ describe('full business simulation integration', () => {
     const seatActivationDispatcher = createSeatActivationDispatcher({
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       symbolRegistry,
+      snapshot,
       monitorTaskQueue,
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
+      snapshot,
       ...ASYNC_PROCESSOR_RUNTIME,
       monitorTaskQueue,
       monitorContext,
@@ -724,12 +1069,13 @@ describe('full business simulation integration', () => {
       quoteSubscriptionRuntime,
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
-      lastState,
+
       getCanProcessTask: () => true,
       getCanTradeNow: () => lastState.canTrade === true,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
+      snapshot,
       logger: { error: () => {} },
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -761,6 +1107,7 @@ describe('full business simulation integration', () => {
     });
 
     const buyProcessor = createBuyProcessor({
+      snapshot,
       now: () => new Date(Date.now()),
       taskQueue: buyTaskQueue,
       monitorContext,
@@ -775,6 +1122,7 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
+      snapshot,
       ...ASYNC_PROCESSOR_RUNTIME,
       taskQueue: sellTaskQueue,
       monitorContext,
@@ -789,7 +1137,7 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
-    function emitMonitorQuoteUpdated(price: number): void {
+    function emitMonitorQuoteUpdated(price: string): void {
       quoteUpdatedEvents.emit({
         symbol: monitorConfig.monitorSymbol,
         quote: createQuoteDouble(monitorConfig.monitorSymbol, price, 1),
@@ -797,19 +1145,19 @@ describe('full business simulation integration', () => {
     }
 
     function emitOrderStateChanged(symbol: string): void {
-      orderStateChangedEvents.emit({
-        orderId: `order-${symbol}`,
-        symbol,
-        side: 'SELL',
-        source: 'WS',
-        status: 'FILLED',
-        monitorSymbol: monitorConfig.monitorSymbol,
-        isLongSymbol: true,
-        isProtectiveLiquidation: false,
-        executedPrice: 1,
-        executedQuantity: 100,
-        executedTimeMs: Date.now(),
-      });
+      const frame = simulationExecutionFrame('SELL-1', symbol, 'SELL', '2', 9_999_999_999_999);
+      ingress.setOrderDetailReplies([frame]);
+      ingress.setExecutionReplies([
+        {
+          orderId: frame.orderId,
+          tradeId: frame.tradeId,
+          symbol,
+          quantity: '100',
+          price: '2',
+          tradeDoneAtMs: 9_999_999_999_999,
+        },
+      ]);
+      ingress.emitOrderChangedFrame(frame);
     }
 
     buyProcessor.start();
@@ -858,17 +1206,28 @@ describe('full business simulation integration', () => {
         quantity: 100,
         availableQuantity: 100,
       });
-      lastState.cachedPositions = [oldPosition];
-      lastState.positionCache.update([oldPosition]);
+      await refreshPositions([oldPosition]);
+      const positionedReceipt = await postTradeConsistencyRuntime.waitForFresh();
+      expect(postTradeConsistencyRuntime.isCurrent(positionedReceipt)).toBeTrue();
+      await quoteSubscriptionRuntime.reconcileFromCurrentTruth();
 
-      emitMonitorQuoteUpdated(20_010);
-      await waitUntil(() => executedActions.length > 0);
+      // 自动搜索保留原 09:00 预热；真实订单边界只在原模拟的 09:31 连续时段推进。
+      simulationNowMs = ASYNC_PROCESSOR_RUNTIME.clock.now().getTime();
+      emitMonitorQuoteUpdated('20010');
+      await waitUntil(() => executedActions.length > 0).catch((error: unknown) => {
+        throw new Error(
+          `native switch SELL timeout: originalClock=${runtimeNow().toISOString()}, attempts=${JSON.stringify(executionAttempts)}, seat=${JSON.stringify(symbolRegistry.getSeatState('LONG'))}`,
+          { cause: error },
+        );
+      });
 
       expect(executedActions[0]?.action).toBe('SELLCALL');
       expect(executedActions[0]?.symbol).toBe('OLD_BULL.HK');
 
-      lastState.cachedPositions = [];
-      lastState.positionCache.update([]);
+      await refreshPositions([]);
+      const clearedReceipt = await postTradeConsistencyRuntime.waitForFresh();
+      expect(postTradeConsistencyRuntime.isCurrent(clearedReceipt)).toBeTrue();
+      await quoteSubscriptionRuntime.reconcileFromCurrentTruth();
       emitOrderStateChanged('OLD_BULL.HK');
 
       await waitUntil(() => executedActions.length > 1).catch((error: unknown) => {
@@ -907,6 +1266,7 @@ describe('full business simulation integration', () => {
       expect(finalSeat.symbol).toBe('NEW_BULL.HK');
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(3);
     } finally {
+      await postTradeConsistencyRuntime.stopAndDrain();
       await Promise.all([
         autoSearchWakeupRuntime.stopAndDrain(),
         quoteSubscriptionRuntime.stopAndDrain(),
@@ -968,35 +1328,22 @@ describe('full business simulation integration', () => {
       positions: [longPosition],
       currentDayKey: '1999-01-01',
     });
+    const { ingress, accountService, snapshot, refreshPositions } = await createSimulationSnapshot([
+      longPosition,
+    ]);
+    const dailyLossTracker = createSimulationDailyLossTracker();
 
-    const orderRecorder = createOrderRecorderDouble({
-      getBuyOrdersForSymbol: () => [
-        {
-          orderId: 'BUY-ORIGIN',
-          symbol: 'BULL.HK',
-          executedPrice: 1,
-          executedQuantity: 100,
-          executedTime: 1,
-          submittedAt: undefined,
-          updatedAt: undefined,
-        },
+    const { orderRecorder, hydrate, bindSettlement } = await createSimulationOrderRecorder(
+      ingress,
+      snapshot,
+      monitorConfig,
+      dailyLossTracker,
+      [
+        simulationExecutionFrame('BUY-ORIGIN', 'BULL.HK', 'BUY', '1', 1),
+        simulationExecutionFrame('BUY-100', 'BULL.HK', 'BUY', '1', Date.now()),
       ],
-      getCostAveragePrice: () => 1.2,
-      selectSellableOrders: () => ({
-        orders: [
-          {
-            orderId: 'BUY-100',
-            symbol: 'BULL.HK',
-            executedPrice: 1,
-            executedQuantity: 100,
-            executedTime: Date.now(),
-            submittedAt: undefined,
-            updatedAt: undefined,
-          },
-        ],
-        totalQuantity: 100,
-      }),
-    });
+    );
+
     let resetForTradingDayCalls = 0;
 
     const monitorContext = createMonitorContextDouble({
@@ -1008,7 +1355,7 @@ describe('full business simulation integration', () => {
         },
       }),
       orderRecorder,
-      dailyLossTracker: createNoopDailyLossTracker(),
+      dailyLossTracker: dailyLossTracker,
       riskChecker: createRiskCheckerDouble(),
       unrealizedLossMonitor: createNoopUnrealizedLossMonitor(),
       autoSymbolManager: {
@@ -1039,15 +1386,17 @@ describe('full business simulation integration', () => {
       },
     });
     const submittedActions: string[] = [];
+    let executor: OrderExecutor | null = null;
     const trader = createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble(200_000),
-      getStockPositions: async () => [...lastState.cachedPositions],
-      executeSignals: async (signals) => {
-        for (const signal of signals) {
-          submittedActions.push(signal.action);
-        }
+      ...accountService,
+      executeSignals: async (signals, callerAuthorization) => {
+        if (executor === null) throw new Error('Simulation executor not assembled');
 
-        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`) };
+        const result = await executor.executeSignals(signals, callerAuthorization);
+        if (result.executedOrderIds.length > 0)
+          for (const signal of signals) submittedActions.push(signal.action);
+
+        return result;
       },
     });
     const signalProcessor = createSignalProcessor({
@@ -1063,11 +1412,39 @@ describe('full business simulation integration', () => {
       reportFatalError: () => {},
     });
 
-    const postTradeConsistencyRuntime = {
-      waitForFresh: async () => {},
-      onFreshReached: () => () => {},
-    };
+    const postTradeConsistencyRuntime = createSimulationSettlement({
+      snapshot,
+      trader,
+      monitorContext,
+      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+    });
+    bindSettlement(postTradeConsistencyRuntime);
+    hydrate(ASYNC_PROCESSOR_RUNTIME.clock.now());
+    expect(orderRecorder.getCostBasis('BULL.HK', true)).toEqual({
+      costAmount: '200',
+      quantity: 200,
+    });
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    postTradeConsistencyRuntime.start();
+    expect(await postTradeConsistencyRuntime.completeRebuildBaseline()).toBeTrue();
+    const originalReceipt = await postTradeConsistencyRuntime.waitForFresh();
+    expect(postTradeConsistencyRuntime.isCurrent(originalReceipt)).toBeTrue();
+    expect(originalReceipt.snapshotToken).toBe(snapshot.getView().token);
+    ingress.setSubmitBehavior(async () => 'EXECUTED-ORDER');
+    executor = await createSimulationExecutor({
+      ingress,
+      tradingConfig,
+      symbolRegistry,
+      orderRecorder,
+      dailyLossTracker,
+      riskChecker: monitorContext.riskChecker,
+      postTradeConsistencyRuntime,
+      marketDataClient: createSimulationQuoteClient(),
+      now: ASYNC_PROCESSOR_RUNTIME.clock.now,
+      isExecutionAllowed: () => lastState.canTrade === true && lastState.isTradingEnabled,
+    });
     const buyProcessor = createBuyProcessor({
+      snapshot,
       now: () => new Date(Date.now()),
       taskQueue: buyTaskQueue,
       monitorContext,
@@ -1078,11 +1455,11 @@ describe('full business simulation integration', () => {
           const quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>();
           for (const symbol of symbols) {
             if (symbol === 'HSI.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 20_000, 1));
+              quotes.set(symbol, createQuoteDouble(symbol, '20000', 1));
             } else if (symbol === 'BULL.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 1.05, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '1.05', 100));
             } else if (symbol === 'BEAR.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 0.95, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '0.95', 100));
             } else {
               quotes.set(symbol, null);
             }
@@ -1097,6 +1474,7 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
+      snapshot,
       ...ASYNC_PROCESSOR_RUNTIME,
       taskQueue: sellTaskQueue,
       monitorContext,
@@ -1107,11 +1485,11 @@ describe('full business simulation integration', () => {
           const quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>();
           for (const symbol of symbols) {
             if (symbol === 'HSI.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 20_000, 1));
+              quotes.set(symbol, createQuoteDouble(symbol, '20000', 1));
             } else if (symbol === 'BULL.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 1.05, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '1.05', 100));
             } else if (symbol === 'BEAR.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 0.95, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '0.95', 100));
             } else {
               quotes.set(symbol, null);
             }
@@ -1126,6 +1504,7 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const monitorTaskProcessor = createMonitorTaskProcessor({
+      snapshot,
       ...ASYNC_PROCESSOR_RUNTIME,
       monitorTaskQueue,
       monitorContext,
@@ -1136,7 +1515,7 @@ describe('full business simulation integration', () => {
         handoffPendingSwitch: () => {},
       },
       periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeDouble(),
-      lastState,
+
       getCanProcessTask: () => lastState.isTradingEnabled,
       getCanTradeNow: () => lastState.canTrade === true,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
@@ -1158,16 +1537,19 @@ describe('full business simulation integration', () => {
         stopAndDrain: async () => {},
       },
       postTradeConsistencyRuntime: {
-        abortWaiting: () => {},
-        resetAbort: () => {},
+        ...postTradeConsistencyRuntime,
         start: () => {
           postTradeStartCount += 1;
+          postTradeConsistencyRuntime.start();
         },
         stopAndDrain: async () => {
           postTradeStopCount += 1;
+          await postTradeConsistencyRuntime.stopAndDrain();
         },
-        midnightClear: () => {},
-        completeRebuildBaseline: () => {},
+        completeRebuildBaseline: async () => {
+          hydrate(ASYNC_PROCESSOR_RUNTIME.clock.now());
+          return postTradeConsistencyRuntime.completeRebuildBaseline();
+        },
       },
       tradingRiskEventRuntime: {
         start: () => {},
@@ -1202,11 +1584,12 @@ describe('full business simulation integration', () => {
     });
 
     const globalStateDomain = createGlobalStateDomain({
+      snapshot,
       logger: createLoggerDouble(),
       lastState,
       runTradingDayOpenRebuild: async () => {
         runOpenRebuildCount += 1;
-        // 重建阶段应使用当日快照恢复账户/持仓，这里显式模拟恢复结果，避免依赖跨日残留缓存。
+        // 当日恢复读取同 ctx 金融事实，发布成对 H；不写回已退役的 LastState 缓存。
         const rebuiltPositions = [
           createPositionDouble({
             symbol: 'BULL.HK',
@@ -1214,13 +1597,12 @@ describe('full business simulation integration', () => {
             availableQuantity: 500,
           }),
         ];
-        lastState.cachedAccount = createAccountSnapshotDouble(200_000);
-        lastState.cachedPositions = rebuiltPositions;
-        lastState.positionCache.update(rebuiltPositions);
+        return await refreshPositions(rebuiltPositions, 'LIFECYCLE_REBUILD');
       },
     });
 
     const dayLifecycleManager = createDayLifecycleManager({
+      snapshot,
       termination: createTerminationDouble(),
       mutableState: lastState,
       cacheDomains: [signalRuntimeDomain, globalStateDomain],
@@ -1258,11 +1640,11 @@ describe('full business simulation integration', () => {
           const quotes = new Map<string, ReturnType<typeof createQuoteDouble> | null>();
           for (const symbol of symbols) {
             if (symbol === 'HSI.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 20_000, 1));
+              quotes.set(symbol, createQuoteDouble(symbol, '20000', 1));
             } else if (symbol === 'BULL.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 1.05, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '1.05', 100));
             } else if (symbol === 'BEAR.HK') {
-              quotes.set(symbol, createQuoteDouble(symbol, 0.95, 100));
+              quotes.set(symbol, createQuoteDouble(symbol, '0.95', 100));
             } else {
               quotes.set(symbol, null);
             }
@@ -1277,6 +1659,7 @@ describe('full business simulation integration', () => {
       });
 
       await timeWakeupEvaluationProgram({
+        snapshot,
         logger: createLoggerDouble(),
         marketDataClient,
         trader,
@@ -1285,7 +1668,7 @@ describe('full business simulation integration', () => {
         tradingConfig,
         monitorContext,
         tradingGateEventRuntime: createTradingGateEventRuntimeDouble(),
-        quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
+
         dayLifecycleManager,
         now: () => new Date(Date.now()),
       });
@@ -1299,6 +1682,7 @@ describe('full business simulation integration', () => {
       expect(postTradeStopCount).toBe(1);
 
       await timeWakeupEvaluationProgram({
+        snapshot,
         logger: createLoggerDouble(),
         marketDataClient,
         trader,
@@ -1307,7 +1691,7 @@ describe('full business simulation integration', () => {
         tradingConfig,
         monitorContext,
         tradingGateEventRuntime: createTradingGateEventRuntimeDouble(),
-        quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
+
         dayLifecycleManager,
         now: () => new Date(Date.now()),
       });
@@ -1331,6 +1715,7 @@ describe('full business simulation integration', () => {
 
       expect(submittedActions).toEqual(['SELLCALL']);
     } finally {
+      await postTradeConsistencyRuntime.stopAndDrain();
       Date.now = originalNow;
       await Promise.all([
         buyProcessor.stopAndDrain(),

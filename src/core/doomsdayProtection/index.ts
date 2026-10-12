@@ -14,7 +14,6 @@
  * 控制开关：
  * - DOOMSDAY_PROTECTION 环境变量（默认 true）
  */
-import { OrderSide, OrderType } from 'longbridge';
 import { logger } from '../../utils/logger/index.js';
 import { ORDER_QUOTE_RETRY, TIME } from '../../constants/index.js';
 import {
@@ -43,14 +42,15 @@ import {
 } from './utils.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { getHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
+import { formatDecimal } from '../../utils/numeric/exact.js';
 import { isCancelAcceptedOrTerminalNonFilledClose } from '../../utils/trading/orderStatus.js';
 
 function formatPendingOrderPrice(order: PendingOrder): string {
   if (order.submittedPrice !== null) {
-    return order.submittedPrice.toFixed(3);
+    return formatDecimal(order.submittedPrice, 3, 'unsigned');
   }
 
-  return order.orderType === OrderType.MO ? '无委托价（市价单）' : '无委托价';
+  return order.orderType === 'MO' ? '无委托价（市价单）' : '无委托价';
 }
 
 /**
@@ -317,10 +317,11 @@ export function createDoomsdayProtection(deps: {
       trader,
       marketDataClient,
       lastState,
-      onPositionsCommitted,
+      snapshot,
       isLive,
     } = context;
     const todayKey = getHKDateKey(currentTime);
+    const dayEpoch = snapshot.getView().token.dayEpoch;
 
     if (!isLive()) {
       return abortClearanceForClosedLiveGate();
@@ -469,7 +470,10 @@ export function createDoomsdayProtection(deps: {
         return abortClearanceForClosedLiveGate();
       }
 
-      const executionResult = await trader.executeDoomsdayClearanceSignals(uniqueClearanceSignals);
+      const executionResult = await trader.executeDoomsdayClearanceSignals(
+        uniqueClearanceSignals,
+        isLive,
+      );
       executedOrderCount = executionResult.executedOrderIds.length;
       if (!isLive()) {
         return abortClearanceForClosedLiveGate(executedOrderCount);
@@ -506,25 +510,13 @@ export function createDoomsdayProtection(deps: {
           return abortClearanceForClosedLiveGate(executedOrderCount);
         }
 
-        lastState.cachedAccount = null;
-        if (!isLive()) {
+        if (!context.lastState.isTradingEnabled || snapshot.getView().token.dayEpoch !== dayEpoch) {
           return abortClearanceForClosedLiveGate(executedOrderCount);
         }
 
-        lastState.cachedPositions = lastState.cachedPositions.filter(
-          (position) => !submittedSymbols.has(position.symbol),
-        );
-
-        if (!isLive()) {
-          return abortClearanceForClosedLiveGate(executedOrderCount);
-        }
-
-        lastState.positionCache.update(lastState.cachedPositions);
-        if (!isLive()) {
-          return abortClearanceForClosedLiveGate(executedOrderCount);
-        }
-
-        await onPositionsCommitted?.();
+        // 全部 accepted 只证明提交成功，不证明持仓已平；不虚裁 positions 或登记 settlement stale。
+        // owner 原接口无 epoch 入参：先同步核对 captured epoch，再失效账户，无 await 间隙。
+        snapshot.invalidateAccount();
         if (!isLive()) {
           return abortClearanceForClosedLiveGate(executedOrderCount);
         }
@@ -535,7 +527,7 @@ export function createDoomsdayProtection(deps: {
             return abortClearanceForClosedLiveGate(executedOrderCount);
           }
 
-          orderRecorder.clearBuyOrders(longSymbol, true, longQuote);
+          orderRecorder.clearBuyOrders(longSymbol, true);
         }
 
         if (shortSymbol && submittedSymbols.has(shortSymbol)) {
@@ -543,11 +535,11 @@ export function createDoomsdayProtection(deps: {
             return abortClearanceForClosedLiveGate(executedOrderCount);
           }
 
-          orderRecorder.clearBuyOrders(shortSymbol, false, shortQuote);
+          orderRecorder.clearBuyOrders(shortSymbol, false);
         }
       } else {
         logger.warn(
-          `[末日保护程序] 清仓信号仅执行 ${executedOrderCount}/${uniqueClearanceSignals.length} 个，保留缓存与订单记录等待后续刷新`,
+          `[末日保护程序] 清仓信号仅执行 ${executedOrderCount}/${uniqueClearanceSignals.length} 个，保留 canonical 事实与订单记录等待后续刷新`,
         );
       }
     } else {
@@ -689,7 +681,7 @@ export function createDoomsdayProtection(deps: {
       }
 
       // 过滤出买入订单
-      const pendingBuyOrders = pendingOrders.filter((order) => order.side === OrderSide.Buy);
+      const pendingBuyOrders = pendingOrders.filter((order) => order.side === 'BUY');
       if (pendingBuyOrders.length === 0) {
         if (!isLive()) {
           return { executed: false, cancelRequestAcceptedCount: 0, nextRetryAtMs: null };

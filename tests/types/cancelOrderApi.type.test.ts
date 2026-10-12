@@ -19,8 +19,19 @@ const doomsdayRequest: DoomsdayCancelOrderRequest = {
 };
 
 function assertTraderCancelApiBoundary(trader: Trader): void {
-  const normalOutcome: Promise<CancelOrderOutcome> = trader.cancelOrder('ORDER-FACT');
+  const normalOutcome: Promise<CancelOrderOutcome> = trader.cancelOrder('ORDER-FACT', {
+    kind: 'ORDER_FACT',
+  });
   void normalOutcome;
+
+  const businessOutcome: Promise<CancelOrderOutcome> = trader.cancelOrder('SWITCH-ORDER', {
+    kind: 'SIGNAL_AUTHORIZED',
+    authorize: () => true,
+  });
+  void businessOutcome;
+
+  // @ts-expect-error 公共撤单必须显式区分事实请求与业务原票，不能默认授权。
+  void trader.cancelOrder('MISSING-AUTHORIZATION');
 
   const doomsdayOutcome: Promise<DoomsdayCancelOrderOutcome> = trader.cancelDoomsdayOrder(
     'DOOMSDAY-ORDER',

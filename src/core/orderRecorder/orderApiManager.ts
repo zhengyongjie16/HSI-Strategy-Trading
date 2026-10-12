@@ -1,168 +1,11 @@
-/**
- * 订单 API 管理模块
- *
- * 职责：
- * - 每次从 Longbridge API 拉取 historyOrders 与 todayOrders
- * - 合并两份订单快照并按 orderId 去重
- * - 在信任边界将 SDK Order 转换为 RawOrderFromAPI
- */
-import { OrderSide, type OrderStatus, type Order } from 'longbridge';
-import { VALID_ORDER_TYPE_VALUES } from '../../constants/index.js';
-import { decimalToNumber, isRecord } from '../../utils/helpers/index.js';
-import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
-import type { RawOrderFromAPI, ValidatedOrderType } from '../../types/services.js';
+/** 订单快照owner：原history/today去重，SDK读取/解析仅在注入infra IO edge。 */
+import type { RawOrderFromAPI } from '../../types/services.js';
 import type {
   MergedOrderEntry,
   OrderAPIManager,
   OrderAPIManagerDeps,
   OrderSnapshotSource,
 } from './types.js';
-import { classifyOrderStatusLifecycle } from '../orderStatusLifecycle/index.js';
-
-/**
- * 校验外部订单 API 返回值必须是数组。
- *
- * @param value 外部 API 返回值
- * @param operation 外部 API 操作名
- */
-function assertOrderArray(
-  value: unknown,
-  operation: string,
-): asserts value is ReadonlyArray<unknown> {
-  if (!Array.isArray(value)) {
-    throw new TypeError(`[订单记录] ${operation} 返回值不是数组`);
-  }
-}
-
-function hasToNumber(value: unknown): value is { readonly toNumber: () => unknown } {
-  return isRecord(value) && typeof value['toNumber'] === 'function';
-}
-
-function isFiniteDecimalLike(value: unknown): boolean {
-  if (typeof value === 'number' || typeof value === 'string') {
-    return Number.isFinite(decimalToNumber(value));
-  }
-
-  if (hasToNumber(value)) {
-    const numeric = value.toNumber();
-    return typeof numeric === 'number' && Number.isFinite(numeric);
-  }
-
-  return false;
-}
-
-function isNullableFiniteDecimalLike(value: unknown): boolean {
-  return value === null || isFiniteDecimalLike(value);
-}
-
-/**
- * 校验 SDK 订单时间为可用于内部订单事实的正有限时间点。
- *
- * @param value SDK 返回的时间字段
- * @returns 时间字段是否为有效的正有限 Date
- */
-function isValidOrderTimestamp(value: unknown): value is Date {
-  if (!(value instanceof Date)) {
-    return false;
-  }
-
-  const timestampMs = value.getTime();
-  return Number.isFinite(timestampMs) && timestampMs > 0;
-}
-
-function isValidOrderSide(value: unknown): value is OrderSide {
-  switch (value) {
-    case OrderSide.Unknown:
-    case OrderSide.Buy:
-    case OrderSide.Sell: {
-      return true;
-    }
-
-    default: {
-      return false;
-    }
-  }
-}
-
-function isValidOrderStatus(value: unknown): value is OrderStatus {
-  if (typeof value !== 'number') {
-    return false;
-  }
-
-  try {
-    classifyOrderStatusLifecycle(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isValidOrderType(value: unknown): value is ValidatedOrderType {
-  return typeof value === 'number' && VALID_ORDER_TYPE_VALUES.has(value);
-}
-
-function assertValidOrder(value: unknown, operation: string): asserts value is Order {
-  if (!isRecord(value)) {
-    throw new TypeError(`[订单记录] ${operation} 订单数据结构无效`);
-  }
-
-  if (
-    typeof value['orderId'] !== 'string' ||
-    value['orderId'].length === 0 ||
-    typeof value['symbol'] !== 'string' ||
-    value['symbol'].length === 0 ||
-    typeof value['stockName'] !== 'string' ||
-    !isValidOrderSide(value['side']) ||
-    !isValidOrderStatus(value['status']) ||
-    !isValidOrderType(value['orderType']) ||
-    !isNullableFiniteDecimalLike(value['price']) ||
-    !isFiniteDecimalLike(value['quantity']) ||
-    !isNullableFiniteDecimalLike(value['executedPrice']) ||
-    !isFiniteDecimalLike(value['executedQuantity']) ||
-    !isValidOrderTimestamp(value['submittedAt']) ||
-    (value['updatedAt'] !== undefined &&
-      value['updatedAt'] !== null &&
-      !isValidOrderTimestamp(value['updatedAt']))
-  ) {
-    throw new TypeError(`[订单记录] ${operation} 订单数据结构无效`);
-  }
-}
-
-function assertValidOrders(
-  orders: ReadonlyArray<unknown>,
-  operation: string,
-): asserts orders is ReadonlyArray<Order> {
-  for (const order of orders) {
-    assertValidOrder(order, operation);
-  }
-}
-
-/**
- * 将 Longbridge SDK Order 实例转换为内部 RawOrderFromAPI（信任边界唯一转换处）。
- *
- * @param order Longbridge SDK 返回的 Order 实例
- * @returns 内部统一的 RawOrderFromAPI 结构
- */
-function orderToRawOrderFromAPI(order: Order): RawOrderFromAPI {
-  const price = order.price;
-  const executedPrice = order.executedPrice;
-  const remark = order.remark;
-  return {
-    orderId: order.orderId,
-    symbol: order.symbol,
-    stockName: order.stockName,
-    side: order.side,
-    status: order.status,
-    orderType: order.orderType,
-    remark: typeof remark === 'string' ? remark : null,
-    price: price === null ? null : decimalToNumber(price),
-    quantity: decimalToNumber(order.quantity),
-    executedPrice: executedPrice === null ? null : decimalToNumber(executedPrice),
-    executedQuantity: decimalToNumber(order.executedQuantity),
-    submittedAt: order.submittedAt,
-    updatedAt: order.updatedAt ?? null,
-  };
-}
 
 /**
  * 解析订单快照版本时间（用于合并去重时比较新旧）。
@@ -172,13 +15,7 @@ function orderToRawOrderFromAPI(order: Order): RawOrderFromAPI {
  * @returns 版本时间戳（毫秒）
  */
 function resolveOrderSnapshotVersionMs(order: RawOrderFromAPI): number {
-  const updatedAtMs = order.updatedAt?.getTime() ?? 0;
-  if (updatedAtMs > 0) {
-    return updatedAtMs;
-  }
-
-  const submittedAtMs = order.submittedAt?.getTime() ?? 0;
-  return Math.max(Number.isNaN(submittedAtMs) ? 0 : submittedAtMs, 0);
+  return order.updatedAtMs;
 }
 
 /**
@@ -259,44 +96,12 @@ function mergeAndDeduplicateOrders(
   return Array.from(mergedByOrderId.values(), (entry) => entry.order);
 }
 
-/**
- * 创建订单 API 管理器
- * 拉取 history + today 并合并去重；信任边界内将 SDK Order 转为 RawOrderFromAPI。
- * @param deps 依赖注入（ctx、rateLimiter）
- * @returns OrderAPIManager 接口实例
- */
+/** 原快照合并入口，不改变today优先/同source更新版本选择。 */
 export function createOrderAPIManager(deps: OrderAPIManagerDeps): OrderAPIManager {
-  const { ctx, rateLimiter } = deps;
-
-  /** 每次从 API 拉取 historyOrders 与 todayOrders，并返回合并去重后的全量订单快照 */
-  async function fetchAllOrdersFromAPI(): Promise<ReadonlyArray<RawOrderFromAPI>> {
-    await rateLimiter.throttle();
-    const historyOrdersRaw: unknown = await wrapExternalApiRequest({
-      operation: 'TradeContext.historyOrders',
-      request: () =>
-        ctx.historyOrders({
-          endAt: new Date(),
-        }),
-    });
-    assertOrderArray(historyOrdersRaw, 'TradeContext.historyOrders');
-    assertValidOrders(historyOrdersRaw, 'TradeContext.historyOrders');
-
-    await rateLimiter.throttle();
-    const todayOrdersRaw: unknown = await wrapExternalApiRequest({
-      operation: 'TradeContext.todayOrders',
-      request: () => ctx.todayOrders(),
-    });
-    assertOrderArray(todayOrdersRaw, 'TradeContext.todayOrders');
-    assertValidOrders(todayOrdersRaw, 'TradeContext.todayOrders');
-
-    const historyOrders = Array.from(historyOrdersRaw, orderToRawOrderFromAPI);
-    const todayOrders = Array.from(todayOrdersRaw, orderToRawOrderFromAPI);
-    const allOrders = mergeAndDeduplicateOrders(historyOrders, todayOrders);
-
-    return [...allOrders];
-  }
-
   return {
-    fetchAllOrdersFromAPI,
+    fetchAllOrdersFromAPI: async () => {
+      const { historyOrders, todayOrders } = await deps.orderSnapshotReadPort.fetchSnapshots();
+      return [...mergeAndDeduplicateOrders(historyOrders, todayOrders)];
+    },
   };
 }

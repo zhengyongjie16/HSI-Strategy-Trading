@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'bun:test';
-import { Decimal, OrderSide, OrderStatus, OrderType, type OrderDetail } from 'longbridge';
 import { ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS } from '../../../../src/constants/index.js';
 import { createRateLimiter as createTraderRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
 import { createOrderOps as createProductionOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
-import { createOrderStatusQuery } from '../../../../src/core/trader/orderMonitor/orderStatusQuery.js';
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createExecutionFixture } from '../../orderRecorder/executionFixture.js';
+import { createTradeMutationAdapter } from '../../../../src/infrastructure/longbridge/trade/tradeMutationAdapter.js';
+import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
 import { normalizeTerminalStateSnapshot } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
 import type {
   OrderMonitorRuntimeStore,
@@ -30,14 +32,88 @@ import { createTradeContextMock } from '../../../../mock/longbridge/tradeContext
 
 const TEST_MONITOR_CONFIG = createTradingConfig().monitor;
 
-type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now' | 'termination'> &
-  Partial<Pick<OrderOpsDeps, 'now' | 'termination'>>;
+/** Actual SDK mapper classifications only. Malformed-input tests retain their original
+ * price/qty/T/revision defects; they cannot manufacture a lifecycle or execution tag. */
+async function nativeObservation(
+  status: 'New' | 'PartialFilled' | 'Canceled' | 'Rejected' | 'PendingCancel' | 'WaitToCancel',
+  executedQuantity: string,
+  executedPrice: string,
+  executionTimeMs: number | null,
+  updatedAtMs: number,
+  side: 'BUY' | 'SELL' = 'SELL',
+) {
+  const native = await createBrokerIngressFixture({
+    orderId: 'OPS-NATIVE-CLASSIFICATION',
+    tradeId: 'OPS-NATIVE-EXECUTION',
+    symbol: 'BULL.HK',
+    stockName: 'BULL',
+    remark: '',
+    side,
+    orderType: 'ELO',
+    status,
+    quantity: '100',
+    executedQuantity,
+    submittedPrice: '1',
+    executedPrice,
+    submittedAtMs: 1,
+    executionTimeMs,
+    updatedAtMs,
+  });
+  return native.queryObservation;
+}
+const nativeWorkingBuy = await nativeObservation('New', '0', '0', null, 100, 'BUY');
+const nativeWorkingSell = await nativeObservation('New', '0', '0', null, 100, 'SELL');
+const nativePartial = await nativeObservation('PartialFilled', '40', '1.02', 150, 200);
+const nativeCanceledZero = await nativeObservation('Canceled', '0', '0', null, 300);
+const nativeCanceled40 = await nativeObservation('Canceled', '40', '1.02', 150, 200);
+const nativeCanceled80Original = await nativeObservation('Canceled', '80', '1.01', 100, 100);
+const nativeCanceled80 = await nativeObservation('Canceled', '80', '1.03', 100, 100);
+const nativeRejectedZero = await nativeObservation('Rejected', '0', '0', null, 300);
+const nativePendingCancel = await nativeObservation('PendingCancel', '0', '0', null, 300);
+const nativeWaitToCancel = await nativeObservation('WaitToCancel', '0', '0', null, 300);
 
+type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now' | 'termination' | 'captureWorkGuard'> &
+  Partial<Pick<OrderOpsDeps, 'now' | 'termination' | 'captureWorkGuard'>>;
+
+/** Unit work-owner follows actual stop generation; it is not an account readiness or native Monitor proof. */
 function createOrderOps(deps: TestOrderOpsDeps) {
+  let state = deps.runtime.runtimeState;
+  let generation = 0;
+  Object.defineProperty(deps.runtime, 'runtimeState', {
+    enumerable: true,
+    configurable: true,
+    get: () => state,
+    set: (next: OrderMonitorRuntimeStore['runtimeState']) => {
+      if (next === 'STOPPED') generation++;
+
+      state = next;
+    },
+  });
+  const termination =
+    deps.termination ??
+    createTerminationRuntime({
+      closeTradingGate: () => {
+        deps.runtime.runtimeState = 'STOPPED';
+      },
+      closeProducerAdmission: () => {
+        deps.runtime.running = false;
+      },
+      stopProducers: [],
+      onSecondaryError: (error) => {
+        throw error;
+      },
+    });
+  const captureWorkGuard =
+    deps.captureWorkGuard ??
+    (() => {
+      const captured = generation;
+      return () => captured === generation && state !== 'STOPPED' && !termination.isTerminated();
+    });
   return createProductionOrderOps({
-    termination: { isTerminated: () => false, reportFatalError: () => {} },
-    now: () => new Date(Date.now()),
     ...deps,
+    termination,
+    now: deps.now ?? (() => new Date(Date.now())),
+    captureWorkGuard,
   });
 }
 
@@ -124,7 +200,7 @@ function createReplaceTempBlockedHarness(): {
     termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     monitorConfig: TEST_MONITOR_CONFIG,
-    ctx: createTradeContextDouble(tradeCtx),
+    tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
     rateLimiter: createRateLimiter(),
     cacheManager: createCacheManager(),
     orderHoldRegistry: createOrderHoldRegistry(),
@@ -144,15 +220,16 @@ function createReplaceTempBlockedHarness(): {
   orderOps.trackOrder({
     orderId: 'REPLACE-602013-BACKOFF-BOUNDARY',
     symbol: 'BULL.HK',
-    side: OrderSide.Buy,
-    price: 1,
-    initialSubmittedPrice: 1,
+    side: nativeWorkingBuy.executionSide,
+    executionSide: 'BUY',
+    price: '1',
+    initialSubmittedPrice: '1',
     quantity: 100,
-    initialStatus: OrderStatus.New,
+    initialStatus: nativeWorkingBuy.status,
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: false,
-    orderType: OrderType.ELO,
+    orderType: nativeWorkingBuy.orderType,
   });
   const trackedOrder = runtime.trackedOrders.get('REPLACE-602013-BACKOFF-BOUNDARY');
   if (trackedOrder === undefined) {
@@ -203,7 +280,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeContext),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeContext)),
       rateLimiter,
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -220,32 +297,34 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-CANCEL-PERMIT',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1',
+      initialSubmittedPrice: '1',
       quantity: 100,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
     orderOps.trackOrder({
       orderId: 'ORDER-REPLACE-PERMIT',
       symbol: 'BEAR.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
+      price: '1',
+      initialSubmittedPrice: '1',
       quantity: 100,
       isLongSymbol: false,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingSell.orderType,
     });
 
     const [cancelOutcome, replaceOutcome] = await Promise.all([
       orderOps.cancelOrder('ORDER-CANCEL-PERMIT', { kind: 'ORDER_FACT' }),
-      orderOps.replaceOrderPrice('ORDER-REPLACE-PERMIT', 1.1, { kind: 'ORDER_FACT' }),
+      orderOps.replaceOrderPrice('ORDER-REPLACE-PERMIT', '1.1', { kind: 'ORDER_FACT' }),
     ]);
 
     expect(cancelOutcome.kind).toBe('CANCEL_CONFIRMED');
@@ -279,7 +358,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeContext),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeContext)),
       rateLimiter,
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -296,19 +375,20 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-REPLACE-AUTH-REVOKED-AFTER-PERMIT',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
+      price: '1',
+      initialSubmittedPrice: '1',
       quantity: 100,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingSell.orderType,
     });
 
     const outcome = await orderOps.replaceOrderPrice(
       'ORDER-REPLACE-AUTH-REVOKED-AFTER-PERMIT',
-      1.1,
+      '1.1',
       { kind: 'SIGNAL_AUTHORIZED', authorize: () => authorized },
     );
 
@@ -335,7 +415,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeContext),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeContext)),
       rateLimiter,
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -378,7 +458,7 @@ describe('orderMonitor orderOps', () => {
       now: () => new Date(injectedNowMs),
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble()),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -399,15 +479,16 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-TRACK-1',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
     expect([...(runtime.trackedOrderIdsBySymbol.get('BULL.HK') ?? new Set()).values()]).toEqual([
@@ -431,7 +512,7 @@ describe('orderMonitor orderOps', () => {
     const deps = {
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble()),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -452,15 +533,16 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-RECOVERY-1',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
     expect([...(runtime.trackedOrderIdsBySymbol.get('BULL.HK') ?? new Set()).values()]).toEqual([
@@ -475,7 +557,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble()),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -494,14 +576,15 @@ describe('orderMonitor orderOps', () => {
       orderOps.trackOrder({
         orderId: 'ORDER-TRACK-MISMATCH',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        price: 1.01,
-        initialSubmittedPrice: 1.01,
+        side: nativeWorkingBuy.executionSide,
+        executionSide: 'BUY',
+        price: '1.01',
+        initialSubmittedPrice: '1.01',
         quantity: 100,
         isLongSymbol: true,
         monitorSymbol: 'OTHER.HK',
         isProtectiveLiquidation: false,
-        orderType: OrderType.ELO,
+        orderType: nativeWorkingBuy.orderType,
       });
     }).toThrow(/monitorSymbol.*期望=HSI\.HK/);
   });
@@ -518,7 +601,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -557,7 +640,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -598,7 +681,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -633,7 +716,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -641,9 +724,12 @@ describe('orderMonitor orderOps', () => {
       recordCumulativeExecution: () => {},
       orderStatusQuery: {
         checkOrderState: async () => ({
+          executionStatus: nativeCanceledZero.executionStatus,
+          executedAmount: '0',
+          executionTimeMs: null,
           kind: 'TERMINAL' as const,
           closedReason: 'CANCELED' as const,
-          status: 15,
+          status: nativeCanceledZero.status,
           executedPrice: null,
           executedQuantity: 0,
           submittedQuantity: 100,
@@ -673,7 +759,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -690,18 +776,19 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-REPLACE-BUSINESS-NO-RETRY',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
-    await orderOps.replaceOrderPrice('ORDER-REPLACE-BUSINESS-NO-RETRY', 1.23, {
+    await orderOps.replaceOrderPrice('ORDER-REPLACE-BUSINESS-NO-RETRY', '1.23', {
       kind: 'ORDER_FACT',
     });
 
@@ -723,7 +810,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -740,19 +827,20 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-REPLACE-CODED-TRANSIENT',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
     try {
-      await orderOps.replaceOrderPrice('ORDER-REPLACE-CODED-TRANSIENT', 1.23, {
+      await orderOps.replaceOrderPrice('ORDER-REPLACE-CODED-TRANSIENT', '1.23', {
         kind: 'ORDER_FACT',
       });
       expect.unreachable();
@@ -777,7 +865,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -794,19 +882,20 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-REPLACE-RETRY',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
     try {
-      await orderOps.replaceOrderPrice('ORDER-REPLACE-RETRY', 1.23, { kind: 'ORDER_FACT' }, 1000);
+      await orderOps.replaceOrderPrice('ORDER-REPLACE-RETRY', '1.23', { kind: 'ORDER_FACT' }, 1000);
       expect.unreachable();
     } catch (error) {
       expect(error).toMatchObject({
@@ -831,7 +920,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -848,20 +937,21 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-REPLACE-AUTH-REVOKED',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
     await orderOps.replaceOrderPrice(
       'ORDER-REPLACE-AUTH-REVOKED',
-      1.23,
+      '1.23',
       { kind: 'SIGNAL_AUTHORIZED', authorize: () => authorized },
       100,
     );
@@ -883,7 +973,7 @@ describe('orderMonitor orderOps', () => {
     const deps = {
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -901,22 +991,23 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-STALE-REPLACE-1',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
     const trackedOrder = runtime.trackedOrders.get('ORDER-STALE-REPLACE-1');
     if (!trackedOrder) {
       throw new Error('missing tracked order for stale replace test');
     }
 
-    const replacePromise = orderOps.replaceOrderPrice('ORDER-STALE-REPLACE-1', 1.23, {
+    const replacePromise = orderOps.replaceOrderPrice('ORDER-STALE-REPLACE-1', '1.23', {
       kind: 'ORDER_FACT',
     });
     await replaceStarted.promise;
@@ -932,7 +1023,7 @@ describe('orderMonitor orderOps', () => {
     expect(replaceOutcome).toEqual({ kind: 'BROKER_CONFIRMED' });
     expect(runtime.latestReplaceTerminalByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
     expect(runtime.queriedTerminalStateByOrderId.has('ORDER-STALE-REPLACE-1')).toBe(false);
-    expect(Object.is(trackedOrder.submittedPrice, 1.01)).toBeTrue();
+    expect(Object.is(trackedOrder.submittedPrice, '1.01')).toBeTrue();
     expect(trackedOrder.submittedQuantity).toBe(100);
   });
 
@@ -949,7 +1040,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: {
         throttle: async () => {},
         withTradeMutation: async <T>(
@@ -978,18 +1069,19 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'ORDER-DETACHED-BEFORE-API',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingBuy.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingBuy.orderType,
     });
 
-    const replacePromise = orderOps.replaceOrderPrice('ORDER-DETACHED-BEFORE-API', 1.23, {
+    const replacePromise = orderOps.replaceOrderPrice('ORDER-DETACHED-BEFORE-API', '1.23', {
       kind: 'ORDER_FACT',
     });
     await throttleStarted.promise;
@@ -1019,7 +1111,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -1034,9 +1126,12 @@ describe('orderMonitor orderOps', () => {
       },
       orderStatusQuery: {
         checkOrderState: async () => ({
+          executionStatus: nativePartial.executionStatus,
+          executedAmount: '40.8',
+          executionTimeMs: 150,
           kind: 'OPEN' as const,
-          status: OrderStatus.PartialFilled,
-          executedPrice: 1.02,
+          status: nativePartial.status,
+          executedPrice: '1.02',
           executedQuantity: 40,
           updatedAtMs: 200,
         }),
@@ -1046,24 +1141,25 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'SELL-CANCEL-OPEN-PARTIAL',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingSell.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingSell.orderType,
     });
 
     await orderOps.cancelOrder('SELL-CANCEL-OPEN-PARTIAL', { kind: 'ORDER_FACT' });
 
     expect(runtime.trackedOrders.get('SELL-CANCEL-OPEN-PARTIAL')).toMatchObject({
-      status: OrderStatus.PartialFilled,
-      executedPrice: 1.02,
+      status: nativePartial.status,
+      executedPrice: '1.02',
       executedQuantity: 40,
-      lastExecutedTimeMs: 200,
+      lastExecutedTimeMs: 150,
       lastOrderUpdateAtMs: 200,
     });
     expect(partialFills).toEqual([{ orderId: 'SELL-CANCEL-OPEN-PARTIAL', filledQuantity: 40 }]);
@@ -1078,78 +1174,103 @@ describe('orderMonitor orderOps', () => {
   });
 
   it('撤单业务错误的无效 state-check revision 不会阻断后续有效 revision', async () => {
-    const runtime = createRuntimeStore();
-    const tradeCtx = createTradeContextMock();
     const orderId = 'BUY-CANCEL-OPEN-INVALID-REVISION';
     const validUpdatedAtMs = Date.parse('2026-07-14T02:00:00.000Z');
-    let updatedAt: unknown = new Date(Number.NaN);
-    tradeCtx.cancelOrder = async () => {
-      throw new Error('openapi error: code=601011: order cannot be cancelled');
-    };
-
-    tradeCtx.orderDetail = async (requestedOrderId) => {
-      // 外部 SDK 边界允许错误时间类型；其余字段与订单详情最小事实一致。
-      return {
-        orderId: requestedOrderId,
-        status: OrderStatus.New,
-        stockName: 'BULL',
-        quantity: new Decimal(100),
-        executedQuantity: new Decimal(0),
-        price: new Decimal(1),
-        executedPrice: new Decimal(0),
-        submittedAt: new Date('2026-07-14T01:00:00.000Z'),
-        side: OrderSide.Buy,
-        symbol: 'BULL.HK',
-        orderType: OrderType.ELO,
-        updatedAt,
-      } as unknown as OrderDetail;
-    };
-    const rateLimiter = createRateLimiter();
-    const orderOps = createOrderOps({
-      termination: { isTerminated: () => false, reportFatalError: () => {} },
+    const native = await createBrokerIngressFixture({
+      orderId,
+      tradeId: 'revision-native',
+      symbol: 'BULL.HK',
+      stockName: 'HSI RC',
+      remark: '',
+      side: 'BUY',
+      status: 'New',
+      quantity: '100',
+      executedQuantity: '0',
+      submittedPrice: '1',
+      executedPrice: '0',
+      submittedAtMs: Date.parse('2026-07-14T01:00:00.000Z'),
+      executionTimeMs: validUpdatedAtMs - 60_000,
+      updatedAtMs: validUpdatedAtMs,
+    });
+    const f = createExecutionFixture({
+      nowMs: validUpdatedAtMs,
+      createRecorder: native.createRecorder,
+    });
+    const runtime = f.runtime;
+    runtime.runtimeState = 'ACTIVE';
+    runtime.running = true;
+    const orderOps = native.createOperations({
+      termination: f.termination,
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
-      rateLimiter,
+      rateLimiter: f.rateLimiter,
       cacheManager: createCacheManager(),
-      orderHoldRegistry: createOrderHoldRegistry(),
-      orderRecorder: createOrderRecorderDouble(),
-      recordCumulativeExecution: () => {},
-      orderStatusQuery: createOrderStatusQuery({
-        ctx: createTradeContextDouble(tradeCtx),
-        rateLimiter,
-      }),
+      orderHoldRegistry: f.holds,
+      orderRecorder: f.recorder,
+      getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
+      recordCumulativeExecution: (params) => {
+        f.flow.recordCumulativeExecution(params);
+      },
+      captureWorkGuard: () => {
+        const captured = f.snapshot.getView().token;
+        return () =>
+          !f.termination.isTerminated() &&
+          runtime.runtimeState !== 'STOPPED' &&
+          f.snapshot.getView().token === captured;
+      },
+      now: () => new Date(validUpdatedAtMs),
       triggerRoute: () => {},
     });
     orderOps.trackOrder({
       orderId,
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: native.queryObservation.executionSide,
+      executionSide: native.queryObservation.executionSide,
+      price: '1',
+      initialSubmittedPrice: '1',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: native.queryObservation.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: native.queryObservation.orderType,
     });
     const trackedOrder = runtime.trackedOrders.get(orderId);
-    if (trackedOrder === undefined) {
+    if (trackedOrder === undefined)
       throw new Error('missing tracked order for state-check revision test');
+
+    const baseline = { ...trackedOrder };
+    const generation = f.snapshot.getView().token.snapshotGeneration;
+    const ledgerBefore = native.readCounts();
+    native.setCancelFailure(new Error('openapi error: code=601011: order cannot be cancelled'));
+    native.setQueryUpdatedAtMs(Number.NaN);
+    let malformed: unknown;
+    try {
+      await orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' });
+    } catch (error) {
+      malformed = error;
     }
 
-    await orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' });
-
+    expect(malformed).toBeInstanceOf(TypeError);
+    expect(malformed).toHaveProperty('message', '[orderMapper] invalid updatedAt');
+    expect(native.nativeReadCounts()).toEqual({ cancel: 1, detail: 1 });
+    expect(native.readCounts()).toEqual(ledgerBefore);
+    expect(trackedOrder).toEqual(baseline);
     expect(trackedOrder.lastOrderUpdateAtMs).toBeNull();
-
-    updatedAt = new Date(validUpdatedAtMs);
+    expect(f.recorder.getExecutionFact(orderId)).toBeNull();
+    expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
+    expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
+    native.setQueryUpdatedAtMs(validUpdatedAtMs);
     await orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' });
-
+    expect(native.nativeReadCounts()).toEqual({ cancel: 2, detail: 2 });
     expect(trackedOrder.lastOrderUpdateAtMs).toBe(validUpdatedAtMs);
+    expect(trackedOrder.lastExecutedTimeMs).toBeNull();
+    expect(f.recorder.getExecutionFact(orderId)).toBeNull();
+    expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
+    expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
   });
 
-  it.each([null, 0] as const)(
+  it.each([null, '0'] as const)(
     'OPEN state-check 累计量推进但成交价为 %s 时拒绝且不推进本地与累计副作用',
     async (incomingPrice) => {
       const runtime = createRuntimeStore();
@@ -1162,7 +1283,7 @@ describe('orderMonitor orderOps', () => {
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
-        ctx: createTradeContextDouble(tradeCtx),
+        tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
         rateLimiter: createRateLimiter(),
         cacheManager: createCacheManager(),
         orderHoldRegistry: createOrderHoldRegistry(),
@@ -1172,8 +1293,11 @@ describe('orderMonitor orderOps', () => {
         },
         orderStatusQuery: {
           checkOrderState: async () => ({
+            executionStatus: nativePartial.executionStatus,
+            executedAmount: '102',
+            executionTimeMs: 150,
             kind: 'OPEN',
-            status: OrderStatus.PartialFilled,
+            status: nativePartial.status,
             executedPrice: incomingPrice,
             executedQuantity: 100,
             updatedAtMs: 200,
@@ -1184,15 +1308,16 @@ describe('orderMonitor orderOps', () => {
       orderOps.trackOrder({
         orderId: 'SELL-CANCEL-OPEN-INVALID-PRICE',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        price: 1.01,
-        initialSubmittedPrice: 1.01,
+        side: nativeWorkingSell.executionSide,
+        executionSide: 'SELL',
+        price: '1.01',
+        initialSubmittedPrice: '1.01',
         quantity: 100,
-        initialStatus: OrderStatus.PartialFilled,
+        initialStatus: nativePartial.status,
         isLongSymbol: true,
         monitorSymbol: 'HSI.HK',
         isProtectiveLiquidation: true,
-        orderType: OrderType.ELO,
+        orderType: nativeWorkingSell.orderType,
       });
       const trackedOrder = runtime.trackedOrders.get('SELL-CANCEL-OPEN-INVALID-PRICE');
       if (!trackedOrder) {
@@ -1200,7 +1325,8 @@ describe('orderMonitor orderOps', () => {
       }
 
       trackedOrder.executedQuantity = 40;
-      trackedOrder.executedPrice = 1;
+      trackedOrder.executedAmount = '40.8';
+      trackedOrder.executedPrice = '1';
       trackedOrder.lastExecutedTimeMs = 100;
       trackedOrder.lastOrderUpdateAtMs = 100;
 
@@ -1214,13 +1340,15 @@ describe('orderMonitor orderOps', () => {
       expect(caughtError).toBeInstanceOf(Error);
       expect(caughtError).toHaveProperty(
         'message',
-        expect.stringContaining('累计成交数量推进但缺少有效成交价'),
+        expect.stringContaining(
+          '[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision',
+        ),
       );
 
       expect(trackedOrder).toMatchObject({
-        status: OrderStatus.PartialFilled,
+        status: nativePartial.status,
         executedQuantity: 40,
-        executedPrice: 1,
+        executedPrice: '1',
         lastExecutedTimeMs: 100,
         lastOrderUpdateAtMs: 100,
       });
@@ -1239,7 +1367,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -1249,9 +1377,12 @@ describe('orderMonitor orderOps', () => {
       },
       orderStatusQuery: {
         checkOrderState: async () => ({
+          executionStatus: nativePartial.executionStatus,
+          executedAmount: '103.02',
+          executionTimeMs: 150,
           kind: 'OPEN',
-          status: OrderStatus.PartialFilled,
-          executedPrice: 1.02,
+          status: nativePartial.status,
+          executedPrice: '1.02',
           executedQuantity: 101,
           updatedAtMs: 200,
         }),
@@ -1261,14 +1392,15 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'SELL-CANCEL-OPEN-EXCEEDS-SUBMITTED',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingSell.orderType,
     });
     const trackedOrder = runtime.trackedOrders.get('SELL-CANCEL-OPEN-EXCEEDS-SUBMITTED');
     if (trackedOrder === undefined) {
@@ -1287,8 +1419,11 @@ describe('orderMonitor orderOps', () => {
     [
       '成交价',
       {
+        executionStatus: nativePartial.executionStatus,
+        executedAmount: '40.8',
+        executionTimeMs: 150,
         kind: 'OPEN' as const,
-        status: OrderStatus.PartialFilled,
+        status: nativePartial.status,
         executedPrice: null,
         executedQuantity: 40,
         updatedAtMs: 200,
@@ -1297,9 +1432,12 @@ describe('orderMonitor orderOps', () => {
     [
       '累计成交数量',
       {
+        executionStatus: nativePartial.executionStatus,
+        executedAmount: '40.8',
+        executionTimeMs: 150,
         kind: 'OPEN' as const,
-        status: OrderStatus.PartialFilled,
-        executedPrice: 1.02,
+        status: nativePartial.status,
+        executedPrice: '1.02',
         executedQuantity: null,
         updatedAtMs: 200,
       },
@@ -1307,9 +1445,12 @@ describe('orderMonitor orderOps', () => {
     [
       '原始执行/修订时间',
       {
+        executionStatus: nativePartial.executionStatus,
+        executedAmount: '40.8',
+        executionTimeMs: null,
         kind: 'OPEN' as const,
-        status: OrderStatus.PartialFilled,
-        executedPrice: 1.02,
+        status: nativePartial.status,
+        executedPrice: '1.02',
         executedQuantity: 40,
         updatedAtMs: null,
       },
@@ -1328,7 +1469,7 @@ describe('orderMonitor orderOps', () => {
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
-        ctx: createTradeContextDouble(tradeCtx),
+        tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
         rateLimiter: createRateLimiter(),
         cacheManager: createCacheManager(),
         orderHoldRegistry: createOrderHoldRegistry(),
@@ -1349,15 +1490,16 @@ describe('orderMonitor orderOps', () => {
       orderOps.trackOrder({
         orderId: 'SELL-CANCEL-OPEN-RAW-FACT',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        price: 1.01,
-        initialSubmittedPrice: 1.01,
+        side: nativeWorkingSell.executionSide,
+        executionSide: 'SELL',
+        price: '1.01',
+        initialSubmittedPrice: '1.01',
         quantity: 100,
-        initialStatus: OrderStatus.PartialFilled,
+        initialStatus: nativePartial.status,
         isLongSymbol: true,
         monitorSymbol: 'HSI.HK',
         isProtectiveLiquidation: true,
-        orderType: OrderType.ELO,
+        orderType: nativeWorkingSell.orderType,
       });
       const trackedOrder = runtime.trackedOrders.get('SELL-CANCEL-OPEN-RAW-FACT');
       if (trackedOrder === undefined) {
@@ -1365,7 +1507,8 @@ describe('orderMonitor orderOps', () => {
       }
 
       trackedOrder.executedQuantity = 40;
-      trackedOrder.executedPrice = 1;
+      trackedOrder.executedAmount = '40.8';
+      trackedOrder.executedPrice = '1';
       trackedOrder.lastExecutedTimeMs = 100;
       trackedOrder.lastOrderUpdateAtMs = 100;
 
@@ -1379,13 +1522,15 @@ describe('orderMonitor orderOps', () => {
       expect(caughtError).toBeInstanceOf(Error);
       expect(caughtError).toHaveProperty(
         'message',
-        expect.stringMatching(/保护性 SELL|无效累计成交数量/),
+        expect.stringMatching(
+          /正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision|无效累计成交数量/,
+        ),
       );
 
       expect(trackedOrder).toMatchObject({
-        status: OrderStatus.PartialFilled,
+        status: nativePartial.status,
         executedQuantity: 40,
-        executedPrice: 1,
+        executedPrice: '1',
         lastExecutedTimeMs: 100,
         lastOrderUpdateAtMs: 100,
       });
@@ -1406,7 +1551,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -1421,9 +1566,12 @@ describe('orderMonitor orderOps', () => {
       },
       orderStatusQuery: {
         checkOrderState: async () => ({
+          executionStatus: nativePartial.executionStatus,
+          executedAmount: '40.8',
+          executionTimeMs: 150,
           kind: 'OPEN' as const,
-          status: OrderStatus.PartialFilled,
-          executedPrice: 1.02,
+          status: nativePartial.status,
+          executedPrice: '1.02',
           executedQuantity: 40,
           updatedAtMs: 200,
         }),
@@ -1433,14 +1581,15 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'SELL-CANCEL-OPEN-DURABLE-FIRST',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingSell.orderType,
     });
     const trackedOrder = runtime.trackedOrders.get('SELL-CANCEL-OPEN-DURABLE-FIRST');
     if (trackedOrder === undefined) {
@@ -1457,7 +1606,7 @@ describe('orderMonitor orderOps', () => {
     expect(caughtError).toBe(persistenceError);
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.New,
+      status: nativeWorkingSell.status,
       executedQuantity: 0,
       executedPrice: null,
       lastExecutedTimeMs: null,
@@ -1480,7 +1629,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -1495,9 +1644,12 @@ describe('orderMonitor orderOps', () => {
       },
       orderStatusQuery: {
         checkOrderState: async () => ({
+          executionStatus: nativePartial.executionStatus,
+          executedAmount: '61.8',
+          executionTimeMs: 250,
           kind: 'OPEN' as const,
-          status: OrderStatus.PartialFilled,
-          executedPrice: 1.03,
+          status: nativePartial.status,
+          executedPrice: '1.03',
           executedQuantity: 60,
           updatedAtMs: 300,
         }),
@@ -1507,26 +1659,27 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'SELL-REPLACE-OPEN-PARTIAL',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingSell.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingSell.orderType,
     });
 
-    await orderOps.replaceOrderPrice('SELL-REPLACE-OPEN-PARTIAL', 1.04, {
+    await orderOps.replaceOrderPrice('SELL-REPLACE-OPEN-PARTIAL', '1.04', {
       kind: 'ORDER_FACT',
     });
 
     expect(runtime.trackedOrders.get('SELL-REPLACE-OPEN-PARTIAL')).toMatchObject({
-      status: OrderStatus.PartialFilled,
-      executedPrice: 1.03,
+      status: nativePartial.status,
+      executedPrice: '1.03',
       executedQuantity: 60,
-      lastExecutedTimeMs: 300,
+      lastExecutedTimeMs: 250,
       lastOrderUpdateAtMs: 300,
     });
     expect(partialFills).toEqual([{ orderId: 'SELL-REPLACE-OPEN-PARTIAL', filledQuantity: 60 }]);
@@ -1553,7 +1706,7 @@ describe('orderMonitor orderOps', () => {
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
-      ctx: createTradeContextDouble(tradeCtx),
+      tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -1568,9 +1721,12 @@ describe('orderMonitor orderOps', () => {
       },
       orderStatusQuery: {
         checkOrderState: async () => ({
+          executionStatus: nativePartial.executionStatus,
+          executedAmount: '84',
+          executionTimeMs: 350,
           kind: 'OPEN' as const,
-          status: OrderStatus.PartialFilled,
-          executedPrice: 1.05,
+          status: nativePartial.status,
+          executedPrice: '1.05',
           executedQuantity: 80,
           updatedAtMs: 400,
         }),
@@ -1580,15 +1736,16 @@ describe('orderMonitor orderOps', () => {
     orderOps.trackOrder({
       orderId: 'SELL-REPLACE-602013-OPEN-PARTIAL',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1.01,
-      initialSubmittedPrice: 1.01,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
       quantity: 100,
-      initialStatus: OrderStatus.New,
+      initialStatus: nativeWorkingSell.status,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: true,
-      orderType: OrderType.ELO,
+      orderType: nativeWorkingSell.orderType,
     });
     const trackedOrder = runtime.trackedOrders.get('SELL-REPLACE-602013-OPEN-PARTIAL');
     if (trackedOrder === undefined) {
@@ -1597,16 +1754,16 @@ describe('orderMonitor orderOps', () => {
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       trackedOrder.replaceBlockedUntilAt = null;
-      await orderOps.replaceOrderPrice('SELL-REPLACE-602013-OPEN-PARTIAL', 1.04, {
+      await orderOps.replaceOrderPrice('SELL-REPLACE-602013-OPEN-PARTIAL', '1.04', {
         kind: 'ORDER_FACT',
       });
     }
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.PartialFilled,
-      executedPrice: 1.05,
+      status: nativePartial.status,
+      executedPrice: '1.05',
       executedQuantity: 80,
-      lastExecutedTimeMs: 400,
+      lastExecutedTimeMs: 350,
       lastOrderUpdateAtMs: 400,
       replaceCapability: 'TEMP_BLOCKED_BY_STATUS',
       replaceResumeMode: 'WAIT_WS_ONLY',
@@ -1636,7 +1793,7 @@ describe('orderMonitor orderOps', () => {
         createReplaceTempBlockedHarness();
       trackedOrder.replaceTempBlockedCount = previousRetryCount;
 
-      const outcome = await orderOps.replaceOrderPrice(trackedOrder.orderId, 1.01, {
+      const outcome = await orderOps.replaceOrderPrice(trackedOrder.orderId, '1.01', {
         kind: 'ORDER_FACT',
       });
 
@@ -1663,7 +1820,7 @@ describe('orderMonitor orderOps', () => {
       createReplaceTempBlockedHarness();
     trackedOrder.replaceTempBlockedCount = 4;
 
-    const outcome = await orderOps.replaceOrderPrice(trackedOrder.orderId, 1.01, {
+    const outcome = await orderOps.replaceOrderPrice(trackedOrder.orderId, '1.01', {
       kind: 'ORDER_FACT',
     });
 
@@ -1697,7 +1854,7 @@ describe('orderMonitor orderOps', () => {
 
     try {
       await expectStateCheckRawFactFailure(
-        () => orderOps.replaceOrderPrice(trackedOrder.orderId, 1.01, { kind: 'ORDER_FACT' }),
+        () => orderOps.replaceOrderPrice(trackedOrder.orderId, '1.01', { kind: 'ORDER_FACT' }),
         /602013.*退避配置缺失/,
       );
 
@@ -1728,7 +1885,7 @@ describe('orderMonitor orderOps', () => {
       const trackedOrderBefore = { ...trackedOrder };
 
       await expectStateCheckRawFactFailure(
-        () => orderOps.replaceOrderPrice(trackedOrder.orderId, 1.01, { kind: 'ORDER_FACT' }),
+        () => orderOps.replaceOrderPrice(trackedOrder.orderId, '1.01', { kind: 'ORDER_FACT' }),
         /602013.*重试计数/,
       );
 
@@ -1739,9 +1896,10 @@ describe('orderMonitor orderOps', () => {
     },
   );
 
-  it.each([OrderStatus.PendingCancel, OrderStatus.WaitToCancel] as const)(
+  it.each([nativePendingCancel, nativeWaitToCancel] as const)(
     '已有部分成交的保护性 SELL 收到 %s OPEN state-check 零值事实时拒绝推进',
-    async (status) => {
+    async (pendingObservation) => {
+      const status = pendingObservation.status;
       const runtime = createRuntimeStore();
       const tradeCtx = createTradeContextMock();
       tradeCtx.cancelOrder = async () => {
@@ -1752,7 +1910,7 @@ describe('orderMonitor orderOps', () => {
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
-        ctx: createTradeContextDouble(tradeCtx),
+        tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
         rateLimiter: createRateLimiter(),
         cacheManager: createCacheManager(),
         orderHoldRegistry: createOrderHoldRegistry(),
@@ -1762,9 +1920,12 @@ describe('orderMonitor orderOps', () => {
         },
         orderStatusQuery: {
           checkOrderState: async () => ({
+            executionStatus: pendingObservation.executionStatus,
+            executedAmount: '0',
+            executionTimeMs: null,
             kind: 'OPEN' as const,
             status,
-            executedPrice: 0,
+            executedPrice: '0',
             executedQuantity: 0,
             updatedAtMs: 300,
           }),
@@ -1772,25 +1933,27 @@ describe('orderMonitor orderOps', () => {
         triggerRoute: () => {},
       });
       orderOps.trackOrder({
-        orderId: `SELL-OPEN-${String(status)}-RAW-ZERO`,
+        orderId: `SELL-OPEN-${status}-RAW-ZERO`,
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        price: 1.01,
-        initialSubmittedPrice: 1.01,
+        side: nativeWorkingSell.executionSide,
+        executionSide: 'SELL',
+        price: '1.01',
+        initialSubmittedPrice: '1.01',
         quantity: 100,
-        initialStatus: OrderStatus.PartialFilled,
+        initialStatus: nativePartial.status,
         isLongSymbol: true,
         monitorSymbol: 'HSI.HK',
         isProtectiveLiquidation: true,
-        orderType: OrderType.ELO,
+        orderType: nativeWorkingSell.orderType,
       });
-      const trackedOrder = runtime.trackedOrders.get(`SELL-OPEN-${String(status)}-RAW-ZERO`);
+      const trackedOrder = runtime.trackedOrders.get(`SELL-OPEN-${status}-RAW-ZERO`);
       if (trackedOrder === undefined) {
         throw new Error('missing tracked order for protective OPEN raw-zero test');
       }
 
       trackedOrder.executedQuantity = 40;
-      trackedOrder.executedPrice = 1.02;
+      trackedOrder.executedAmount = '40.8';
+      trackedOrder.executedPrice = '1.02';
       trackedOrder.lastExecutedTimeMs = 200;
       trackedOrder.lastOrderUpdateAtMs = 200;
 
@@ -1804,9 +1967,9 @@ describe('orderMonitor orderOps', () => {
       expect(caughtError).toBeInstanceOf(Error);
       expect(caughtError).toHaveProperty('message', expect.stringMatching(/保护性 SELL/));
       expect(trackedOrder).toMatchObject({
-        status: OrderStatus.PartialFilled,
+        status: nativePartial.status,
         executedQuantity: 40,
-        executedPrice: 1.02,
+        executedPrice: '1.02',
         lastExecutedTimeMs: 200,
         lastOrderUpdateAtMs: 200,
       });
@@ -1832,7 +1995,7 @@ describe('orderMonitor orderOps', () => {
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
-        ctx: createTradeContextDouble(tradeCtx),
+        tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
         rateLimiter: createRateLimiter(),
         cacheManager: createCacheManager(),
         orderHoldRegistry: createOrderHoldRegistry(),
@@ -1840,12 +2003,15 @@ describe('orderMonitor orderOps', () => {
         recordCumulativeExecution: () => {},
         orderStatusQuery: {
           checkOrderState: async () => ({
+            executionStatus: nativeCanceled80Original.executionStatus,
+            executedAmount: '80.8',
+            executionTimeMs: 100,
             kind: 'TERMINAL' as const,
             closedReason: 'CANCELED' as const,
-            status: OrderStatus.Canceled,
+            status: nativeCanceledZero.status,
             submittedQuantity: 100,
             executedQuantity: 80,
-            executedPrice: 1.01,
+            executedPrice: '1.01',
             orderUpdatedAtMs: 100,
           }),
         },
@@ -1855,15 +2021,16 @@ describe('orderMonitor orderOps', () => {
       orderOps.trackOrder({
         orderId,
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        price: 1.01,
-        initialSubmittedPrice: 1.01,
+        side: nativeWorkingSell.executionSide,
+        executionSide: 'SELL',
+        price: '1.01',
+        initialSubmittedPrice: '1.01',
         quantity: 100,
-        initialStatus: OrderStatus.PartialFilled,
+        initialStatus: nativePartial.status,
         isLongSymbol: true,
         monitorSymbol: 'HSI.HK',
         isProtectiveLiquidation: true,
-        orderType: OrderType.ELO,
+        orderType: nativeWorkingSell.orderType,
       });
       const trackedOrder = runtime.trackedOrders.get(orderId);
       if (trackedOrder === undefined) {
@@ -1871,7 +2038,8 @@ describe('orderMonitor orderOps', () => {
       }
 
       trackedOrder.executedQuantity = 40;
-      trackedOrder.executedPrice = 1.02;
+      trackedOrder.executedAmount = '40.8';
+      trackedOrder.executedPrice = '1.02';
       trackedOrder.lastExecutedTimeMs = 190;
       trackedOrder.lastOrderUpdateAtMs = 200;
 
@@ -1880,7 +2048,7 @@ describe('orderMonitor orderOps', () => {
         const operationResult =
           operation === 'cancel'
             ? orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' })
-            : orderOps.replaceOrderPrice(orderId, 1.03, { kind: 'ORDER_FACT' });
+            : orderOps.replaceOrderPrice(orderId, '1.03', { kind: 'ORDER_FACT' });
         await operationResult;
       } catch (error) {
         caughtError = error;
@@ -1891,9 +2059,9 @@ describe('orderMonitor orderOps', () => {
       expect(runtime.queriedTerminalStateByOrderId.has(orderId)).toBe(false);
       expect(runtime.latestReplaceTerminalByOrderId.has(orderId)).toBe(false);
       expect(trackedOrder).toMatchObject({
-        status: OrderStatus.PartialFilled,
+        status: nativePartial.status,
         executedQuantity: 40,
-        executedPrice: 1.02,
+        executedPrice: '1.02',
         lastExecutedTimeMs: 190,
         lastOrderUpdateAtMs: 200,
       });
@@ -1912,7 +2080,8 @@ function asStateCheckResultFromExternalPayload(payload: unknown): OrderStateChec
 /** 构造常规订单的 state-check 失败路径，并记录所有可观察副作用。 */
 function createStateCheckRawFactHarness(params: {
   readonly operation: StateCheckOperation;
-  readonly side: OrderSide;
+  readonly side: 'BUY' | 'SELL';
+  readonly executionSide: 'BUY' | 'SELL';
   readonly stateCheckResult: OrderStateCheckResult;
   readonly isProtectiveLiquidation?: boolean;
   readonly brokerErrorMessage?: string;
@@ -1940,7 +2109,7 @@ function createStateCheckRawFactHarness(params: {
     termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     monitorConfig: TEST_MONITOR_CONFIG,
-    ctx: createTradeContextDouble(tradeCtx),
+    tradeMutationPort: createTradeMutationAdapter(createTradeContextDouble(tradeCtx)),
     rateLimiter: createRateLimiter(),
     cacheManager: {
       getPendingOrders: async () => [],
@@ -1965,19 +2134,20 @@ function createStateCheckRawFactHarness(params: {
       routeWakeups.push({ symbol, kind });
     },
   });
-  const orderId = `RAW-STATE-CHECK-${params.operation}-${String(params.side)}`;
+  const orderId = `RAW-STATE-CHECK-${params.operation}-${params.side}`;
   orderOps.trackOrder({
     orderId,
     symbol: 'BULL.HK',
     side: params.side,
-    price: 1,
-    initialSubmittedPrice: 1,
+    executionSide: params.executionSide,
+    price: '1',
+    initialSubmittedPrice: '1',
     quantity: 100,
-    initialStatus: OrderStatus.New,
+    initialStatus: nativeWorkingBuy.status,
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: params.isProtectiveLiquidation ?? false,
-    orderType: OrderType.ELO,
+    orderType: nativeWorkingSell.orderType,
   });
   const trackedOrder = runtime.trackedOrders.get(orderId);
   if (trackedOrder === undefined) {
@@ -2005,7 +2175,7 @@ function runStateCheckOperation(
     return harness.orderOps.cancelOrder(harness.orderId, { kind: 'ORDER_FACT' });
   }
 
-  return harness.orderOps.replaceOrderPrice(harness.orderId, 1.01, { kind: 'ORDER_FACT' });
+  return harness.orderOps.replaceOrderPrice(harness.orderId, '1.01', { kind: 'ORDER_FACT' });
 }
 
 /** 断言外部事实被拒绝时未留下任何可驱动结算的本地证据或经济副作用。 */
@@ -2048,17 +2218,24 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
     ['negative', -1],
   ];
 
-  for (const side of [OrderSide.Buy, OrderSide.Sell] as const) {
+  for (const [side, executionSide] of [
+    [nativeWorkingBuy.executionSide, 'BUY'],
+    [nativeWorkingSell.executionSide, 'SELL'],
+  ] as const) {
     for (const operation of ['cancel', 'replace'] as const) {
       for (const [description, executedQuantity] of invalidExecutedQuantities) {
-        it(`普通 ${side === OrderSide.Buy ? 'BUY' : 'SELL'} ${operation} TERMINAL 原始累计量为 ${description} 时在写入前失败`, async () => {
+        it(`普通 ${side === nativeWorkingBuy.executionSide ? 'BUY' : 'SELL'} ${operation} TERMINAL 原始累计量为 ${description} 时在写入前失败`, async () => {
           const harness = createStateCheckRawFactHarness({
             operation,
             side,
+            executionSide,
             stateCheckResult: asStateCheckResultFromExternalPayload({
+              executionStatus: nativeCanceledZero.executionStatus,
+              executedAmount: '0',
+              executionTimeMs: null,
               kind: 'TERMINAL',
               closedReason: 'CANCELED',
-              status: OrderStatus.Canceled,
+              status: nativeCanceledZero.status,
               submittedQuantity: 100,
               executedQuantity,
               executedPrice: null,
@@ -2078,15 +2255,22 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
     }
   }
 
-  for (const side of [OrderSide.Buy, OrderSide.Sell] as const) {
-    it(`普通 ${side === OrderSide.Buy ? 'BUY' : 'SELL'} OPEN 原始累计量为 null 时不更新订单事实`, async () => {
+  for (const [side, executionSide] of [
+    [nativeWorkingBuy.executionSide, 'BUY'],
+    [nativeWorkingSell.executionSide, 'SELL'],
+  ] as const) {
+    it(`普通 ${side === nativeWorkingBuy.executionSide ? 'BUY' : 'SELL'} OPEN 原始累计量为 null 时不更新订单事实`, async () => {
       const harness = createStateCheckRawFactHarness({
         operation: 'cancel',
         side,
+        executionSide,
         stateCheckResult: {
+          executionStatus: nativePartial.executionStatus,
+          executedAmount: '40.8',
+          executionTimeMs: 150,
           kind: 'OPEN',
-          status: OrderStatus.PartialFilled,
-          executedPrice: 1.02,
+          status: nativePartial.status,
+          executedPrice: '1.02',
           executedQuantity: null,
           updatedAtMs: 200,
         },
@@ -2107,16 +2291,22 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
       const stateCheckResult: OrderStateCheckResult =
         kind === 'OPEN'
           ? {
+              executionStatus: nativePartial.executionStatus,
+              executedAmount: '40.8',
+              executionTimeMs: 150,
               kind: 'OPEN',
-              status: OrderStatus.PartialFilled,
-              executedPrice: 1.02,
+              status: nativePartial.status,
+              executedPrice: '1.02',
               executedQuantity: null,
               updatedAtMs: 200,
             }
           : {
+              executionStatus: nativeCanceledZero.executionStatus,
+              executedAmount: '0',
+              executionTimeMs: null,
               kind: 'TERMINAL',
               closedReason: 'CANCELED',
-              status: OrderStatus.Canceled,
+              status: nativeCanceledZero.status,
               submittedQuantity: 100,
               executedPrice: null,
               executedQuantity: null,
@@ -2124,7 +2314,8 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
             };
       const harness = createStateCheckRawFactHarness({
         operation: 'replace',
-        side: OrderSide.Buy,
+        side: nativeWorkingBuy.executionSide,
+        executionSide: 'BUY',
         stateCheckResult,
         brokerErrorMessage: 'openapi error: code=602013: order status does not allow amendment',
       });
@@ -2154,14 +2345,19 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
     });
   }
 
-  for (const terminalStatus of [OrderStatus.Canceled, OrderStatus.Rejected] as const) {
-    it(`显式零累计量 ${String(terminalStatus)} 终态即使没有 revision 仍可关闭`, async () => {
+  for (const terminalObservation of [nativeCanceledZero, nativeRejectedZero] as const) {
+    const terminalStatus = terminalObservation.status;
+    it(`显式零累计量 ${terminalStatus} 终态即使没有 revision 仍可关闭`, async () => {
       const harness = createStateCheckRawFactHarness({
         operation: 'cancel',
-        side: OrderSide.Buy,
+        side: nativeWorkingBuy.executionSide,
+        executionSide: 'BUY',
         stateCheckResult: {
+          executionStatus: terminalObservation.executionStatus,
+          executedAmount: '0',
+          executionTimeMs: null,
           kind: 'TERMINAL',
-          closedReason: terminalStatus === OrderStatus.Canceled ? 'CANCELED' : 'REJECTED',
+          closedReason: terminalStatus === nativeCanceledZero.status ? 'CANCELED' : 'REJECTED',
           status: terminalStatus,
           submittedQuantity: 100,
           executedPrice: null,
@@ -2190,21 +2386,27 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
   it('已确认 40 的等量终态可缺少本次 revision 并保留既有事实关闭', async () => {
     const harness = createStateCheckRawFactHarness({
       operation: 'cancel',
-      side: OrderSide.Sell,
+      side: nativeWorkingSell.executionSide,
+      executionSide: 'SELL',
       isProtectiveLiquidation: true,
       stateCheckResult: {
+        executionStatus: nativeCanceled40.executionStatus,
+        executedAmount: '40.8',
+        executionTimeMs: null,
         kind: 'TERMINAL',
         closedReason: 'CANCELED',
-        status: OrderStatus.Canceled,
+        status: nativeCanceledZero.status,
         submittedQuantity: 100,
         executedPrice: null,
         executedQuantity: 40,
         orderUpdatedAtMs: null,
       },
     });
-    harness.trackedOrder.status = OrderStatus.PartialFilled;
+    harness.trackedOrder.status = nativePartial.status;
+    harness.trackedOrder.executionPhase = nativePartial.executionPhase;
     harness.trackedOrder.executedQuantity = 40;
-    harness.trackedOrder.executedPrice = 1.02;
+    harness.trackedOrder.executedAmount = '40.8';
+    harness.trackedOrder.executedPrice = '1.02';
     harness.trackedOrder.lastExecutedTimeMs = 100;
     harness.trackedOrder.lastOrderUpdateAtMs = 100;
 
@@ -2216,9 +2418,9 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
     expect(normalizeTerminalStateSnapshot(harness.trackedOrder, terminalState, true)).toMatchObject(
       {
-        status: OrderStatus.Canceled,
+        status: nativeCanceledZero.status,
         executedQuantity: 40,
-        executedPrice: 1.02,
+        executedPrice: '1.02',
         executedTimeMs: 100,
         orderUpdatedAtMs: 100,
       },
@@ -2228,20 +2430,26 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
   it('累计量推进且 revision 相同的终态可使用本次 broker observation', async () => {
     const harness = createStateCheckRawFactHarness({
       operation: 'cancel',
-      side: OrderSide.Buy,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
       stateCheckResult: {
+        executionStatus: nativeCanceled80.executionStatus,
+        executedAmount: '82.4',
+        executionTimeMs: 100,
         kind: 'TERMINAL',
         closedReason: 'CANCELED',
-        status: OrderStatus.Canceled,
+        status: nativeCanceledZero.status,
         submittedQuantity: 100,
-        executedPrice: 1.03,
+        executedPrice: '1.03',
         executedQuantity: 80,
         orderUpdatedAtMs: 100,
       },
     });
-    harness.trackedOrder.status = OrderStatus.PartialFilled;
+    harness.trackedOrder.status = nativePartial.status;
+    harness.trackedOrder.executionPhase = nativePartial.executionPhase;
     harness.trackedOrder.executedQuantity = 40;
-    harness.trackedOrder.executedPrice = 1.02;
+    harness.trackedOrder.executedAmount = '40.8';
+    harness.trackedOrder.executedPrice = '1.02';
     harness.trackedOrder.lastExecutedTimeMs = 100;
     harness.trackedOrder.lastOrderUpdateAtMs = 100;
 
@@ -2253,7 +2461,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
     expect(normalizeTerminalStateSnapshot(harness.trackedOrder, terminalState)).toMatchObject({
       executedQuantity: 80,
-      executedPrice: 1.03,
+      executedPrice: '1.03',
       executedTimeMs: 100,
       orderUpdatedAtMs: 100,
     });
@@ -2262,20 +2470,26 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
   it('累计量推进但 revision 倒退时在缓存前失败', async () => {
     const harness = createStateCheckRawFactHarness({
       operation: 'cancel',
-      side: OrderSide.Buy,
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
       stateCheckResult: {
+        executionStatus: nativeCanceled80.executionStatus,
+        executedAmount: '82.4',
+        executionTimeMs: 90,
         kind: 'TERMINAL',
         closedReason: 'CANCELED',
-        status: OrderStatus.Canceled,
+        status: nativeCanceledZero.status,
         submittedQuantity: 100,
-        executedPrice: 1.03,
+        executedPrice: '1.03',
         executedQuantity: 80,
         orderUpdatedAtMs: 99,
       },
     });
-    harness.trackedOrder.status = OrderStatus.PartialFilled;
+    harness.trackedOrder.status = nativePartial.status;
+    harness.trackedOrder.executionPhase = nativePartial.executionPhase;
     harness.trackedOrder.executedQuantity = 40;
-    harness.trackedOrder.executedPrice = 1.02;
+    harness.trackedOrder.executedAmount = '40.8';
+    harness.trackedOrder.executedPrice = '1.02';
     harness.trackedOrder.lastExecutedTimeMs = 100;
     harness.trackedOrder.lastOrderUpdateAtMs = 100;
     const trackedOrderBefore = { ...harness.trackedOrder };

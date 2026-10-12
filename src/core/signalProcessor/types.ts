@@ -18,7 +18,7 @@ export type SellContextValidationResult =
   | {
       readonly valid: true;
       readonly availableQuantity: number;
-      readonly currentPrice: number;
+      readonly currentPrice: string;
     }
   | {
       readonly valid: false;

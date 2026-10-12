@@ -9,7 +9,6 @@ import type {
   TradeSessions,
 } from 'longbridge';
 import type { CandlestickCacheSnapshot, CandlestickUpdatedEvent } from '../../types/services.js';
-import type { DecimalLike } from '../../utils/helpers/types.js';
 
 /**
  * 轮证报价最小结构。
@@ -19,7 +18,9 @@ import type { DecimalLike } from '../../utils/helpers/types.js';
  */
 type QuoteContextWarrantQuote = Readonly<{
   readonly symbol: string;
-  readonly callPrice?: DecimalLike | string | number | null;
+
+  /** 未信任SDK字段仅由infra financial mapper验证原文，不允许toNumber bridge。 */
+  readonly callPrice?: unknown;
   readonly category?: number | string | null;
 }>;
 

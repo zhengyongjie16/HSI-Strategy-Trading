@@ -7,13 +7,12 @@
  */
 import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
-import type { DecimalInput } from '../../utils/numeric/types.js';
+import { compareRatios, exactCompare, exactMultiply } from '../../utils/numeric/exact.js';
 import {
   resolveNextQuoteRetry,
   resolveQuoteReadinessForRequirement,
 } from '../../utils/quoteRetry/index.js';
 import type { QuoteReadinessStatus } from '../../utils/quoteRetry/types.js';
-import { decimalGte, decimalLte } from '../../utils/numeric/index.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { PendingOrder } from '../../types/services.js';
@@ -202,31 +201,28 @@ function resolvePeriodicSeatBlockSource(params: {
   return 'EMPTY';
 }
 
+/** 以未舍入距离基数交叉乘比较百分比阈值；LONG/SHORT原包含边界不变。 */
 function resolveDistanceTriggerSide(params: {
   readonly direction: 'LONG' | 'SHORT';
-  readonly distancePercent: DecimalInput;
-  readonly range: { readonly min: DecimalInput; readonly max: DecimalInput };
+  readonly distanceNumerator: string;
+  readonly distanceDenominator: string;
+  readonly range: { readonly min: string; readonly max: string };
 }): 'SAFE' | 'DANGER' | null {
-  const { direction, distancePercent, range } = params;
+  const { direction, distanceNumerator, distanceDenominator, range } = params;
+  const numerator = exactMultiply(distanceNumerator, '100');
+  const comparedToMin = compareRatios(numerator, distanceDenominator, range.min, '1');
+  const comparedToMax = compareRatios(numerator, distanceDenominator, range.max, '1');
   if (direction === 'LONG') {
-    if (decimalLte(distancePercent, range.min)) {
-      return 'DANGER';
-    }
+    if (comparedToMin <= 0) return 'DANGER';
 
-    if (decimalGte(distancePercent, range.max)) {
-      return 'SAFE';
-    }
+    if (comparedToMax >= 0) return 'SAFE';
 
     return null;
   }
 
-  if (decimalGte(distancePercent, range.max)) {
-    return 'DANGER';
-  }
+  if (comparedToMax >= 0) return 'DANGER';
 
-  if (decimalLte(distancePercent, range.min)) {
-    return 'SAFE';
-  }
+  if (comparedToMin <= 0) return 'SAFE';
 
   return null;
 }
@@ -237,6 +233,8 @@ function resolveDistanceTriggerSide(params: {
  * @returns SwitchStateMachine 实例（evaluatePeriodicSwitchDue、startSwitchOnDistance、advancePendingSwitch、hasPendingSwitch）
  */
 export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchStateMachine {
+  // 仅关联原issued stage的broker ID；远端事实仍由O持有，不给后继route重新授权。
+  const rebuyOrderIds = new WeakMap<SwitchState, ReadonlyArray<string>>();
   const {
     autoSearchConfig,
     monitorSymbol,
@@ -283,14 +281,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return null;
     }
 
-    const executionResult = await trader.executeSignals([signal]);
+    // 原调用方票与原route身份直通executor；其内部quote/permit/position await后仍使用同一授权。
+    const executionResult = await trader.executeSignals([signal], canContinue);
 
-    if (!canContinue()) {
-      return null;
-    }
-
+    // 真实ack是O/执行owner事实，旧业务授权失效不能把已返回ID变成未提交。
     if (executionResult.executedOrderIds.length === 0) {
-      logger.warn(submitFailedMessage);
+      if (canContinue()) logger.warn(submitFailedMessage);
+
       return null;
     }
 
@@ -397,6 +394,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     const nowMs = nowDate.getTime();
     const currentSeat = symbolRegistry.getSeatState(direction);
 
+    // 原票有效时先关闭原周期等待；EMPTY/version bump后不能用旧ACTIVE票自否认已提交收口。
+    if (!clearPeriodicPending(direction, canContinue)) return false;
+
     if (
       !clearSeatWithSearchFailure({
         direction,
@@ -406,10 +406,6 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         bumpVersion: true,
       })
     ) {
-      return false;
-    }
-
-    if (!clearPeriodicPending(direction, canContinue)) {
       return false;
     }
 
@@ -495,7 +491,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
   async function findSwitchCandidate(
     direction: 'LONG' | 'SHORT',
     canContinue: () => boolean,
-  ): Promise<{ symbol: string; callPrice: number } | null> {
+  ): Promise<{ readonly symbol: string; readonly callPrice: string } | null> {
     if (!canContinue()) {
       return null;
     }
@@ -562,6 +558,17 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     const seatVersionAtStart = symbolRegistry.getSeatVersion(direction);
     const seatSymbol = seatState.symbol;
+    // 原closure携带调用方captured epoch/receipt/gate/position组件；仅叠加原ACTIVE身份，不换票。
+    const canAdmit = (): boolean => {
+      const currentSeat = symbolRegistry.getSeatState(direction);
+      return (
+        canContinue() &&
+        symbolRegistry.getSeatVersion(direction) === seatVersionAtStart &&
+        isSeatActive(currentSeat) &&
+        currentSeat.symbol === seatSymbol
+      );
+    };
+
     if (
       suppressionTriggerKind !== null &&
       resolveSuppression(direction, seatSymbol, suppressionTriggerKind)
@@ -569,8 +576,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
-    const next = await findSwitchCandidate(direction, canContinue);
-    if (!canContinue()) {
+    const next = await findSwitchCandidate(direction, canAdmit);
+    if (!canAdmit()) {
       return createNoopDriveResult();
     }
 
@@ -587,7 +594,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     }
 
     const brokerPendingOrders = await trader.getPendingOrders([latestSeatState.symbol]);
-    if (!canContinue()) {
+    if (!canAdmit()) {
       return createNoopDriveResult();
     }
 
@@ -643,27 +650,25 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
-    if (!clearPeriodicPending(direction, canContinue)) {
-      return createNoopDriveResult();
-    }
-
-    if (!canContinue()) {
-      return createNoopDriveResult();
-    }
+    // 在原票仍有效时准备初始计划；进入SWITCHING后不再用旧ACTIVE授权自否认已提交的route。
+    const position =
+      distanceContext === null
+        ? null
+        : extractPosition(distanceContext.positions, admittedSeatState.symbol);
+    const shouldRebuy = (position?.quantity ?? 0) > 0;
+    if (!clearPeriodicPending(direction, canAdmit) || !canAdmit()) return createNoopDriveResult();
 
     const seatVersion = enterSwitchingSeat({ direction, reason });
-
-    let shouldRebuy = false;
-    if (distanceContext !== null) {
-      const position = extractPosition(distanceContext.positions, latestSeatState.symbol);
-      shouldRebuy = (position?.quantity ?? 0) > 0;
-    }
-
-    if (!canContinue()) {
+    const committedSeat = symbolRegistry.getSeatState(direction);
+    if (
+      symbolRegistry.getSeatVersion(direction) !== seatVersion ||
+      committedSeat.status !== 'SWITCHING' ||
+      committedSeat.symbol !== seatSymbol
+    )
       return createNoopDriveResult();
-    }
 
-    switchStates.set(direction, {
+    // 该同步段只发布真实新route及其WAIT owner；后续mutation须由下一次原route授权推进。
+    const publishedState: SwitchState = {
       direction,
       switchMode,
       seatVersion,
@@ -679,9 +684,30 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       quoteRetryNextAt: null,
       quoteRetryExhausted: false,
       cancelRequestSubmitted: false,
-    });
+    };
+    switchStates.set(direction, publishedState);
 
-    return createWaitDriveResult([{ kind: 'RETRY_TIMER', atMs: now().getTime() }]);
+    // 只证明本次已发布的WAIT事实，不是交易授权；原receipt/position/canContinue不能被此票替换。
+    // state identity同时排除同方向后继pending；version+symbol+status排除已替换席位。
+    const publishedRoute = {
+      direction,
+      symbol: seatSymbol,
+      seatVersion,
+      isCurrent: (): boolean => {
+        const currentSeat = symbolRegistry.getSeatState(direction);
+        return (
+          switchStates.get(direction) === publishedState &&
+          symbolRegistry.getSeatVersion(direction) === seatVersion &&
+          currentSeat.status === 'SWITCHING' &&
+          currentSeat.symbol === seatSymbol
+        );
+      },
+    };
+    const initialWait = {
+      ...createWaitDriveResult([{ kind: 'RETRY_TIMER', atMs: now().getTime() }]),
+      publishedRoute,
+    };
+    return initialWait;
   }
 
   /**
@@ -700,6 +726,14 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     function stopIfSwitchInvalid(): SwitchDriveResult | null {
       if (!canContinue()) {
+        if (
+          state.stage === 'REBUY' &&
+          state.nextSymbol !== null &&
+          rebuyOrderIds.has(state) &&
+          isCurrentSwitchStateValid(state)
+        )
+          return createOrderAndFreshnessWait(state.nextSymbol);
+
         return createNoopDriveResult();
       }
 
@@ -806,7 +840,11 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
             return invalidResultBeforeCancel;
           }
 
-          const cancelOutcome = await trader.cancelOrder(cancelTarget.orderId);
+          // 同一业务票必须穿过 FIFO/重试等待到 broker 边界，不能借订单事实授权继续旧换标。
+          const cancelOutcome = await trader.cancelOrder(cancelTarget.orderId, {
+            kind: 'SIGNAL_AUTHORIZED',
+            authorize: () => canContinue() && isCurrentSwitchStateValid(state),
+          });
           const invalidResultAfterCancel = stopIfSwitchInvalid();
           if (invalidResultAfterCancel !== null) {
             return invalidResultAfterCancel;
@@ -981,37 +1019,30 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         const executionResult = await executeSwitchSignal(
           signal,
           `[自动换标] 移仓卖出未提交成功，等待重试: monitorSymbol=${monitorSymbol} direction=${direction} symbol=${state.oldSymbol}`,
-          canContinue,
+          () => canContinue() && isCurrentSwitchStateValid(state),
         );
+        if (executionResult !== null) {
+          const orderId = executionResult.executedOrderIds[0];
+          if (typeof orderId !== 'string' || orderId.length === 0)
+            throw new TypeError('Switch sell acknowledgement must contain a nonempty order ID');
+
+          // 仅关联本次实际issued的原state；即使脱离当前map，也不污染较新route或再卖一次。
+          state.sellSubmitted = true;
+          state.sellOrderId = orderId;
+          if (!isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+
+          return createOrderAndFreshnessWait(state.oldSymbol);
+        }
+
         const invalidResultAfterSellSubmit = stopIfSwitchInvalid();
-        if (invalidResultAfterSellSubmit !== null) {
-          return invalidResultAfterSellSubmit;
-        }
+        if (invalidResultAfterSellSubmit !== null) return invalidResultAfterSellSubmit;
 
-        if (executionResult === null) {
-          if (!canContinue()) {
-            return createNoopDriveResult();
-          }
+        if (!canContinue()) return createNoopDriveResult();
 
-          advanceQuoteRetryState(state, now().getTime());
-          if (state.quoteRetryExhausted) {
-            return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT_SUBMIT');
-          }
+        advanceQuoteRetryState(state, now().getTime());
+        if (state.quoteRetryExhausted) return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT_SUBMIT');
 
-          return createQuoteRetryWait(state.oldSymbol);
-        }
-
-        if (!canContinue()) {
-          return createNoopDriveResult();
-        }
-
-        state.sellSubmitted = true;
-        if (!canContinue()) {
-          return createNoopDriveResult();
-        }
-
-        state.sellOrderId = executionResult.executedOrderIds[0] ?? null;
-        return createOrderAndFreshnessWait(state.oldSymbol);
+        return createQuoteRetryWait(state.oldSymbol);
       }
 
       if (state.shouldRebuy && !state.sellSubmitted && !isValidPositiveNumber(totalQuantity)) {
@@ -1034,10 +1065,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
       if (state.sellOrderId !== null) {
         const sellRecord = orderRecorder.getSellRecordByOrderId(state.sellOrderId);
-        const actualNotional = sellRecord
-          ? sellRecord.executedPrice * sellRecord.executedQuantity
-          : Number.NaN;
-        if (isValidPositiveNumber(actualNotional)) {
+        // O提供权威累计经济金额；不得用显示均价乘数量重建，也不重复累加同一累计记录。
+        const actualNotional = sellRecord?.costAmount ?? null;
+        if (actualNotional !== null && exactCompare(actualNotional, '0') > 0) {
           if (!canContinue()) {
             return createNoopDriveResult();
           }
@@ -1157,6 +1187,14 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       state.stage = 'REBUY';
     }
 
+    // 已确认回补只按新的原route授权完成本地收尾，不再取价、重算预算或提交第二次BUY。
+    if (state.stage === 'REBUY' && rebuyOrderIds.has(state)) {
+      const invalidResultBeforeRebuyCompletion = stopIfSwitchInvalid();
+      if (invalidResultBeforeRebuyCompletion !== null) return invalidResultBeforeRebuyCompletion;
+
+      state.stage = 'COMPLETE';
+    }
+
     if (state.stage === 'REBUY') {
       const nextSymbol = state.nextSymbol;
       if (!nextSymbol) {
@@ -1213,13 +1251,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       resetQuoteRetryState(state);
 
       const buyNotional = state.sellNotional;
-      if (!isValidPositiveNumber(buyNotional)) {
+      if (buyNotional === null || exactCompare(buyNotional, '0') <= 0) {
         return failAndClear('MISSING_REBUY_NOTIONAL');
       }
 
       const buyQuantity = calculateBuyQuantityByNotional(buyNotional, quote.price, quote.lotSize);
+      if (buyQuantity !== null && (!Number.isSafeInteger(buyQuantity) || buyQuantity < 0))
+        throw new RangeError('Switch buy quantity must be a nonnegative safe integer');
 
-      if (buyQuantity !== null && isValidPositiveNumber(buyQuantity)) {
+      if (buyQuantity !== null && buyQuantity > 0) {
         const signal = buildOrderSignal({
           action: buyAction,
           symbol: nextSymbol,
@@ -1238,12 +1278,22 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         const executionResult = await executeSwitchSignal(
           signal,
           `[自动换标] 回补买入未提交成功，等待重试: monitorSymbol=${monitorSymbol} direction=${direction} symbol=${nextSymbol}`,
-          canContinue,
+          () => canContinue() && isCurrentSwitchStateValid(state),
         );
-        const invalidResultAfterRebuySubmit = stopIfSwitchInvalid();
-        if (invalidResultAfterRebuySubmit !== null) {
-          return invalidResultAfterRebuySubmit;
+        if (executionResult !== null) {
+          const orderIds = executionResult.executedOrderIds;
+          if (!orderIds.every((orderId) => typeof orderId === 'string' && orderId.length > 0))
+            throw new TypeError('Switch rebuy acknowledgement must contain nonempty order IDs');
+
+          rebuyOrderIds.set(state, [...orderIds]);
+          if (!isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+
+          // ack独立于旧票；暂停只交原订单/就绪事件，不发布ACTIVATING或否认已发BUY。
+          if (!canContinue()) return createOrderAndFreshnessWait(nextSymbol);
         }
+
+        const invalidResultAfterRebuySubmit = stopIfSwitchInvalid();
+        if (invalidResultAfterRebuySubmit !== null) return invalidResultAfterRebuySubmit;
 
         if (executionResult === null) {
           if (!canContinue()) {
@@ -1268,9 +1318,8 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         );
       }
 
-      if (!canContinue()) {
-        return createNoopDriveResult();
-      }
+      const invalidResultBeforeRebuyCompletion = stopIfSwitchInvalid();
+      if (invalidResultBeforeRebuyCompletion !== null) return invalidResultBeforeRebuyCompletion;
 
       state.stage = 'COMPLETE';
     }
@@ -1392,6 +1441,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         triggerKind: 'PERIODIC',
         canContinue,
       });
+      // 已创建WAIT交原wakeup owner，不因旧ACTIVE closure/receipt失效丢注册需求。
+      if (driveResult.kind === 'WAIT') return driveResult;
+
       return canContinue() ? driveResult : createNoopDriveResult();
     }
 
@@ -1452,6 +1504,9 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       triggerKind: 'PERIODIC',
       canContinue,
     });
+    // 已创建WAIT交原wakeup owner，不因旧ACTIVE closure/receipt失效丢注册需求。
+    if (driveResult.kind === 'WAIT') return driveResult;
+
     return canContinue() ? driveResult : createNoopDriveResult();
   }
 
@@ -1513,12 +1568,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       seatState.symbol,
       monitorPrice,
     );
-    const distancePercent = distanceInfo?.distanceToStrikePercent ?? null;
     const policy = resolveDirectionalAutoSearchPolicy({
       direction,
       logPrefix: '[自动换标] 缺少阈值配置，无法检查换标区间',
     });
-    if (distancePercent === null || policy === null) {
+    if (
+      distanceInfo === null ||
+      policy === null ||
+      (distanceInfo.distanceNumerator === null && distanceInfo.distanceDenominator === null)
+    ) {
       return {
         started: false,
         direction,
@@ -1526,10 +1584,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       };
     }
 
+    const { distanceNumerator, distanceDenominator } = distanceInfo;
+    if (distanceNumerator === null || distanceDenominator === null)
+      throw new TypeError('Warrant distance basis must be jointly known or unknown');
+
     const range = policy.switchDistanceRange;
     const distanceTriggerSide = resolveDistanceTriggerSide({
       direction,
-      distancePercent,
+      distanceNumerator,
+      distanceDenominator,
       range,
     });
     if (distanceTriggerSide === null) {
@@ -1547,14 +1610,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       canContinue,
     });
 
-    if (!canContinue()) {
-      return {
-        started: false,
-        direction,
-        driveResult: createNoopDriveResult(),
-      };
-    }
-
+    // WAIT证明实际状态提交已完成；旧ACTIVE closure只取消未提交工作，不撤销已生成route。
     if (driveResult.kind === 'NOOP') {
       return {
         started: false,
@@ -1599,13 +1655,11 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     try {
       pendingOrdersForOldSymbol = await trader.getPendingOrders([pendingSwitch.oldSymbol]);
     } catch (error) {
-      if (!canContinue()) {
-        return createNoopAdvanceResult(direction);
-      }
+      // 内部事实/配置/状态损坏与授权取消独立；只有明确外部读取失败才走原重试owner。
+      if (!isExternalApiRequestError(error)) throw error;
 
-      if (!isExternalApiRequestError(error)) {
-        throw error;
-      }
+      if (!canContinue() || !isCurrentSwitchStateValid(pendingSwitch))
+        return createNoopAdvanceResult(direction);
 
       return {
         advanced: true,
@@ -1617,7 +1671,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       };
     }
 
-    if (!canContinue()) {
+    if (!canContinue() || !isCurrentSwitchStateValid(pendingSwitch)) {
       return createNoopAdvanceResult(direction);
     }
 
@@ -1635,7 +1689,30 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       };
     }
 
-    if (!canContinue()) {
+    // SELL真实ack只交接原route的订单/就绪唤醒；后续mutation仍需下一次原epoch/receipt授权。
+    if (
+      driveResult.kind === 'WAIT' &&
+      pendingSwitch.stage === 'SELL_OUT' &&
+      pendingSwitch.sellSubmitted &&
+      pendingSwitch.sellOrderId !== null
+    ) {
+      if (!isCurrentSwitchStateValid(pendingSwitch)) return createNoopAdvanceResult(direction);
+
+      return { advanced: true, direction, stillPending: true, driveResult };
+    }
+
+    if (
+      driveResult.kind === 'WAIT' &&
+      pendingSwitch.stage === 'REBUY' &&
+      rebuyOrderIds.has(pendingSwitch)
+    ) {
+      if (!isCurrentSwitchStateValid(pendingSwitch)) return createNoopAdvanceResult(direction);
+
+      return { advanced: true, direction, stillPending: true, driveResult };
+    }
+
+    // 原issued流程被新map route替代时，不能借新pending事实判定旧结果或索要旧WAIT。
+    if (!canContinue() || !isCurrentSwitchStateValid(pendingSwitch)) {
       return createNoopAdvanceResult(direction);
     }
 

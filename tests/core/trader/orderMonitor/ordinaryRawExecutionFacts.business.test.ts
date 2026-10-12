@@ -5,42 +5,35 @@
  * 不允许把历史 tracked 时间当作新成交事实的替代来源。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
-import { createPushOrderChanged } from '../../../../mock/factories/tradeFactory.js';
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { BrokerIngressInput } from '../../../infrastructure/longbridge/trade/brokerIngressFixture.js';
+import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
+import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
+import {
+  createDailyLossTrackerDouble,
+  createMonitorContextDouble,
+  createLiquidationCooldownTrackerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createTerminationDouble,
+  createTraderDouble,
+} from '../../../helpers/testDoubles.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import { createEventFlow as createProductionEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
 import { mergeMonotonicOrderFact } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
-import { createOrderOps as createProductionOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
 import type {
   FinalizeOrderSettlementParams,
   EventFlowDeps,
-  OrderOpsDeps,
   OrderCumulativeExecutionParams,
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
 } from '../../../../src/core/trader/orderMonitor/types.js';
 import type { OrderCacheManager, OrderHoldRegistry } from '../../../../src/core/trader/types.js';
 import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
-import {
-  createOrderRecorderDouble,
-  createTradeContextDouble,
-} from '../../../helpers/testDoubles.js';
-import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 
 type TestEventFlowDeps = Omit<EventFlowDeps, 'now'> & Partial<Pick<EventFlowDeps, 'now'>>;
-type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now' | 'termination'> &
-  Partial<Pick<OrderOpsDeps, 'now' | 'termination'>>;
-
 function createEventFlow(deps: TestEventFlowDeps) {
   return createProductionEventFlow({
-    now: () => new Date('2031-01-02T03:04:05.000Z'),
-    ...deps,
-  });
-}
-
-function createOrderOps(deps: TestOrderOpsDeps) {
-  return createProductionOrderOps({
-    termination: { isTerminated: () => false, reportFatalError: () => {} },
     now: () => new Date('2031-01-02T03:04:05.000Z'),
     ...deps,
   });
@@ -70,10 +63,10 @@ function createRuntimeStore(): OrderMonitorRuntimeStore {
 /** 创建普通订单的受控 tracked fact。 */
 function createTrackedOrder(params: {
   readonly orderId: string;
-  readonly side: OrderSide;
-  readonly status?: OrderStatus;
+  readonly side: 'BUY' | 'SELL';
+  readonly status?: OrderMonitorTrackedOrder['status'];
   readonly executedQuantity?: number;
-  readonly executedPrice?: number | null;
+  readonly executedPrice?: string | null;
   readonly lastExecutedTimeMs?: number | null;
   readonly lastOrderUpdateAtMs?: number | null;
 }): OrderMonitorTrackedOrder {
@@ -82,18 +75,22 @@ function createTrackedOrder(params: {
     orderId: params.orderId,
     symbol: 'BULL.HK',
     side: params.side,
+    executionSide: params.side,
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: false,
-    orderType: OrderType.ELO,
-    submittedPrice: 1,
-    initialSubmittedPrice: 1,
+    orderType: 'ELO',
+    submittedPrice: '1',
+    initialSubmittedPrice: '1',
     submittedQuantity: 100,
     executedQuantity: params.executedQuantity ?? 0,
     executedPrice: params.executedPrice ?? null,
+    executedAmount: params.executedQuantity === 40 ? '40.8' : '0',
+    executionPhase:
+      params.status === 'FILLED' || params.status === 'CANCELED' ? 'TERMINAL' : 'OPEN',
     lastExecutedTimeMs: params.lastExecutedTimeMs ?? null,
     lastOrderUpdateAtMs: params.lastOrderUpdateAtMs ?? null,
-    status: params.status ?? OrderStatus.New,
+    status: params.status ?? 'WORKING',
     submittedAt: now,
     lastPriceUpdateAt: now,
     convertedToMarket: false,
@@ -112,23 +109,135 @@ function createTrackedOrder(params: {
 }
 
 /** 创建事件流并记录所有会触及经济事实或路由的下游动作。 */
-function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
+async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
   const runtime = createRuntimeStore();
   runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
   const pendingSellQuantities: number[] = [];
   const dailyLossInputs: OrderCumulativeExecutionParams[] = [];
   const settlementInputs: FinalizeOrderSettlementParams[] = [];
   const routeWakeups: Array<Readonly<{ symbol: string; kind: string }>> = [];
+  const native = await createBrokerIngressFixture({
+    orderId: 'ORIGINAL-BUY',
+    tradeId: 'ORIGINAL-BUY-T',
+    symbol: 'BULL.HK',
+    stockName: 'HSI BULL',
+    remark: '',
+    side: 'BUY',
+    status: 'Filled',
+    orderType: 'ELO',
+    quantity: '100',
+    executedQuantity: '100',
+    submittedPrice: '1',
+    executedPrice: '1',
+    submittedAtMs: 1,
+    executionTimeMs: 100,
+    updatedAtMs: 100,
+  });
+  native.setAccountBalance({
+    currency: 'HKD',
+    totalCash: '10000',
+    netAssets: '10100',
+    availableCash: '10000',
+  });
+
+  native.setStockPositions([
+    {
+      symbol: 'BULL.HK',
+      symbolName: 'BULL',
+      accountChannel: 'lb_papertrading',
+      currency: 'HKD',
+      quantity: '100',
+      availableQuantity: '100',
+      costPrice: '1',
+    },
+  ]);
+  const account = native.createAccountService({ rateLimiter: createRateLimiter() });
+  const snapshot = createAccountPositionSnapshot({
+    dayEpoch: 1,
+    readPort: account,
+    scheduler: { schedule: queueMicrotask },
+    reportFatalError: (error) => {
+      throw error;
+    },
+  });
+  const commit = await snapshot.requestRefresh({
+    source: 'ordinary-raw-baseline',
+    dayEpoch: 1,
+    refreshAccount: true,
+    refreshPositions: true,
+  }).result;
+  if (commit.status !== 'COMMITTED') throw new Error('expected actual paired commit');
+
+  const dailyLossTracker = createDailyLossTrackerDouble();
+  dailyLossTracker.resetAll(new Date(KNOWN_FACT_TIME_MS));
+  let trader: ReturnType<typeof createTraderDouble> | null = null;
+  const postTrade = createPostTradeConsistencyRuntime({
+    snapshot,
+    termination: createTerminationDouble(),
+    getTrader: () => {
+      if (trader === null) throw new Error('unbound trader');
+
+      return trader;
+    },
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: false, positions: true }))
+        throw new Error('stale positions token');
+    },
+    scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
+  });
+  const orderRecorder = native.createRecorder({
+    rateLimiter: createRateLimiter(),
+    getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
+    settlementRefreshNeedRecorder: postTrade,
+  });
+  trader = createTraderDouble({
+    ...account,
+    orderRecorder,
+    executeSignals: async () => {
+      throw new Error('raw observation must not submit');
+    },
+  });
+  const protectiveTracker = createProtectiveLiquidationEpisodeTrackerDouble();
+  const monitorContext = createMonitorContextDouble({ orderRecorder, dailyLossTracker });
+  postTrade.bindBusinessDeps({
+    monitorContext,
+    dailyLossTracker,
+    protectiveLiquidationEpisodeTracker: protectiveTracker,
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => {
+        throw new Error('ordinary observation is not protective completion');
+      },
+    },
+  });
+  postTrade.start();
+  expect(await postTrade.completeRebuildBaseline()).toBeTrue();
+  const receipt = await postTrade.waitForFresh();
+  expect(postTrade.isCurrent(receipt)).toBeTrue();
+  const originalMark = orderRecorder.markSellPartialFilled;
+  orderRecorder.markSellPartialFilled = (orderId, quantity) => {
+    pendingSellQuantities.push(quantity);
+    return originalMark(orderId, quantity);
+  };
+  const settlementFlow = createSettlementFlow({
+    runtime,
+    orderRecorder,
+    dailyLossTracker,
+    orderHoldRegistry: createOrderHoldRegistry(),
+    protectiveLiquidationEpisodeTracker: protectiveTracker,
+    persistProtectiveLiquidationExecutionProgress: () => {
+      throw new Error('ordinary fact cannot persist protective progress');
+    },
+    postTradeConsistencyRuntime: postTrade,
+    emitOrderStateChanged: () => {},
+  });
   const eventFlow = createEventFlow({
     runtime,
-    orderRecorder: createOrderRecorderDouble({
-      markSellPartialFilled: (_orderId, executedQuantity) => {
-        pendingSellQuantities.push(executedQuantity);
-        return null;
-      },
-    }),
+    monitorConfig: createTradingConfig().monitor,
+    orderRecorder,
     recordCumulativeExecution: (input) => {
       dailyLossInputs.push(input);
+      settlementFlow.recordCumulativeExecution(input);
     },
     prepareProtectiveTerminalExecution: () => null,
     settleOrder: (input) => {
@@ -144,6 +253,16 @@ function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
   return {
     runtime,
     pendingSellQuantities,
+    native,
+    isOriginalCurrent: () =>
+      postTrade.isCurrent(receipt) &&
+      snapshot.isCurrent(receipt.snapshotToken, { account: true, positions: true, paired: true }),
+    orderRecorder,
+    dailyLossTracker,
+    dispose: async () => {
+      await postTrade.stopAndDrain();
+      await snapshot.requestClear({ reason: 'STOP', dayEpoch: 1 });
+    },
     dailyLossInputs,
     settlementInputs,
     routeWakeups,
@@ -184,91 +303,127 @@ function createCacheManager(): OrderCacheManager {
   };
 }
 
+/** 每次明确T/null与revision，经私有nativeSDKpush和独立ledger映射，不借tracked历史时间。 */
+async function createNativeObservation(params: {
+  orderId: string;
+  side: 'BUY' | 'SELL';
+  status: BrokerIngressInput['status'];
+  quantity: string;
+  executedQuantity: string;
+  executedPrice: string;
+  revisionMs: number;
+  executionTimeMs: number | null;
+}) {
+  const native = await createBrokerIngressFixture({
+    orderId: params.orderId,
+    tradeId: params.orderId + '-T',
+    symbol: 'BULL.HK',
+    stockName: 'HSI BULL',
+    remark: '',
+    side: params.side,
+    status: params.status,
+    orderType: 'ELO',
+    quantity: params.quantity,
+    executedQuantity: params.executedQuantity,
+    submittedPrice: '1',
+    executedPrice: params.executedPrice,
+    submittedAtMs: 1,
+    executionTimeMs: params.executionTimeMs,
+    updatedAtMs: params.revisionMs,
+  });
+  return native.pushObservation;
+}
 describe('orderMonitor 普通订单原始成交事实准入', () => {
   it('累计成交增加的原始执行时间不得早于已确认执行时间', () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-EXECUTION-TIME-STALE',
-      side: OrderSide.Buy,
-      status: OrderStatus.PartialFilled,
+      side: 'BUY',
+      status: 'PARTIALLY_FILLED',
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
       lastExecutedTimeMs: KNOWN_FACT_TIME_MS,
       lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
 
     expect(() =>
       mergeMonotonicOrderFact(trackedOrder, {
-        status: OrderStatus.PartialFilled,
+        executedAmount: '80.8',
+        executionPhase: 'OPEN',
+        status: 'PARTIALLY_FILLED',
         executedQuantity: 80,
-        executedPrice: 1.01,
+        executedPrice: '1.01',
         executedTimeMs: KNOWN_FACT_TIME_MS - 1,
         updatedAtMs: KNOWN_FACT_TIME_MS,
       }),
-    ).toThrow(/累计成交数量推进.*执行时间.*倒退/);
+    ).toThrow('[订单事实] 新 revision 的可信执行时间倒退');
   });
 
   it('累计成交增加的原始 broker revision 不得早于已确认 revision', () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-REVISION-STALE',
-      side: OrderSide.Buy,
-      status: OrderStatus.PartialFilled,
+      side: 'BUY',
+      status: 'PARTIALLY_FILLED',
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
       lastExecutedTimeMs: KNOWN_FACT_TIME_MS - 10,
       lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
 
     expect(() =>
       mergeMonotonicOrderFact(trackedOrder, {
-        status: OrderStatus.PartialFilled,
+        executedAmount: '80.8',
+        executionPhase: 'OPEN',
+        status: 'PARTIALLY_FILLED',
         executedQuantity: 80,
-        executedPrice: 1.01,
+        executedPrice: '1.01',
         executedTimeMs: KNOWN_FACT_TIME_MS - 1,
         updatedAtMs: KNOWN_FACT_TIME_MS - 1,
       }),
-    ).toThrow(/累计成交数量推进.*broker revision.*倒退/);
+    ).toThrow('[订单监控] 累计成交推进但 broker revision 倒退');
   });
 
   it('累计成交增加的执行时间不得晚于同次 broker revision', () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-EXECUTION-AFTER-REVISION',
-      side: OrderSide.Buy,
+      side: 'BUY',
     });
 
     expect(() =>
       mergeMonotonicOrderFact(trackedOrder, {
-        status: OrderStatus.PartialFilled,
+        executedAmount: '40.8',
+        executionPhase: 'OPEN',
+        status: 'PARTIALLY_FILLED',
         executedQuantity: 40,
-        executedPrice: 1.02,
+        executedPrice: '1.02',
         executedTimeMs: KNOWN_FACT_TIME_MS + 1,
         updatedAtMs: KNOWN_FACT_TIME_MS,
       }),
-    ).toThrow(/累计成交数量推进.*执行时间晚于 broker revision/);
+    ).toThrow('[订单监控] 原始执行时间晚于 order revision');
   });
 
-  it('普通 SELL WS 0 到 40 的累计成交缺少原始时间时零副作用失败', () => {
+  it('普通 SELL WS 0 到 40 的累计成交缺少原始时间时零副作用失败', async () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-SELL-WS-INVALID-TIME',
-      side: OrderSide.Sell,
+      side: 'SELL',
     });
-    const harness = createEventFlowHarness(trackedOrder);
-    const event = createPushOrderChanged({
+    const harness = await createEventFlowHarness(trackedOrder);
+    const event = await createNativeObservation({
       orderId: trackedOrder.orderId,
-      symbol: trackedOrder.symbol,
       side: trackedOrder.side,
-      status: OrderStatus.PartialFilled,
-      executedQuantity: 40,
-      executedPrice: 1.02,
-      updatedAtMs: KNOWN_FACT_TIME_MS,
+      status: 'PartialFilled',
+      quantity: '100',
+      executedQuantity: '40',
+      executedPrice: '1.02',
+      revisionMs: KNOWN_FACT_TIME_MS,
+      executionTimeMs: null,
     });
-    Object.assign(event, { updatedAt: new Date(Number.NaN) });
 
     expect(() => {
       harness.eventFlow.handleOrderChangedWhenActive(event);
-    }).toThrow(/累计成交数量推进.*原始执行时间/);
+    }).toThrow('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.New,
+      status: 'WORKING',
       executedQuantity: 0,
       executedPrice: null,
       lastExecutedTimeMs: null,
@@ -278,31 +433,35 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     expect(harness.dailyLossInputs).toEqual([]);
     expect(harness.settlementInputs).toEqual([]);
     expect(harness.routeWakeups).toEqual([]);
+
+    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
+    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    await harness.dispose();
   });
 
-  it('普通 BUY Filled WS 缺少原始时间时不会进入结算或路由', () => {
+  it('普通 BUY Filled WS 缺少原始时间时不会进入结算或路由', async () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-BUY-WS-INVALID-TIME',
-      side: OrderSide.Buy,
+      side: 'BUY',
     });
-    const harness = createEventFlowHarness(trackedOrder);
-    const event = createPushOrderChanged({
+    const harness = await createEventFlowHarness(trackedOrder);
+    const event = await createNativeObservation({
       orderId: trackedOrder.orderId,
-      symbol: trackedOrder.symbol,
       side: trackedOrder.side,
-      status: OrderStatus.Filled,
-      executedQuantity: 100,
-      executedPrice: 1.02,
-      updatedAtMs: KNOWN_FACT_TIME_MS,
+      status: 'Filled',
+      quantity: '100',
+      executedQuantity: '100',
+      executedPrice: '1.02',
+      revisionMs: KNOWN_FACT_TIME_MS,
+      executionTimeMs: null,
     });
-    Object.assign(event, { updatedAt: new Date(Number.NaN) });
 
     expect(() => {
       harness.eventFlow.handleOrderChangedWhenActive(event);
-    }).toThrow(/累计成交数量推进.*原始执行时间/);
+    }).toThrow('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.New,
+      status: 'WORKING',
       executedQuantity: 0,
       executedPrice: null,
       lastExecutedTimeMs: null,
@@ -312,38 +471,42 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     expect(harness.dailyLossInputs).toEqual([]);
     expect(harness.settlementInputs).toEqual([]);
     expect(harness.routeWakeups).toEqual([]);
+
+    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
+    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    await harness.dispose();
   });
 
-  it('普通 SELL 终态 40 到 80 的旧 revision 不得借用已确认时间结算', () => {
+  it('普通 SELL 终态 40 到 80 的旧 revision 不得借用已确认时间结算', async () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-SELL-TERMINAL-STALE-REVISION',
-      side: OrderSide.Sell,
-      status: OrderStatus.PartialFilled,
+      side: 'SELL',
+      status: 'PARTIALLY_FILLED',
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
       lastExecutedTimeMs: KNOWN_FACT_TIME_MS,
       lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
-    const harness = createEventFlowHarness(trackedOrder);
+    const harness = await createEventFlowHarness(trackedOrder);
 
+    const incoming = await createNativeObservation({
+      orderId: trackedOrder.orderId,
+      side: trackedOrder.side,
+      status: 'Canceled',
+      quantity: '100',
+      executedQuantity: '80',
+      executedPrice: '1.01',
+      revisionMs: KNOWN_FACT_TIME_MS - 1,
+      executionTimeMs: KNOWN_FACT_TIME_MS - 1,
+    });
     expect(() => {
-      harness.eventFlow.handleOrderChangedWhenActive(
-        createPushOrderChanged({
-          orderId: trackedOrder.orderId,
-          symbol: trackedOrder.symbol,
-          side: trackedOrder.side,
-          status: OrderStatus.Canceled,
-          executedQuantity: 80,
-          executedPrice: 1.01,
-          updatedAtMs: KNOWN_FACT_TIME_MS - 1,
-        }),
-      );
-    }).toThrow(/累计成交数量推进.*(?:执行时间|broker revision).*倒退/);
+      harness.eventFlow.handleOrderChangedWhenActive(incoming);
+    }).toThrow('[订单监控] 累计成交推进但 broker revision 倒退');
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.PartialFilled,
+      status: 'PARTIALLY_FILLED',
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
       lastExecutedTimeMs: KNOWN_FACT_TIME_MS,
       lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
@@ -351,36 +514,41 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     expect(harness.dailyLossInputs).toEqual([]);
     expect(harness.settlementInputs).toEqual([]);
     expect(harness.routeWakeups).toEqual([]);
+
+    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
+    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    await harness.dispose();
   });
 
-  it('相同 revision 的普通累计成交增加直接提交本次原始时间与 revision', () => {
+  it('相同 revision 的普通累计成交增加直接提交本次原始时间与 revision', async () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-SELL-SAME-REVISION',
-      side: OrderSide.Sell,
-      status: OrderStatus.PartialFilled,
+      side: 'SELL',
+      status: 'PARTIALLY_FILLED',
       executedQuantity: 40,
-      executedPrice: 1.02,
+      executedPrice: '1.02',
       lastExecutedTimeMs: KNOWN_FACT_TIME_MS,
       lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
-    const harness = createEventFlowHarness(trackedOrder);
+    const harness = await createEventFlowHarness(trackedOrder);
 
     harness.eventFlow.handleOrderChangedWhenActive(
-      createPushOrderChanged({
+      await createNativeObservation({
         orderId: trackedOrder.orderId,
-        symbol: trackedOrder.symbol,
         side: trackedOrder.side,
-        status: OrderStatus.PartialFilled,
-        executedQuantity: 80,
-        executedPrice: 1.01,
-        updatedAtMs: KNOWN_FACT_TIME_MS,
+        status: 'PartialFilled',
+        quantity: '100',
+        executedQuantity: '80',
+        executedPrice: '1.01',
+        revisionMs: KNOWN_FACT_TIME_MS,
+        executionTimeMs: KNOWN_FACT_TIME_MS,
       }),
     );
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.PartialFilled,
+      status: 'PARTIALLY_FILLED',
       executedQuantity: 80,
-      executedPrice: 1.01,
+      executedPrice: '1.01',
       lastExecutedTimeMs: KNOWN_FACT_TIME_MS,
       lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
@@ -394,35 +562,44 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     ]);
     expect(harness.settlementInputs).toEqual([]);
     expect(harness.routeWakeups).toEqual([{ symbol: 'BULL.HK', kind: 'ORDER_EVENT' }]);
+
+    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toMatchObject({
+      cumulativeQuantity: 80,
+      cumulativeAmount: '80.8',
+      executionTimeMs: KNOWN_FACT_TIME_MS,
+      updatedAtMs: KNOWN_FACT_TIME_MS,
+      phase: 'OPEN',
+    });
+    await harness.dispose();
   });
 
-  it('零成交终态即使没有本次原始时间仍可收口生命周期', () => {
+  it('零成交终态即使没有本次原始时间仍可收口生命周期', async () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-ZERO-TERMINAL',
-      side: OrderSide.Sell,
+      side: 'SELL',
     });
-    const harness = createEventFlowHarness(trackedOrder);
-    const event = createPushOrderChanged({
+    const harness = await createEventFlowHarness(trackedOrder);
+    const event = await createNativeObservation({
       orderId: trackedOrder.orderId,
-      symbol: trackedOrder.symbol,
       side: trackedOrder.side,
-      status: OrderStatus.Canceled,
-      executedQuantity: 0,
-      executedPrice: 0,
-      updatedAtMs: KNOWN_FACT_TIME_MS,
+      status: 'Canceled',
+      quantity: '100',
+      executedQuantity: '0',
+      executedPrice: '0',
+      revisionMs: KNOWN_FACT_TIME_MS,
+      executionTimeMs: null,
     });
-    Object.assign(event, { updatedAt: new Date(Number.NaN) });
 
     expect(() => {
       harness.eventFlow.handleOrderChangedWhenActive(event);
     }).not.toThrow();
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.Canceled,
+      status: 'CANCELED',
       executedQuantity: 0,
-      executedPrice: null,
+      executedPrice: '0',
       lastExecutedTimeMs: null,
-      lastOrderUpdateAtMs: null,
+      lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
     expect(harness.pendingSellQuantities).toEqual([]);
     expect(harness.dailyLossInputs).toEqual([]);
@@ -430,47 +607,72 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
       expect.objectContaining({
         executedQuantity: 0,
         executedTimeMs: null,
-        orderUpdatedAtMs: null,
+        orderUpdatedAtMs: KNOWN_FACT_TIME_MS,
       }),
     ]);
     expect(harness.routeWakeups).toEqual([]);
+
+    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
+    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    await harness.dispose();
   });
 });
 
 describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => {
   it('API OPEN 累计成交增加但缺少 revision 时不得写入 tracked、pending、DailyLoss 或路由', async () => {
     const runtime = createRuntimeStore();
-    const tradeContext = createTradeContextMock();
-    tradeContext.cancelOrder = async () => {
-      throw new Error('openapi error: code=601011: order cannot be cancelled');
-    };
+    const actualOwners = await createEventFlowHarness(
+      createTrackedOrder({ orderId: 'ORDINARY-SELL-OPEN-NULL-REVISION', side: 'SELL' }),
+    );
+    const native = actualOwners.native;
+    native.setOrderDetailReplies([
+      {
+        orderId: 'ORDINARY-SELL-OPEN-NULL-REVISION',
+        tradeId: 'API-T',
+        symbol: 'BULL.HK',
+        stockName: 'HSI BULL',
+        remark: '',
+        side: 'SELL',
+        status: 'PartialFilled',
+        orderType: 'ELO',
+        quantity: '100',
+        executedQuantity: '40',
+        submittedPrice: '1',
+        executedPrice: '1.02',
+        submittedAtMs: 1,
+        executionTimeMs: KNOWN_FACT_TIME_MS,
+        updatedAtMs: Number.NaN,
+      },
+    ]);
+    native.setCancelFailure(new Error('openapi error: code=601011: order cannot be cancelled'));
     const pendingSellQuantities: number[] = [];
     const dailyLossInputs: OrderCumulativeExecutionParams[] = [];
     const routeWakeups: Array<Readonly<{ symbol: string; kind: string }>> = [];
-    const orderOps = createOrderOps({
+    const orderOps = native.createOperations({
+      captureWorkGuard: () => () =>
+        runtime.running && runtime.runtimeState === 'ACTIVE' && actualOwners.isOriginalCurrent(),
+      termination: {
+        isTerminated: () => !runtime.running,
+        reportFatalError: (error) => {
+          throw error;
+        },
+      },
+      now: () => new Date(200),
+      getExecutionTimeEvidence: () => [],
       runtime,
       monitorConfig: createTradingConfig().monitor,
-      ctx: createTradeContextDouble(tradeContext),
       rateLimiter: createRateLimiter(),
       cacheManager: createCacheManager(),
       orderHoldRegistry: createOrderHoldRegistry(),
-      orderRecorder: createOrderRecorderDouble({
+      orderRecorder: {
+        ...actualOwners.orderRecorder,
         markSellPartialFilled: (_orderId, executedQuantity) => {
           pendingSellQuantities.push(executedQuantity);
           return null;
         },
-      }),
+      },
       recordCumulativeExecution: (input) => {
         dailyLossInputs.push(input);
-      },
-      orderStatusQuery: {
-        checkOrderState: async () => ({
-          kind: 'OPEN' as const,
-          status: OrderStatus.PartialFilled,
-          executedPrice: 1.02,
-          executedQuantity: 40,
-          updatedAtMs: null,
-        }),
       },
       triggerRoute: (symbol, kind) => {
         routeWakeups.push({ symbol, kind });
@@ -479,14 +681,16 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
     orderOps.trackOrder({
       orderId: 'ORDINARY-SELL-OPEN-NULL-REVISION',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      price: 1,
-      initialSubmittedPrice: 1,
+      side: 'SELL',
+      price: '1',
+      executionSide: 'SELL',
+      submittedAtMs: 1,
+      initialSubmittedPrice: '1',
       quantity: 100,
       isLongSymbol: true,
       monitorSymbol: 'HSI.HK',
       isProtectiveLiquidation: false,
-      orderType: OrderType.ELO,
+      orderType: 'ELO',
     });
     const trackedOrder = runtime.trackedOrders.get('ORDINARY-SELL-OPEN-NULL-REVISION');
     if (trackedOrder === undefined) {
@@ -501,14 +705,11 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
       caughtError = error;
     }
 
-    expect(caughtError).toBeInstanceOf(Error);
-    expect(caughtError).toHaveProperty(
-      'message',
-      expect.stringMatching(/state-check 累计成交数量推进但缺少有效 broker revision/),
-    );
+    expect(caughtError).toBeInstanceOf(TypeError);
+    expect(caughtError).toHaveProperty('message', '[orderMapper] invalid updatedAt');
 
     expect(trackedOrder).toMatchObject({
-      status: OrderStatus.New,
+      status: 'WORKING',
       executedQuantity: 0,
       executedPrice: null,
       lastExecutedTimeMs: null,
@@ -517,5 +718,9 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
     expect(pendingSellQuantities).toEqual([]);
     expect(dailyLossInputs).toEqual([]);
     expect(routeWakeups).toEqual([]);
+    expect(native.nativeReadCounts()).toEqual({ cancel: 1, detail: 1 });
+    expect(native.nativeMutations()).toEqual([]);
+    expect(actualOwners.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
+    await actualOwners.dispose();
   });
 });

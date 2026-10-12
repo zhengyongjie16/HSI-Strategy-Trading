@@ -1,6 +1,4 @@
-import type { AdjustType, NaiveDate, Period, TradeSessions } from 'longbridge';
-
-import type { DecimalLike } from '../../src/utils/helpers/types.js';
+import type { AdjustType, Candlestick, NaiveDate, Period, TradeSessions } from 'longbridge';
 
 /**
  * 命令行分析参数。
@@ -93,7 +91,7 @@ export interface MeanDeviationQuoteContext {
     tradeSessions: TradeSessions,
   ) => Promise<
     ReadonlyArray<{
-      readonly close: DecimalLike;
+      readonly close: Candlestick['close'];
       readonly volume: number;
       readonly timestamp: Date;
     }>

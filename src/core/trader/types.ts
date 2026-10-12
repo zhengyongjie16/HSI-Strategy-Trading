@@ -1,26 +1,23 @@
+import type { BrokerAccess } from '../../types/brokerAccessPorts.js';
+import type { OrderDetailReadPort } from '../../types/orderDetailReadPorts.js';
+import type { OrderReadStatus, OrderReadType } from '../../types/orderReadMetadata.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
-import type {
-  Config,
-  Decimal,
-  OrderSide,
-  OrderType,
-  OrderStatus,
-  TimeInForceType,
-  TradeContext,
-} from 'longbridge';
+import type { TradeMutationPort } from '../../types/tradeMutationPorts.js';
+import type { OrderExecutionLedgerPort } from '../../types/orderExecutionLedger.js';
+import type { OrderPushPort } from '../../types/orderPushPorts.js';
+import type { SettlementRefreshNeedRecorder } from '../../types/settlement.js';
+import type { Decimal, OrderSide, OrderType, TimeInForceType } from 'longbridge';
 import type {
   DoomsdayClearanceCommand,
   ExecutableSignal,
   SignalType,
   OrderTypeConfig,
 } from '../../types/signal.js';
-import type { AccountSnapshot, Position } from '../../types/account.js';
-import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
+import type { Position } from '../../types/account.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type {
   PendingOrder,
-  PostTradeConsistencyRuntimePort,
   TradeCheckResult,
   RateLimiter,
   TradeMutationPermit,
@@ -43,6 +40,7 @@ import type {
   DoomsdayCancelOrderRequest,
   DoomsdayClearanceExecutionResult,
   ExecuteSignalsResult,
+  SignalCallerAuthorization,
 } from '../../types/trader.js';
 import type { ProtectiveLiquidationEpisodeTracker } from './protectiveLiquidationEpisodeTracker/types.js';
 
@@ -81,20 +79,24 @@ export type OrderPayload = {
 export type TrackOrderParams = {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: OrderSide;
-  readonly price: number | null;
-  readonly initialSubmittedPrice: number | null;
+  readonly side: 'BUY' | 'SELL';
+
+  /** 来自实际中性submit command或SDK mapper，供新经济事实consumer使用。 */
+  readonly executionSide: 'BUY' | 'SELL';
+  readonly initialExecutionPhase?: 'OPEN' | 'TERMINAL';
+  readonly price: string | null;
+  readonly initialSubmittedPrice: string | null;
   readonly quantity: number;
 
   /** 可选：恢复阶段使用原始下单时间（毫秒），用于保持超时策略语义一致 */
   readonly submittedAtMs?: number;
 
   /** 可选：恢复阶段保留快照中的 pending 状态，避免错误触发改单流程 */
-  readonly initialStatus?: OrderStatus;
+  readonly initialStatus?: OrderReadStatus;
   readonly isLongSymbol: boolean;
   readonly monitorSymbol: string;
   readonly isProtectiveLiquidation: boolean;
-  readonly orderType: OrderType;
+  readonly orderType: OrderReadType;
 };
 
 /**
@@ -156,22 +158,6 @@ export type ErrorTypeIdentifier = {
 // ==================== 服务接口定义 ====================
 
 /**
- * 账户服务接口。
- * 类型用途：提供账户快照与持仓查询，供 Trader/OrderExecutor 等获取资金与持仓状态。
- * 数据来源：由 Trader 依赖注入，实现层通过 TradeContext 调用 Longbridge API 获取。
- * 使用范围：仅 trader 模块内部实现与使用。
- */
-export interface AccountService {
-  getAccountSnapshot: (params?: {
-    readonly retryConfig?: ExternalApiRetryConfig;
-  }) => Promise<AccountSnapshot>;
-  getStockPositions: (params?: {
-    readonly symbols?: ReadonlyArray<string> | null;
-    readonly retryConfig?: ExternalApiRetryConfig;
-  }) => Promise<ReadonlyArray<Position>>;
-}
-
-/**
  * 今日订单缓存原始条目。
  * 类型用途：表达 orderCacheManager 从 todayOrders 信任边界接收并已校验的订单字段。
  * 数据来源：Longbridge TradeContext.todayOrders 返回数组中的单条订单。
@@ -181,9 +167,9 @@ export type TodayOrderForPendingCache = Readonly<{
   orderId: string;
   symbol: string;
   side: PendingOrder['side'];
-  price: unknown;
-  quantity: unknown;
-  executedQuantity: unknown;
+  submittedPrice: string | null;
+  quantity: number;
+  executedQuantity: number;
   status: PendingOrder['status'];
   orderType: PendingOrder['orderType'];
 }>;
@@ -194,7 +180,7 @@ export type TodayOrderForPendingCache = Readonly<{
  * 数据来源：生产环境由 Longbridge TradeContext 提供；测试可直接提供最小 double。
  * 使用范围：仅 OrderCacheManagerDeps。
  */
-interface TodayOrdersReader {
+export interface TodayOrdersReader {
   todayOrders: () => Promise<unknown>;
 }
 
@@ -246,7 +232,7 @@ export interface OrderMonitor {
    */
   replaceOrderPriceWithPermit: (
     orderId: string,
-    newPrice: number,
+    newPrice: string,
     request: OrderMutationRequest,
     permit: TradeMutationPermit,
     quantity?: number | null,
@@ -280,11 +266,15 @@ export interface OrderMonitor {
  */
 export interface OrderExecutor {
   canTradeNow: (signalAction: SignalType) => TradeCheckResult;
-  executeSignals: (signals: ReadonlyArray<ExecutableSignal>) => Promise<ExecuteSignalsResult>;
+  executeSignals: (
+    signals: ReadonlyArray<ExecutableSignal>,
+    callerAuthorization: SignalCallerAuthorization,
+  ) => Promise<ExecuteSignalsResult>;
 
   /** 末日清仓专用入口；仅该入口可构造末日清仓执行目的。 */
   executeDoomsdayClearanceSignals: (
     commands: ReadonlyArray<DoomsdayClearanceCommand>,
+    callerAuthorization: SignalCallerAuthorization,
   ) => Promise<DoomsdayClearanceExecutionResult>;
 
   /** 清空 lastBuyTime（买入节流状态） */
@@ -313,17 +303,6 @@ export type RateLimiterDeps = {
 };
 
 /**
- * 账户服务依赖。
- * 类型用途：创建 AccountService 实例时的依赖注入参数。
- * 数据来源：由 Trader 工厂在创建 accountService 时传入。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type AccountServiceDeps = {
-  readonly ctx: TradeContext;
-  readonly rateLimiter: RateLimiter;
-};
-
-/**
  * 订单缓存管理器依赖。
  * 类型用途：用于创建 OrderCacheManager 时的依赖注入。
  * 数据来源：如适用。
@@ -346,7 +325,11 @@ export type OrderCacheManagerDeps = {
 export type TrackedOrder = {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: OrderSide;
+  readonly side: 'BUY' | 'SELL';
+  readonly executionSide: 'BUY' | 'SELL';
+
+  /** 原mapper/已接受观察的生命周期；尚无broker事实时未知。 */
+  executionPhase: 'OPEN' | 'TERMINAL' | null;
 
   /** 是否为做多标的（成交后更新本地记录时使用） */
   readonly isLongSymbol: boolean;
@@ -358,13 +341,13 @@ export type TrackedOrder = {
   readonly isProtectiveLiquidation: boolean;
 
   /** 订单类型（用于合并和改单判断） */
-  readonly orderType: OrderType;
+  readonly orderType: OrderReadType;
 
   /** 当前委托价；市价单为 null，非市价单会随改单更新。 */
-  submittedPrice: number | null;
+  submittedPrice: string | null;
 
   /** 跟踪开始时的初始委托价；市价单为 null，用于非市价买单跟价上限判断。 */
-  readonly initialSubmittedPrice: number | null;
+  readonly initialSubmittedPrice: string | null;
 
   /** 委托数量（含部分成交后的剩余总量） */
   submittedQuantity: number;
@@ -373,7 +356,8 @@ export type TrackedOrder = {
   executedQuantity: number;
 
   /** 最近一次已成交价格（部分成交/完全成交时更新） */
-  executedPrice: number | null;
+  executedPrice: string | null;
+  executedAmount: string;
 
   /** 最近一次已成交时间（毫秒） */
   lastExecutedTimeMs: number | null;
@@ -382,7 +366,7 @@ export type TrackedOrder = {
   lastOrderUpdateAtMs: number | null;
 
   /** 当前订单状态（由 WebSocket 推送更新） */
-  status: OrderStatus;
+  status: OrderReadStatus;
 
   /** 提交时间戳（用于超时检测） */
   readonly submittedAt: number;
@@ -415,10 +399,10 @@ export type TrackedOrder = {
 export type PendingSellOrderSnapshot = {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: OrderSide;
-  readonly status: OrderStatus;
-  readonly orderType: OrderType;
-  readonly submittedPrice: number | null;
+  readonly side: 'BUY' | 'SELL';
+  readonly status: OrderReadStatus;
+  readonly orderType: OrderReadType;
+  readonly submittedPrice: string | null;
   readonly submittedQuantity: number;
   readonly executedQuantity: number;
   readonly submittedAt: number;
@@ -444,7 +428,7 @@ export type SellMergeDecisionInput = {
   readonly symbol: string;
   readonly pendingOrders: ReadonlyArray<PendingSellOrderSnapshot>;
   readonly newOrderQuantity: number;
-  readonly newOrderType: OrderType;
+  readonly newOrderType: OrderReadType;
   readonly isProtectiveLiquidation: boolean;
 };
 
@@ -486,7 +470,7 @@ export type OrderMonitorConfig = {
   readonly priceUpdateIntervalMs: number;
 
   /** 价格差异阈值（低于此值不触发修改） */
-  readonly priceDiffThreshold: number;
+  readonly priceDiffThreshold: string;
 
   /** 买单跟价是否允许高于初始委托价 */
   readonly allowBuyOrderTrackingAboveInitialPrice: boolean;
@@ -527,7 +511,10 @@ export interface OrderHoldRegistry {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type OrderMonitorDeps = {
-  readonly ctx: TradeContext;
+  readonly orderDetailReadPort: OrderDetailReadPort;
+  readonly executionLedgerPort: OrderExecutionLedgerPort;
+  readonly orderPushPort: OrderPushPort;
+  readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;
   readonly cacheManager: OrderCacheManager;
   readonly marketDataClient: MarketDataClient;
@@ -556,7 +543,7 @@ export type OrderMonitorDeps = {
   readonly tradingConfig: TradingConfig;
 
   /** 成交后一致性运行时（负责收口成交后的最小补刷需求） */
-  readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntimePort;
+  readonly postTradeConsistencyRuntime: SettlementRefreshNeedRecorder;
 
   /** 连续交易授权（仅用于订单监控派生的新订单与自动改单） */
   readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
@@ -656,7 +643,13 @@ export type CancelOrderMutationRequest = OrderMutationRequest | DoomsdayCancelOr
  * 使用范围：OrderExecutor 卖单合并链路。
  */
 export type ReplaceOrderPriceOutcome =
-  { readonly kind: 'BROKER_CONFIRMED' } | { readonly kind: 'NOT_EXECUTED' };
+  | { readonly kind: 'BROKER_CONFIRMED' }
+  | { readonly kind: 'NOT_EXECUTED' }
+  | {
+      /** 必须在最外 mutation FIFO callback 完全退出后执行，不能在持permit时query/throttle。 */
+      readonly kind: 'POST_FAILURE_CONFIRMATION_REQUIRED';
+      readonly confirmAfterPermitReleased: () => Promise<ReplaceOrderPriceOutcome>;
+    };
 
 /**
  * 订单执行器依赖。
@@ -665,7 +658,8 @@ export type ReplaceOrderPriceOutcome =
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type OrderExecutorDeps = {
-  readonly ctx: TradeContext;
+  readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
+  readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;
 
   /** 与 Trader 共用的行情客户端；仅最终订单 callback permit 内读取执行行情。 */
@@ -705,7 +699,8 @@ export type OrderExecutorDeps = {
  * 使用范围：见调用方（启动层等）。
  */
 export type TraderDeps = {
-  readonly config: Config;
+  /** 同步延迟创建唯一 broker 访问能力；错误仍由 createTrader 捕获为 rejected Promise。 */
+  readonly brokerAccess: () => BrokerAccess;
   readonly tradingConfig: TradingConfig;
   readonly marketDataClient: MarketDataClient;
 
@@ -722,7 +717,7 @@ export type TraderDeps = {
   ) => void;
 
   /** 成交后一致性运行时（负责收口成交后的最小补刷需求） */
-  readonly postTradeConsistencyRuntime: PostTradeConsistencyRuntimePort;
+  readonly postTradeConsistencyRuntime: SettlementRefreshNeedRecorder;
 
   /** 运行时执行门禁（单一状态源注入，执行层统一判定） */
   readonly isExecutionAllowed: IsExecutionAllowed;

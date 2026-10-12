@@ -6,32 +6,24 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { inspect } from 'node:util';
-import {
-  FilterWarrantExpiryDate,
-  FilterWarrantInOutBoundsType,
-  SortOrderType,
-  WarrantSortBy,
-  WarrantStatus,
-  WarrantType,
-} from 'longbridge';
+import { rejects } from 'node:assert/strict';
 
 import { findBestWarrant } from '../../../src/services/autoSymbolFinder/index.js';
 import { resolveDirectionalAutoSearchPolicy } from '../../../src/services/autoSymbolFinder/policyResolver.js';
-import { createMarketDataClient } from '../../../src/services/quoteClient/index.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
+import type { MarketQuoteContext } from '../../../src/types/services.js';
 import {
   buildExpiryDateFilters,
   createWarrantListCache,
   selectBestWarrant,
 } from '../../../src/services/autoSymbolFinder/utils.js';
-import { toMockDecimal } from '../../../mock/longbridge/decimal.js';
-import { createQuoteContextMock } from '../../../mock/longbridge/quoteContextMock.js';
+
 import type {
   DirectionalAutoSearchPolicy,
   WarrantListItem,
 } from '../../../src/services/autoSymbolFinder/types.js';
 import type { Logger } from '../../../src/utils/logger/types.js';
-import { createQuoteContextDouble, createSdkConfigDouble } from '../../helpers/testDoubles.js';
 
 function createLoggerRecorder(): {
   readonly logger: Logger;
@@ -58,54 +50,32 @@ function createLoggerRecorder(): {
 
 function createWarrantListItem(params: {
   readonly symbol: string;
-  readonly apiDistanceRatio: number;
-  readonly turnover: number;
+  readonly apiDistanceRatio: string;
+  readonly turnover: string;
   readonly status?: WarrantListItem['status'];
-  readonly callPrice?: number;
+  readonly callPrice?: string;
   readonly name?: string;
 }): WarrantListItem {
   return {
     symbol: params.symbol,
     name: params.name ?? params.symbol,
-    toCallPrice: toMockDecimal(params.apiDistanceRatio),
-    callPrice: toMockDecimal(params.callPrice ?? 20_000),
-    turnover: toMockDecimal(params.turnover),
-    status: params.status ?? WarrantStatus.Normal,
+    toCallPrice: params.apiDistanceRatio,
+    callPrice: params.callPrice ?? '20000',
+    turnover: params.turnover,
+    status: Object.hasOwn(params, 'status') ? params.status : 'NORMAL',
   };
-}
-
-function toApiDistanceRatio(percentValue: number): number {
-  return percentValue / 100;
 }
 
 function toWarrantInfo(
   item: WarrantListItem,
-): Parameters<ReturnType<typeof createQuoteContextMock>['seedWarrantList']>[1][number] {
-  const normalizeDecimalField = (
-    value: WarrantListItem['toCallPrice'],
-  ): number | null | undefined => {
-    if (value === undefined || value === null) {
-      return value;
-    }
-
-    if (typeof value === 'string' || typeof value === 'number') {
-      return Number(value);
-    }
-
-    return value.toNumber();
-  };
-
-  const toCallPrice = normalizeDecimalField(item.toCallPrice);
-  const callPrice = normalizeDecimalField(item.callPrice);
-  const turnover = normalizeDecimalField(item.turnover);
+): Awaited<ReturnType<MarketQuoteContext['warrantList']>>[number] {
   return {
-    warrantType: WarrantType.Bull,
-    symbol: item.symbol,
-    ...(item.name === undefined ? {} : { name: item.name }),
-    ...(toCallPrice === undefined ? {} : { toCallPrice }),
-    ...(callPrice === undefined ? {} : { callPrice }),
-    ...(turnover === undefined ? {} : { turnover }),
-    ...(item.status === undefined ? {} : { status: item.status }),
+    ...item,
+    lastDone: '1',
+    toCallPrice: item.toCallPrice,
+    turnover: item.turnover,
+    warrantType: 'BULL',
+    status: item.status,
   };
 }
 
@@ -117,17 +87,17 @@ function createDirectionalPolicy(
     direction === 'LONG'
       ? {
           direction,
-          primaryThreshold: 0.35,
-          minTurnoverPerMinute: 10_000,
-          degradedRange: { min: 0.2, max: 0.35 },
-          switchDistanceRange: { min: 0.2, max: 1.5 },
+          primaryThreshold: '0.35',
+          minTurnoverPerMinute: '10000',
+          degradedRange: { min: '0.2', max: '0.35' },
+          switchDistanceRange: { min: '0.2', max: '1.5' },
         }
       : {
           direction,
-          primaryThreshold: -0.35,
-          minTurnoverPerMinute: 10_000,
-          degradedRange: { min: -0.35, max: -0.2 },
-          switchDistanceRange: { min: -1.5, max: -0.2 },
+          primaryThreshold: '-0.35',
+          minTurnoverPerMinute: '10000',
+          degradedRange: { min: '-0.35', max: '-0.2' },
+          switchDistanceRange: { min: '-1.5', max: '-0.2' },
         };
   return {
     ...base,
@@ -138,16 +108,13 @@ function createDirectionalPolicy(
 describe('autoSymbolFinder business flow', () => {
   it('builds expiry filter sets by configured minimum month threshold', () => {
     expect(buildExpiryDateFilters(3)).toEqual([
-      FilterWarrantExpiryDate.Between_3_6,
-      FilterWarrantExpiryDate.Between_6_12,
-      FilterWarrantExpiryDate.GT_12,
+      'MONTHS_3_TO_6',
+      'MONTHS_6_TO_12',
+      'OVER_12_MONTHS',
     ]);
 
-    expect(buildExpiryDateFilters(5)).toEqual([
-      FilterWarrantExpiryDate.Between_6_12,
-      FilterWarrantExpiryDate.GT_12,
-    ]);
-    expect(buildExpiryDateFilters(7)).toEqual([FilterWarrantExpiryDate.GT_12]);
+    expect(buildExpiryDateFilters(5)).toEqual(['MONTHS_6_TO_12', 'OVER_12_MONTHS']);
+    expect(buildExpiryDateFilters(7)).toEqual(['OVER_12_MONTHS']);
   });
 
   it('selects best candidate by distance then turnover-per-minute under business constraints', () => {
@@ -155,29 +122,41 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'A.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.8),
-          turnover: 120_000,
+          apiDistanceRatio: '0.008',
+          turnover: '120000',
         }),
         createWarrantListItem({
           symbol: 'B.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.6),
-          turnover: 200_000,
+          apiDistanceRatio: '0.006',
+          turnover: '200000',
         }),
         createWarrantListItem({
           symbol: 'C.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.6),
-          turnover: 260_000,
+          apiDistanceRatio: '0.006',
+          turnover: '260000',
         }),
         createWarrantListItem({
           symbol: 'D.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.3),
-          turnover: 500_000,
+          apiDistanceRatio: '0.003',
+          turnover: '500000',
         }),
         createWarrantListItem({
           symbol: 'E.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.5),
-          turnover: 500_000,
-          status: 999,
+          apiDistanceRatio: '0.005',
+          turnover: '500000',
+          status: 'NON_NORMAL',
+        }),
+        createWarrantListItem({
+          symbol: 'UNKNOWN-NULL.HK',
+          apiDistanceRatio: '0.005',
+          turnover: '999999',
+          status: null,
+        }),
+        createWarrantListItem({
+          symbol: 'UNKNOWN-UNDEFINED.HK',
+          apiDistanceRatio: '0.005',
+          turnover: '999999',
+          status: undefined,
         }),
       ],
       tradingMinutes: 10,
@@ -185,8 +164,8 @@ describe('autoSymbolFinder business flow', () => {
     });
 
     expect(result.candidate?.symbol).toBe('C.HK');
-    expect(Object.is(result.candidate?.distancePct, 0.6)).toBeTrue();
-    expect(result.candidate?.turnoverPerMinute).toBe(26_000);
+    expect(result.candidate?.distancePct).toBe('0.6');
+    expect(result.candidate?.turnoverPerMinute).toBe('26000');
     expect(result.candidate?.selectionStage).toBe('PRIMARY');
     expect(result.primaryCandidateCount).toBe(3);
     expect(result.degradedCandidateCount).toBe(1);
@@ -197,18 +176,18 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'LOWER.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.22),
-          turnover: 150_000,
+          apiDistanceRatio: '0.0022',
+          turnover: '150000',
         }),
         createWarrantListItem({
           symbol: 'BEST.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.34),
-          turnover: 160_000,
+          apiDistanceRatio: '0.0034',
+          turnover: '160000',
         }),
         createWarrantListItem({
           symbol: 'PRIMARY.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.36),
-          turnover: 200_000,
+          apiDistanceRatio: '0.0036',
+          turnover: '200000',
         }),
       ],
       tradingMinutes: 10,
@@ -226,18 +205,18 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'LOWER.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.22),
-          turnover: 150_000,
+          apiDistanceRatio: '0.0022',
+          turnover: '150000',
         }),
         createWarrantListItem({
           symbol: 'BEST.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.3499),
-          turnover: 140_000,
+          apiDistanceRatio: '0.003499',
+          turnover: '140000',
         }),
         createWarrantListItem({
           symbol: 'TIE.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.3499),
-          turnover: 180_000,
+          apiDistanceRatio: '0.003499',
+          turnover: '180000',
         }),
       ],
       tradingMinutes: 10,
@@ -246,7 +225,7 @@ describe('autoSymbolFinder business flow', () => {
 
     expect(result.candidate?.symbol).toBe('TIE.HK');
     expect(result.candidate?.selectionStage).toBe('DEGRADED');
-    expect(result.candidate?.distanceDeltaToThreshold).toBeCloseTo(0.0001);
+    expect(result.candidate?.distanceDeltaToThreshold).toBe('0.0001');
     expect(result.primaryCandidateCount).toBe(0);
     expect(result.degradedCandidateCount).toBe(3);
   });
@@ -256,23 +235,23 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'FAR.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.8),
-          turnover: 200_000,
+          apiDistanceRatio: '-0.008',
+          turnover: '200000',
         }),
         createWarrantListItem({
           symbol: 'BEST.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.4),
-          turnover: 260_000,
+          apiDistanceRatio: '-0.004',
+          turnover: '260000',
         }),
         createWarrantListItem({
           symbol: 'TIE.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.4),
-          turnover: 220_000,
+          apiDistanceRatio: '-0.004',
+          turnover: '220000',
         }),
         createWarrantListItem({
           symbol: 'DEGRADED.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.3),
-          turnover: 500_000,
+          apiDistanceRatio: '-0.003',
+          turnover: '500000',
         }),
       ],
       tradingMinutes: 10,
@@ -290,18 +269,18 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'UPPER.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.22),
-          turnover: 150_000,
+          apiDistanceRatio: '-0.0022',
+          turnover: '150000',
         }),
         createWarrantListItem({
           symbol: 'BEST.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.3499),
-          turnover: 160_000,
+          apiDistanceRatio: '-0.003499',
+          turnover: '160000',
         }),
         createWarrantListItem({
           symbol: 'TIE.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.3499),
-          turnover: 180_000,
+          apiDistanceRatio: '-0.003499',
+          turnover: '180000',
         }),
       ],
       tradingMinutes: 10,
@@ -310,7 +289,7 @@ describe('autoSymbolFinder business flow', () => {
 
     expect(result.candidate?.symbol).toBe('TIE.HK');
     expect(result.candidate?.selectionStage).toBe('DEGRADED');
-    expect(result.candidate?.distanceDeltaToThreshold).toBeCloseTo(0.0001);
+    expect(result.candidate?.distanceDeltaToThreshold).toBe('0.0001');
     expect(result.primaryCandidateCount).toBe(0);
     expect(result.degradedCandidateCount).toBe(3);
   });
@@ -320,13 +299,13 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'THRESHOLD.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.35),
-          turnover: 200_000,
+          apiDistanceRatio: '0.0035',
+          turnover: '200000',
         }),
         createWarrantListItem({
           symbol: 'BOUNDARY.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.2),
-          turnover: 200_000,
+          apiDistanceRatio: '0.002',
+          turnover: '200000',
         }),
       ],
       tradingMinutes: 10,
@@ -343,13 +322,13 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'THRESHOLD.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.35),
-          turnover: 200_000,
+          apiDistanceRatio: '-0.0035',
+          turnover: '200000',
         }),
         createWarrantListItem({
           symbol: 'BOUNDARY.HK',
-          apiDistanceRatio: toApiDistanceRatio(-0.2),
-          turnover: 200_000,
+          apiDistanceRatio: '-0.002',
+          turnover: '200000',
         }),
       ],
       tradingMinutes: 10,
@@ -366,13 +345,13 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'NEARER.HK',
-          apiDistanceRatio: 0.003500000002,
-          turnover: 200_000,
+          apiDistanceRatio: '0.003500000002',
+          turnover: '200000',
         }),
         createWarrantListItem({
           symbol: 'FARTHER.HK',
-          apiDistanceRatio: 0.003500000009,
-          turnover: 500_000,
+          apiDistanceRatio: '0.003500000009',
+          turnover: '500000',
         }),
       ],
       tradingMinutes: 10,
@@ -387,13 +366,13 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'NEARER.HK',
-          apiDistanceRatio: -0.003500000002,
-          turnover: 200_000,
+          apiDistanceRatio: '-0.003500000002',
+          turnover: '200000',
         }),
         createWarrantListItem({
           symbol: 'FARTHER.HK',
-          apiDistanceRatio: -0.003500000009,
-          turnover: 500_000,
+          apiDistanceRatio: '-0.003500000009',
+          turnover: '500000',
         }),
       ],
       tradingMinutes: 10,
@@ -408,26 +387,26 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'BELOW.HK',
-          apiDistanceRatio: 0.0184,
-          turnover: 2_000_000,
+          apiDistanceRatio: '0.0184',
+          turnover: '2000000',
         }),
         createWarrantListItem({
           symbol: 'MATCH.HK',
-          apiDistanceRatio: 0.0185000001,
-          turnover: 2_500_000,
+          apiDistanceRatio: '0.0185000001',
+          turnover: '2500000',
         }),
       ],
       tradingMinutes: 10,
       policy: createDirectionalPolicy('LONG', {
-        primaryThreshold: 1.85,
-        degradedRange: { min: 1, max: 1.85 },
-        switchDistanceRange: { min: 1, max: 4 },
+        primaryThreshold: '1.85',
+        degradedRange: { min: '1', max: '1.85' },
+        switchDistanceRange: { min: '1', max: '4' },
       }),
     });
 
     expect(result.candidate?.symbol).toBe('MATCH.HK');
     expect(result.candidate?.selectionStage).toBe('PRIMARY');
-    expect(result.candidate?.distancePct).toBeCloseTo(1.85000001);
+    expect(result.candidate?.distancePct).toBe('1.85000001');
   });
 
   it('interprets realistic bear thresholds against api raw ratio inputs', () => {
@@ -435,26 +414,26 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'ABOVE.HK',
-          apiDistanceRatio: -0.0184,
-          turnover: 2_000_000,
+          apiDistanceRatio: '-0.0184',
+          turnover: '2000000',
         }),
         createWarrantListItem({
           symbol: 'MATCH.HK',
-          apiDistanceRatio: -0.0185000001,
-          turnover: 2_500_000,
+          apiDistanceRatio: '-0.0185000001',
+          turnover: '2500000',
         }),
       ],
       tradingMinutes: 10,
       policy: createDirectionalPolicy('SHORT', {
-        primaryThreshold: -1.85,
-        degradedRange: { min: -1.85, max: -1 },
-        switchDistanceRange: { min: -4, max: -1 },
+        primaryThreshold: '-1.85',
+        degradedRange: { min: '-1.85', max: '-1' },
+        switchDistanceRange: { min: '-4', max: '-1' },
       }),
     });
 
     expect(result.candidate?.symbol).toBe('MATCH.HK');
     expect(result.candidate?.selectionStage).toBe('PRIMARY');
-    expect(result.candidate?.distancePct).toBeCloseTo(-1.85000001);
+    expect(result.candidate?.distancePct).toBe('-1.85000001');
   });
 
   it('supports higher realistic bull thresholds without treating api raw ratios as percent values', () => {
@@ -462,26 +441,26 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'BELOW.HK',
-          apiDistanceRatio: 0.0349,
-          turnover: 2_000_000,
+          apiDistanceRatio: '0.0349',
+          turnover: '2000000',
         }),
         createWarrantListItem({
           symbol: 'MATCH.HK',
-          apiDistanceRatio: 0.035000001,
-          turnover: 2_500_000,
+          apiDistanceRatio: '0.035000001',
+          turnover: '2500000',
         }),
       ],
       tradingMinutes: 10,
       policy: createDirectionalPolicy('LONG', {
-        primaryThreshold: 3.5,
-        degradedRange: { min: 2, max: 3.5 },
-        switchDistanceRange: { min: 2, max: 8 },
+        primaryThreshold: '3.5',
+        degradedRange: { min: '2', max: '3.5' },
+        switchDistanceRange: { min: '2', max: '8' },
       }),
     });
 
     expect(result.candidate?.symbol).toBe('MATCH.HK');
     expect(result.candidate?.selectionStage).toBe('PRIMARY');
-    expect(result.candidate?.distancePct).toBeCloseTo(3.5000001);
+    expect(result.candidate?.distancePct).toBe('3.5000001');
   });
 
   it('supports higher realistic bear thresholds without treating api raw ratios as percent values', () => {
@@ -489,56 +468,56 @@ describe('autoSymbolFinder business flow', () => {
       warrants: [
         createWarrantListItem({
           symbol: 'ABOVE.HK',
-          apiDistanceRatio: -0.0349,
-          turnover: 2_000_000,
+          apiDistanceRatio: '-0.0349',
+          turnover: '2000000',
         }),
         createWarrantListItem({
           symbol: 'MATCH.HK',
-          apiDistanceRatio: -0.035000001,
-          turnover: 2_500_000,
+          apiDistanceRatio: '-0.035000001',
+          turnover: '2500000',
         }),
       ],
       tradingMinutes: 10,
       policy: createDirectionalPolicy('SHORT', {
-        primaryThreshold: -3.5,
-        degradedRange: { min: -3.5, max: -2 },
-        switchDistanceRange: { min: -8, max: -2 },
+        primaryThreshold: '-3.5',
+        degradedRange: { min: '-3.5', max: '-2' },
+        switchDistanceRange: { min: '-8', max: '-2' },
       }),
     });
 
     expect(result.candidate?.symbol).toBe('MATCH.HK');
     expect(result.candidate?.selectionStage).toBe('PRIMARY');
-    expect(result.candidate?.distancePct).toBeCloseTo(-3.5000001);
+    expect(result.candidate?.distancePct).toBe('-3.5000001');
   });
 
-  it('rejects non-finite thresholds at policy construction boundary', () => {
+  it('fails fast for malformed financial thresholds at policy construction boundary', () => {
     const { logger, warns } = createLoggerRecorder();
-    const policy = resolveDirectionalAutoSearchPolicy({
-      direction: 'LONG',
-      autoSearchConfig: {
-        autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: Number.NaN,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: Number.NaN,
-        autoSearchMinTurnoverPerMinuteBear: 10_000,
-        autoSearchExpiryMinMonths: 3,
-        autoSearchOpenDelayMinutes: 0,
-        switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
-      },
-      monitorSymbol: 'HSI.HK',
-      logPrefix: '[自动寻标] 非法策略',
-      logger: {
-        ...logger,
-        error: (message: string) => {
-          warns.push(message);
+    expect(() =>
+      resolveDirectionalAutoSearchPolicy({
+        direction: 'LONG',
+        autoSearchConfig: {
+          autoSearchEnabled: true,
+          autoSearchMinDistancePctBull: 'NaN',
+          autoSearchMinDistancePctBear: '-0.35',
+          autoSearchMinTurnoverPerMinuteBull: 'NaN',
+          autoSearchMinTurnoverPerMinuteBear: '10000',
+          autoSearchExpiryMinMonths: 3,
+          autoSearchOpenDelayMinutes: 0,
+          switchIntervalMinutes: 0,
+          switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+          switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
         },
-      },
-    });
-
-    expect(policy).toBeNull();
-    expect(warns.some((message) => message.includes('不是有限数'))).toBeTrue();
+        monitorSymbol: 'HSI.HK',
+        logPrefix: '[自动寻标] 非法策略',
+        logger: {
+          ...logger,
+          error: (message: string) => {
+            warns.push(message);
+          },
+        },
+      }),
+    ).toThrow(TypeError);
+    expect(warns).toEqual([]);
   });
 
   it('rejects policies whose primary threshold is not strictly inside the switch range', () => {
@@ -547,15 +526,15 @@ describe('autoSymbolFinder business flow', () => {
       direction: 'LONG',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 10_000,
-        autoSearchMinTurnoverPerMinuteBear: 10_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '10000',
+        autoSearchMinTurnoverPerMinuteBear: '10000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 0.35 },
-        switchDistanceRangeBear: { min: -1.5, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '0.35' },
+        switchDistanceRangeBear: { min: '-1.5', max: '-0.2' },
       },
       monitorSymbol: 'HSI.HK',
       logPrefix: '[自动寻标] 非法策略',
@@ -570,15 +549,15 @@ describe('autoSymbolFinder business flow', () => {
       direction: 'SHORT',
       autoSearchConfig: {
         autoSearchEnabled: true,
-        autoSearchMinDistancePctBull: 0.35,
-        autoSearchMinDistancePctBear: -0.35,
-        autoSearchMinTurnoverPerMinuteBull: 10_000,
-        autoSearchMinTurnoverPerMinuteBear: 10_000,
+        autoSearchMinDistancePctBull: '0.35',
+        autoSearchMinDistancePctBear: '-0.35',
+        autoSearchMinTurnoverPerMinuteBull: '10000',
+        autoSearchMinTurnoverPerMinuteBear: '10000',
         autoSearchExpiryMinMonths: 3,
         autoSearchOpenDelayMinutes: 0,
         switchIntervalMinutes: 0,
-        switchDistanceRangeBull: { min: 0.2, max: 1.5 },
-        switchDistanceRangeBear: { min: -0.35, max: -0.2 },
+        switchDistanceRangeBull: { min: '0.2', max: '1.5' },
+        switchDistanceRangeBear: { min: '-0.35', max: '-0.2' },
       },
       monitorSymbol: 'HSI.HK',
       logPrefix: '[自动寻标] 非法策略',
@@ -597,170 +576,234 @@ describe('autoSymbolFinder business flow', () => {
     ).toBeTrue();
   });
 
-  it('forwards full warrantList filters through the MarketQuoteContext boundary', async () => {
-    const quoteCtx = createQuoteContextMock();
-    const ctx = createQuoteContextDouble(quoteCtx);
-
-    await ctx.warrantList({
-      symbol: 'HSI.HK',
-      sortBy: WarrantSortBy.Turnover,
-      sortOrder: SortOrderType.Descending,
-      types: [WarrantType.Bull],
-      issuerIds: [123],
-      expiryFilters: [FilterWarrantExpiryDate.Between_3_6],
-      inOutBoundsTypes: [FilterWarrantInOutBoundsType.In],
-      status: [WarrantStatus.Normal],
+  it('forwards full finder filters through the neutral MarketQuoteContext boundary', async () => {
+    const requests: Array<Parameters<MarketQuoteContext['warrantList']>[0]> = [];
+    const ctx: MarketQuoteContext = {
+      warrantQuote: async () => [],
+      warrantList: async (request) => {
+        requests.push(request);
+        return [];
+      },
+    };
+    const { logger } = createLoggerRecorder();
+    await findBestWarrant({
+      ctx,
+      monitorSymbol: 'HSI.HK',
+      tradingMinutes: 10,
+      policy: createDirectionalPolicy('LONG'),
+      expiryMinMonths: 3,
+      logger,
     });
 
-    const warrantListCalls = quoteCtx.getCalls('warrantList');
-    expect(warrantListCalls).toHaveLength(1);
-    expect(warrantListCalls[0]?.args).toEqual([
-      'HSI.HK',
-      WarrantSortBy.Turnover,
-      SortOrderType.Descending,
-      [WarrantType.Bull],
-      [123],
-      [FilterWarrantExpiryDate.Between_3_6],
-      [FilterWarrantInOutBoundsType.In],
-      [WarrantStatus.Normal],
+    expect(requests).toEqual([
+      {
+        symbol: 'HSI.HK',
+        sortBy: 'TURNOVER',
+        sortOrder: 'DESCENDING',
+        types: ['BULL'],
+        issuerIds: null,
+        expiryFilters: ['MONTHS_3_TO_6', 'MONTHS_6_TO_12', 'OVER_12_MONTHS'],
+        inOutBoundsTypes: ['IN'],
+        status: ['NORMAL'],
+      },
     ]);
   });
 
   it('reuses cache within TTL and re-fetches after expiry for the same monitor symbol and direction', async () => {
-    const quoteCtx = createQuoteContextMock();
-    quoteCtx.seedWarrantList('HSI.HK', [
+    const items = [
       toWarrantInfo(
         createWarrantListItem({
           symbol: 'BULL-1.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.55),
-          turnover: 300_000,
+          apiDistanceRatio: '0.0055',
+          turnover: '300000',
         }),
       ),
-    ]);
-
+    ];
+    let queries = 0;
+    const ctx: MarketQuoteContext = {
+      warrantQuote: async () => [],
+      warrantList: async () => {
+        queries += 1;
+        return items;
+      },
+    };
     let nowMs = 1_000;
     const cache = createWarrantListCache();
     const { logger } = createLoggerRecorder();
-
     const baseInput = {
-      ctx: createQuoteContextDouble(quoteCtx),
+      ctx,
       monitorSymbol: 'HSI.HK',
       tradingMinutes: 10,
       policy: createDirectionalPolicy('LONG'),
       expiryMinMonths: 3,
       logger,
-      cacheConfig: {
-        cache,
-        ttlMs: 3_000,
-        nowMs: () => nowMs,
-      },
+      cacheConfig: { cache, ttlMs: 3_000, nowMs: () => nowMs },
     };
-
     const first = await findBestWarrant(baseInput);
     nowMs = 2_000;
     const second = await findBestWarrant(baseInput);
-
     expect(first?.symbol).toBe('BULL-1.HK');
     expect(second?.symbol).toBe('BULL-1.HK');
-    expect(quoteCtx.getCalls('warrantList')).toHaveLength(1);
-
+    expect(queries).toBe(1);
     nowMs = 5_500;
     await findBestWarrant(baseInput);
-    expect(quoteCtx.getCalls('warrantList')).toHaveLength(2);
+    expect(queries).toBe(2);
   });
 
-  it('shares one client-retry failure across same-key calls and reuses the next success from cache', async () => {
-    const quoteCtx = createQuoteContextMock();
-    quoteCtx.seedWarrantList('HSI.HK', [
+  it('shares one exhausted read-port failure across same-key calls and reuses the next success from cache', async () => {
+    const items = [
       toWarrantInfo(
         createWarrantListItem({
           symbol: 'BULL-1.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.55),
-          turnover: 300_000,
+          apiDistanceRatio: '0.0055',
+          turnover: '300000',
         }),
       ),
-    ]);
-
-    quoteCtx.setFailureRule('warrantList', {
-      failAtCalls: [1, 2, 3],
-      errorMessage: 'service unavailable',
+    ];
+    const cause = new Error('service unavailable');
+    const exhausted = await createExternalApiRequestError({
+      operation: 'QuoteContext.warrantList',
+      attempts: 3,
+      cause,
     });
+    let queries = 0;
+    const ctx: MarketQuoteContext = {
+      warrantQuote: async () => [],
+      warrantList: async () => {
+        queries += 1;
+        if (queries === 1) throw exhausted;
 
-    const marketDataClient = await createMarketDataClient({
-      config: createSdkConfigDouble(),
-      quoteContextFactory: async () => quoteCtx,
-    });
+        return items;
+      },
+    };
     const { logger } = createLoggerRecorder();
     const cache = createWarrantListCache();
     const baseInput = {
-      ctx: await marketDataClient.getQuoteContext(),
+      ctx,
       monitorSymbol: 'HSI.HK',
       tradingMinutes: 10,
       policy: createDirectionalPolicy('LONG'),
       expiryMinMonths: 3,
       logger,
-      cacheConfig: {
-        cache,
-        ttlMs: 3_000,
-        nowMs: () => 1_000,
-      },
+      cacheConfig: { cache, ttlMs: 3_000, nowMs: () => 1_000 },
     };
+    const results = await Promise.allSettled([
+      findBestWarrant(baseInput),
+      findBestWarrant(baseInput),
+    ]);
+    const [first, second] = results;
+    expect(first.status).toBe('rejected');
+    expect(second.status).toBe('rejected');
+    if (first.status !== 'rejected' || second.status !== 'rejected')
+      throw new Error('expected both requests to reject');
 
-    const firstAttempt = findBestWarrant(baseInput);
-    const secondAttempt = findBestWarrant(baseInput);
-    const [firstResult, secondResult] = await Promise.allSettled([firstAttempt, secondAttempt]);
-
-    expect(firstResult.status).toBe('rejected');
-    expect(secondResult.status).toBe('rejected');
-    if (firstResult.status !== 'rejected' || secondResult.status !== 'rejected') {
-      throw new Error('expected both same-key finder requests to reject');
-    }
-
-    expect(secondResult.reason).toBe(firstResult.reason);
-    expect(isExternalApiRequestError(firstResult.reason)).toBeTrue();
-    expect(firstResult.reason).toMatchObject({
+    expect(first.reason).toBe(exhausted);
+    expect(second.reason).toBe(first.reason);
+    expect(isExternalApiRequestError(first.reason)).toBeTrue();
+    expect(first.reason).toMatchObject({
       name: 'ExternalApiRequestError',
       operation: 'QuoteContext.warrantList',
       attempts: 3,
     });
+    expect(exhausted.cause).toBe(cause);
+    expect(queries).toBe(1);
+    const next = await findBestWarrant(baseInput);
+    expect(next?.symbol).toBe('BULL-1.HK');
+    expect(queries).toBe(2);
+    const cached = await findBestWarrant(baseInput);
+    expect(cached?.symbol).toBe('BULL-1.HK');
+    expect(queries).toBe(2);
+  });
 
-    expect((firstResult.reason as Error & { cause?: unknown }).cause).toBe(
-      quoteCtx.getCalls('warrantList')[2]?.error,
+  it.each([{ callPrice: 'NaN' }, { turnover: 'Infinity' }, { toCallPrice: '2e-3' }])(
+    'rejects malformed NORMAL candidate financial fields before no-candidate fallback: %j',
+    async (invalidFields) => {
+      const { logger, warns } = createLoggerRecorder();
+      const item = toWarrantInfo(
+        createWarrantListItem({
+          symbol: 'MALFORMED.HK',
+          apiDistanceRatio: '0.005',
+          turnover: '300000',
+          status: 'NORMAL',
+        }),
+      );
+      const ctx: MarketQuoteContext = {
+        warrantQuote: async () => [],
+        warrantList: async () => [{ ...item, ...invalidFields }],
+      };
+      await rejects(
+        findBestWarrant({
+          ctx,
+          monitorSymbol: 'HSI.HK',
+          tradingMinutes: 10,
+          policy: createDirectionalPolicy('LONG'),
+          expiryMinMonths: 3,
+          logger,
+        }),
+        TypeError,
+      );
+      expect(warns).toEqual([]);
+    },
+  );
+
+  it('preserves the original internal read failure identity instead of returning an empty candidate', async () => {
+    const internalError = new TypeError('internal warrant projection invariant');
+    const item = toWarrantInfo(
+      createWarrantListItem({
+        symbol: 'BROKEN.HK',
+        apiDistanceRatio: '0.005',
+        turnover: '300000',
+        status: 'NORMAL',
+      }),
     );
-    expect(quoteCtx.getCalls('warrantList')).toHaveLength(3);
-
-    const nextAttempt = await findBestWarrant(baseInput);
-    expect(nextAttempt?.symbol).toBe('BULL-1.HK');
-    expect(quoteCtx.getCalls('warrantList')).toHaveLength(4);
-
-    const cachedAttempt = await findBestWarrant(baseInput);
-    expect(cachedAttempt?.symbol).toBe('BULL-1.HK');
-    expect(quoteCtx.getCalls('warrantList')).toHaveLength(4);
+    Object.defineProperty(item, 'callPrice', {
+      get: () => {
+        throw internalError;
+      },
+    });
+    const { logger, warns } = createLoggerRecorder();
+    const ctx: MarketQuoteContext = {
+      warrantQuote: async () => [],
+      warrantList: async () => [item],
+    };
+    await rejects(
+      findBestWarrant({
+        ctx,
+        monitorSymbol: 'HSI.HK',
+        tradingMinutes: 10,
+        policy: createDirectionalPolicy('LONG'),
+        expiryMinMonths: 3,
+        logger,
+      }),
+      (error: unknown) => error === internalError,
+    );
+    expect(warns).toEqual([]);
   });
 
   it('returns null and logs when no warrant can satisfy business thresholds', async () => {
-    const quoteCtx = createQuoteContextMock();
-    quoteCtx.seedWarrantList('HSI.HK', [
-      toWarrantInfo(
-        createWarrantListItem({
-          symbol: 'LOW-DIST.HK',
-          apiDistanceRatio: toApiDistanceRatio(0.2),
-          turnover: 1_000_000,
-        }),
-      ),
-    ]);
-
+    const ctx: MarketQuoteContext = {
+      warrantQuote: async () => [],
+      warrantList: async () => [
+        toWarrantInfo(
+          createWarrantListItem({
+            symbol: 'LOW-DIST.HK',
+            apiDistanceRatio: '0.002',
+            turnover: '1000000',
+          }),
+        ),
+      ],
+    };
     const { logger, warns } = createLoggerRecorder();
-    const result = await findBestWarrant({
-      ctx: createQuoteContextDouble(quoteCtx),
-      monitorSymbol: 'HSI.HK',
-      tradingMinutes: 10,
-      policy: createDirectionalPolicy('LONG'),
-      expiryMinMonths: 3,
-      logger,
-    });
-
-    expect(result).toBeNull();
+    expect(
+      await findBestWarrant({
+        ctx,
+        monitorSymbol: 'HSI.HK',
+        tradingMinutes: 10,
+        policy: createDirectionalPolicy('LONG'),
+        expiryMinMonths: 3,
+        logger,
+      }),
+    ).toBeNull();
     expect(warns.some((msg) => msg.includes('主条件与降级条件均未命中'))).toBeTrue();
   });
 });

@@ -1,137 +1,155 @@
-/**
- * OrderRecorder 执行事实边界测试
- *
- * 覆盖公开记录入口与直达存储入口都只接受完整的 broker 成交事实，避免无效事实污染本地订单记录。
- */
+/** 执行事实边界回归：真实同步 O/Daily/S 准入保留原无效输入、无污染与价格优先抵扣 oracle。 */
 import { describe, expect, it } from 'bun:test';
-import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
 import { createOrderStorage } from '../../../src/core/orderRecorder/orderStorage.js';
-import type { RateLimiter, TradeMutationPermit } from '../../../src/types/services.js';
-import { createTradeContextDouble } from '../../helpers/testDoubles.js';
+import { calculateOrderStatistics } from '../../../src/core/orderRecorder/utils.js';
+import { createExecutionFixture } from './executionFixture.js';
 
 const SYMBOL = 'BULL.HK';
-
-function createImmediateRateLimiter(): RateLimiter {
-  return {
-    throttle: async (): Promise<void> => {},
-    withTradeMutation: async <T>(
-      callback: (permit: TradeMutationPermit) => Promise<T>,
-    ): Promise<T> =>
-      callback({
-        invoke: async <TResult>(operation: () => Promise<TResult>): Promise<TResult> => operation(),
-      }),
-  };
-}
-
-function createRecorder() {
-  return createOrderRecorder({
-    ctx: createTradeContextDouble(),
-    rateLimiter: createImmediateRateLimiter(),
-  });
-}
-
-const invalidExecutionFacts: ReadonlyArray<{
-  readonly label: string;
-  readonly executedPrice: number;
-  readonly executedQuantity: number;
-  readonly executedTimeMs: number;
-}> = [
-  {
-    label: 'price',
-    executedPrice: 0,
-    executedQuantity: 100,
-    executedTimeMs: 1_000,
-  },
-  {
-    label: 'quantity',
-    executedPrice: 1,
-    executedQuantity: Number.NaN,
-    executedTimeMs: 1_000,
-  },
-  {
-    label: 'time',
-    executedPrice: 1,
-    executedQuantity: 100,
-    executedTimeMs: Number.POSITIVE_INFINITY,
-  },
+const invalidExecutionFacts = [
+  { label: 'price', price: '0', amount: '0', quantity: 100, offsetMs: 1_000 },
+  { label: 'quantity', price: '1', amount: '100', quantity: Number.NaN, offsetMs: 1_000 },
+  { label: 'time', price: '1', amount: '100', quantity: 100, offsetMs: Number.POSITIVE_INFINITY },
 ];
 
 describe('OrderRecorder execution-fact boundary', () => {
-  for (const invalidFact of invalidExecutionFacts) {
-    it(`rejects invalid ${invalidFact.label} at the public buy boundary without mutation`, () => {
-      const recorder = createRecorder();
-
-      expect(() => {
-        recorder.recordLocalBuy(
+  for (const invalid of invalidExecutionFacts) {
+    it(`rejects invalid ${invalid.label} at the public buy boundary without mutation`, () => {
+      const f = createExecutionFixture();
+      const token = f.snapshot.getView().token;
+      const status = f.sink.getStatus();
+      expect(() =>
+        f.commit(
+          'INVALID',
+          'BUY',
+          invalid.price,
+          invalid.amount,
+          invalid.quantity,
+          invalid.offsetMs,
           SYMBOL,
-          invalidFact.executedPrice,
-          invalidFact.executedQuantity,
-          true,
-          invalidFact.executedTimeMs,
-        );
-      }).toThrow(/执行事实/);
-      expect(recorder.getBuyOrdersForSymbol(SYMBOL, true)).toEqual([]);
+        ),
+      ).toThrow();
+      expect(f.recorder.getBuyOrdersForSymbol(SYMBOL, true)).toEqual([]);
+      expect(f.recorder.getExecutionFact('INVALID')).toBeNull();
+      expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
+      expect(f.snapshot.getView().token).toBe(token);
+      expect(f.sink.getStatus()).toEqual(status);
     });
 
-    it(`rejects invalid ${invalidFact.label} at the public sell boundary without mutation`, () => {
-      const recorder = createRecorder();
-      recorder.recordLocalBuy(SYMBOL, 1, 100, true, 1_000);
-      const beforeBuyOrders = recorder.getBuyOrdersForSymbol(SYMBOL, true);
-
-      expect(() => {
-        recorder.recordLocalSell(
+    it(`rejects invalid ${invalid.label} at the public sell boundary without mutation`, () => {
+      const f = createExecutionFixture();
+      f.commit('BUY', 'BUY', '1', '100', 100, 1_000, SYMBOL);
+      const before = f.recorder.getBuyOrdersForSymbol(SYMBOL, true);
+      const evidence = f.daily.getExecutionTimeEvidence();
+      const token = f.snapshot.getView().token;
+      const status = f.sink.getStatus();
+      expect(() =>
+        f.commit(
+          'INVALID',
+          'SELL',
+          invalid.price,
+          invalid.amount,
+          invalid.quantity,
+          invalid.offsetMs,
           SYMBOL,
-          invalidFact.executedPrice,
-          invalidFact.executedQuantity,
-          true,
-          invalidFact.executedTimeMs,
-        );
-      }).toThrow(/执行事实/);
-      expect(recorder.getBuyOrdersForSymbol(SYMBOL, true)).toEqual(beforeBuyOrders);
+        ),
+      ).toThrow();
+      expect(f.recorder.getBuyOrdersForSymbol(SYMBOL, true)).toEqual(before);
+      expect(f.recorder.getSellRecordByOrderId('INVALID')).toBeNull();
+      expect(f.daily.getExecutionTimeEvidence()).toEqual(evidence);
+      expect(f.snapshot.getView().token).toBe(token);
+      expect(f.sink.getStatus()).toEqual(status);
     });
 
-    it(`rejects invalid ${invalidFact.label} at direct storage entrypoints without mutation`, () => {
+    it(`rejects invalid ${invalid.label} at the direct cost-analysis boundary without mutating storage`, () => {
       const storage = createOrderStorage();
-      storage.addBuyOrder(SYMBOL, 1, 100, true, 1_000);
-      const beforeBuyOrders = storage.getBuyOrdersList(SYMBOL, true);
-
-      expect(() => {
-        storage.addBuyOrder(
-          SYMBOL,
-          invalidFact.executedPrice,
-          invalidFact.executedQuantity,
-          true,
-          invalidFact.executedTimeMs,
-        );
-      }).toThrow(/执行事实/);
-
-      expect(() => {
-        storage.updateAfterSell(
-          SYMBOL,
-          invalidFact.executedPrice,
-          invalidFact.executedQuantity,
-          true,
-          invalidFact.executedTimeMs,
-        );
-      }).toThrow(/执行事实/);
-      expect(storage.getBuyOrdersList(SYMBOL, true)).toEqual(beforeBuyOrders);
+      const valid = {
+        orderId: 'BUY',
+        symbol: SYMBOL,
+        costAmount: '100',
+        executedQuantity: 100,
+        executedTime: 1_000,
+        submittedAt: undefined,
+        updatedAt: undefined,
+      };
+      storage.setBuyOrdersListForLong(SYMBOL, [valid]);
+      const before = storage.getBuyOrdersList(SYMBOL, true);
+      expect(() =>
+        calculateOrderStatistics([
+          {
+            ...valid,
+            costAmount: invalid.amount,
+            executedQuantity: invalid.quantity,
+            executedTime: invalid.offsetMs,
+          },
+        ]),
+      ).toThrow();
+      expect(storage.getBuyOrdersList(SYMBOL, true)).toEqual(before);
+      expect(storage.getCostBasis(SYMBOL, true)).toEqual({ costAmount: '100', quantity: 100 });
+      // 废弃的无 broker identity 存储写入能力不再存在；业务写入走上面的真实事实链。
+      expect(Object.hasOwn(storage, 'addBuyOrder')).toBe(false);
+      expect(Object.hasOwn(storage, 'updateAfterSell')).toBe(false);
     });
   }
 
   it('keeps valid broker execution times and price-priority deduction behavior', () => {
-    const recorder = createRecorder();
-    recorder.recordLocalBuy(SYMBOL, 1.2, 100, true, 3_000);
-    recorder.recordLocalBuy(SYMBOL, 0.8, 100, true, 1_000);
-    recorder.recordLocalBuy(SYMBOL, 0.8, 100, true, 2_000);
-
-    recorder.recordLocalSell(SYMBOL, 1.1, 200, true, 4_000);
-
-    expect(recorder.getBuyOrdersForSymbol(SYMBOL, true)).toMatchObject([
+    const f = createExecutionFixture();
+    f.commit('BUY-HIGH', 'BUY', '1.2', '120', 100, 3_000, SYMBOL);
+    f.commit('BUY-LOW-1', 'BUY', '0.8', '80', 100, 1_000, SYMBOL);
+    f.commit('BUY-LOW-2', 'BUY', '0.8', '80', 100, 2_000, SYMBOL);
+    expect(f.commit('SELL', 'SELL', '1.1', '220', 200, 4_000, SYMBOL).admission).toBe('ADMITTED');
+    expect(f.recorder.getBuyOrdersForSymbol(SYMBOL, true)).toMatchObject([
       {
-        executedPrice: 1.2,
+        orderId: 'BUY-HIGH',
+        costAmount: '120',
         executedQuantity: 100,
-        executedTime: 3_000,
+        executedTime: f.now + 3_000,
       },
     ]);
+    expect(f.sink.getStatus().staleVersion).toBe(4);
+    expect(f.snapshot.getView().token.snapshotGeneration).toBe(4);
+    expect(f.io.calls).toEqual([]);
+  });
+
+  it('a real duplicate does not register another stale generation', () => {
+    const f = createExecutionFixture();
+    expect(f.commit('BUY', 'BUY', '1', '100', 100, 1_000, SYMBOL).admission).toBe('ADMITTED');
+    const before = f.snapshot.getView().token;
+    expect(f.commit('BUY', 'BUY', '1', '100', 100, 1_000, SYMBOL).admission).toBe('DUPLICATE');
+    expect(f.snapshot.getView().token).toBe(before);
+    expect(f.sink.getStatus().staleVersion).toBe(1);
+    expect(f.recorder.getCostBasis(SYMBOL, true)).toEqual({ costAmount: '100', quantity: 100 });
+  });
+
+  it('a real sealed boundary suppresses a later original-time revision before economic publication', () => {
+    const f = createExecutionFixture();
+    f.commit('BUY', 'BUY', '1', '100', 100, 1_000, SYMBOL);
+    f.daily.commitProtectionBoundary(
+      f.daily.prepareProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: f.now + 1_000,
+      }),
+    );
+    const before = f.snapshot.getView().token;
+    const cost = f.recorder.getCostBasis(SYMBOL, true);
+    expect(
+      f.flow.recordCumulativeExecution({
+        factStage: 'TERMINAL',
+        orderId: 'BUY',
+        side: 'BUY',
+        monitorSymbol: 'HSI.HK',
+        symbol: SYMBOL,
+        isLongSymbol: true,
+        isProtectiveLiquidation: false,
+        executedQuantity: 100,
+        executedPrice: '1.1',
+        executedAmount: '110',
+        executedTimeMs: f.now + 1_000,
+        orderUpdatedAtMs: f.now + 1_001,
+      }).admission,
+    ).toBe('SUPPRESSED');
+    expect(f.recorder.getExecutionFact('BUY')?.cumulativeAmount).toBe('100');
+    expect(f.recorder.getCostBasis(SYMBOL, true)).toEqual(cost);
+    expect(f.snapshot.getView().token).toBe(before);
+    expect(f.sink.getStatus().staleVersion).toBe(1);
   });
 });

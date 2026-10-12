@@ -5,7 +5,6 @@
  * - 验证保护性清仓边界推进后的分段过滤、幂等重置与启动恢复边界语义。
  */
 import { describe, expect, it } from 'bun:test';
-import { OrderSide, OrderStatus, OrderType } from 'longbridge';
 import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
@@ -17,31 +16,40 @@ import type {
 } from '../../../src/types/risk.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
 
+/** 直接提供场景中性事实；金额、生命周期及真实执行时间由调用方明确给出，不经过 SDK 映射。 */
 function createExecutedOrder(params: {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: OrderSide;
-  readonly status?: OrderStatus;
+  readonly executionSide: RawOrderFromAPI['executionSide'];
+  readonly executionStatus: RawOrderFromAPI['executionStatus'];
+  readonly executionPhase: RawOrderFromAPI['executionPhase'];
+  readonly status: RawOrderFromAPI['status'];
   readonly stockName?: string;
-  readonly executedPrice: number;
+  readonly executedPrice: string;
+  readonly executedAmount: string;
   readonly executedQuantity: number;
   readonly updatedAtMs: number;
+  readonly executionTimeMs: number;
 }): RawOrderFromAPI {
-  const updatedAt = new Date(params.updatedAtMs);
   return {
     orderId: params.orderId,
     symbol: params.symbol,
     stockName: params.stockName ?? params.symbol,
-    side: params.side,
-    status: params.status ?? OrderStatus.Filled,
-    orderType: OrderType.ELO,
-    remark: null,
-    price: params.executedPrice,
+    remark: '',
+    executionSide: params.executionSide,
+    executionStatus: params.executionStatus,
+    executionPhase: params.executionPhase,
+    status: params.status,
+    orderType: 'LO',
     quantity: params.executedQuantity,
-    executedPrice: params.executedPrice,
     executedQuantity: params.executedQuantity,
-    submittedAt: updatedAt,
-    updatedAt,
+    price: params.executedPrice,
+    executedPrice: params.executedPrice,
+    executedAmount: params.executedAmount,
+    submittedAt: new Date(params.updatedAtMs),
+    updatedAt: new Date(params.updatedAtMs),
+    executionTimeMs: params.executionTimeMs,
+    updatedAtMs: params.updatedAtMs,
   };
 }
 
@@ -64,26 +72,12 @@ function resolveOrderOwnership(order: RawOrderFromAPI): OrderOwnership | null {
   return null;
 }
 
-type SegmentTestTracker = Omit<DailyLossTracker, 'recordCumulativeExecution'> & {
-  readonly recordCumulativeExecution: (
-    input: Omit<DailyLossCumulativeExecutionInput, 'factStage'> & {
-      readonly factStage?: DailyLossCumulativeExecutionInput['factStage'];
-    },
-  ) => ReturnType<DailyLossTracker['recordCumulativeExecution']>;
-};
-
-function createSegmentTracker(): SegmentTestTracker {
-  const orderAnalysisDeps = createDailyLossOrderAnalysisDeps();
-  const tracker = createDailyLossTracker({
-    ...orderAnalysisDeps,
+function createSegmentTracker(): DailyLossTracker {
+  return createDailyLossTracker({
+    ...createDailyLossOrderAnalysisDeps(),
     resolveOrderOwnership: (order) => resolveOrderOwnership(order),
     toHongKongTimeIso,
   });
-  return {
-    ...tracker,
-    recordCumulativeExecution: (input) =>
-      tracker.recordCumulativeExecution({ factStage: 'TERMINAL', ...input }),
-  };
 }
 
 function commitPreparedBoundary(
@@ -220,12 +214,17 @@ describe('dailyLossTracker segment flow', () => {
       tracker.recalculateFromAllOrders(
         [
           createExecutedOrder({
+            status: 'FILLED',
+            executionStatus: 'FILLED',
+            executionPhase: 'TERMINAL',
             orderId: 'BOUNDARY-SELECTOR',
             symbol: 'BULL.HK',
-            side: OrderSide.Buy,
-            executedPrice: 10,
+            executionSide: 'BUY',
+            executedPrice: '10',
+            executedAmount: '1000',
             executedQuantity: 100,
             updatedAtMs: currentUpdatedAtMs,
+            executionTimeMs: currentUpdatedAtMs,
           }),
         ],
         createMonitor(),
@@ -237,7 +236,7 @@ describe('dailyLossTracker segment flow', () => {
         tracker.restoreExecutionSnapshot({
           direction: 'LONG',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
+          side: 'BUY',
           orderId: 'BOUNDARY-SELECTOR',
           ...snapshot,
         });
@@ -271,27 +270,37 @@ describe('dailyLossTracker segment flow', () => {
     const currentUpdatedAtMs = boundaryMs + 100;
     const currentOrders = [
       createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
         orderId: 'BUY-SELECTOR-CONSISTENCY',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        executionSide: 'BUY',
+        executedPrice: '10',
+        executedAmount: '1000',
         executedQuantity: 100,
         updatedAtMs: currentUpdatedAtMs,
+        executionTimeMs: currentUpdatedAtMs,
       }),
       createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
         orderId: 'SELL-SELECTOR-CONSISTENCY',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        executedPrice: 9,
+        executionSide: 'SELL',
+        executedPrice: '9',
+        executedAmount: '900',
         executedQuantity: 100,
         updatedAtMs: currentUpdatedAtMs,
+        executionTimeMs: currentUpdatedAtMs,
       }),
     ];
 
     function restoreBoundarySnapshots(tracker: DailyLossTracker): void {
       for (const [orderId, side, cumulativeAmount] of [
-        ['BUY-SELECTOR-CONSISTENCY', OrderSide.Buy, '400'],
-        ['SELL-SELECTOR-CONSISTENCY', OrderSide.Sell, '360'],
+        ['BUY-SELECTOR-CONSISTENCY', 'BUY', '400'],
+        ['SELL-SELECTOR-CONSISTENCY', 'SELL', '360'],
       ] as const) {
         for (const factStage of ['OPEN', 'TERMINAL'] as const) {
           tracker.restoreExecutionSnapshot({
@@ -322,10 +331,10 @@ describe('dailyLossTracker segment flow', () => {
       boundaryExecutedTimeMs: boundaryMs,
     });
     live.commitProtectionBoundary(prepared);
-    expect(live.getLossOffset('LONG')).toBe(-60);
+    expect(live.getLossOffset('LONG')).toBe('-60');
 
     live.recalculateFromAllOrders(currentOrders, createMonitor(), new Date(currentUpdatedAtMs));
-    expect(live.getLossOffset('LONG')).toBe(-60);
+    expect(live.getLossOffset('LONG')).toBe('-60');
 
     const restarted = createSegmentTracker();
     restarted.recalculateFromAllOrders(
@@ -336,7 +345,7 @@ describe('dailyLossTracker segment flow', () => {
     );
     restoreBoundarySnapshots(restarted);
     restarted.restoreProtectionBoundary(prepared);
-    expect(restarted.getLossOffset('LONG')).toBe(-60);
+    expect(restarted.getLossOffset('LONG')).toBe('-60');
   });
 
   it('derives execution progress from cumulative facts and keeps an equal terminal revision idempotent', () => {
@@ -344,28 +353,39 @@ describe('dailyLossTracker segment flow', () => {
     tracker.resetAll(new Date('2026-07-11T01:00:00.000Z'));
 
     const partialResult = tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 40,
       executedTimeMs: Date.parse('2026-07-11T02:00:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-07-11T02:00:00.000Z'),
       orderId: 'PROTECTIVE-1',
     });
     const terminalResult = tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 40,
       executedTimeMs: Date.parse('2026-07-11T02:00:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-07-11T02:01:00.000Z'),
       orderId: 'PROTECTIVE-1',
     });
 
-    expect(partialResult).toEqual({ authoritativeFactChanged: true, executionAdvanced: true });
-    expect(terminalResult).toEqual({ authoritativeFactChanged: true, executionAdvanced: false });
+    expect(partialResult).toEqual({
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
+      executionAdvanced: true,
+    });
+
+    expect(terminalResult).toEqual({
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
+      executionAdvanced: false,
+    });
   });
 
   it('derives 40 to 100 cumulative execution as one further execution advance', () => {
@@ -376,25 +396,30 @@ describe('dailyLossTracker segment flow', () => {
       factStage: 'OPEN',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 40,
       executedTimeMs: Date.parse('2026-07-11T02:00:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-07-11T02:00:00.000Z'),
       orderId: 'PROTECTIVE-2',
     });
     const finalResult = tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.95,
+      side: 'SELL',
+      executedPrice: '0.95',
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-07-11T02:02:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-07-11T02:02:00.000Z'),
       orderId: 'PROTECTIVE-2',
     });
 
-    expect(finalResult).toEqual({ authoritativeFactChanged: true, executionAdvanced: true });
+    expect(finalResult).toEqual({
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
+      executionAdvanced: true,
+    });
   });
 
   it('accepts cumulative quantity growth at the same order revision and updates the amount snapshot', () => {
@@ -406,25 +431,31 @@ describe('dailyLossTracker segment flow', () => {
       factStage: 'OPEN',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 40,
       executedTimeMs: revisionMs,
       orderUpdatedAtMs: revisionMs,
       orderId: 'PROTECTIVE-SAME-REVISION',
     });
     const advanced = tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.95,
+      side: 'SELL',
+      executedPrice: '0.95',
       executedQuantity: 100,
       executedTimeMs: revisionMs,
       orderUpdatedAtMs: revisionMs,
       orderId: 'PROTECTIVE-SAME-REVISION',
     });
 
-    expect(advanced).toEqual({ authoritativeFactChanged: true, executionAdvanced: true });
+    expect(advanced).toEqual({
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
+      executionAdvanced: true,
+    });
+
     expect(
       tracker.prepareProtectionBoundary({
         direction: 'LONG',
@@ -451,8 +482,8 @@ describe('dailyLossTracker segment flow', () => {
       factStage: 'OPEN',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 40,
       executedTimeMs: revisionMs,
       orderUpdatedAtMs: revisionMs,
@@ -464,14 +495,14 @@ describe('dailyLossTracker segment flow', () => {
         factStage: 'OPEN',
         direction: 'LONG',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        executedPrice: 0.95,
+        side: 'SELL',
+        executedPrice: '0.95',
         executedQuantity: 40,
         executedTimeMs: revisionMs,
         orderUpdatedAtMs: revisionMs,
         orderId: 'PROTECTIVE-SAME-REVISION-CONFLICT',
       }),
-    ).toThrow(/revision conflict/);
+    ).toThrow('[订单事实] 同 revision 同量同阶段的累计经济或执行时间冲突');
   });
 
   it('allows same-revision equal-quantity amount correction only when OPEN advances to TERMINAL', () => {
@@ -483,8 +514,8 @@ describe('dailyLossTracker segment flow', () => {
       factStage: 'OPEN',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 40,
       executedTimeMs: revisionMs,
       orderUpdatedAtMs: revisionMs,
@@ -494,15 +525,20 @@ describe('dailyLossTracker segment flow', () => {
       factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.95,
+      side: 'SELL',
+      executedPrice: '0.95',
       executedQuantity: 40,
       executedTimeMs: revisionMs,
       orderUpdatedAtMs: revisionMs,
       orderId: 'PROTECTIVE-SAME-REVISION-TERMINAL-CORRECTION',
     });
 
-    expect(correction).toEqual({ authoritativeFactChanged: true, executionAdvanced: false });
+    expect(correction).toEqual({
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
+      executionAdvanced: false,
+    });
+
     expect(
       tracker.prepareProtectionBoundary({
         direction: 'LONG',
@@ -525,8 +561,8 @@ describe('dailyLossTracker segment flow', () => {
         factStage: 'OPEN',
         direction: 'LONG',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        executedPrice: 0.95,
+        side: 'SELL',
+        executedPrice: '0.95',
         executedQuantity: 40,
         executedTimeMs: revisionMs,
         orderUpdatedAtMs: revisionMs,
@@ -541,10 +577,11 @@ describe('dailyLossTracker segment flow', () => {
     const live = createSegmentTracker();
     live.resetAll(new Date('2026-07-11T01:00:00.000Z'));
     live.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 1,
+      side: 'BUY',
+      executedPrice: '1',
       executedQuantity: 100,
       executedTimeMs: boundaryMs - 10,
       orderUpdatedAtMs: boundaryMs - 10,
@@ -552,10 +589,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     live.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 40,
       executedTimeMs: boundaryMs,
       orderUpdatedAtMs: boundaryMs,
@@ -567,10 +605,11 @@ describe('dailyLossTracker segment flow', () => {
     });
     live.commitProtectionBoundary(persistedBoundary);
     live.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 1,
+      side: 'BUY',
+      executedPrice: '1',
       executedQuantity: 60,
       executedTimeMs: finalMs - 10,
       orderUpdatedAtMs: finalMs - 10,
@@ -578,10 +617,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     live.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 0.9,
+      side: 'SELL',
+      executedPrice: '0.9',
       executedQuantity: 100,
       executedTimeMs: finalMs,
       orderUpdatedAtMs: finalMs,
@@ -592,28 +632,43 @@ describe('dailyLossTracker segment flow', () => {
     restarted.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'BUY-PRE',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 1,
+          executionSide: 'BUY',
+          executedPrice: '1',
+          executedAmount: '100',
           executedQuantity: 100,
           updatedAtMs: boundaryMs - 10,
+          executionTimeMs: boundaryMs - 10,
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'BUY-POST',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 1,
+          executionSide: 'BUY',
+          executedPrice: '1',
+          executedAmount: '60',
           executedQuantity: 60,
           updatedAtMs: finalMs - 10,
+          executionTimeMs: finalMs - 10,
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'SELL-PROTECTIVE',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 0.9,
+          executionSide: 'SELL',
+          executedPrice: '0.9',
+          executedAmount: '90',
           executedQuantity: 100,
           updatedAtMs: finalMs,
+          executionTimeMs: finalMs,
         }),
       ],
       createMonitor(),
@@ -623,7 +678,7 @@ describe('dailyLossTracker segment flow', () => {
     restarted.restoreProtectionBoundary(persistedBoundary);
 
     expect(restarted.getLossOffset('LONG')).toBe(live.getLossOffset('LONG'));
-    expect(restarted.getLossOffset('LONG')).toBe(-6);
+    expect(restarted.getLossOffset('LONG')).toBe('-6');
   });
 
   it('blocks restart when a persisted baseline identity conflicts with the current order', () => {
@@ -632,12 +687,17 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'BUY-1',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 1,
+          executionSide: 'BUY',
+          executedPrice: '1',
+          executedAmount: '100',
           executedQuantity: 100,
           updatedAtMs: boundaryMs,
+          executionTimeMs: boundaryMs,
         }),
       ],
       createMonitor(),
@@ -670,12 +730,17 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'BUY-REQUIRED-BASELINE',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 1,
+          executionSide: 'BUY',
+          executedPrice: '1',
+          executedAmount: '100',
           executedQuantity: 100,
           updatedAtMs: boundaryMs,
+          executionTimeMs: boundaryMs,
         }),
       ],
       createMonitor(),
@@ -699,12 +764,17 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'BUY-AFTER-BOUNDARY',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 1,
+          executionSide: 'BUY',
+          executedPrice: '1',
+          executedAmount: '100',
           executedQuantity: 100,
           updatedAtMs: afterBoundaryMs,
+          executionTimeMs: afterBoundaryMs,
         }),
       ],
       createMonitor(),
@@ -740,22 +810,32 @@ describe('dailyLossTracker segment flow', () => {
         // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只能给出折叠后的最终总值。
         {
           ...createExecutedOrder({
+            status: 'FILLED',
+            executionStatus: 'FILLED',
+            executionPhase: 'TERMINAL',
             orderId: 'ORDINARY-BUY-CROSSING-BOUNDARY',
             symbol: 'BULL.HK',
-            side: OrderSide.Buy,
-            executedPrice: 16,
+            executionSide: 'BUY',
+            executedPrice: '16',
+            executedAmount: '1600',
             executedQuantity: 100,
             updatedAtMs: finalExecutionMs,
+            executionTimeMs: finalExecutionMs,
           }),
           submittedAt: new Date(boundaryMs - 60_000),
         },
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '360',
           executedQuantity: 40,
           updatedAtMs: boundaryMs,
+          executionTimeMs: boundaryMs,
         }),
       ],
       createMonitor(),
@@ -792,22 +872,32 @@ describe('dailyLossTracker segment flow', () => {
         // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只保留边界后的最终累计值。
         {
           ...createExecutedOrder({
+            status: 'FILLED',
+            executionStatus: 'FILLED',
+            executionPhase: 'TERMINAL',
             orderId: 'ORDINARY-BUY-CROSSING-PERSISTED-BASELINE',
             symbol: 'BULL.HK',
-            side: OrderSide.Buy,
-            executedPrice: 16,
+            executionSide: 'BUY',
+            executedPrice: '16',
+            executedAmount: '1600',
             executedQuantity: 100,
             updatedAtMs: finalExecutionMs,
+            executionTimeMs: finalExecutionMs,
           }),
           submittedAt: new Date(boundaryMs - 120_000),
         },
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'PROTECTIVE-SELL-AT-PERSISTED-BOUNDARY',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '360',
           executedQuantity: 40,
           updatedAtMs: boundaryMs,
+          executionTimeMs: boundaryMs,
         }),
       ],
       createMonitor(),
@@ -851,22 +941,32 @@ describe('dailyLossTracker segment flow', () => {
       [
         {
           ...createExecutedOrder({
+            status: 'FILLED',
+            executionStatus: 'FILLED',
+            executionPhase: 'TERMINAL',
             orderId: 'ORDINARY-BUY-SUBMITTED-AFTER-BOUNDARY',
             symbol: 'BULL.HK',
-            side: OrderSide.Buy,
-            executedPrice: 16,
+            executionSide: 'BUY',
+            executedPrice: '16',
+            executedAmount: '1600',
             executedQuantity: 100,
             updatedAtMs: finalExecutionMs,
+            executionTimeMs: finalExecutionMs,
           }),
           submittedAt: new Date(boundaryMs + 1),
         },
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '360',
           executedQuantity: 40,
           updatedAtMs: boundaryMs,
+          executionTimeMs: boundaryMs,
         }),
       ],
       createMonitor(),
@@ -894,7 +994,11 @@ describe('dailyLossTracker segment flow', () => {
   });
 
   for (const testCase of [
-    { name: 'missing submittedAt', resolveSubmittedAt: (_boundaryMs: number) => null },
+    {
+      name: 'missing submittedAt',
+      // 明确模拟 broker 非法输入，不把空提交时间放宽为合法内部契约。
+      resolveSubmittedAt: (_boundaryMs: number) => null,
+    },
     {
       name: 'invalid submittedAt',
       resolveSubmittedAt: (_boundaryMs: number) => new Date(Number.NaN),
@@ -908,26 +1012,36 @@ describe('dailyLossTracker segment flow', () => {
       const tracker = createSegmentTracker();
       const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
       const finalExecutionMs = boundaryMs + 60_000;
+      const unprovenOrder = createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'ORDINARY-BUY-UNPROVEN-BOUNDARY',
+        symbol: 'BULL.HK',
+        executionSide: 'BUY',
+        executedPrice: '16',
+        executedAmount: '1600',
+        executedQuantity: 100,
+        updatedAtMs: finalExecutionMs,
+        executionTimeMs: finalExecutionMs,
+      });
+      // 负向场景故意损坏中性事实输入，不放宽领域 Date 契约。
+      Reflect.set(unprovenOrder, 'submittedAt', testCase.resolveSubmittedAt(boundaryMs));
       tracker.recalculateFromAllOrders(
         [
-          {
-            ...createExecutedOrder({
-              orderId: 'ORDINARY-BUY-UNPROVEN-BOUNDARY',
-              symbol: 'BULL.HK',
-              side: OrderSide.Buy,
-              executedPrice: 16,
-              executedQuantity: 100,
-              updatedAtMs: finalExecutionMs,
-            }),
-            submittedAt: testCase.resolveSubmittedAt(boundaryMs),
-          },
+          unprovenOrder,
           createExecutedOrder({
+            status: 'FILLED',
+            executionStatus: 'FILLED',
+            executionPhase: 'TERMINAL',
             orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
             symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            executedPrice: 9,
+            executionSide: 'SELL',
+            executedPrice: '9',
+            executedAmount: '360',
             executedQuantity: 40,
             updatedAtMs: boundaryMs,
+            executionTimeMs: boundaryMs,
           }),
         ],
         createMonitor(),
@@ -961,12 +1075,17 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'SELL-COLLAPSED',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 0.9,
+          executionSide: 'SELL',
+          executedPrice: '0.9',
+          executedAmount: '90',
           executedQuantity: 100,
           updatedAtMs: boundaryMs + 60_000,
+          executionTimeMs: boundaryMs + 60_000,
         }),
       ],
       createMonitor(),
@@ -991,10 +1110,11 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 40,
       executedTimeMs: partialTimeMs,
       orderUpdatedAtMs: partialTimeMs,
@@ -1007,10 +1127,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 40,
       executedTimeMs: partialTimeMs,
       orderUpdatedAtMs: boundaryMs + 1,
@@ -1018,10 +1139,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 100,
       executedTimeMs: boundaryMs + 2,
       orderUpdatedAtMs: boundaryMs + 2,
@@ -1029,10 +1151,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 60,
       executedTimeMs: boundaryMs + 3,
       orderUpdatedAtMs: boundaryMs + 3,
@@ -1040,17 +1163,18 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 100,
       executedTimeMs: boundaryMs + 2,
       orderUpdatedAtMs: boundaryMs + 2,
       orderId: 'buy-cross-boundary',
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-60);
+    expect(tracker.getLossOffset('LONG')).toBe('-60');
   });
 
   it('projects only cumulative quantity and amount growth after the boundary baseline', () => {
@@ -1062,10 +1186,11 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 40,
       executedTimeMs: partialTimeMs,
       orderUpdatedAtMs: partialTimeMs,
@@ -1078,10 +1203,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 9,
+      side: 'BUY',
+      executedPrice: '9',
       executedQuantity: 100,
       executedTimeMs: boundaryMs + 1,
       orderUpdatedAtMs: boundaryMs + 1,
@@ -1089,10 +1215,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 8,
+      side: 'SELL',
+      executedPrice: '8',
       executedQuantity: 60,
       executedTimeMs: boundaryMs + 2,
       orderUpdatedAtMs: boundaryMs + 2,
@@ -1100,7 +1227,7 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     // 买单累计金额从 400 增至 900，新段成本为 500；卖出金额 480，亏损 20。
-    expect(tracker.getLossOffset('LONG')).toBeCloseTo(-20, 10);
+    expect(tracker.getLossOffset('LONG')).toBe('-20');
   });
 
   it('keeps runtime cumulative updates equal to a same-day full recalculation with the same baseline', () => {
@@ -1111,27 +1238,41 @@ describe('dailyLossTracker segment flow', () => {
     const partialBuy = createExecutedOrder({
       orderId: 'buy-runtime-recalc',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      status: OrderStatus.PartialFilled,
-      executedPrice: 10,
+      executionSide: 'BUY',
+      status: 'PARTIALLY_FILLED',
+      executionStatus: 'PARTIAL',
+      executionPhase: 'OPEN',
+      executedPrice: '10',
+      executedAmount: '400',
       executedQuantity: 40,
       updatedAtMs: partialTimeMs,
+      executionTimeMs: partialTimeMs,
     });
     const finalBuy = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
       orderId: 'buy-runtime-recalc',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      executionSide: 'BUY',
+      executedPrice: '10',
+      executedAmount: '1000',
       executedQuantity: 100,
       updatedAtMs: boundaryMs + 1,
+      executionTimeMs: boundaryMs + 1,
     });
     const newSell = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
       orderId: 'sell-runtime-recalc',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      executionSide: 'SELL',
+      executedPrice: '9',
+      executedAmount: '540',
       executedQuantity: 60,
       updatedAtMs: boundaryMs + 2,
+      executionTimeMs: boundaryMs + 2,
     });
     const runtimeTracker = createSegmentTracker();
     const recalculatedTracker = createSegmentTracker();
@@ -1145,10 +1286,11 @@ describe('dailyLossTracker segment flow', () => {
     }
 
     runtimeTracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 100,
       executedTimeMs: boundaryMs + 1,
       orderUpdatedAtMs: boundaryMs + 1,
@@ -1156,10 +1298,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     runtimeTracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 60,
       executedTimeMs: boundaryMs + 2,
       orderUpdatedAtMs: boundaryMs + 2,
@@ -1168,7 +1311,7 @@ describe('dailyLossTracker segment flow', () => {
     recalculatedTracker.recalculateFromAllOrders([finalBuy, newSell], monitor, now);
 
     expect(recalculatedTracker.getLossOffset('LONG')).toBe(runtimeTracker.getLossOffset('LONG'));
-    expect(recalculatedTracker.getLossOffset('LONG')).toBe(-60);
+    expect(recalculatedTracker.getLossOffset('LONG')).toBe('-60');
   });
 
   it('allows a newer equal-quantity revision to correct cumulative amount without new execution', () => {
@@ -1179,10 +1322,11 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 100,
       executedTimeMs: executionTimeMs,
       orderUpdatedAtMs: executionTimeMs,
@@ -1190,10 +1334,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 11,
+      side: 'BUY',
+      executedPrice: '11',
       executedQuantity: 100,
       executedTimeMs: executionTimeMs,
       orderUpdatedAtMs: executionTimeMs + 1,
@@ -1201,17 +1346,18 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 10,
+      side: 'SELL',
+      executedPrice: '10',
       executedQuantity: 100,
       executedTimeMs: executionTimeMs + 2,
       orderUpdatedAtMs: executionTimeMs + 2,
       orderId: 'sell-price-correction',
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-100);
+    expect(tracker.getLossOffset('LONG')).toBe('-100');
   });
 
   it('fails fast when the same revision and quantity report conflicting cumulative amount', () => {
@@ -1222,10 +1368,11 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 40,
       executedTimeMs: revisionMs,
       orderUpdatedAtMs: revisionMs,
@@ -1234,19 +1381,20 @@ describe('dailyLossTracker segment flow', () => {
 
     expect(() => {
       tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
         direction: 'LONG',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 11,
+        side: 'BUY',
+        executedPrice: '11',
         executedQuantity: 40,
         executedTimeMs: revisionMs,
         orderUpdatedAtMs: revisionMs,
         orderId: 'same-revision-conflict',
       });
-    }).toThrow(/same-revision-conflict.*revision conflict/);
+    }).toThrow('[订单事实] 同 revision 同量同阶段的累计经济或执行时间冲突');
   });
 
-  it('ignores an older revision even when it reports a larger cumulative quantity', () => {
+  it('rejects quantity growth with an older revision without changing the existing economic fact', () => {
     const tracker = createSegmentTracker();
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
@@ -1254,39 +1402,44 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 40,
       executedTimeMs: executionTimeMs,
       orderUpdatedAtMs: executionTimeMs + 2,
       orderId: 'older-revision',
     });
 
-    tracker.recordCumulativeExecution({
-      direction: 'LONG',
-      symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
-      executedQuantity: 100,
-      executedTimeMs: executionTimeMs + 1,
-      orderUpdatedAtMs: executionTimeMs + 1,
-      orderId: 'older-revision',
-    });
+    expect(() =>
+      tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        executedPrice: '10',
+        executedQuantity: 100,
+        executedTimeMs: executionTimeMs + 1,
+        orderUpdatedAtMs: executionTimeMs + 1,
+        orderId: 'older-revision',
+      }),
+    ).toThrow('[订单事实] 累计数量推进但 revision 倒退');
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 40,
       executedTimeMs: executionTimeMs + 3,
       orderUpdatedAtMs: executionTimeMs + 3,
       orderId: 'older-revision-sell',
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-40);
+    expect(tracker.getLossOffset('LONG')).toBe('-40');
   });
 
   it('does not move last execution time or segment contribution for a pure terminal update', () => {
@@ -1298,10 +1451,11 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 40,
       executedTimeMs: executionTimeMs,
       orderUpdatedAtMs: executionTimeMs,
@@ -1309,12 +1463,14 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 40,
-      executedTimeMs: boundaryMs + 1,
+      // 终态修订不是新成交；保留真实执行时间，不能拿 revision 冒充 T。
+      executedTimeMs: executionTimeMs,
       orderUpdatedAtMs: boundaryMs + 1,
       orderId: 'pure-terminal-update',
     });
@@ -1325,17 +1481,18 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 40,
       executedTimeMs: boundaryMs + 2,
       orderUpdatedAtMs: boundaryMs + 2,
       orderId: 'pure-terminal-sell',
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe('0');
   });
 
   it('replaces a partial cumulative fill with the authoritative final quantity', () => {
@@ -1346,21 +1503,30 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-filled',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '1000',
           executedQuantity: 100,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
         createExecutedOrder({
           orderId: 'sell-partial',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          status: OrderStatus.PartialFilled,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          status: 'PARTIALLY_FILLED',
+          executionStatus: 'PARTIAL',
+          executionPhase: 'OPEN',
+          executedPrice: '9',
+          executedAmount: '360',
           executedQuantity: 40,
           updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
         }),
       ],
       monitor,
@@ -1368,17 +1534,18 @@ describe('dailyLossTracker segment flow', () => {
     );
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-03-03T01:02:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
       orderId: 'sell-partial',
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-100);
+    expect(tracker.getLossOffset('LONG')).toBe('-100');
   });
 
   it('treats a repeated final cumulative fill as idempotent', () => {
@@ -1389,12 +1556,17 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-filled',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '1000',
           executedQuantity: 100,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
       ],
       monitor,
@@ -1405,8 +1577,8 @@ describe('dailyLossTracker segment flow', () => {
       factStage: 'TERMINAL' as const,
       direction: 'LONG' as const,
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-03-03T01:02:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
@@ -1415,7 +1587,7 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recordCumulativeExecution(finalFill);
     tracker.recordCumulativeExecution(finalFill);
 
-    expect(tracker.getLossOffset('LONG')).toBe(-100);
+    expect(tracker.getLossOffset('LONG')).toBe('-100');
   });
 
   it('ignores an older cumulative fill after a larger quantity was recorded', () => {
@@ -1426,12 +1598,17 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-filled',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '1000',
           executedQuantity: 100,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
       ],
       monitor,
@@ -1439,10 +1616,11 @@ describe('dailyLossTracker segment flow', () => {
     );
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 100,
       executedTimeMs: Date.parse('2026-03-03T01:02:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
@@ -1450,26 +1628,27 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 40,
       executedTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
       orderId: 'sell-cumulative',
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-100);
+    expect(tracker.getLossOffset('LONG')).toBe('-100');
   });
 
   it('fails fast when the same orderId changes direction, side, or symbol', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
     const identityChanges = [
-      { direction: 'SHORT' as const, symbol: 'BULL.HK', side: OrderSide.Buy },
-      { direction: 'LONG' as const, symbol: 'BULL.HK', side: OrderSide.Sell },
-      { direction: 'LONG' as const, symbol: 'OTHER.HK', side: OrderSide.Buy },
+      { direction: 'SHORT' as const, symbol: 'BULL.HK', side: 'BUY' },
+      { direction: 'LONG' as const, symbol: 'BULL.HK', side: 'SELL' },
+      { direction: 'LONG' as const, symbol: 'OTHER.HK', side: 'BUY' },
     ] satisfies ReadonlyArray<
       Pick<DailyLossCumulativeExecutionInput, 'direction' | 'symbol' | 'side'>
     >;
@@ -1478,10 +1657,11 @@ describe('dailyLossTracker segment flow', () => {
       const tracker = createSegmentTracker();
       tracker.recalculateFromAllOrders([], monitor, now);
       tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
         direction: 'LONG',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        side: 'BUY',
+        executedPrice: '10',
         executedQuantity: 40,
         executedTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         orderUpdatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
@@ -1490,8 +1670,9 @@ describe('dailyLossTracker segment flow', () => {
 
       expect(() => {
         tracker.recordCumulativeExecution({
+          factStage: 'TERMINAL',
           ...identityChange,
-          executedPrice: 10,
+          executedPrice: '10',
           executedQuantity: 100,
           executedTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
           orderUpdatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
@@ -1507,47 +1688,57 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const initialOrders = [
       createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
         orderId: 'CONFLICT-ID',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        executionSide: 'BUY',
+        executedPrice: '10',
+        executedAmount: '100',
         executedQuantity: 10,
         updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+        executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
       }),
       createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
         orderId: 'SELL-ID',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        executedPrice: 9,
+        executionSide: 'SELL',
+        executedPrice: '9',
+        executedAmount: '90',
         executedQuantity: 10,
         updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+        executionTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
       }),
     ];
 
     tracker.recalculateFromAllOrders(initialOrders, monitor, now);
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
 
+    const conflictingOrder1 = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
+      orderId: 'CONFLICT-ID',
+      symbol: 'BULL.HK',
+      executionSide: 'SELL',
+      executedPrice: '10',
+      executedAmount: '10',
+      executedQuantity: 1,
+      updatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
+      executionTimeMs: Date.parse('2026-03-03T01:02:00.000Z'),
+    });
     expect(() => {
-      tracker.recalculateFromAllOrders(
-        [
-          createExecutedOrder({
-            orderId: 'CONFLICT-ID',
-            symbol: 'BULL.HK',
-            side: OrderSide.Sell,
-            executedPrice: 10,
-            executedQuantity: 1,
-            updatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
-          }),
-        ],
-        monitor,
-        now,
-      );
+      tracker.recalculateFromAllOrders([conflictingOrder1], monitor, now);
     }).toThrow(/CONFLICT-ID.*identity mismatch/);
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
 
     tracker.recalculateFromAllOrders(initialOrders, monitor, now);
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('keeps the existing protection boundary when same-day recalculation rejects a revision conflict', () => {
@@ -1559,10 +1750,11 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: boundaryMs,
       orderUpdatedAtMs: boundaryMs,
@@ -1570,10 +1762,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 10,
       executedTimeMs: boundaryMs,
       orderUpdatedAtMs: boundaryMs,
@@ -1581,10 +1774,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: executionMs,
       orderUpdatedAtMs: executionMs,
@@ -1592,10 +1786,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 10,
       executedTimeMs: executionMs + 1,
       orderUpdatedAtMs: executionMs + 1,
@@ -1606,41 +1801,46 @@ describe('dailyLossTracker segment flow', () => {
       direction: 'LONG',
       boundaryExecutedTimeMs: boundaryMs,
     });
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
 
+    const conflictingOrder2 = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
+      orderId: 'REVISION-CONFLICT-ID',
+      symbol: 'BULL.HK',
+      executionSide: 'BUY',
+      executedPrice: '11',
+      executedAmount: '110',
+      executedQuantity: 10,
+      updatedAtMs: executionMs,
+      executionTimeMs: executionMs,
+    });
     expect(() => {
-      tracker.recalculateFromAllOrders(
-        [
-          createExecutedOrder({
-            orderId: 'REVISION-CONFLICT-ID',
-            symbol: 'BULL.HK',
-            side: OrderSide.Buy,
-            executedPrice: 11,
-            executedQuantity: 10,
-            updatedAtMs: executionMs,
-          }),
-        ],
-        monitor,
-        now,
-      );
-    }).toThrow(/REVISION-CONFLICT-ID.*revision conflict/);
+      tracker.recalculateFromAllOrders([conflictingOrder2], monitor, now);
+    }).toThrow('[订单事实] 同 revision 同量同阶段的累计经济或执行时间冲突');
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
 
     expect(
       tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
         direction: 'LONG',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        side: 'BUY',
+        executedPrice: '10',
         executedQuantity: 10,
         executedTimeMs: boundaryMs,
         orderUpdatedAtMs: boundaryMs,
         orderId: 'BOUNDARY-IGNORED-BUY-ID',
       }),
-    ).toEqual({ authoritativeFactChanged: false, executionAdvanced: false });
+    ).toEqual({
+      admission: 'SUPPRESSED',
+      authoritativeFactChanged: false,
+      executionAdvanced: false,
+    });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('keeps only fills strictly after a newly completed protection boundary', () => {
@@ -1656,10 +1856,11 @@ describe('dailyLossTracker segment flow', () => {
       ['after', boundaryMs + 1],
     ] as const) {
       tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
         direction: 'LONG',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        side: 'BUY',
+        executedPrice: '10',
         executedQuantity: 10,
         executedTimeMs,
         orderUpdatedAtMs: executedTimeMs,
@@ -1667,10 +1868,11 @@ describe('dailyLossTracker segment flow', () => {
       });
 
       tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
         direction: 'LONG',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        executedPrice: 9,
+        side: 'SELL',
+        executedPrice: '9',
         executedQuantity: 10,
         executedTimeMs,
         orderUpdatedAtMs: executedTimeMs,
@@ -1678,14 +1880,14 @@ describe('dailyLossTracker segment flow', () => {
       });
     }
 
-    expect(tracker.getLossOffset('LONG')).toBe(-30);
+    expect(tracker.getLossOffset('LONG')).toBe('-30');
 
     commitPreparedBoundary(tracker, {
       direction: 'LONG',
       boundaryExecutedTimeMs: boundaryMs,
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('keeps post-boundary fills across repeated or earlier boundary notifications', () => {
@@ -1696,10 +1898,11 @@ describe('dailyLossTracker segment flow', () => {
 
     tracker.recalculateFromAllOrders([], monitor, now);
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: boundaryMs + 1,
       orderUpdatedAtMs: boundaryMs + 1,
@@ -1707,10 +1910,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 10,
       executedTimeMs: boundaryMs + 2,
       orderUpdatedAtMs: boundaryMs + 2,
@@ -1736,7 +1940,7 @@ describe('dailyLossTracker segment flow', () => {
       });
     }).toThrow(/未向前推进/);
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('advances one direction without deleting the other direction or later fills', () => {
@@ -1751,10 +1955,11 @@ describe('dailyLossTracker segment flow', () => {
       ['SHORT', 'BEAR.HK'],
     ] as const) {
       tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
         direction,
         symbol,
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        side: 'BUY',
+        executedPrice: '10',
         executedQuantity: 10,
         executedTimeMs: boundaryMs + 1,
         orderUpdatedAtMs: boundaryMs + 1,
@@ -1762,10 +1967,11 @@ describe('dailyLossTracker segment flow', () => {
       });
 
       tracker.recordCumulativeExecution({
+        factStage: 'TERMINAL',
         direction,
         symbol,
-        side: OrderSide.Sell,
-        executedPrice: 9,
+        side: 'SELL',
+        executedPrice: '9',
         executedQuantity: 10,
         executedTimeMs: boundaryMs + 2,
         orderUpdatedAtMs: boundaryMs + 2,
@@ -1778,47 +1984,62 @@ describe('dailyLossTracker segment flow', () => {
       boundaryExecutedTimeMs: boundaryMs,
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
-    expect(tracker.getLossOffset('SHORT')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
+    expect(tracker.getLossOffset('SHORT')).toBe('-10');
   });
 
   it('matches a final full rebuild after startup partial fill reaches terminal quantity', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
     const buyOrder = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
       orderId: 'buy-filled',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      executionSide: 'BUY',
+      executedPrice: '10',
+      executedAmount: '1000',
       executedQuantity: 100,
       updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+      executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
     });
     const partialSellOrder = createExecutedOrder({
       orderId: 'sell-recovered',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      status: OrderStatus.PartialFilled,
-      executedPrice: 9,
+      executionSide: 'SELL',
+      status: 'PARTIALLY_FILLED',
+      executionStatus: 'PARTIAL',
+      executionPhase: 'OPEN',
+      executedPrice: '9',
+      executedAmount: '360',
       executedQuantity: 40,
       updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+      executionTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
     });
     const finalSellOrder = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
       orderId: 'sell-recovered',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      executionSide: 'SELL',
+      executedPrice: '9',
+      executedAmount: '900',
       executedQuantity: 100,
       updatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
+      executionTimeMs: Date.parse('2026-03-03T01:02:00.000Z'),
     });
     const resumedTracker = createSegmentTracker();
     const rebuiltTracker = createSegmentTracker();
 
     resumedTracker.recalculateFromAllOrders([buyOrder, partialSellOrder], monitor, now);
     resumedTracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: finalSellOrder.symbol,
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 100,
       executedTimeMs: finalSellOrder.updatedAt?.getTime() ?? 0,
       orderUpdatedAtMs: finalSellOrder.updatedAt?.getTime() ?? 0,
@@ -1827,7 +2048,7 @@ describe('dailyLossTracker segment flow', () => {
     rebuiltTracker.recalculateFromAllOrders([buyOrder, finalSellOrder], monitor, now);
 
     expect(resumedTracker.getLossOffset('LONG')).toBe(rebuiltTracker.getLossOffset('LONG'));
-    expect(resumedTracker.getLossOffset('LONG')).toBe(-100);
+    expect(resumedTracker.getLossOffset('LONG')).toBe('-100');
   });
 
   it('prepare/commit protection boundary baselines old segment facts and ignores pre-segment fills', () => {
@@ -1838,50 +2059,62 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-old',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'sell-old',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
       monitor,
       now,
     );
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
 
     commitPreparedBoundary(tracker, {
       direction: 'LONG',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe('0');
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:09:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:09:00.000Z'),
       orderId: 'buy-before-segment',
     });
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe('0');
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:11:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:11:00.000Z'),
@@ -1889,16 +2122,17 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderId: 'sell-new-segment',
     });
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('prepare/commit protection boundary advances only the SHORT segment and keeps LONG state intact', () => {
@@ -1909,68 +2143,90 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'long-buy-existing',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'long-sell-existing',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'short-buy-old',
           symbol: 'BEAR.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:02:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:02:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'short-sell-old',
           symbol: 'BEAR.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:03:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:03:00.000Z'),
         }),
       ],
       monitor,
       now,
     );
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
-    expect(tracker.getLossOffset('SHORT')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
+    expect(tracker.getLossOffset('SHORT')).toBe('-10');
 
     commitPreparedBoundary(tracker, {
       direction: 'SHORT',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
-    expect(tracker.getLossOffset('SHORT')).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
+    expect(tracker.getLossOffset('SHORT')).toBe('0');
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'SHORT',
       symbol: 'BEAR.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:09:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:09:00.000Z'),
       orderId: 'short-buy-before-segment',
     });
-    expect(tracker.getLossOffset('SHORT')).toBe(0);
+    expect(tracker.getLossOffset('SHORT')).toBe('0');
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'SHORT',
       symbol: 'BEAR.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:11:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:11:00.000Z'),
@@ -1978,18 +2234,19 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'SHORT',
       symbol: 'BEAR.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderId: 'short-sell-new-segment',
     });
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
-    expect(tracker.getLossOffset('SHORT')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
+    expect(tracker.getLossOffset('SHORT')).toBe('-10');
   });
 
   it('prepare/commit protection boundary rejects stale for the same protection boundary', () => {
@@ -2006,10 +2263,11 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      side: 'BUY',
+      executedPrice: '10',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:11:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:11:00.000Z'),
@@ -2017,16 +2275,17 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     tracker.recordCumulativeExecution({
+      factStage: 'TERMINAL',
       direction: 'LONG',
       symbol: 'BULL.HK',
-      side: OrderSide.Sell,
-      executedPrice: 9,
+      side: 'SELL',
+      executedPrice: '9',
       executedQuantity: 10,
       executedTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderUpdatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
       orderId: 'sell-after-first-boundary',
     });
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
 
     expect(() => {
       commitPreparedBoundary(tracker, {
@@ -2034,7 +2293,7 @@ describe('dailyLossTracker segment flow', () => {
         boundaryExecutedTimeMs: firstBoundaryMs,
       });
     }).toThrow(/未向前推进/);
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('recalculateFromAllOrders respects external protectionBoundaryByDirection at startup', () => {
@@ -2047,36 +2306,56 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-before-segment',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'sell-before-segment',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-after-segment',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:11:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:11:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'sell-after-segment',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
         }),
       ],
       monitor,
@@ -2084,7 +2363,7 @@ describe('dailyLossTracker segment flow', () => {
       protectionBoundaryByDirection,
     );
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('recalculateFromAllOrders keeps same-day in-memory protection boundary when no boundary is passed', () => {
@@ -2095,73 +2374,103 @@ describe('dailyLossTracker segment flow', () => {
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-old',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'sell-old',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
       monitor,
       now,
     );
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
 
     commitPreparedBoundary(tracker, {
       direction: 'LONG',
       boundaryExecutedTimeMs: Date.parse('2026-03-03T01:10:00.000Z'),
     });
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe('0');
 
     tracker.recalculateFromAllOrders(
       [
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-old',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'sell-old',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'buy-new',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:11:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:11:00.000Z'),
         }),
         createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
           orderId: 'sell-new',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:12:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:12:00.000Z'),
         }),
       ],
       monitor,
       now,
     );
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('recalculateFromAllOrders includes canceled order executed part to keep restart consistency', () => {
@@ -2174,27 +2483,35 @@ describe('dailyLossTracker segment flow', () => {
         createExecutedOrder({
           orderId: 'buy-filled',
           symbol: 'BULL.HK',
-          side: OrderSide.Buy,
-          status: OrderStatus.Filled,
-          executedPrice: 10,
+          executionSide: 'BUY',
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
+          executedPrice: '10',
+          executedAmount: '100',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
         }),
         createExecutedOrder({
           orderId: 'sell-canceled-partial',
           symbol: 'BULL.HK',
-          side: OrderSide.Sell,
-          status: OrderStatus.Canceled,
-          executedPrice: 9,
+          executionSide: 'SELL',
+          status: 'CANCELED',
+          executionStatus: 'PARTIAL',
+          executionPhase: 'TERMINAL',
+          executedPrice: '9',
+          executedAmount: '90',
           executedQuantity: 10,
           updatedAtMs: Date.parse('2026-03-03T01:05:00.000Z'),
+          executionTimeMs: Date.parse('2026-03-03T01:05:00.000Z'),
         }),
       ],
       monitor,
       now,
     );
 
-    expect(tracker.getLossOffset('LONG')).toBe(-10);
+    expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
   it('recalculateFromAllOrders fails fast when a relevant in-day executed order cannot be owned', () => {
@@ -2206,19 +2523,23 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
+    const conflictingOrder3 = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
+      orderId: 'unowned-relevant-long',
+      symbol: 'BULL.HK',
+      stockName: 'Unparseable Warrant',
+      executionSide: 'BUY',
+      executedPrice: '10',
+      executedAmount: '100',
+      executedQuantity: 10,
+      updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+      executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
+    });
     expect(() => {
       tracker.recalculateFromAllOrders(
-        [
-          createExecutedOrder({
-            orderId: 'unowned-relevant-long',
-            symbol: 'BULL.HK',
-            stockName: 'Unparseable Warrant',
-            side: OrderSide.Buy,
-            executedPrice: 10,
-            executedQuantity: 10,
-            updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
-          }),
-        ],
+        [conflictingOrder3],
         monitor,
         now,
         undefined,
@@ -2228,46 +2549,56 @@ describe('dailyLossTracker segment flow', () => {
   });
 
   for (const testCase of [
-    { name: 'BUY with null updatedAt', side: OrderSide.Buy, updatedAt: null },
+    { name: 'BUY with null updatedAt', side: 'BUY', updatedAt: null },
     {
       name: 'BUY with Invalid Date updatedAt',
-      side: OrderSide.Buy,
+      side: 'BUY',
       updatedAt: new Date(Number.NaN),
     },
-    { name: 'BUY with epoch updatedAt', side: OrderSide.Buy, updatedAt: new Date(0) },
-    { name: 'SELL with null updatedAt', side: OrderSide.Sell, updatedAt: null },
+    { name: 'BUY with epoch updatedAt', side: 'BUY', updatedAt: new Date(0) },
+    { name: 'SELL with null updatedAt', side: 'SELL', updatedAt: null },
     {
       name: 'SELL with Invalid Date updatedAt',
-      side: OrderSide.Sell,
+      side: 'SELL',
       updatedAt: new Date(Number.NaN),
     },
-    { name: 'SELL with epoch updatedAt', side: OrderSide.Sell, updatedAt: new Date(0) },
+    { name: 'SELL with epoch updatedAt', side: 'SELL', updatedAt: new Date(0) },
   ] as const) {
     it(`fails closed before replacing tracker state for an attributable ordinary ${testCase.name}`, () => {
       const tracker = createSegmentTracker();
       const monitor = createMonitor();
       const now = new Date('2026-03-03T02:00:00.000Z');
       const validBuy = createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
         orderId: 'valid-buy-before-invalid-rebuild',
         symbol: 'BULL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        executionSide: 'BUY',
+        executedPrice: '10',
+        executedAmount: '100',
         executedQuantity: 10,
         updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+        executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
       });
       const validSell = createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
         orderId: 'valid-sell-before-invalid-rebuild',
         symbol: 'BULL.HK',
-        side: OrderSide.Sell,
-        executedPrice: 9,
+        executionSide: 'SELL',
+        executedPrice: '9',
+        executedAmount: '90',
         executedQuantity: 10,
         updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
+        executionTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
       });
       tracker.recalculateFromAllOrders([validBuy, validSell], monitor, now);
 
-      expect(tracker.getLossOffset('LONG')).toBe(-10);
+      expect(tracker.getLossOffset('LONG')).toBe('-10');
 
-      const validOrder = testCase.side === OrderSide.Buy ? validBuy : validSell;
+      const validOrder = testCase.side === 'BUY' ? validBuy : validSell;
       const invalidOrder: RawOrderFromAPI = {
         ...validOrder,
         orderId: `ordinary-${testCase.side}-missing-updated-at`,
@@ -2278,7 +2609,7 @@ describe('dailyLossTracker segment flow', () => {
         tracker.recalculateFromAllOrders([invalidOrder], monitor, now);
       }).toThrow(/缺少有效更新时间.*ordinary-/);
 
-      expect(tracker.getLossOffset('LONG')).toBe(-10);
+      expect(tracker.getLossOffset('LONG')).toBe('-10');
     });
   }
 
@@ -2290,19 +2621,23 @@ describe('dailyLossTracker segment flow', () => {
     });
     const monitor = createMonitor();
 
+    const conflictingOrder4 = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
+      orderId: 'related-historical-unowned-order',
+      symbol: 'BULL.HK',
+      stockName: 'Unparseable Warrant',
+      executionSide: 'BUY',
+      executedPrice: '10',
+      executedAmount: '100',
+      executedQuantity: 10,
+      updatedAtMs: Date.parse('2026-03-02T01:00:00.000Z'),
+      executionTimeMs: Date.parse('2026-03-02T01:00:00.000Z'),
+    });
     expect(() => {
       tracker.recalculateFromAllOrders(
-        [
-          createExecutedOrder({
-            orderId: 'related-historical-unowned-order',
-            symbol: 'BULL.HK',
-            stockName: 'Unparseable Warrant',
-            side: OrderSide.Buy,
-            executedPrice: 10,
-            executedQuantity: 10,
-            updatedAtMs: Date.parse('2026-03-02T01:00:00.000Z'),
-          }),
-        ],
+        [conflictingOrder4],
         monitor,
         new Date('2026-03-03T02:00:00.000Z'),
         undefined,
@@ -2317,29 +2652,41 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const externalUnfilledOrder: RawOrderFromAPI = {
       ...createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
         orderId: 'external-unfilled-noise',
         symbol: 'EXTERNAL.HK',
-        side: OrderSide.Buy,
-        executedPrice: 10,
+        executionSide: 'BUY',
+        executedPrice: '10',
+        executedAmount: '100',
         executedQuantity: 10,
         updatedAtMs: Date.parse('2026-03-03T01:00:00.000Z'),
+        executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
       }),
-      executedPrice: 0,
+      executedPrice: '0',
       executedQuantity: 0,
+      executedAmount: '0',
+      executionTimeMs: null,
       updatedAt: null,
     };
     const historicalOwnedOrder = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
       orderId: 'historical-owned-execution',
       symbol: 'BULL.HK',
-      side: OrderSide.Buy,
-      executedPrice: 10,
+      executionSide: 'BUY',
+      executedPrice: '10',
+      executedAmount: '100',
       executedQuantity: 10,
       updatedAtMs: Date.parse('2026-03-02T01:00:00.000Z'),
+      executionTimeMs: Date.parse('2026-03-02T01:00:00.000Z'),
     });
 
     expect(() => {
       tracker.recalculateFromAllOrders([externalUnfilledOrder, historicalOwnedOrder], monitor, now);
     }).not.toThrow();
-    expect(tracker.getLossOffset('LONG')).toBe(0);
+    expect(tracker.getLossOffset('LONG')).toBe('0');
   });
 });

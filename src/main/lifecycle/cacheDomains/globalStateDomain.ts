@@ -4,7 +4,7 @@
  * 午夜清理：
  * - 禁止交易（canTrade = false）
  * - 重置半日标记、开盘保护、交易日信息缓存
- * - 清空账户/持仓缓存，确保开盘重建强制拉取当日实时快照
+ * - 由 canonical snapshot owner 等待已发出的读取落定并清理账户/持仓事实
  * - 清空交易标的集合（allTradingSymbols 的权威清理位置）
  *
  * 开盘重建：
@@ -12,7 +12,7 @@
  *   （加载运行时快照 → 重建交易日状态）
  */
 import type { LastState } from '../../../types/state.js';
-import type { CacheDomain } from '../types.js';
+import type { CacheDomain, CacheDomainOpenRebuildResult } from '../types.js';
 import type { GlobalStateDomainDeps } from './types.js';
 
 /**
@@ -26,9 +26,6 @@ function runGlobalMidnightClear(lastState: LastState): void {
   lastState.canTrade = false;
   lastState.isHalfDay = null;
   lastState.openProtectionActive = null;
-  lastState.cachedAccount = null;
-  lastState.cachedPositions = [];
-  lastState.positionCache.update([]);
   lastState.cachedTradingDayInfo = null;
   lastState.tradingCalendarSnapshot = new Map();
   lastState.allTradingSymbols = new Set<string>();
@@ -42,15 +39,50 @@ function runGlobalMidnightClear(lastState: LastState): void {
  * @returns 实现 CacheDomain 的全局状态域实例
  */
 export function createGlobalStateDomain(deps: GlobalStateDomainDeps): CacheDomain {
-  const { logger, lastState, runTradingDayOpenRebuild } = deps;
+  const { logger, lastState, snapshot, runTradingDayOpenRebuild } = deps;
   return {
-    midnightClear(): void {
+    async midnightClear(): Promise<void> {
+      await snapshot.requestClear({
+        reason: 'DAY_CUT',
+        dayEpoch: snapshot.getStatus().token.dayEpoch,
+      });
       runGlobalMidnightClear(lastState);
       logger.debug('[Lifecycle][globalState] 午夜状态清理完成');
     },
-    async openRebuild(ctx): Promise<void> {
-      await runTradingDayOpenRebuild(ctx.now);
-      logger.debug('[Lifecycle][globalState] 开盘重建流程执行完成');
+    async openRebuild(ctx): Promise<CacheDomainOpenRebuildResult> {
+      if (!ctx.isCurrent()) return { status: 'ABORTED' };
+
+      const result = await runTradingDayOpenRebuild(ctx.now);
+      switch (result.status) {
+        case 'ABORTED': {
+          return result;
+        }
+
+        case 'COMMITTED': {
+          if (result.snapshotToken.dayEpoch !== ctx.dayEpoch) {
+            throw new TypeError('[Lifecycle][globalState] 开盘重建返回外来 dayEpoch token');
+          }
+
+          if (
+            !ctx.isCurrent() ||
+            snapshot.getStatus().admission === 'CLOSED' ||
+            !snapshot.isCurrent(result.snapshotToken, {
+              account: true,
+              positions: true,
+              paired: true,
+            })
+          ) {
+            return { status: 'ABORTED' };
+          }
+
+          logger.debug('[Lifecycle][globalState] 开盘重建流程执行完成');
+          return result;
+        }
+
+        default: {
+          throw new TypeError('[Lifecycle][globalState] 开盘重建返回无效公开结果');
+        }
+      }
     },
   };
 }
