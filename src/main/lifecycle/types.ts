@@ -2,6 +2,7 @@ import type { RuntimeTermination } from '../../types/runtime.js';
 import type { AccountPositionSnapshot, SnapshotToken } from '../../types/accountPosition.js';
 import type { Logger } from '../../utils/logger/types.js';
 import type { DailyLossTracker } from '../../types/risk.js';
+import type { SettlementProtectionRecovery } from '../../types/settlement.js';
 import type { TradeLogHydrator } from '../../services/liquidationCooldown/types.js';
 import type { MixedTradeLogRepository } from '../../services/mixedTradeLogRepository/types.js';
 import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/types.js';
@@ -217,6 +218,7 @@ export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
   tradeLogHydrator: TradeLogHydrator;
   mixedTradeLogRepository: MixedTradeLogRepository;
+  protectionRecovery: SettlementProtectionRecovery;
   warrantListCacheConfig: WarrantListCacheConfig;
   seatActivationDispatcher: Pick<SeatActivationDispatcher, 'dispatchCurrentActivatingSeats'>;
   reportFatalError: (error: unknown) => void;

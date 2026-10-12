@@ -23,7 +23,7 @@ import {
   createDailyLossOrderAnalysisDeps,
   createOrderRecorder,
 } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { createHarness } from '../core/strategy/intradayRegression/fixtures.js';
@@ -56,6 +56,7 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       let requested = false;
       const trace: string[] = [];
       const daily = createDailyLossTracker({
+        onOwnershipWarning: () => {},
         ...createDailyLossOrderAnalysisDeps(),
         toHongKongTimeIso,
       });

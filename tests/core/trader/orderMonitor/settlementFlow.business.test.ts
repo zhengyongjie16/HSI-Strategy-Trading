@@ -3,7 +3,7 @@
  * 使用真实 recorder/DailyLoss 的同步准入，不以 LOCAL 或空 callback mock 代替经济事实。
  */
 import { describe, expect, it } from 'bun:test';
-import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
 import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
 import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
@@ -144,6 +144,7 @@ function createHarness(failPersistence = false) {
   const persistenceError = new Error('protective progress persistence failed');
   let shouldThrowOnPersist = failPersistence;
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });
@@ -792,6 +793,7 @@ describe('settlementFlow business flow', () => {
 it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/baseline/H/stale不变，terminal资源仍关闭', async () => {
   const now = new Date(PROTECTIVE_EXECUTION_TIME_MS);
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });

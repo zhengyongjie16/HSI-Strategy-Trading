@@ -1121,6 +1121,48 @@ r10 settlement commit
 - 不存在 coordinator self-await。
 - 迟到投影不能覆盖新 revision。
 
+### 8.5 P2 离线实施完成证据（2026-10-12）
+
+本轮 P2 已通过离线工程验收，不等同于生产恢复或发布验收。所有实施 owner 停写后，由单一验证执行者串行完成质量链、定向/全量测试及构建；以下数量分别统计，不相加为独立测试总数。
+
+#### 实际职责与接线
+
+- `src/application/postTradeSettlement/index.ts` 为唯一刷新 pump、completion 同步事务、R1/N1 发布与 readiness owner；`src/app/runtime/createPostTradeConsistencyRuntime.ts` 仅保留 factory、窄协作器映射与启动前单次绑定。共享 receipt/recovery 契约直接来自 `src/types/settlement.ts`，旧 app status/test helper 导出已清除。
+- 日损状态与规则已直接迁至 `src/domain/risk/dailyLossTracker.ts`、`dailyLossRules.ts`、`types.ts`；app 直接装配真实 domain owner，通过窄 `onOwnershipWarning` 注入原 warning 观测。不保留旧 core wrapper/re-export，不建立第二订单账或第二 completion owner。
+- `tests/integration/postTradeSettlementOwner.integration.test.ts` 使用同一 native tracking、recorder/daily-loss、snapshot、真实订阅 owner、durable repository 与真实风险 owner：native 回报触发刷新，paired snapshot 已提交但订阅 ack 尚未返回时，completion、冷却与 ready 均未推进；ack 后依次完成 durable append、分段/episode、真实 R1/N1 再发布 ready，另一方向精确成本保持不变。
+- `tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts` 使用真实 repository → loader → 同一 settlement recovery 能力 → 真实 hydrator/tracker → rebuild；全部 LONG/SHORT episode 先恢复，再同步收口一次，随后 hydrate 一次且不调用 live cooldown trigger。重启保持原 V1 文本与 completion 幂等，实际剩余冷却一致；triggerLimit=2 的部分计数恢复后，下一次 live completion 恰好激活一次冷却，重复 baseline 不双计。
+- 旧 V1 同 revision、同量、仅 OPEN→API TERMINAL 阶段推进而金额不同，若没有既有独立 durable TERMINAL 确认则 fail-fast，不推进 completion/cooldown/ready。独立证据须经 monitor/symbol/direction/保护性 SELL 来源校验，且同 orderId/revision/quantity/executionTime、精确金额与 API 一致；其他订单、金额、symbol、direction、数量、revision、执行时间共七类不匹配负例均拒绝。在线同 revision 合法修订及更高 revision 合法修订继续通过，不改 schema、历史文本或冲突容差。
+- 六消费者（普通 SELL、监控行情、静态清仓、换标唤醒、周期换标唤醒、交易风险）保留原 readiness/position/seat 复核与防旧写；日切/abort waiter、shutdown/fatal drain、开盘重建 baseline 由对应行为与集成测试覆盖。本轮不强行提前搬迁其 P3/P5 物理目录。
+
+#### 静态门禁与残留
+
+- `baseline.stage` 从 P1 收紧至 P2；21 个 SDK import、296 个 SDK use、7 个 legacy edge、94 个 helper occurrence 的原 P2 cutoff 当期失效。只修改阶段，不重采冻结 occurrence、不扩大 allowance、不推迟 cutoff；`unresolved.json` 不变。先前两条日损 legacy debt 已通过真实迁移清零。
+- 门禁增加 P2 多重集合到期、旧 readiness 物理入口、旧 app status/test 导出及 durable/recovery 金额防 number 回退正反例。层矩阵仅约束生产 `src/*`，不将 `tests/application/*` 真实协作者装配误判为生产反向依赖；SDK/fixture、snapshot 与金融检查独立保留。
+- 对生产/行为测试含新增文件共 593 个 TypeScript 文件的 module AST 扫描，旧 `utils/refreshGate`、`core/riskController/dailyLossTracker` 与 `core/riskController/utils` 直接模块引用为零。冻结 baseline/numeric probe 的历史审计键、迁移来源表与历史文档保留，不机械改写历史路径。
+
+#### 串行验收结果
+
+| 实际命令/范围 | 退出码 | 结果 |
+| --- | --- | --- |
+| `bun --no-env-file test tests/architecture/refactoring --timeout 30000` | 0 | 229 pass / 0 fail，4 files，2544 assertions；P2 debt 清零 |
+| `bun --no-env-file run format` | 0 | 659 files；格式器旁路修改的 3 份历史/无关 Markdown 恢复原字节，剩余额外格式改动 0 |
+| `bun --no-env-file run lint` | 0 | 0 diagnostics |
+| `bun --no-env-file run type-check` | 0 | 0 diagnostics |
+| P2 定向测试（完整 argv 见下述证据文件） | 0 | 371 pass / 0 fail，28 files，2860 assertions |
+| `bun --no-env-file test --timeout 30000` | 0 | 2585 pass / 0 fail，256 files，15943 assertions |
+| `bun --no-env-file run build` | 0 | clean + TypeScript build 成功，301 个 JavaScript 产物；不执行产物 |
+| `git diff --check HEAD` | 0 | 无 whitespace error |
+
+P2 定向范围包括 `tests/application/postTradeSettlement/`、app settlement wiring/authorization、native 单实例 owner 集成、真实 recovery/loader/hydrator、`tests/domain/risk/`、金额修订与保护性 baseline 集成、六消费者、订阅失败 ownership、drain、startup/rebuild readiness。完整实际命令、退出码与原始离线输出位于仓外 `D:/Temp/hsi-p2-final-20261012/`，对应 `architecture-final-results.json`、`quality-final-results.json`、`tests-build-final-results.json`、`all-build-diff-final-results.json` 及同名输出文件。
+
+全量首轮发现六处 ESLint typed fixture 仍引用已删除 core 文件，已只改为真实 domain 路径且保持规则/断言不变；另一个失败来自验证 launcher 的自定义日志目录与既有默认路径测试冲突。最终按授权取消该 override，以既有 preload 的默认 `tests/logs` 重跑全量通过，未改 runtime 测试或生产契约。
+
+#### 验收边界与剩余发布阻断
+
+执行环境只保留基础 OS 变量与测试配置，使用 `--no-env-file`；测试 preload 固定 test profile、禁用进程 hooks，并安装离线 SDK 网络工厂保护。仅使用 mock/脱敏 fixtures 与测试隔离文件 IO，不启动 app、不联网实盘、不读取凭证或真实生产日志。静态门禁不替代任意跨函数语义证明。
+
+P3 剩余 workflow/runtime 物理目录迁移、真实旧 V1 与权威订单逐条对账、真实生产恢复演练及发布/回退演练不在本轮。它们仍是相应后续阶段或生产发布的验收事项，不能由本轮离线全绿推定完成。
+
 ---
 
 ## 9. Phase 3：迁移 Application Workflow 业务所有权

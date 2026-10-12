@@ -11,7 +11,7 @@ import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProt
 import { TRADING } from '../../constants/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
-import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
 import type { StartSwitchOnDistanceResult } from '../../types/monitorContextPorts.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
@@ -679,7 +679,7 @@ function createMonitorQuoteEventRuntime(
     try {
       return await deps.postTradeConsistencyRuntime.waitForFresh();
     } catch (error) {
-      if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) return null;
+      if (isSettlementReadinessAbortError(error, 'STOP_AND_DRAIN')) return null;
 
       throw error;
     }

@@ -11,7 +11,7 @@ import { createBrokerAccessFactory } from '../../infrastructure/longbridge/trade
 import { orderEconomics } from '../../domain/order/orderEconomics.js';
 import { TIME } from '../../constants/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../domain/risk/dailyLossTracker.js';
 import { createRiskChecker } from '../../core/riskController/index.js';
 import { createPositionLimitChecker } from '../../core/riskController/positionLimitChecker.js';
 import { createUnrealizedLossChecker } from '../../core/riskController/unrealizedLossChecker.js';
@@ -262,6 +262,7 @@ function createPostGateRuntimeFactory(
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
       toHongKongTimeIso,
+      onOwnershipWarning: logger.warn,
     });
     const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
     const mixedTradeLogRepository = buildMixedTradeLogRepository({
@@ -458,6 +459,7 @@ function createPostGateRuntimeFactory(
       protectiveLiquidationEpisodeTracker,
       tradeLogHydrator,
       mixedTradeLogRepository,
+      protectionRecovery: postTradeConsistencyRuntime,
       warrantListCacheConfig,
       seatActivationDispatcher,
       reportFatalError: termination.reportFatalError,

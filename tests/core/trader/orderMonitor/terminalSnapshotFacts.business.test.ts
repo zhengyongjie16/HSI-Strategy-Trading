@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import {
   assertProtectiveSellRawTerminalStateFactsReady,
   normalizeTerminalStateSnapshot,
@@ -166,6 +166,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
     const normalized = normalizeTerminalStateSnapshot(knownFact, terminalState, true);
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,

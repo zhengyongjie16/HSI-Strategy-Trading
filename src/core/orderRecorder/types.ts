@@ -1,7 +1,7 @@
 import type { OrderSnapshotReadPort } from '../../types/orderSnapshotReadPorts.js';
 import type { Quote } from '../../types/quote.js';
 import type { SettlementRefreshNeedRecorder } from '../../types/settlement.js';
-import type { MonitorConfig } from '../../types/config.js';
+import type { DailyLossMonitorScope, DailyLossOrderSnapshot } from '../../types/risk.js';
 import type {
   BrokerOrderExecutionFact,
   OrderFilteringEngine,
@@ -160,17 +160,17 @@ export type OrderRecorderFactoryDeps = {
  * 数据来源：由 orderRecorder 公共边界内组装后返回。
  * 使用范围：仅 orderRecorder 的对外分析导出使用。
  */
-export type OrderDailyLossAnalysisDeps = {
+export interface OrderDailyLossAnalysisDeps {
   readonly filteringEngine: OrderFilteringEngine;
   readonly resolveOrderOwnership: (
-    order: RawOrderFromAPI,
-    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    order: DailyLossOrderSnapshot,
+    monitor: DailyLossMonitorScope,
   ) => OrderOwnership | null;
-  readonly classifyAndConvertOrders: (orders: ReadonlyArray<RawOrderFromAPI>) => {
+  readonly classifyAndConvertOrders: (orders: ReadonlyArray<OrderExecutionRecordObservation>) => {
     readonly buyOrders: ReadonlyArray<OrderRecord>;
     readonly sellOrders: ReadonlyArray<OrderRecord>;
   };
-};
+}
 
 /**
  * 订单记录器依赖。

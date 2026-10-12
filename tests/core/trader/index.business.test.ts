@@ -5,7 +5,7 @@ import { createAccountPositionSnapshot } from '../../../src/application/accountP
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import type { Trader } from '../../../src/types/services.js';
 import { getRequiredHKDateKey, toHongKongTimeIso } from '../../../src/utils/time/index.js';
@@ -53,6 +53,7 @@ async function createNativeAccountFixture() {
 async function createFacadeFixture() {
   const native = await createNativeAccountFixture();
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });

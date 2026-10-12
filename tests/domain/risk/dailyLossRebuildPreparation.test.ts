@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { DailyLossTracker, DailyLossTrackerDeps } from '../../../src/types/risk.js';
@@ -90,7 +90,12 @@ const seedOrders = [
 function createOwner(
   resolveOrderOwnership: DailyLossTrackerDeps['resolveOrderOwnership'] = analysis.resolveOrderOwnership,
 ): DailyLossTracker {
-  return createDailyLossTracker({ ...analysis, resolveOrderOwnership, toHongKongTimeIso });
+  return createDailyLossTracker({
+    onOwnershipWarning: () => {},
+    ...analysis,
+    resolveOrderOwnership,
+    toHongKongTimeIso,
+  });
 }
 
 function inspect(owner: DailyLossTracker) {
@@ -162,6 +167,44 @@ function candidateOrders(): ReadonlyArray<RawOrderFromAPI> {
 }
 
 describe('DailyLoss rebuild preparation', () => {
+  it('reports ownership diagnostics through the injected observation without publishing prepared state', () => {
+    const warnings: string[] = [];
+    const owner = createDailyLossTracker({
+      ...analysis,
+      toHongKongTimeIso,
+      onOwnershipWarning: (message) => {
+        warnings.push(message);
+      },
+    });
+    const unowned = {
+      ...order({
+        orderId: 'UNOWNED',
+        direction: 'LONG',
+        side: 'BUY',
+        price: '1',
+        executedAmount: '100',
+      }),
+      symbol: 'UNRELATED.HK',
+      stockName: 'UNRELATED RC',
+    };
+    const prepared = owner.prepareRecalculationFromAllOrders(
+      [...seedOrders, unowned],
+      monitor,
+      now,
+      undefined,
+      relatedTradingSymbols,
+    );
+    expect(warnings).toEqual([
+      '[日内亏损追踪] 未归属订单: 当日成交5笔, 未归属1笔, 样例=UNRELATED.HK:UNRELATED RC',
+    ]);
+    expect(owner.getExecutionTimeEvidence()).toEqual([]);
+    expect(owner.getLossOffset('LONG')).toBe('0');
+    owner.publishRecalculation(prepared);
+    expect(owner.getLossOffset('LONG')).toBe('-15');
+    expect(owner.getLossOffset('SHORT')).toBe('-50');
+    expect(warnings).toHaveLength(1);
+  });
+
   it('uses the actual instance resolver despite default-parser acceptance, preserving sealed baselines', () => {
     const owner = createOwner((input, config) =>
       input.orderId === 'INSTANCE-REJECTED' ? null : analysis.resolveOrderOwnership(input, config),
@@ -219,6 +262,7 @@ describe('DailyLoss rebuild preparation', () => {
     let rejectShortProjection = false;
     const projectedSymbols: string[] = [];
     const owner = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...analysis,
       toHongKongTimeIso,
       filteringEngine: {

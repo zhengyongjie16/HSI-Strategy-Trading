@@ -6,6 +6,10 @@
  */
 import type { Position, AccountSnapshot } from '../../src/types/account.js';
 import type { AccountPositionSnapshotReader } from '../../src/types/accountPosition.js';
+import type {
+  PostTradeSettlementBusinessDeps,
+  SettlementCompletionPersistence,
+} from '../../src/application/postTradeSettlement/types.js';
 import type { MonitorConfig } from '../../src/types/config.js';
 import type { CandleData, NormalizedCandle } from '../../src/types/data.js';
 import type { Quote } from '../../src/types/quote.js';
@@ -39,7 +43,7 @@ import type {
   CancelPendingBuyOrdersResult,
 } from '../../src/core/doomsdayProtection/types.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createMonitorConfig } from '../../mock/factories/configFactory.js';
 import type {
@@ -522,6 +526,7 @@ export function createDailyLossTrackerDouble(
   overrides: Partial<DailyLossTracker> = {},
 ): DailyLossTracker {
   const base = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });
@@ -1336,6 +1341,50 @@ export function createMonitorContextDouble(
     longSymbolName: overrides.longSymbolName ?? '',
     shortSymbolName: overrides.shortSymbolName ?? '',
     monitorSymbolName: overrides.monitorSymbolName ?? config.monitorSymbol,
+  };
+}
+
+/** 将旧业务 fixture 的真实协作者投影为 workflow 窄能力；测试直接调用 application owner。 */
+export function createSettlementBusinessDeps(params: {
+  readonly monitorContext: MonitorContext;
+  readonly dailyLossTracker: DailyLossTracker;
+  readonly liquidationCooldownTracker: LiquidationCooldownTracker;
+  readonly protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
+  readonly mixedTradeLogRepository: SettlementCompletionPersistence;
+}): PostTradeSettlementBusinessDeps {
+  const { monitorContext, dailyLossTracker, liquidationCooldownTracker } = params;
+  return {
+    monitorSymbol: monitorContext.config.monitorSymbol,
+    seats: {
+      getSeatState: monitorContext.symbolRegistry.getSeatState,
+      getSeatVersion: monitorContext.symbolRegistry.getSeatVersion,
+    },
+    episodes: params.protectiveLiquidationEpisodeTracker,
+    completionPersistence: params.mixedTradeLogRepository,
+    lossBoundaries: {
+      prepareProtectionBoundary: dailyLossTracker.prepareProtectionBoundary,
+      commitProtectionBoundary: dailyLossTracker.commitProtectionBoundary,
+      getLossOffset: monitorContext.dailyLossTracker.getLossOffset,
+    },
+    cooldownTriggers: {
+      recordLiquidationTrigger: (input) => {
+        liquidationCooldownTracker.recordLiquidationTrigger({
+          ...input,
+          triggerLimit: monitorContext.config.liquidationTriggerLimit,
+          cooldownConfig: monitorContext.config.liquidationCooldown,
+        });
+      },
+    },
+    riskProjection: {
+      prepare: (symbol, direction, dailyLossOffset) =>
+        monitorContext.riskChecker.prepareUnrealizedLossData(
+          monitorContext.orderRecorder,
+          symbol,
+          direction === 'LONG',
+          dailyLossOffset,
+        ),
+      publish: monitorContext.riskChecker.publishUnrealizedLossData,
+    },
   };
 }
 

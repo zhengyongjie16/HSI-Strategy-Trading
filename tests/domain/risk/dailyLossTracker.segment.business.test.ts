@@ -5,13 +5,14 @@
  * - 验证保护性清仓边界推进后的分段过滤、幂等重置与启动恢复边界语义。
  */
 import { describe, expect, it } from 'bun:test';
-import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { OrderOwnership } from '../../../src/types/orderRecorder.js';
 import type {
   DailyLossCumulativeExecutionInput,
+  DailyLossOrderSnapshot,
   DailyLossTracker,
 } from '../../../src/types/risk.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
@@ -60,7 +61,7 @@ function createMonitor(): Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipM
   };
 }
 
-function resolveOrderOwnership(order: RawOrderFromAPI): OrderOwnership | null {
+function resolveOrderOwnership(order: DailyLossOrderSnapshot): OrderOwnership | null {
   if (order.symbol === 'BULL.HK') {
     return { monitorSymbol: 'HSI.HK', direction: 'LONG' };
   }
@@ -74,6 +75,7 @@ function resolveOrderOwnership(order: RawOrderFromAPI): OrderOwnership | null {
 
 function createSegmentTracker(): DailyLossTracker {
   return createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     resolveOrderOwnership: (order) => resolveOrderOwnership(order),
     toHongKongTimeIso,
@@ -2516,6 +2518,7 @@ describe('dailyLossTracker segment flow', () => {
 
   it('recalculateFromAllOrders fails fast when a relevant in-day executed order cannot be owned', () => {
     const tracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
@@ -2615,6 +2618,7 @@ describe('dailyLossTracker segment flow', () => {
 
   it('rejects a related executed order before a historical timestamp can hide missing ownership', () => {
     const tracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,

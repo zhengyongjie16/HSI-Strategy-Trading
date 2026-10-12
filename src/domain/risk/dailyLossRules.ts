@@ -1,8 +1,11 @@
+/**
+ * 当日亏损纯规则：香港日键、精确订单成本汇总与归属诊断；不持有状态或 IO。
+ */
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { exactAdd, exactCompare } from '../../utils/numeric/exact.js';
-import type { MonitorConfig } from '../../types/config.js';
+import type { DailyLossMonitorScope, DailyLossOrderSnapshot } from '../../types/risk.js';
 import type { OrderOwnership } from '../../types/orderRecorder.js';
-import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
+import type { OrderRecord } from '../../types/services.js';
 import type { OrderOwnershipDiagnostics, OrderOwnershipDiagnosticSample } from './types.js';
 
 /**
@@ -72,12 +75,12 @@ export function collectOrderOwnershipDiagnostics({
   toHongKongTimeIso,
   maxSamples = 3,
 }: {
-  readonly orders: ReadonlyArray<RawOrderFromAPI>;
-  readonly monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>;
+  readonly orders: ReadonlyArray<DailyLossOrderSnapshot>;
+  readonly monitor: DailyLossMonitorScope;
   readonly now: Date;
   readonly resolveOrderOwnership: (
-    order: RawOrderFromAPI,
-    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    order: DailyLossOrderSnapshot,
+    monitor: DailyLossMonitorScope,
   ) => OrderOwnership | null;
   readonly toHongKongTimeIso: (date: Date | null) => string;
   readonly maxSamples?: number;

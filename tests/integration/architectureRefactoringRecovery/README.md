@@ -1,4 +1,4 @@
-# P0 离线恢复基准
+# P0 基准与 P2 离线恢复验收
 
 运行：`bun test tests/integration/architectureRefactoringRecovery`。
 
@@ -19,9 +19,11 @@
 
 完整恢复路径真实运行 repository、loader、seat preparation/registry/dispatcher、DailyLossTracker、episode、cooldown/hydrator、rebuild、order recorder/filtering、risk cache 与 orderMonitor/recovery。broker、账户/持仓读取、行情/日历、clock、显示和 append IO failure 是离线边界。MonitorContext 的未参与策略成员只是结构装配，不使用替身 tracker/episode/settlement。
 
-恢复链路使用 monitor 自身的真实 runtime 与 settlement store，没有另建独立 settlement store。分段增长用例直接向 recovered DailyLossTracker 输入中性累计事实；时间/revision 用例连接真实 recorder、Daily 与 repository，验证同单覆盖和历史文本不变。这些用例**不证明 monitor 正成交事件自然传递到 post-trade completion**；post-trade 虽装配为 refresh sink，本目录不启动其运行期 completion 消费，不把人工 refresh nudge 当生产 wiring 证明。
+恢复链路使用 monitor 自身的真实 runtime 与 settlement store，没有另建独立 settlement store。loader 按原顺序逐条恢复全部 progress、已有 completion 及全部 in-progress episode 后，同步调用唯一 `PostTradeSettlementWorkflow.completeProtectionRecovery`；loader 不自行判 flat/prepare/append/commit。owner 读取 canonical paired snapshot 与未终结 protective 方向，完成同步 completion 事务；恢复模式不调用在线 `recordLiquidationTrigger`，随后日志 hydrate 只回放一次冷却。分段增长用例直接向 recovered DailyLossTracker 输入中性累计事实；时间/revision 用例连接真实 recorder、Daily 与 repository，验证同单覆盖和历史文本不变。恢复主链不依赖运行期 completion 消费；triggerLimit=2 用例在真实重启后以中性事实提供下一事件，由同一 live settlement owner 提交完成。不把此计数回归、恢复调用或人工 refresh nudge 当作自然 push→settlement wiring 证明。
 
-覆盖完整 loader/rebuild 双次恢复、冻结历史 completion、crash-gap 一次完成、BUY/SELL baseline、分段损益、分钟冷却水合、同 revision OPEN→TERMINAL、早期不同 ID 的 API 冲突、baseline 冲突、精确事实缺失、completion IO 失败不提交，以及零成交 protective OPEN 阻断完成/不自行创建 episode。
+覆盖完整 loader/rebuild 双次恢复、冻结历史 completion、同 owner crash-gap 一次完成、BUY/SELL baseline、分段损益、分钟冷却水合、同 revision OPEN→TERMINAL、早期不同 ID 的 API 冲突、baseline 冲突、精确事实缺失、completion IO 失败不提交，以及零成交 protective OPEN 阻断完成/不自行创建 episode。新增 LONG/SHORT 全部 episode 恢复后一次 owner 调用、hydrate 单次且在线冷却触发为零；generation/day-cut/termination 失效时 owner 返回 false，loader 按原 receipt 返回 SUPERSEDED/ABORTED，不 hydrate、不取 quotes、不推进 ready。
+
+真实重启后再次断言分钟冷却剩余 `240000ms`。triggerLimit=2 用例验证首轮和重启均恢复部分计数 `[1]`、无冷却及零在线触发；下一真实 settlement completion 恰好触发一次冷却，重复 baseline 不再触发或追加，剩余时间从 `300000ms` 递减到 `240000ms`，证明未双计。
 
 不声称真实历史对账、候选/指定回退版本恢复、SDK 高有效位 mapper、所有跨订单择新排序、半日/跨日冷却全模式或静态清仓目的隔离。
 
@@ -33,6 +35,12 @@ P1 已接入真实中性 order observation/port 边界。本目录通过 `archit
 
 原 fixture 保持 executionTime=T、API updatedAt/revision=T+30 秒。当前测试断言恢复事实采用 durable 可信 T，revision 独立保留 T+30；相同 query 事实不重复经济投影、progress 或 submit。已完成 boundary 的同量修订继续按原规则 SUPPRESSED，历史 payload/ID/revision、baseline 与原始 fixture 字节保持不变，不用 updatedAt 补造成交时间。
 
-## 未来 Decimal 差分
+## P2 金融精度定向验证
 
-保留原 fixtures 文本，候选及指定回退版本分别运行恢复入口，对照人工 oracle、baseline 和冲突/原文本保护断言。新生成金额文本不要求与旧 number 投影字节相同；应新增独立精确 oracle 登记误差修正，不覆写旧期望、不添加容差/尾零、不改 ID/revision。本整数账本是“原有效行为保持”，冲突/缺证据是“恢复阻断”，时间/revision 分离是事实契约回归，并非精度误差修正证明。真实历史发布门禁仍独立存在。
+原 fixture 四份字节和 SHA-256 保持冻结；低位变体仅从原 OPEN 行复制到用例专属临时目录，不变 schema/ID/revision。成对反例为同 revision/quantity 的旧 OPEN 金额 `44.9999999999999999` 或 `45.0000000000000001` 与 API TERMINAL `45`，无独立 durable TERMINAL 证据时双向 fail-fast，不推进 completion/cooldown/ready，不改原文本。偏低反例修复前会被共享在线 OPEN→TERMINAL 裁决及单向 restore 检查吞掉；根因在 loader 恢复边界修正，没有修改共享在线裁决。
+
+正例为原 durable TERMINAL 对同 revision/quantity/金额的独立确认、金额完全一致及更高 revision 权威修订；正常在线合法修订沿既有测试保留。新增反例为真实 repository 可读取的 TERMINAL 与当前 OPEN/API 的 orderId、amount、symbol、direction、quantity、revision 或 execution time 不匹配，均不能成为独立证据，阻断前不调用 completion owner/hydrate、不取 quotes且原文本保持。BUY baseline 与 API 的 `49.9999999999999999` / `50.0000000000000001` 双向冲突仍按原精确 baseline 规则拒绝。
+
+高有效位用例通过中性金融事实装配，真实 loader/rebuild/repository/tracker/settlement 冻结 BUY `50.0000000000000002`、SELL `45.0000000000000001` baseline，重启不再追加；后续分段固定手工账为 BUY `60.0000000000000001`、SELL `40.0000000000000003`，精确亏损 `-19.9999999999999998`。该用例验证恢复消费链，不冒充 SDK 高有效位 mapper 证明。
+
+整数账本属于“原有效行为保持”，冲突/缺证据属于“历史恢复阻断”，时间/revision 分离属于事实契约回归。新生成金额文本不要求与旧 number 投影字节相同；不覆写旧期望、不添加容差/尾零、不改 ID/revision。候选及指定回退版本的真实完整历史恢复仍是未来发布门禁，离线 fixtures 不能替代。

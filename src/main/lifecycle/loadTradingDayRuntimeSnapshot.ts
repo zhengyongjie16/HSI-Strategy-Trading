@@ -167,6 +167,44 @@ function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
 }
 
 /**
+ * 恢复不能借在线 OPEN→TERMINAL 裁决吞掉旧精度冲突。
+ * 同 revision/quantity 的异金额必须由原 durable TERMINAL 确认；阶段变化或新 API 更精确都不是独立证据。
+ * 更高 revision 和在线合法修订仍由原订单事实 owner 裁决，不在此改写历史或引入容差。
+ */
+function assertSameRevisionTerminalAmountHasDurableEvidence(
+  progressRecords: ReadonlyArray<ProtectiveLiquidationExecutionProgressRecordV1>,
+  rawProtectiveSellOrdersById: ReadonlyMap<string, RawOrderFromAPI>,
+): void {
+  for (const progress of progressRecords) {
+    const order = rawProtectiveSellOrdersById.get(progress.orderId);
+    if (
+      progress.factStage !== 'OPEN' ||
+      order?.executionPhase !== 'TERMINAL' ||
+      progress.orderRevisionMs !== order.updatedAtMs ||
+      safeQuantityNumber(progress.cumulativeQuantity) !== order.executedQuantity ||
+      exactCompare(progress.cumulativeAmount, order.executedAmount) === 0
+    ) {
+      continue;
+    }
+
+    const hasDurableTerminalEvidence = progressRecords.some(
+      (terminal) =>
+        terminal.factStage === 'TERMINAL' &&
+        terminal.orderId === progress.orderId &&
+        terminal.orderRevisionMs === progress.orderRevisionMs &&
+        exactCompare(terminal.cumulativeQuantity, progress.cumulativeQuantity) === 0 &&
+        exactCompare(terminal.cumulativeAmount, order.executedAmount) === 0 &&
+        terminal.lastExecutionTimeMs === progress.lastExecutionTimeMs,
+    );
+    if (!hasDurableTerminalEvidence) {
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] 同 revision OPEN/TERMINAL 金额冲突缺少独立 durable 终态证据: ${progress.orderId}`,
+      );
+    }
+  }
+}
+
+/**
  * 创建交易日运行时快照加载函数（工厂）。
  * 注入依赖后返回 loadTradingDayRuntimeSnapshot，用于启动初始化与开盘重建时加载账户、持仓、订单、席位与行情快照。
  *
@@ -186,6 +224,7 @@ export function createLoadTradingDayRuntimeSnapshot(
     protectiveLiquidationEpisodeTracker,
     tradeLogHydrator,
     mixedTradeLogRepository,
+    protectionRecovery,
     warrantListCacheConfig,
     seatActivationDispatcher,
     snapshot,
@@ -278,11 +317,17 @@ export function createLoadTradingDayRuntimeSnapshot(
         : [];
     // durable 来源/唯一归属先预检，再补真实 T；首轮 daily 全量重算不能先消费 API revision 伪 T。
     assertCompletionRecordsMatchExpectedMonitor(completionRecords, expectedMonitorSymbol);
+    const rawProtectiveSellOrdersById = collectRawProtectiveSellOrdersById(rawOrders);
     assertExecutionProgressRecordsHaveRawProtectiveProvenance(
       executionProgressRecords,
-      collectRawProtectiveSellOrdersById(rawOrders),
+      rawProtectiveSellOrdersById,
       tradingConfig.monitor,
       expectedMonitorSymbol,
+    );
+
+    assertSameRevisionTerminalAmountHasDurableEvidence(
+      executionProgressRecords,
+      rawProtectiveSellOrdersById,
     );
     const trustedEvidence: OrderExecutionTimeEvidence[] = executionProgressRecords.map(
       (progress) => ({
@@ -601,44 +646,22 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
 
       for (const progress of latestProgressByDirection.values()) {
-        const hasPosition = canonicalView.positions.some(
-          (position) => position.symbol === progress.symbol && position.quantity > 0,
-        );
-        const hasPendingProtectiveOrders = pendingProtectiveDirections.has(progress.direction);
-
         protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
           direction: progress.direction,
           symbol: progress.symbol,
           latestExecutedTimeMs: progress.lastExecutionTimeMs,
         });
+      }
 
-        if (hasPosition || hasPendingProtectiveOrders) {
-          continue;
-        }
-
-        const preparedEpisode = protectiveLiquidationEpisodeTracker.prepareCompletion({
-          direction: progress.direction,
-          isDirectionFlat: true,
-          hasPendingProtectiveOrders: false,
-        });
-        if (preparedEpisode === null) {
-          throw new Error(
-            `[loadTradingDayRuntimeSnapshot] crash-gap episode 无法冻结: ${progress.orderId}`,
-          );
-        }
-
-        const preparedDailyLoss = dailyLossTracker.prepareProtectionBoundary({
-          direction: preparedEpisode.direction,
-          boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
-        });
-        mixedTradeLogRepository.appendCompletionIdempotent({
-          monitorSymbol: expectedMonitorSymbol,
-          direction: preparedEpisode.direction,
-          boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
-          orderBaselines: preparedDailyLoss.orderBaselines,
-        });
-        dailyLossTracker.commitProtectionBoundary(preparedDailyLoss);
-        protectiveLiquidationEpisodeTracker.commitCompletion(preparedEpisode);
+      // 全部历史事实与 episode 恢复后，由唯一 settlement owner 同步收口 crash-gap。
+      // 恢复能力不直接触发冷却，随后 hydrate 根据 durable completion 只回放一次。
+      if (
+        !protectionRecovery.completeProtectionRecovery({
+          snapshotToken: capturedSnapshotToken,
+          pendingProtectiveDirections,
+        })
+      ) {
+        return resolveReceiptInvalidation() ?? { status: 'ABORTED' };
       }
     }
 

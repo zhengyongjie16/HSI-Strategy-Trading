@@ -10,7 +10,7 @@ import { createAccountPositionSnapshot } from '../../src/application/accountPosi
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createEventFlow as createProductionEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
 import { createSettlementFlow } from '../../src/core/trader/orderMonitor/settlementFlow.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
@@ -304,11 +304,115 @@ async function createAmountActors(
 }
 
 describe('DailyLoss protective amount revision integration', () => {
+  it('keeps a live same-revision OPEN→TERMINAL amount correction legal while persisting progress before DailyLoss and episode', async () => {
+    const revision = Date.parse('2026-07-11T02:05:00.000Z');
+    const daily = createDailyLossTracker({
+      onOwnershipWarning: () => {},
+      ...createDailyLossOrderAnalysisDeps(),
+      resolveOrderOwnership: () => null,
+      toHongKongTimeIso,
+    });
+    daily.resetAll(new Date('2026-07-11T01:00:00.000Z'));
+    const episode = createProtectiveLiquidationEpisodeTracker();
+    const actors = await createAmountActors(
+      revision,
+      daily,
+      episode,
+      () => {
+        throw new Error('held positions must not complete');
+      },
+      false,
+      () => {},
+    );
+    const progress: Array<{ readonly phase: 'OPEN' | 'TERMINAL'; readonly amount: string }> = [];
+    const flow = createSettlementFlow({
+      runtime: createRuntime(),
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: actors.orderRecorder,
+      dailyLossTracker: daily,
+      protectiveLiquidationEpisodeTracker: episode,
+      persistProtectiveLiquidationExecutionProgress: (record) => {
+        expect(daily.getLossOffset('LONG')).toBe(progress.length === 0 ? '0' : '-5');
+        expect(episode.getInProgressEpisodes()).toHaveLength(progress.length === 0 ? 0 : 1);
+        progress.push({ phase: record.factStage, amount: record.cumulativeAmount });
+      },
+      postTradeConsistencyRuntime: actors.postTrade,
+      emitOrderStateChanged: () => {},
+    });
+    try {
+      for (const [status, price, phase] of [
+        ['PartialFilled', '9', 'OPEN'],
+        ['Filled', '9.4', 'TERMINAL'],
+      ] as const) {
+        actors.native.setExecutionReplies([
+          {
+            orderId: actors.sellFrame.orderId,
+            tradeId: 'SELL-T',
+            symbol: 'BULL.HK',
+            quantity: '5',
+            price,
+            tradeDoneAtMs: revision,
+          },
+        ]);
+
+        actors.native.setOrderDetailReplies([
+          {
+            ...actors.sellFrame,
+            status,
+            executedPrice: price,
+            executedQuantity: '5',
+            executionTimeMs: revision,
+            updatedAtMs: revision,
+          },
+        ]);
+        const [observation] = await actors.native.createQueryOrdersReader(
+          actors.sellFrame.orderId,
+        )();
+        if (observation === undefined) throw new Error('Expected actual live revision observation');
+
+        const result = flow.recordCumulativeExecution({
+          factStage: phase,
+          orderId: observation.orderId,
+          side: 'SELL',
+          monitorSymbol: 'HSI.HK',
+          symbol: observation.symbol,
+          isLongSymbol: true,
+          isProtectiveLiquidation: true,
+          executedPrice: observation.executedPrice,
+          executedAmount: observation.executedAmount,
+          executedQuantity: observation.executedQuantity,
+          executedTimeMs: observation.executionTimeMs,
+          orderUpdatedAtMs: observation.updatedAtMs,
+        });
+        expect(result.authoritativeFactChanged).toBe(true);
+        expect(result.executionAdvanced).toBe(phase === 'OPEN');
+      }
+
+      await actors.postTrade.waitForFresh();
+      expect(progress).toEqual([
+        { phase: 'OPEN', amount: '45' },
+        { phase: 'TERMINAL', amount: '47' },
+      ]);
+      expect(daily.getLossOffset('LONG')).toBe('-3');
+      expect(actors.orderRecorder.getExecutionFact(actors.sellFrame.orderId)).toMatchObject({
+        phase: 'TERMINAL',
+        cumulativeQuantity: 5,
+        cumulativeAmount: '47',
+        updatedAtMs: revision,
+        executionTimeMs: revision,
+      });
+    } finally {
+      await actors.postTrade.stopAndDrain();
+      await actors.snapshot.requestClear({ reason: 'STOP', dayEpoch: 1 });
+    }
+  });
+
   it('persists an unsealed same-quantity amount revision, refreshes risk, and preserves its crash-gap baseline', async () => {
     const firstRevisionMs = Date.parse('2026-07-11T02:00:00.000Z');
     const secondRevisionMs = firstRevisionMs + 1_000;
     const runtime = createRuntime();
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
@@ -436,6 +540,7 @@ describe('DailyLoss protective amount revision integration', () => {
     ]);
 
     const restartedTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: () => ({ monitorSymbol: 'HSI.HK', direction: 'LONG' }),
       toHongKongTimeIso,
@@ -496,6 +601,7 @@ describe('DailyLoss protective amount revision integration', () => {
     const firstRevisionMs = Date.parse('2026-07-11T02:10:00.000Z');
     const secondRevisionMs = firstRevisionMs + 1_000;
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,

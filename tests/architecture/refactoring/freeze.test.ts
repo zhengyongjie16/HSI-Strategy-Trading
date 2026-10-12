@@ -1,5 +1,5 @@
 /**
- * P1 多重集合收缩：到期 occurrence 必须删除，P2+ 精确旧例外不可增殖或搬进新层。
+ * P2 多重集合收缩：P1/P2 到期 occurrence 必须删除，后续精确旧例外不可增殖或搬进新层。
  * 临时 fixtures 只用于静态编译器检查，不写入生产树、不连接 SDK。
  */
 import path from 'node:path';
@@ -71,7 +71,7 @@ const files = [
 const program = createAuditProgram(root, files);
 const actual = scanProgram(root, program, files);
 
-describe('P1 frozen occurrence architecture', () => {
+describe('P2 frozen occurrence architecture', () => {
   it.each([
     "import { readFileSync } from 'node:fs'; void readFileSync;",
     "import type { Stats } from 'node:fs'; export type Stat = Stats;",
@@ -267,6 +267,21 @@ describe('P1 frozen occurrence architecture', () => {
     expect(scan.violations.some((key) => key.includes('LAYER'))).toBe(true);
   });
 
+  it('applies the layer matrix to production, not offline tests assembling real collaborators', () => {
+    const scan = fixture({
+      'src/core/owner.ts': 'export const create = () => ({ read: () => "fact" });',
+      'src/application/consumer.ts': "import { create } from '../core/owner.js'; void create;",
+      'tests/application/consumer.test.ts':
+        "import { create } from '../../src/core/owner.js'; void create;",
+      'tests/application/native.test.ts': "import { Decimal } from 'longbridge'; void Decimal;",
+    });
+    expect(scan.violations).toEqual([
+      occurrenceKey('src/application/consumer.ts', 'LAYER', 'src/core/owner.ts'),
+    ]);
+    expect(scan.imports).toHaveLength(1);
+    expect(excess(scan.imports, [], 'P2')).toEqual(scan.imports);
+  });
+
   it('retains old business owner dependencies even when their function signatures are neutral', () => {
     const scan = fixture({
       'src/core/policy.ts': 'export function decide(value: string) { return { value }; }',
@@ -374,14 +389,62 @@ describe('P1 frozen occurrence architecture', () => {
     expect(scan.imports).toHaveLength(1);
   });
 
-  it('requires the P1 stage without granting any P2+ or final-directory exception', () => {
-    expect(baseline.stage).toBe('P1');
+  it('requires the P2 stage without granting later or final-directory exceptions', () => {
+    expect(baseline.stage).toBe('P2');
     const later = baseline.imports.find((row) => row.cutoff === 'P4.5');
     expect(later).toBeDefined();
     if (later !== undefined) {
-      expect(excess([later.key], [later], 'P1')).toEqual([]);
+      expect(excess([later.key], [later], 'P2')).toEqual([]);
       expect(excess([later.key], [later], 'P4.5')).toEqual([later.key]);
     }
+  });
+
+  it('expires each original P2 SDK, legacy and helper occurrence without resampling', () => {
+    for (const rows of [baseline.imports, baseline.uses, baseline.legacy, baseline.helperCalls]) {
+      const expiring = rows.filter((row) => row.cutoff === 'P2');
+      const keys = expiring.map((row) => row.key);
+      expect(keys.length).toBeGreaterThan(0);
+      expect(excess(keys, expiring, 'P1')).toEqual([]);
+      expect(excess([...keys, ...keys], expiring, 'P1')).toEqual(keys);
+      expect(excess(keys, expiring, 'P2')).toEqual(keys);
+    }
+  });
+
+  it('retires the old readiness modules, app business status and exported app test helpers', () => {
+    expect(
+      files
+        .map((file) => path.relative(root, file).replaceAll('\\', '/'))
+        .filter((file) => /^(?:src|tests)\/utils\/refreshGate\//.test(file)),
+    ).toEqual([]);
+
+    const checker = program.getTypeChecker();
+    for (const [file, expected] of [
+      [
+        'src/app/runtime/createPostTradeConsistencyRuntime.ts',
+        ['createPostTradeConsistencyRuntime'],
+      ],
+      ['tests/app/runtime/createPostTradeConsistencyRuntime.test.ts', []],
+    ] as const) {
+      const source = program.getSourceFile(path.join(root, file));
+      if (source === undefined) throw new Error(`Missing settlement composition module: ${file}`);
+
+      const module = checker.getSymbolAtLocation(source);
+      if (module === undefined) throw new Error(`Missing settlement composition exports: ${file}`);
+
+      expect(checker.getExportsOfModule(module).map((symbol) => symbol.name)).toEqual([
+        ...expected,
+      ]);
+    }
+
+    const appTypes = program.getSourceFile(path.join(root, 'src/app/types.ts'));
+    if (appTypes === undefined) throw new Error('Missing app composition contracts');
+
+    const appModule = checker.getSymbolAtLocation(appTypes);
+    if (appModule === undefined) throw new Error('Missing app composition type exports');
+
+    expect(checker.getExportsOfModule(appModule).map((symbol) => symbol.name)).not.toContain(
+      'PostTradeConsistencyRuntimeStatus',
+    );
   });
 
   it('keeps exactly one actual TradeContext creator in the production trade adapter', () => {
@@ -771,13 +834,13 @@ describe('P1 frozen occurrence architecture', () => {
     const edge = baseline.legacy.find(
       (row) =>
         row.file === 'src/app/runtime/createPostGateRuntime.ts' &&
-        row.key.includes('doomsdayProtection/index.ts'),
+        row.key.includes('riskController/dailyLossTracker.ts'),
     );
     expect(edge).toBeDefined();
     if (edge === undefined) return;
 
     expect(excess([edge.key], [edge], 'P0')).toEqual([]);
-    expect(excess([edge.key], [edge], 'P3E')).toEqual([edge.key]);
+    expect(excess([edge.key], [edge], 'P2')).toEqual([edge.key]);
     const probe = fixture({
       'src/application/probe.ts': "import { create } from '../core/old.js'; void create;",
       'src/core/old.ts': 'export const create = () => 1;',

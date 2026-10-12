@@ -226,8 +226,10 @@ function forbiddenDomainIo(file: string, specifier: string): boolean {
   );
 }
 
-/** 目标矩阵从 P0 生效，旧混合实现只能消耗逐条 legacy allowance。 */
+/** 生产目标矩阵从 P0 生效；测试装配真实 owner，不继承目录同名的生产依赖限制。 */
 function forbiddenLayer(file: string, target: string): boolean {
+  if (!file.startsWith('src/')) return false;
+
   const from = file.split('/')[1];
   const to = target.split('/')[1];
   if (!target.startsWith('src/')) return false;

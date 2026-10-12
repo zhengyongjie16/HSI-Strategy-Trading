@@ -14,7 +14,7 @@ import type { QuoteUpdatedEvent } from '../../types/services.js';
 import { isSeatActive } from '../../utils/seat/guards.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { exactCompare, sumSafeQuantities } from '../../utils/numeric/exact.js';
-import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import { resolveNextQuoteRetry } from '../../utils/quoteRetry/index.js';
 import type {
@@ -189,7 +189,7 @@ export function createStaticLiquidationExecutor(
     try {
       receipt = await postTradeConsistencyRuntime.waitForFresh();
     } catch (error) {
-      if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) return { kind: 'NOOP' };
+      if (isSettlementReadinessAbortError(error, 'STOP_AND_DRAIN')) return { kind: 'NOOP' };
 
       throw error;
     }

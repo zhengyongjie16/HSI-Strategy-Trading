@@ -14,7 +14,7 @@ import {
   isUnconfirmedOrderSubmissionError,
 } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
-import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
 import { isTradingRiskRouteCurrent, resolveTradingRiskRoute } from './routeValidation.js';
 import { buildTradingRiskRoutingIndex } from './routingIndex.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
@@ -317,7 +317,7 @@ export function createTradingRiskEventRuntime(
         try {
           receipt = await deps.postTradeConsistencyRuntime.waitForFresh();
         } catch (error) {
-          if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) {
+          if (isSettlementReadinessAbortError(error, 'STOP_AND_DRAIN')) {
             return;
           }
 

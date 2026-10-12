@@ -10,7 +10,7 @@
  */
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../core/doomsdayProtection/utils.js';
 import { formatError } from '../../utils/error/index.js';
-import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import type { TradingGateStateChangedEvent } from '../tradingGateEventRuntime/types.js';
 import type {
@@ -723,7 +723,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
         try {
           receipt = await deps.postTradeConsistencyRuntime.waitForFresh();
         } catch (error) {
-          if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) {
+          if (isSettlementReadinessAbortError(error, 'STOP_AND_DRAIN')) {
             return;
           }
 

@@ -11,7 +11,7 @@ import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
@@ -80,6 +80,7 @@ describe('delayed strategy sell integration', () => {
       });
       native.setStockPositions([]);
       const daily = createDailyLossTracker({
+        onOwnershipWarning: () => {},
         ...createDailyLossOrderAnalysisDeps(),
         toHongKongTimeIso,
       });

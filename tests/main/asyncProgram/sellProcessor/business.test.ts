@@ -914,20 +914,11 @@ describe('sellProcessor business flow', () => {
       dailyLossTracker: createDailyLossTrackerDouble(),
       liquidationCooldownTracker: {
         recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
-        getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
       },
       protectiveLiquidationEpisodeTracker: {
-        recordProtectiveFillProgress: () => {},
         prepareCompletion: () => null,
         commitCompletion: () => {},
-        restoreCompletedBoundary: () => {},
-        restoreInProgressEpisode: () => {},
         getInProgressEpisodes: () => [],
-        resetAll: () => {},
       },
       mixedTradeLogRepository: {
         appendCompletionIdempotent: () => {},

@@ -14,7 +14,7 @@ import {
   createDailyLossOrderAnalysisDeps,
   createOrderRecorder,
 } from '../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
 import { createSettlementFlow } from '../../../src/core/trader/orderMonitor/settlementFlow.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
@@ -86,6 +86,7 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
     });
     const daily = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       toHongKongTimeIso,
     });

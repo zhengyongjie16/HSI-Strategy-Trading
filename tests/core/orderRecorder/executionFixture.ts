@@ -6,7 +6,7 @@ import {
   createDailyLossOrderAnalysisDeps,
   createOrderRecorder,
 } from '../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
 import { createSettlementFlow } from '../../../src/core/trader/orderMonitor/settlementFlow.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
@@ -19,7 +19,7 @@ import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import { createOfflineBrokerPort } from '../../integration/accountPositionConsistency/offlinePorts.js';
 import { createRateLimiter } from '../../../src/core/trader/rateLimiter.js';
 import type { OrderStateChangedEvent, Trader } from '../../../src/types/services.js';
-import type { SnapshotReadPort } from '../../../src/types/accountPosition.js';
+import type { SnapshotReadPort, SnapshotToken } from '../../../src/types/accountPosition.js';
 import type { OrderRecorderFactoryDeps } from '../../../src/core/orderRecorder/types.js';
 
 /** 构造真实同步结算链；未启动消费者时不读取账户、不声称 fresh。 */
@@ -30,7 +30,7 @@ export function createExecutionFixture(
     readonly termination?: ReturnType<typeof createTerminationRuntime>;
     readonly readPort?: SnapshotReadPort;
     readonly getTrader?: () => Trader;
-    readonly onPositionsCommitted?: () => Promise<void>;
+    readonly onPositionsCommitted?: (token: SnapshotToken) => Promise<void>;
     readonly persistProgress?: SettlementFlowDeps['persistProtectiveLiquidationExecutionProgress'];
     readonly createRecorder?: (
       deps: Omit<OrderRecorderFactoryDeps, 'orderSnapshotReadPort'> &
@@ -114,6 +114,7 @@ export function createExecutionFixture(
           },
         };
   const dailyOwner = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });

@@ -1,7 +1,9 @@
 import type { AccountPositionSnapshot, SnapshotToken } from '../types/accountPosition.js';
 import type { PreparedStrategySelection } from './startup/types.js';
 import type {
+  PostTradeSettlementStatus,
   SettlementFreshnessReader,
+  SettlementProtectionRecovery,
   SettlementRefreshNeedRecorder,
 } from '../types/settlement.js';
 import type { Config } from 'longbridge';
@@ -536,27 +538,18 @@ export type AsyncRuntimeFactoryDeps = Readonly<{
 }>;
 
 /**
- * 成交后一致性运行时状态快照。
- * 类型用途：向调用方暴露启动态与 freshness 版本号。
- * 数据来源：由 PostTradeConsistencyRuntime.getStatus 返回。
- * 使用范围：仅 app 装配层与相关测试使用。
- */
-export type PostTradeConsistencyRuntimeStatus = Readonly<{
-  started: boolean;
-  currentVersion: number;
-  staleVersion: number;
-}>;
-
-/**
  * 成交后一致性运行时依赖。
  * 类型用途：封装创建 PostTradeConsistencyRuntime 所需的最小外部依赖。
  * 数据来源：由 app 顶层装配在创建运行时时注入。
  * 使用范围：仅 createPostTradeConsistencyRuntime 与相关测试使用。
  */
 export type PostTradeConsistencyRuntimeDeps = Readonly<{
-  termination: RuntimeTermination;
-  getTrader: () => Trader;
-  snapshot: AccountPositionSnapshot;
+  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
+  getTrader: () => Pick<Trader, 'hasPendingProtectiveLiquidationOrders'>;
+  snapshot: Pick<
+    AccountPositionSnapshot,
+    'getView' | 'isCurrent' | 'getStatus' | 'requestRefresh' | 'invalidate' | 'waitForIssuedDrain'
+  >;
   onPositionsCommitted: (token: SnapshotToken) => Promise<void>;
   scheduler: RuntimeScheduler;
 }>;
@@ -568,24 +561,42 @@ export type PostTradeConsistencyRuntimeDeps = Readonly<{
  * 使用范围：仅成交后一致性运行时与 app 装配层使用。
  */
 export type PostTradeConsistencyRuntimeBusinessDeps = Readonly<{
-  monitorContext: MonitorContext;
-  dailyLossTracker: DailyLossTracker;
-  liquidationCooldownTracker: LiquidationCooldownTracker;
-  protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
+  monitorContext: {
+    readonly config: Pick<
+      MonitorConfig,
+      'monitorSymbol' | 'liquidationTriggerLimit' | 'liquidationCooldown'
+    >;
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly orderRecorder: OrderRecorder;
+    readonly riskChecker: Pick<
+      RiskChecker,
+      'prepareUnrealizedLossData' | 'publishUnrealizedLossData'
+    >;
+    readonly dailyLossTracker: Pick<DailyLossTracker, 'getLossOffset'>;
+  };
+  dailyLossTracker: Pick<
+    DailyLossTracker,
+    'prepareProtectionBoundary' | 'commitProtectionBoundary'
+  >;
+  liquidationCooldownTracker: Pick<LiquidationCooldownTracker, 'recordLiquidationTrigger'>;
+  protectiveLiquidationEpisodeTracker: Pick<
+    ProtectiveLiquidationEpisodeTracker,
+    'getInProgressEpisodes' | 'prepareCompletion' | 'commitCompletion'
+  >;
   mixedTradeLogRepository: Pick<MixedTradeLogRepository, 'appendCompletionIdempotent'>;
 }>;
 
 /**
  * 成交后一致性运行时契约。
- * 类型用途：统一拥有成交后 stale/fresh 推进与账户持仓最小补刷能力，供后续主流程与生命周期链路接入。
- * 数据来源：由 createPostTradeConsistencyRuntime 创建。
- * 使用范围：仅 app 装配层与后续接线模块使用。
+ * 类型用途：把 app 的构造环绑定入口与唯一 application settlement owner 的能力装配到一起。
+ * 数据来源：由 createPostTradeConsistencyRuntime 映射窄能力后返回真实 workflow。
+ * 使用范围：仅 app 装配与生命周期接线使用，不承载业务实现。
  */
 export interface PostTradeConsistencyRuntime
-  extends SettlementFreshnessReader, SettlementRefreshNeedRecorder {
+  extends SettlementFreshnessReader, SettlementRefreshNeedRecorder, SettlementProtectionRecovery {
   /** 绑定成交后业务依赖；同一运行时只允许绑定一次，重复绑定必须暴露为装配错误。 */
   readonly bindBusinessDeps: (deps: PostTradeConsistencyRuntimeBusinessDeps) => void;
-  readonly getStatus: () => PostTradeConsistencyRuntimeStatus;
+  readonly getStatus: () => PostTradeSettlementStatus;
   readonly abortWaiting: () => void;
   readonly resetAbort: () => void;
   readonly start: () => void;

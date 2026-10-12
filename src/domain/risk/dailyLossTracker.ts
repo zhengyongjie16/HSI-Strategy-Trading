@@ -4,21 +4,21 @@
  * 功能/职责：按唯一监控标的的 LONG/SHORT 方向累计已实现亏损偏移；内部基于当日成交订单与过滤算法（filteringEngine）计算未平仓买入成本。
  * 执行流程：调用方通过 recalculateFromAllOrders 或 recordCumulativeExecution 提供累计订单事实，通过 getLossOffset(direction) 获取当日亏损偏移；内部只维护唯一 monitor 的方向级状态。
  */
-import { mergeBrokerOrderExecutionFact } from '../../domain/order/executionFact.js';
+import { mergeBrokerOrderExecutionFact } from '../order/executionFact.js';
 import type { BrokerOrderExecutionFact } from '../../types/orderRecorder.js';
-import { logger } from '../../utils/logger/index.js';
-import type { MonitorConfig } from '../../types/config.js';
 import type {
   DailyLossCumulativeExecutionInput,
   DailyLossCumulativeExecutionResult,
   DailyLossAuthoritativeFactSnapshot,
   DailyLossTracker,
   DailyLossTrackerDeps,
+  DailyLossOrderSnapshot,
+  DailyLossMonitorScope,
   StartNewProtectionEpisodeParams,
   PreparedDailyLossProtectionBoundary,
   PreparedDailyLossRecalculation,
 } from '../../types/risk.js';
-import type { OrderRecord, RawOrderFromAPI } from '../../types/services.js';
+import type { OrderRecord } from '../../types/services.js';
 import {
   canonicalDecimal,
   exactAdd,
@@ -36,7 +36,11 @@ import type {
   DailyLossOwnedInDayExecution,
   DailyLossState,
 } from './types.js';
-import { collectOrderOwnershipDiagnostics, resolveHongKongDayKey, sumOrderCost } from './utils.js';
+import {
+  collectOrderOwnershipDiagnostics,
+  resolveHongKongDayKey,
+  sumOrderCost,
+} from './dailyLossRules.js';
 
 /** OPEN 事实必须先于 TERMINAL 事实排序，保证同 identity 的终态覆盖开放态。 */
 function compareFactStage(left: 'OPEN' | 'TERMINAL', right: 'OPEN' | 'TERMINAL'): number {
@@ -320,7 +324,7 @@ function createOrderFactFromFill(
  * @returns 有效累计成交事实；无有效成交时返回 null
  */
 function createOrderFactFromRawOrder(
-  order: RawOrderFromAPI,
+  order: DailyLossOrderSnapshot,
   direction: DailyLossDirection,
   classifyAndConvertOrders: DailyLossTrackerDeps['classifyAndConvertOrders'],
 ): DailyLossOrderFact | null {
@@ -462,7 +466,7 @@ function resolveAuthoritativeOrderFactMerge(
  * @param order API 原始订单
  * @returns 成交价与成交量均有效时返回 true
  */
-function hasValidExecution(order: RawOrderFromAPI): boolean {
+function hasValidExecution(order: DailyLossOrderSnapshot): boolean {
   return (
     Number.isSafeInteger(order.executedQuantity) &&
     order.executedQuantity > 0 &&
@@ -492,8 +496,8 @@ function resolveTrustedOrderUpdatedAt(updatedAt: Date | null | undefined): Date 
  * @param params 订单、监控配置与相关交易标的集合
  */
 function assertUnownedOrderIsNotRelevant(params: {
-  readonly order: RawOrderFromAPI;
-  readonly monitor: Pick<MonitorConfig, 'monitorSymbol'>;
+  readonly order: DailyLossOrderSnapshot;
+  readonly monitor: Pick<DailyLossMonitorScope, 'monitorSymbol'>;
   readonly relatedTradingSymbols: ReadonlySet<string> | undefined;
 }): void {
   const { order, monitor, relatedTradingSymbols } = params;
@@ -516,8 +520,8 @@ function assertUnownedOrderIsNotRelevant(params: {
  * 可归属订单必须有可信 updatedAt，只有已知为非当日的历史成交才可跳过。
  */
 function collectOwnedInDayExecutionsForRecalculation(params: {
-  readonly allOrders: ReadonlyArray<RawOrderFromAPI>;
-  readonly monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>;
+  readonly allOrders: ReadonlyArray<DailyLossOrderSnapshot>;
+  readonly monitor: DailyLossMonitorScope;
   readonly currentDayKey: string | null;
   readonly relatedTradingSymbols: ReadonlySet<string> | undefined;
   readonly resolveOrderOwnership: DailyLossTrackerDeps['resolveOrderOwnership'];
@@ -597,7 +601,7 @@ function collectOwnedInDayExecutionsForRecalculation(params: {
  * 创建当日亏损追踪器实例。
  * 按唯一 monitor 的 LONG/SHORT 方向维护当日买入/卖出订单与亏损偏移，支持 resetAll、全量重算、累计成交合并与事务化保护边界。
  * 风控与浮亏计算依赖当日已实现盈亏偏移，需在跨日时重置、启动或 SEAT_REFRESH 时通过全量订单重算、成交时增量更新。
- * @param deps 依赖（filteringEngine、resolveOrderOwnership、classifyAndConvertOrders、toHongKongTimeIso）
+ * @param deps 依赖（filteringEngine、resolveOrderOwnership、classifyAndConvertOrders、toHongKongTimeIso、onOwnershipWarning）
  * @returns 实现 DailyLossTracker 接口的实例
  */
 export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTracker {
@@ -645,8 +649,8 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
    * 订单事实合并、边界基线、诊断与双方向状态均先在局部 candidate 完成；任一失败不得改写现有运行态。
    */
   function prepareRecalculationFromAllOrders(
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    allOrders: ReadonlyArray<DailyLossOrderSnapshot>,
+    monitor: DailyLossMonitorScope,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
@@ -762,7 +766,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     }
 
     if (ownershipWarning !== null) {
-      logger.warn(ownershipWarning);
+      deps.onOwnershipWarning(ownershipWarning);
     }
 
     const prepared: PreparedDailyLossRecalculation = Object.freeze({
@@ -825,8 +829,8 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
    * protectionBoundaryByDirection 可选：提供保护性边界以重建 per-order 分段基线。
    */
   function recalculateFromAllOrders(
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    allOrders: ReadonlyArray<DailyLossOrderSnapshot>,
+    monitor: DailyLossMonitorScope,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,

@@ -1,7 +1,10 @@
 /** Settlement readiness 门禁：pending 严格追当前 token，完成水位不随普通 commit 撤销。 */
 import { describe, expect, test } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createSettlementReadinessGate } from '../../../src/application/postTradeSettlement/readinessGate.js';
+import {
+  createSettlementReadinessGate,
+  isSettlementReadinessAbortError,
+} from '../../../src/application/postTradeSettlement/readinessGate.js';
 
 function createFixture() {
   const snapshot = createAccountPositionSnapshot({
@@ -35,6 +38,27 @@ function createFixture() {
 }
 
 describe('settlement readiness receipt', () => {
+  test.each(['STOP_AND_DRAIN', 'FATAL_INVARIANT'] as const)(
+    'formal abort classification shares pending and subsequent wait construction: %s',
+    async (reason) => {
+      const { gate } = createFixture();
+      const waiting = gate.waitForFresh().catch((error: unknown) => error);
+      gate.abortWaiting(reason);
+      const pendingError = await waiting;
+      const laterError = await gate.waitForFresh().catch((error: unknown) => error);
+      expect(isSettlementReadinessAbortError(pendingError)).toBe(true);
+      expect(isSettlementReadinessAbortError(laterError, reason)).toBe(true);
+      expect(
+        isSettlementReadinessAbortError(
+          pendingError,
+          reason === 'STOP_AND_DRAIN' ? 'FATAL_INVARIANT' : 'STOP_AND_DRAIN',
+        ),
+      ).toBe(false);
+      expect(isSettlementReadinessAbortError(new Error('external failure'))).toBe(false);
+      expect(isSettlementReadinessAbortError(String(pendingError), reason)).toBe(false);
+    },
+  );
+
   test('commit alone does not release waiters; completed settlement survives ordinary pair and position commits', async () => {
     const { snapshot, gate, refresh } = createFixture();
     const version = gate.markStale();

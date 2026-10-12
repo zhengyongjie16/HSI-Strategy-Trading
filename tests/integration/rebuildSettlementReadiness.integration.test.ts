@@ -13,7 +13,7 @@ import { createLoadTradingDayRuntimeSnapshot } from '../../src/main/lifecycle/lo
 import { createRebuildTradingDayState } from '../../src/main/lifecycle/rebuildTradingDayState.js';
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createRiskChecker } from '../../src/core/riskController/index.js';
 import { createWarrantRiskChecker } from '../../src/core/riskController/warrantRiskChecker.js';
 import { createPositionLimitChecker } from '../../src/core/riskController/positionLimitChecker.js';
@@ -154,6 +154,7 @@ async function createHarness(
   const tradingConfig = createTradingConfig({ monitor: config });
   const symbolRegistry = createSymbolRegistry(config);
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });
@@ -296,6 +297,7 @@ async function createHarness(
     protectiveLiquidationEpisodeTracker: episode,
     tradeLogHydrator: { hydrate: () => {} },
     mixedTradeLogRepository: repository,
+    protectionRecovery: postTrade,
     seatActivationDispatcher: { dispatchCurrentActivatingSeats: () => {} },
     warrantListCacheConfig: { cache: createWarrantListCache(), ttlMs: 60000, nowMs: () => timeMs },
     reportFatalError: termination.reportFatalError,

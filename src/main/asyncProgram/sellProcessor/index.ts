@@ -42,7 +42,7 @@ import {
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
 } from '../../../utils/apiFailure/index.js';
-import { isRefreshGateAbortError } from '../../../utils/refreshGate/index.js';
+import { isSettlementReadinessAbortError } from '../../../application/postTradeSettlement/readinessGate.js';
 import { logger } from '../../../utils/logger/index.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
 import {
@@ -160,7 +160,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
         try {
           receipt = await postTradeConsistencyRuntime.waitForFresh();
         } catch (err) {
-          if (isRefreshGateAbortError(err, 'STOP_AND_DRAIN')) {
+          if (isSettlementReadinessAbortError(err, 'STOP_AND_DRAIN')) {
             return;
           }
 

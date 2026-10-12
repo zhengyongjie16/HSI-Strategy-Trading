@@ -11,7 +11,7 @@ import {
   ORDER_QUOTE_RETRY,
 } from '../../../../src/constants/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../../orderRecorder/executionFixture.js';
@@ -209,6 +209,7 @@ function createDeferredValue<T>(): {
 
 function createActualDailyTracker(now = new Date('2026-04-08T09:00:00.000Z')) {
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });

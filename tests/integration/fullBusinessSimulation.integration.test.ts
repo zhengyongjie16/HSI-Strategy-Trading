@@ -9,7 +9,7 @@ import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import type { Position } from '../../src/types/account.js';
 import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
@@ -250,6 +250,7 @@ function simulationExecutionFrame(
 
 function createSimulationDailyLossTracker(): DailyLossTracker {
   return createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });

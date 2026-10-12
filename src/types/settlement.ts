@@ -10,6 +10,27 @@ export type SettlementReadinessReceipt = {
   readonly ready: true;
 };
 
+/** 生命周期中断或内部不变量失败；消费者只按明确原因取消原等待，不吞掉其他失败。 */
+export type SettlementReadinessAbortReason = 'STOP_AND_DRAIN' | 'FATAL_INVARIANT';
+
+/** 成交后 owner 的可观察调度状态；不暴露内部刷新队列或可变业务事实。 */
+export type PostTradeSettlementStatus = {
+  readonly started: boolean;
+  readonly currentVersion: number;
+  readonly staleVersion: number;
+};
+
+/** 恢复时已封存的 canonical 事实和未终结保护性卖单方向；不接受 loader 提供的完成结论。 */
+export type SettlementProtectionRecoveryRequest = {
+  readonly snapshotToken: SnapshotToken;
+  readonly pendingProtectiveDirections: ReadonlySet<'LONG' | 'SHORT'>;
+};
+
+/** 同一 settlement owner 的同步 crash-gap 收口能力；冷却随后由 durable log hydrate，避免重复触发。 */
+export interface SettlementProtectionRecovery {
+  readonly completeProtectionRecovery: (request: SettlementProtectionRecoveryRequest) => boolean;
+}
+
 /** 成交后账户/持仓刷新需求；真实订单事实成功提交的同一同步段登记。 */
 export type SettlementRefreshNeed = {
   readonly refreshAccount: boolean;

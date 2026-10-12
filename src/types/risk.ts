@@ -1,18 +1,33 @@
-import type { MonitorConfig } from './config.js';
 import type { Quote } from './quote.js';
-import type {
-  OrderRecord,
-  OrderRecorder,
-  RawOrderFromAPI,
-  RiskChecker,
-  Trader,
-} from './services.js';
+import type { OrderRecord, OrderRecorder, RiskChecker, Trader } from './services.js';
 import type {
   OrderExecutionAdmission,
   OrderExecutionTimeEvidence,
+  OrderExecutionRecordObservation,
   OrderFilteringEngine,
   OrderOwnership,
 } from './orderRecorder.js';
+
+/**
+ * 当日亏损重算的中性订单快照事实。
+ * 复用已验证的累计执行观察，仅补充归属名称、执行状态与可信 revision Date；不携带 SDK 元数据。
+ * 数据来源：订单读取 adapter 或已验证历史快照；供 domain/risk 的全量重算与诊断使用。
+ */
+export type DailyLossOrderSnapshot = OrderExecutionRecordObservation &
+  Readonly<{
+    stockName: string;
+    executionStatus: 'NONE' | 'PARTIAL' | 'FILLED';
+    updatedAt: Date | null;
+  }>;
+
+/**
+ * 唯一监控标的的日损归属范围。
+ * 数据来源：装配层的监控标的及归属缩写；仅用于订单归属解析，不包含策略/SDK 配置。
+ */
+export type DailyLossMonitorScope = Readonly<{
+  monitorSymbol: string;
+  orderOwnershipMapping: ReadonlyArray<string>;
+}>;
 
 /**
  * 累计成交事实输入。
@@ -143,7 +158,7 @@ export interface PreparedDailyLossRecalculation {
 /**
  * 当日亏损追踪器接口。
  * 类型用途：按唯一 monitor 的 LONG/SHORT 方向维护已实现盈亏偏移，供浮亏刷新、成交处理与生命周期重建共享。
- * 数据来源：由 riskController 模块实现并注入。
+ * 数据来源：由 domain/risk 实现并注入。
  * 使用范围：主程序、生命周期、订单监控、浮亏监控；全项目可引用。
  */
 export interface DailyLossTracker {
@@ -152,8 +167,8 @@ export interface DailyLossTracker {
 
   /** 按本实例真实依赖完整预检全部订单与双方向财务候选，不修改任何运行态。 */
   prepareRecalculationFromAllOrders: (
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    allOrders: ReadonlyArray<DailyLossOrderSnapshot>,
+    monitor: DailyLossMonitorScope,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
@@ -164,8 +179,8 @@ export interface DailyLossTracker {
 
   /** 完整 prepare 后立即同步 publish，供仅需单 owner 重算的调用方使用。 */
   recalculateFromAllOrders: (
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
-    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    allOrders: ReadonlyArray<DailyLossOrderSnapshot>,
+    monitor: DailyLossMonitorScope,
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
@@ -236,20 +251,20 @@ export interface UnrealizedLossMonitor {
 }
 
 /**
- * 当日亏损追踪器依赖注入类型。
- * 类型用途：创建 DailyLossTracker 时约束过滤算法、归属解析与订单转换依赖。
- * 数据来源：由启动层在组装 riskController 子模块时传入。
- * 使用范围：riskController 模块内部创建流程；全项目可引用。
+ * 当日亏损 domain owner 的窄协作依赖。
+ * 过滤/归属/转换只消费已验证中性事实；观测 callback 由装配层注入，不授予 domain logger IO。
+ * 数据来源：启动层的既有纯分析规则、香港时间转换与告警观测；供 domain/risk 工厂使用。
  */
-export type DailyLossTrackerDeps = {
+export interface DailyLossTrackerDeps {
   readonly filteringEngine: OrderFilteringEngine;
   readonly resolveOrderOwnership: (
-    order: RawOrderFromAPI,
-    monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'>,
+    order: DailyLossOrderSnapshot,
+    monitor: DailyLossMonitorScope,
   ) => OrderOwnership | null;
-  readonly classifyAndConvertOrders: (orders: ReadonlyArray<RawOrderFromAPI>) => {
-    buyOrders: ReadonlyArray<OrderRecord>;
-    sellOrders: ReadonlyArray<OrderRecord>;
+  readonly classifyAndConvertOrders: (orders: ReadonlyArray<OrderExecutionRecordObservation>) => {
+    readonly buyOrders: ReadonlyArray<OrderRecord>;
+    readonly sellOrders: ReadonlyArray<OrderRecord>;
   };
   readonly toHongKongTimeIso: (date: Date | null) => string;
-};
+  readonly onOwnershipWarning: (message: string) => void;
+}

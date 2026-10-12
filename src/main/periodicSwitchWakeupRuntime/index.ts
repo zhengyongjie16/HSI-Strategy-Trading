@@ -8,7 +8,7 @@
  */
 import { TRADING } from '../../constants/index.js';
 import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
-import { isRefreshGateAbortError } from '../../utils/refreshGate/index.js';
+import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import type { SeatTruthChangedListener } from '../../types/seat.js';
 import type { MonitorTaskInput } from '../asyncProgram/monitorTaskQueue/types.js';
@@ -236,7 +236,7 @@ export function createPeriodicSwitchWakeupRuntime(
         try {
           receipt = await deps.postTradeConsistencyRuntime.waitForFresh();
         } catch (error) {
-          if (isRefreshGateAbortError(error, 'STOP_AND_DRAIN')) return;
+          if (isSettlementReadinessAbortError(error, 'STOP_AND_DRAIN')) return;
 
           throw error;
         }

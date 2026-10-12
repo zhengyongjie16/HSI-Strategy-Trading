@@ -8,7 +8,7 @@ import { createAccountPositionSnapshot } from '../../src/application/accountPosi
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createRiskChecker } from '../../src/core/riskController/index.js';
 import { createPositionLimitChecker } from '../../src/core/riskController/positionLimitChecker.js';
 import { createUnrealizedLossChecker } from '../../src/core/riskController/unrealizedLossChecker.js';
@@ -119,6 +119,7 @@ async function createFixture() {
     lastSeatActivatedAt: NOW_MS,
   });
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });

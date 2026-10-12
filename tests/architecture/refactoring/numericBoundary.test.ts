@@ -18,7 +18,7 @@ describe('P0.3 staged financial boundaries', () => {
     const actual = listTypeScript('src').flatMap((file) =>
       numericOccurrences(file.replaceAll(path.sep, '/'), sourceText(file)),
     );
-    for (const stage of ['P1', 'P4.5', 'P6'] as const)
+    for (const stage of ['P1', 'P2', 'P4.5', 'P6'] as const)
       expect(newNumeric(actual, frozenNumeric, stage)).toEqual([]);
   });
 
@@ -114,6 +114,32 @@ describe('P0.3 staged financial boundaries', () => {
       expect(numericOccurrences(file, `type ${parent} = { readonly ${name}: string };`)).toEqual(
         [],
       );
+    },
+  );
+
+  it.each([
+    ['src/types/risk.ts', 'DailyLossAuthoritativeFactSnapshot'],
+    ['src/types/risk.ts', 'RestoreDailyLossExecutionSnapshotParams'],
+    ['src/types/risk.ts', 'ProtectiveLiquidationExecutionProgressInput'],
+    ['src/types/risk.ts', 'PreparedDailyLossProtectionBoundary'],
+    ['src/services/mixedTradeLogRepository/types.ts', 'ProtectiveLiquidationOrderBaselineV1'],
+    [
+      'src/services/mixedTradeLogRepository/types.ts',
+      'ProtectiveLiquidationExecutionProgressRecordV1',
+    ],
+  ])(
+    'keeps P2 recovery and durable amounts exact at their original contract: %s %s',
+    (file, parent) => {
+      const exact = `type ${parent} = { readonly cumulativeAmount: string; readonly orderRevisionMs: number; readonly lastExecutionTimeMs: number };`;
+      expect(numericOccurrences(file, exact)).toEqual([]);
+      for (const source of [
+        exact.replace('cumulativeAmount: string', 'cumulativeAmount: number'),
+        `${exact} const project = (fact: ${parent}) => Number(fact.cumulativeAmount);`,
+      ]) {
+        const actual = numericOccurrences(file, source);
+        expect(actual).toHaveLength(1);
+        expect(newNumeric(actual, frozenNumeric, 'P2')).toEqual(actual);
+      }
     },
   );
 

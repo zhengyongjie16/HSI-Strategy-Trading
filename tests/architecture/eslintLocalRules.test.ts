@@ -61,7 +61,7 @@ describe('local ESLint rules', () => {
 
   it('rejects type declarations in src implementation files', async () => {
     const messages = await lintText(
-      'src/core/riskController/dailyLossTracker.ts',
+      'src/domain/risk/dailyLossTracker.ts',
       "type Probe = { readonly id: string };\nconst probe: Probe = { id: '1' };\nvoid probe;\n",
     );
 
@@ -70,7 +70,7 @@ describe('local ESLint rules', () => {
 
   it('rejects interface declarations in src implementation files', async () => {
     const messages = await lintText(
-      'src/core/riskController/dailyLossTracker.ts',
+      'src/domain/risk/dailyLossTracker.ts',
       "interface Probe { readonly id: string }\nconst probe: Probe = { id: '1' };\nvoid probe;\n",
     );
 
@@ -79,7 +79,7 @@ describe('local ESLint rules', () => {
 
   it('rejects module declarations in src implementation files', async () => {
     const messages = await lintText(
-      'src/core/riskController/dailyLossTracker.ts',
+      'src/domain/risk/dailyLossTracker.ts',
       'declare namespace Probe {}\n',
     );
 
@@ -88,7 +88,7 @@ describe('local ESLint rules', () => {
 
   it('rejects ambient function declarations in src implementation files', async () => {
     const messages = await lintText(
-      'src/core/riskController/dailyLossTracker.ts',
+      'src/domain/risk/dailyLossTracker.ts',
       'declare function probe(): void;\n',
     );
 
@@ -97,7 +97,7 @@ describe('local ESLint rules', () => {
 
   it('rejects ambient variable declarations in src implementation files', async () => {
     const messages = await lintText(
-      'src/core/riskController/dailyLossTracker.ts',
+      'src/domain/risk/dailyLossTracker.ts',
       'declare const probe: string;\n',
     );
 
@@ -142,7 +142,7 @@ describe('local ESLint rules', () => {
 
   it('rejects enums in src implementation files', async () => {
     const messages = await lintText(
-      'src/core/riskController/dailyLossTracker.ts',
+      'src/domain/risk/dailyLossTracker.ts',
       "enum Probe { A = 'a' }\nexport type ProbeValue = Probe;\n",
     );
 

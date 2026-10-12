@@ -2,7 +2,7 @@ import { createBrokerIngressFixture } from '../../../integration/architectureRef
 import { afterEach, describe, expect, it } from 'bun:test';
 import { createMonitorTaskProcessor as createMonitorTaskProcessorImpl } from '../../../../src/main/asyncProgram/monitorTaskProcessor/index.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
-import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import { classifyOrdersForRebuild } from '../../../../src/core/orderRecorder/utils.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
 import { createPositionLimitChecker } from '../../../../src/core/riskController/positionLimitChecker.js';
@@ -29,7 +29,10 @@ import {
 } from '../../../services/autoSymbolManager/utils.js';
 import type { AccountPositionSnapshot } from '../../../../src/types/accountPosition.js';
 import type { RawOrderFromAPI } from '../../../../src/types/services.js';
-import type { PreparedDailyLossRecalculation } from '../../../../src/types/risk.js';
+import type {
+  DailyLossOrderSnapshot,
+  PreparedDailyLossRecalculation,
+} from '../../../../src/types/risk.js';
 import {
   createAccountSnapshotDouble,
   createMonitorConfigDouble,
@@ -1383,7 +1386,7 @@ describe('monitorTaskProcessor business flow', () => {
       'OLD_BULL.HK',
       'BEAR.HK',
     ];
-    const rebuildSnapshots: Array<ReadonlyArray<RawOrderFromAPI>> = [];
+    const rebuildSnapshots: Array<ReadonlyArray<DailyLossOrderSnapshot>> = [];
     const rebuildSteps: string[] = [];
     const preflightSymbols: string[] = [];
     let dailyLossRelatedTradingSymbols: ReadonlySet<string> | undefined;
@@ -1572,6 +1575,7 @@ describe('monitorTaskProcessor business flow', () => {
     expect(ingress.nativeReadCounts().detail).toBe(0);
     let queryFailure: unknown = null;
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
@@ -1729,6 +1733,7 @@ describe('monitorTaskProcessor business flow', () => {
       },
     );
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
@@ -1985,6 +1990,7 @@ describe('monitorTaskProcessor business flow', () => {
       expect(ingress.nativeReadCounts().detail).toBe(0);
       let queryFailure: unknown = null;
       const dailyLossTracker = createDailyLossTracker({
+        onOwnershipWarning: () => {},
         ...createDailyLossOrderAnalysisDeps(),
         resolveOrderOwnership: (order) =>
           order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
@@ -2172,6 +2178,7 @@ describe('monitorTaskProcessor business flow', () => {
       const readOrders = ingress.createQueryOrdersReader();
       let queryFailure: unknown = null;
       const dailyLossTracker = createDailyLossTracker({
+        onOwnershipWarning: () => {},
         ...createDailyLossOrderAnalysisDeps(),
         resolveOrderOwnership: (order) =>
           order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,

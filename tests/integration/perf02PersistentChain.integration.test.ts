@@ -37,7 +37,7 @@ import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createP
 import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
@@ -351,6 +351,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   native.setOrderSnapshotReplies([], []);
   native.setExecutionReplies([]);
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });

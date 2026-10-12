@@ -9,7 +9,7 @@ import { createBrokerIngressFixture } from './architectureRefactoringP1Native/tr
 import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
 import { createOrderStorage } from '../../src/core/orderRecorder/orderStorage.js';
@@ -104,6 +104,7 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
   const dailyLossTracker =
     monitorDailyOwners.get(ingress) ??
     createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       toHongKongTimeIso,
     });

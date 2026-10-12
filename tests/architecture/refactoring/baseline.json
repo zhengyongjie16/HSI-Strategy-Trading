@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "stage": "P1",
+  "stage": "P2",
   "provenance": "hsi-p03-audit/README.md; immutable external inventories, HEAD-existing SDK imports only; no automatic refresh",
   "imports": [
     {

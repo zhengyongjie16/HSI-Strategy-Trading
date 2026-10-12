@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
+import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createEmptySnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
@@ -20,7 +21,7 @@ import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/ut
 import { TRADING } from '../../../src/constants/index.js';
 import { createSeatActivationDispatcher } from '../../../src/main/seatActivationDispatcher/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createDailyLossTracker } from '../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
@@ -43,7 +44,9 @@ import {
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
+  createLiquidationCooldownTrackerDouble,
   createMonitorConfigDouble,
+  createMonitorContextDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteContextDouble,
   createSeatActivationDispatcherDouble,
@@ -120,22 +123,48 @@ function createBaseDeps(
       },
     });
 
+  const symbolRegistry = overrides.symbolRegistry ?? createSymbolRegistry(tradingConfig.monitor);
+  const dailyLossTracker = overrides.dailyLossTracker ?? createDailyLossTrackerDouble();
+  const protectiveLiquidationEpisodeTracker =
+    overrides.protectiveLiquidationEpisodeTracker ??
+    createProtectiveLiquidationEpisodeTrackerDouble();
+  const mixedTradeLogRepository =
+    overrides.mixedTradeLogRepository ?? createMixedTradeLogRepositoryDouble();
+  const postTrade = createPostTradeConsistencyRuntime({
+    snapshot,
+    termination,
+    getTrader: () => trader,
+    onPositionsCommitted: async () => {},
+    scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
+  });
+  // loader 的 crash-gap 仍走真实唯一 owner，复用场景中的 tracker/daily/repository，不能以 noop 伪造完成。
+  postTrade.bindBusinessDeps({
+    monitorContext: createMonitorContextDouble({
+      config: tradingConfig.monitor,
+      symbolRegistry,
+      orderRecorder: trader.orderRecorder,
+      dailyLossTracker,
+    }),
+    dailyLossTracker,
+    protectiveLiquidationEpisodeTracker,
+    mixedTradeLogRepository,
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+  });
+
   return {
     snapshot,
     marketDataClient: overrides.marketDataClient ?? createMarketDataClientDouble(),
     trader,
     lastState,
     tradingConfig,
-    symbolRegistry: overrides.symbolRegistry ?? createSymbolRegistry(tradingConfig.monitor),
-    dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
-    protectiveLiquidationEpisodeTracker:
-      overrides.protectiveLiquidationEpisodeTracker ??
-      createProtectiveLiquidationEpisodeTrackerDouble(),
+    symbolRegistry,
+    dailyLossTracker,
+    protectiveLiquidationEpisodeTracker,
     tradeLogHydrator: overrides.tradeLogHydrator ?? {
       hydrate: () => {},
     },
-    mixedTradeLogRepository:
-      overrides.mixedTradeLogRepository ?? createMixedTradeLogRepositoryDouble(),
+    mixedTradeLogRepository,
+    protectionRecovery: overrides.protectionRecovery ?? postTrade,
     warrantListCacheConfig: overrides.warrantListCacheConfig ?? createWarrantListCacheConfig(),
     seatActivationDispatcher:
       overrides.seatActivationDispatcher ?? createSeatActivationDispatcherDouble(),
@@ -322,6 +351,7 @@ function createBoundaryCaptureDailyLossTracker(
   ) => void,
 ): LoadTradingDayRuntimeSnapshotDeps['dailyLossTracker'] {
   const tracker = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     resolveOrderOwnership: (order) => {
       if (order.symbol === 'BULL.HK') return { monitorSymbol: 'HSI.HK', direction: 'LONG' };
@@ -1051,6 +1081,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       executionTimeMs: null,
     });
     const actualDailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
@@ -1421,6 +1452,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
@@ -1499,6 +1531,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
@@ -2037,6 +2070,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
         order.orderId === protectiveOrder.orderId
@@ -2113,6 +2147,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
     const createDailyLossTrackerForRecovery = () =>
       createDailyLossTracker({
+        onOwnershipWarning: () => {},
         ...createDailyLossOrderAnalysisDeps(),
         resolveOrderOwnership: (order) =>
           order.orderId === protectiveOrder.orderId
@@ -2205,6 +2240,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       executionTimeMs: null,
     });
     const dailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
         order.orderId === protectiveOrder.orderId
@@ -2273,6 +2309,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       orderBaselines: appendedCompletion.orderBaselines,
     });
     const restartedDailyLossTracker = createDailyLossTracker({
+      onOwnershipWarning: () => {},
       ...createDailyLossOrderAnalysisDeps(),
       resolveOrderOwnership: (order) =>
         order.orderId === protectiveOrder.orderId

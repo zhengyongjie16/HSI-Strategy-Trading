@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 import { normalizeTerminalStateSnapshot } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
 import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createDailyLossTracker } from '../../../../src/core/riskController/dailyLossTracker.js';
+import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
 import { createRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
 import { createOrderHoldRegistry } from '../../../../src/core/trader/orderHoldRegistry.js';
@@ -62,6 +62,7 @@ async function fixture() {
     },
   });
   const daily = createDailyLossTracker({
+    onOwnershipWarning: () => {},
     ...createDailyLossOrderAnalysisDeps(),
     toHongKongTimeIso,
   });
