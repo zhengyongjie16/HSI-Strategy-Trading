@@ -1,5 +1,4 @@
-import type { OrderType } from 'longbridge';
-import { ORDER_TYPE_CONFIG_TO_OPEN_API, SYMBOL_WITH_REGION_REGEX } from '../constants/index.js';
+import { ORDER_TYPE_CONFIG_VALUES, SYMBOL_WITH_REGION_REGEX } from '../constants/index.js';
 import type { LiquidationCooldownConfig, DecimalRange } from '../types/config.js';
 import { AMOUNT_CONFIG_TEXT_PATTERN } from '../constants/financialConfig.js';
 import { canonicalDecimal, exactCompare } from '../utils/numeric/exact.js';
@@ -301,7 +300,7 @@ export function isSymbolWithRegion(symbol: string | null | undefined): symbol is
  * @returns true 表示值属于 OrderTypeConfig
  */
 function isOrderTypeConfig(value: string): value is OrderTypeConfig {
-  return Object.hasOwn(ORDER_TYPE_CONFIG_TO_OPEN_API, value);
+  return ORDER_TYPE_CONFIG_VALUES.has(value);
 }
 
 /**
@@ -309,18 +308,18 @@ function isOrderTypeConfig(value: string): value is OrderTypeConfig {
  * @param env - 进程环境变量对象
  * @param envKey - 环境变量键名
  * @param defaultType - 未设置时的默认订单类型，默认为 'ELO'
- * @returns 对应的 OrderType 枚举值
+ * @returns 已验证的中性订单类型配置代码
  */
 export function parseOrderTypeConfig(
   env: NodeJS.ProcessEnv,
   envKey: string,
   defaultType: OrderTypeConfig = 'ELO',
-): OrderType {
+): OrderTypeConfig {
   // getStringConfig 已处理 trim 和占位符
   const value = getStringConfig(env, envKey);
   if (value) {
     if (isOrderTypeConfig(value)) {
-      return ORDER_TYPE_CONFIG_TO_OPEN_API[value];
+      return value;
     }
 
     throw createConfigValidationError(
@@ -328,5 +327,5 @@ export function parseOrderTypeConfig(
     );
   }
 
-  return ORDER_TYPE_CONFIG_TO_OPEN_API[defaultType];
+  return defaultType;
 }

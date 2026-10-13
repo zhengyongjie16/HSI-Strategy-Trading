@@ -14,15 +14,17 @@ import { createRebuildTradingDayState } from '../../src/main/lifecycle/rebuildTr
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createRiskChecker } from '../../src/core/riskController/index.js';
-import { createWarrantRiskChecker } from '../../src/core/riskController/warrantRiskChecker.js';
-import { createPositionLimitChecker } from '../../src/core/riskController/positionLimitChecker.js';
-import { createUnrealizedLossChecker } from '../../src/core/riskController/unrealizedLossChecker.js';
+import { createRiskChecker } from '../../src/domain/risk/index.js';
+import { createWarrantRiskRefresh } from '../../src/application/riskRefresh/warrantRiskRefresh.js';
+import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
+import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
 import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
-import { createWarrantListCache } from '../../src/services/autoSymbolFinder/utils.js';
-import { toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import { createWarrantCandidateSearch } from '../../src/application/autoSearch/candidateSearch.js';
+import { createStartupSeatSearch } from '../../src/application/autoSearch/startupSeatSearch.js';
+import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { createTradingConfig, createMonitorConfig } from '../../mock/factories/configFactory.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import type { LastState } from '../../src/types/state.js';
@@ -239,10 +241,17 @@ async function createHarness(
     seedOrderHoldSymbols: holds.seedFromOrders,
     getOrderHoldSymbols: holds.getHoldSymbols,
   });
+  const warrantRiskChecker = createWarrantRiskChecker({
+    onInvalidCallPrice: () => {},
+    onWarrantInfoSet: () => {},
+  });
   const risk = createRiskChecker({
-    warrantRiskChecker: createWarrantRiskChecker(),
+    warrantRiskChecker,
     positionLimitChecker: createPositionLimitChecker({ maxPositionNotional: null }),
-    unrealizedLossChecker: createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null }),
+    unrealizedLossChecker: createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: null,
+      onMissingData: () => {},
+    }),
   });
   const context = createMonitorContextDouble({
     config,
@@ -299,13 +308,29 @@ async function createHarness(
     mixedTradeLogRepository: repository,
     protectionRecovery: postTrade,
     seatActivationDispatcher: { dispatchCurrentActivatingSeats: () => {} },
-    warrantListCacheConfig: { cache: createWarrantListCache(), ttlMs: 60000, nowMs: () => timeMs },
+    startupSeatSearch: createStartupSeatSearch({
+      monitorSymbol: tradingConfig.monitor.monitorSymbol,
+      symbolRegistry,
+      candidateSearch: createWarrantCandidateSearch({
+        monitorSymbol: tradingConfig.monitor.monitorSymbol,
+        autoSearchConfig: tradingConfig.monitor.autoSearchConfig,
+        marketDataClient: market,
+        logger: createLoggerDouble(),
+        getTradingMinutesSinceOpen,
+      }),
+      logger: createLoggerDouble(),
+    }),
     reportFatalError: termination.reportFatalError,
   });
   const rebuild = createRebuildTradingDayState({
     snapshot,
     termination,
     marketDataClient: market,
+    warrantRiskRefresh: createWarrantRiskRefresh({
+      marketDataClient: market,
+      warrantRiskChecker,
+      logger: createLoggerDouble(),
+    }),
     trader,
     lastState,
     symbolRegistry,

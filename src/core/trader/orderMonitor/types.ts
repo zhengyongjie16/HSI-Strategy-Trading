@@ -5,6 +5,12 @@ import type { TradeMutationPort, TradeSubmitResult } from '../../../types/tradeM
 import type { OrderDetailReadPort } from '../../../types/orderDetailReadPorts.js';
 import type { MonitorConfig, TradingConfig } from '../../../types/config.js';
 import type { Quote } from '../../../types/quote.js';
+import type { MarketDataClient } from '../../../types/marketPorts.js';
+import type {
+  OrderMutationRequest,
+  ReplaceOrderPriceOutcome,
+  TrackOrderParams,
+} from '../../../domain/order/types.js';
 import type {
   DailyLossCumulativeExecutionResult,
   DailyLossTracker,
@@ -21,7 +27,6 @@ import type {
   OrderRecorder,
   RateLimiter,
   RawOrderFromAPI,
-  MarketDataClient,
   OrderStateChangedEvent,
   TradeMutationPermit,
   Unsubscribe,
@@ -29,17 +34,14 @@ import type {
 import type { BoundedOneShotTimerController } from '../../../utils/timer/types.js';
 import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
 import type { SettlementRefreshNeedRecorder } from '../../../types/settlement.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../protectiveLiquidationEpisodeTracker/types.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../../../domain/liquidation/episode/types.js';
 import type {
   CancelOrderMutationRequest,
   OrderCacheManager,
-  OrderMutationRequest,
   OrderMonitorConfig,
   OrderHoldRegistry,
   OrderMonitorRuntimeState,
-  TrackOrderParams,
   TrackedOrder,
-  ReplaceOrderPriceOutcome,
 } from '../types.js';
 
 /**

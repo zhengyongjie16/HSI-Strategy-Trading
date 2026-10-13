@@ -7,11 +7,11 @@ import { describe, expect, it } from 'bun:test';
 import type { Trader } from '../../src/types/services.js';
 import type { ExecuteSignalsResult, SignalCallerAuthorization } from '../../src/types/trader.js';
 import type { BuySignal } from '../../src/types/signal.js';
-import type { ExecutableOrderCommand } from '../../src/core/trader/orderExecutor/types.js';
+import type { ExecutableOrderCommand } from '../../src/application/orderExecution/types.js';
 
 describe('ExecuteSignalsResult type contract', () => {
   it('keeps the single executedOrderIds truth constructible', () => {
-    const result: ExecuteSignalsResult = { executedOrderIds: ['ORDER-1'] };
+    const result: ExecuteSignalsResult = { executedOrderIds: ['ORDER-1'], quoteFailures: [] };
     expect(result.executedOrderIds).toEqual(['ORDER-1']);
   });
 });

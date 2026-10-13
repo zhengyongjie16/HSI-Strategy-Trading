@@ -18,9 +18,9 @@ import {
   createSymbolRegistryDouble,
 } from '../../../helpers/testDoubles.js';
 import type { Quote } from '../../../../src/types/quote.js';
+import type { QuoteUpdatedEvent } from '../../../../src/types/marketPorts.js';
 import type {
   OrderStateChangedEvent,
-  QuoteUpdatedEvent,
   RateLimiter,
   TradeMutationPermit,
 } from '../../../../src/types/services.js';

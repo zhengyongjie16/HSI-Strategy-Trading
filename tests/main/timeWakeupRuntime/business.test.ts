@@ -2,14 +2,14 @@ import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { TIME } from '../../../src/constants/index.js';
-import { timeWakeupEvaluationProgram } from '../../../src/main/timeWakeupEvaluationProgram/index.js';
+import { timeWakeupEvaluationProgram } from '../../../src/runtime/timeWakeupEvaluationProgram/index.js';
 import { createTimeWakeupRuntime } from '../../../src/main/timeWakeupRuntime/index.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import type { TimeWakeupEvaluationContext } from '../../../src/main/timeWakeupEvaluationProgram/types.js';
-import type { TimeWakeupPlan } from '../../../src/main/timeWakeupPlanner/types.js';
-import type { TradingDayInfo } from '../../../src/types/services.js';
+import type { TimeWakeupEvaluationContext } from '../../../src/runtime/timeWakeupEvaluationProgram/types.js';
+import type { TimeWakeupPlan } from '../../../src/runtime/timeWakeupPlanner/types.js';
+import type { TradingDayInfo } from '../../../src/types/marketPorts.js';
 import {
-  createDoomsdayProtectionDouble,
+  createDoomsdayClearanceWorkflowDouble,
   createMarketDataClientDouble,
   createLoggerDouble,
   createMonitorConfigDouble,
@@ -95,7 +95,7 @@ async function createGateIntegrationContext(
         info: { isTradingDay: true, isHalfDay: false },
       },
     }),
-    doomsdayProtection: createDoomsdayProtectionDouble(),
+    doomsdayClearanceWorkflow: createDoomsdayClearanceWorkflowDouble(),
     tradingConfig: createTradingConfig({ monitor: monitorConfig }),
     monitorContext,
     tradingGateEventRuntime: {

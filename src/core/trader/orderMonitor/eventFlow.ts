@@ -28,7 +28,7 @@ import {
 import { exactCompare, exactMultiply } from '../../../utils/numeric/exact.js';
 import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js';
 import { resolveOrderOwnership } from '../../../domain/order/orderOwnership.js';
-import { hasProtectiveLiquidationRemark } from '../utils.js';
+import { hasProtectiveLiquidationRemark } from '../../../domain/order/orderRemark.js';
 
 /** 仅当状态已离开撤单中阶段时，才恢复下一次撤单重试机会。 */
 function shouldResumeCancelRetryFromWsStatus(status: OrderReadStatus): boolean {

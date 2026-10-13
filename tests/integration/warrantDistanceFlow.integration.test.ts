@@ -3,13 +3,14 @@
  * 真实 warrantRiskChecker → RiskChecker 门面 → 距离换标/行情展示，验证单位、精确边界和同标的抑制。
  * 只替换候选查询与非距离交易依赖，不手工构造距离事实，也不提交订单。
  */
+
 import { describe, expect, it } from 'bun:test';
-import { createRiskChecker } from '../../src/core/riskController/index.js';
-import { createPositionLimitChecker } from '../../src/core/riskController/positionLimitChecker.js';
-import { createUnrealizedLossChecker } from '../../src/core/riskController/unrealizedLossChecker.js';
-import { createWarrantRiskChecker } from '../../src/core/riskController/warrantRiskChecker.js';
-import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
+import { createRiskChecker } from '../../src/domain/risk/index.js';
+import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
+import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
+import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { buildPriceDisplayInfo } from '../../src/services/marketMonitor/priceDisplayInfo.js';
 import { formatWarrantDistanceDisplay } from '../../src/services/marketMonitor/utils.js';
 import {
@@ -22,7 +23,8 @@ import {
   captureSwitchSeatAuthorization,
   createWarrantCandidateWithOverrides,
   getDefaultAutoSearchConfig,
-} from '../services/autoSymbolManager/utils.js';
+  createLoggerStub,
+} from '../helpers/seatTestUtils.js';
 
 /** 装配真实距离 producer、门面、席位/换标 owner；查询次数用于观察当日抑制。 */
 function createDistanceFlowHarness(direction: 'LONG' | 'SHORT', sameSymbol = false) {
@@ -42,16 +44,23 @@ function createDistanceFlowHarness(direction: 'LONG' | 'SHORT', sameSymbol = fal
     searchFailCountToday: 0,
     frozenTradingDayKey: null,
   });
-  const warrantRiskChecker = createWarrantRiskChecker();
+  const warrantRiskChecker = createWarrantRiskChecker({
+    onInvalidCallPrice: () => {},
+    onWarrantInfoSet: () => {},
+  });
   warrantRiskChecker.setWarrantInfoFromCallPrice(symbol, '20000', direction === 'LONG');
   const riskChecker = createRiskChecker({
     warrantRiskChecker,
     positionLimitChecker: createPositionLimitChecker({ maxPositionNotional: null }),
-    unrealizedLossChecker: createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null }),
+    unrealizedLossChecker: createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: null,
+      onMissingData: () => {},
+    }),
   });
   const orderRecorder = createOrderRecorderDouble();
   let searchCalls = 0;
-  const manager = createAutoSymbolManager({
+  const manager = createSeatSwitchWorkflow({
+    logger: createLoggerStub(),
     monitorConfig,
     symbolRegistry,
     riskChecker,
@@ -62,12 +71,18 @@ function createDistanceFlowHarness(direction: 'LONG' | 'SHORT', sameSymbol = fal
         throw new Error('距离换标 admission 不应提交订单');
       },
     }),
-    findBestWarrant: async () => {
-      searchCalls += 1;
-      return createWarrantCandidateWithOverrides(sameSymbol ? symbol : `NEXT_${symbol}`, {
-        callPrice: '20000',
-        distancePct: direction === 'LONG' ? '0.5' : '-0.5',
-      });
+    candidateSearch: {
+      resolveDistanceRange: (candidateDirection) =>
+        monitorConfig.autoSearchConfig[
+          candidateDirection === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+        ],
+      findCandidate: async () => {
+        searchCalls += 1;
+        return createWarrantCandidateWithOverrides(sameSymbol ? symbol : `NEXT_${symbol}`, {
+          callPrice: '20000',
+          distancePct: direction === 'LONG' ? '0.5' : '-0.5',
+        });
+      },
     },
     getTradingCalendarSnapshot: () =>
       new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
@@ -197,7 +212,10 @@ for (const direction of ['LONG', 'SHORT'] as const) {
 }
 
 it('formats repeating ratios once from the real unscaled producer basis', () => {
-  const checker = createWarrantRiskChecker();
+  const checker = createWarrantRiskChecker({
+    onInvalidCallPrice: () => {},
+    onWarrantInfoSet: () => {},
+  });
   checker.setWarrantInfoFromCallPrice('BULL.HK', '300', true);
   checker.setWarrantInfoFromCallPrice('BEAR.HK', '300', false);
   expect(formatWarrantDistanceDisplay(checker.getWarrantDistanceInfo(true, 'BULL.HK', '301'))).toBe(

@@ -215,8 +215,8 @@ export interface DailyLossTracker {
 
 /**
  * 单方向浮亏监控上下文。
- * 类型用途：TradingRiskEventRuntime 调用单方向浮亏执行器时的入参，只携带当前命中的方向与 seatVersion。
- * 数据来源：由 tradingRiskEventRuntime 基于 symbolRegistry 路由与 quote push 事件组装传入。
+ * 类型用途：ProtectiveLiquidationWorkflow 调用单方向浮亏执行器时的入参，只携带当前方向与 seatVersion。
+ * 数据来源：由 protective workflow 校验行情、席位与结算事实后组装传入。
  * 使用范围：风险控制与事件驱动浮亏链路；全项目可引用。
  */
 export type DirectionalUnrealizedLossMonitorContext = {
@@ -228,16 +228,16 @@ export type DirectionalUnrealizedLossMonitorContext = {
   readonly isCurrent: () => boolean;
   readonly quote: Quote;
   readonly riskChecker: RiskChecker;
-  readonly trader: Trader;
+  readonly trader: Pick<Trader, 'executeSignals'>;
   readonly orderRecorder: OrderRecorder;
   readonly dailyLossTracker: DailyLossTracker;
 };
 
 /**
  * 浮亏监控器接口。
- * 类型用途：依赖注入，由 riskController 模块实现，供事件驱动浮亏链路按单方向执行保护性清仓。
- * 数据来源：由 riskController 模块实现并注入。
- * 使用范围：TradingRiskEventRuntime 与 MonitorContext；全项目可引用。
+ * 类型用途：依赖注入，由 application protective 执行器按单方向执行保护性清仓。
+ * 数据来源：由 composition root 创建并注入唯一 protective workflow。
+ * 使用范围：ProtectiveLiquidationWorkflow 与 MonitorContext；全项目可引用。
  */
 export interface UnrealizedLossMonitor {
   /**

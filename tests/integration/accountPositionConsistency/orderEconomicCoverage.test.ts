@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
-import { createUnrealizedLossChecker } from '../../../src/core/riskController/unrealizedLossChecker.js';
+import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
 import { withTrustedOrderExecutionTimes } from '../../../src/domain/order/executionFact.js';
 import type {
   BrokerOrderExecutionFact,
@@ -67,7 +67,10 @@ describe('same-instance economic coverage across neutral API and online facts', 
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
     });
-    const risk = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null });
+    const risk = createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: null,
+      onMissingData: () => {},
+    });
     const evidence: ReadonlyArray<OrderExecutionTimeEvidence> = [
       {
         brokerOrderId: 'PHASE-BUY',
@@ -146,7 +149,10 @@ describe('same-instance economic coverage across neutral API and online facts', 
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
     });
-    const risk = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null });
+    const risk = createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: null,
+      onMissingData: () => {},
+    });
     const buy150 = fact('BUY150', 'BUY', 150, '150', 1000);
     const buy50 = fact('BUY50', 'BUY', 50, '100', 1100);
     const sell100 = fact('CUMULATIVE-SELL', 'SELL', 100, '120', 1200);
@@ -205,7 +211,10 @@ describe('same-instance economic coverage across neutral API and online facts', 
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
     });
-    const risk = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null });
+    const risk = createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: null,
+      onMissingData: () => {},
+    });
     const original = fact('CLEARED-BUY', 'BUY', 150, '150', 1000);
     owner.commitRebuildSnapshot(targets, [apiOrder(original)], () => true, 'ACTIVATION');
     owner.clearBuyOrders('COVERED.HK', true);

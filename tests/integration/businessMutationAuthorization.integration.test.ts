@@ -3,22 +3,25 @@
  * 真实 switch/风险 runtime、monitor、Trader、FIFO、snapshot、settlement 与 broker adapter
  * 共同验证原票失效后的撤单阻断及未 accepted 风险工作的原 owner 重评，不伪造 ACK/READY。
  */
+
 import { describe, expect, it } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createRiskChecker } from '../../src/core/riskController/index.js';
-import { createPositionLimitChecker } from '../../src/core/riskController/positionLimitChecker.js';
-import { createUnrealizedLossChecker } from '../../src/core/riskController/unrealizedLossChecker.js';
-import { createUnrealizedLossMonitor } from '../../src/core/riskController/unrealizedLossMonitor.js';
-import { createWarrantRiskChecker } from '../../src/core/riskController/warrantRiskChecker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createTradingRiskEventRuntime } from '../../src/main/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
-import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
-import type { Trader, QuoteUpdatedEvent } from '../../src/types/services.js';
+import { createRiskChecker } from '../../src/domain/risk/index.js';
+import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
+import { createUnrealizedLossMonitor } from '../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
+import { createProtectiveLiquidationWorkflow } from '../../src/application/protectiveLiquidation/index.js';
+import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { createTradingRiskEventRuntime } from '../../src/runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
+import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import type { Trader } from '../../src/types/services.js';
+import type { QuoteUpdatedEvent } from '../../src/types/marketPorts.js';
 import type { Quote } from '../../src/types/quote.js';
 import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
@@ -33,7 +36,8 @@ import {
 import {
   createWarrantCandidate,
   getDefaultAutoSearchConfig,
-} from '../services/autoSymbolManager/utils.js';
+  createLoggerStub,
+} from '../helpers/seatTestUtils.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 
@@ -156,9 +160,15 @@ async function createFixture() {
     reportFatalError: termination.reportFatalError,
   });
   const risk = createRiskChecker({
-    warrantRiskChecker: createWarrantRiskChecker(),
+    warrantRiskChecker: createWarrantRiskChecker({
+      onInvalidCallPrice: () => {},
+      onWarrantInfoSet: () => {},
+    }),
     positionLimitChecker: createPositionLimitChecker({ maxPositionNotional: '50000' }),
-    unrealizedLossChecker: createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: '10' }),
+    unrealizedLossChecker: createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: '10',
+      onMissingData: () => {},
+    }),
   });
   risk.setWarrantInfoFromCallPrice('BULL.HK', '20000', true);
   const episodeTracker = createProtectiveLiquidationEpisodeTracker();
@@ -215,7 +225,10 @@ async function createFixture() {
     termination,
   });
   trader = actualTrader;
-  const monitor = createUnrealizedLossMonitor({ maxUnrealizedLossPerSymbol: '10' });
+  const monitor = createUnrealizedLossMonitor({
+    logger: createLoggerDouble(),
+    maxUnrealizedLossPerSymbol: '10',
+  });
   let monitorCalls = 0;
   const monitorResults: boolean[] = [];
   const monitorContext = createMonitorContextDouble({
@@ -267,9 +280,8 @@ async function createFixture() {
   settlement.start();
   await settlement.completeRebuildBaseline();
   await settlement.waitForFresh();
-  const runtime = createTradingRiskEventRuntime({
+  const workflow = createProtectiveLiquidationWorkflow({
     logger: createLoggerDouble(),
-    marketDataClient,
     trader: actualTrader,
     symbolRegistry,
     monitorContext,
@@ -278,6 +290,14 @@ async function createFixture() {
     snapshot,
     doomsdayProtectionEnabled: false,
     now: () => new Date(NOW_MS),
+    termination,
+  });
+  const runtime = createTradingRiskEventRuntime({
+    logger: createLoggerDouble(),
+    marketDataClient,
+    symbolRegistry,
+    postTradeConsistencyRuntime: settlement,
+    workflow,
     termination,
   });
   return {
@@ -335,14 +355,21 @@ async function createFixture() {
 
 /** 换标入口只消费真实 pending cache 与 snapshot/settlement/席位票。 */
 async function createPendingSwitch(f: Awaited<ReturnType<typeof createFixture>>) {
-  const manager = createAutoSymbolManager({
+  const manager = createSeatSwitchWorkflow({
+    logger: createLoggerStub(),
     monitorConfig: f.monitorContext.config,
     symbolRegistry: f.symbolRegistry,
     marketDataClient: f.marketDataClient,
     trader: f.trader,
     orderRecorder: f.trader.orderRecorder,
     riskChecker: f.risk,
-    findBestWarrant: async () => createWarrantCandidate('NEXT.HK'),
+    candidateSearch: {
+      resolveDistanceRange: (direction) =>
+        f.monitorContext.config.autoSearchConfig[
+          direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+        ],
+      findCandidate: async () => createWarrantCandidate('NEXT.HK'),
+    },
     clock: { now: () => new Date(NOW_MS) },
     getTradingCalendarSnapshot: () =>
       new Map([['2026-07-10', { isTradingDay: true, isHalfDay: false }]]),

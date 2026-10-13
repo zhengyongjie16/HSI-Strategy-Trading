@@ -5,34 +5,33 @@
 import { describe, expect, it } from 'bun:test';
 import { rejects } from 'node:assert/strict';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
-import { captureSwitchSeatAuthorization } from '../services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import { captureSwitchSeatAuthorization } from '../helpers/seatTestUtils.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
-import { createStrategyEmitter } from '../../src/main/businessEventProgram/emissionAdapter.js';
+import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import { createUnrealizedLossMonitor } from '../../src/core/riskController/unrealizedLossMonitor.js';
-import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
-import { createBuyProcessor } from '../../src/main/asyncProgram/buyProcessor/index.js';
-import type { BuyRiskCheckContext, Trader } from '../../src/types/services.js';
-import type { ProcessedSellSignal } from '../../src/core/signalProcessor/types.js';
-import { createSellProcessor } from '../../src/main/asyncProgram/sellProcessor/index.js';
+import { createUnrealizedLossMonitor } from '../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
+import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
+import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
+import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
+import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
+import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
+import type { Trader } from '../../src/types/services.js';
+import { createSellProcessor } from '../../src/runtime/asyncProgram/sellProcessor/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
+} from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
-import {
-  prepareFixture,
-  createHarness,
-  marketContext,
-} from '../core/strategy/intradayRegression/fixtures.js';
+import { prepareFixture, createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
 import { createLastState, waitUntil } from '../main/asyncProgram/utils.js';
 import {
   createDailyLossTrackerDouble,
-  createDoomsdayProtectionDouble,
   createLiquidationCooldownTrackerDouble,
+  createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
@@ -273,34 +272,31 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     protectiveLiquidationEpisodeTracker,
     mixedTradeLogRepository: { appendCompletionIdempotent: () => {} },
   });
-  const signalProcessor = createSignalProcessor({
-    tradingConfig,
-    liquidationCooldownTracker,
-    reportFatalError: () => {},
-  });
-  const processedSells: ProcessedSellSignal[] = [];
   const buyTaskQueue = createBuyTaskQueue();
   const sellTaskQueue = createSellTaskQueue();
-  const sellProcessor = createSellProcessor({
+  const sellWorkflow = createOrdinarySellWorkflow({
+    logger: createLoggerDouble(),
     clock: h.deps.clock,
+    config,
+    symbolRegistry,
+    orderRecorder,
+    trader,
+    marketDataClient,
+    snapshot,
+    settlement: postTrade,
+    getTradingCalendar: () => ({
+      isHalfDay: lastState.isHalfDay ?? false,
+      tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
+    }),
+    getCanProcessTask: () => lastState.isTradingEnabled,
+    termination,
+  });
+  const sellProcessor = createSellProcessor({
     scheduler: h.deps.scheduler,
     termination,
     taskQueue: sellTaskQueue,
-    monitorContext,
-    trader,
-    signalProcessor: {
-      ...signalProcessor,
-      processSellSignals: (params) => {
-        const results = signalProcessor.processSellSignals(params);
-        processedSells.push(...results);
-        return results;
-      },
-    },
-    marketDataClient,
-    snapshot,
-    getLastState: () => lastState,
+    workflow: sellWorkflow,
     getCanProcessTask: () => lastState.isTradingEnabled,
-    postTradeConsistencyRuntime: postTrade,
   });
   await orderMonitor.initialize();
   await orderMonitor.recoverOrderTrackingFromSnapshot([native.queryObservation]);
@@ -341,14 +337,13 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     lastState,
     postTrade,
     trader,
-    signalProcessor,
     sellProcessor,
     buyTaskQueue,
     sellTaskQueue,
     termination,
     executedSignals,
     callerAuthorizations,
-    processedSells,
+    liquidationCooldownTracker,
     positionsRelease,
     tradingConfig,
     marketDataClient,
@@ -414,6 +409,7 @@ describe('single active strategy execution integration', () => {
         protectionSeatAuthorization() &&
         f.snapshot.getView().token.dayEpoch === f.baselineReceipt.snapshotToken.dayEpoch;
       await createUnrealizedLossMonitor({
+        logger: createLoggerDouble(),
         maxUnrealizedLossPerSymbol: '1',
       }).monitorDirectionalUnrealizedLoss({
         symbol: 'BULL.HK',
@@ -596,11 +592,11 @@ describe('execution authority at buy and clearance boundaries', () => {
         triggerTimeMs: f.generatedAtMs,
         reason: '末日保护程序：策略要求全量清仓',
       });
+      expect(f.sellTaskQueue.isEmpty()).toBeFalse();
+      const quoteReadsBeforeSell = f.getQuoteReads();
       f.sellProcessor.start();
-      await waitUntil(() => f.processedSells.length === 1);
+      await waitUntil(() => f.getQuoteReads() > quoteReadsBeforeSell);
       await f.sellProcessor.stopAndDrain();
-      expect(f.processedSells[0]?.action).toBe('HOLD');
-      expect(f.processedSells[0]?.triggerTime?.getTime()).toBe(f.generatedAtMs);
       expect(f.native.nativeSubmitObservations()).toEqual([]);
       expect(f.executedSignals).toEqual([]);
       expect(f.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toHaveLength(1);
@@ -665,34 +661,42 @@ describe('execution authority at buy and clearance boundaries', () => {
       let quoteRequested = false;
       const processor = createBuyProcessor({
         taskQueue: f.buyTaskQueue,
-        monitorContext: f.monitorContext,
-        trader: f.trader,
-        signalProcessor: f.signalProcessor,
-        marketDataClient: createMarketDataClientDouble({
-          getQuotes: async () => {
-            quoteRequested = true;
-            const quotes = new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1', 100)]]);
-            if (price !== null)
-              quotes.set(
-                f.monitorContext.config.monitorSymbol,
-                createQuoteDouble(
+        workflow: createOrdinaryBuyWorkflow({
+          logger: createLoggerDouble(),
+          config: f.monitorContext.config,
+          doomsdayProtection: f.tradingConfig.global.doomsdayProtection,
+          symbolRegistry: f.monitorContext.symbolRegistry,
+          orderRecorder: f.orderRecorder,
+          riskChecker: f.riskChecker,
+          trader: f.trader,
+          marketDataClient: createMarketDataClientDouble({
+            getQuotes: async () => {
+              quoteRequested = true;
+              const quotes = new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1', 100)]]);
+              if (price !== null)
+                quotes.set(
                   f.monitorContext.config.monitorSymbol,
-                  typeof price === 'string' ? price : '1',
-                ),
-              );
+                  createQuoteDouble(
+                    f.monitorContext.config.monitorSymbol,
+                    typeof price === 'string' ? price : '1',
+                  ),
+                );
 
-            if (typeof price === 'number') {
-              const malformed = quotes.get(f.monitorContext.config.monitorSymbol);
-              if (malformed !== undefined) Reflect.set(malformed, 'price', price);
-            }
+              if (typeof price === 'number') {
+                const malformed = quotes.get(f.monitorContext.config.monitorSymbol);
+                if (malformed !== undefined) Reflect.set(malformed, 'price', price);
+              }
 
-            return quotes;
-          },
+              return quotes;
+            },
+          }),
+          liquidationCooldownTracker: f.liquidationCooldownTracker,
+          getIsHalfDay: () => false,
+          now: f.h.deps.clock.now,
+          snapshot: f.snapshot,
+          getCanProcessTask: () => f.lastState.isTradingEnabled && f.lastState.canTrade === true,
+          termination: f.termination,
         }),
-        doomsdayProtection: createDoomsdayProtectionDouble(),
-        getIsHalfDay: () => false,
-        now: f.h.deps.clock.now,
-        snapshot: f.snapshot,
         getCanProcessTask: () => f.lastState.isTradingEnabled && f.lastState.canTrade === true,
         termination: f.termination,
       });
@@ -749,12 +753,17 @@ describe('execution authority at buy and clearance boundaries', () => {
         shortSymbolName: null,
         currentTime: new Date(f.generatedAtMs),
         isHalfDay: false,
-        doomsdayProtection: createDoomsdayProtectionDouble(),
         config: f.monitorContext.config,
       } satisfies BuyRiskCheckContext;
       Reflect.set(invalidContext, 'monitorQuote', null);
       await rejects(
-        f.signalProcessor.applyRiskChecks(
+        createBuyRiskChecks({
+          logger: createLoggerDouble(),
+          doomsdayProtection: f.tradingConfig.global.doomsdayProtection,
+          liquidationCooldownTracker: f.liquidationCooldownTracker,
+          lastRiskCheckTime: new Map(),
+          reportFatalError: f.termination.reportFatalError,
+        })(
           [
             {
               symbol: 'BULL.HK',

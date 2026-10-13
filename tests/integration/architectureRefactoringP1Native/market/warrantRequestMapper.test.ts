@@ -1,8 +1,7 @@
 /** 默认 SDK 入口→真实 quoteClient；原生 tuple oracle 与纯 mapper case 位于 tests/infrastructure/longbridge/market。 */
 import { describe, expect, it } from 'bun:test';
-import { installNativeWarrantRequestFixture } from '../../../infrastructure/longbridge/market/warrantRequestFixture.js';
+import { createNativeWarrantMarketFixture } from '../../../infrastructure/longbridge/market/warrantMarketFixture.js';
 import { EXPIRY_DATE_FILTERS } from '../../../../src/constants/index.js';
-import { createMarketDataClient } from '../../../../src/services/quoteClient/index.js';
 import type { MarketWarrantListRequest } from '../../../../src/types/marketPorts.js';
 
 describe('warrant request native mapping', () => {
@@ -17,15 +16,8 @@ describe('warrant request native mapping', () => {
       inOutBoundsTypes: ['IN'],
       status: ['NORMAL'],
     };
-    const unexpected = (): never => {
-      throw new Error('unconfigured offline quote SDK method');
-    };
-    const fixture = installNativeWarrantRequestFixture();
+    const { port, controller: fixture } = await createNativeWarrantMarketFixture();
     try {
-      const client = await createMarketDataClient({
-        config: { refreshAccessToken: unexpected },
-      });
-      const port = await client.getQuoteContext();
       expect(fixture.getFactoryCallCount()).toBe(1);
       expect(await port.warrantList(request)).toEqual([]);
       fixture.assertReceivedExpectedRequest();

@@ -1,32 +1,30 @@
 /** 延迟 SELL 回流：原策略验证与 caller route 保留；真实同 ctx H/O/Daily/S 及 native executor 读取最新可卖事实。 */
 import { describe, expect, it } from 'bun:test';
-import { createStrategyEmitter } from '../../src/main/businessEventProgram/emissionAdapter.js';
-import { createSellProcessor } from '../../src/main/asyncProgram/sellProcessor/index.js';
+import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
+import { createSellProcessor } from '../../src/runtime/asyncProgram/sellProcessor/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
+} from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import type { LastState } from '../../src/types/state.js';
 import type { Signal } from '../../src/types/signal.js';
 import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
-import {
-  prepareFixture,
-  createHarness,
-  marketContext,
-} from '../core/strategy/intradayRegression/fixtures.js';
+import { prepareFixture, createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
 import { waitUntil } from '../main/asyncProgram/utils.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import {
   createLiquidationCooldownTrackerDouble,
+  createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
@@ -265,7 +263,7 @@ describe('delayed strategy sell integration', () => {
         }),
         rateLimiter: createRateLimiterDouble(),
         marketDataClient: market,
-        cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+        cacheManager: { clearCache: () => {} },
         orderMonitor: {
           ...monitor,
           getPendingSellOrders: (symbol) => {
@@ -314,22 +312,27 @@ describe('delayed strategy sell integration', () => {
       for (const timer of h.timers) timer.callback();
 
       const processor = createSellProcessor({
-        clock: h.deps.clock,
         scheduler: h.deps.scheduler,
         termination,
         taskQueue: sellTaskQueue,
-        monitorContext,
-        trader,
-        signalProcessor: createSignalProcessor({
-          tradingConfig,
-          liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-          reportFatalError: termination.reportFatalError,
+        workflow: createOrdinarySellWorkflow({
+          logger: createLoggerDouble(),
+          clock: h.deps.clock,
+          config,
+          symbolRegistry: monitorContext.symbolRegistry,
+          orderRecorder: recorder,
+          trader,
+          marketDataClient: market,
+          getTradingCalendar: () => ({
+            isHalfDay: lastState.isHalfDay ?? false,
+            tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
+          }),
+          getCanProcessTask: () => lastState.isTradingEnabled,
+          termination,
+          snapshot,
+          settlement: postTrade,
         }),
-        marketDataClient: market,
-        getLastState: () => lastState,
         getCanProcessTask: () => lastState.isTradingEnabled,
-        snapshot,
-        postTradeConsistencyRuntime: postTrade,
       });
       processor.start();
       try {

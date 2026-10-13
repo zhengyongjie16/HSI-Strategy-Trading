@@ -4,18 +4,22 @@
  * 功能：
  * - 验证买入流程风险管道与下单执行的端到端场景与业务期望。
  */
+import { logger } from '../../src/utils/logger/index.js';
 import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
 import { createSettlementRuntimeFixture } from '../main/fixtures/settlementRuntime.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
 import type { SignalCallerAuthorization } from '../../src/types/trader.js';
-import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
+import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
+import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
+import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
+import { createBuyTaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { runProcessorFlow } from '../main/asyncProgram/utils.js';
 import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../src/constants/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import {
-  createDoomsdayProtectionDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
   createOrderMonitorDouble,
@@ -25,10 +29,12 @@ import {
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
+  createLiquidationCooldownTrackerDouble,
 } from '../helpers/testDoubles.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
-import type { BuyRiskCheckContext } from '../../src/types/services.js';
-import type { OrderExecutorDeps, OrderMonitor } from '../../src/core/trader/types.js';
+import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
+import type { OrderMonitor } from '../../src/core/trader/types.js';
+import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
 
 const createMutationRateLimiter = createRateLimiterDouble;
 
@@ -204,12 +210,101 @@ function createRiskContext(params: {
     shortSymbolName: 'BEAR.HK',
     currentTime: params.currentTime,
     isHalfDay: false,
-    doomsdayProtection: createDoomsdayProtectionDouble(),
     config: monitorConfig,
   };
 }
 
 describe('buy-flow integration', () => {
+  it('runs FIFO -> ordinary BUY owner -> realtime risk reads -> final native execution with exact whole-lot notional', async () => {
+    const baseConfig = createTradingConfig();
+    const tradingConfig = createTradingConfig({
+      monitor: { ...baseConfig.monitor, targetNotional: '0.3' },
+    });
+    const ingress = await createNativeBuyIngress();
+    const registry = createSymbolRegistryDouble();
+    const recorder = createOrderRecorderDouble();
+    const now = () => new Date('2026-07-10T03:00:00Z');
+    let quoteReads = 0;
+    const market = createMarketDataClientDouble({
+      getQuotes: async (symbols) => {
+        quoteReads += 1;
+        return new Map(
+          [...symbols].map((symbol) => [
+            symbol,
+            createQuoteDouble(symbol, symbol === 'HSI.HK' ? '20000' : '0.1', 3),
+          ]),
+        );
+      },
+    });
+    const executor = await createOrderExecutor({
+      ingress,
+      rateLimiter: createRateLimiterDouble(),
+      marketDataClient: market,
+      cacheManager: { clearCache: () => {} },
+      orderMonitor: {},
+      orderRecorder: recorder,
+      tradingConfig,
+      symbolRegistry: registry,
+      isExecutionAllowed: () => true,
+      now,
+      readCurrentTradingDayInfo: () => ({
+        dateKey: '2026-07-10',
+        info: { isTradingDay: true, isHalfDay: false },
+      }),
+    });
+    const queue = createBuyTaskQueue();
+    const termination = createTerminationRuntime({
+      closeTradingGate: () => {},
+      closeProducerAdmission: queue.close,
+      stopProducers: [],
+      onSecondaryError: () => {},
+    });
+    const workflow = createOrdinaryBuyWorkflow({
+      logger,
+      config: tradingConfig.monitor,
+      doomsdayProtection: tradingConfig.global.doomsdayProtection,
+      symbolRegistry: registry,
+      orderRecorder: recorder,
+      riskChecker: createRiskCheckerDouble(),
+      trader: {
+        ...executor.accountService,
+        canTradeNow: executor.canTradeNow,
+        executeSignals: executor.executeSignals,
+      },
+      marketDataClient: market,
+      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+      snapshot: executor.snapshot,
+      getIsHalfDay: () => false,
+      now,
+      getCanProcessTask: () => true,
+      termination,
+    });
+    const processor = createBuyProcessor({
+      taskQueue: queue,
+      workflow,
+      getCanProcessTask: () => true,
+      termination,
+    });
+    await runProcessorFlow({
+      processor,
+      pushTask: () => {
+        queue.push({
+          type: 'STRATEGY_BUY',
+          data: createSignal({
+            symbol: 'BULL.HK',
+            action: 'BUYCALL',
+            triggerTimeMs: now().getTime(),
+          }),
+        });
+      },
+      waitCondition: () => ingress.nativeSubmitObservations().length === 1,
+    });
+    expect(termination.isTerminated()).toBeFalse();
+    expect(quoteReads).toBe(2);
+    expect(ingress.nativeSubmitObservations()[0]?.quantity).toBe('3');
+    expect(ingress.nativeSubmitObservations()[0]?.price).toBe('0.1');
+  });
+
   it.each([
     {
       label: '正常交易日',
@@ -237,7 +332,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -277,7 +371,7 @@ describe('buy-flow integration', () => {
       orderExecutor.callerAuthorization,
     );
 
-    expect(result).toEqual({ executedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [], quoteFailures: [] });
     expect(tradeCtx.nativeMutations()).toHaveLength(0);
     expect(orderExecutor.canTradeNow('BUYCALL')).toEqual({ canTrade: true });
   });
@@ -315,7 +409,7 @@ describe('buy-flow integration', () => {
         },
       }),
       marketDataClient: createExecutableQuoteClient(),
-      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      cacheManager: { clearCache: () => {} },
       orderMonitor: {
         initialize: async () => {},
         trackOrder: () => {},
@@ -354,7 +448,7 @@ describe('buy-flow integration', () => {
       orderExecutor.callerAuthorization,
     );
 
-    expect(result).toEqual({ executedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [], quoteFailures: [] });
     expect(tradeCtx.nativeMutations()).toHaveLength(0);
     expect(orderExecutor.canTradeNow('BUYCALL')).toEqual({ canTrade: true });
   });
@@ -386,7 +480,7 @@ describe('buy-flow integration', () => {
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
-      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      cacheManager: { clearCache: () => {} },
       orderMonitor: {
         initialize: async () => {},
         trackOrder: () => {},
@@ -438,7 +532,7 @@ describe('buy-flow integration', () => {
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
-      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      cacheManager: { clearCache: () => {} },
       orderMonitor: {
         initialize: async () => {},
         trackOrder: () => {},
@@ -508,7 +602,6 @@ describe('buy-flow integration', () => {
       }),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -578,7 +671,6 @@ describe('buy-flow integration', () => {
       }),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -654,7 +746,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -700,7 +791,7 @@ describe('buy-flow integration', () => {
       true,
     );
 
-    expect(result).toEqual({ executedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [], quoteFailures: [] });
     expect(tradeCtx.nativeMutations()).toHaveLength(0);
     expect(trackedOrderCount).toBe(0);
   });
@@ -733,7 +824,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -775,7 +865,7 @@ describe('buy-flow integration', () => {
 
     expect(mutationPermitAcquisitions).toBe(1);
     expect(symbolRegistry.getSeatVersion('LONG')).toBe(initialSeatVersion + 1);
-    expect(result).toEqual({ executedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [], quoteFailures: [] });
     expect(tradeCtx.nativeMutations()).toHaveLength(0);
   });
 
@@ -790,7 +880,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -858,7 +947,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -902,7 +990,7 @@ describe('buy-flow integration', () => {
       true,
     );
 
-    expect(result).toEqual({ executedOrderIds: [] });
+    expect(result).toEqual({ executedOrderIds: [], quoteFailures: [] });
     expect(tradeCtx.nativeMutations()).toHaveLength(0);
     expect(trackedOrderCount).toBe(0);
   });
@@ -910,15 +998,12 @@ describe('buy-flow integration', () => {
   it('runs risk pipeline -> order execution and submits notional-based buy quantity', async () => {
     const tradingConfig = createTradingConfig();
     const currentTime = new Date('2026-07-10T07:00:00.000Z');
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
+    const checkBuyRisk = createBuyRiskChecks({
+      logger,
+      lastRiskCheckTime: new Map(),
+      doomsdayProtection: tradingConfig.global.doomsdayProtection,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
       },
       reportFatalError: () => {},
     });
@@ -935,7 +1020,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -982,7 +1066,7 @@ describe('buy-flow integration', () => {
           reason: 'integration-buy',
         });
 
-        const checkedSignals = await signalProcessor.applyRiskChecks(
+        const checkedSignals = await checkBuyRisk(
           [signal],
           createRiskContext({ trader, riskChecker, orderRecorder, currentTime }),
         );
@@ -1026,7 +1110,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1104,7 +1187,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1164,7 +1246,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1258,7 +1339,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1317,15 +1397,12 @@ describe('buy-flow integration', () => {
 
   it('blocks the next buy in applyRiskChecks once the previous buy has passed frequency check, regardless of submit success', async () => {
     const tradingConfig = createTradingConfig();
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
+    const checkBuyRisk = createBuyRiskChecks({
+      logger,
+      lastRiskCheckTime: new Map(),
+      doomsdayProtection: tradingConfig.global.doomsdayProtection,
       liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
         getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
       },
       reportFatalError: () => {},
     });
@@ -1340,7 +1417,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1383,7 +1459,7 @@ describe('buy-flow integration', () => {
     });
 
     await withMockedNow(successNow, async () => {
-      const checkedSignals = await signalProcessor.applyRiskChecks(
+      const checkedSignals = await checkBuyRisk(
         [successfulSignal],
         createRiskContext({
           trader: successTrader,
@@ -1409,7 +1485,7 @@ describe('buy-flow integration', () => {
 
     await withMockedNow(successNow + BUY_RISK_CHECK_COOLDOWN_MS + 1, async () => {
       successClockMs = successAuthorizationMs + BUY_RISK_CHECK_COOLDOWN_MS + 1;
-      const blockedResult = await signalProcessor.applyRiskChecks(
+      const blockedResult = await checkBuyRisk(
         [blockedSignal],
         createRiskContext({
           trader: successTrader,
@@ -1437,7 +1513,6 @@ describe('buy-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1480,7 +1555,7 @@ describe('buy-flow integration', () => {
     });
 
     await withMockedNow(failedNow, async () => {
-      const checkedSignals = await signalProcessor.applyRiskChecks(
+      const checkedSignals = await checkBuyRisk(
         [firstFailedSignal],
         createRiskContext({
           trader: failedTrader,
@@ -1515,7 +1590,7 @@ describe('buy-flow integration', () => {
 
     await withMockedNow(failedNow + BUY_RISK_CHECK_COOLDOWN_MS + 1, async () => {
       failedClockMs = failedAuthorizationMs + BUY_RISK_CHECK_COOLDOWN_MS + 1;
-      const allowedResult = await signalProcessor.applyRiskChecks(
+      const allowedResult = await checkBuyRisk(
         [secondAllowedSignal],
         createRiskContext({
           trader: failedTrader,

@@ -1,14 +1,4 @@
 import type { OrderReadStatus, OrderReadType } from './orderReadMetadata.js';
-import type { MarketWarrantListRequest } from './marketPorts.js';
-import type {
-  Candlestick,
-  Market,
-  OrderSide,
-  OrderStatus,
-  OrderType,
-  Period,
-  TradeSessions,
-} from 'longbridge';
 import type {
   BuySignal,
   DoomsdayClearanceCommand,
@@ -29,7 +19,6 @@ import type {
   SignalCallerAuthorization,
   OrderClosedReason,
 } from './trader.js';
-import type { NormalizedCandle } from './data.js';
 import type { ExternalApiRetryConfig } from '../utils/apiFailure/types.js';
 import type {
   BrokerOrderExecutionFact,
@@ -39,253 +28,6 @@ import type {
   OrderExecutionAdmission,
   OrderProjectionTarget,
 } from './orderRecorder.js';
-
-/**
- * 已通过 todayOrders 信任边界校验的SDK订单方向。
- * 数据来源：Longbridge SDK OrderSide 中明确可处理的业务成员。
- * 使用范围：SDK边界验证规则常量；公共PendingOrder/RawOrderFromAPI不携带此SDK类型。
- */
-export type ValidatedOrderSide = OrderSide.Buy | OrderSide.Sell;
-
-/**
- * 已通过 todayOrders 信任边界校验的订单状态。
- * 数据来源：订单生命周期真值表中的全部明确成员，不包含 Unknown。
- * 使用范围：PendingOrder 与订单缓存边界；RawOrderFromAPI 仍保留 SDK 原始枚举语义。
- */
-export type ValidatedOrderStatus =
-  | OrderStatus.NotReported
-  | OrderStatus.ReplacedNotReported
-  | OrderStatus.ProtectedNotReported
-  | OrderStatus.VarietiesNotReported
-  | OrderStatus.WaitToNew
-  | OrderStatus.New
-  | OrderStatus.WaitToReplace
-  | OrderStatus.PendingReplace
-  | OrderStatus.Replaced
-  | OrderStatus.PartialFilled
-  | OrderStatus.WaitToCancel
-  | OrderStatus.PendingCancel
-  | OrderStatus.Filled
-  | OrderStatus.Rejected
-  | OrderStatus.Canceled
-  | OrderStatus.Expired
-  | OrderStatus.PartialWithdrawal;
-
-/**
- * 已通过 todayOrders 信任边界校验的订单类型。
- * 数据来源：Longbridge SDK OrderType 中明确支持查询与撤单识别的成员，不包含 Unknown。
- * 使用范围：PendingOrder 与订单缓存边界；RawOrderFromAPI 仍保留 SDK 原始枚举语义。
- */
-export type ValidatedOrderType =
-  | OrderType.LO
-  | OrderType.ELO
-  | OrderType.MO
-  | OrderType.AO
-  | OrderType.ALO
-  | OrderType.ODD
-  | OrderType.LIT
-  | OrderType.MIT
-  | OrderType.TSLPAMT
-  | OrderType.TSLPPCT
-  | OrderType.TSMAMT
-  | OrderType.TSMPCT
-  | OrderType.SLO;
-
-/**
- * 交易日查询结果。
- * 类型用途：封装交易日 API 的返回结构，作为 isTradingDay / 交易日查询的返回值或中间数据。
- * 数据来源：Longbridge 交易日 API（如 trading_days）。
- * 使用范围：行情客户端、生命周期、门禁等；全项目可引用。
- */
-export type TradingDaysResult = {
-  /** 完整交易日列表 */
-  readonly tradingDays: ReadonlyArray<string>;
-
-  /** 半日交易日列表 */
-  readonly halfTradingDays: ReadonlyArray<string>;
-};
-
-/**
- * 交易日信息。
- * 类型用途：表示某日是否为交易日及是否为半日市，作为 isTradingDay 返回值、门禁与跨日逻辑的入参。
- * 数据来源：Longbridge 交易日 API（如 trading_days）或行情客户端 isTradingDay。
- * 使用范围：行情客户端、生命周期、门禁等；全项目可引用。
- */
-export type TradingDayInfo = {
-  /** 是否为交易日 */
-  readonly isTradingDay: boolean;
-
-  /** 是否为半日市（如节假日前一天） */
-  readonly isHalfDay: boolean;
-};
-
-/**
- * 本地 K 线缓存快照。
- * 类型用途：业务事件链路消费的应用层 K 线缓存结构，包含版本、最后一根 bar 状态与初始化标记。
- * 数据来源：quoteClient 在 subscribe seed 与 setOnCandlestick push 更新后维护。
- * 使用范围：MarketDataClient.getCandlestickSnapshot 与指标流水线使用。
- */
-export type CandlestickCacheSnapshot = {
-  readonly symbol: string;
-  readonly period: Period;
-  readonly version: number;
-  readonly candles: ReadonlyArray<NormalizedCandle>;
-  readonly lastBarTimestamp: number | null;
-  readonly lastBarConfirmed: boolean | null;
-  readonly initialized: boolean;
-};
-
-/**
- * 标准化行情更新事件。
- * 类型用途：表示经过 quoteClient 标准化后的单标的报价更新事件，供运行时与业务监听器消费。
- * 数据来源：quoteClient 基于 Longbridge QuoteContext 的 quote push 事件与本地缓存标准化得到。
- * 使用范围：MarketDataClient.onQuoteUpdated 与相关风控/运行时消费链路；全项目可引用。
- */
-export type QuoteUpdatedEvent = {
-  /** 标的代码 */
-  readonly symbol: string;
-
-  /** 标准化后的行情快照 */
-  readonly quote: Quote;
-};
-
-/**
- * 标准化 K 线更新事件。
- * 类型用途：表示经过 quoteClient 标准化后的单标的 K 线更新事件，供事件驱动业务监听器消费。
- * 数据来源：quoteClient 在处理 Longbridge K 线 push 并更新本地缓存后标准化得到。
- * 使用范围：MarketDataClient.onCandlestickUpdated 与相关业务监听链路；全项目可引用。
- */
-export type CandlestickUpdatedEvent = {
-  /** 标的代码 */
-  readonly symbol: string;
-
-  /** K 线周期 */
-  readonly period: Period;
-
-  /** 最新本地 K 线缓存快照 */
-  readonly snapshot: CandlestickCacheSnapshot;
-};
-
-/**
- * 轮证报价最小结构。
- * 类型用途：表达当前仓库直接消费的 warrantQuote 字段边界，仅保留 symbol/callPrice/category。
- * 数据来源：quoteClient 将 Longbridge warrantQuote 金融原文适配为中立文本。
- * 使用范围：MarketQuoteContext.warrantQuote 返回值内部使用，不作为跨模块公共类型导出。
- */
-type MarketWarrantQuote = Readonly<{
-  readonly symbol: string;
-  readonly callPrice?: string | null | undefined;
-  readonly category?: number | string | null;
-}>;
-
-/**
- * 轮证列表最小结构。
- * 类型用途：表达当前仓库直接消费的 warrantList 字段边界，仅保留自动寻标所需字段。
- * 数据来源：quoteClient 将 Longbridge warrantList 金融原文适配为中立文本。
- * 使用范围：MarketQuoteContext.warrantList 返回值内部使用，不作为跨模块公共类型导出。
- */
-type MarketWarrantListItem = Readonly<{
-  readonly symbol: string;
-  readonly name?: string | null;
-  readonly lastDone: string | null | undefined;
-  readonly toCallPrice: string | null | undefined;
-  readonly callPrice?: string | null | undefined;
-  readonly turnover: string | null | undefined;
-  readonly warrantType: number | string | null | undefined;
-  readonly status: 'NORMAL' | 'NON_NORMAL' | null | undefined;
-}>;
-
-/**
- * 行情上下文最小契约。
- * 类型用途：约束 getQuoteContext 对外暴露的真实能力边界，只包含当前业务链路实际依赖的轮证查询能力。
- * 数据来源：由 quoteClient 基于 Longbridge QuoteContext 适配后提供。
- * 使用范围：自动寻标、牛熊证风险检查与运行时恢复等需要直接访问轮证接口的链路。
- */
-export interface MarketQuoteContext {
-  /** 查询轮证报价（用于回收价/牛熊证类型检查） */
-  warrantQuote: (symbols: ReadonlyArray<string>) => Promise<ReadonlyArray<MarketWarrantQuote>>;
-
-  /** 查询轮证列表（用于自动寻标/换标候选筛选） */
-  warrantList: (request: MarketWarrantListRequest) => Promise<ReadonlyArray<MarketWarrantListItem>>;
-}
-
-/**
- * 行情数据客户端接口。
- * 类型用途：依赖注入用接口，封装 Longbridge 行情 API，提供行情获取、订阅、K 线、交易日查询及运行期缓存重置。
- * 数据来源：由 quoteClient 等实现，对接 Longbridge QuoteContext。
- * 使用范围：启动装配、生命周期、业务事件链路、行情订阅与 K 线消费方等；全项目可引用。
- */
-export interface MarketDataClient {
-  /** 获取轮证查询上下文（内部使用） */
-  getQuoteContext: () => Promise<MarketQuoteContext>;
-
-  /**
-   * 批量获取多个标的的最新行情
-   * @param symbols 标的代码可迭代对象
-   * @returns 标的代码到行情数据的 Map
-   */
-  getQuotes: (symbols: Iterable<string>) => Promise<Map<string, Quote | null>>;
-
-  /** 动态订阅行情标的（报价推送） */
-  subscribeSymbols: (symbols: ReadonlyArray<string>) => Promise<void>;
-
-  /** 取消订阅行情标的（报价推送） */
-  unsubscribeSymbols: (symbols: ReadonlyArray<string>) => Promise<void>;
-
-  /**
-   * 订阅标准化行情更新事件。
-   *
-   * 该事件由 quoteClient 基于 quote push 与本地缓存标准化后发出。
-   *
-   * @param listener 报价更新监听器
-   * @returns 取消订阅函数
-   */
-  onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => () => void;
-
-  /**
-   * 订阅标准化 K 线更新事件。
-   *
-   * 该事件由 quoteClient 基于 K 线 push 与本地缓存标准化后发出，是普通 K 线事件业务链路的必需能力。
-   *
-   * @param listener K 线更新监听器
-   * @returns 取消订阅函数
-   */
-  onCandlestickUpdated: (listener: (event: CandlestickUpdatedEvent) => void) => () => void;
-
-  /**
-   * 订阅指定标的的 K 线推送
-   *
-   * 订阅后客户端会用返回值 seed 应用层本地 K 线缓存，并通过 push 事件持续更新。
-   *
-   * @param symbol 标的代码
-   * @param period K 线周期
-   * @param tradeSessions 交易时段（默认 Intraday）
-   * @returns 初始 K 线数据
-   */
-  subscribeCandlesticks: (
-    symbol: string,
-    period: Period,
-    tradeSessions?: TradeSessions,
-  ) => Promise<ReadonlyArray<Candlestick>>;
-
-  /**
-   * 获取应用层本地 K 线缓存快照（由 subscribe seed + push 更新维护）。
-   *
-   * @param symbol 标的代码
-   * @param period K 线周期
-   * @returns 本地缓存快照，不存在时返回 null
-   */
-  getCandlestickSnapshot: (symbol: string, period: Period) => CandlestickCacheSnapshot | null;
-
-  /** 判断指定日期是否为交易日 */
-  isTradingDay: (date: Date, market?: Market) => Promise<TradingDayInfo>;
-
-  /** 批量获取交易日历区间 */
-  getTradingDays: (startDate: Date, endDate: Date, market?: Market) => Promise<TradingDaysResult>;
-
-  /** 重置运行期订阅与缓存（跨日午夜清理） */
-  resetRuntimeSubscriptionsAndCaches: () => Promise<void>;
-}
 
 /**
  * 待处理订单。
@@ -723,7 +465,7 @@ export interface Trader {
   /** 生命周期开盘重建：基于快照恢复订单追踪 */
   recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<RawOrderFromAPI>) => Promise<void>;
 
-  /** 执行交易信号；返回真正新提交或 broker 已确认改单的唯一订单 ID 列表 */
+  /** 执行交易信号；返回唯一 accepted ID 与准确保留原输入对象的最终报价失败事实 */
   executeSignals: (
     signals: ReadonlyArray<ExecutableSignal>,
     callerAuthorization: SignalCallerAuthorization,
@@ -764,8 +506,8 @@ export type WarrantDistanceInfo = {
 /**
  * 牛熊证信息刷新结果。
  * 类型用途：表示刷新牛熊证信息的结果（ok/notWarrant/error/skipped），作为 setWarrantInfoFromCallPrice、refreshWarrantInfoForSymbol 返回值。
- * 数据来源：RiskChecker 根据 API 或透传回收价得出。
- * 使用范围：RiskChecker、调用方与 UI；全项目可引用。
+ * 数据来源：同步 RiskChecker 的已知回收价发布，或 WarrantRiskRefresh 的外部事实查询。
+ * 使用范围：同步风险检查、风险刷新用例、调用方与 UI；全项目可引用。
  */
 export type WarrantRefreshResult =
   | { readonly status: 'ok'; readonly isWarrant: true }
@@ -877,17 +619,6 @@ export type UnrealizedLossCheckResult = {
 };
 
 /**
- * 末日保护买入门禁最小契约。
- * 类型用途：仅约束风险检查链路对末日保护买入截止窗口的依赖行为，避免类型层反向依赖业务实现。
- * 数据来源：由 doomsdayProtection 模块实现并注入。
- * 使用范围：BuyRiskCheckContext 与买入风险检查链路使用。
- */
-interface DoomsdayBuyGuard {
-  /** 检查买入截止窗口当前是否生效 */
-  isBuyCutoffWindowActive: (currentTime: Date, isHalfDay: boolean) => boolean;
-}
-
-/**
  * 买入风险检查上下文。
  * 类型用途：承载固定买入风控流水线所需的交易器、风控器、实时行情与配置依赖。
  * 数据来源：由 BuyProcessor 根据当前 MonitorContext 与执行时行情组装传入。
@@ -930,9 +661,6 @@ export type BuyRiskCheckContext = {
   /** 是否为半日市 */
   readonly isHalfDay: boolean;
 
-  /** 末日保护实例 */
-  readonly doomsdayProtection: DoomsdayBuyGuard;
-
   /** 监控配置 */
   readonly config: MonitorConfig;
 };
@@ -951,14 +679,6 @@ export interface RiskChecker {
     isLongSymbol: boolean,
     symbolName?: string | null,
   ) => WarrantRefreshResult;
-
-  /** 刷新单个标的的牛熊证信息 */
-  refreshWarrantInfoForSymbol: (
-    marketDataClient: MarketDataClient,
-    symbol: string,
-    isLongSymbol: boolean,
-    symbolName?: string | null,
-  ) => Promise<WarrantRefreshResult>;
 
   /** 买入订单前风险检查（现金与持仓限制） */
   checkBeforeOrder: (params: {

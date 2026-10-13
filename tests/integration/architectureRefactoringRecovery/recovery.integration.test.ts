@@ -13,36 +13,39 @@ import { createHash } from 'node:crypto';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
 import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
-import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
 import { resolveOrderOwnership } from '../../../src/domain/order/orderOwnership.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createLiquidationCooldownTracker } from '../../../src/services/liquidationCooldown/index.js';
-import { createTradeLogHydrator } from '../../../src/services/liquidationCooldown/tradeLogHydrator.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import { createLiquidationCooldownTracker } from '../../../src/domain/liquidation/cooldown/index.js';
+import { createTradeLogHydrator } from '../../../src/application/protectiveLiquidation/tradeLogHydrator.js';
 import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { withTrustedOrderExecutionTimes } from '../../../src/domain/order/executionFact.js';
 import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
-import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
-import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
-import { createSeatActivationDispatcher } from '../../../src/main/seatActivationDispatcher/index.js';
-import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import { createRiskChecker } from '../../../src/core/riskController/index.js';
-import { createWarrantRiskChecker } from '../../../src/core/riskController/warrantRiskChecker.js';
-import { createPositionLimitChecker } from '../../../src/core/riskController/positionLimitChecker.js';
-import { createUnrealizedLossChecker } from '../../../src/core/riskController/unrealizedLossChecker.js';
+import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
+import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
+import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
+import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../../src/utils/time/index.js';
+import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
+import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createRiskChecker } from '../../../src/domain/risk/index.js';
+import { createWarrantRiskRefresh } from '../../../src/application/riskRefresh/warrantRiskRefresh.js';
+import { createWarrantRiskChecker } from '../../../src/domain/risk/warrantRiskChecker.js';
+import { createPositionLimitChecker } from '../../../src/domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
 import { createTradingConfig, createMonitorConfig } from '../../../mock/factories/configFactory.js';
-import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import { logger } from '../../../src/utils/logger/index.js';
 import { isRecord } from '../../../src/utils/helpers/index.js';
 import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
-import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { OfflineRecoveryFixture } from './types.js';
 import {
+  createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
   createQuoteDouble,
@@ -206,7 +209,7 @@ async function createOfflineRecovery(
     toHongKongTimeIso,
   });
   const episode = createProtectiveLiquidationEpisodeTracker();
-  const cooldownOwner = createLiquidationCooldownTracker({ nowMs: () => now.getTime() });
+  const cooldownOwner = createLiquidationCooldownTracker();
   let liveCooldownTriggers = 0;
   const restoredTriggerCounts: number[] = [];
   const cooldown = {
@@ -297,10 +300,17 @@ async function createOfflineRecovery(
     tradingCalendarSnapshot: new Map(),
     allTradingSymbols: new Set(),
   };
+  const warrantRiskChecker = createWarrantRiskChecker({
+    onInvalidCallPrice: () => {},
+    onWarrantInfoSet: () => {},
+  });
   const risk = createRiskChecker({
-    warrantRiskChecker: createWarrantRiskChecker(),
+    warrantRiskChecker,
     positionLimitChecker: createPositionLimitChecker({ maxPositionNotional: null }),
-    unrealizedLossChecker: createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null }),
+    unrealizedLossChecker: createUnrealizedLossChecker({
+      maxUnrealizedLossPerSymbol: null,
+      onMissingData: () => {},
+    }),
   });
   const context = createMonitorContextDouble({
     config,
@@ -368,17 +378,29 @@ async function createOfflineRecovery(
         return postTrade.completeProtectionRecovery(request);
       },
     },
-    warrantListCacheConfig: {
-      cache: createWarrantListCache(),
-      ttlMs: 60_000,
-      nowMs: () => now.getTime(),
-    },
+    startupSeatSearch: createStartupSeatSearch({
+      monitorSymbol: tradingConfig.monitor.monitorSymbol,
+      symbolRegistry,
+      candidateSearch: createWarrantCandidateSearch({
+        monitorSymbol: tradingConfig.monitor.monitorSymbol,
+        autoSearchConfig: tradingConfig.monitor.autoSearchConfig,
+        marketDataClient: market,
+        logger,
+        getTradingMinutesSinceOpen,
+      }),
+      logger,
+    }),
     seatActivationDispatcher: dispatcher,
     reportFatalError: termination.reportFatalError,
   });
   const rebuild = createRebuildTradingDayState({
     snapshot,
     marketDataClient: market,
+    warrantRiskRefresh: createWarrantRiskRefresh({
+      marketDataClient: market,
+      warrantRiskChecker,
+      logger: createLoggerDouble(),
+    }),
     trader,
     lastState,
     symbolRegistry,
@@ -745,6 +767,7 @@ describe('P2 same-owner loader recovery completion', () => {
         first.cooldown.getRemainingMs({
           direction: 'LONG',
           cooldownConfig: { mode: 'minutes', minutes: 5 },
+          currentTimeMs: Date.parse(fixture.now),
         }),
       ).toBe(0);
       expect(first.getRecoveryProjectionCounts().liveCooldownTriggers).toBe(0);
@@ -763,6 +786,7 @@ describe('P2 same-owner loader recovery completion', () => {
         restarted.cooldown.getRemainingMs({
           direction: 'LONG',
           cooldownConfig: { mode: 'minutes', minutes: 5 },
+          currentTimeMs: Date.parse(fixture.now),
         }),
       ).toBe(0);
 

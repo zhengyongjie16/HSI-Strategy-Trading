@@ -7,9 +7,9 @@ import type { SignalRuntimeDomainDeps } from '../../../../src/main/lifecycle/cac
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createMonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import type { MonitorTaskDataMap } from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
+} from '../../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { createMonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import type { MonitorTaskDataMap } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createLoggerDouble, createMonitorContextDouble } from '../../../helpers/testDoubles.js';
 
 function harness() {

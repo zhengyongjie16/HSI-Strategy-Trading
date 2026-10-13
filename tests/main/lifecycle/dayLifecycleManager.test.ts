@@ -2,11 +2,11 @@ import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { beforeEach, describe, it, expect } from 'bun:test';
 import type { Logger } from '../../../src/utils/logger/types.js';
+import type { LifecycleRuntimeFlags } from '../../../src/types/timeControlPlane.js';
 import type {
   CacheDomain,
   LifecycleContext,
   LifecycleMutableState,
-  LifecycleRuntimeFlags,
   DayLifecycleManagerDeps,
   OpenRebuildContext,
   CacheDomainOpenRebuildResult,
@@ -619,6 +619,12 @@ describe('createDayLifecycleManager', () => {
         symbolRegistry,
         riskChecker: createRiskCheckerDouble({
           setWarrantInfoFromCallPrice: () => ({ status: 'ok', isWarrant: true }),
+        }),
+      });
+      const rebuildTradingDayState = createRebuildTradingDayState({
+        termination,
+        snapshot,
+        warrantRiskRefresh: {
           refreshWarrantInfoForSymbol: async () => {
             warrantRefreshCalls += 1;
             throw await createExternalApiRequestError({
@@ -627,11 +633,7 @@ describe('createDayLifecycleManager', () => {
               cause: new Error('warrant quote api down'),
             });
           },
-        }),
-      });
-      const rebuildTradingDayState = createRebuildTradingDayState({
-        termination,
-        snapshot,
+        },
         marketDataClient: createMarketDataClientDouble({
           getTradingDays: async () => ({
             tradingDays: ['2025-02-15'],

@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import type { PostTradeConsistencyRuntimeBusinessDeps } from '../../../src/app/types.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
 import {

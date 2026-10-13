@@ -2,10 +2,10 @@
 import { expect, test } from 'bun:test';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
-import { createRiskChecker } from '../../src/core/riskController/index.js';
-import { createUnrealizedLossChecker } from '../../src/core/riskController/unrealizedLossChecker.js';
-import { createWarrantRiskChecker } from '../../src/core/riskController/warrantRiskChecker.js';
-import { createPositionLimitChecker } from '../../src/core/riskController/positionLimitChecker.js';
+import { createRiskChecker } from '../../src/domain/risk/index.js';
+import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
+import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
+import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
 import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
 import type { RawOrderFromAPI } from '../../src/types/services.js';
 
@@ -116,9 +116,15 @@ function assertRiskProjection(
   expectedR1: string,
   expectedN1: number,
 ): void {
-  const unrealizedLossChecker = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null });
+  const unrealizedLossChecker = createUnrealizedLossChecker({
+    maxUnrealizedLossPerSymbol: null,
+    onMissingData: () => {},
+  });
   const riskChecker = createRiskChecker({
-    warrantRiskChecker: createWarrantRiskChecker(),
+    warrantRiskChecker: createWarrantRiskChecker({
+      onInvalidCallPrice: () => {},
+      onWarrantInfoSet: () => {},
+    }),
     positionLimitChecker: createPositionLimitChecker({ maxPositionNotional: null }),
     unrealizedLossChecker,
   });

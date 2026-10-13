@@ -11,14 +11,8 @@
  * - 指标缓存相关：计算缓存、时序缓存配置
  * - 信号相关：交易信号类型定义
  */
-import { OrderSide, OrderStatus, OrderType, Period } from 'longbridge';
 import type { OrderTypeConfig, SignalType } from '../types/signal.js';
 import type { MarketWarrantExpiryRange } from '../types/marketPorts.js';
-import type {
-  ValidatedOrderSide,
-  ValidatedOrderStatus,
-  ValidatedOrderType,
-} from '../types/services.js';
 
 /** 时间相关常量 */
 export const TIME = {
@@ -62,7 +56,7 @@ export const HK_DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 /** 交易相关常量 */
 export const TRADING = {
   /** K线周期，用于订阅和获取实时K线数据 */
-  CANDLE_PERIOD: Period.Min_1,
+  CANDLE_PERIOD: 'MIN_1',
 
   /** K线数量，获取的实时K线条数 */
   CANDLE_COUNT: 200,
@@ -188,107 +182,11 @@ export const ORDER_QUOTE_RETRY = {
   MAX_ATTEMPTS: 5,
 } as const;
 
-/** 配置字符串到 OpenAPI 订单类型的映射 */
-export const ORDER_TYPE_CONFIG_TO_OPEN_API: Readonly<Record<OrderTypeConfig, OrderType>> = {
-  LO: OrderType.LO,
-  ELO: OrderType.ELO,
-  MO: OrderType.MO,
-};
-
-/** OpenAPI 订单类型到配置字符串的映射（仅支持 LO/ELO/MO） */
-export const OPEN_API_ORDER_TYPE_TO_CONFIG: Readonly<Partial<Record<OrderType, OrderTypeConfig>>> =
-  {
-    [OrderType.LO]: 'LO',
-    [OrderType.ELO]: 'ELO',
-    [OrderType.MO]: 'MO',
-  };
-
-/** todayOrders 允许进入内部订单模型的明确 OrderSide 成员；Unknown 必须在边界拒绝。 */
-export const VALID_ORDER_SIDE_VALUES: ReadonlySet<ValidatedOrderSide> = new Set([
-  OrderSide.Buy,
-  OrderSide.Sell,
-]);
-
-/** 订单 API 查询结果允许进入已验证内部模型的明确 OrderType 成员；Unknown 必须在边界拒绝。 */
-export const VALID_ORDER_TYPE_VALUES: ReadonlySet<ValidatedOrderType> = new Set([
-  OrderType.LO,
-  OrderType.ELO,
-  OrderType.MO,
-  OrderType.AO,
-  OrderType.ALO,
-  OrderType.ODD,
-  OrderType.LIT,
-  OrderType.MIT,
-  OrderType.TSLPAMT,
-  OrderType.TSLPPCT,
-  OrderType.TSMAMT,
-  OrderType.TSMPCT,
-  OrderType.SLO,
-]);
-
-/** 订单类型显示文本映射 */
-export const ORDER_TYPE_LABEL_MAP: ReadonlyMap<OrderType, string> = new Map([
-  [OrderType.LO, '限价单'],
-  [OrderType.ELO, '增强限价单'],
-  [OrderType.MO, '市价单'],
-  [OrderType.ALO, '竞价限价单'],
-  [OrderType.SLO, '特别限价单'],
-]);
-
-/** 订单类型代码映射 */
-export const ORDER_TYPE_CODE_MAP: ReadonlyMap<OrderType, string> = new Map([
-  [OrderType.LO, 'LO'],
-  [OrderType.ELO, 'ELO'],
-  [OrderType.MO, 'MO'],
-  [OrderType.ALO, 'ALO'],
-  [OrderType.SLO, 'SLO'],
-]);
-
-/** SDK OrderStatus 的单一生命周期真值表；Unknown 不进入表并由分类器 fail-fast。 */
-export const ORDER_STATUS_LIFECYCLE_MAP: ReadonlyMap<ValidatedOrderStatus, 'OPEN' | 'TERMINAL'> =
-  new Map([
-    [OrderStatus.NotReported, 'OPEN'],
-    [OrderStatus.ReplacedNotReported, 'OPEN'],
-    [OrderStatus.ProtectedNotReported, 'OPEN'],
-    [OrderStatus.VarietiesNotReported, 'OPEN'],
-    [OrderStatus.WaitToNew, 'OPEN'],
-    [OrderStatus.New, 'OPEN'],
-    [OrderStatus.WaitToReplace, 'OPEN'],
-    [OrderStatus.PendingReplace, 'OPEN'],
-    [OrderStatus.Replaced, 'OPEN'],
-    [OrderStatus.PartialFilled, 'OPEN'],
-    [OrderStatus.WaitToCancel, 'OPEN'],
-    [OrderStatus.PendingCancel, 'OPEN'],
-    [OrderStatus.Filled, 'TERMINAL'],
-    [OrderStatus.Rejected, 'TERMINAL'],
-    [OrderStatus.Canceled, 'TERMINAL'],
-    [OrderStatus.Expired, 'TERMINAL'],
-    [OrderStatus.PartialWithdrawal, 'TERMINAL'],
-  ]);
-
-/** todayOrders 允许进入内部订单模型的 OrderStatus；从生命周期真值表派生。 */
-export const VALID_ORDER_STATUS_VALUES: ReadonlySet<ValidatedOrderStatus> = new Set(
-  ORDER_STATUS_LIFECYCLE_MAP.keys(),
-);
-
-/** 未成交订单状态集合；从生命周期真值表派生，供策略依赖注入使用。 */
-export const PENDING_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set(
-  [...ORDER_STATUS_LIFECYCLE_MAP.entries()]
-    .filter(([, lifecycle]) => lifecycle === 'OPEN')
-    .map(([status]) => status),
-);
-
-/** 不可改单的订单状态集合（包含改单中与撤单中状态） */
-export const NON_REPLACEABLE_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
-  OrderStatus.WaitToReplace,
-  OrderStatus.PendingReplace,
-  OrderStatus.WaitToCancel,
-  OrderStatus.PendingCancel,
-]);
-
-/** 不可改单的订单类型集合（MO 市价单不支持改单） */
-export const NON_REPLACEABLE_ORDER_TYPES: ReadonlySet<OrderType> = new Set<OrderType>([
-  OrderType.MO,
+/** 配置解析支持的中性订单类型代码；SDK 映射只由 trade adapter 负责。 */
+export const ORDER_TYPE_CONFIG_VALUES: ReadonlySet<string> = new Set<OrderTypeConfig>([
+  'LO',
+  'ELO',
+  'MO',
 ]);
 
 /** 风险检查相关常量（牛熊证） */

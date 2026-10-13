@@ -19,11 +19,9 @@
  * - 程序启动时的首次初始化
  * - 开盘重建流程中由 globalStateDomain 调用
  */
-import { TradeSessions } from 'longbridge';
 import { TRADING } from '../../constants/index.js';
 import {
   getHKDateKey,
-  getTradingMinutesSinceOpen,
   isInContinuousHKSession,
   isWithinMorningOpenWindow,
 } from '../../utils/time/index.js';
@@ -35,7 +33,7 @@ import { exactCompare, safeQuantityNumber } from '../../utils/numeric/exact.js';
 import { withTrustedOrderExecutionTimes } from '../../domain/order/executionFact.js';
 import type { OrderExecutionTimeEvidence } from '../../types/orderRecorder.js';
 import { resolveOrderOwnership } from '../../domain/order/orderOwnership.js';
-import { hasProtectiveLiquidationRemark } from '../../core/trader/utils.js';
+import { hasProtectiveLiquidationRemark } from '../../domain/order/orderRemark.js';
 import { decimalGt } from '../../utils/numeric/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
@@ -43,12 +41,12 @@ import type {
   LoadTradingDayRuntimeSnapshotResult,
   TradingDayRuntimeInvalidationResult,
 } from './types.js';
-import type { ProtectiveLiquidationDirection } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
+import type { ProtectiveLiquidationDirection } from '../../domain/liquidation/episode/types.js';
 import type { RawOrderFromAPI } from '../../types/services.js';
 import type {
   ProtectiveLiquidationCompletionRecordV1,
   ProtectiveLiquidationExecutionProgressRecordV1,
-} from '../../services/mixedTradeLogRepository/types.js';
+} from '../../types/tradeLog.js';
 
 /** OPEN 必须先于 TERMINAL 恢复，终态才能覆盖同 identity 的开放态观察。 */
 function compareFactStage(left: 'OPEN' | 'TERMINAL', right: 'OPEN' | 'TERMINAL'): number {
@@ -208,7 +206,7 @@ function assertSameRevisionTerminalAmountHasDurableEvidence(
  * 创建交易日运行时快照加载函数（工厂）。
  * 注入依赖后返回 loadTradingDayRuntimeSnapshot，用于启动初始化与开盘重建时加载账户、持仓、订单、席位与行情快照。
  *
- * @param deps 依赖注入（marketDataClient、trader、lastState、tradingConfig、symbolRegistry、dailyLossTracker、tradeLogHydrator、warrantListCacheConfig、reportFatalError）
+ * @param deps 依赖注入（marketDataClient、trader、lastState、tradingConfig、symbolRegistry、dailyLossTracker、tradeLogHydrator、reportFatalError）
  * @returns 接收 LoadTradingDayRuntimeSnapshotParams 的异步函数，返回全量订单与行情快照供重建使用
  */
 export function createLoadTradingDayRuntimeSnapshot(
@@ -225,7 +223,7 @@ export function createLoadTradingDayRuntimeSnapshot(
     tradeLogHydrator,
     mixedTradeLogRepository,
     protectionRecovery,
-    warrantListCacheConfig,
+    startupSeatSearch,
     seatActivationDispatcher,
     snapshot,
   } = deps;
@@ -431,10 +429,9 @@ export function createLoadTradingDayRuntimeSnapshot(
       symbolRegistry,
       positions: canonicalView.positions,
       orders: allOrders,
-      marketDataClient,
+      startupSeatSearch,
+      canContinue: () => resolveReceiptInvalidation() === null,
       now: () => now,
-      logger,
-      getTradingMinutesSinceOpen,
       resolveCanAutoSearchNow: ({ currentTime, openDelayMinutes }) => {
         const tradingDayInfo = lastState.cachedTradingDayInfo?.info ?? null;
         if (tradingDayInfo?.isTradingDay !== true) {
@@ -447,7 +444,6 @@ export function createLoadTradingDayRuntimeSnapshot(
 
         return !isWithinMorningOpenWindow(currentTime, openDelayMinutes);
       },
-      warrantListCacheConfig,
     });
     invalidation = resolveReceiptInvalidation();
     if (invalidation !== null) return invalidation;
@@ -688,7 +684,7 @@ export function createLoadTradingDayRuntimeSnapshot(
     await marketDataClient.subscribeCandlesticks(
       tradingConfig.monitor.monitorSymbol,
       TRADING.CANDLE_PERIOD,
-      TradeSessions.Intraday,
+      'INTRADAY',
     );
     invalidation = resolveReceiptInvalidation();
     if (invalidation !== null) return invalidation;

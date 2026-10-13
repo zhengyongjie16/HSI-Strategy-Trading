@@ -3,28 +3,20 @@ import type { AccountPositionSnapshot, SnapshotToken } from '../../types/account
 import type { Logger } from '../../utils/logger/types.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import type { SettlementProtectionRecovery } from '../../types/settlement.js';
-import type { TradeLogHydrator } from '../../services/liquidationCooldown/types.js';
-import type { MixedTradeLogRepository } from '../../services/mixedTradeLogRepository/types.js';
-import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/types.js';
+import type { TradeLogHydrator } from '../../application/protectiveLiquidation/types.js';
+import type { MixedTradeLogRepository } from '../../types/tradeLog.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { LifecycleState, SymbolRegistry } from '../../types/seat.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
-import type { MarketDataClient, RawOrderFromAPI, Trader } from '../../types/services.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
-import type { SeatActivationDispatcher } from '../seatActivationDispatcher/types.js';
+import type { RawOrderFromAPI, Trader } from '../../types/services.js';
+import type { MarketDataClient } from '../../types/marketPorts.js';
+import type { WarrantRiskRefresh } from '../../application/riskRefresh/types.js';
+import type { StartupSeatSearch } from '../../application/autoSearch/types.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/types.js';
+import type { SeatActivationDispatcher } from '../../runtime/seatActivationDispatcher/types.js';
 
-/**
- * 单次生命周期推进传入的运行时标志。
- * 类型用途：供 DayLifecycleManager.tick 使用，表示当日键、是否可交易、是否交易日等；isTradingDay 为 null 表示交易日状态未知；管理器只读不写。
- * 数据来源：由时间唤醒评估根据当前时间与交易日历等计算后传入 tick(now, runtime)。
- * 使用范围：仅 lifecycle 模块及时间唤醒评估调用 tick 处使用，内部使用。
- */
-export type LifecycleRuntimeFlags = Readonly<{
-  dayKey: string | null;
-  canTradeNow: boolean;
-  isTradingDay: boolean | null;
-}>;
+import type { LifecycleRuntimeFlags } from '../../types/timeControlPlane.js';
 
 /**
  * 生命周期管理器持有的可变状态。
@@ -83,27 +75,6 @@ export interface CacheDomain {
 }
 
 /**
- * 单次生命周期 tick 后暴露给时间评估器的重试与等待状态。
- * 类型用途：表达生命周期内部下一次重试时间与是否仍等待开盘重建，供时间唤醒评估器规划后续唤醒。
- * 数据来源：由 DayLifecycleManager.tick 根据内部午夜清理与开盘重建重试状态生成。
- * 使用范围：仅生命周期管理器与时间唤醒评估链路使用。
- */
-export type DayLifecycleTickResult = Readonly<{
-  nextRetryAtMs: number | null;
-  pendingOpenRebuild: boolean;
-}>;
-
-/**
- * 交易日生命周期管理器接口。
- * 类型用途：对外暴露 tick 方法，供时间唤醒评估器驱动；内部根据 dayKey 与状态执行午夜清理与开盘重建。
- * 数据来源：由 createDayLifecycleManager(DayLifecycleManagerDeps) 返回。
- * 使用范围：仅时间驱动/时间唤醒主程序调用。
- */
-export interface DayLifecycleManager {
-  readonly tick: (now: Date, runtime: LifecycleRuntimeFlags) => Promise<DayLifecycleTickResult>;
-}
-
-/**
  * 交易日生命周期管理器依赖（创建 DayLifecycleManager 时的参数）。
  * 类型用途：createDayLifecycleManager 的依赖注入，包含可变状态、缓存域列表、日志与重试间隔等。
  * 数据来源：由主程序/启动流程组装并传入工厂。
@@ -130,6 +101,7 @@ export type DayLifecycleManagerDeps = Readonly<{
 export type RebuildTradingDayStateDeps = Readonly<{
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   marketDataClient: MarketDataClient;
+  warrantRiskRefresh: WarrantRiskRefresh;
   trader: Trader;
   snapshot: AccountPositionSnapshot;
   lastState: LastState;
@@ -219,7 +191,7 @@ export type LoadTradingDayRuntimeSnapshotDeps = Readonly<{
   tradeLogHydrator: TradeLogHydrator;
   mixedTradeLogRepository: MixedTradeLogRepository;
   protectionRecovery: SettlementProtectionRecovery;
-  warrantListCacheConfig: WarrantListCacheConfig;
+  startupSeatSearch: StartupSeatSearch;
   seatActivationDispatcher: Pick<SeatActivationDispatcher, 'dispatchCurrentActivatingSeats'>;
   reportFatalError: (error: unknown) => void;
 }>;

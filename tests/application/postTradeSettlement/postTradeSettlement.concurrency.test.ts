@@ -4,7 +4,7 @@ import { API } from '../../../src/constants/index.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
 import type { SnapshotToken } from '../../../src/types/accountPosition.js';
 import {

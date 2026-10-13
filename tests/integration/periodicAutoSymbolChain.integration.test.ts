@@ -4,25 +4,27 @@
  * 功能：
  * - 验证周期换标的任务链路：任务调度 -> 任务处理器 -> 自动换标管理器状态机。
  */
+import { createPeriodicSwitchTaskHandler } from '../../src/application/seatSwitch/periodicSwitchTask.js';
+
 import { describe, expect, it } from 'bun:test';
 
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
 import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import type { PeriodicSwitchTaskData } from '../../src/types/periodicSwitch.js';
-import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
-import { createPeriodicSwitchWakeupRuntime } from '../../src/main/periodicSwitchWakeupRuntime/index.js';
+import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
+import { createPeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/index.js';
 import { calculateTradingDurationDueAtMs } from '../../src/utils/time/index.js';
-import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
-import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
+import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createMonitorTaskProcessor } from '../../src/runtime/asyncProgram/monitorTaskProcessor/index.js';
+import { createSwitchWakeupRuntime } from '../../src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
 
 import type { LastState, MonitorContext } from '../../src/types/state.js';
-import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { SwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/types.js';
+import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { SwitchWakeupRuntime } from '../../src/runtime/monitorQuoteEventRuntime/types.js';
 
 import {
   createTerminationDouble,
@@ -40,7 +42,7 @@ import {
   createQuoteSubscriptionRuntimeDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
-import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
+import { createWarrantCandidateWithOverrides, createLoggerStub } from '../helpers/seatTestUtils.js';
 
 function createTradingGateEventRuntime() {
   return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
@@ -225,14 +227,21 @@ describe('periodic auto-symbol full chain integration', () => {
         }),
     });
 
-    const autoSymbolManager = createAutoSymbolManager({
+    const seatSwitch = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
       trader,
       orderRecorder,
       riskChecker,
-      findBestWarrant: async () => candidateQueue.shift() ?? null,
+      candidateSearch: {
+        resolveDistanceRange: (direction) =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () => candidateQueue.shift() ?? null,
+      },
       clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
@@ -249,17 +258,20 @@ describe('periodic auto-symbol full chain integration', () => {
     if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
 
     dailyLossTracker.publishRecalculation(preparedDaily);
-    const monitorContext = createMonitorContextDouble({
-      config: monitorConfig,
-      symbolRegistry,
-      autoSymbolManager,
-      orderRecorder,
-      dailyLossTracker,
-      riskChecker,
-      longSymbolName: 'OLD_BULL.HK',
-      shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
-    });
+    const monitorContext = {
+      ...createMonitorContextDouble({
+        config: monitorConfig,
+        symbolRegistry,
+
+        orderRecorder,
+        dailyLossTracker,
+        riskChecker,
+        longSymbolName: 'OLD_BULL.HK',
+        shortSymbolName: '',
+        monitorSymbolName: 'HSI.HK',
+      }),
+      seatSwitch: seatSwitch,
+    };
     const lastState = createLastState();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
@@ -354,17 +366,26 @@ describe('periodic auto-symbol full chain integration', () => {
         if (index !== -1) dueCallbacks.splice(index, 1);
       },
     });
-    const processor = createMonitorTaskProcessor({
-      ...MONITOR_TASK_RUNTIME,
-      monitorTaskQueue,
+    const periodicHandler = createPeriodicSwitchTaskHandler({
       monitorContext,
-      trader,
-      marketDataClient: createMarketDataClientDouble(),
-      quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
       getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      logger: createLoggerStub(),
+      now: () => new Date(currentNowMs),
+    });
+    const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
+      monitorTaskQueue,
+      ...periodicHandler,
+      seatActivation: {
+        activate: async () => {
+          throw new Error('周期链不消费激活任务');
+        },
+        isCurrent: () => false,
+      },
+      logger: createLoggerStub(),
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
@@ -383,7 +404,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(seatAfterPeriodicMiss.symbol).toBeNull();
       expect(seatAfterPeriodicMiss.searchFailCountToday).toBe(1);
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
-      expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
+      expect(seatSwitch.hasPendingSwitch('LONG')).toBeFalse();
 
       processor.restart();
       currentNowMs += 600_000;
@@ -399,7 +420,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(seatAfterAutoSearch.status).toBe('EMPTY');
       expect(seatAfterAutoSearch.symbol).toBeNull();
       expect(seatAfterAutoSearch.searchFailCountToday).toBe(1);
-      expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
+      expect(seatSwitch.hasPendingSwitch('LONG')).toBeFalse();
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();
@@ -476,14 +497,21 @@ describe('periodic auto-symbol full chain integration', () => {
         }),
     });
 
-    const autoSymbolManager = createAutoSymbolManager({
+    const seatSwitch = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
       trader,
       orderRecorder,
       riskChecker,
-      findBestWarrant: async () => candidateQueue.shift() ?? null,
+      candidateSearch: {
+        resolveDistanceRange: (direction) =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () => candidateQueue.shift() ?? null,
+      },
       clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
@@ -500,17 +528,20 @@ describe('periodic auto-symbol full chain integration', () => {
     if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
 
     dailyLossTracker.publishRecalculation(preparedDaily);
-    const monitorContext = createMonitorContextDouble({
-      config: monitorConfig,
-      symbolRegistry,
-      autoSymbolManager,
-      orderRecorder,
-      dailyLossTracker,
-      riskChecker,
-      longSymbolName: 'OLD_BULL.HK',
-      shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
-    });
+    const monitorContext = {
+      ...createMonitorContextDouble({
+        config: monitorConfig,
+        symbolRegistry,
+
+        orderRecorder,
+        dailyLossTracker,
+        riskChecker,
+        longSymbolName: 'OLD_BULL.HK',
+        shortSymbolName: '',
+        monitorSymbolName: 'HSI.HK',
+      }),
+      seatSwitch: seatSwitch,
+    };
     const lastState = createLastState();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
@@ -605,17 +636,26 @@ describe('periodic auto-symbol full chain integration', () => {
         if (index !== -1) dueCallbacks.splice(index, 1);
       },
     });
-    const processor = createMonitorTaskProcessor({
-      ...MONITOR_TASK_RUNTIME,
-      monitorTaskQueue,
+    const periodicHandler = createPeriodicSwitchTaskHandler({
       monitorContext,
-      trader,
-      marketDataClient: createMarketDataClientDouble(),
-      quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
       getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      logger: createLoggerStub(),
+      now: () => new Date(currentNowMs),
+    });
+    const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
+      monitorTaskQueue,
+      ...periodicHandler,
+      seatActivation: {
+        activate: async () => {
+          throw new Error('周期链不消费激活任务');
+        },
+        isCurrent: () => false,
+      },
+      logger: createLoggerStub(),
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
@@ -632,7 +672,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
-      expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
+      expect(seatSwitch.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
       await switchWakeupRuntime.stopAndDrain();
@@ -708,14 +748,21 @@ describe('periodic auto-symbol full chain integration', () => {
         }),
     });
 
-    const autoSymbolManager = createAutoSymbolManager({
+    const seatSwitch = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
       trader,
       orderRecorder,
       riskChecker,
-      findBestWarrant: async () => candidateQueue.shift() ?? null,
+      candidateSearch: {
+        resolveDistanceRange: (direction) =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () => candidateQueue.shift() ?? null,
+      },
       clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
@@ -732,17 +779,20 @@ describe('periodic auto-symbol full chain integration', () => {
     if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
 
     dailyLossTracker.publishRecalculation(preparedDaily);
-    const monitorContext = createMonitorContextDouble({
-      config: monitorConfig,
-      symbolRegistry,
-      autoSymbolManager,
-      orderRecorder,
-      dailyLossTracker,
-      riskChecker,
-      longSymbolName: 'OLD_BULL.HK',
-      shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
-    });
+    const monitorContext = {
+      ...createMonitorContextDouble({
+        config: monitorConfig,
+        symbolRegistry,
+
+        orderRecorder,
+        dailyLossTracker,
+        riskChecker,
+        longSymbolName: 'OLD_BULL.HK',
+        shortSymbolName: '',
+        monitorSymbolName: 'HSI.HK',
+      }),
+      seatSwitch: seatSwitch,
+    };
     const lastState = createLastState();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
@@ -837,17 +887,26 @@ describe('periodic auto-symbol full chain integration', () => {
         if (index !== -1) dueCallbacks.splice(index, 1);
       },
     });
-    const processor = createMonitorTaskProcessor({
-      ...MONITOR_TASK_RUNTIME,
-      monitorTaskQueue,
+    const periodicHandler = createPeriodicSwitchTaskHandler({
       monitorContext,
-      trader,
-      marketDataClient: createMarketDataClientDouble(),
-      quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
       getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      logger: createLoggerStub(),
+      now: () => new Date(currentNowMs),
+    });
+    const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
+      monitorTaskQueue,
+      ...periodicHandler,
+      seatActivation: {
+        activate: async () => {
+          throw new Error('周期链不消费激活任务');
+        },
+        isCurrent: () => false,
+      },
+      logger: createLoggerStub(),
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
@@ -864,7 +923,7 @@ describe('periodic auto-symbol full chain integration', () => {
       expect(seat.status).toBe('ACTIVE');
       expect(seat.symbol).toBe('OLD_BULL.HK');
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
-      expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
+      expect(seatSwitch.hasPendingSwitch('LONG')).toBeFalse();
     } finally {
       await processor.stopAndDrain();
       await switchWakeupRuntime.stopAndDrain();
@@ -940,14 +999,21 @@ describe('periodic auto-symbol full chain integration', () => {
         }),
     });
 
-    const autoSymbolManager = createAutoSymbolManager({
+    const seatSwitch = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
       trader,
       orderRecorder,
       riskChecker,
-      findBestWarrant: async () => candidateQueue.shift() ?? null,
+      candidateSearch: {
+        resolveDistanceRange: (direction) =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () => candidateQueue.shift() ?? null,
+      },
       clock: { now: () => new Date(currentNowMs) },
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
@@ -964,17 +1030,20 @@ describe('periodic auto-symbol full chain integration', () => {
     if (!preparedDaily.isCurrent()) throw new Error('original Daily preparation must be current');
 
     dailyLossTracker.publishRecalculation(preparedDaily);
-    const monitorContext = createMonitorContextDouble({
-      config: monitorConfig,
-      symbolRegistry,
-      autoSymbolManager,
-      orderRecorder,
-      dailyLossTracker,
-      riskChecker,
-      longSymbolName: 'OLD_BULL.HK',
-      shortSymbolName: '',
-      monitorSymbolName: 'HSI.HK',
-    });
+    const monitorContext = {
+      ...createMonitorContextDouble({
+        config: monitorConfig,
+        symbolRegistry,
+
+        orderRecorder,
+        dailyLossTracker,
+        riskChecker,
+        longSymbolName: 'OLD_BULL.HK',
+        shortSymbolName: '',
+        monitorSymbolName: 'HSI.HK',
+      }),
+      seatSwitch: seatSwitch,
+    };
     const lastState = createLastState();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
@@ -1069,17 +1138,26 @@ describe('periodic auto-symbol full chain integration', () => {
         if (index !== -1) dueCallbacks.splice(index, 1);
       },
     });
-    const processor = createMonitorTaskProcessor({
-      ...MONITOR_TASK_RUNTIME,
-      monitorTaskQueue,
+    const periodicHandler = createPeriodicSwitchTaskHandler({
       monitorContext,
-      trader,
-      marketDataClient: createMarketDataClientDouble(),
-      quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
       getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      logger: createLoggerStub(),
+      now: () => new Date(currentNowMs),
+    });
+    const processor = createMonitorTaskProcessor({
+      ...MONITOR_TASK_RUNTIME,
+      monitorTaskQueue,
+      ...periodicHandler,
+      seatActivation: {
+        activate: async () => {
+          throw new Error('周期链不消费激活任务');
+        },
+        isCurrent: () => false,
+      },
+      logger: createLoggerStub(),
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
 
@@ -1093,7 +1171,7 @@ describe('periodic auto-symbol full chain integration', () => {
       await waitUntil(() => monitorTaskQueue.isEmpty());
       await processor.stopAndDrain();
       expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVE');
-      expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
+      expect(seatSwitch.hasPendingSwitch('LONG')).toBeFalse();
 
       processor.restart();
       currentNowMs += 60_000; // Day2 09:31 HK
@@ -1109,7 +1187,7 @@ describe('periodic auto-symbol full chain integration', () => {
       const switchingSeat = symbolRegistry.getSeatState('LONG');
       expect(switchingSeat.status).toBe('ACTIVATING');
       expect(switchingSeat.symbol).toBe('NEW_BULL.HK');
-      expect(autoSymbolManager.hasPendingSwitch('LONG')).toBeFalse();
+      expect(seatSwitch.hasPendingSwitch('LONG')).toBeFalse();
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(2);
     } finally {
       await processor.stopAndDrain();

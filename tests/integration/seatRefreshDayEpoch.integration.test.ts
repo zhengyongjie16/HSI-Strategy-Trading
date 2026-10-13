@@ -5,12 +5,12 @@
 import { describe, expect, it, spyOn } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import { createSeatActivationDispatcher } from '../../src/main/seatActivationDispatcher/index.js';
-import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
+import { createSeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/index.js';
+import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
-import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { RuntimeScheduler } from '../../src/types/runtime.js';
 import {
   createAccountSnapshotDouble,

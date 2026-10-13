@@ -11,17 +11,14 @@ import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
 import { isOpenOrderReadStatus } from './orderReadLifecycle.js';
 import type { RawOrderFromAPI } from '../../../types/services.js';
+import type { TrackOrderParams } from '../../../domain/order/types.js';
 import { resolveOrderOwnership } from '../../../domain/order/orderOwnership.js';
 import { isSeatActive } from '../../../utils/seat/guards.js';
-import type {
-  OrderSeatOwnership,
-  RecoverySnapshotReconciliationParams,
-  TrackOrderParams,
-} from '../types.js';
+import type { OrderSeatOwnership, RecoverySnapshotReconciliationParams } from '../types.js';
 import type { RecoveryFlow, RecoveryFlowDeps } from './types.js';
 import { acknowledgeQueriedTerminalState, peekQueriedTerminalState } from './orderOps.js';
 import { resolveSubmittedAtMs, resolveUpdatedAtMs } from './utils.js';
-import { hasProtectiveLiquidationRemark } from '../utils.js';
+import { hasProtectiveLiquidationRemark } from '../../../domain/order/orderRemark.js';
 import { resetRoutingIndex } from './routingIndex.js';
 import {
   assertExecutionQuantityWithinSubmittedQuantity,

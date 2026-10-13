@@ -6,7 +6,7 @@ import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/crea
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import type { Trader } from '../../../src/types/services.js';
 import { getRequiredHKDateKey, toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';

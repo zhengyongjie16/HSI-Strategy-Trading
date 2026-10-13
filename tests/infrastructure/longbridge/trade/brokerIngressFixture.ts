@@ -32,16 +32,11 @@ import {
 import type { BrokerOrderSdkFields } from '../../../../src/infrastructure/longbridge/trade/types.js';
 import type { OrderExecutionLedgerPort } from '../../../../src/types/orderExecutionLedger.js';
 import {
-  VALID_ORDER_SIDE_VALUES,
-  VALID_ORDER_STATUS_VALUES,
-  VALID_ORDER_TYPE_VALUES,
-} from '../../../../src/constants/index.js';
-import type {
-  RawOrderFromAPI,
-  ValidatedOrderSide,
-  ValidatedOrderStatus,
-  ValidatedOrderType,
-} from '../../../../src/types/services.js';
+  isValidatedOrderSide,
+  isValidatedOrderStatus,
+  isValidatedOrderType,
+} from '../../../../src/infrastructure/longbridge/trade/orderValidation.js';
+import type { RawOrderFromAPI } from '../../../../src/types/services.js';
 import { isRecord } from '../../../../src/utils/helpers/index.js';
 import { canonicalDecimal, safeQuantityNumber } from '../../../../src/utils/numeric/exact.js';
 
@@ -62,19 +57,6 @@ function frozenV1Date(value: Record<string, unknown>, key: string): Date {
     throw new TypeError('[BrokerIngressFixture] frozen V1 invalid date: ' + key);
 
   return date;
-}
-
-/** SDK整数metadata只能在私有producer通过原批准集合收窄。 */
-function isFrozenV1Side(value: unknown): value is ValidatedOrderSide {
-  return typeof value === 'number' && VALID_ORDER_SIDE_VALUES.has(value);
-}
-
-function isFrozenV1Status(value: unknown): value is ValidatedOrderStatus {
-  return typeof value === 'number' && VALID_ORDER_STATUS_VALUES.has(value);
-}
-
-function isFrozenV1Type(value: unknown): value is ValidatedOrderType {
-  return typeof value === 'number' && VALID_ORDER_TYPE_VALUES.has(value);
 }
 
 /** SDK订阅参数只在私有边界解码，不向caller泄漏enum。 */
@@ -534,7 +516,11 @@ export async function createBrokerIngressFixture(
       const side = value['side'];
       const status = value['status'];
       const orderType = value['orderType'];
-      if (!isFrozenV1Side(side) || !isFrozenV1Status(status) || !isFrozenV1Type(orderType))
+      if (
+        !isValidatedOrderSide(side) ||
+        !isValidatedOrderStatus(status) ||
+        !isValidatedOrderType(orderType)
+      )
         throw new TypeError('[BrokerIngressFixture] frozen V1 invalid SDK metadata');
 
       const quantity = frozenV1Text(value, 'quantity');

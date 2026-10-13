@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'bun:test';
-import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import type { PersistableTradeRecord } from '../../../src/types/trader.js';
 
 const TRADING_DAY = '2026-01-21';

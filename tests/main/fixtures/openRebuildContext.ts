@@ -2,10 +2,8 @@ import { createEmptySnapshotFixture } from './accountPositionSnapshot.js';
 import { createAccountSnapshotDouble } from '../../helpers/testDoubles.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 import type { RuntimeTermination } from '../../../src/types/runtime.js';
-import type {
-  LifecycleRuntimeFlags,
-  OpenRebuildContext,
-} from '../../../src/main/lifecycle/types.js';
+import type { OpenRebuildContext } from '../../../src/main/lifecycle/types.js';
+import type { LifecycleRuntimeFlags } from '../../../src/types/timeControlPlane.js';
 
 /** Issue actual paired H evidence before a unit domain's open stage, retaining its original owner. */
 export async function createOpenRebuildContextFixture(

@@ -34,6 +34,14 @@ function moduleReferences(file: string, source: string): ReadonlyArray<string> {
     }
 
     if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    ) {
+      references.push(node.argument.literal.text);
+    }
+
+    if (
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
         (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
@@ -55,14 +63,40 @@ function moduleReferences(file: string, source: string): ReadonlyArray<string> {
 }
 
 function privateStrategyOwner(file: string): string | null {
-  const prefix = 'src/core/strategy/';
-  if (!file.startsWith(prefix)) return null;
+  for (const prefix of [
+    'src/domain/strategy/',
+    'src/runtime/strategy/',
+    'src/config/strategy/',
+    'src/app/startup/strategyDefinitions/',
+  ]) {
+    if (!file.startsWith(prefix)) continue;
 
-  const tail = file.slice(prefix.length);
-  return tail.includes('/') ? (tail.split('/')[0] ?? null) : null;
+    const tail = file.slice(prefix.length);
+    return tail.includes('/') ? (tail.split('/')[0] ?? null) : null;
+  }
+
+  return null;
 }
 
 describe('single active strategy architecture', () => {
+  it('identifies same-strategy ownership across four roots without granting host access', () => {
+    for (const prefix of [
+      'src/domain/strategy/',
+      'src/runtime/strategy/',
+      'src/config/strategy/',
+      'src/app/startup/strategyDefinitions/',
+    ]) {
+      expect(privateStrategyOwner(prefix + 'intradayRegression/index.ts')).toBe(
+        'intradayRegression',
+      );
+      expect(privateStrategyOwner(prefix + 'otherStrategy/index.ts')).toBe('otherStrategy');
+      expect(privateStrategyOwner(prefix + 'utils.ts')).toBeNull();
+    }
+
+    expect(privateStrategyOwner('src/app/runApp.ts')).toBeNull();
+    expect(privateStrategyOwner('src/types/strategy.ts')).toBeNull();
+  });
+
   it('isolates every private strategy from host, public modules and other strategies', async () => {
     const violations: string[] = [];
     for (const file of await listSources('src')) {
@@ -77,18 +111,31 @@ describe('single active strategy architecture', () => {
   });
 
   it('removes the old physical directory and source import edges', async () => {
-    const oldRoot = ['src', 'services', 'indicators'].join('/');
+    const oldRoots = [
+      ['src', 'services', 'indicators'].join('/'),
+      ['src', 'core', 'strategy'].join('/'),
+    ] as const;
     expect(
-      await access(oldRoot).then(
+      await access(oldRoots[0]).then(
         () => true,
         () => false,
       ),
     ).toBe(false);
+
+    // P3 删除旧实现与引用；未入版本的空目录由 P6 物理清理，不代表仍有旧业务 owner。
+    if (
+      await access(oldRoots[1]).then(
+        () => true,
+        () => false,
+      )
+    )
+      expect(await listSources(oldRoots[1])).toEqual([]);
+
     const violations: string[] = [];
     for (const root of ['src', 'tools', 'tests', 'mock']) {
       for (const file of await listSources(root)) {
         for (const target of moduleReferences(file, await readFile(file, 'utf8'))) {
-          if (target === oldRoot || target.startsWith(oldRoot + '/'))
+          if (oldRoots.some((oldRoot) => target === oldRoot || target.startsWith(oldRoot + '/')))
             violations.push(file + ' -> ' + target);
         }
       }
@@ -106,17 +153,24 @@ describe('single active strategy architecture', () => {
       ),
     ).toEqual([]);
 
-    expect(
-      moduleReferences('tools/probe.ts', 'import type { Probe } from "' + target + '";'),
-    ).toEqual([path.posix.normalize(path.posix.join('tools', target)).replace(/\.js$/, '.ts')]);
+    for (const source of [
+      'import type { Probe } from "' + target + '";',
+      'type Probe = import("' + target + '").Probe;',
+      'export { probe } from "' + target + '";',
+      'const probe = import("' + target + '");',
+      'const probe = require("' + target + '");',
+    ])
+      expect(moduleReferences('tools/probe.ts', source)).toEqual([
+        path.posix.normalize(path.posix.join('tools', target)).replace(/\.js$/, '.ts'),
+      ]);
   });
 
   it('keeps actual analysis consumers on direct private mathematical leaves and types', async () => {
-    const runtime = 'src/core/strategy/intradayRegression/runtime/';
+    const indicators = 'src/domain/strategy/intradayRegression/indicators/';
     for (const [file, expected] of [
       [
         'tools/dailyIndicatorAnalysis/indicatorCalculators.ts',
-        ['ema', 'kdj', 'mfi', 'rsi', 'utils', 'types'],
+        ['ema', 'kdj', 'mfi', 'rsi', 'indicatorMath', 'types'],
       ],
       ['tools/dailyIndicatorAnalysis/types.ts', ['types']],
     ] as const) {
@@ -127,15 +181,17 @@ describe('single active strategy architecture', () => {
           .sort((left, right) => left.localeCompare(right)),
       ).toEqual(
         expected
-          .map((name) => runtime + name + '.ts')
+          .map((name) => indicators + name + '.ts')
           .sort((left, right) => left.localeCompare(right)),
       );
     }
   });
 
   it('keeps leaf evaluation declaration-only across runtime imports without executing SDK', async () => {
-    const runtime = 'src/core/strategy/intradayRegression/runtime/';
-    const leaves = ['ema', 'kdj', 'mfi', 'rsi', 'utils'].map((name) => runtime + name + '.ts');
+    const indicators = 'src/domain/strategy/intradayRegression/indicators/';
+    const leaves = ['ema', 'kdj', 'mfi', 'rsi', 'indicatorMath'].map(
+      (name) => indicators + name + '.ts',
+    );
     const pending = [...leaves];
     const visited = new Set<string>();
     const violations: string[] = [];
@@ -217,6 +273,41 @@ describe('single active strategy architecture', () => {
     expect(loader).toContain('strategyIdToDirectoryName');
     expect(loader).toContain('inspectStrategyLocation');
     expect(loader).toContain('prepareStrategyDefinition');
+
+    const ast = ts.createSourceFile('prepareStrategy.ts', loader, ts.ScriptTarget.Latest, true);
+    const owner = ast.statements.find(
+      (statement) =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'prepareStrategy',
+    );
+    if (owner === undefined || !ts.isFunctionDeclaration(owner) || owner.body === undefined)
+      throw new Error('Missing actual selected-strategy preparation owner');
+
+    const preparedLocation = owner.body.statements
+      .filter(ts.isVariableStatement)
+      .flatMap((statement) => statement.declarationList.declarations)
+      .find(
+        (declaration) =>
+          declaration.initializer !== undefined &&
+          ts.isAwaitExpression(declaration.initializer) &&
+          ts.isCallExpression(declaration.initializer.expression) &&
+          declaration.initializer.expression.expression.getText(ast) === 'inspectStrategyLocation',
+      );
+    if (preparedLocation === undefined || !ts.isIdentifier(preparedLocation.name))
+      throw new Error('Selected loader must consume its validated local location');
+
+    const definitionImports: ts.CallExpression[] = [];
+    function collect(node: ts.Node): void {
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'importStrategyDefinition')
+        definitionImports.push(node);
+
+      ts.forEachChild(node, collect);
+    }
+    collect(owner.body);
+    expect(definitionImports).toHaveLength(1);
+    expect(definitionImports[0]?.arguments[0]?.getText(ast)).toBe(preparedLocation.name.text);
+    expect(definitionImports[0]?.arguments[1]?.getText(ast)).toBe(
+      owner.parameters[1]?.name.getText(ast),
+    );
   });
 
   it('removes old owners, registries and opaque conversion chains rather than retaining adapters', async () => {

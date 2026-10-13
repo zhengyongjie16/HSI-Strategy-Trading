@@ -18,18 +18,23 @@ async function fixture(extension: '.ts' | '.js' = '.ts') {
   const root = await mkdtemp(nodePath.join(tmpdir(), 'strategy loader 空格 '));
   roots.push(root);
   const source = extension === '.ts' ? 'src' : 'dist/src';
-  const strategyRoot = nodePath.join(root, source, 'core/strategy');
+  const strategyRoot = nodePath.join(root, source, 'app/startup/strategyDefinitions');
+  const configRoot = nodePath.join(root, source, 'config/strategy');
+  const selectedConfig = nodePath.join(configRoot, 'firstStrategy');
+  const otherConfig = nodePath.join(configRoot, 'brokenOther');
   const selected = nodePath.join(strategyRoot, 'firstStrategy');
   const other = nodePath.join(strategyRoot, 'brokenOther');
   await mkdir(selected, { recursive: true });
   await mkdir(other, { recursive: true });
+  await mkdir(selectedConfig, { recursive: true });
+  await mkdir(otherConfig, { recursive: true });
   await writeFile(nodePath.join(selected, `definition${extension}`), 'fixture entry');
-  await writeFile(nodePath.join(selected, 'config.json'), '{ "value": 1 }\r\n');
+  await writeFile(nodePath.join(selectedConfig, 'config.json'), '{ "value": 1 }\r\n');
   await writeFile(
     nodePath.join(other, `definition${extension}`),
     'throw new Error("unselected evaluated")',
   );
-  await writeFile(nodePath.join(other, 'config.json'), 'broken JSON');
+  await writeFile(nodePath.join(otherConfig, 'config.json'), 'broken JSON');
   const calls: string[] = [];
   const prepared = {
     create: () => {
@@ -62,7 +67,19 @@ async function fixture(extension: '.ts' | '.js' = '.ts') {
       return { strategyDefinition: definition };
     },
   };
-  return { root, strategyRoot, selected, other, definition, prepared, deps, calls };
+  return {
+    root,
+    strategyRoot,
+    configRoot,
+    selected,
+    selectedConfig,
+    other,
+    otherConfig,
+    definition,
+    prepared,
+    deps,
+    calls,
+  };
 }
 
 const selection = { env: { ACTIVE_STRATEGY_ID: 'first-strategy' } };
@@ -172,15 +189,17 @@ describe('prepareStrategy', () => {
   });
 
   test.each([
-    { names: ['Definition.ts', 'config.json'] },
-    { names: ['definition.ts', 'Config.json'] },
-    { names: ['definition.ts', 'config.json', 'CONFIG.JSON'] },
-  ])('固定文件大小写不符或冲突拒绝 %j', async ({ names }) => {
+    { target: 'definition', names: ['Definition.ts'] },
+    { target: 'definition', names: ['definition.ts', 'DEFINITION.TS'] },
+    { target: 'config', names: ['Config.json'] },
+    { target: 'config', names: ['config.json', 'CONFIG.JSON'] },
+  ])('固定文件大小写不符或冲突拒绝 %j', async ({ target, names }) => {
     const f = await fixture();
+    const directory = target === 'definition' ? f.selected : f.selectedConfig;
     await assert.rejects(
       prepareStrategy(selection, {
         ...f.deps,
-        readDirectory: (path) => (path === f.selected ? Promise.resolve(names) : readdir(path)),
+        readDirectory: (path) => (path === directory ? Promise.resolve(names) : readdir(path)),
       }),
       /必需文件/,
     );
@@ -188,7 +207,35 @@ describe('prepareStrategy', () => {
 
   test('缺配置时不导入入口', async () => {
     const f = await fixture();
-    await rm(nodePath.join(f.selected, 'config.json'));
+    await rm(nodePath.join(f.selectedConfig, 'config.json'));
+    await assert.rejects(prepareStrategy(selection, f.deps), /必需文件/);
+    expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
+  });
+
+  test('config 根枚举与选中目录真实路径同样精确，不接受 definition 相邻的替代 JSON', async () => {
+    const f = await fixture();
+    for (const names of [['FirstStrategy'], ['firstStrategy', 'firststrategy']]) {
+      await assert.rejects(
+        prepareStrategy(selection, {
+          ...f.deps,
+          readDirectory: (path) => (path === f.configRoot ? Promise.resolve(names) : readdir(path)),
+        }),
+        /配置目录/,
+      );
+    }
+
+    await assert.rejects(
+      prepareStrategy(selection, {
+        ...f.deps,
+        realpath: (path) =>
+          path === f.selectedConfig
+            ? Promise.resolve(`${f.configRoot}-outside/firstStrategy`)
+            : realpath(path),
+      }),
+      /真实路径/,
+    );
+    await writeFile(nodePath.join(f.selected, 'config.json'), '{}');
+    await rm(nodePath.join(f.selectedConfig, 'config.json'));
     await assert.rejects(prepareStrategy(selection, f.deps), /必需文件/);
     expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
   });
@@ -310,13 +357,13 @@ describe('prepareStrategy', () => {
     );
   });
 
-  test('相邻 JSON 的链接元信息拒绝，入口零导入', async () => {
+  test('独立配置 JSON 的链接元信息拒绝，入口零导入', async () => {
     const f = await fixture();
     await assert.rejects(
       prepareStrategy(selection, {
         ...f.deps,
         lstat: (path) =>
-          path === nodePath.join(f.selected, 'config.json')
+          path === nodePath.join(f.selectedConfig, 'config.json')
             ? Promise.resolve({
                 isDirectory: () => false,
                 isFile: () => true,
@@ -336,12 +383,12 @@ describe('prepareStrategy', () => {
       await writeFile(
         nodePath.join(f.selected, 'definition.ts'),
         fault === 'invalid-json'
-          ? "import config from './config.json'; export const strategyDefinition = { id: 'first-strategy', prepare() { throw Error('prepare ran ' + config); } };"
+          ? "import config from '../../../../config/strategy/firstStrategy/config.json'; export const strategyDefinition = { id: 'first-strategy', prepare() { throw Error('prepare ran ' + config); } };"
           : "import './missing.js'; export const strategyDefinition = { id: 'first-strategy', prepare() { throw Error('prepare ran'); } };",
       );
 
       if (fault === 'invalid-json')
-        await writeFile(nodePath.join(f.selected, 'config.json'), 'broken JSON');
+        await writeFile(nodePath.join(f.selectedConfig, 'config.json'), 'broken JSON');
 
       let imports = 0;
       try {
@@ -367,10 +414,12 @@ describe('prepareStrategy', () => {
     const f = await fixture();
     const directory = nodePath.join(f.strategyRoot, 'newSchema');
     await mkdir(directory);
-    await writeFile(nodePath.join(directory, 'config.json'), '{"privateIndicator":"unique"}');
+    const configDirectory = nodePath.join(f.configRoot, 'newSchema');
+    await mkdir(configDirectory);
+    await writeFile(nodePath.join(configDirectory, 'config.json'), '{"privateIndicator":"unique"}');
     await writeFile(
       nodePath.join(directory, 'definition.ts'),
-      `import config from './config.json';
+      `import config from '../../../../config/strategy/newSchema/config.json';
 export const strategyDefinition = {
       id: 'new-schema',
       prepare() {

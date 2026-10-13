@@ -1,0 +1,174 @@
+/**
+ * 普通 SELL 数量计算与智能平仓
+ *
+ * 功能：
+ * - 计算卖出信号数量并生成原因说明
+ * - 支持智能平仓与全仓清仓
+ * - 普通 reason 仅用于说明，typed 清仓由宿主独立执行入口负责
+ *
+ * 卖出委托价规则（业务约束）：
+ * - 限价/增强限价卖单的委托价必须以「执行时行情」为准，不能使用信号生成时的快照价。
+ * - 本模块只计算卖出数量；orderExecutor 在提交前重新获取执行时行情。
+ */
+import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/index.js';
+import {
+  buildSellReason,
+  validateSellContext,
+  resolveSellQuantityByFullClose,
+  resolveSellQuantityBySmartClose,
+} from './quantitySelection.js';
+import type { Position } from '../../types/account.js';
+import type { Quote } from '../../types/quote.js';
+import type { OrderRecorder } from '../../types/services.js';
+import type { ProcessedSellSignal, ProcessSellSignalsParams } from './types.js';
+import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
+
+/**
+ * 计算卖出信号的数量和原因
+ * 智能平仓开启：按三阶段规则计算；关闭：清仓所有持仓
+ * @param params 卖出数量计算参数（持仓、行情、方向、配置与时间快照）
+ * @returns 包含卖出数量、是否持有、原因说明及关联买入订单ID列表的结果
+ */
+function calculateSellQuantity(params: {
+  readonly position: Position | null;
+  readonly quote: Quote | null;
+  readonly orderRecorder: Pick<OrderRecorder, 'getCostBasis' | 'selectSellableOrders'> | null;
+  readonly direction: 'LONG' | 'SHORT';
+  readonly originalReason: string;
+  readonly smartCloseEnabled: boolean;
+  readonly symbol: string;
+  readonly smartCloseTimeoutMinutes: number | null;
+  readonly nowMs: number;
+  readonly isHalfDay: boolean;
+  readonly tradingCalendarSnapshot: TradingCalendarSnapshot;
+}): {
+  readonly quantity: number | null;
+  readonly shouldHold: boolean;
+  readonly reason: string;
+  readonly relatedBuyOrderIds: readonly string[];
+} {
+  const {
+    position,
+    quote,
+    orderRecorder,
+    direction,
+    originalReason,
+    smartCloseEnabled,
+    symbol,
+    smartCloseTimeoutMinutes,
+    nowMs,
+    isHalfDay,
+    tradingCalendarSnapshot,
+  } = params;
+  const reason = originalReason || '';
+  const directionName = direction === 'LONG' ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;
+
+  // 验证输入参数
+  const validationResult = validateSellContext(position, quote);
+  if (!validationResult.valid) {
+    return {
+      quantity: null,
+      shouldHold: true,
+      reason: buildSellReason(reason, validationResult.reason),
+      relatedBuyOrderIds: [],
+    };
+  }
+
+  const { currentPrice, availableQuantity } = validationResult;
+
+  // 智能平仓关闭：直接清仓所有持仓
+  if (!smartCloseEnabled) {
+    const fullCloseResult = resolveSellQuantityByFullClose({
+      availableQuantity,
+      directionName,
+    });
+    return {
+      ...fullCloseResult,
+      reason: buildSellReason(reason, fullCloseResult.reason),
+    };
+  }
+
+  // 智能平仓开启：按三阶段规则计算可卖数量，并结合订单记录做防重扣减，避免重复卖出同一批持仓
+  const smartCloseResult = resolveSellQuantityBySmartClose({
+    orderRecorder,
+    currentPrice,
+    availableQuantity,
+    direction,
+    symbol,
+    smartCloseTimeoutMinutes,
+    nowMs,
+    isHalfDay,
+    tradingCalendarSnapshot,
+  });
+  return {
+    ...smartCloseResult,
+    reason: buildSellReason(reason, smartCloseResult.reason),
+  };
+}
+
+/**
+ * 处理卖出信号，计算实际卖出数量并返回新信号数组
+ *
+ * 遍历信号列表，对每个卖出信号（SELLCALL/SELLPUT）根据智能平仓配置计算数量。
+ * 不从普通 reason 推导清仓权限；所有输入均执行已选定的数量计算规则。
+ * 委托价以执行时行情为准，覆盖信号生成时的快照价，确保提交时价格准确。
+ *
+ * @param params 卖出信号处理参数（行情、持仓、配置与时间快照）
+ * @returns 处理后的新信号数组（不修改入参）
+ */
+export const processSellSignals = (
+  params: ProcessSellSignalsParams,
+): ReadonlyArray<ProcessedSellSignal> => {
+  const {
+    signals,
+    longPosition,
+    shortPosition,
+    longQuote,
+    shortQuote,
+    orderRecorder,
+    smartCloseEnabled,
+    smartCloseTimeoutMinutes,
+    nowMs,
+    isHalfDay,
+    tradingCalendarSnapshot,
+  } = params;
+  return signals.map((sig) => {
+    // 根据信号类型确定对应的持仓和行情
+    const isLongSignal = sig.action === 'SELLCALL';
+    const position = isLongSignal ? longPosition : shortPosition;
+    const quote = isLongSignal ? longQuote : shortQuote;
+    const direction: 'LONG' | 'SHORT' = isLongSignal ? 'LONG' : 'SHORT';
+
+    // 正常卖出信号：根据智能平仓配置进行数量计算。
+    // 传入 sig.symbol，确保只筛选当前席位标的对应的订单记录。
+    const result = calculateSellQuantity({
+      position,
+      quote,
+      orderRecorder,
+      direction,
+      originalReason: sig.reason ?? '',
+      smartCloseEnabled,
+      symbol: sig.symbol,
+      smartCloseTimeoutMinutes,
+      nowMs,
+      isHalfDay,
+      tradingCalendarSnapshot,
+    });
+    if (result.shouldHold) {
+      return {
+        ...sig,
+        action: 'HOLD' as const,
+        isProtectiveLiquidation: false,
+        reason: result.reason,
+        relatedBuyOrderIds: null,
+      };
+    }
+
+    return {
+      ...sig,
+      reason: result.reason,
+      relatedBuyOrderIds: result.relatedBuyOrderIds,
+      quantity: result.quantity,
+    };
+  });
+};

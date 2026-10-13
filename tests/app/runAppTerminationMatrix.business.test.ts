@@ -1,22 +1,19 @@
-import { strategyDefinition } from '../../src/core/strategy/intradayRegression/definition.js';
+import { strategyDefinition } from '../../src/app/startup/strategyDefinitions/intradayRegression/definition.js';
 
 /** T20/T21：离线真实 post-gate owner 的 root 挂起终止矩阵，不访问账户或入口。 */
 import { describe, expect, it, mock } from 'bun:test';
 import os from 'node:os';
 import path from 'node:path';
 import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
-import { createMixedTradeLogRepository } from '../../src/services/mixedTradeLogRepository/index.js';
-import type { MixedTradeLogRepositoryDeps } from '../../src/services/mixedTradeLogRepository/types.js';
+import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
+import type { MixedTradeLogRepositoryDeps } from '../../src/infrastructure/persistence/mixedTradeLogRepository/types.js';
 import { createMonitorContext } from '../../src/app/context/createMonitorContext.js';
 import { createTimeWakeupRuntime } from '../../src/main/timeWakeupRuntime/index.js';
 
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createWarrantListCache } from '../../src/services/autoSymbolFinder/utils.js';
-import {
-  prepareFixture,
-  configObject,
-  createHarness,
-} from '../core/strategy/intradayRegression/fixtures.js';
+import { createWarrantListCache } from '../../src/infrastructure/longbridge/market/warrantListCache/index.js';
+import { prepareFixture, createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
 import type {
   RunAppDeps,
   RuntimeAssemblyResources,
@@ -25,8 +22,8 @@ import type {
 } from '../../src/app/types.js';
 import type { RuntimeTermination } from '../../src/types/runtime.js';
 import type { TraderDeps } from '../../src/core/trader/types.js';
-import type { StrategyDeps, TradingSignalStrategy } from '../../src/core/strategy/types.js';
-import type { Processor } from '../../src/main/asyncProgram/types.js';
+import type { StrategyDeps, TradingSignalStrategy } from '../../src/types/strategy.js';
+import type { Processor } from '../../src/runtime/asyncProgram/types.js';
 import {
   createLoggerDouble,
   createSignalDouble,
@@ -139,7 +136,7 @@ async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownE
         tradingConfig: createTradingConfig(),
         symbolRegistry: createSymbolRegistryDouble(),
         startupTradingDayInfo: null,
-        warrantListCacheConfig: { cache: createWarrantListCache(), ttlMs: 60000, nowMs: () => 0 },
+        warrantListCache: createWarrantListCache(),
         marketDataClient: createMarketDataClientDouble({
           subscribeSymbols: async () => {
             if (stage === 'quote' && !quoteBlocked) {

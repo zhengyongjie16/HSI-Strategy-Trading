@@ -1,9 +1,10 @@
 import type { MonitorConfig } from './config.js';
 import type { SymbolRegistry, LifecycleState } from './seat.js';
-import type { OrderRecorder, RiskChecker, TradingDayInfo } from './services.js';
+import type { OrderRecorder, RiskChecker } from './services.js';
+import type { TradingDayInfo } from './marketPorts.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from './risk.js';
-import type { AutoSymbolManagerPort } from './monitorContextPorts.js';
-import type { TradingSignalStrategy } from '../core/strategy/types.js';
+import type { SeatSwitchWorkflow } from './monitorContextPorts.js';
+import type { TradingSignalStrategy } from './strategy.js';
 
 /**
  * LastState 中的交易日信息缓存。
@@ -71,8 +72,8 @@ export type MonitorContext = {
   /** 标的注册表 */
   readonly symbolRegistry: SymbolRegistry;
 
-  /** 自动换标管理器 */
-  readonly autoSymbolManager: AutoSymbolManagerPort;
+  /** 独立席位换标用例，距离/周期推进与日切状态由同一实例持有 */
+  readonly seatSwitch: SeatSwitchWorkflow;
 
   /** 策略实例 */
   readonly strategy: TradingSignalStrategy;

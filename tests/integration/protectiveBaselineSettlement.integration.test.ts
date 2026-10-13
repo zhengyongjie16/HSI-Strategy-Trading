@@ -6,8 +6,8 @@ import { expect, test } from 'bun:test';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
 import { createEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
-import { createMixedTradeLogRepository } from '../../src/services/mixedTradeLogRepository/index.js';
-import { createLiquidationCooldownTracker } from '../../src/services/liquidationCooldown/index.js';
+import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
+import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import type { RawOrderFromAPI } from '../../src/types/services.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
@@ -104,7 +104,7 @@ async function harness(
     getTrader: () => trader,
     onPositionsCommitted: async () => {},
   });
-  const cooldownOwner = createLiquidationCooldownTracker({ nowMs: () => T });
+  const cooldownOwner = createLiquidationCooldownTracker();
   let cooldownCommits = 0;
   const cooldown = {
     ...cooldownOwner,
@@ -242,6 +242,7 @@ async function complete(h: Awaited<ReturnType<typeof harness>>, time: number) {
     h.cooldown.getRemainingMs({
       direction: 'LONG',
       cooldownConfig: monitorConfig.liquidationCooldown,
+      currentTimeMs: T,
     }),
   ).toBe(300_000 + time - T);
 }

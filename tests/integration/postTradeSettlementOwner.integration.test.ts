@@ -9,13 +9,13 @@ import { expect, test } from 'bun:test';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import { createRiskChecker } from '../../src/core/riskController/index.js';
-import { createPositionLimitChecker } from '../../src/core/riskController/positionLimitChecker.js';
-import { createUnrealizedLossChecker } from '../../src/core/riskController/unrealizedLossChecker.js';
-import { createWarrantRiskChecker } from '../../src/core/riskController/warrantRiskChecker.js';
+import { createRiskChecker } from '../../src/domain/risk/index.js';
+import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
+import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
 import { createRateLimiter } from '../../src/core/trader/rateLimiter.js';
-import { createLiquidationCooldownTracker } from '../../src/services/liquidationCooldown/index.js';
-import { createMixedTradeLogRepository } from '../../src/services/mixedTradeLogRepository/index.js';
+import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
+import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import {
   createLoggerDouble,
@@ -118,9 +118,15 @@ test('same native tracking owners wait for real position subscription ack before
       trace.push('position-subscription-complete');
     },
   });
-  const unrealized = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null });
+  const unrealized = createUnrealizedLossChecker({
+    maxUnrealizedLossPerSymbol: null,
+    onMissingData: () => {},
+  });
   const risk = createRiskChecker({
-    warrantRiskChecker: createWarrantRiskChecker(),
+    warrantRiskChecker: createWarrantRiskChecker({
+      onInvalidCallPrice: () => {},
+      onWarrantInfoSet: () => {},
+    }),
     positionLimitChecker: createPositionLimitChecker({ maxPositionNotional: null }),
     unrealizedLossChecker: {
       ...unrealized,
@@ -130,7 +136,7 @@ test('same native tracking owners wait for real position subscription ack before
       },
     },
   });
-  const cooldown = createLiquidationCooldownTracker({ nowMs: () => sellTime });
+  const cooldown = createLiquidationCooldownTracker();
   const lastState = { allTradingSymbols: new Set<string>() };
   const market = createMarketDataClientDouble({
     subscribeSymbols: async (symbols) => {
@@ -303,7 +309,11 @@ test('same native tracking owners wait for real position subscription ack before
     expect(f.daily.getLossOffset('LONG')).toBe('-10');
     expect(unrealized.getUnrealizedLossData('BULL.HK')).toEqual({ r1: '100', n1: 100 });
     expect(
-      cooldown.getRemainingMs({ direction: 'LONG', cooldownConfig: config.liquidationCooldown }),
+      cooldown.getRemainingMs({
+        direction: 'LONG',
+        cooldownConfig: config.liquidationCooldown,
+        currentTimeMs: sellTime,
+      }),
     ).toBe(0);
     expect(monitor.getPendingSellOrders('BULL.HK')).toEqual([]);
     expect(monitor.hasPendingProtectiveLiquidationOrders('LONG')).toBeFalse();
@@ -336,7 +346,11 @@ test('same native tracking owners wait for real position subscription ack before
     });
 
     expect(
-      cooldown.getRemainingMs({ direction: 'LONG', cooldownConfig: config.liquidationCooldown }),
+      cooldown.getRemainingMs({
+        direction: 'LONG',
+        cooldownConfig: config.liquidationCooldown,
+        currentTimeMs: sellTime,
+      }),
     ).toBe(300_000);
     expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
   } finally {

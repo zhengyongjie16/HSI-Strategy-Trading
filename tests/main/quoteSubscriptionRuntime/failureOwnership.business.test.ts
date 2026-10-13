@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
-import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { Position } from '../../../src/types/account.js';
 import type { OrderHoldSymbolsChangedEvent } from '../../../src/types/services.js';

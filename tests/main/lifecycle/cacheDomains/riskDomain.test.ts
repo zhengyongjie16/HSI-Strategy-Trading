@@ -7,8 +7,8 @@
 import { describe, it, expect } from 'bun:test';
 import { createRiskDomain } from '../../../../src/main/lifecycle/cacheDomains/riskDomain.js';
 import type { DailyLossTracker } from '../../../../src/types/risk.js';
-import type { SignalProcessor } from '../../../../src/core/signalProcessor/types.js';
-import type { LiquidationCooldownTracker } from '../../../../src/services/liquidationCooldown/types.js';
+import type { OrdinaryBuyWorkflow } from '../../../../src/application/ordinaryBuy/types.js';
+import type { LiquidationCooldownTracker } from '../../../../src/domain/liquidation/cooldown/types.js';
 import {
   createLoggerDouble,
   createMonitorContextDouble,
@@ -16,7 +16,7 @@ import {
 } from '../../../helpers/testDoubles.js';
 
 describe('createRiskDomain', () => {
-  it('midnightClear 调用 signalProcessor.resetRiskCheckCooldown、dailyLossTracker.resetAll、clearMidnightEligible、各 riskChecker 清理', async () => {
+  it('midnightClear 调用 ordinaryBuy.resetRiskCheckCooldown、dailyLossTracker.resetAll、clearMidnightEligible、各 riskChecker 清理', async () => {
     let resetRiskCheckCooldownCalled = false;
     let resetAllCalled = false;
     let resetAllNow: Date | null = null as Date | null;
@@ -45,11 +45,11 @@ describe('createRiskDomain', () => {
         },
       } as never,
     });
-    const signalProcessor: SignalProcessor = {
+    const ordinaryBuy: Pick<OrdinaryBuyWorkflow, 'resetRiskCheckCooldown'> = {
       resetRiskCheckCooldown: () => {
         resetRiskCheckCooldownCalled = true;
       },
-    } as unknown as SignalProcessor;
+    };
     const dailyLossTracker: DailyLossTracker = {
       resetAll: (now: Date) => {
         resetAllCalled = true;
@@ -78,7 +78,7 @@ describe('createRiskDomain', () => {
 
     const domain = createRiskDomain({
       logger: createLoggerDouble(),
-      signalProcessor,
+      ordinaryBuy,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       monitorContext,
@@ -130,7 +130,7 @@ describe('createRiskDomain', () => {
 
     const domain = createRiskDomain({
       logger: createLoggerDouble(),
-      signalProcessor: { resetRiskCheckCooldown: () => {} } as unknown as SignalProcessor,
+      ordinaryBuy: { resetRiskCheckCooldown: () => {} },
       dailyLossTracker: {
         resetAll: () => {},
         prepareProtectionBoundary: () => ({

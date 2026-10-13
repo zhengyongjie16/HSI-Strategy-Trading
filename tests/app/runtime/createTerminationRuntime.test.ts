@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createBuyTaskQueue } from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
+import { createBuyTaskQueue } from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 
 /** 终止入口同步顺序、原始首错及队列终态回归。 */
 

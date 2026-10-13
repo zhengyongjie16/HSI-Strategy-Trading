@@ -1,4 +1,17 @@
 import type { DailyLossOrderSnapshot } from '../../types/risk.js';
+import type { Position } from '../../types/account.js';
+import type { BuySignal, SignalType } from '../../types/signal.js';
+import type {
+  OrderRecorder,
+  BullBearWarrantType,
+  RiskCheckResult,
+  WarrantDistanceInfo,
+  WarrantDistanceLiquidationResult,
+  WarrantRefreshResult,
+  UnrealizedLossData,
+  PreparedUnrealizedLossData,
+  UnrealizedLossCheckResult,
+} from '../../types/services.js';
 
 // ==================== 当日亏损追踪 ====================
 
@@ -113,3 +126,101 @@ export type OrderOwnershipDiagnostics = {
   readonly unmatchedFilled: number;
   readonly unmatchedSamples: ReadonlyArray<OrderOwnershipDiagnosticSample>;
 };
+
+/**
+ * 中性牛熊证风险事实。
+ * 数据来源：riskRefresh 消费 market 报价后解析，或 activation/rebuild 提供已知回收价。
+ * 使用范围：domain/risk 的双方向缓存及 application/riskRefresh 的同步发布边界。
+ */
+export type WarrantInfo =
+  | { readonly isWarrant: false }
+  | {
+      readonly isWarrant: true;
+      readonly warrantType: BullBearWarrantType;
+      readonly callPrice: string | null;
+      readonly symbol: string;
+    };
+
+/** 牛熊证事实的唯一状态及同步规则能力；外部读取不属于此 domain owner。 */
+export interface WarrantRiskChecker {
+  readonly publishWarrantInfo: (info: WarrantInfo, isLongSymbol: boolean) => void;
+  readonly setWarrantInfoFromCallPrice: (
+    symbol: string,
+    callPrice: string,
+    isLongSymbol: boolean,
+    symbolName?: string | null,
+  ) => WarrantRefreshResult;
+  readonly checkRisk: (
+    symbol: string,
+    signalType: SignalType,
+    monitorCurrentPrice: string,
+  ) => RiskCheckResult;
+  readonly checkWarrantDistanceLiquidation: (
+    symbol: string,
+    isLongSymbol: boolean,
+    monitorCurrentPrice: string,
+  ) => WarrantDistanceLiquidationResult;
+  readonly getWarrantDistanceInfo: (
+    isLongSymbol: boolean,
+    seatSymbol: string,
+    monitorCurrentPrice: string | null,
+  ) => WarrantDistanceInfo | null;
+  readonly clearLongWarrantInfo: () => void;
+  readonly clearShortWarrantInfo: () => void;
+}
+
+/** 只观测风险事实异常和已知回收价发布；具体日志输出由 composition root 注入。 */
+export interface WarrantRiskCheckerDeps {
+  readonly onInvalidCallPrice: (symbol: string, callPrice: string | null) => void;
+  readonly onWarrantInfoSet: (
+    symbol: string,
+    callPrice: string,
+    isLongSymbol: boolean,
+    symbolName: string | null,
+  ) => void;
+}
+
+/** 买入前单标的持仓市值限制；数据来自实时持仓及计划金额。 */
+export interface PositionLimitChecker {
+  readonly checkLimit: (
+    signal: BuySignal,
+    positions: ReadonlyArray<Position> | null,
+    orderNotional: string,
+  ) => RiskCheckResult;
+}
+
+/** 浮亏事实的唯一缓存能力；prepare 无副作用，publish 由调用方最终同步授权。 */
+export interface UnrealizedLossChecker {
+  readonly getUnrealizedLossData: (symbol: string) => UnrealizedLossData | undefined;
+  readonly clearUnrealizedLossData: (symbol?: string | null) => void;
+  readonly prepare: (
+    orderRecorder: OrderRecorder,
+    symbol: string,
+    isLongSymbol: boolean,
+    dailyLossOffset: string,
+  ) => PreparedUnrealizedLossData;
+  readonly publish: (prepared: PreparedUnrealizedLossData) => void;
+  readonly check: (
+    symbol: string,
+    currentPrice: string,
+    isLongSymbol: boolean,
+  ) => UnrealizedLossCheckResult;
+}
+
+/** 持仓限制规则配置；金额从配置边界以保真十进制文本注入。 */
+export type PositionLimitCheckerDeps = {
+  readonly maxPositionNotional: string | null;
+};
+
+/** 浮亏阈值与未初始化事实观测；domain 不持有 logger 或外部读取能力。 */
+export interface UnrealizedLossCheckerDeps {
+  readonly maxUnrealizedLossPerSymbol: string | null;
+  readonly onMissingData: (symbol: string) => void;
+}
+
+/** 同步风险规则组合的协作能力；装配层只创建一次并向所有消费者注入相同缓存。 */
+export interface RiskCheckerDeps {
+  readonly warrantRiskChecker: WarrantRiskChecker;
+  readonly positionLimitChecker: PositionLimitChecker;
+  readonly unrealizedLossChecker: UnrealizedLossChecker;
+}

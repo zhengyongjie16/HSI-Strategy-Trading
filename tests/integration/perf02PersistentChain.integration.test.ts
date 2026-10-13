@@ -1,34 +1,32 @@
 /** PERF-02 持久化全链路回归：真实 quoteClient → D-event 宿主 → intraday-regression → 生命周期清理/重建。 */
 import { describe, expect, it } from 'bun:test';
-import { Period, type Candlestick, type PushCandlestickEvent } from 'longbridge';
-import { toMockDecimal } from '../../mock/longbridge/decimal.js';
-import { createQuoteContextMock } from '../../mock/longbridge/quoteContextMock.js';
-import { createBusinessEventProgram } from '../../src/main/businessEventProgram/index.js';
+import { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
 import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
 import { createMarketDataDomain } from '../../src/main/lifecycle/cacheDomains/marketDataDomain.js';
 import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
-import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
+import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import { createMarketDataClient } from '../../src/services/quoteClient/index.js';
-import type { TradingSignalStrategy } from '../../src/core/strategy/types.js';
-import type { BusinessEventProgram } from '../../src/main/businessEventProgram/types.js';
-import type { Processor } from '../../src/main/asyncProgram/types.js';
-import type { LifecycleMutableState } from '../../src/main/lifecycle/types.js';
+import { createMarketFixture } from '../infrastructure/longbridge/market/marketFixture.js';
 import type {
-  CandlestickUpdatedEvent,
-  MarketDataClient,
-  Trader,
-} from '../../src/types/services.js';
-import { prepareFixture, configObject } from '../core/strategy/intradayRegression/fixtures.js';
-import { createEventHarness, monitorConfig } from '../main/businessEventProgram/fixtures.js';
-import type { EventHarness } from '../main/businessEventProgram/types.js';
+  MarketCandleInput,
+  MarketFixtureController,
+} from '../infrastructure/longbridge/market/types.js';
+import type { TradingSignalStrategy } from '../../src/types/strategy.js';
+import type { BusinessEventProgram } from '../../src/runtime/businessEventProgram/types.js';
+import type { Processor } from '../../src/runtime/asyncProgram/types.js';
+import type { LifecycleMutableState } from '../../src/main/lifecycle/types.js';
+import type { CandlestickUpdatedEvent, MarketDataClient } from '../../src/types/marketPorts.js';
+import type { Trader } from '../../src/types/services.js';
+import { prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
+import { createEventHarness, monitorConfig } from '../runtime/businessEventProgram/fixtures.js';
+import type { EventHarness } from '../runtime/businessEventProgram/types.js';
 import {
   createLoggerDouble,
   createMonitorContextDouble,
   createRateLimiterDouble,
   createLiquidationCooldownTrackerDouble,
   createRiskCheckerDouble,
-  createSdkConfigDouble,
 } from '../helpers/testDoubles.js';
 
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
@@ -38,14 +36,14 @@ import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/g
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
 import type { LastState } from '../../src/types/state.js';
 
 const SYMBOL = 'HSI.HK';
-const PERIOD = Period.Min_1;
+const PERIOD = 'MIN_1';
 const MINUTE_MS = 60_000;
 const INITIAL_NOW_MS = Date.parse('2026-07-15T02:00:00.000Z');
 const RESEEDED_NOW_MS = Date.parse('2026-07-16T02:00:00.000Z');
@@ -58,7 +56,7 @@ type StrategyTimer = {
 };
 
 type ChainHarness = {
-  readonly quoteMock: ReturnType<typeof createQuoteContextMock>;
+  readonly marketController: MarketFixtureController;
   readonly marketDataClient: MarketDataClient;
   readonly marketDataEvents: ReadonlyArray<CandlestickUpdatedEvent>;
   readonly removeMarketDataObserver: () => void;
@@ -70,49 +68,52 @@ type ChainHarness = {
   readonly getHostListener: () => ((event: CandlestickUpdatedEvent) => void) | null;
 };
 
-/** 构造包含稳定 OHLC 区间的 seed K 线，避免测试依赖 SDK Decimal 对象继续流入策略。 */
+/** 给定稳定 OHLC 区间的中性 seed，SDK candle 由 infra fixture 私有构造。 */
 function createSeedCandles(
   lastTimestampMs: number,
   close: number,
   high: number,
   low: number,
-): ReadonlyArray<Candlestick> {
+): ReadonlyArray<MarketCandleInput> {
   return Array.from({ length: SEED_LENGTH }, (_, index) => {
     const timestampMs = lastTimestampMs - (SEED_LENGTH - 1 - index) * MINUTE_MS;
-    return createCandle(timestampMs, close, high, low);
+    return createCandleInput(timestampMs, close, high, low);
   });
 }
 
-/** 构造 SDK mock 可消费的单根 K 线；真实 quoteClient 负责标准化与冻结。 */
-function createCandle(timestampMs: number, close: number, high: number, low: number): Candlestick {
+/** 明确测试输入数值，不构造 SDK Decimal、K 线或 push。 */
+function createCandleInput(
+  timestampMs: number,
+  close: number,
+  high: number,
+  low: number,
+): MarketCandleInput {
   return {
-    open: toMockDecimal(close),
-    high: toMockDecimal(high),
-    low: toMockDecimal(low),
-    close: toMockDecimal(close),
+    open: close,
+    high,
+    low,
+    close,
     volume: 1_000,
-    turnover: toMockDecimal(close * 1_000),
-    timestamp: new Date(timestampMs),
-    tradeSession: 0,
-  } as unknown as Candlestick;
+    turnover: close * 1_000,
+    timestampMs,
+  };
 }
 
-/** 构造真实 QuoteContext push，覆盖同柱替换、确认和下一柱追加。 */
-function createPush(
+/** 通过中性 controller 驱动实际 quoteClient 的入站链，事件仍由调用方显式 flush。 */
+function emitCandle(
+  chain: ChainHarness,
   timestampMs: number,
   close: number,
   high: number,
   low: number,
   isConfirmed: boolean,
-): PushCandlestickEvent {
-  return {
-    symbol: SYMBOL,
-    data: {
-      period: PERIOD,
-      candlestick: createCandle(timestampMs, close, high, low),
-      isConfirmed,
-    },
-  } as unknown as PushCandlestickEvent;
+): void {
+  chain.marketController.emitCandlestick(
+    SYMBOL,
+    PERIOD,
+    createCandleInput(timestampMs, close, high, low),
+    isConfirmed,
+  );
 }
 
 /** 让业务事件宿主完成 single-flight 微任务，不等待真实 timer。 */
@@ -141,7 +142,7 @@ function drainSignalActions(harness: EventHarness): ReadonlyArray<string> {
   return actions;
 }
 
-/** 创建真实策略与真实 D-event 宿主；行情接入在本 helper 内始终使用生产 createMarketDataClient。 */
+/** 创建真实策略与 D-event 宿主；infra fixture 装配真实行情 client，对宿主仅注入中性 port。 */
 async function createChainHarness(strategyConfig: unknown): Promise<ChainHarness> {
   let nowMs = INITIAL_NOW_MS;
   const timers: StrategyTimer[] = [];
@@ -176,12 +177,16 @@ async function createChainHarness(strategyConfig: unknown): Promise<ChainHarness
     strategy,
     createTerminationRuntime: () => termination,
   });
-  const quoteMock = createQuoteContextMock();
-  quoteMock.seedCandlesticks(SYMBOL, PERIOD, createSeedCandles(INITIAL_NOW_MS, 50, 100, 1));
-  const marketDataClient = await createMarketDataClient({
-    config: createSdkConfigDouble(),
-    quoteContextFactory: async () => quoteMock,
-  });
+  const marketFixture = await createMarketFixture();
+  marketFixture.controller.seedCandlesticks(
+    SYMBOL,
+    PERIOD,
+    createSeedCandles(INITIAL_NOW_MS, 50, 100, 1),
+  );
+  const marketDataClient: MarketDataClient = {
+    ...marketFixture.client,
+    getQuotes: (symbols) => marketFixture.client.getQuotes([...symbols]),
+  };
   const marketDataEvents: CandlestickUpdatedEvent[] = [];
   const removeMarketDataObserver = marketDataClient.onCandlestickUpdated((event) => {
     marketDataEvents.push(event);
@@ -211,7 +216,7 @@ async function createChainHarness(strategyConfig: unknown): Promise<ChainHarness
   });
 
   return {
-    quoteMock,
+    marketController: marketFixture.controller,
     marketDataClient,
     marketDataEvents,
     removeMarketDataObserver,
@@ -245,27 +250,21 @@ async function runDelayedSampleScenario(
 ): Promise<ReadonlyArray<string>> {
   chain.program.start();
   chain.setNow(params.baseNowMs);
-  chain.quoteMock.emitCandlestick(
-    createPush(params.baseNowMs, params.initialClose, params.high, params.low, false),
-  );
-  chain.quoteMock.flushAllEvents();
+  emitCandle(chain, params.baseNowMs, params.initialClose, params.high, params.low, false);
+  chain.marketController.flushAllEvents();
   await flushHost();
   const pendingTimers = [...chain.timers];
   if (pendingTimers.length === 0) throw new Error('expected delayed verification timers');
 
   chain.eventHarness.lastState.openProtectionActive = true;
   chain.setNow(params.baseNowMs + 55_000);
-  chain.quoteMock.emitCandlestick(
-    createPush(params.baseNowMs, params.badClose, params.high, params.low, false),
-  );
-  chain.quoteMock.flushAllEvents();
+  emitCandle(chain, params.baseNowMs, params.badClose, params.high, params.low, false);
+  chain.marketController.flushAllEvents();
   await flushHost();
 
   chain.setNow(params.baseNowMs + 80_000);
-  chain.quoteMock.emitCandlestick(
-    createPush(params.baseNowMs, params.goodClose, params.high, params.low, false),
-  );
-  chain.quoteMock.flushAllEvents();
+  emitCandle(chain, params.baseNowMs, params.goodClose, params.high, params.low, false);
+  chain.marketController.flushAllEvents();
   await flushHost();
   const sameVersionSource = chain.marketDataClient.getCandlestickSnapshot(SYMBOL, PERIOD);
   if (sameVersionSource === null) throw new Error('expected same-version source snapshot');
@@ -429,19 +428,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     termination,
   });
   boundQuotes = quoteRuntime;
-  chain.quoteMock.seedStaticInfo(
-    [SYMBOL, 'BULL.HK', 'BEAR.HK'].map((symbol) => ({
-      symbol,
-      info: { symbol, nameCn: symbol, lotSize: 100 },
-    })),
-  );
-
-  chain.quoteMock.seedQuotes(
-    [SYMBOL, 'BULL.HK', 'BEAR.HK'].map((symbol) => ({
-      symbol,
-      quote: { symbol, prevClose: '1' },
-    })),
-  );
+  chain.marketController.seedSymbolMetadata([SYMBOL, 'BULL.HK', 'BEAR.HK'], '1', 100);
 
   settlement.bindBusinessDeps({
     monitorContext,
@@ -571,8 +558,8 @@ describe('PERF-02 真实持久化全链路', () => {
       await flushHost();
       expect(chain.eventHarness.contexts).toHaveLength(0);
 
-      chain.quoteMock.emitCandlestick(createPush(INITIAL_NOW_MS, 50, 100, 1, false));
-      chain.quoteMock.flushAllEvents();
+      emitCandle(chain, INITIAL_NOW_MS, 50, 100, 1, false);
+      chain.marketController.flushAllEvents();
       await flushHost();
 
       const afterPush = chain.marketDataClient.getCandlestickSnapshot(SYMBOL, PERIOD);
@@ -594,8 +581,8 @@ describe('PERF-02 真实持久化全链路', () => {
       const beforeConfirmation = afterPush;
       const beforeConfirmationCandles = beforeConfirmation.candles;
       const beforeConfirmationCandle = beforeConfirmation.candles.at(-1);
-      chain.quoteMock.emitCandlestick(createPush(INITIAL_NOW_MS, 50, 100, 1, true));
-      chain.quoteMock.flushAllEvents();
+      emitCandle(chain, INITIAL_NOW_MS, 50, 100, 1, true);
+      chain.marketController.flushAllEvents();
       await flushHost();
 
       const confirmed = chain.marketDataClient.getCandlestickSnapshot(SYMBOL, PERIOD);
@@ -614,19 +601,17 @@ describe('PERF-02 真实持久化全链路', () => {
         beforeConfirmationCandle,
       );
 
-      chain.quoteMock.emitCandlestick(createPush(INITIAL_NOW_MS, 50, 100, 1, true));
-      chain.quoteMock.emitCandlestick(createPush(INITIAL_NOW_MS, 50, 100, 1, false));
-      chain.quoteMock.flushAllEvents();
+      emitCandle(chain, INITIAL_NOW_MS, 50, 100, 1, true);
+      emitCandle(chain, INITIAL_NOW_MS, 50, 100, 1, false);
+      chain.marketController.flushAllEvents();
       await flushHost();
       expect(events).toHaveLength(2);
       expect(chain.eventHarness.contexts).toHaveLength(2);
 
       chain.setNow(INITIAL_NOW_MS + 120_000);
-      chain.quoteMock.emitCandlestick(createPush(INITIAL_NOW_MS + MINUTE_MS, 51, 100, 1, false));
-      chain.quoteMock.emitCandlestick(
-        createPush(INITIAL_NOW_MS + 2 * MINUTE_MS, 52, 100, 1, false),
-      );
-      chain.quoteMock.flushAllEvents();
+      emitCandle(chain, INITIAL_NOW_MS + MINUTE_MS, 51, 100, 1, false);
+      emitCandle(chain, INITIAL_NOW_MS + 2 * MINUTE_MS, 52, 100, 1, false);
+      chain.marketController.flushAllEvents();
       await flushHost();
 
       const authoritativeLatest = chain.marketDataClient.getCandlestickSnapshot(SYMBOL, PERIOD);
@@ -693,10 +678,8 @@ describe('PERF-02 真实持久化全链路', () => {
       chain.eventHarness.lastState.openProtectionActive = false;
       const oldPendingTimerStart = chain.timers.length;
       chain.setNow(INITIAL_NOW_MS + 3 * MINUTE_MS);
-      chain.quoteMock.emitCandlestick(
-        createPush(INITIAL_NOW_MS + 3 * MINUTE_MS, 80, 100, 1, false),
-      );
-      chain.quoteMock.flushAllEvents();
+      emitCandle(chain, INITIAL_NOW_MS + 3 * MINUTE_MS, 80, 100, 1, false);
+      chain.marketController.flushAllEvents();
       await flushHost();
       const oldPendingTimers = chain.timers.slice(oldPendingTimerStart);
       expect(oldPendingTimers.length).toBeGreaterThan(0);
@@ -716,7 +699,7 @@ describe('PERF-02 真实持久化全链路', () => {
       expect(drainSignalActions(chain.eventHarness)).toEqual([]);
 
       const eventCountBeforeReseed = chain.marketDataEvents.length;
-      chain.quoteMock.seedCandlesticks(
+      chain.marketController.seedCandlesticks(
         SYMBOL,
         PERIOD,
         createSeedCandles(RESEEDED_NOW_MS, 200, 300, 100),

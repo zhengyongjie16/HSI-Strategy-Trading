@@ -7,8 +7,9 @@
  * - 以 SymbolRegistry 作为席位真相，仅根据启动 quotesMap 派生标的名称缓存
  * - 将唯一 monitor 配置装配为纯返回值，由调用方持有唯一上下文
  */
-import { createUnrealizedLossMonitor } from '../../core/riskController/unrealizedLossMonitor.js';
-import { createAutoSymbolManager } from '../../services/autoSymbolManager/index.js';
+import { createUnrealizedLossMonitor } from '../../application/protectiveLiquidation/unrealizedLossExecutor.js';
+import { logger } from '../../utils/logger/index.js';
+import { createSeatSwitchWorkflow } from '../../application/seatSwitch/index.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
 import type { CreateMonitorContextParams, MonitorContextFactoryDeps } from '../types.js';
@@ -55,7 +56,7 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
     dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor,
-    autoSymbolManager,
+    seatSwitch,
   } = deps;
   const symbolNames = resolveMonitorContextSymbolNames({
     symbolRegistry,
@@ -66,7 +67,7 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
   return {
     config,
     symbolRegistry,
-    autoSymbolManager,
+    seatSwitch,
     strategy,
     orderRecorder,
     dailyLossTracker,
@@ -111,14 +112,15 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
   const { riskChecker } = postGateRuntime;
   requireTradingCalendarSnapshot(postGateRuntime.lastState.tradingCalendarSnapshot);
 
-  const autoSymbolManager = createAutoSymbolManager({
+  const seatSwitch = createSeatSwitchWorkflow({
     monitorConfig,
     symbolRegistry: preGateRuntime.symbolRegistry,
     marketDataClient: preGateRuntime.marketDataClient,
     trader: postGateRuntime.trader,
     orderRecorder: postGateRuntime.trader.orderRecorder,
     riskChecker,
-    warrantListCacheConfig: preGateRuntime.warrantListCacheConfig,
+    candidateSearch: postGateRuntime.candidateSearch,
+    logger,
     getTradingCalendarSnapshot: () => postGateRuntime.lastState.tradingCalendarSnapshot,
     clock,
   });
@@ -131,8 +133,9 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     dailyLossTracker: postGateRuntime.dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor: createUnrealizedLossMonitor({
+      logger,
       maxUnrealizedLossPerSymbol: monitorConfig.maxUnrealizedLossPerSymbol,
     }),
-    autoSymbolManager,
+    seatSwitch,
   });
 }

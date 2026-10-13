@@ -18,18 +18,19 @@ import type {
   LifecycleRuntimeFactories,
   LifecycleRuntimeFactoryDeps,
 } from '../../../src/app/types.js';
-import type { SignalProcessor } from '../../../src/core/signalProcessor/types.js';
 import type { CacheDomain } from '../../../src/main/lifecycle/types.js';
 import type { SignalRuntimeDomainDeps } from '../../../src/main/lifecycle/cacheDomains/types.js';
-import type { MonitorTaskProcessor } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { Processor } from '../../../src/main/asyncProgram/types.js';
+import type { MonitorTaskProcessor } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { Processor } from '../../../src/runtime/asyncProgram/types.js';
 import type { LastState } from '../../../src/types/state.js';
-import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
+import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
   createDailyLossTrackerDouble,
   createAccountSnapshotDouble,
   createLoggerDouble,
+  createOrdinaryBuyWorkflowDouble,
+  createOrdinarySellWorkflowDouble,
   createAutoSearchWakeupRuntimeDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
   createMarketDataClientDouble,
@@ -38,6 +39,8 @@ import {
   createQuoteSubscriptionRuntimeDouble,
   createSdkConfigDouble,
   createSeatActivationDispatcherDouble,
+  createSeatActivationWorkflowDouble,
+  createWarrantRiskRefreshDouble,
   createSeatRuntimeCleanupDispatcherDouble,
   createSymbolRegistryDouble,
   createTradingGateEventRuntimeDouble,
@@ -135,14 +138,6 @@ function createTradingQuoteDisplayRuntimeDouble() {
   };
 }
 
-function createSignalProcessorDouble(): SignalProcessor {
-  return {
-    processSellSignals: ({ signals }) => signals,
-    applyRiskChecks: async (signals) => signals,
-    resetRiskCheckCooldown: () => {},
-  };
-}
-
 function createLastState(): LastState {
   return {
     canTrade: null,
@@ -200,11 +195,7 @@ async function createLifecycleDeps(): Promise<LifecycleRuntimeFactoryDeps> {
       config: createSdkConfigDouble(),
       tradingConfig,
       symbolRegistry: createSymbolRegistryDouble(),
-      warrantListCacheConfig: {
-        cache: warrantListCache,
-        ttlMs: 60_000,
-        nowMs: () => 0,
-      },
+      warrantListCache: warrantListCache,
       marketDataClient: createMarketDataClientDouble(),
       startupTradingDayInfo: {
         dateKey: '2026-03-09',
@@ -258,8 +249,10 @@ async function createLifecycleDeps(): Promise<LifecycleRuntimeFactoryDeps> {
           quotesMap: new Map(),
         };
       },
-      doomsdayProtection: {
-        isBuyCutoffWindowActive: () => false,
+      seatActivation: createSeatActivationWorkflowDouble(),
+      warrantRiskRefresh: createWarrantRiskRefreshDouble(),
+      doomsdayClearanceWorkflow: {
+        evaluate: async () => ({ executed: false, nextRetryAtMs: null }),
         executeClearance: async () => ({
           executed: false,
           nextRetryAtMs: null,
@@ -270,7 +263,8 @@ async function createLifecycleDeps(): Promise<LifecycleRuntimeFactoryDeps> {
           nextRetryAtMs: null,
         }),
       },
-      signalProcessor: createSignalProcessorDouble(),
+      ordinaryBuy: createOrdinaryBuyWorkflowDouble(),
+      ordinarySell: createOrdinarySellWorkflowDouble(),
       buyTaskQueue: {
         push: () => true,
         close: () => {},

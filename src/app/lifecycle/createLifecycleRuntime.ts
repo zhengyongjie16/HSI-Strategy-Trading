@@ -14,7 +14,8 @@ import { createRiskDomain } from '../../main/lifecycle/cacheDomains/riskDomain.j
 import { createSeatDomain } from '../../main/lifecycle/cacheDomains/seatDomain.js';
 import { createSignalRuntimeDomain } from '../../main/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { executeTradingDayOpenRebuild } from './rebuild.js';
-import type { CacheDomain, DayLifecycleManager } from '../../main/lifecycle/types.js';
+import type { CacheDomain } from '../../main/lifecycle/types.js';
+import type { DayLifecycleManager } from '../../types/timeControlPlane.js';
 import type { LifecycleRuntimeFactories, LifecycleRuntimeFactoryDeps } from '../types.js';
 
 const DEFAULT_LIFECYCLE_RUNTIME_FACTORIES: LifecycleRuntimeFactories = {
@@ -46,7 +47,7 @@ function createLifecycleCacheDomains(
     businessEventProgram,
     rebuildTradingDayState,
   } = params;
-  const { symbolRegistry, warrantListCacheConfig, marketDataClient } = preGateRuntime;
+  const { symbolRegistry, warrantListCache, marketDataClient } = preGateRuntime;
   const {
     monitorContext,
     buyTaskQueue,
@@ -66,7 +67,7 @@ function createLifecycleCacheDomains(
     snapshot,
     trader,
     lastState,
-    signalProcessor,
+    ordinaryBuy,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
     liquidationCooldownTracker,
@@ -115,8 +116,8 @@ function createLifecycleCacheDomains(
     buildSeatDomain({
       logger,
       symbolRegistry,
-      autoSymbolManager: monitorContext.autoSymbolManager,
-      warrantListCache: warrantListCacheConfig.cache,
+      seatSwitch: monitorContext.seatSwitch,
+      warrantListCache,
     }),
     buildOrderDomain({
       logger,
@@ -124,7 +125,7 @@ function createLifecycleCacheDomains(
     }),
     buildRiskDomain({
       logger,
-      signalProcessor,
+      ordinaryBuy,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
       monitorContext,

@@ -4,13 +4,15 @@
  * 功能：
  * - 验证自动换标端到端场景与业务期望。
  */
+
 import { describe, expect, it, setSystemTime } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
-import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
+import { createAutoSearch } from '../../src/application/autoSearch/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 
 import {
@@ -33,15 +35,16 @@ import {
   captureSearchSeatAuthorization,
   captureSwitchSeatAuthorization,
   createWarrantCandidateWithOverrides,
-} from '../services/autoSymbolManager/utils.js';
+  createLoggerStub,
+} from '../helpers/seatTestUtils.js';
 
 let candidateQueue: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
 
 async function runDistanceSwitch(
-  manager: ReturnType<typeof createAutoSymbolManager>,
+  manager: ReturnType<typeof createSeatSwitchWorkflow>,
   symbolRegistry: Parameters<typeof captureSwitchSeatAuthorization>[0],
   params: Omit<
-    Parameters<ReturnType<typeof createAutoSymbolManager>['startSwitchOnDistance']>[0],
+    Parameters<ReturnType<typeof createSeatSwitchWorkflow>['startSwitchOnDistance']>[0],
     'canContinue'
   >,
 ): Promise<void> {
@@ -115,10 +118,10 @@ describe('auto-symbol-switch integration', () => {
         });
 
         if (signal?.action === 'SELLCALL') {
-          return { executedOrderIds: ['SELL-ORDER-1'] };
+          return { executedOrderIds: ['SELL-ORDER-1'], quoteFailures: [] };
         }
 
-        return { executedOrderIds: ['BUY-ORDER-1'] };
+        return { executedOrderIds: ['BUY-ORDER-1'], quoteFailures: [] };
       },
       getPendingOrders: async () => [],
       cancelOrder: async () => ({
@@ -156,7 +159,15 @@ describe('auto-symbol-switch integration', () => {
       },
     });
 
-    const manager = createAutoSymbolManager({
+    const candidateSearch = {
+      resolveDistanceRange: (direction: 'LONG' | 'SHORT') =>
+        monitorConfig.autoSearchConfig[
+          direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+        ],
+      findCandidate: async () => candidateQueue.shift() ?? null,
+    };
+    const manager = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
@@ -166,13 +177,20 @@ describe('auto-symbol-switch integration', () => {
       trader,
       orderRecorder,
       riskChecker,
-      findBestWarrant: async () => candidateQueue.shift() ?? null,
+      candidateSearch,
       clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
+    const autoSearch = createAutoSearch({
+      monitorSymbol: monitorConfig.monitorSymbol,
+      autoSearchConfig: monitorConfig.autoSearchConfig,
+      symbolRegistry,
+      candidateSearch,
+      logger: createLoggerStub(),
+    });
 
-    await manager.maybeSearchOnEvent({
+    await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:00:00.000Z'),
       canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
@@ -402,10 +420,7 @@ describe('auto-symbol-switch integration', () => {
       const orderExecutor = native.createExecutor({
         rateLimiter: createRateLimiterDouble(),
         marketDataClient,
-        cacheManager: {
-          clearCache: () => {},
-          getPendingOrders: async () => [],
-        },
+        cacheManager: { clearCache: () => {} },
         orderMonitor: createOrderMonitorDouble({
           trackOrder: ({ orderId, side, quantity }) => {
             trackedOrders.push({
@@ -490,23 +505,38 @@ describe('auto-symbol-switch integration', () => {
       });
 
       boundTrader = trader;
-      const manager = createAutoSymbolManager({
+      const candidateSearch = {
+        resolveDistanceRange: (direction: 'LONG' | 'SHORT') =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () => candidateQueue.shift() ?? null,
+      };
+      const manager = createSeatSwitchWorkflow({
+        logger: createLoggerStub(),
         monitorConfig,
         symbolRegistry,
         marketDataClient,
         trader,
         orderRecorder,
         riskChecker,
-        findBestWarrant: async () => candidateQueue.shift() ?? null,
+        candidateSearch,
         clock: { now: () => new Date(fixedNowMs) },
         getTradingCalendarSnapshot: () =>
           new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
+      });
+      const autoSearch = createAutoSearch({
+        monitorSymbol: monitorConfig.monitorSymbol,
+        autoSearchConfig: monitorConfig.autoSearchConfig,
+        symbolRegistry,
+        candidateSearch,
+        logger: createLoggerStub(),
       });
 
       const monitorContext = createMonitorContextDouble({
         config: monitorConfig,
         symbolRegistry,
-        autoSymbolManager: manager,
+        seatSwitch: manager,
         orderRecorder,
         dailyLossTracker,
         riskChecker,
@@ -557,7 +587,7 @@ describe('auto-symbol-switch integration', () => {
           });
         }
       };
-      await manager.maybeSearchOnEvent({
+      await autoSearch.maybeSearchOnEvent({
         direction: 'LONG',
         currentTime: new Date(fixedNowMs),
         canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),
@@ -667,7 +697,8 @@ describe('auto-symbol-switch integration', () => {
       callPrice: '20000',
     });
 
-    const manager = createAutoSymbolManager({
+    const manager = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
@@ -686,9 +717,15 @@ describe('auto-symbol-switch integration', () => {
             distanceDenominator: '100',
           }),
       }),
-      findBestWarrant: async () => {
-        findBestCalls += 1;
-        return candidateQueue.shift() ?? null;
+      candidateSearch: {
+        resolveDistanceRange: (direction) =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () => {
+          findBestCalls += 1;
+          return candidateQueue.shift() ?? null;
+        },
       },
       clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
@@ -758,7 +795,8 @@ describe('auto-symbol-switch integration', () => {
       callPrice: '20000',
     });
 
-    const manager = createAutoSymbolManager({
+    const manager = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
@@ -777,9 +815,15 @@ describe('auto-symbol-switch integration', () => {
             distanceDenominator: '100',
           }),
       }),
-      findBestWarrant: async () => {
-        findBestCalls += 1;
-        return candidateQueue.shift() ?? null;
+      candidateSearch: {
+        resolveDistanceRange: (direction) =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () => {
+          findBestCalls += 1;
+          return candidateQueue.shift() ?? null;
+        },
       },
       clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
@@ -844,7 +888,15 @@ describe('auto-symbol-switch integration', () => {
       callPrice: '20000',
     });
 
-    const manager = createAutoSymbolManager({
+    const candidateSearch = {
+      resolveDistanceRange: (direction: 'LONG' | 'SHORT') =>
+        monitorConfig.autoSearchConfig[
+          direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+        ],
+      findCandidate: async () => candidateQueue.shift() ?? null,
+    };
+    const manager = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble({
@@ -863,10 +915,17 @@ describe('auto-symbol-switch integration', () => {
             distanceDenominator: '100',
           }),
       }),
-      findBestWarrant: async () => candidateQueue.shift() ?? null,
+      candidateSearch,
       clock: { now: () => new Date('2026-02-16T01:00:00.000Z') },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
+    });
+    const autoSearch = createAutoSearch({
+      monitorSymbol: monitorConfig.monitorSymbol,
+      autoSearchConfig: monitorConfig.autoSearchConfig,
+      symbolRegistry,
+      candidateSearch,
+      logger: createLoggerStub(),
     });
 
     await runDistanceSwitch(manager, symbolRegistry, {
@@ -880,7 +939,7 @@ describe('auto-symbol-switch integration', () => {
     expect(emptySeat.symbol).toBeNull();
     expect(manager.hasPendingSwitch('LONG')).toBeFalse();
 
-    await manager.maybeSearchOnEvent({
+    await autoSearch.maybeSearchOnEvent({
       direction: 'LONG',
       currentTime: new Date('2026-02-16T01:11:00.000Z'),
       canContinue: captureSearchSeatAuthorization(symbolRegistry, 'LONG'),

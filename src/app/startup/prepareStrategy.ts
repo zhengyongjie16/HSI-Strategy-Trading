@@ -5,7 +5,7 @@
 import nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LEGACY_STRATEGY_ENV_KEYS } from '../../constants/strategy.js';
-import { strategyIdToDirectoryName } from '../../core/strategy/utils.js';
+import { strategyIdToDirectoryName } from '../../domain/strategy/utils.js';
 import {
   assertStrategyNode,
   importStrategyDefinition,
@@ -52,7 +52,10 @@ export async function prepareStrategy(
     throw new Error('[Strategy:location] 不支持的加载器扩展名: ' + extension);
   }
 
-  const rootPath = nodePath.resolve(fileURLToPath(new URL('../../core/strategy/', moduleUrl)));
+  const rootPath = nodePath.resolve(fileURLToPath(new URL('strategyDefinitions/', moduleUrl)));
+  const configRootPath = nodePath.resolve(
+    fileURLToPath(new URL('../../config/strategy/', moduleUrl)),
+  );
   await assertStrategyNode(rootPath, 'directory', deps);
   const names = await deps.readDirectory(rootPath);
   if (
@@ -62,7 +65,14 @@ export async function prepareStrategy(
     throw new Error('[Strategy:selection] 选中目录不存在、拼写不符或大小写冲突: ' + directoryName);
   }
 
-  const location = await inspectStrategyLocation(rootPath, directoryName, extension, deps);
+  await assertStrategyNode(configRootPath, 'directory', deps);
+  const location = await inspectStrategyLocation(
+    rootPath,
+    configRootPath,
+    directoryName,
+    extension,
+    deps,
+  );
   const definition = await importStrategyDefinition(location, deps);
   return { strategyId, prepared: prepareStrategyDefinition(definition) };
 }

@@ -1,8 +1,8 @@
 import type { RuntimeTermination } from '../../types/runtime.js';
-import type { QuoteUpdatedEvent, MarketDataClient } from '../../types/services.js';
+import type { QuoteUpdatedEvent, MarketDataClient } from '../../types/marketPorts.js';
 import type { LastState, MonitorContext } from '../../types/state.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { TradingRiskRoute } from '../tradingRiskEventRuntime/types.js';
+import type { ProtectiveLiquidationRoute } from '../../application/protectiveLiquidation/types.js';
 import type { Logger } from '../../utils/logger/types.js';
 
 /**
@@ -15,7 +15,7 @@ export type TradingQuoteDisplayRouteState = {
   inFlight: boolean;
   dirty: boolean;
   latestEvent: QuoteUpdatedEvent | null;
-  latestRoute: TradingRiskRoute | null;
+  latestRoute: ProtectiveLiquidationRoute | null;
 };
 
 /**

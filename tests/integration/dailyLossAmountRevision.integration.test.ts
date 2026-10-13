@@ -13,7 +13,7 @@ import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/i
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createEventFlow as createProductionEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
 import { createSettlementFlow } from '../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,

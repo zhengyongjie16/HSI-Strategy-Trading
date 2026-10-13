@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
-import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { OrderHoldSymbolsChangedEvent } from '../../../src/types/services.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';

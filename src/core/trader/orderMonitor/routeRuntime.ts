@@ -8,7 +8,7 @@
  */
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
 import { scheduleBoundedOneShotAt } from '../../../utils/timer/index.js';
-import type { QuoteUpdatedEvent } from '../../../types/services.js';
+import type { QuoteUpdatedEvent } from '../../../types/marketPorts.js';
 import type { OrderMonitorConfig, TrackedOrder } from '../types.js';
 import { clearRouteTimers } from './routingIndex.js';
 import type {

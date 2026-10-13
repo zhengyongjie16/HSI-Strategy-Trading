@@ -1,7 +1,5 @@
-import type { OrderType } from 'longbridge';
 import type { MonitorConfig } from '../../types/config.js';
 import type { OrderTypeConfig } from '../../types/signal.js';
-import { OPEN_API_ORDER_TYPE_TO_CONFIG } from '../../constants/index.js';
 import {
   createConfigValidationError,
   getBooleanConfig,
@@ -68,20 +66,6 @@ function parseFailFastIntegerBoundedNumberConfig({
   }
 
   return value;
-}
-
-/**
- * 将 OpenAPI 订单类型映射为内部订单类型配置。
- * @param orderType OpenAPI 订单类型
- * @returns 内部订单类型配置
- */
-function mapOrderTypeConfig(orderType: OrderType): OrderTypeConfig {
-  const mappedConfig = OPEN_API_ORDER_TYPE_TO_CONFIG[orderType];
-  if (mappedConfig === undefined) {
-    throw new Error(`[TradingConfig] 未知 OpenAPI 订单类型: ${String(orderType)}`);
-  }
-
-  return mappedConfig;
 }
 
 /**
@@ -217,5 +201,5 @@ export function parseTradingOrderType(
   envKey: string,
   defaultType: OrderTypeConfig,
 ): OrderTypeConfig {
-  return mapOrderTypeConfig(parseOrderTypeConfig(env, envKey, defaultType));
+  return parseOrderTypeConfig(env, envKey, defaultType);
 }

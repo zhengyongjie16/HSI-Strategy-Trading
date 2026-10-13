@@ -23,7 +23,8 @@ import type {
   TerminalStateSnapshot,
   RouteProcessorDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
-import type { OrderMonitorConfig, TrackOrderParams } from '../../../../src/core/trader/types.js';
+import type { OrderMonitorConfig } from '../../../../src/core/trader/types.js';
+import type { TrackOrderParams } from '../../../../src/domain/order/types.js';
 import type { OrderRecorder, TradeMutationPermit } from '../../../../src/types/services.js';
 import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
 import {

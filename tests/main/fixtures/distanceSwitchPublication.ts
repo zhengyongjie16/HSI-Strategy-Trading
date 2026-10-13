@@ -1,13 +1,15 @@
-import { createAutoSymbolManager } from '../../../src/services/autoSymbolManager/index.js';
-import { createDefaultMonitorQuoteEventRuntime } from '../../../src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
-import { createSwitchWakeupRuntime } from '../../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
+import { createSeatSwitchWorkflow } from '../../../src/application/seatSwitch/index.js';
+import { createStaticLiquidationExecutor } from '../../../src/application/staticLiquidation/index.js';
+import { createDefaultMonitorQuoteEventRuntime } from '../../../src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
+import { createSwitchWakeupRuntime } from '../../../src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createSnapshotFixture } from './accountPositionSnapshot.js';
 import { createSettlementRuntimeFixture } from './settlementRuntime.js';
 import {
+  createLoggerStub,
   createWarrantCandidate,
   getDefaultAutoSearchConfig,
-} from '../../services/autoSymbolManager/utils.js';
+} from '../../helpers/seatTestUtils.js';
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
@@ -20,7 +22,7 @@ import {
   createTraderDouble,
   createWarrantDistanceInfoDouble,
 } from '../../helpers/testDoubles.js';
-import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
+import type { QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
 import type { StartSwitchOnDistanceResult } from '../../../src/types/monitorContextPorts.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
@@ -30,7 +32,7 @@ import type {
   SwitchWakeupHandoffParams,
   MonitorQuoteEventRuntime,
   SwitchWakeupRuntime,
-} from '../../../src/main/monitorQuoteEventRuntime/types.js';
+} from '../../../src/runtime/monitorQuoteEventRuntime/types.js';
 
 type DistancePublicationFixture = Readonly<{
   monitor: MonitorQuoteEventRuntime;
@@ -129,7 +131,8 @@ export async function createDistanceSwitchPublicationFixture(
       }),
   });
   const base = createMonitorContextDouble({ config, symbolRegistry, riskChecker });
-  const manager = createAutoSymbolManager({
+  const manager = createSeatSwitchWorkflow({
+    logger: createLoggerStub(),
     monitorConfig: config,
     symbolRegistry,
     marketDataClient,
@@ -139,18 +142,24 @@ export async function createDistanceSwitchPublicationFixture(
     clock: { now: params.now },
     getTradingCalendarSnapshot: () =>
       new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
-    findBestWarrant: async () => {
-      if (params.stage === 'BEFORE_PUBLICATION') {
-        stageReached.resolve(null);
-        await releaseStage.promise;
-      }
+    candidateSearch: {
+      resolveDistanceRange: (direction) =>
+        config.autoSearchConfig[
+          direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+        ],
+      findCandidate: async () => {
+        if (params.stage === 'BEFORE_PUBLICATION') {
+          stageReached.resolve(null);
+          await releaseStage.promise;
+        }
 
-      return createWarrantCandidate('NEXT_BULL.HK');
+        return createWarrantCandidate('NEXT_BULL.HK');
+      },
     },
   });
   const monitorContext = {
     ...base,
-    autoSymbolManager: {
+    seatSwitch: {
       ...manager,
       startSwitchOnDistance: async (...args: Parameters<typeof manager.startSwitchOnDistance>) => {
         const result = await manager.startSwitchOnDistance(...args);
@@ -225,7 +234,13 @@ export async function createDistanceSwitchPublicationFixture(
   });
   const monitor = createDefaultMonitorQuoteEventRuntime({
     logger: { error: () => {} },
-    trader,
+    executeStaticLiquidation: createStaticLiquidationExecutor({
+      trader,
+      marketDataClient,
+      snapshot,
+      postTradeConsistencyRuntime: settlement,
+      now: params.now,
+    }),
     marketDataClient,
     monitorContext,
     lastState,

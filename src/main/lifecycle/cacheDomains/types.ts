@@ -2,37 +2,37 @@ import type { RuntimeTermination } from '../../../types/runtime.js';
 import type { AccountPositionSnapshot, SnapshotToken } from '../../../types/accountPosition.js';
 import type { LastState, MonitorContext } from '../../../types/state.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
-import type { MarketDataClient, Trader } from '../../../types/services.js';
-import type { AutoSymbolManagerPort } from '../../../types/monitorContextPorts.js';
-import type { Processor } from '../../asyncProgram/types.js';
+import type { Trader } from '../../../types/services.js';
+import type { MarketDataClient, WarrantListCacheClearer } from '../../../types/marketPorts.js';
+import type { SeatSwitchWorkflow } from '../../../types/monitorContextPorts.js';
+import type { Processor } from '../../../runtime/asyncProgram/types.js';
 import type {
   TaskQueue,
   BuyTaskType,
   SellTaskType,
-} from '../../asyncProgram/tradeTaskQueue/types.js';
+} from '../../../runtime/asyncProgram/tradeTaskQueue/types.js';
 import type {
   MonitorTaskDataMap,
   MonitorTaskProcessor,
-} from '../../asyncProgram/monitorTaskProcessor/types.js';
-import type { MonitorTaskQueue } from '../../asyncProgram/monitorTaskQueue/types.js';
-import type { TradingRiskEventRuntime } from '../../tradingRiskEventRuntime/types.js';
-import type { BusinessEventProgram } from '../../businessEventProgram/types.js';
+} from '../../../runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskQueue } from '../../../runtime/asyncProgram/monitorTaskQueue/types.js';
+import type { TradingRiskEventRuntime } from '../../../runtime/tradingRiskEventRuntime/types.js';
+import type { BusinessEventProgram } from '../../../runtime/businessEventProgram/types.js';
 import type {
   MonitorQuoteEventRuntime,
   SwitchWakeupRuntime,
-} from '../../monitorQuoteEventRuntime/types.js';
+} from '../../../runtime/monitorQuoteEventRuntime/types.js';
 import type { MonitorDisplayRuntime } from '../../monitorDisplayRuntime/types.js';
 import type { TradingQuoteDisplayRuntime } from '../../tradingQuoteDisplayRuntime/types.js';
-import type { PeriodicSwitchWakeupRuntime } from '../../periodicSwitchWakeupRuntime/types.js';
+import type { PeriodicSwitchWakeupRuntime } from '../../../runtime/periodicSwitchWakeupRuntime/types.js';
 import type { QuoteSubscriptionRuntime } from '../../quoteSubscriptionRuntime/types.js';
-import type { AutoSearchWakeupRuntime } from '../../autoSearchWakeupRuntime/types.js';
-import type { SeatActivationDispatcher } from '../../seatActivationDispatcher/types.js';
-import type { SeatRuntimeCleanupDispatcher } from '../../seatRuntimeCleanupDispatcher/types.js';
-import type { WarrantListCache } from '../../../services/autoSymbolFinder/types.js';
-import type { SignalProcessor } from '../../../core/signalProcessor/types.js';
+import type { AutoSearchWakeupRuntime } from '../../../runtime/autoSearchWakeupRuntime/types.js';
+import type { SeatActivationDispatcher } from '../../../runtime/seatActivationDispatcher/types.js';
+import type { SeatRuntimeCleanupDispatcher } from '../../../runtime/seatRuntimeCleanupDispatcher/types.js';
+import type { OrdinaryBuyWorkflow } from '../../../application/ordinaryBuy/types.js';
 import type { DailyLossTracker } from '../../../types/risk.js';
-import type { LiquidationCooldownTracker } from '../../../services/liquidationCooldown/types.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../../../core/trader/protectiveLiquidationEpisodeTracker/types.js';
+import type { LiquidationCooldownTracker } from '../../../domain/liquidation/cooldown/types.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../../../domain/liquidation/episode/types.js';
 import type { Logger } from '../../../utils/logger/types.js';
 
 /**
@@ -93,8 +93,8 @@ export type SignalRuntimeDomainDeps = Readonly<{
 export type SeatDomainDeps = Readonly<{
   logger: Pick<Logger, 'debug'>;
   symbolRegistry: SymbolRegistry;
-  autoSymbolManager: Pick<AutoSymbolManagerPort, 'resetAllState'>;
-  warrantListCache: Pick<WarrantListCache, 'clear'>;
+  seatSwitch: Pick<SeatSwitchWorkflow, 'resetAllState'>;
+  warrantListCache: WarrantListCacheClearer;
 }>;
 
 /**
@@ -110,13 +110,13 @@ export type OrderDomainDeps = Readonly<{
 
 /**
  * 风险域依赖。
- * 类型用途：createRiskDomain 的入参，提供 signalProcessor、dailyLossTracker、monitorContext、liquidationCooldownTracker。
+ * 类型用途：createRiskDomain 的入参，提供普通 BUY 冷却清理、dailyLossTracker、monitorContext、liquidationCooldownTracker。
  * 数据来源：由 lifecycle 在注册 cacheDomains 时组装传入。
  * 使用范围：仅 lifecycle 模块使用。
  */
 export type RiskDomainDeps = Readonly<{
   logger: Pick<Logger, 'debug'>;
-  signalProcessor: SignalProcessor;
+  ordinaryBuy: Pick<OrdinaryBuyWorkflow, 'resetRiskCheckCooldown'>;
   dailyLossTracker: DailyLossTracker;
   protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;
   monitorContext: MonitorContext;

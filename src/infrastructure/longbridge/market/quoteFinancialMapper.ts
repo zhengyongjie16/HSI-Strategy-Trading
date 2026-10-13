@@ -2,7 +2,7 @@
 import { WarrantStatus } from 'longbridge';
 import { canonicalDecimal } from '../../../utils/numeric/exact.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import type { MarketQuoteContext } from '../../../types/services.js';
+import type { MarketQuoteContext } from '../../../types/marketPorts.js';
 
 /**
  * 将 SDK Decimal 或已保真文本映射为规范文本；缺失行情由调用方按既有无行情语义处理。

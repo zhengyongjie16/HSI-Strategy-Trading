@@ -1,0 +1,741 @@
+/**
+ * staticLiquidationExecutor 业务测试
+ *
+ * 功能：
+ * - 验证 monitor quote 驱动的静态距回收价清仓执行语义
+ * - 复用历史清仓执行态的业务契约
+ */
+import { describe, expect, it } from 'bun:test';
+import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+
+import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
+import { createStaticLiquidationExecutor } from '../../../src/application/staticLiquidation/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
+import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
+import type { RuntimeWritableSeatState, SeatState } from '../../../src/types/seat.js';
+import type { MarketDataClient } from '../../../src/types/marketPorts.js';
+import {
+  createAccountSnapshotDouble,
+  createDailyLossTrackerDouble,
+  createLiquidationCooldownTrackerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createMarketDataClientDouble,
+  createMonitorContextDouble,
+  createOrderRecorderDouble,
+  createPositionDouble,
+  createQuoteDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+  createTraderDouble,
+} from '../../helpers/testDoubles.js';
+
+const EXECUTION_TIME_ISO = '2026-04-08T10:00:00+08:00';
+const EXECUTION_TIME_MS = new Date(EXECUTION_TIME_ISO).getTime();
+const WAIT_RESOLVED_TIME_MS = EXECUTION_TIME_MS + 750;
+const EXPECTED_RETRY_AT_MS = EXECUTION_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
+const EXPECTED_WAIT_RESOLVED_RETRY_AT_MS = WAIT_RESOLVED_TIME_MS + ORDER_QUOTE_RETRY.INTERVAL_MS;
+
+function createDeferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+
+  return { promise, resolve };
+}
+
+function createLongSeatState(status: SeatState['status']): RuntimeWritableSeatState {
+  if (status === 'EMPTY' || status === 'SEARCHING') {
+    return {
+      symbol: null,
+      status,
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    };
+  }
+
+  if (status === 'ACTIVE') {
+    return {
+      symbol: 'BULL.HK',
+      status,
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: 1,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    };
+  }
+
+  return {
+    symbol: 'BULL.HK',
+    status,
+    lastSwitchAt: null,
+    lastSearchAt: null,
+    lastSeatActivatedAt: null,
+    callPrice: null,
+    searchFailCountToday: 0,
+    frozenTradingDayKey: null,
+  };
+}
+
+async function createExecutorHarness(
+  params: {
+    readonly executeSignalsExecutedCount?: number;
+    readonly executeSignalsExecutedCounts?: ReadonlyArray<number>;
+    readonly shouldLiquidateLong?: boolean;
+    readonly shouldLiquidateShort?: boolean;
+    readonly longSeatStatus?: 'EMPTY' | 'SEARCHING' | 'SWITCHING' | 'ACTIVATING' | 'ACTIVE';
+    readonly bumpLongSeatVersionAfterSignalBuild?: boolean;
+    readonly bumpLongSeatVersionAfterSubmission?: boolean;
+    readonly longQuoteAvailable?: boolean;
+    readonly shortQuoteAvailable?: boolean;
+    readonly monitorQuoteAvailable?: boolean;
+    readonly executionMonitorPrice?: string;
+    readonly waitResolvedTimeMs?: number;
+    readonly getQuotes?: MarketDataClient['getQuotes'];
+    readonly onExecuteSignalsStarted?: () => void;
+    readonly waitForExecuteSignals?: Promise<void>;
+  } = {},
+) {
+  const submittedActions: string[] = [];
+  const acceptedOrderIds: string[] = [];
+  const submittedTriggerTimes: number[] = [];
+  const liquidationMonitorPrices: string[] = [];
+  const clearedOrderSymbols: string[] = [];
+  const refreshedSymbols: string[] = [];
+  let clearedOrders = 0;
+  let refreshUnrealizedCalls = 0;
+  let currentNowMs = EXECUTION_TIME_MS;
+  let executeSignalsCallIndex = 0;
+  let longQuoteAvailable = params.longQuoteAvailable !== false;
+  const shortQuoteAvailable = params.shortQuoteAvailable !== false;
+
+  const orderRecorder = createOrderRecorderDouble({
+    clearBuyOrders: (symbol) => {
+      clearedOrders += 1;
+      clearedOrderSymbols.push(symbol);
+    },
+  });
+
+  const symbolRegistry = createSymbolRegistryDouble({
+    longSeat: createLongSeatState(params.longSeatStatus ?? 'ACTIVE'),
+    shortSeat: {
+      symbol: 'BEAR.HK',
+      status: 'ACTIVE',
+      lastSwitchAt: null,
+      lastSearchAt: null,
+      lastSeatActivatedAt: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    },
+  });
+  let shouldBumpLongSeatVersionOnNextRead = false;
+  const symbolRegistryWithVersionRace = {
+    ...symbolRegistry,
+    getSeatVersion: (direction: 'LONG' | 'SHORT') => {
+      const version = symbolRegistry.getSeatVersion(direction);
+      if (direction === 'LONG' && shouldBumpLongSeatVersionOnNextRead) {
+        shouldBumpLongSeatVersionOnNextRead = false;
+        const currentSeat = symbolRegistry.getSeatState(direction);
+        if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+          throw new Error('expected runtime ACTIVE LONG seat');
+        }
+
+        symbolRegistry.updateSeatStateWithVersionBump(direction, currentSeat);
+      }
+
+      return version;
+    },
+  };
+
+  const monitorContext = createMonitorContextDouble({
+    config: createMonitorConfig({
+      monitorSymbol: 'HSI.HK',
+      autoSearchConfig: {
+        autoSearchEnabled: false,
+        autoSearchMinDistancePctBull: null,
+        autoSearchMinDistancePctBear: null,
+        autoSearchMinTurnoverPerMinuteBull: null,
+        autoSearchMinTurnoverPerMinuteBear: null,
+        autoSearchExpiryMinMonths: 3,
+        autoSearchOpenDelayMinutes: 5,
+        switchIntervalMinutes: 0,
+        switchDistanceRangeBull: null,
+        switchDistanceRangeBear: null,
+      },
+      longSymbol: 'BULL.HK',
+      shortSymbol: 'BEAR.HK',
+    }),
+    symbolRegistry: symbolRegistryWithVersionRace,
+    orderRecorder,
+    riskChecker: createRiskCheckerDouble({
+      checkWarrantDistanceLiquidation: (_symbol, isLongSymbol, monitorCurrentPrice) => {
+        liquidationMonitorPrices.push(monitorCurrentPrice);
+        const shouldLiquidate = isLongSymbol
+          ? (params.shouldLiquidateLong ?? true)
+          : (params.shouldLiquidateShort ?? false);
+        if (shouldLiquidate) {
+          return {
+            shouldLiquidate: true,
+            reason: '触发清仓阈值',
+          };
+        }
+
+        return {
+          shouldLiquidate: false,
+        };
+      },
+      publishUnrealizedLossData: ({ symbol }) => {
+        refreshUnrealizedCalls += 1;
+        refreshedSymbols.push(symbol);
+      },
+    }),
+  });
+
+  const trader = createTraderDouble({
+    executeSignals: async (signals, callerAuthorization) => {
+      expect(callerAuthorization()).toBe(true);
+      for (const signal of signals) {
+        submittedActions.push(signal.action);
+        if (signal.triggerTime instanceof Date) {
+          submittedTriggerTimes.push(signal.triggerTime.getTime());
+        }
+      }
+
+      params.onExecuteSignalsStarted?.();
+      await params.waitForExecuteSignals;
+
+      if (params.bumpLongSeatVersionAfterSubmission) {
+        const currentSeat = symbolRegistry.getSeatState('LONG');
+        if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+          throw new Error('expected runtime ACTIVE LONG seat');
+        }
+
+        symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
+      }
+
+      const executedCount =
+        params.executeSignalsExecutedCounts?.[executeSignalsCallIndex++] ??
+        params.executeSignalsExecutedCount ??
+        signals.length;
+      const executedOrderIds = Array.from(
+        { length: executedCount },
+        (_, index) => `STATIC-LIQUIDATION-${executeSignalsCallIndex}-${index}`,
+      );
+      acceptedOrderIds.push(...executedOrderIds);
+      return { executedOrderIds, quoteFailures: [] };
+    },
+  });
+
+  const snapshot = await createSnapshotFixture({
+    account: createAccountSnapshotDouble('100000'),
+    positions: [
+      createPositionDouble({ symbol: 'BULL.HK', quantity: 200, availableQuantity: 200 }),
+      ...(params.shouldLiquidateShort
+        ? [createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 })]
+        : []),
+    ],
+  });
+  const termination = createTerminationRuntime({
+    closeTradingGate: () => {},
+    closeProducerAdmission: () => {},
+    stopProducers: [],
+    onSecondaryError: (error) => {
+      throw error;
+    },
+  });
+  const settlement = createPostTradeConsistencyRuntime({
+    snapshot,
+    termination,
+    getTrader: () => trader,
+    onPositionsCommitted: async (token) => {
+      if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
+        throw new Error('Stale static liquidation positions callback');
+    },
+    scheduler: {
+      scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+      clearTimer: (handle) => {
+        clearTimeout(handle);
+      },
+    },
+  });
+  settlement.bindBusinessDeps({
+    monitorContext,
+    dailyLossTracker: createDailyLossTrackerDouble(),
+    liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
+    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
+    mixedTradeLogRepository: {
+      appendCompletionIdempotent: () => {
+        throw new Error('unexpected completion');
+      },
+    },
+  });
+  settlement.start();
+  expect(await settlement.completeRebuildBaseline()).toBeTrue();
+  const receipt = await settlement.waitForFresh();
+  // 父 quote owner 在普通 commit 后捕获新选单 token，settlement 仍是原完成凭据。
+  for (const refreshAccount of [true, false]) {
+    await snapshot.requestRefresh({
+      source: 'SEAT_ACTIVATION',
+      dayEpoch: receipt.snapshotToken.dayEpoch,
+      refreshAccount,
+      refreshPositions: true,
+    }).result;
+    expect(settlement.isCurrent(receipt)).toBe(true);
+    expect(await settlement.waitForFresh()).toBe(receipt);
+  }
+
+  // paired baseline 已真实完成 R1/N1；后续观测只记录静态清仓的发布与席位竞争。
+  refreshUnrealizedCalls = 0;
+  refreshedSymbols.length = 0;
+  shouldBumpLongSeatVersionOnNextRead = params.bumpLongSeatVersionAfterSignalBuild ?? false;
+  const token = snapshot.getView().token;
+  const canContinue = () =>
+    !termination.isTerminated() &&
+    snapshot.isCurrent(token, { account: false, positions: true }) &&
+    settlement.isCurrent(receipt);
+
+  const productionExecutor = createStaticLiquidationExecutor({
+    trader,
+    snapshot,
+    postTradeConsistencyRuntime: settlement,
+    marketDataClient: createMarketDataClientDouble({
+      getQuotes:
+        params.getQuotes ??
+        (async () => {
+          if (params.waitResolvedTimeMs !== undefined) {
+            currentNowMs = params.waitResolvedTimeMs;
+          }
+
+          return new Map([
+            [
+              'HSI.HK',
+              params.monitorQuoteAvailable === false
+                ? null
+                : createQuoteDouble('HSI.HK', params.executionMonitorPrice ?? '20000', 100),
+            ],
+            ['BULL.HK', longQuoteAvailable ? createQuoteDouble('BULL.HK', '1', 100) : null],
+            ['BEAR.HK', shortQuoteAvailable ? createQuoteDouble('BEAR.HK', '1', 100) : null],
+          ]);
+        }),
+    }),
+    now: () => new Date(currentNowMs),
+  });
+  return {
+    executor: productionExecutor,
+    canContinue,
+    monitorContext,
+    submittedActions,
+    getAcceptedOrderIds: () => [...acceptedOrderIds],
+    getSubmittedTriggerTimes: () => [...submittedTriggerTimes],
+    getLiquidationMonitorPrices: () => [...liquidationMonitorPrices],
+    getClearedOrderSymbols: () => [...clearedOrderSymbols],
+    getRefreshedSymbols: () => [...refreshedSymbols],
+    getClearedOrders: () => clearedOrders,
+    getRefreshUnrealizedCalls: () => refreshUnrealizedCalls,
+    setLongQuoteAvailable: (available: boolean) => {
+      longQuoteAvailable = available;
+    },
+  };
+}
+
+describe('staticLiquidationExecutor', () => {
+  it('executes static liquidation with fresh execution monitor quote', async () => {
+    const harness = await createExecutorHarness({
+      executionMonitorPrice: '19500',
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({ kind: 'COMPLETED' });
+    // 候选计算与最终 broker 前重检都必须消费同一精确执行报价。
+    expect(harness.getLiquidationMonitorPrices()).toEqual(['19500', '19500']);
+    expect(harness.submittedActions).toEqual(['SELLCALL']);
+    expect(harness.getSubmittedTriggerTimes()).toEqual([EXECUTION_TIME_MS]);
+    expect(harness.getClearedOrders()).toBe(1);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(1);
+  });
+
+  it('returns WAIT with monitor and trading wakeup symbols when execution monitor quote is unavailable', async () => {
+    const harness = await createExecutorHarness({
+      monitorQuoteAvailable: false,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result.kind).toBe('WAIT');
+    if (result.kind !== 'WAIT') {
+      throw new Error('result should be WAIT');
+    }
+
+    expect(result.wakeupSymbols).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
+    expect(result.retryAtMs).toBe(EXPECTED_RETRY_AT_MS);
+    expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('returns the existing finite WAIT owner when the side-effect-free quote batch has an external failure', async () => {
+    const externalFailure = await createExternalApiRequestError({
+      operation: 'test.staticLiquidationQuotes',
+      attempts: 1,
+      cause: new Error('quotes unavailable'),
+    });
+    const harness = await createExecutorHarness({
+      getQuotes: async () => {
+        throw externalFailure;
+      },
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({
+      kind: 'WAIT',
+      wakeupSymbols: ['HSI.HK', 'BULL.HK', 'BEAR.HK'],
+      retryAtMs: EXPECTED_RETRY_AT_MS,
+    });
+    expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('anchors WAIT retry time to when the wait decision finishes instead of execution start', async () => {
+    const harness = await createExecutorHarness({
+      monitorQuoteAvailable: false,
+      waitResolvedTimeMs: WAIT_RESOLVED_TIME_MS,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result.kind).toBe('WAIT');
+    if (result.kind !== 'WAIT') {
+      throw new Error('result should be WAIT');
+    }
+
+    expect(result.retryAtMs).toBe(EXPECTED_WAIT_RESOLVED_RETRY_AT_MS);
+  });
+
+  it('exhausts static liquidation retry scheduling at the configured limit', async () => {
+    const harness = await createExecutorHarness({
+      monitorQuoteAvailable: false,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: ORDER_QUOTE_RETRY.MAX_ATTEMPTS,
+    });
+
+    expect(result).toEqual({
+      kind: 'WAIT',
+      wakeupSymbols: ['HSI.HK', 'BULL.HK', 'BEAR.HK'],
+      retryAtMs: null,
+    });
+  });
+
+  it('returns WAIT with monitor and trading wakeup symbols when long trading quote is unavailable', async () => {
+    const harness = await createExecutorHarness({
+      longQuoteAvailable: false,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result.kind).toBe('WAIT');
+    if (result.kind !== 'WAIT') {
+      throw new Error('result should be WAIT');
+    }
+
+    expect(result.wakeupSymbols).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
+    expect(result.retryAtMs).toBe(EXPECTED_RETRY_AT_MS);
+    expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('still executes the short-side liquidation candidate when long trading quote is unavailable', async () => {
+    const harness = await createExecutorHarness({
+      longQuoteAvailable: false,
+      shouldLiquidateLong: false,
+      shouldLiquidateShort: true,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({ kind: 'COMPLETED' });
+    expect(harness.submittedActions).toEqual(['SELLPUT']);
+    expect(harness.getClearedOrderSymbols()).toEqual(['BEAR.HK']);
+    expect(harness.getRefreshedSymbols()).toEqual(['BEAR.HK']);
+    expect(harness.getClearedOrders()).toBe(1);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(1);
+  });
+
+  it('keeps WAIT ownership after submitting short-side liquidation when long side still needs a quote', async () => {
+    const harness = await createExecutorHarness({
+      longQuoteAvailable: false,
+      shouldLiquidateLong: true,
+      shouldLiquidateShort: true,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result.kind).toBe('WAIT');
+    if (result.kind !== 'WAIT') {
+      throw new Error('result should be WAIT');
+    }
+
+    expect(result.wakeupSymbols).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
+    expect(result.retryAtMs).toBe(EXPECTED_RETRY_AT_MS);
+    expect(harness.submittedActions).toEqual(['SELLPUT']);
+    expect(harness.getClearedOrderSymbols()).toEqual(['BEAR.HK']);
+    expect(harness.getRefreshedSymbols()).toEqual(['BEAR.HK']);
+    expect(harness.getClearedOrders()).toBe(1);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(1);
+  });
+
+  it('keeps WAIT ownership after submitting long-side liquidation when short side still needs a quote', async () => {
+    const harness = await createExecutorHarness({
+      shortQuoteAvailable: false,
+      shouldLiquidateLong: true,
+      shouldLiquidateShort: true,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result.kind).toBe('WAIT');
+    if (result.kind !== 'WAIT') {
+      throw new Error('result should be WAIT');
+    }
+
+    expect(result.wakeupSymbols).toEqual(['HSI.HK', 'BULL.HK', 'BEAR.HK']);
+    expect(result.retryAtMs).toBe(EXPECTED_RETRY_AT_MS);
+    expect(harness.submittedActions).toEqual(['SELLCALL']);
+    expect(harness.getClearedOrderSymbols()).toEqual(['BULL.HK']);
+    expect(harness.getRefreshedSymbols()).toEqual(['BULL.HK']);
+    expect(harness.getClearedOrders()).toBe(1);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(1);
+  });
+
+  it('retries only the unresolved direction after a mixed submit and WAIT result', async () => {
+    const harness = await createExecutorHarness({
+      longQuoteAvailable: false,
+      shouldLiquidateLong: true,
+      shouldLiquidateShort: true,
+    });
+    const submittedDirections = new Set<'LONG' | 'SHORT'>();
+
+    const firstResult = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+      onDirectionSubmitted: (direction) => {
+        submittedDirections.add(direction);
+      },
+    });
+    expect(firstResult.kind).toBe('WAIT');
+    if (firstResult.kind !== 'WAIT') {
+      throw new Error('first result should be WAIT');
+    }
+
+    harness.setLongQuoteAvailable(true);
+    const secondResult = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 1,
+      excludedDirections: submittedDirections,
+      onDirectionSubmitted: (direction) => {
+        submittedDirections.add(direction);
+      },
+    });
+
+    expect(secondResult).toEqual({ kind: 'COMPLETED' });
+    expect(harness.submittedActions).toEqual(['SELLPUT', 'SELLCALL']);
+    expect(harness.getClearedOrderSymbols()).toEqual(['BEAR.HK', 'BULL.HK']);
+    expect(harness.getRefreshedSymbols()).toEqual(['BEAR.HK', 'BULL.HK']);
+  });
+
+  it('returns NOOP instead of WAIT when long side has position but liquidation is not triggered', async () => {
+    const harness = await createExecutorHarness({
+      shouldLiquidateLong: false,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({ kind: 'NOOP' });
+    expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('keeps clearing the successfully submitted candidate when later candidate only partially submits', async () => {
+    const harness = await createExecutorHarness({
+      executeSignalsExecutedCounts: [1, 0],
+      shouldLiquidateShort: true,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({ kind: 'COMPLETED' });
+    expect(harness.submittedActions).toEqual(['SELLCALL', 'SELLPUT']);
+    expect(harness.getClearedOrderSymbols()).toEqual(['BULL.HK']);
+    expect(harness.getRefreshedSymbols()).toEqual(['BULL.HK']);
+    expect(harness.getClearedOrders()).toBe(1);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(1);
+  });
+
+  it('keeps evaluating later candidates when earlier candidate is not submitted', async () => {
+    const harness = await createExecutorHarness({
+      executeSignalsExecutedCounts: [0, 1],
+      shouldLiquidateShort: true,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({ kind: 'COMPLETED' });
+    expect(harness.submittedActions).toEqual(['SELLCALL', 'SELLPUT']);
+    expect(harness.getClearedOrderSymbols()).toEqual(['BEAR.HK']);
+    expect(harness.getRefreshedSymbols()).toEqual(['BEAR.HK']);
+    expect(harness.getClearedOrders()).toBe(1);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(1);
+  });
+
+  it('does not clear caches when long seatVersion changes before submission settles', async () => {
+    const harness = await createExecutorHarness({
+      bumpLongSeatVersionAfterSignalBuild: true,
+    });
+
+    await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('preserves the accepted broker ID but does not publish into a changed seat after submission returns', async () => {
+    const harness = await createExecutorHarness({
+      bumpLongSeatVersionAfterSubmission: true,
+    });
+
+    const result = await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(result).toEqual({ kind: 'COMPLETED' });
+    expect(harness.submittedActions).toEqual(['SELLCALL']);
+    expect(harness.getAcceptedOrderIds()).toEqual(['STATIC-LIQUIDATION-0-0']);
+    expect(harness.getClearedOrderSymbols()).toEqual([]);
+    expect(harness.getRefreshedSymbols()).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('skips cache mutation when long seat is no longer active at execution time', async () => {
+    const harness = await createExecutorHarness({
+      longSeatStatus: 'SWITCHING',
+    });
+
+    await harness.executor({
+      canContinue: harness.canContinue,
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+    });
+
+    expect(harness.submittedActions).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+
+  it('does not continue static liquidation after takeover begins while a submission is in flight', async () => {
+    const submissionStarted = createDeferred();
+    const releaseSubmission = createDeferred();
+    let canContinue = true;
+    const submittedDirections: Array<'LONG' | 'SHORT'> = [];
+    const harness = await createExecutorHarness({
+      onExecuteSignalsStarted: () => {
+        submissionStarted.resolve();
+      },
+      waitForExecuteSignals: releaseSubmission.promise,
+    });
+
+    const executionPromise = harness.executor({
+      monitorContext: harness.monitorContext,
+      retryAttempts: 0,
+      canContinue: () => canContinue && harness.canContinue(),
+      onDirectionSubmitted: (direction) => {
+        submittedDirections.push(direction);
+      },
+    });
+
+    await submissionStarted.promise;
+    canContinue = false;
+    releaseSubmission.resolve();
+
+    const result = await executionPromise;
+
+    expect(result).toEqual({ kind: 'COMPLETED' });
+    expect(harness.submittedActions).toEqual(['SELLCALL']);
+    expect(harness.getAcceptedOrderIds()).toEqual(['STATIC-LIQUIDATION-0-0']);
+    expect(submittedDirections).toEqual([]);
+    expect(harness.getClearedOrders()).toBe(0);
+    expect(harness.getRefreshUnrealizedCalls()).toBe(0);
+  });
+});

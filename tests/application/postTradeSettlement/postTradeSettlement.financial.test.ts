@@ -7,8 +7,8 @@ import {
   createDailyLossOrderAnalysisDeps,
 } from '../../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createUnrealizedLossChecker } from '../../../src/core/riskController/unrealizedLossChecker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import type { SettlementProtectionCompletion } from '../../../src/application/postTradeSettlement/types.js';
 import { exactMultiply } from '../../../src/utils/numeric/exact.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
@@ -68,7 +68,10 @@ test('high-revision same-quantity authoritative corrections preserve exact cost/
     settlementRefreshNeedRecorder: workflow,
   });
   const episodes = createProtectiveLiquidationEpisodeTracker();
-  const risk = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: '1000' });
+  const risk = createUnrealizedLossChecker({
+    maxUnrealizedLossPerSymbol: '1000',
+    onMissingData: () => {},
+  });
   const completions: SettlementProtectionCompletion[] = [];
   const cooldowns: number[] = [];
   workflow.bindBusinessDeps({

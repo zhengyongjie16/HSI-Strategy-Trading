@@ -2,7 +2,7 @@
  * 席位缓存域（CacheDomain: seat）
  *
  * 午夜清理：
- * - 重置唯一监控标的的自动换仓状态（autoSymbolManager）
+ * - 重置唯一监控标的的自动换仓状态（seatSwitch）
  * - 清空轮证列表缓存
  * - 清空所有席位绑定（保留 lastSwitchAt / lastSearchAt 时间戳，重置 lastSeatActivatedAt）
  *
@@ -52,7 +52,7 @@ function clearAllSeatBindings(symbolRegistry: SymbolRegistry): number {
  * @returns 实现 CacheDomain 的席位域实例
  */
 export function createSeatDomain(deps: SeatDomainDeps): CacheDomain {
-  const { logger, symbolRegistry, autoSymbolManager, warrantListCache } = deps;
+  const { logger, symbolRegistry, seatSwitch, warrantListCache } = deps;
   return {
     midnightClear(ctx: LifecycleContext): void {
       if (ctx.invalidateSeatActivationCarryover === true) {
@@ -61,7 +61,7 @@ export function createSeatDomain(deps: SeatDomainDeps): CacheDomain {
         captureSeatActivationCarryover({ symbolRegistry });
       }
 
-      autoSymbolManager.resetAllState();
+      seatSwitch.resetAllState();
       warrantListCache.clear();
       const changedSeats = clearAllSeatBindings(symbolRegistry);
 

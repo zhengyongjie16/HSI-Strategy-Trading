@@ -1,6 +1,6 @@
 /** 真实成交准入→精确成本依据→智能平仓→结算集成；保留原十二场景的经济和防重 oracle。 */
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { resolveSellQuantityBySmartClose } from '../../../src/core/signalProcessor/utils.js';
+import { resolveSellQuantityBySmartClose } from '../../../src/application/ordinarySell/quantitySelection.js';
 import { createExecutionFixture } from './executionFixture.js';
 
 const emptyCalendarSnapshot = new Map<string, { isTradingDay: boolean; isHalfDay: boolean }>();

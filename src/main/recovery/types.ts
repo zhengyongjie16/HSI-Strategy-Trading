@@ -1,13 +1,12 @@
-import type { Logger } from '../../utils/logger/types.js';
-import type { MonitorConfig, TradingConfig } from '../../types/config.js';
+import type { TradingConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { MarketDataClient, RawOrderFromAPI } from '../../types/services.js';
-import type { WarrantListCacheConfig } from '../../services/autoSymbolFinder/types.js';
+import type { RawOrderFromAPI } from '../../types/services.js';
+import type { StartupSeatSearch } from '../../application/autoSearch/types.js';
 
 /**
  * prepareSeatsForRuntime() 的依赖注入对象。
- * 类型用途：统一表达交易日快照加载时恢复席位所需的配置、持仓、订单、行情客户端、时间依赖与同步自动寻标准入判断。
+ * 类型用途：统一表达交易日快照加载时恢复席位所需的配置、持仓、订单、启动寻标与同步准入判断。
  * 数据来源：由运行时快照加载链路组装传入。
  * 使用范围：仅席位恢复流程使用。
  */
@@ -16,26 +15,11 @@ export type PrepareSeatsForRuntimeDeps = {
   readonly symbolRegistry: SymbolRegistry;
   readonly positions: ReadonlyArray<Position>;
   readonly orders: ReadonlyArray<RawOrderFromAPI>;
-  readonly marketDataClient: MarketDataClient;
+  readonly startupSeatSearch: StartupSeatSearch;
+  readonly canContinue: () => boolean;
   readonly now: () => Date;
-  readonly logger: Logger;
-  readonly getTradingMinutesSinceOpen: (currentTime: Date) => number;
   readonly resolveCanAutoSearchNow: (params: {
     readonly currentTime: Date;
     readonly openDelayMinutes: number;
   }) => boolean;
-  readonly warrantListCacheConfig?: WarrantListCacheConfig;
 };
-
-/**
- * 运行时恢复寻标参数。
- * 类型用途：封装 searchSeatSymbol 所需的监控标的、方向、自动寻标配置与当前时间。
- * 数据来源：由 prepareSeatsForRuntime 在尝试补空席位时组装传入。
- * 使用范围：仅运行时席位恢复流程内部使用。
- */
-export type RuntimeRecoverySearchParams = Readonly<{
-  monitorSymbol: string;
-  direction: 'LONG' | 'SHORT';
-  autoSearchConfig: MonitorConfig['autoSearchConfig'];
-  currentTime: Date;
-}>;

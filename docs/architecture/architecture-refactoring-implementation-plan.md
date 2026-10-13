@@ -1193,6 +1193,12 @@ P2 已创建并迁移正式 settlement owner；P3A 不再创建第二个 workflo
 - `waitForFresh` 调用方无需了解 snapshot coordinator 内部。
 - 业务失败和内部 fatal 分类不变。
 
+#### P3A 独立验收进度
+
+- 只读验收已确认 P2 owner 闭合，无待补业务缺口；11 个文件的定向验证为 **97 pass / 0 fail，816 assertions**。
+- 保留唯一 settlement 完成事务，不新增 wrapper、第二 workflow 或重复测试。
+- P3B 新 episode/cooldown/repository 接线完成后，仍须在最终集成中复核同实例注入与 completion 唯一调用点；本记录不表示整个 P3 已验收，也不更新 stage baseline。
+
 ### 9.2 P3B：ProtectiveLiquidationWorkflow
 
 #### 范围
@@ -1247,8 +1253,9 @@ current ACTIVATING identity / lifecycle admission
   -> capture order-read token before I/O
   -> read allOrders for this task
   -> related-symbol preflight + order-read token validation
-  -> daily loss recalculate / commit
+  -> DailyLoss prepare (no state publish)
   -> current-direction local order rebuild + consumed-fact coverage commit
+  -> DailyLoss publish
   -> canonical account/position paired refresh (SEAT_ACTIVATION)
   -> validate receipt + current identity
   -> await position-hold subscription reconcile from current truth
@@ -1264,7 +1271,7 @@ finally:
 
 必须保持以下边界：
 
-- **订单读写：** 发读前捕获 `dayEpoch + snapshotGeneration + direction + symbol + seatVersion + ACTIVATING`，每任务读取自己的 allOrders；返回后及日损/订单发布前复核。预检覆盖新、不同的旧、当前双方向相关标的。预检、日损重算/提交、方向订单列表及其实际消费覆盖提交为同一无 await 本地段；日损不依赖重建后的缓存，预检不能替代其归属校验。旧快照缺少新 WS orderId 时，当前日损同 ID 合并和订单列表替换都不保护该新事实；必须实现 P1.7 的早期栅栏，不能靠后置 receipt 补合法性。
+- **订单读写：** 发读前捕获 `dayEpoch + snapshotGeneration + direction + symbol + seatVersion + ACTIVATING`，每任务读取自己的 allOrders；返回后及日损/订单发布前复核。预检覆盖新、不同的旧、当前双方向相关标的。用户已确认保留现有同步顺序：预检 → DailyLoss prepare → 方向订单列表及其实际消费覆盖 commit → DailyLoss publish，全段不插入 await；prepare 不发布日损运行态，且不依赖重建后的缓存，预检不能替代其归属校验。旧快照缺少新 WS orderId 时，当前日损同 ID 合并和订单列表替换都不保护该新事实；必须实现 P1.7 的早期栅栏，不能靠后置 receipt 补合法性。
 - **幂等基线：** 继承 P1.7 / 设计 §9.2 的共同 broker orderId 与实际消费覆盖，不在 P3C 重建第二账或首次补防重。相同已消费事实的同单 WS/query 不再次追加 BUY/扣减 SELL；OPEN partial、已消除 BUY、已消费 SELL、空结果与同量金额修正按完整契约处理，不用日损去重/幸存列表替代，也不跳过终态资源收尾。
 - **分阶段追赶：** 发读期间 generation 变化但身份仍有效，由同一 owner 追赶当前代次、重读未提交订单输入；不消耗外部失败重试、不 EMPTY、不重开 settlement stale。跨入口幂等前提成立后，此前合法提交后有新事实，保留提交并按正确更新的当前经济投影重做未提交的后置准备；普通 commitRevision 变化不重拉订单，只让依赖旧 revision 的派生重新准备。迟到结果不计为新席位成功/失败，内部错误仍先分类、不能按过期吞掉。
 - **snapshot/订阅/风险：** coordinator 只 read/validate/commit/receipt，不等待业务 ready；activation owner 校验 receipt 后等待当前事实的持仓订阅，不调用 `waitForFresh()`。每个 await 后复核生命周期、epoch、身份及适用 generation/revision；当前字段足够则取新 receipt 重算，否则补读。R1/N1 数学上不依赖订阅，但现方法直接发布共享缓存，故保留订阅成功后才发布的业务屏障。最终计算/发布、条件化旧标本地买单清理、warrant/name、ACTIVE 不插入 await；有异步准备必须 compare-and-publish，禁止先写后检。旧标清理只在 previousSymbol 不同于新标且无当前席位归属时发生，不删除真实持仓/成交或全局订阅。

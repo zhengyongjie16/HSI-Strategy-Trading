@@ -18,12 +18,12 @@
  * 错误处理：
  * - 任一步骤失败即整体抛出，由生命周期管理器负责重试
  */
-import type { RuntimeTermination } from '../../types/runtime.js';
+import { commitRebuiltSeatActivation } from '../../application/seatActivation/rebuiltSeats.js';
+import type { WarrantRiskRefresh } from '../../application/riskRefresh/types.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { Quote } from '../../types/quote.js';
-import type { SymbolRegistry } from '../../types/seat.js';
-import type { MarketDataClient, RawOrderFromAPI } from '../../types/services.js';
+import type { RawOrderFromAPI } from '../../types/services.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
 import type {
@@ -93,15 +93,16 @@ function rebuildOrderRecords(
  * 优先使用席位缓存的 callPrice，否则从 API 重新拉取。
  */
 async function refreshSeatWarrantInfo(
-  marketDataClient: MarketDataClient,
+  warrantRiskRefresh: WarrantRiskRefresh,
   monitorContext: MonitorContext,
   symbol: string | null,
   quote: Quote | null,
   isLongSymbol: boolean,
   callPriceFromSeat: string | null,
-): Promise<void> {
+  isCurrent: () => boolean,
+): Promise<boolean> {
   if (!symbol) {
-    return;
+    return true;
   }
 
   const symbolName = quote?.name ?? null;
@@ -116,52 +117,58 @@ async function refreshSeatWarrantInfo(
       throw new Error(result.reason);
     }
 
-    return;
+    return true;
   }
 
-  const result = await monitorContext.riskChecker.refreshWarrantInfoForSymbol(
-    marketDataClient,
+  const result = await warrantRiskRefresh.refreshWarrantInfoForSymbol(
     symbol,
     isLongSymbol,
+    isCurrent,
     symbolName,
   );
+  if (result.status === 'INVALIDATED') return false;
+
   if (result.status === 'error' || result.status === 'skipped') {
     const reason = result.status === 'error' ? result.reason : '未提供行情客户端';
     throw new Error(reason);
   }
+
+  return true;
 }
 
 /**
  * 重建唯一监控标的已绑定席位的牛熊证风险缓存（收回价等关键风控数据）。
  */
 async function rebuildWarrantRiskCache(
-  marketDataClient: MarketDataClient,
+  warrantRiskRefresh: WarrantRiskRefresh,
   monitorContext: MonitorContext,
   quotesMap: ReadonlyMap<string, Quote | null>,
   isCurrent: () => boolean,
 ): Promise<boolean> {
   const longSeatState = monitorContext.symbolRegistry.getSeatState('LONG');
   const shortSeatState = monitorContext.symbolRegistry.getSeatState('SHORT');
-  await refreshSeatWarrantInfo(
-    marketDataClient,
+  const longRefreshed = await refreshSeatWarrantInfo(
+    warrantRiskRefresh,
     monitorContext,
     hasSeatSymbol(longSeatState) ? longSeatState.symbol : null,
     hasSeatSymbol(longSeatState) ? (quotesMap.get(longSeatState.symbol) ?? null) : null,
     true,
     hasSeatSymbol(longSeatState) ? (longSeatState.callPrice ?? null) : null,
+    isCurrent,
   );
 
-  if (!isCurrent()) return false;
+  if (!longRefreshed || !isCurrent()) return false;
 
-  await refreshSeatWarrantInfo(
-    marketDataClient,
+  const shortRefreshed = await refreshSeatWarrantInfo(
+    warrantRiskRefresh,
     monitorContext,
     hasSeatSymbol(shortSeatState) ? shortSeatState.symbol : null,
     hasSeatSymbol(shortSeatState) ? (quotesMap.get(shortSeatState.symbol) ?? null) : null,
     false,
     hasSeatSymbol(shortSeatState) ? (shortSeatState.callPrice ?? null) : null,
+    isCurrent,
   );
-  return isCurrent();
+  return shortRefreshed && isCurrent();
 }
 
 /**
@@ -193,36 +200,6 @@ function rebuildUnrealizedLossCache(
 }
 
 /**
- * 在重建完成后，将已完成 admission 与缓存初始化的 seat 统一推进到 ACTIVE。
- */
-function activateRebuiltSeats(
-  monitorContext: MonitorContext,
-  symbolRegistry: SymbolRegistry,
-  nowMs: number,
-  termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>,
-): void {
-  for (const direction of ['LONG', 'SHORT'] as const) {
-    if (termination.isTerminated()) return;
-
-    const seatState = monitorContext.symbolRegistry.getSeatState(direction);
-    if (!hasSeatSymbol(seatState)) {
-      continue;
-    }
-
-    monitorContext.symbolRegistry.updateSeatState(direction, {
-      ...seatState,
-      status: 'ACTIVE',
-      lastSeatActivatedAt:
-        resolveSeatActivationCarryover({
-          symbolRegistry,
-          direction,
-          symbol: seatState.symbol,
-        }) ?? nowMs,
-    });
-  }
-}
-
-/**
  * 创建交易日状态重建函数（工厂）。
  * 注入依赖后返回 rebuildTradingDayState，在开盘重建阶段以 SymbolRegistry 为席位真相，刷新名称缓存、重建订单与风控缓存并展示账户持仓。
  *
@@ -234,6 +211,7 @@ export function createRebuildTradingDayState(
 ): (params: RebuildTradingDayStateParams) => Promise<RebuildTradingDayStateResult> {
   const {
     marketDataClient,
+    warrantRiskRefresh,
     termination,
     trader,
     lastState,
@@ -352,7 +330,15 @@ export function createRebuildTradingDayState(
       invalidation = resolveInvalidation();
       if (invalidation !== null) return invalidation;
 
-      await rebuildWarrantRiskCache(marketDataClient, monitorContext, quotesMap, isCurrent);
+      if (
+        !(await rebuildWarrantRiskCache(warrantRiskRefresh, monitorContext, quotesMap, isCurrent))
+      ) {
+        invalidation = resolveInvalidation();
+        if (invalidation !== null) return invalidation;
+
+        throw new Error('[Lifecycle] warrant 刷新无授权失效却返回 INVALIDATED');
+      }
+
       invalidation = resolveInvalidation();
       if (invalidation !== null) return invalidation;
 
@@ -360,7 +346,41 @@ export function createRebuildTradingDayState(
       invalidation = resolveInvalidation();
       if (invalidation !== null) return invalidation;
 
-      activateRebuiltSeats(monitorContext, symbolRegistry, now.getTime(), termination);
+      const activationCommitted = commitRebuiltSeatActivation(
+        {
+          symbolRegistry,
+          snapshot,
+          getIsTradingEnabled: () => lastState.isTradingEnabled,
+          isTerminated: termination.isTerminated,
+        },
+        {
+          snapshotToken,
+          seats: seats.flatMap(({ direction, seatState, seatVersion }) =>
+            hasSeatSymbol(seatState)
+              ? [
+                  {
+                    direction,
+                    symbol: seatState.symbol,
+                    status: seatState.status,
+                    seatVersion,
+                    lastSeatActivatedAt:
+                      resolveSeatActivationCarryover({
+                        symbolRegistry,
+                        direction,
+                        symbol: seatState.symbol,
+                      }) ?? now.getTime(),
+                  },
+                ]
+              : [],
+          ),
+        },
+      );
+      if (!activationCommitted) {
+        invalidation = resolveInvalidation();
+        if (invalidation !== null) return invalidation;
+
+        throw new Error('[Lifecycle] 重建激活无授权失效却未提交');
+      }
 
       for (const { seatState } of seats) {
         if (hasSeatSymbol(seatState)) seatState.status = 'ACTIVE';

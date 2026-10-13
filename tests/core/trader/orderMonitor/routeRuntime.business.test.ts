@@ -17,7 +17,7 @@ import type {
   OrderMonitorTrackedOrder,
   RouteRuntimeDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
-import type { QuoteUpdatedEvent } from '../../../../src/types/services.js';
+import type { QuoteUpdatedEvent } from '../../../../src/types/marketPorts.js';
 
 function createRouteRuntime(
   deps: Omit<RouteRuntimeDeps, 'now' | 'scheduleTimer' | 'clearTimer' | 'termination'> &

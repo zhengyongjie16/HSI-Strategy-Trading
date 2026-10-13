@@ -1,7 +1,7 @@
 /**
  * 席位缓存域单元测试
  *
- * 覆盖：midnightClear 调用 autoSymbolManager.resetAllState、warrantListCache.clear、
+ * 覆盖：midnightClear 调用 seatSwitch.resetAllState、warrantListCache.clear、
  * clearAllSeatBindings
  */
 import { describe, it, expect } from 'bun:test';
@@ -55,7 +55,7 @@ describe('createSeatDomain', () => {
       direction: string;
       nextState: SeatState;
     }> = [];
-    const autoSymbolManager = {
+    const seatSwitch = {
       resetAllState: () => {
         resetAllStateCount += 1;
       },
@@ -88,7 +88,7 @@ describe('createSeatDomain', () => {
     const domain = createSeatDomain({
       logger: createLoggerDouble(),
       symbolRegistry,
-      autoSymbolManager,
+      seatSwitch,
       warrantListCache,
     });
 
@@ -152,7 +152,7 @@ describe('createSeatDomain', () => {
       status: 'ACTIVE',
       lastSeatActivatedAt: 310,
     };
-    const autoSymbolManager = { resetAllState: () => {} };
+    const seatSwitch = { resetAllState: () => {} };
     const symbolRegistry: SymbolRegistry = {
       getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longSeatState : shortSeatState;
@@ -184,7 +184,7 @@ describe('createSeatDomain', () => {
     const domain = createSeatDomain({
       logger: createLoggerDouble(),
       symbolRegistry,
-      autoSymbolManager,
+      seatSwitch,
       warrantListCache,
     });
 
@@ -233,7 +233,7 @@ describe('createSeatDomain', () => {
       status: 'ACTIVE',
       lastSeatActivatedAt: 310,
     };
-    const autoSymbolManager = { resetAllState: () => {} };
+    const seatSwitch = { resetAllState: () => {} };
     const symbolRegistry: SymbolRegistry = {
       getSeatState: (direction: 'LONG' | 'SHORT') => {
         return direction === 'LONG' ? longSeatState : shortSeatState;
@@ -251,7 +251,7 @@ describe('createSeatDomain', () => {
     const domain = createSeatDomain({
       logger: createLoggerDouble(),
       symbolRegistry,
-      autoSymbolManager,
+      seatSwitch,
       warrantListCache,
     });
 

@@ -1,10 +1,7 @@
-import type { StrategyDisplayItem } from '../../core/strategy/types.js';
+import type { StrategyDisplayItem } from '../../types/strategy.js';
 import type { Quote } from '../../types/quote.js';
-import type {
-  QuoteUpdatedEvent,
-  UnrealizedLossMetrics,
-  WarrantDistanceInfo,
-} from '../../types/services.js';
+import type { QuoteUpdatedEvent } from '../../types/marketPorts.js';
+import type { UnrealizedLossMetrics, WarrantDistanceInfo } from '../../types/services.js';
 
 /** 交易行情原始金融文本在终态一次格式化的展示投影，不回流价格或涨跌事实。 */
 export type QuoteDisplay = {

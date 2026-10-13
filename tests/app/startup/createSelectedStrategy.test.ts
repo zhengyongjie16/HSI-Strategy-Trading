@@ -1,5 +1,5 @@
+/** 选中策略创建与清理边界：只创建一次，先登记 destroy 后拒绝错误端口，跨日复用原实例。 */
 import { describe, expect, it, mock } from 'bun:test';
-import { Period } from 'longbridge';
 import { createSelectedStrategy } from '../../../src/app/startup/createSelectedStrategy.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import type { PreparedStrategySelection } from '../../../src/app/startup/types.js';
@@ -7,7 +7,7 @@ import type {
   StrategyDeps,
   StrategyMarketContext,
   TradingSignalStrategy,
-} from '../../../src/core/strategy/types.js';
+} from '../../../src/types/strategy.js';
 
 const deps: StrategyDeps = {
   clock: { now: () => new Date(0) },
@@ -40,20 +40,41 @@ function selection(value: unknown): PreparedStrategySelection {
 describe('selected strategy cleanup boundary', () => {
   it('creates the single valid instance and destroys once across repeated cleanup', async () => {
     let destroyed = 0;
+    let created = 0;
+    let resets = 0;
     const onCandlestick = mock(() => null);
     const instance = {
       ...strategy(() => {
         destroyed++;
       }),
       onCandlestick,
+      resetForTradingDay: () => {
+        resets++;
+      },
     };
     const cleanup = createCleanup();
-    const selected = createSelectedStrategy(selection(instance), deps, cleanup);
+    const selected = createSelectedStrategy(
+      {
+        strategyId: 'selected',
+        prepared: {
+          create: () => {
+            created++;
+            return instance;
+          },
+        },
+      },
+      deps,
+      cleanup,
+    );
     expect(selected).toBe(instance);
+    selected.resetForTradingDay();
+    selected.resetForTradingDay();
+    expect(resets).toBe(2);
+    expect(created).toBe(1);
     const context: StrategyMarketContext = {
       candlesticks: {
         symbol: 'HSI.HK',
-        period: Period.Min_1,
+        period: 'MIN_1',
         version: 1,
         initialized: true,
         lastBarTimestamp: 0,
@@ -71,6 +92,7 @@ describe('selected strategy cleanup boundary', () => {
     await cleanup.execute();
     await cleanup.execute();
     expect(destroyed).toBe(1);
+    expect(created).toBe(1);
   });
 
   for (const kind of [

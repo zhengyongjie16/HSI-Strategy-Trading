@@ -14,18 +14,13 @@ import type {
   PreGateRuntime,
   RunAppDeps,
 } from '../../../src/app/types.js';
-import type {
-  ProcessedSellSignal,
-  ProcessSellSignalsParams,
-  SignalProcessor,
-} from '../../../src/core/signalProcessor/types.js';
-import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
-import type { BuySignal } from '../../../src/types/signal.js';
+import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import type { LastState } from '../../../src/types/state.js';
-import type { BuyRiskCheckContext } from '../../../src/types/services.js';
 import {
   createAutoSearchWakeupRuntimeDouble,
-  createDoomsdayProtectionDouble,
+  createDoomsdayClearanceWorkflowDouble,
+  createOrdinaryBuyWorkflowDouble,
+  createOrdinarySellWorkflowDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
@@ -33,6 +28,8 @@ import {
   createQuoteSubscriptionRuntimeDouble,
   createSdkConfigDouble,
   createSeatActivationDispatcherDouble,
+  createSeatActivationWorkflowDouble,
+  createWarrantRiskRefreshDouble,
   createSeatRuntimeCleanupDispatcherDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
@@ -44,7 +41,7 @@ import { applyStartupSnapshotFailureState } from '../../../src/main/lifecycle/st
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
+} from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import type { StartupRecoveryHarnessParams, StartupRecoveryHarness } from './types.js';
 
 const startsContext = new AsyncLocalStorage<string[]>();
@@ -132,11 +129,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
       },
     }),
     symbolRegistry: createSymbolRegistryDouble(),
-    warrantListCacheConfig: {
-      cache: warrantListCache,
-      ttlMs: 60_000,
-      nowMs: () => 0,
-    },
+    warrantListCache: warrantListCache,
     marketDataClient: createMarketDataClientDouble(),
     startupTradingDayInfo: null,
   };
@@ -147,17 +140,6 @@ function createMockPostGateRuntime(
   monitorContext: PostGateRuntime['monitorContext'],
   owner: StartupRecoveryHarnessParams['executionOwner'],
 ): PostGateRuntime {
-  const signalProcessor: SignalProcessor = {
-    processSellSignals: ({
-      signals,
-    }: ProcessSellSignalsParams): ReadonlyArray<ProcessedSellSignal> => signals,
-    applyRiskChecks: async (
-      signals: ReadonlyArray<BuySignal>,
-      _context: BuyRiskCheckContext,
-    ): Promise<ReadonlyArray<BuySignal>> => signals,
-    resetRiskCheckCooldown: () => {},
-  };
-
   const quoteSubscriptionRuntime = createQuoteSubscriptionRuntimeDouble({
     reconcileFromCurrentTruth: async () => {
       recordSteadyRuntimeStart('quoteSubscriptionRuntime.reconcileFromCurrentTruth');
@@ -193,6 +175,8 @@ function createMockPostGateRuntime(
       onGateStateChanged: () => noop,
     }),
     quoteSubscriptionRuntime,
+    seatActivation: createSeatActivationWorkflowDouble(),
+    warrantRiskRefresh: createWarrantRiskRefreshDouble(),
     seatActivationDispatcher: createSeatActivationDispatcherDouble({
       start: () => {
         recordSteadyRuntimeStart('seatActivationDispatcher.start');
@@ -254,8 +238,9 @@ function createMockPostGateRuntime(
             quotesMap: new Map(),
           };
     },
-    doomsdayProtection: createDoomsdayProtectionDouble(),
-    signalProcessor,
+    doomsdayClearanceWorkflow: createDoomsdayClearanceWorkflowDouble(),
+    ordinaryBuy: createOrdinaryBuyWorkflowDouble(),
+    ordinarySell: createOrdinarySellWorkflowDouble(),
     buyTaskQueue: createBuyTaskQueue(),
     sellTaskQueue: createSellTaskQueue(),
     monitorTaskQueue: createMonitorTaskQueueDouble(),

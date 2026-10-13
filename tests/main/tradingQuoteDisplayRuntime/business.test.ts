@@ -5,9 +5,9 @@ import {
   createQuoteDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
-import { createSymbolRegistry as createProductionSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry as createProductionSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import type { QuoteUpdatedEvent } from '../../../src/types/services.js';
+import type { QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
 
 /**
  * tradingQuoteDisplayRuntime 业务测试

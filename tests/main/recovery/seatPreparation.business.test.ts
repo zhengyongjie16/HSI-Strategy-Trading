@@ -1,4 +1,4 @@
-import type { MarketQuoteContext } from '../../../src/types/services.js';
+import type { MarketQuoteContext } from '../../../src/types/marketPorts.js';
 
 /**
  * recovery/seatPreparation 业务测试
@@ -9,6 +9,8 @@ import type { MarketQuoteContext } from '../../../src/types/services.js';
 import { describe, expect, it } from 'bun:test';
 
 import { prepareSeatsForRuntime } from '../../../src/main/recovery/seatPreparation.js';
+import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
+import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
 import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../../src/constants/index.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
 import {
@@ -184,15 +186,25 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => {
-          quoteContextCalls += 1;
-          return quoteCtx.port;
-        },
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => {
+              quoteContextCalls += 1;
+              return quoteCtx.port;
+            },
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 5,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date(startupTime),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 5,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => true,
     });
 
@@ -249,12 +261,22 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => quoteCtx.port,
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => quoteCtx.port,
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 10,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date('2026-02-16T01:00:00.000Z'),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 10,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => true,
     });
 
@@ -294,14 +316,24 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => {
-          throw new Error('should not request quote context');
-        },
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => {
+              throw new Error('should not request quote context');
+            },
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 5,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date('2026-02-16T01:35:00.000Z'),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 5,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => true,
     });
 
@@ -339,21 +371,31 @@ describe('recovery seat preparation business flow', () => {
         symbolRegistry,
         positions: [],
         orders: [],
-        marketDataClient: createMarketDataClientDouble({
-          getQuoteContext: async () => ({
-            warrantQuote: async () => [],
-            warrantList: async () => {
-              throw await createExternalApiRequestError({
-                operation: 'QuoteContext.warrantList',
-                attempts: 3,
-                cause: new Error('network'),
-              });
-            },
+        startupSeatSearch: createStartupSeatSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          symbolRegistry,
+          candidateSearch: createWarrantCandidateSearch({
+            monitorSymbol: monitor.monitorSymbol,
+            autoSearchConfig: monitor.autoSearchConfig,
+            marketDataClient: createMarketDataClientDouble({
+              getQuoteContext: async () => ({
+                warrantQuote: async () => [],
+                warrantList: async () => {
+                  throw await createExternalApiRequestError({
+                    operation: 'QuoteContext.warrantList',
+                    attempts: 3,
+                    cause: new Error('network'),
+                  });
+                },
+              }),
+            }),
+            logger: createLoggerStub(),
+            getTradingMinutesSinceOpen: () => 5,
           }),
+          logger: createLoggerStub(),
         }),
         now: () => new Date('2026-02-16T01:35:00.000Z'),
-        logger: createLoggerStub(),
-        getTradingMinutesSinceOpen: () => 5,
+        canContinue: () => true,
         resolveCanAutoSearchNow: () => true,
       });
     } catch (caught) {
@@ -401,17 +443,27 @@ describe('recovery seat preparation business flow', () => {
         symbolRegistry,
         positions: [],
         orders: [],
-        marketDataClient: createMarketDataClientDouble({
-          getQuoteContext: async () => ({
-            warrantQuote: async () => [],
-            warrantList: async () => {
-              throw new TypeError('warrant payload contract broken');
-            },
+        startupSeatSearch: createStartupSeatSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          symbolRegistry,
+          candidateSearch: createWarrantCandidateSearch({
+            monitorSymbol: monitor.monitorSymbol,
+            autoSearchConfig: monitor.autoSearchConfig,
+            marketDataClient: createMarketDataClientDouble({
+              getQuoteContext: async () => ({
+                warrantQuote: async () => [],
+                warrantList: async () => {
+                  throw new TypeError('warrant payload contract broken');
+                },
+              }),
+            }),
+            logger: createLoggerStub(),
+            getTradingMinutesSinceOpen: () => 5,
           }),
+          logger: createLoggerStub(),
         }),
         now: () => new Date('2026-02-16T01:35:00.000Z'),
-        logger: createLoggerStub(),
-        getTradingMinutesSinceOpen: () => 5,
+        canContinue: () => true,
         resolveCanAutoSearchNow: () => true,
       });
     } catch (caught) {
@@ -455,12 +507,22 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => createWarrantQuoteHarness().port,
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => createWarrantQuoteHarness().port,
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 5,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => currentTime,
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 5,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => true,
     });
 
@@ -530,12 +592,22 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => quoteCtx.port,
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => quoteCtx.port,
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 1,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date('2026-02-16T01:01:00.000Z'),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 1,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => false,
     });
 
@@ -558,12 +630,22 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => quoteCtx.port,
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => quoteCtx.port,
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 0,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date(currentTime),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 0,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => false,
     });
 
@@ -583,12 +665,22 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => quoteCtx.port,
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => quoteCtx.port,
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 5,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date('2026-02-16T01:35:00.000Z'),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 5,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => true,
     });
 
@@ -612,12 +704,22 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => quoteCtx.port,
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => quoteCtx.port,
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 150,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date('2026-02-16T05:00:00.000Z'),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 150,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => true,
     });
 
@@ -689,12 +791,22 @@ describe('recovery seat preparation business flow', () => {
       symbolRegistry,
       positions: [],
       orders: [],
-      marketDataClient: createMarketDataClientDouble({
-        getQuoteContext: async () => quoteCtx.port,
+      startupSeatSearch: createStartupSeatSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: monitor.monitorSymbol,
+          autoSearchConfig: monitor.autoSearchConfig,
+          marketDataClient: createMarketDataClientDouble({
+            getQuoteContext: async () => quoteCtx.port,
+          }),
+          logger: createLoggerStub(),
+          getTradingMinutesSinceOpen: () => 10,
+        }),
+        logger: createLoggerStub(),
       }),
       now: () => new Date('2026-02-16T01:00:00.000Z'),
-      logger: createLoggerStub(),
-      getTradingMinutesSinceOpen: () => 10,
+      canContinue: () => true,
       resolveCanAutoSearchNow: () => true,
     });
 

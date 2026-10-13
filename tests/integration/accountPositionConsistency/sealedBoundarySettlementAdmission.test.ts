@@ -17,8 +17,8 @@ import {
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
 import { createSettlementFlow } from '../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import type {

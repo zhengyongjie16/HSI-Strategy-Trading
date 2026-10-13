@@ -19,49 +19,55 @@ import type { Quote } from '../types/quote.js';
 import type { RuntimeClock, RuntimeScheduler, RuntimeTermination } from '../types/runtime.js';
 import type {
   MarketDataClient,
+  TradingDayInfo,
+  WarrantListCacheClearer,
+} from '../types/marketPorts.js';
+import type {
   OrderRecorder,
   RawOrderFromAPI,
   RiskChecker,
   Trader,
-  TradingDayInfo,
   Unsubscribe,
 } from '../types/services.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../types/risk.js';
-import type { TradingSignalStrategy } from '../core/strategy/types.js';
-import type { AutoSymbolManagerPort } from '../types/monitorContextPorts.js';
-import type { WarrantListCacheConfig } from '../services/autoSymbolFinder/types.js';
-import type { LiquidationCooldownTracker } from '../services/liquidationCooldown/types.js';
-import type { MixedTradeLogRepository } from '../services/mixedTradeLogRepository/types.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../core/trader/protectiveLiquidationEpisodeTracker/types.js';
-import type { DoomsdayProtection } from '../core/doomsdayProtection/types.js';
-import type { SignalProcessor } from '../core/signalProcessor/types.js';
+import type { TradingSignalStrategy } from '../types/strategy.js';
+import type { SeatSwitchWorkflow } from '../types/monitorContextPorts.js';
+import type { WarrantCandidateSearch } from '../application/autoSearch/types.js';
+import type { OrdinaryBuyWorkflow } from '../application/ordinaryBuy/types.js';
+import type { OrdinarySellWorkflow } from '../application/ordinarySell/types.js';
+import type { LiquidationCooldownTracker } from '../domain/liquidation/cooldown/types.js';
+import type { MixedTradeLogRepository } from '../types/tradeLog.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../domain/liquidation/episode/types.js';
+import type { DoomsdayClearanceWorkflow } from '../application/doomsdayClearance/types.js';
+import type { SeatActivationWorkflow } from '../application/seatActivation/types.js';
+import type { WarrantRiskRefresh } from '../application/riskRefresh/types.js';
 import type {
   BuyTaskType,
   SellTaskType,
   TaskQueue,
-} from '../main/asyncProgram/tradeTaskQueue/types.js';
-import type { MonitorTaskQueue } from '../main/asyncProgram/monitorTaskQueue/types.js';
+} from '../runtime/asyncProgram/tradeTaskQueue/types.js';
+import type { MonitorTaskQueue } from '../runtime/asyncProgram/monitorTaskQueue/types.js';
 import type {
   MonitorTaskDataMap,
   MonitorTaskProcessor,
-} from '../main/asyncProgram/monitorTaskProcessor/types.js';
-import type { Processor } from '../main/asyncProgram/types.js';
-import type { TradingRiskEventRuntime } from '../main/tradingRiskEventRuntime/types.js';
-import type { AutoSearchWakeupRuntime } from '../main/autoSearchWakeupRuntime/types.js';
+} from '../runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { Processor } from '../runtime/asyncProgram/types.js';
+import type { TradingRiskEventRuntime } from '../runtime/tradingRiskEventRuntime/types.js';
+import type { AutoSearchWakeupRuntime } from '../runtime/autoSearchWakeupRuntime/types.js';
 import type {
   MonitorQuoteEventRuntime,
   SwitchWakeupRuntime,
-} from '../main/monitorQuoteEventRuntime/types.js';
+} from '../runtime/monitorQuoteEventRuntime/types.js';
 import type { MonitorDisplayRuntime } from '../main/monitorDisplayRuntime/types.js';
-import type { PeriodicSwitchWakeupRuntime } from '../main/periodicSwitchWakeupRuntime/types.js';
+import type { PeriodicSwitchWakeupRuntime } from '../runtime/periodicSwitchWakeupRuntime/types.js';
 import type { TradingQuoteDisplayRuntime } from '../main/tradingQuoteDisplayRuntime/types.js';
 import type {
   BusinessEventProgram,
   BusinessEventProgramDeps,
-} from '../main/businessEventProgram/types.js';
+} from '../runtime/businessEventProgram/types.js';
 import type { QuoteSubscriptionRuntime } from '../main/quoteSubscriptionRuntime/types.js';
-import type { SeatActivationDispatcher } from '../main/seatActivationDispatcher/types.js';
-import type { SeatRuntimeCleanupDispatcher } from '../main/seatRuntimeCleanupDispatcher/types.js';
+import type { SeatActivationDispatcher } from '../runtime/seatActivationDispatcher/types.js';
+import type { SeatRuntimeCleanupDispatcher } from '../runtime/seatRuntimeCleanupDispatcher/types.js';
 import type { TradingGateEventRuntime } from '../main/tradingGateEventRuntime/types.js';
 import type {
   LoadTradingDayRuntimeSnapshotParams,
@@ -70,9 +76,9 @@ import type {
   RebuildTradingDayStateParams,
   RebuildTradingDayStateResult,
   CacheDomain,
-  DayLifecycleManager,
   DayLifecycleManagerDeps,
 } from '../main/lifecycle/types.js';
+import type { DayLifecycleManager } from '../types/timeControlPlane.js';
 import type { Logger } from '../utils/logger/types.js';
 import type { DisplayAccountAndPositionsParams } from '../services/accountDisplay/types.js';
 import type { TimeWakeupRuntime, TimeWakeupRuntimeDeps } from '../main/timeWakeupRuntime/types.js';
@@ -287,7 +293,7 @@ export type MonitorContextFactoryDeps = Readonly<{
   dailyLossTracker: DailyLossTracker;
   riskChecker: RiskChecker;
   unrealizedLossMonitor: UnrealizedLossMonitor;
-  autoSymbolManager: AutoSymbolManagerPort;
+  seatSwitch: SeatSwitchWorkflow;
 }>;
 
 /**
@@ -434,7 +440,7 @@ export type PreGateRuntime = Readonly<{
   config: Config;
   tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
-  warrantListCacheConfig: WarrantListCacheConfig;
+  warrantListCache: WarrantListCacheClearer;
   marketDataClient: MarketDataClient;
   startupTradingDayInfo: StartupTradingDayInfo | null;
 }>;
@@ -472,6 +478,8 @@ export type PostGateRuntime = Readonly<{
   tradingGateEventRuntime: TradingGateEventRuntime;
   quoteSubscriptionRuntime: QuoteSubscriptionRuntime;
   seatActivationDispatcher: SeatActivationDispatcher;
+  seatActivation: SeatActivationWorkflow;
+  warrantRiskRefresh: WarrantRiskRefresh;
   seatRuntimeCleanupDispatcher: SeatRuntimeCleanupDispatcher;
   autoSearchWakeupRuntime: AutoSearchWakeupRuntime;
   periodicSwitchWakeupRuntime: PeriodicSwitchWakeupRuntime;
@@ -487,8 +495,9 @@ export type PostGateRuntime = Readonly<{
   loadTradingDayRuntimeSnapshot: (
     params: LoadTradingDayRuntimeSnapshotParams,
   ) => Promise<LoadTradingDayRuntimeSnapshotResult>;
-  doomsdayProtection: DoomsdayProtection;
-  signalProcessor: SignalProcessor;
+  doomsdayClearanceWorkflow: DoomsdayClearanceWorkflow;
+  ordinaryBuy: OrdinaryBuyWorkflow;
+  ordinarySell: OrdinarySellWorkflow;
   buyTaskQueue: TaskQueue<BuyTaskType>;
   sellTaskQueue: TaskQueue<SellTaskType>;
   monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
@@ -506,6 +515,7 @@ type MonitorContextBootstrapRuntime = Readonly<{
 
   /** 与 Trader 共用的唯一风险检查器，统一持有浮亏 R1/N1 与当日亏损偏移缓存。 */
   readonly riskChecker: RiskChecker;
+  readonly candidateSearch: WarrantCandidateSearch;
   readonly lastState: LastState;
 }>;
 
@@ -528,6 +538,7 @@ export type AsyncRuntime = Readonly<{
  * 使用范围：仅异步运行时创建链路使用。
  */
 export type AsyncRuntimeFactoryDeps = Readonly<{
+  logger: Pick<Logger, 'debug' | 'warn' | 'error'>;
   termination: RuntimeTermination;
   resources: RuntimeAssemblyResources;
   cleanup: CleanupController;

@@ -11,11 +11,11 @@
  * - orderCacheManager: 未成交订单缓存
  * - orderRecorder: 订单记录管理
  * - orderMonitor: WebSocket 订单状态监控
- * - orderExecutor: 信号执行和订单提交
+ * - 注入的 execution 能力：由 app 创建，负责信号执行和订单提交
  *
  * 初始化顺序：
  * 1. brokerAccess → 2. rateLimiter/cacheManager/accountService
- * 3. orderRecorder → 4. orderMonitor → 5. orderExecutor
+ * 3. orderRecorder → 4. orderMonitor → 5. 向 app 交付同实例 execution 绑定
  */
 import { createOrderRecorder } from '../orderRecorder/index.js';
 import type { DoomsdayClearanceCommand, ExecutableSignal } from '../../types/signal.js';
@@ -38,12 +38,11 @@ import { createRateLimiter } from './rateLimiter.js';
 import { createAccountService } from '../../application/accountQuery/index.js';
 import { createOrderCacheManager } from './orderCacheManager.js';
 import { createOrderMonitor } from './orderMonitor/index.js';
-import { createOrderExecutor } from './orderExecutor/index.js';
 import { createOrderHoldRegistry } from './orderHoldRegistry.js';
 
 /**
  * 创建交易执行模块（门面模式）。
- * 按固定顺序创建 rateLimiter、accountService、orderCacheManager、orderRecorder、orderMonitor、orderExecutor 等子模块并组装为 Trader 接口。
+ * 按固定顺序创建 rateLimiter、accountService、orderCacheManager、orderRecorder、orderMonitor，再消费 app 注入的执行能力组装 Trader。
  * createTrader 仅负责依赖装配，不执行运行期副作用（如 WebSocket 初始化、订单恢复），由上层显式调用。
  * 交易能力由多子模块协同完成，门面统一初始化顺序与依赖注入，保证 orderMonitor 依赖 orderRecorder、orderExecutor 依赖 orderMonitor 等约束。
  * @param deps 依赖（brokerAccess、tradingConfig、unrealizedLossBuyGate、symbolRegistry、dailyLossTracker、postTradeConsistencyRuntime、isExecutionAllowed 等）
@@ -132,8 +131,8 @@ export function createTrader(deps: TraderDeps): Promise<Trader> {
       termination,
     });
 
-    // ========== 6. 创建 orderExecutor ==========
-    const orderExecutor = createOrderExecutor({
+    // app 在同一同步装配段创建唯一 executor，绑定上述真实 tracking/cache/recorder。
+    const orderExecutor = deps.createExecution({
       readSellPositions: brokerAccess.createSellPositionReader(),
       tradeMutationPort,
       rateLimiter,

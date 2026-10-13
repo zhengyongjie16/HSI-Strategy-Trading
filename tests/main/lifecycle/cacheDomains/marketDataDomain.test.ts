@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { createMarketDataDomain } from '../../../../src/main/lifecycle/cacheDomains/marketDataDomain.js';
-import type { MarketDataClient } from '../../../../src/types/services.js';
+import type { MarketDataClient } from '../../../../src/types/marketPorts.js';
 import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 
 describe('createMarketDataDomain', () => {

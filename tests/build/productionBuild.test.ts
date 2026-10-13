@@ -18,20 +18,20 @@ import nodePath from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createChildEnv } from '../setup/childEnv.js';
-import { createEventHarness } from '../main/businessEventProgram/fixtures.js';
-import type { createBusinessEventProgram } from '../../src/main/businessEventProgram/index.js';
+import { createEventHarness } from '../runtime/businessEventProgram/fixtures.js';
+import type { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
 import type {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
+} from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import type { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
 import type { createSelectedStrategy } from '../../src/app/startup/createSelectedStrategy.js';
 import type { prepareStrategy } from '../../src/app/startup/prepareStrategy.js';
 import type { PrepareStrategyDeps } from '../../src/app/startup/types.js';
 import type { createCleanup } from '../../src/app/shutdown/createCleanup.js';
-import type { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
-import type { TradingSignalStrategy } from '../../src/core/strategy/types.js';
-import asset from '../../src/core/strategy/intradayRegression/config.json';
+import type { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import type { TradingSignalStrategy } from '../../src/types/strategy.js';
+import asset from '../../src/config/strategy/intradayRegression/config.json';
 
 const roots: string[] = [];
 const project = fileURLToPath(new URL('../../', import.meta.url));
@@ -99,14 +99,18 @@ async function fixture() {
   }
 
   async function add(name: string, config: unknown = asset) {
-    const directory = nodePath.join(root, 'src/core/strategy', name);
-    await mkdir(directory, { recursive: true });
-    await writeFile(nodePath.join(directory, 'config.json'), JSON.stringify(config));
+    const directory = nodePath.join(root, 'src/app/startup/strategyDefinitions', name);
+    const configDirectory = nodePath.join(root, 'src/config/strategy', name);
+    await Promise.all([
+      mkdir(directory, { recursive: true }),
+      mkdir(configDirectory, { recursive: true }),
+    ]);
+    await writeFile(nodePath.join(configDirectory, 'config.json'), JSON.stringify(config));
     await writeFile(
       nodePath.join(directory, 'definition.ts'),
       `
-      import config from './config.json';
-      import { parseStrategyConfig } from '../intradayRegression/config.js';
+      import config from '../../../../config/strategy/${name}/config.json';
+      import { parseStrategyConfig } from '../../../../config/strategy/intradayRegression/config.js';
       export const strategyDefinition = {
         id: '${name}',
         prepare() {
@@ -119,16 +123,21 @@ async function fixture() {
   }
 
   async function addReplaceabilityStrategies(): Promise<void> {
-    const buy = nodePath.join(root, 'src/core/strategy/privateBuySchema');
-    const sell = nodePath.join(root, 'src/core/strategy/privateSellSchema');
-    await Promise.all([mkdir(buy, { recursive: true }), mkdir(sell, { recursive: true })]);
+    const buy = nodePath.join(root, 'src/app/startup/strategyDefinitions/privateBuySchema');
+    const sell = nodePath.join(root, 'src/app/startup/strategyDefinitions/privateSellSchema');
+    const buyConfig = nodePath.join(root, 'src/config/strategy/privateBuySchema');
+    const sellConfig = nodePath.join(root, 'src/config/strategy/privateSellSchema');
+    await Promise.all(
+      [buy, sell, buyConfig, sellConfig].map((directory) => mkdir(directory, { recursive: true })),
+    );
+
     await writeFile(
-      nodePath.join(buy, 'config.json'),
+      nodePath.join(buyConfig, 'config.json'),
       JSON.stringify({ mode: 'threshold', threshold: 7, action: 'BUYCALL', label: 'threshold' }),
     );
 
     await writeFile(
-      nodePath.join(sell, 'config.json'),
+      nodePath.join(sellConfig, 'config.json'),
       JSON.stringify({
         authorization: 'filled-buy',
         direction: 'SHORT',
@@ -146,8 +155,8 @@ async function fixture() {
   StrategyEmitter,
   StrategyMarketContext,
   TradingSignalStrategy,
-} from '../types.js';
-import configJson from './config.json';
+} from '../../../../types/strategy.js';
+import configJson from '../../../../config/strategy/privateBuySchema/config.json';
 
 type PrivateBuyConfig = {
   readonly mode: 'threshold';
@@ -212,8 +221,8 @@ export const strategyDefinition: StrategyDefinition = Object.freeze({
   StrategyEmitter,
   StrategyMarketContext,
   TradingSignalStrategy,
-} from '../types.js';
-import configJson from './config.json';
+} from '../../../../types/strategy.js';
+import configJson from '../../../../config/strategy/privateSellSchema/config.json';
 
 type PrivateSellConfig = {
   readonly authorization: 'filled-buy';
@@ -345,15 +354,15 @@ async function loadReplaceabilityRuntime(
     ),
     load<Pick<ReplaceabilityRuntime, 'createCleanup'>>('app/shutdown/createCleanup'),
     load<Pick<ReplaceabilityRuntime, 'createBusinessEventProgram'>>(
-      'main/businessEventProgram/index',
+      'runtime/businessEventProgram/index',
     ),
     load<Pick<ReplaceabilityRuntime, 'createBuyTaskQueue' | 'createSellTaskQueue'>>(
-      'main/asyncProgram/tradeTaskQueue/index',
+      'runtime/asyncProgram/tradeTaskQueue/index',
     ),
     load<Pick<ReplaceabilityRuntime, 'createTerminationRuntime'>>(
       'app/runtime/createTerminationRuntime',
     ),
-    load<Pick<ReplaceabilityRuntime, 'createSymbolRegistry'>>('services/autoSymbolManager/utils'),
+    load<Pick<ReplaceabilityRuntime, 'createSymbolRegistry'>>('domain/seat/symbolRegistry'),
   ]);
   return {
     prepareStrategy: startup.prepareStrategy,
@@ -472,7 +481,9 @@ async function runReplaceabilitySmoke(
 
   const directory = nodePath.join(
     root,
-    mode === 'source' ? 'src/core/strategy' : 'dist/src/core/strategy',
+    mode === 'source'
+      ? 'src/app/startup/strategyDefinitions'
+      : 'dist/src/app/startup/strategyDefinitions',
     testCase.directory,
   );
   expect(imported).toEqual([nodePath.join(directory, `definition${extension}`)]);
@@ -510,7 +521,7 @@ test('package build is only clean + tsc; actual JSON semantics, JSON-only rebuil
   expect(packageConfig.scripts.build).toBe('bun run clean && tsc -p tsconfig.build.json');
   const result1 = await f.build();
   expect(result1.exitCode).toBe(0);
-  const output = nodePath.join(f.root, 'dist/src/core/strategy/intradayRegression/config.json');
+  const output = nodePath.join(f.root, 'dist/src/config/strategy/intradayRegression/config.json');
   expect(JSON.parse(await readFile(output, 'utf8'))).toEqual(asset);
   const outputs = await files(nodePath.join(f.root, 'dist'));
   expect(outputs.every((name) => name.startsWith('src/') && /\.(js|json)$/.test(name))).toBe(true);
@@ -519,7 +530,7 @@ test('package build is only clean + tsc; actual JSON semantics, JSON-only rebuil
     verification: { ...asset.verification, buy: { delaySeconds: 0.5, indicators: ['D'] } },
   };
   await writeFile(
-    nodePath.join(f.root, 'src/core/strategy/intradayRegression/config.json'),
+    nodePath.join(f.root, 'src/config/strategy/intradayRegression/config.json'),
     JSON.stringify(changed),
   );
   const result2 = await f.build();
@@ -530,9 +541,17 @@ test('package build is only clean + tsc; actual JSON semantics, JSON-only rebuil
   expect(result3.exitCode).toBe(0);
   const result4 = await f.load('alpha');
   expect(result4.exitCode).toBe(0);
-  const alpha = nodePath.join(f.root, 'dist/src/core/strategy/alpha');
-  expect(JSON.parse(await readFile(nodePath.join(alpha, 'config.json'), 'utf8'))).toEqual(asset);
-  await rm(nodePath.join(f.root, 'src/core/strategy/alpha'), { recursive: true });
+  const alpha = nodePath.join(f.root, 'dist/src/app/startup/strategyDefinitions/alpha');
+  expect(
+    JSON.parse(
+      await readFile(nodePath.join(f.root, 'dist/src/config/strategy/alpha/config.json'), 'utf8'),
+    ),
+  ).toEqual(asset);
+
+  await Promise.all([
+    rm(nodePath.join(f.root, 'src/app/startup/strategyDefinitions/alpha'), { recursive: true }),
+    rm(nodePath.join(f.root, 'src/config/strategy/alpha'), { recursive: true }),
+  ]);
   const result5 = await f.build();
   expect(result5.exitCode).toBe(0);
   await assert.rejects(readFile(nodePath.join(alpha, 'definition.js')));
@@ -544,8 +563,12 @@ test('build never prepares: invalid DSL/schema compile, only selected startup fa
   await f.add('bad', { ...asset, signals: { ...asset.signals, BUYCALL: '(ADX>1)' } });
   await f.add('unknown', { ...asset, extra: true });
   // 未导入的坏 JSON 和半成品目录没有自定义构建扫描。
-  await mkdir(nodePath.join(f.root, 'src/core/strategy/unfinished'));
-  await writeFile(nodePath.join(f.root, 'src/core/strategy/unfinished/config.json'), 'broken JSON');
+  await mkdir(nodePath.join(f.root, 'src/app/startup/strategyDefinitions/unfinished'));
+  await mkdir(nodePath.join(f.root, 'src/config/strategy/unfinished'));
+  await writeFile(
+    nodePath.join(f.root, 'src/config/strategy/unfinished/config.json'),
+    'broken JSON',
+  );
   const result6 = await f.build();
   expect(result6.exitCode).toBe(0);
   const result7 = await f.load('alpha');
@@ -560,7 +583,7 @@ test('build never prepares: invalid DSL/schema compile, only selected startup fa
   await rename(nodePath.join(f.root, 'src'), nodePath.join(f.root, 'source removed'));
   const result8 = await f.load('alpha');
   expect(result8.stdout.trim()).toBe('alpha');
-  await rm(nodePath.join(f.root, 'dist/src/core/strategy/alpha/config.json'));
+  await rm(nodePath.join(f.root, 'dist/src/config/strategy/alpha/config.json'));
   const missing = await f.load('alpha');
   expect(missing.exitCode).not.toBe(0);
   expect(missing.stderr).toContain('必需文件');
@@ -575,13 +598,13 @@ test('independent private schemas run source and clean-build dist from create to
   for (const testCase of replaceabilityCases) {
     const sourceDefinition = nodePath.join(
       f.root,
-      'src/core/strategy',
+      'src/app/startup/strategyDefinitions',
       testCase.directory,
       'definition.ts',
     );
     const distConfig = nodePath.join(
       f.root,
-      'dist/src/core/strategy',
+      'dist/src/config/strategy',
       testCase.directory,
       'config.json',
     );
@@ -617,7 +640,7 @@ test('clean plus noEmitOnError leaves no stale JavaScript on compiler errors or 
   expect(result10.exitCode).not.toBe(0);
   expect(await Bun.file(nodePath.join(f.root, 'dist/src/index.js')).exists()).toBe(false);
   await rm(nodePath.join(f.root, 'src/buildFailure.ts'));
-  await rm(nodePath.join(f.root, 'src/core/strategy/intradayRegression/config.json'));
+  await rm(nodePath.join(f.root, 'src/config/strategy/intradayRegression/config.json'));
   const result11 = await f.build();
   expect(result11.exitCode).not.toBe(0);
   expect(await Bun.file(nodePath.join(f.root, 'dist/src/index.js')).exists()).toBe(false);

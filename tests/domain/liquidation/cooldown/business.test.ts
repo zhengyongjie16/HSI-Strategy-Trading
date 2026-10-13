@@ -1,0 +1,335 @@
+/**
+ * liquidationCooldown 业务测试
+ *
+ * 功能：
+ * - 验证清仓冷却追踪与触发次数限制相关的业务行为。
+ */
+import { describe, expect, it } from 'bun:test';
+
+import { createLiquidationCooldownTracker } from '../../../../src/domain/liquidation/cooldown/index.js';
+
+describe('liquidationCooldown business flow', () => {
+  it('triggerLimit=1 activates cooldown immediately', () => {
+    const now = 1_000_000;
+    const tracker = createLiquidationCooldownTracker();
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now,
+      triggerLimit: 1,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 5 },
+      }),
+    ).toBe(300_000);
+  });
+
+  it('triggerLimit=3 activates cooldown only on the third trigger', () => {
+    const now = 1_000_000;
+    const tracker = createLiquidationCooldownTracker();
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 5 },
+      }),
+    ).toBe(0);
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now + 1_000,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 5 },
+      }),
+    ).toBe(0);
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now + 2_000,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 5 },
+      }),
+    ).toBe(302_000);
+  });
+
+  it('resets trigger counter when cooldown expires', () => {
+    let now = 1_000_000;
+    const tracker = createLiquidationCooldownTracker();
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now + 1_000,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now + 2_000,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    now += 62_001;
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBe(0);
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBe(0);
+  });
+
+  it('resolves one-day and half-day cooldown windows by Hong Kong time rules', () => {
+    let now = Date.parse('2026-02-16T23:59:59+08:00');
+    const tracker = createLiquidationCooldownTracker();
+
+    const oneDayExecutedAt = Date.parse('2026-02-16T10:00:00+08:00');
+    tracker.recordCooldown({
+      direction: 'LONG',
+      executedTimeMs: oneDayExecutedAt,
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'one-day' },
+      }),
+    ).toBe(1_000);
+
+    const morningExecutedAt = Date.parse('2026-02-16T11:00:00+08:00');
+    tracker.recordCooldown({
+      direction: 'SHORT',
+      executedTimeMs: morningExecutedAt,
+    });
+    now = Date.parse('2026-02-16T12:30:00+08:00');
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'SHORT',
+        cooldownConfig: { mode: 'half-day' },
+      }),
+    ).toBe(30 * 60_000);
+
+    const afternoonExecutedAt = Date.parse('2026-02-16T13:30:00+08:00');
+    tracker.recordCooldown({
+      direction: 'SHORT',
+      executedTimeMs: afternoonExecutedAt,
+    });
+    now = Date.parse('2026-02-16T23:00:00+08:00');
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'SHORT',
+        cooldownConfig: { mode: 'half-day' },
+      }),
+    ).toBe(60 * 60_000);
+  });
+
+  it('clearMidnightEligible clears designated keys and related trigger counters', () => {
+    const now = 10_000;
+    const tracker = createLiquidationCooldownTracker();
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now + 1_000,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    tracker.recordLiquidationTrigger({
+      direction: 'SHORT',
+      executedTimeMs: now,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    tracker.clearMidnightEligible({
+      directionsToClear: new Set(['LONG']),
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 10 },
+      }),
+    ).toBe(0);
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now + 2_000,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    tracker.recordLiquidationTrigger({
+      direction: 'SHORT',
+      executedTimeMs: now + 2_000,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'SHORT',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBeGreaterThan(0);
+  });
+
+  it('resetAllTriggerCounts resets all counters', () => {
+    const tracker = createLiquidationCooldownTracker();
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: 1_000,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    tracker.recordLiquidationTrigger({
+      direction: 'SHORT',
+      executedTimeMs: 1_000,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+    tracker.resetAllTriggerCounts();
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: 2_000,
+      triggerLimit: 2,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: 1_000,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBe(0);
+  });
+
+  it('restoreTriggerCount can continue counting from hydrated state', () => {
+    const tracker = createLiquidationCooldownTracker();
+
+    tracker.restoreTriggerCount({
+      direction: 'LONG',
+      count: 2,
+    });
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: 2_000,
+      triggerLimit: 3,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: 1_000,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBeGreaterThan(0);
+  });
+
+  it('getRemainingMs stays side-effect free before and after expiration', () => {
+    let now = 1_000;
+    const tracker = createLiquidationCooldownTracker();
+
+    tracker.recordLiquidationTrigger({
+      direction: 'LONG',
+      executedTimeMs: now,
+      triggerLimit: 1,
+      cooldownConfig: { mode: 'minutes', minutes: 1 },
+    });
+
+    now = 30_000;
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBe(31_000);
+
+    now = 61_001;
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: now,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBe(0);
+
+    // 过期查询不删除事实；显式较早时点仍得到同一冷却记录的结果。
+    expect(
+      tracker.getRemainingMs({
+        currentTimeMs: 30_000,
+        direction: 'LONG',
+        cooldownConfig: { mode: 'minutes', minutes: 1 },
+      }),
+    ).toBe(31_000);
+  });
+});

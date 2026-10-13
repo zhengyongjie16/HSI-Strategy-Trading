@@ -165,7 +165,7 @@ export type ExecutableSellSignal = SellSignal | ProtectiveLiquidationSellSignal;
  * 末日清仓命令。
  * 类型用途：向末日清仓专用入口传递当前席位的卖出身份；最终数量由执行器在提交前从权威可用持仓读取，
  * 末日卖出不参与智能平仓关联买单或保护性清仓追踪。
- * 数据来源：doomsdayProtection 根据当前席位、行情与持仓事实构造。
+ * 数据来源：DoomsdayClearanceWorkflow 根据当前席位、行情与持仓事实构造。
  * 使用范围：Trader.executeDoomsdayClearanceSignals 与 OrderExecutor 的末日清仓链路。
  */
 export type DoomsdayClearanceCommand = {

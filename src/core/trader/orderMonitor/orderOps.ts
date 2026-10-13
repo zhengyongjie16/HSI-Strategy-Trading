@@ -16,17 +16,17 @@ import {
 } from '../../../utils/apiFailure/index.js';
 import type { CancelOrderOutcome, OrderStateCheckResult } from '../../../types/trader.js';
 import type { TradeMutationPermit } from '../../../types/services.js';
-import {
-  ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS,
-  ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
-} from '../../../constants/index.js';
 import type {
-  CancelOrderMutationRequest,
   OrderActionAuthorizationStage,
   OrderMutationRequest,
   ReplaceOrderPriceOutcome,
   TrackOrderParams,
-} from '../types.js';
+} from '../../../domain/order/types.js';
+import {
+  ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS,
+  ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
+} from '../../../constants/index.js';
+import type { CancelOrderMutationRequest } from '../types.js';
 import type {
   OrderMonitorRuntimeStore,
   OrderMonitorTrackedOrder,
@@ -388,6 +388,10 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
 
     if (!['BUY', 'SELL'].includes(executionSide))
       throw new TypeError('[订单监控] trackOrder 缺少已验证执行方向');
+
+    if (typeof isProtectiveLiquidation !== 'boolean') {
+      throw new TypeError('[订单监控] trackOrder 缺少可证明的 protective 身份');
+    }
 
     const now = deps.now().getTime();
     const submittedAt =

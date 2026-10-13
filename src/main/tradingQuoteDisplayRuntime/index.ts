@@ -7,14 +7,14 @@
  * - 按方向执行 single-flight + latest-only collapse，避免异步期间输出旧 quote
  * - 在异步补充 monitor quote 后再次复核方向 + seatVersion，再交给纯渲染器输出
  */
-import { buildTradingRiskRoutingIndex } from '../tradingRiskEventRuntime/routingIndex.js';
+import { buildTradingRiskRoutingIndex } from '../../runtime/tradingRiskEventRuntime/routingIndex.js';
 import {
   isTradingRiskRouteCurrent,
   resolveTradingRiskRoute,
-} from '../tradingRiskEventRuntime/routeValidation.js';
+} from '../../runtime/tradingRiskEventRuntime/routeValidation.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
-import type { TradingRiskRoutingIndex } from '../tradingRiskEventRuntime/types.js';
+import type { TradingRiskRoutingIndex } from '../../runtime/tradingRiskEventRuntime/types.js';
 import type {
   TradingQuoteDisplayRouteState,
   TradingQuoteDisplayRuntime,

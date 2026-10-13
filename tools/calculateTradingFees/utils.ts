@@ -1,4 +1,4 @@
-import { parseMixedRecord } from '../../src/services/mixedTradeLogRepository/index.js';
+import { parseMixedRecord } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import type { FeeSummary, HKFeeRates, OrderFees, Trade, TieredFeeRate } from './types.js';
 
 const TRADE_STRING_FIELDS = [

@@ -6,7 +6,7 @@
  * - 保持启动快照失败后阻断交易并切换到开盘重建重试的语义不变
  * - 在唯一装配入口中复用 monitorContext，并组装 async runtime、lifecycle 与 cleanup
  */
-import { timeWakeupEvaluationProgram } from '../main/timeWakeupEvaluationProgram/index.js';
+import { timeWakeupEvaluationProgram } from '../runtime/timeWakeupEvaluationProgram/index.js';
 import { createTerminationRuntime } from './runtime/createTerminationRuntime.js';
 import { createSelectedStrategy } from './startup/createSelectedStrategy.js';
 import { isExternalApiRequestError } from '../utils/apiFailure/index.js';
@@ -207,6 +207,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
       const rebuildTradingDayState = buildRebuildTradingDayState({
         termination,
         marketDataClient: preGateRuntime.marketDataClient,
+        warrantRiskRefresh: postGateRuntime.warrantRiskRefresh,
         trader: postGateRuntime.trader,
         lastState: postGateRuntime.lastState,
         snapshot: postGateRuntime.snapshot,
@@ -217,6 +218,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
       });
 
       const asyncRuntime = buildAsyncRuntime({
+        logger: appLogger,
         preGateRuntime,
         postGateRuntime,
         clock: SYSTEM_RUNTIME_CLOCK,
@@ -266,7 +268,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
             trader: postGateRuntime.trader,
             lastState: postGateRuntime.lastState,
             snapshot: postGateRuntime.snapshot,
-            doomsdayProtection: postGateRuntime.doomsdayProtection,
+            doomsdayClearanceWorkflow: postGateRuntime.doomsdayClearanceWorkflow,
             tradingConfig: preGateRuntime.tradingConfig,
             monitorContext,
             tradingGateEventRuntime: postGateRuntime.tradingGateEventRuntime,

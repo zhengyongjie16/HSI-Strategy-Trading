@@ -15,15 +15,13 @@ import {
 } from '../../../utils/apiFailure/index.js';
 import { withTrustedOrderExecutionTimes } from '../../../domain/order/executionFact.js';
 import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
-import { isOpenOrderReadStatus } from './orderReadLifecycle.js';
 import type {
-  CancelOrderMutationRequest,
   OrderMutationRequest,
-  OrderMonitor,
-  OrderMonitorDeps,
   PendingSellOrderSnapshot,
   ReplaceOrderPriceOutcome,
-} from '../types.js';
+} from '../../../domain/order/types.js';
+import { isOpenOrderReadStatus } from './orderReadLifecycle.js';
+import type { CancelOrderMutationRequest, OrderMonitor, OrderMonitorDeps } from '../types.js';
 import type {
   OrderStateChangedEvent,
   RawOrderFromAPI,
@@ -734,6 +732,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         side: order.executionSide,
         status: order.status,
         orderType: order.orderType,
+        isProtectiveLiquidation: order.isProtectiveLiquidation,
         submittedPrice: order.submittedPrice,
         submittedQuantity: order.submittedQuantity,
         executedQuantity: order.executedQuantity,

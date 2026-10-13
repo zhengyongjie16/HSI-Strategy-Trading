@@ -1,10 +1,10 @@
 /** 同一原context订单快照IO边界；core只接收已验证观察，不解析SDK对象。 */
-import { OrderSide, type OrderStatus, type Order, type TradeContext } from 'longbridge';
-import { VALID_ORDER_TYPE_VALUES, ORDER_STATUS_LIFECYCLE_MAP } from '../../../constants/index.js';
+import { OrderSide, type Order, type TradeContext } from 'longbridge';
+import { isValidatedOrderStatus, isValidatedOrderType } from './orderValidation.js';
 import { isRecord } from '../../../utils/helpers/index.js';
 import { canonicalDecimal } from '../../../utils/numeric/exact.js';
 import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
-import type { ValidatedOrderType, RateLimiter } from '../../../types/services.js';
+import type { RateLimiter } from '../../../types/services.js';
 import type { OrderExecutionLedgerPort } from '../../../types/orderExecutionLedger.js';
 import type { OrderSnapshotReadPort } from '../../../types/orderSnapshotReadPorts.js';
 import type { OrderEconomics } from '../../../types/orderEconomics.js';
@@ -75,23 +75,6 @@ function isValidOrderSide(value: unknown): value is OrderSide {
   }
 }
 
-function isValidOrderStatus(value: unknown): value is OrderStatus {
-  if (typeof value !== 'number') {
-    return false;
-  }
-
-  try {
-    const lifecycleMap: ReadonlyMap<number, string> = ORDER_STATUS_LIFECYCLE_MAP;
-    return lifecycleMap.has(value);
-  } catch {
-    return false;
-  }
-}
-
-function isValidOrderType(value: unknown): value is ValidatedOrderType {
-  return typeof value === 'number' && VALID_ORDER_TYPE_VALUES.has(value);
-}
-
 function assertValidOrder(value: unknown, operation: string): asserts value is Order {
   if (!isRecord(value)) {
     throw new TypeError(`[订单记录] ${operation} 订单数据结构无效`);
@@ -104,8 +87,8 @@ function assertValidOrder(value: unknown, operation: string): asserts value is O
     value['symbol'].length === 0 ||
     typeof value['stockName'] !== 'string' ||
     !isValidOrderSide(value['side']) ||
-    !isValidOrderStatus(value['status']) ||
-    !isValidOrderType(value['orderType']) ||
+    !isValidatedOrderStatus(value['status']) ||
+    !isValidatedOrderType(value['orderType']) ||
     !isNullableFiniteDecimalLike(value['price']) ||
     !isFiniteDecimalLike(value['quantity']) ||
     !isNullableFiniteDecimalLike(value['executedPrice']) ||

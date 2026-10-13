@@ -30,7 +30,7 @@ describe('monitor context shared ports', () => {
   it('keeps cancel outcome helpers in a single utility source', () => {
     const traderUtilsPath = path.join(process.cwd(), 'src/core/trader/utils.ts');
     const traderUtilsContent = readFileSync(traderUtilsPath, 'utf8');
-    const submitFlowPath = path.join(process.cwd(), 'src/core/trader/orderExecutor/submitFlow.ts');
+    const submitFlowPath = path.join(process.cwd(), 'src/application/orderExecution/submitFlow.ts');
     const submitFlowContent = readFileSync(submitFlowPath, 'utf8');
 
     expect(traderUtilsContent).not.toContain(

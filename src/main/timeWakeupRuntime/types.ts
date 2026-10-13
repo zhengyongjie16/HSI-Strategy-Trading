@@ -1,5 +1,5 @@
 import type { RuntimeTermination } from '../../types/runtime.js';
-import type { TimeWakeupEvaluationResult } from '../timeWakeupEvaluationProgram/types.js';
+import type { TimeWakeupEvaluationResult } from '../../runtime/timeWakeupEvaluationProgram/types.js';
 import type { Logger } from '../../utils/logger/types.js';
 
 /**

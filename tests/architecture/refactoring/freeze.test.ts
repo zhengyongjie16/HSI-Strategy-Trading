@@ -1,5 +1,5 @@
 /**
- * P2 多重集合收缩：P1/P2 到期 occurrence 必须删除，后续精确旧例外不可增殖或搬进新层。
+ * P3F 多重集合收缩：P1/P2/P3A–P3F 到期 occurrence 必须删除，后续精确旧例外不可增殖或搬进新层。
  * 临时 fixtures 只用于静态编译器检查，不写入生产树、不连接 SDK。
  */
 import path from 'node:path';
@@ -71,7 +71,7 @@ const files = [
 const program = createAuditProgram(root, files);
 const actual = scanProgram(root, program, files);
 
-describe('P2 frozen occurrence architecture', () => {
+describe('P3F frozen occurrence architecture', () => {
   it.each([
     "import { readFileSync } from 'node:fs'; void readFileSync;",
     "import type { Stats } from 'node:fs'; export type Stat = Stats;",
@@ -389,12 +389,12 @@ describe('P2 frozen occurrence architecture', () => {
     expect(scan.imports).toHaveLength(1);
   });
 
-  it('requires the P2 stage without granting later or final-directory exceptions', () => {
-    expect(baseline.stage).toBe('P2');
+  it('requires the P3F stage without granting later or final-directory exceptions', () => {
+    expect(baseline.stage).toBe('P3F');
     const later = baseline.imports.find((row) => row.cutoff === 'P4.5');
     expect(later).toBeDefined();
     if (later !== undefined) {
-      expect(excess([later.key], [later], 'P2')).toEqual([]);
+      expect(excess([later.key], [later], 'P3F')).toEqual([]);
       expect(excess([later.key], [later], 'P4.5')).toEqual([later.key]);
     }
   });
@@ -1058,9 +1058,92 @@ describe('P2 frozen occurrence architecture', () => {
     expect(laundering[0]?.violations.some((key) => key.includes('SNAPSHOT_FACT_WRITE'))).toBe(true);
   });
 
+  it('admits only the real selected-loader connection after its original cutoff', () => {
+    expect(
+      actual.violations.filter(
+        (key) =>
+          key.includes('NONLITERAL') &&
+          /src\/app\/(?:runAppDeps|startup\/strategyLoaderHelpers)\.ts/.test(key),
+      ),
+    ).toEqual([]);
+
+    const scan = fixture({
+      'src/app/startup/types.ts':
+        'export type StrategyLocation = { readonly definitionPath: string }; export interface StrategyFileSystem { readonly importModule: (href: string) => Promise<unknown>; }',
+      'src/app/startup/prepareStrategy.ts':
+        'export function prepareStrategy(params: unknown, deps: unknown) { return [params, deps]; }',
+      'src/app/startup/strategyLoaderHelpers.ts':
+        "import { pathToFileURL } from 'node:url'; import type { StrategyLocation, StrategyFileSystem } from './types.js'; export async function importStrategyDefinition(location: StrategyLocation, fs: StrategyFileSystem) { return fs.importModule(pathToFileURL(location.definitionPath).href); }",
+      'src/app/runAppDeps.ts':
+        "import { prepareStrategy as prepare } from './startup/prepareStrategy.js'; prepare({}, { importModule: (href: string) => import(href) });",
+    });
+    expect(excess(scan.violations, [], 'P3F')).toEqual([]);
+  });
+
+  it.each([
+    'const prepareStrategy = (...args: unknown[]) => args; prepareStrategy({}, { importModule: (href: string) => import(href) });',
+    "import { prepareStrategy } from './startup/prepareStrategy.js'; prepareStrategy({}, { importModule: (href: string) => import(String(href)) });",
+    "import { prepareStrategy } from './startup/prepareStrategy.js'; const href = 'outside'; prepareStrategy({}, { importModule: (selected: string) => import(href) });",
+    "import { prepareStrategy } from './startup/prepareStrategy.js'; const deps = { importModule: (href: string) => import(href) }; prepareStrategy({}, deps);",
+  ])('rejects an impostor or disconnected loader callback: %s', (source) => {
+    const scan = fixture({
+      'src/app/startup/prepareStrategy.ts':
+        'export function prepareStrategy(params: unknown, deps: unknown) { return [params, deps]; }',
+      'src/app/runAppDeps.ts': source,
+    });
+    expect(scan.violations.some((key) => key.includes('NONLITERAL'))).toBe(true);
+    expect(excess(scan.violations, [], 'P3F')).toEqual(scan.violations);
+  });
+
+  it.each([
+    "return fs.importModule(pathToFileURL('outside.ts').href);",
+    'return fs.importModule(location.definitionPath);',
+    'const url = pathToFileURL(location.definitionPath).href; return fs.importModule(url);',
+    'const callback = () => fs.importModule(pathToFileURL(location.definitionPath).href); return callback();',
+  ])('rejects an unvalidated or indirect loader location: %s', (body) => {
+    const scan = fixture({
+      'src/app/startup/types.ts':
+        'export type StrategyLocation = { readonly definitionPath: string }; export interface StrategyFileSystem { readonly importModule: (href: string) => Promise<unknown>; }',
+      'src/app/startup/strategyLoaderHelpers.ts':
+        "import { pathToFileURL } from 'node:url'; import type { StrategyLocation, StrategyFileSystem } from './types.js'; export async function importStrategyDefinition(location: StrategyLocation, fs: StrategyFileSystem) { " +
+        body +
+        ' }',
+    });
+    expect(scan.violations.some((key) => key.includes('NONLITERAL'))).toBe(true);
+  });
+
+  it.each([
+    'const pathToFileURL = (path: string) => ({ href: path });',
+    'type StrategyLocation = { readonly definitionPath: string };',
+  ])('does not approve a local lookalike URL mapper or location contract: %s', (lookalike) => {
+    const source = lookalike.startsWith('type ')
+      ? "import { pathToFileURL } from 'node:url'; import type { StrategyFileSystem } from './types.js'; "
+      : "import type { StrategyLocation, StrategyFileSystem } from './types.js'; ";
+    const scan = fixture({
+      'src/app/startup/types.ts':
+        'export type StrategyLocation = { readonly definitionPath: string }; export interface StrategyFileSystem { readonly importModule: (href: string) => Promise<unknown>; }',
+      'src/app/startup/strategyLoaderHelpers.ts':
+        source +
+        lookalike +
+        ' export async function importStrategyDefinition(location: StrategyLocation, fs: StrategyFileSystem) { return fs.importModule(pathToFileURL(location.definitionPath).href); }',
+    });
+    expect(scan.violations.some((key) => key.includes('NONLITERAL'))).toBe(true);
+  });
+
+  it('does not transfer selected-loader eligibility to another source path', () => {
+    const scan = fixture({
+      'src/app/startup/types.ts':
+        'export type StrategyLocation = { readonly definitionPath: string }; export interface StrategyFileSystem { readonly importModule: (href: string) => Promise<unknown>; }',
+      'src/app/startup/otherLoader.ts':
+        "import { pathToFileURL } from 'node:url'; import type { StrategyLocation, StrategyFileSystem } from './types.js'; export async function importStrategyDefinition(location: StrategyLocation, fs: StrategyFileSystem) { return fs.importModule(pathToFileURL(location.definitionPath).href); }",
+    });
+    expect(scan.violations.some((key) => key.includes('NONLITERAL'))).toBe(true);
+  });
+
   it('constrains selected strategy entry paths in both source and compiled layouts', () => {
     for (const compiled of [false, true]) {
-      const directory = compiled ? 'dist/core/strategy' : 'src/core/strategy';
+      const prefix = compiled ? 'dist/src' : 'src';
+      const directory = `${prefix}/app/startup/strategyDefinitions`;
       const extension = compiled ? 'js' : 'ts';
       expect(
         selectedStrategyPath(
@@ -1073,6 +1156,7 @@ describe('P2 frozen occurrence architecture', () => {
 
       for (const tail of [
         `other/definition.${extension}`,
+        `intradayRegression/Definition.${extension}`,
         `intradayRegression/runtime/ema.${extension}`,
         `intradayRegression/definition.${compiled ? 'ts' : 'js'}`,
         '../outside.js',
@@ -1087,6 +1171,23 @@ describe('P2 frozen occurrence architecture', () => {
         ).toBe(false);
       }
     }
+
+    for (const directory of [
+      'src/core/strategy',
+      'dist/core/strategy',
+      'dist/app/startup/strategyDefinitions',
+      'src/domain/strategy',
+      'src/runtime/strategy',
+      'src/config/strategy',
+    ])
+      expect(
+        selectedStrategyPath(
+          root,
+          'intradayRegression',
+          path.join(root, directory, 'intradayRegression/definition.ts'),
+          false,
+        ),
+      ).toBe(false);
 
     expect(
       selectedStrategyPath(root, '../outside', path.join(root, 'outside/definition.ts'), false),

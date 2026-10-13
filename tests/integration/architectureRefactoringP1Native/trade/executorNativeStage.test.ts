@@ -4,7 +4,7 @@ import {
   createNativeSubmitFixture,
   interceptNativeDecimalSerialization,
 } from '../../../infrastructure/longbridge/trade/mutationStageFixture.js';
-import { createOrderExecutor } from '../../../../src/core/trader/orderExecutor/index.js';
+import { createOrderExecutor } from '../../../../src/application/orderExecution/index.js';
 import { createRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
 import {
   createTradingConfig,
@@ -48,7 +48,7 @@ function fixture(
         ]);
       },
     }),
-    cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+    cacheManager: { clearCache: () => {} },
     orderMonitor: createOrderMonitorDouble({
       trackOrder: (order) => {
         trackedIds.push(order.orderId);
@@ -105,7 +105,10 @@ describe('executor actual native submission stages', () => {
   it('LO/ELO keep exact final price and fund-derived safe whole-lot quantity through native serialization', async () => {
     for (const type of ['LO', 'ELO'] as const) {
       const f = fixture({ type });
-      expect(await f.execute(null)).toEqual({ executedOrderIds: ['NATIVE-ACK'] });
+      expect(await f.execute(null)).toEqual({
+        executedOrderIds: ['NATIVE-ACK'],
+        quoteFailures: [],
+      });
       expect(f.nativeCalls).toHaveLength(1);
       expect(f.nativeCalls[0]?.orderType).toBe(type);
       expect(f.nativeCalls[0]?.submittedPrice).toBe('9.234567891234567891');
@@ -135,7 +138,7 @@ describe('executor actual native submission stages', () => {
     const restoreSerialization = interceptNativeDecimalSerialization(f.revoke);
 
     try {
-      expect(await f.execute()).toEqual({ executedOrderIds: [] });
+      expect(await f.execute()).toEqual({ executedOrderIds: [], quoteFailures: [] });
       expect(f.nativeCalls).toHaveLength(0);
       expect(f.trackedIds).toHaveLength(0);
     } finally {

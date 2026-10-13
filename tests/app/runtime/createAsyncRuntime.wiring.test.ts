@@ -1,6 +1,7 @@
 import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { TRADING } from '../../../src/constants/index.js';
 import { createIssuedPeriodicTasksFixture } from '../../main/fixtures/issuedPeriodicTasks.js';
-import { getDefaultAutoSearchConfig } from '../../services/autoSymbolManager/utils.js';
+import { getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import type { RuntimeTermination } from '../../../src/types/runtime.js';
@@ -14,23 +15,28 @@ import type { RuntimeTermination } from '../../../src/types/runtime.js';
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { createAsyncRuntime as buildAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
-import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
+import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
+} from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import type { AsyncRuntimeFactoryDeps } from '../../../src/app/types.js';
-import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { PeriodicSwitchWakeupRuntime } from '../../../src/main/periodicSwitchWakeupRuntime/types.js';
+import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { PeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/types.js';
 import type { LastState, MonitorContext } from '../../../src/types/state.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
   createDailyLossTrackerDouble,
   createAccountSnapshotDouble,
   createMonitorConfigDouble,
-  createDoomsdayProtectionDouble,
+  createDoomsdayClearanceWorkflowDouble,
+  createOrdinaryBuyWorkflowDouble,
+  createOrdinarySellWorkflowDouble,
+  createLoggerDouble,
+  createSeatActivationWorkflowDouble,
+  createWarrantRiskRefreshDouble,
   createMarketDataClientDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteSubscriptionRuntimeDouble,
@@ -127,6 +133,7 @@ async function createDeps(
   fixtureCleanups.push(issued.stopAndDrain);
 
   return {
+    logger: createLoggerDouble(),
     termination: activeTermination,
     resources: {},
     cleanup: createCleanup(),
@@ -141,11 +148,7 @@ async function createDeps(
       config: { refreshAccessToken: () => Promise.resolve('') },
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
-      warrantListCacheConfig: {
-        cache: warrantListCache,
-        ttlMs: 60_000,
-        nowMs: () => 0,
-      },
+      warrantListCache: warrantListCache,
       marketDataClient: createMarketDataClientDouble(),
       startupTradingDayInfo: null,
     },
@@ -169,6 +172,8 @@ async function createDeps(
         onAutoSearchAuthorizationChanged: () => () => {},
       },
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
+      seatActivation: createSeatActivationWorkflowDouble(),
+      warrantRiskRefresh: createWarrantRiskRefreshDouble(),
       seatActivationDispatcher: {
         start: () => {},
         stop: () => {},
@@ -222,12 +227,9 @@ async function createDeps(
           quotesMap: new Map(),
         };
       },
-      doomsdayProtection: createDoomsdayProtectionDouble(),
-      signalProcessor: {
-        processSellSignals: ({ signals }) => signals,
-        applyRiskChecks: async (signals) => signals,
-        resetRiskCheckCooldown: () => {},
-      },
+      doomsdayClearanceWorkflow: createDoomsdayClearanceWorkflowDouble(),
+      ordinaryBuy: createOrdinaryBuyWorkflowDouble(),
+      ordinarySell: createOrdinarySellWorkflowDouble(),
       buyTaskQueue: createBuyTaskQueue(),
       sellTaskQueue: createSellTaskQueue(),
       monitorTaskQueue,
@@ -277,8 +279,7 @@ describe('app createAsyncRuntime wiring', () => {
       const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
       let periodicDueCalls = 0;
       const context = createMonitorContext({
-        autoSymbolManager: {
-          maybeSearchOnEvent: async () => {},
+        seatSwitch: {
           evaluatePeriodicSwitchDue: async () => {
             periodicDueCalls += 1;
             return { kind: 'NOOP' };
@@ -347,8 +348,7 @@ describe('app createAsyncRuntime wiring', () => {
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
       const context = createMonitorContext({
-        autoSymbolManager: {
-          maybeSearchOnEvent: async () => {},
+        seatSwitch: {
           evaluatePeriodicSwitchDue: async () => {
             throw await createExternalApiRequestError({
               operation: 'test.periodicDue',
@@ -404,6 +404,7 @@ describe('app createAsyncRuntime wiring', () => {
           ...issued.getTask('LONG'),
           taskTimeMs: issued.getTask('LONG').currentTimeMs,
           status: 'failed',
+          reevaluateAtMs: Date.now() + TRADING.INTERVAL_MS,
         },
       ]);
     } finally {
@@ -418,8 +419,7 @@ describe('app createAsyncRuntime wiring', () => {
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
       const context = createMonitorContext({
-        autoSymbolManager: {
-          maybeSearchOnEvent: async () => {},
+        seatSwitch: {
           evaluatePeriodicSwitchDue: async () => {
             throw new TypeError('periodic due contract broken');
           },

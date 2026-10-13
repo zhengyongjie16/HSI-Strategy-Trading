@@ -14,7 +14,10 @@ async function lintText(relativeFilePath: string, code: string) {
       languageOptions: {
         parserOptions: {
           projectService: {
-            allowDefaultProject: ['src/core/strategy/types.d.ts', 'src/types/probe.d.ts'],
+            allowDefaultProject: [
+              'src/runtime/strategy/intradayRegression/types.d.ts',
+              'src/types/probe.d.ts',
+            ],
           },
         },
       },
@@ -24,7 +27,9 @@ async function lintText(relativeFilePath: string, code: string) {
     filePath: path.join(process.cwd(), relativeFilePath),
   });
 
-  return result?.messages ?? [];
+  const messages = result?.messages ?? [];
+  expect(messages.filter((message) => message.fatal === true)).toEqual([]);
+  return messages;
 }
 
 function hasRuleMessage(messages: Awaited<ReturnType<typeof lintText>>, ruleId: string): boolean {
@@ -52,7 +57,7 @@ describe('local ESLint rules', () => {
 
   it('keeps named import aliases allowed in tests', async () => {
     const messages = await lintText(
-      'tests/probe.test.ts',
+      'tests/architecture/eslintLocalRules.test.ts',
       "import { foo as bar } from './foo.js';\nvoid bar;\n",
     );
 
@@ -106,7 +111,7 @@ describe('local ESLint rules', () => {
 
   it('allows type and interface declarations in adjacent types files', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       'export type Probe = { readonly id: string };\nexport interface Runner { run(): void }\n',
     );
 
@@ -115,7 +120,7 @@ describe('local ESLint rules', () => {
 
   it('allows type declarations in src types directory', async () => {
     const messages = await lintText(
-      'src/types/queue.ts',
+      'src/types/strategy.ts',
       'export type Probe = { readonly id: string };\n',
     );
 
@@ -124,7 +129,7 @@ describe('local ESLint rules', () => {
 
   it('rejects declaration files as type location exceptions', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.d.ts',
+      'src/runtime/strategy/intradayRegression/types.d.ts',
       'interface Probe { readonly id: string }\n',
     );
 
@@ -151,7 +156,7 @@ describe('local ESLint rules', () => {
 
   it('rejects enums anywhere under src', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       "enum Probe { A = 'a' }\nexport type ProbeValue = Probe;\n",
     );
 
@@ -160,7 +165,7 @@ describe('local ESLint rules', () => {
 
   it('does not restrict type declarations in tests', async () => {
     const messages = await lintText(
-      'tests/probe.test.ts',
+      'tests/architecture/eslintLocalRules.test.ts',
       'type Probe = { readonly id: string };\ninterface Runner { run(): void }\n',
     );
 
@@ -169,7 +174,7 @@ describe('local ESLint rules', () => {
 
   it('rejects redundant named type aliases in src files', async () => {
     const messages = await lintText(
-      'src/main/periodicSwitchWakeupRuntime/types.ts',
+      'src/runtime/periodicSwitchWakeupRuntime/types.ts',
       [
         "import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';",
         'type PeriodicSwitchTimerHandle = BoundedOneShotTimerController;',
@@ -182,7 +187,7 @@ describe('local ESLint rules', () => {
 
   it('rejects redundant qualified named type aliases in src files', async () => {
     const messages = await lintText(
-      'src/main/periodicSwitchWakeupRuntime/types.ts',
+      'src/runtime/periodicSwitchWakeupRuntime/types.ts',
       [
         "import type * as TimerTypes from '../../utils/timer/types.js';",
         'type PeriodicSwitchTimerHandle = TimerTypes.BoundedOneShotTimerController;',
@@ -194,14 +199,17 @@ describe('local ESLint rules', () => {
   });
 
   it('rejects primitive equivalent type aliases in src files', async () => {
-    const messages = await lintText('src/core/strategy/types.ts', 'export type Price = number;\n');
+    const messages = await lintText(
+      'src/runtime/strategy/intradayRegression/types.ts',
+      'export type Price = number;\n',
+    );
 
     expect(hasRuleMessage(messages, 'local/no-redundant-type-alias')).toBe(true);
   });
 
   it('allows derived type aliases in src files', async () => {
     const messages = await lintText(
-      'src/main/periodicSwitchWakeupRuntime/types.ts',
+      'src/runtime/periodicSwitchWakeupRuntime/types.ts',
       [
         "type Direction = 'LONG' | 'SHORT';",
         'type Route = { readonly direction: Direction };',
@@ -217,7 +225,7 @@ describe('local ESLint rules', () => {
 
   it('does not restrict redundant type aliases in tests', async () => {
     const messages = await lintText(
-      'tests/probe.test.ts',
+      'tests/architecture/eslintLocalRules.test.ts',
       'type Source = { readonly id: string };\ntype Probe = Source;\n',
     );
 
@@ -226,7 +234,7 @@ describe('local ESLint rules', () => {
 
   it('allows import type and type declarations in types files', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       "import type { Foo } from './foo.js';\nexport type Probe = Foo;\n",
     );
 
@@ -235,7 +243,7 @@ describe('local ESLint rules', () => {
 
   it('rejects value imports in types files', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       "import { foo } from './foo.js';\nexport type Probe = { readonly id: string };\nvoid foo;\n",
     );
 
@@ -244,7 +252,7 @@ describe('local ESLint rules', () => {
 
   it('rejects side-effect imports in types files', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       "import './setup.js';\nexport type Probe = { readonly id: string };\n",
     );
 
@@ -252,14 +260,17 @@ describe('local ESLint rules', () => {
   });
 
   it('rejects constants in types files', async () => {
-    const messages = await lintText('src/core/strategy/types.ts', "export const probe = '1';\n");
+    const messages = await lintText(
+      'src/runtime/strategy/intradayRegression/types.ts',
+      "export const probe = '1';\n",
+    );
 
     expect(hasRuleMessage(messages, 'local/types-file-only-types')).toBe(true);
   });
 
   it('rejects functions in types files', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       'export function probe(): void {}\n',
     );
 
@@ -267,26 +278,35 @@ describe('local ESLint rules', () => {
   });
 
   it('rejects classes in types files', async () => {
-    const messages = await lintText('src/core/strategy/types.ts', 'export class Probe {}\n');
+    const messages = await lintText(
+      'src/runtime/strategy/intradayRegression/types.ts',
+      'export class Probe {}\n',
+    );
 
     expect(hasRuleMessage(messages, 'local/types-file-only-types')).toBe(true);
   });
 
   it('rejects module declarations in types files', async () => {
-    const messages = await lintText('src/core/strategy/types.ts', 'declare namespace Probe {}\n');
+    const messages = await lintText(
+      'src/runtime/strategy/intradayRegression/types.ts',
+      'declare namespace Probe {}\n',
+    );
 
     expect(hasRuleMessage(messages, 'local/types-file-only-types')).toBe(true);
   });
 
   it('rejects export all declarations in types files', async () => {
-    const messages = await lintText('src/core/strategy/types.ts', "export * from './foo.js';\n");
+    const messages = await lintText(
+      'src/runtime/strategy/intradayRegression/types.ts',
+      "export * from './foo.js';\n",
+    );
 
     expect(hasRuleMessage(messages, 'local/types-file-only-types')).toBe(true);
   });
 
   it('rejects value export specifiers in types files', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       "export { foo } from './foo.js';\n",
     );
 
@@ -295,7 +315,7 @@ describe('local ESLint rules', () => {
 
   it('rejects type re-export specifiers in types files', async () => {
     const messages = await lintText(
-      'src/core/strategy/types.ts',
+      'src/runtime/strategy/intradayRegression/types.ts',
       "export type { Foo } from './foo.js';\n",
     );
 
@@ -303,20 +323,26 @@ describe('local ESLint rules', () => {
   });
 
   it('rejects control flow statements in types files', async () => {
-    const messages = await lintText('src/core/strategy/types.ts', 'if (true) {}\n');
+    const messages = await lintText(
+      'src/runtime/strategy/intradayRegression/types.ts',
+      'if (true) {}\n',
+    );
 
     expect(hasRuleMessage(messages, 'local/types-file-only-types')).toBe(true);
   });
 
   it('does not restrict runtime code in test types files', async () => {
-    const messages = await lintText('tests/helpers/types.ts', "export const probe = '1';\n");
+    const messages = await lintText(
+      'tests/runtime/strategy/intradayRegression/types.ts',
+      "export const probe = '1';\n",
+    );
 
     expect(hasRuleMessage(messages, 'local/types-file-only-types')).toBe(false);
   });
 
   it('rejects type declarations in src utils files', async () => {
     const messages = await lintText(
-      'src/core/strategy/utils.ts',
+      'src/domain/strategy/utils.ts',
       "type Probe = { readonly id: string };\nconst probe: Probe = { id: '1' };\nvoid probe;\n",
     );
 
@@ -325,7 +351,7 @@ describe('local ESLint rules', () => {
 
   it('rejects interface declarations in src utils files', async () => {
     const messages = await lintText(
-      'src/core/strategy/utils.ts',
+      'src/domain/strategy/utils.ts',
       "interface Probe { readonly id: string }\nconst probe: Probe = { id: '1' };\nvoid probe;\n",
     );
 
@@ -334,7 +360,7 @@ describe('local ESLint rules', () => {
 
   it('rejects ambient function declarations in src utils files', async () => {
     const messages = await lintText(
-      'src/core/strategy/utils.ts',
+      'src/domain/strategy/utils.ts',
       'declare function probe(): void;\n',
     );
 
@@ -342,14 +368,17 @@ describe('local ESLint rules', () => {
   });
 
   it('rejects ambient variable declarations in src utils files', async () => {
-    const messages = await lintText('src/core/strategy/utils.ts', 'declare const probe: string;\n');
+    const messages = await lintText(
+      'src/domain/strategy/utils.ts',
+      'declare const probe: string;\n',
+    );
 
     expect(hasRuleMessage(messages, 'local/utils-file-no-types')).toBe(true);
   });
 
   it('allows import type and type annotations in src utils files', async () => {
     const messages = await lintText(
-      'src/core/strategy/utils.ts',
+      'src/domain/strategy/utils.ts',
       "import type { Probe } from './types.js';\nexport function normalizeProbe(probe: Probe): Probe {\n  return probe;\n}\n",
     );
 
@@ -358,7 +387,7 @@ describe('local ESLint rules', () => {
 
   it('does not restrict type declarations in test utils files', async () => {
     const messages = await lintText(
-      'tests/helpers/utils.ts',
+      'tests/app/shutdown/utils.ts',
       'type Probe = { readonly id: string };\ninterface Runner { run(): void }\n',
     );
 

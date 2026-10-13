@@ -8,17 +8,18 @@ import { describe, expect, it } from 'bun:test';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
-import { createAutoSymbolManager } from '../../src/services/autoSymbolManager/index.js';
-import { createDefaultMonitorQuoteEventRuntime } from '../../src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
-import { createSwitchWakeupRuntime } from '../../src/main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
+import { createStaticLiquidationExecutor } from '../../src/application/staticLiquidation/index.js';
+import { createDefaultMonitorQuoteEventRuntime } from '../../src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
+import { createSwitchWakeupRuntime } from '../../src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
 
 import type {
   AdvancePendingSwitchResult,
-  AutoSymbolManagerPort,
+  SeatSwitchWorkflow,
 } from '../../src/types/monitorContextPorts.js';
-import type { QuoteUpdatedEvent } from '../../src/types/services.js';
+import type { QuoteUpdatedEvent } from '../../src/types/marketPorts.js';
 
 import {
   createTerminationDouble,
@@ -35,7 +36,7 @@ import {
   createTraderDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
-import { createWarrantCandidateWithOverrides } from '../services/autoSymbolManager/utils.js';
+import { createWarrantCandidateWithOverrides, createLoggerStub } from '../helpers/seatTestUtils.js';
 
 function createTradingGateEventRuntime() {
   return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
@@ -194,22 +195,28 @@ describe('terminal switch finalization integration', () => {
         });
       },
     });
-    const actualAutoSymbolManager = createAutoSymbolManager({
+    const actualAutoSymbolManager = createSeatSwitchWorkflow({
+      logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
       marketDataClient,
       trader,
       orderRecorder,
       riskChecker,
-      findBestWarrant: async () =>
-        createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' }),
+      candidateSearch: {
+        resolveDistanceRange: (direction) =>
+          monitorConfig.autoSearchConfig[
+            direction === 'LONG' ? 'switchDistanceRangeBull' : 'switchDistanceRangeBear'
+          ],
+        findCandidate: async () =>
+          createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' }),
+      },
       clock: { now: () => new Date(nowMs) },
       getTradingCalendarSnapshot: () =>
         new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
     });
     const advanceResults: AdvancePendingSwitchResult[] = [];
-    const autoSymbolManager: AutoSymbolManagerPort = {
-      maybeSearchOnEvent: actualAutoSymbolManager.maybeSearchOnEvent,
+    const seatSwitch: SeatSwitchWorkflow = {
       evaluatePeriodicSwitchDue: actualAutoSymbolManager.evaluatePeriodicSwitchDue,
       startSwitchOnDistance: actualAutoSymbolManager.startSwitchOnDistance,
       advancePendingSwitch: async (params) => {
@@ -221,16 +228,19 @@ describe('terminal switch finalization integration', () => {
       getPeriodicSwitchPendingState: actualAutoSymbolManager.getPeriodicSwitchPendingState,
       resetAllState: actualAutoSymbolManager.resetAllState,
     };
-    const monitorContext = createMonitorContextDouble({
-      dailyLossTracker,
-      config: monitorConfig,
-      symbolRegistry,
-      autoSymbolManager,
-      orderRecorder,
-      riskChecker,
-      longSymbolName: 'OLD_BULL.HK',
-      monitorSymbolName: 'HSI.HK',
-    });
+    const monitorContext = {
+      ...createMonitorContextDouble({
+        dailyLossTracker,
+        config: monitorConfig,
+        symbolRegistry,
+
+        orderRecorder,
+        riskChecker,
+        longSymbolName: 'OLD_BULL.HK',
+        monitorSymbolName: 'HSI.HK',
+      }),
+      seatSwitch: seatSwitch,
+    };
     const lastState = { isTradingEnabled: true, canTrade: true, isHalfDay: false };
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext,
@@ -278,7 +288,13 @@ describe('terminal switch finalization integration', () => {
       },
       marketDataClient,
       monitorContext,
-      trader,
+      executeStaticLiquidation: createStaticLiquidationExecutor({
+        trader,
+        marketDataClient,
+        snapshot,
+        postTradeConsistencyRuntime,
+        now: () => new Date(nowMs),
+      }),
       lastState,
       snapshot,
       postTradeConsistencyRuntime,

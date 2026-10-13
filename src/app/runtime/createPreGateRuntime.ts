@@ -9,8 +9,8 @@
 import { AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS } from '../../constants/index.js';
 import { validateAllConfig } from '../../config/validator/index.js';
 import { createTradingConfig } from '../../config/trading/index.js';
-import { createWarrantListCache } from '../../services/autoSymbolFinder/utils.js';
-import { createSymbolRegistry } from '../../services/autoSymbolManager/utils.js';
+import { createWarrantListCache } from '../../infrastructure/longbridge/market/warrantListCache/index.js';
+import { createSymbolRegistry } from '../../domain/seat/symbolRegistry.js';
 import { logger } from '../../utils/logger/index.js';
 import { getHKDateKey, getRequiredHKDateKey } from '../../utils/time/index.js';
 import { formatError } from '../../utils/error/index.js';
@@ -57,7 +57,7 @@ function createPreGateRuntimeFactory(
     });
     if (termination.isTerminated()) return null;
 
-    const marketDataClient = await buildMarketDataClient({ config });
+    const marketDataClient = await buildMarketDataClient({ config, warrantListCacheConfig });
     cleanup.register({
       phase: 'RESET_MARKET_DATA_RUNTIME',
       step: '重置行情运行态订阅与缓存',
@@ -95,7 +95,7 @@ function createPreGateRuntimeFactory(
       config,
       tradingConfig,
       symbolRegistry,
-      warrantListCacheConfig,
+      warrantListCache,
       marketDataClient,
       startupTradingDayInfo,
     };

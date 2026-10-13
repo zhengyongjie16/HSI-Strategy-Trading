@@ -10,7 +10,7 @@ import type { ExternalApiRetryConfig } from '../apiFailure/types.js';
  */
 export type AccountPositionsReadParams = Readonly<{
   /** 交易器实例，用于发起账户快照与持仓两个读取请求 */
-  trader: Trader;
+  trader: Pick<Trader, 'getAccountSnapshot' | 'getStockPositions'>;
 
   /** 外部 API 重试配置；不传时沿用 Trader 默认重试策略 */
   retryConfig?: ExternalApiRetryConfig;

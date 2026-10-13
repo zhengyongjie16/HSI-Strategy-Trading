@@ -5,7 +5,8 @@
  * - types.ts 只能承载类型声明
  * - utils.ts 不声明本地类型
  * - 生产代码不暴露 test-only hook
- * - strategy 契约类型整合到 core/strategy/types.ts
+ * - strategy 公共契约收口到 src/types/strategy.ts
+ * - 迁移后的风险、清仓和订单执行 owner 保持实际导出边界
  * - 内部实现符号不穿透公共 surface
  */
 import path from 'node:path';
@@ -303,10 +304,10 @@ describe('type organization regressions', () => {
   });
 
   it('stores only neutral strategy contracts and injects the prepared instance into context', async () => {
-    const strategyTypesSource = await readProjectFile('src/core/strategy/types.ts');
+    const strategyTypesSource = await readProjectFile('src/types/strategy.ts');
     const monitorContextSource = await readProjectFile('src/app/context/createMonitorContext.ts');
     const exportedNames = collectNamedExports(
-      parseSourceFile('src/core/strategy/types.ts', strategyTypesSource),
+      parseSourceFile('src/types/strategy.ts', strategyTypesSource),
     );
     expect([...exportedNames]).toContain('TradingSignalStrategy');
     expect([...exportedNames]).toContain('StrategyDefinition');
@@ -371,11 +372,11 @@ describe('type organization regressions', () => {
         privateSymbols: ['IsExecutionAllowed'],
       },
       {
-        relativePath: 'src/main/monitorQuoteEventRuntime/types.ts',
+        relativePath: 'src/runtime/monitorQuoteEventRuntime/types.ts',
         privateSymbols: ['MonitorQuoteFreshnessStatus', 'SwitchWakeupFreshnessDeps'],
       },
       {
-        relativePath: 'src/main/tradingRiskEventRuntime/types.ts',
+        relativePath: 'src/runtime/tradingRiskEventRuntime/types.ts',
         privateSymbols: ['TradingRiskConsistencyPort'],
       },
       {
@@ -448,12 +449,83 @@ describe('type organization regressions', () => {
 
     const marketPath = 'src/types/marketPorts.ts';
     const marketSource = await readProjectFile(marketPath);
-    expect(
-      [...collectNamedExports(parseSourceFile(marketPath, marketSource))].sort((left, right) =>
-        left.localeCompare(right),
-      ),
-    ).toEqual(['MarketWarrantExpiryRange', 'MarketWarrantListRequest']);
-    expect(collectProjectImports(marketPath, marketSource)).toEqual([]);
+    const marketExports = collectNamedExports(parseSourceFile(marketPath, marketSource));
+    for (const contract of [
+      'CandlestickCacheSnapshot',
+      'CandlestickPeriod',
+      'CandlestickUpdatedEvent',
+      'MarketDataClient',
+      'MarketQuoteContext',
+      'MarketWarrantExpiryRange',
+      'MarketWarrantListRequest',
+      'QuoteUpdatedEvent',
+      'TradingDayInfo',
+      'TradingDaysResult',
+    ])
+      expect(marketExports.has(contract)).toBe(true);
+
+    expect(collectProjectImports(marketPath, marketSource)).toEqual([
+      'src/types/data.ts',
+      'src/types/quote.ts',
+    ]);
+  });
+
+  it('keeps the migrated switch and ordinary trade factories on their actual owner boundary', async () => {
+    for (const [file, expected] of [
+      ['src/application/seatSwitch/index.ts', 'createSeatSwitchWorkflow'],
+      ['src/application/ordinaryBuy/index.ts', 'createOrdinaryBuyWorkflow'],
+      ['src/application/ordinarySell/index.ts', 'createOrdinarySellWorkflow'],
+      ['src/runtime/asyncProgram/buyProcessor/index.ts', 'createBuyProcessor'],
+      ['src/runtime/asyncProgram/sellProcessor/index.ts', 'createSellProcessor'],
+      ['src/runtime/periodicSwitchWakeupRuntime/index.ts', 'createPeriodicSwitchWakeupRuntime'],
+    ] as const) {
+      const source = await readProjectFile(file);
+      expect([...collectNamedExports(parseSourceFile(file, source))]).toEqual([expected]);
+    }
+
+    for (const oldFile of [
+      'src/services/autoSymbolManager/switchStateMachine.ts',
+      'src/main/periodicSwitchWakeupRuntime/index.ts',
+      'src/main/asyncProgram/buyProcessor/index.ts',
+      'src/main/asyncProgram/sellProcessor/index.ts',
+      'src/core/signalProcessor/index.ts',
+      'src/main/ordinarySignalGuard/index.ts',
+    ])
+      expect(await exists(oldFile)).toBe(false);
+  });
+
+  it('keeps migrated risk, liquidation and execution factories on their actual owner boundary', async () => {
+    for (const [file, expected] of [
+      ['src/domain/risk/index.ts', 'createRiskChecker'],
+      ['src/application/riskRefresh/warrantRiskRefresh.ts', 'createWarrantRiskRefresh'],
+      ['src/application/protectiveLiquidation/index.ts', 'createProtectiveLiquidationWorkflow'],
+      ['src/application/doomsdayClearance/index.ts', 'createDoomsdayClearanceWorkflow'],
+      ['src/application/staticLiquidation/index.ts', 'createStaticLiquidationExecutor'],
+      ['src/application/orderExecution/index.ts', 'createOrderExecutor'],
+      [
+        'src/runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.ts',
+        'createTradingRiskEventRuntime',
+      ],
+      [
+        'src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.ts',
+        'createDefaultMonitorQuoteEventRuntime',
+      ],
+      ['src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.ts', 'createSwitchWakeupRuntime'],
+    ] as const) {
+      const source = await readProjectFile(file);
+      expect([...collectNamedExports(parseSourceFile(file, source))]).toEqual([expected]);
+    }
+
+    for (const oldFile of [
+      'src/core/riskController/index.ts',
+      'src/core/doomsdayProtection/index.ts',
+      'src/core/trader/orderExecutor/index.ts',
+      'src/main/tradingRiskEventRuntime/tradingRiskEventRuntime.ts',
+      'src/main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.ts',
+      'src/main/monitorQuoteEventRuntime/staticLiquidationExecutor.ts',
+      'src/main/monitorQuoteEventRuntime/switchWakeupRuntime.ts',
+    ])
+      expect(await exists(oldFile)).toBe(false);
   });
 
   it('keeps orderRecorder factory deps out of shared public types', async () => {

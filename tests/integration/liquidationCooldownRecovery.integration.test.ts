@@ -5,28 +5,20 @@
  * - 验证启动日志恢复后，单方向冷却会对同监控标的双方向买入生效。
  */
 import { describe, expect, it } from 'bun:test';
-import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
-import { createLiquidationCooldownTracker } from '../../src/services/liquidationCooldown/index.js';
-import { createTradeLogHydrator } from '../../src/services/liquidationCooldown/tradeLogHydrator.js';
-import type { BuyRiskCheckContext } from '../../src/types/services.js';
+import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
+import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
+import { createTradeLogHydrator } from '../../src/application/protectiveLiquidation/tradeLogHydrator.js';
+import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
 import {
   createAccountSnapshotDouble,
-  createDoomsdayProtectionDouble,
+  createLoggerDouble,
   createOrderRecorderDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
-
-function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
-  const originalNow = Date.now;
-  Date.now = () => nowMs;
-  return run().finally(() => {
-    Date.now = originalNow;
-  });
-}
 
 function createCompletedRecord(params: {
   readonly monitorSymbol: string;
@@ -78,7 +70,7 @@ function createRiskContext(params: {
     shortSymbolName: params.monitorConfig.shortSymbol,
     currentTime: new Date('2026-03-13T10:00:00+08:00'),
     isHalfDay: false,
-    doomsdayProtection: createDoomsdayProtectionDouble(),
+
     config: params.monitorConfig,
   };
 }
@@ -96,9 +88,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
   const tradingConfig = createTradingConfig({
     monitor: monitorConfig,
   });
-  const tracker = createLiquidationCooldownTracker({
-    nowMs: () => params.nowMs,
-  });
+  const tracker = createLiquidationCooldownTracker();
   const executedAtMs = params.nowMs - 30_000;
   const hydrator = createTradeLogHydrator({
     mixedTradeLogRepository: {
@@ -135,9 +125,11 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     getStockPositions: async () => [],
     canTradeNow: () => ({ canTrade: true }),
   });
-  const signalProcessor = createSignalProcessor({
-    tradingConfig,
+  const checkRisk = createBuyRiskChecks({
+    logger: createLoggerDouble(),
+    doomsdayProtection: tradingConfig.global.doomsdayProtection,
     liquidationCooldownTracker: tracker,
+    lastRiskCheckTime: new Map(),
     reportFatalError: () => {},
   });
   const context = createRiskContext({
@@ -159,12 +151,14 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     reason: 'recovery-cooldown-buyput',
   });
 
-  const buyCallResult = await withMockedNow(params.nowMs, async () =>
-    signalProcessor.applyRiskChecks([buyCallSignal], context),
-  );
-  const buyPutResult = await withMockedNow(params.nowMs + 10, async () =>
-    signalProcessor.applyRiskChecks([buyPutSignal], context),
-  );
+  const buyCallResult = await checkRisk([buyCallSignal], {
+    ...context,
+    currentTime: new Date(params.nowMs),
+  });
+  const buyPutResult = await checkRisk([buyPutSignal], {
+    ...context,
+    currentTime: new Date(params.nowMs + 10),
+  });
 
   expect(buyCallResult).toHaveLength(0);
   expect(buyPutResult).toHaveLength(0);
@@ -185,9 +179,7 @@ describe('liquidation-cooldown-recovery integration', () => {
     const tradingConfig = createTradingConfig({
       monitor: monitorConfig,
     });
-    const tracker = createLiquidationCooldownTracker({
-      nowMs: () => nowMs,
-    });
+    const tracker = createLiquidationCooldownTracker();
     const hydrator = createTradeLogHydrator({
       mixedTradeLogRepository: {
         loadCompletionRecords: () => [
@@ -247,9 +239,7 @@ describe('liquidation-cooldown-recovery integration', () => {
     const tradingConfig = createTradingConfig({
       monitor: monitorConfig,
     });
-    const tracker = createLiquidationCooldownTracker({
-      nowMs: () => nowMs,
-    });
+    const tracker = createLiquidationCooldownTracker();
     const executedAtMs = nowMs - 6 * 60_000;
     const hydrator = createTradeLogHydrator({
       mixedTradeLogRepository: {
@@ -279,9 +269,11 @@ describe('liquidation-cooldown-recovery integration', () => {
       getStockPositions: async () => [],
       canTradeNow: () => ({ canTrade: true }),
     });
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
+    const checkRisk = createBuyRiskChecks({
+      logger: createLoggerDouble(),
+      doomsdayProtection: tradingConfig.global.doomsdayProtection,
       liquidationCooldownTracker: tracker,
+      lastRiskCheckTime: new Map(),
       reportFatalError: () => {},
     });
     const context = createRiskContext({
@@ -303,12 +295,14 @@ describe('liquidation-cooldown-recovery integration', () => {
       reason: 'recovery-expired-buyput',
     });
 
-    const buyCallResult = await withMockedNow(nowMs, async () =>
-      signalProcessor.applyRiskChecks([buyCallSignal], context),
-    );
-    const buyPutResult = await withMockedNow(nowMs + 10, async () =>
-      signalProcessor.applyRiskChecks([buyPutSignal], context),
-    );
+    const buyCallResult = await checkRisk([buyCallSignal], {
+      ...context,
+      currentTime: new Date(nowMs),
+    });
+    const buyPutResult = await checkRisk([buyPutSignal], {
+      ...context,
+      currentTime: new Date(nowMs + 10),
+    });
 
     expect(buyCallResult).toHaveLength(1);
     expect(buyPutResult).toHaveLength(1);

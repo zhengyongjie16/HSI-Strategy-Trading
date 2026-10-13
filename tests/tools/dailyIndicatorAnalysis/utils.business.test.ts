@@ -5,11 +5,9 @@
  * - 验证日内分析工具按当前分钟 high/low 变体计算低滞后 ER10 指标。
  */
 import { describe, expect, it } from 'bun:test';
-import { TradeSession, type Candlestick } from 'longbridge';
-
-import { toMockDecimal } from '../../../mock/longbridge/decimal.js';
+import { computeDailyMinuteRows } from '../../infrastructure/longbridge/market/marketFixture.js';
+import type { MarketCandleInput } from '../../infrastructure/longbridge/market/types.js';
 import { calculateEfficiencyRatio } from '../../../tools/dailyIndicatorAnalysis/indicatorCalculators.js';
-import { computeMinuteRows } from '../../../tools/dailyIndicatorAnalysis/utils.js';
 import type { CandleData } from '../../../src/types/data.js';
 import type { ComputeMinuteRowsOptions } from '../../../tools/dailyIndicatorAnalysis/types.js';
 
@@ -34,28 +32,6 @@ function createCandle(close: number): CandleData {
   };
 }
 
-function createCandlestick(params: {
-  readonly timestamp: Date;
-  readonly open: number;
-  readonly high: number;
-  readonly low: number;
-  readonly close: number;
-  readonly volume: number;
-}): Candlestick {
-  return {
-    close: toMockDecimal(params.close),
-    open: toMockDecimal(params.open),
-    low: toMockDecimal(params.low),
-    high: toMockDecimal(params.high),
-    volume: params.volume,
-    turnover: toMockDecimal(0),
-    timestamp: params.timestamp,
-    tradeSession: TradeSession.Intraday,
-    toString: () => JSON.stringify(params),
-    toJSON: () => params,
-  };
-}
-
 describe('dailyIndicatorAnalysis utils business flow', () => {
   it('computes Kaufman ER10 from net close movement divided by path movement', () => {
     const closes = [100, 101, 100.5, 102, 101.5, 103, 102, 104, 103.5, 105, 104];
@@ -68,33 +44,31 @@ describe('dailyIndicatorAnalysis utils business flow', () => {
 
   it('projects ER10 into high and low daily indicator rows', () => {
     const baseTime = Date.UTC(2026, 4, 14, 1, 30);
-    const candles: Candlestick[] = [];
+    const candles: MarketCandleInput[] = [];
     for (let index = 0; index < 10; index += 1) {
       const close = 100 + index;
-      candles.push(
-        createCandlestick({
-          timestamp: new Date(baseTime + index * 60_000),
-          open: close - 0.2,
-          high: close + 0.4,
-          low: close - 0.4,
-          close,
-          volume: 1_000 + index,
-        }),
-      );
+      candles.push({
+        timestampMs: baseTime + index * 60_000,
+        open: close - 0.2,
+        high: close + 0.4,
+        low: close - 0.4,
+        close,
+        volume: 1_000 + index,
+        turnover: 0,
+      });
     }
 
-    candles.push(
-      createCandlestick({
-        timestamp: new Date(baseTime + 10 * 60_000),
-        open: 109.8,
-        high: 110.6,
-        low: 108.2,
-        close: 110,
-        volume: 2_000,
-      }),
-    );
+    candles.push({
+      timestampMs: baseTime + 10 * 60_000,
+      open: 109.8,
+      high: 110.6,
+      low: 108.2,
+      close: 110,
+      volume: 2_000,
+      turnover: 0,
+    });
 
-    const result = computeMinuteRows(candles, COMPUTE_OPTIONS);
+    const result = computeDailyMinuteRows(candles, COMPUTE_OPTIONS);
 
     const lastHighRow = result.rows.at(-2);
     const lastLowRow = result.rows.at(-1);

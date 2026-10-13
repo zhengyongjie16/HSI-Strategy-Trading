@@ -15,8 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTradingConfig, createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
-import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
-import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
+import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import {
   createAccountSnapshotDouble,
@@ -113,11 +113,7 @@ function createRuntimeParams(
       config: createSdkConfigDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry: createSymbolRegistryDouble(),
-      warrantListCacheConfig: {
-        cache: warrantListCache,
-        ttlMs: 60_000,
-        nowMs: () => 0,
-      },
+      warrantListCache: warrantListCache,
       marketDataClient: params.marketDataClient ?? createMarketDataClientDouble(),
       startupTradingDayInfo: {
         dateKey: '2026-03-13',

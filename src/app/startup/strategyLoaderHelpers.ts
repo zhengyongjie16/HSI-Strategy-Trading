@@ -9,8 +9,8 @@ import {
   STRATEGY_DEFINITION_EXPORT_NAME,
   STRATEGY_DEFINITION_FILE_NAME,
 } from '../../constants/strategy.js';
-import { strategyDirectoryNameToId } from '../../core/strategy/utils.js';
-import type { PreparedStrategy, StrategyDefinition } from '../../core/strategy/types.js';
+import { strategyDirectoryNameToId } from '../../domain/strategy/utils.js';
+import type { PreparedStrategy, StrategyDefinition } from '../../types/strategy.js';
 import type { StrategyFileSystem, StrategyLocation } from './types.js';
 
 /** 拒绝链接/junction 与错误类型，并按完整相对路径验证真实文件边界。 */
@@ -34,9 +34,29 @@ export async function assertStrategyNode(
   }
 }
 
-/** 按枚举实际名称确认固定文件，阻止大小写容错和运行器隐式扩展名解析。 */
+/** 按真实目录项检查固定文件；不接受大小写容错或另一扩展名替代。 */
+async function assertStrategyFile(
+  directoryPath: string,
+  name: string,
+  fs: StrategyFileSystem,
+): Promise<void> {
+  const names = await fs.readDirectory(directoryPath);
+  if (
+    !names.includes(name) ||
+    names.filter((item) => item.toLowerCase() === name.toLowerCase()).length !== 1
+  ) {
+    throw new Error(
+      `[Strategy:metadata] 必需文件缺失或大小写冲突: ${nodePath.join(directoryPath, name)}`,
+    );
+  }
+
+  await assertStrategyNode(nodePath.join(directoryPath, name), 'file', fs, directoryPath);
+}
+
+/** 同时校验 app definition 与 config 资产布局，只读取选中项的元信息，不预加载其他策略。 */
 export async function inspectStrategyLocation(
   rootPath: string,
+  configRootPath: string,
   directoryName: string,
   extension: '.ts' | '.js',
   fs: StrategyFileSystem,
@@ -44,21 +64,20 @@ export async function inspectStrategyLocation(
   const strategyId = strategyDirectoryNameToId(directoryName);
   const directoryPath = nodePath.join(rootPath, directoryName);
   await assertStrategyNode(directoryPath, 'directory', fs, rootPath);
-  const names = await fs.readDirectory(directoryPath);
   const definitionName = `${STRATEGY_DEFINITION_FILE_NAME}${extension}`;
-  const requiredNames = [definitionName, STRATEGY_CONFIG_FILE_NAME];
-  for (const name of requiredNames) {
-    if (
-      !names.includes(name) ||
-      names.filter((item) => item.toLowerCase() === name.toLowerCase()).length !== 1
-    ) {
-      throw new Error(
-        `[Strategy:metadata] 必需文件缺失或大小写冲突: ${nodePath.join(directoryPath, name)}`,
-      );
-    }
+  await assertStrategyFile(directoryPath, definitionName, fs);
 
-    await assertStrategyNode(nodePath.join(directoryPath, name), 'file', fs, directoryPath);
+  const configNames = await fs.readDirectory(configRootPath);
+  if (
+    !configNames.includes(directoryName) ||
+    configNames.filter((name) => name.toLowerCase() === directoryName.toLowerCase()).length !== 1
+  ) {
+    throw new Error(`[Strategy:metadata] 配置目录缺失或大小写冲突: ${directoryName}`);
   }
+
+  const configDirectoryPath = nodePath.join(configRootPath, directoryName);
+  await assertStrategyNode(configDirectoryPath, 'directory', fs, configRootPath);
+  await assertStrategyFile(configDirectoryPath, STRATEGY_CONFIG_FILE_NAME, fs);
 
   return {
     strategyId,

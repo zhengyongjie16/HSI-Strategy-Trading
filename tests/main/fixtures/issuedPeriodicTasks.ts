@@ -1,4 +1,4 @@
-import { createPeriodicSwitchWakeupRuntime } from '../../../src/main/periodicSwitchWakeupRuntime/index.js';
+import { createPeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/index.js';
 import { createSettlementRuntimeFixture } from './settlementRuntime.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 import type { MonitorContext } from '../../../src/types/state.js';

@@ -272,10 +272,142 @@ export function selectedStrategyPath(
 ): boolean {
   if (!/^[a-z][a-zA-Z0-9]*$/.test(selected)) return false;
 
-  const directory = compiled ? 'dist/core/strategy' : 'src/core/strategy';
+  const directory = compiled
+    ? 'dist/src/app/startup/strategyDefinitions'
+    : 'src/app/startup/strategyDefinitions';
   return (
     path.resolve(candidate) ===
     path.resolve(root, directory, selected, `definition.${compiled ? 'js' : 'ts'}`)
+  );
+}
+
+/** 只准入真实 prepareStrategy 注入与 loader 的具名 location/文件端口连接，不批准任意动态加载。 */
+function selectedStrategyLoaderCall(
+  root: string,
+  node: ts.CallExpression,
+  checker: ts.TypeChecker,
+): boolean {
+  const file = path.relative(root, node.getSourceFile().fileName).replaceAll('\\', '/');
+  const argument = node.arguments[0];
+  if (node.arguments.length !== 1 || argument === undefined) return false;
+
+  const declared = (reference: ts.Node, source: string, name: string): boolean => {
+    const symbol = checker.getSymbolAtLocation(reference);
+    const actual =
+      symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+        ? checker.getAliasedSymbol(symbol)
+        : symbol;
+    return (
+      actual?.name === name &&
+      (actual.declarations?.some(
+        (declaration) =>
+          path.relative(root, declaration.getSourceFile().fileName).replaceAll('\\', '/') ===
+          source,
+      ) ??
+        false)
+    );
+  };
+
+  if (file === 'src/app/runAppDeps.ts' && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+    const callback = node.parent;
+    if (
+      !ts.isArrowFunction(callback) ||
+      callback.body !== node ||
+      callback.parameters.length !== 1 ||
+      !ts.isIdentifier(argument)
+    )
+      return false;
+
+    const property = callback.parent;
+    if (
+      !ts.isPropertyAssignment(property) ||
+      !ts.isIdentifier(property.name) ||
+      property.name.text !== 'importModule' ||
+      property.initializer !== callback
+    )
+      return false;
+
+    const object = property.parent;
+    if (!ts.isObjectLiteralExpression(object)) return false;
+
+    const call = object.parent;
+    if (
+      !ts.isCallExpression(call) ||
+      call.arguments.length !== 2 ||
+      call.arguments[1] !== object ||
+      !declared(call.expression, 'src/app/startup/prepareStrategy.ts', 'prepareStrategy')
+    )
+      return false;
+
+    const parameter = callback.parameters[0];
+    return (
+      parameter !== undefined &&
+      ts.isIdentifier(parameter.name) &&
+      checker.getSymbolAtLocation(argument) === checker.getSymbolAtLocation(parameter.name)
+    );
+  }
+
+  if (
+    file !== 'src/app/startup/strategyLoaderHelpers.ts' ||
+    !ts.isPropertyAccessExpression(node.expression) ||
+    node.expression.name.text !== 'importModule' ||
+    !ts.isIdentifier(node.expression.expression) ||
+    !ts.isPropertyAccessExpression(argument) ||
+    argument.name.text !== 'href' ||
+    !ts.isCallExpression(argument.expression)
+  )
+    return false;
+
+  const urlCall = argument.expression;
+  const location = urlCall.arguments[0];
+  if (
+    urlCall.arguments.length !== 1 ||
+    location === undefined ||
+    !ts.isPropertyAccessExpression(location) ||
+    location.name.text !== 'definitionPath' ||
+    !ts.isIdentifier(location.expression)
+  )
+    return false;
+
+  const urlSymbol = checker.getSymbolAtLocation(urlCall.expression);
+  const urlFunction =
+    urlSymbol !== undefined && (urlSymbol.flags & ts.SymbolFlags.Alias) !== 0
+      ? checker.getAliasedSymbol(urlSymbol)
+      : urlSymbol;
+  if (
+    urlFunction?.name !== 'pathToFileURL' ||
+    !urlFunction.declarations?.some((declaration) =>
+      declaration.getSourceFile().fileName.replaceAll('\\', '/').endsWith('/@types/node/url.d.ts'),
+    )
+  )
+    return false;
+
+  let owner: ts.Node = node.parent;
+  while (!ts.isSourceFile(owner) && !ts.isFunctionLike(owner)) owner = owner.parent;
+
+  if (
+    !ts.isFunctionDeclaration(owner) ||
+    owner.name?.text !== 'importStrategyDefinition' ||
+    owner.parameters.length !== 2
+  )
+    return false;
+
+  const [locationParameter, fileSystemParameter] = owner.parameters;
+  if (locationParameter === undefined || fileSystemParameter === undefined) return false;
+
+  const contract = (parameter: ts.ParameterDeclaration, name: string): boolean =>
+    parameter.type !== undefined &&
+    ts.isTypeReferenceNode(parameter.type) &&
+    declared(parameter.type.typeName, 'src/app/startup/types.ts', name);
+  return (
+    ts.isIdentifier(locationParameter.name) &&
+    ts.isIdentifier(fileSystemParameter.name) &&
+    contract(locationParameter, 'StrategyLocation') &&
+    contract(fileSystemParameter, 'StrategyFileSystem') &&
+    checker.getSymbolAtLocation(location.expression) ===
+      checker.getSymbolAtLocation(locationParameter.name) &&
+    checker.getSymbolAtLocation(node.expression.expression) ===
+      checker.getSymbolAtLocation(fileSystemParameter.name)
   );
 }
 
@@ -1373,7 +1505,7 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
                 compact(node.getText()),
               ),
             );
-        } else
+        } else if (!ts.isCallExpression(node) || !selectedStrategyLoaderCall(root, node, checker))
           violations.push(
             occurrenceKey(file, 'NONLITERAL', functionName(node), compact(node.getText())),
           );

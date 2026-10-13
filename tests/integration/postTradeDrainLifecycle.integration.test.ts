@@ -11,22 +11,22 @@ import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
+} from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
 import type { LastState } from '../../src/types/state.js';
 import type { Position } from '../../src/types/account.js';
-import type { Processor } from '../../src/main/asyncProgram/types.js';
+import type { Processor } from '../../src/runtime/asyncProgram/types.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import {
   createDailyLossOrderAnalysisDeps,
   createOrderRecorder,
 } from '../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import { createHarness } from '../core/strategy/intradayRegression/fixtures.js';
+import { createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
 import { waitUntil } from '../main/asyncProgram/utils.js';
 import {
   createAccountSnapshotDouble,

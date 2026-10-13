@@ -11,7 +11,8 @@ import type {
   OrderMonitorTrackedOrder,
   EventFlowDeps,
 } from '../../../../src/core/trader/orderMonitor/types.js';
-import type { OrderHoldRegistry, TrackOrderParams } from '../../../../src/core/trader/types.js';
+import type { OrderHoldRegistry } from '../../../../src/core/trader/types.js';
+import type { TrackOrderParams } from '../../../../src/domain/order/types.js';
 import type { OrderRecorder, RawOrderFromAPI } from '../../../../src/types/services.js';
 import type { MonitorConfig } from '../../../../src/types/config.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';

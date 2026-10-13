@@ -1,4 +1,4 @@
-import type { PreparedStrategy } from '../../core/strategy/types.js';
+import type { PreparedStrategy } from '../../types/strategy.js';
 
 /** composition root 或离线 fixture 注入的文件元信息端口。 */
 export interface StrategyFileStatus {

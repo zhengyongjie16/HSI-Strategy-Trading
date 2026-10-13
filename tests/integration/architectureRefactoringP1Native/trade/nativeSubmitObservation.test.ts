@@ -45,7 +45,7 @@ test('actual BUY/ELO native entry observations precede reply failure and retain 
       getQuotes: async () =>
         new Map([['BULL.HK', createQuoteDouble('BULL.HK', '9.234567891234567891', 100)]]),
     }),
-    cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+    cacheManager: { clearCache: () => {} },
     orderMonitor: createOrderMonitorDouble(),
     orderRecorder: createOrderRecorderDouble({ getLatestBuyOrderCost: () => null }),
     unrealizedLossBuyGate: createRiskCheckerDouble(),

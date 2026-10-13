@@ -11,36 +11,38 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect } from 'bun:test';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
+import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
+import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createEmptySnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
-import { createMixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/index.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 
-import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { TRADING } from '../../../src/constants/index.js';
-import { createSeatActivationDispatcher } from '../../../src/main/seatActivationDispatcher/index.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
-import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
+import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../../src/utils/time/index.js';
+import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
 } from '../../../src/main/lifecycle/types.js';
-import type { MonitorTaskDataMap } from '../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { LastState } from '../../../src/types/state.js';
+import type { RawOrderFromAPI, BullBearWarrantType } from '../../../src/types/services.js';
 import type {
-  RawOrderFromAPI,
   MarketQuoteContext,
-  BullBearWarrantType,
-} from '../../../src/types/services.js';
-import type { MarketWarrantListRequest } from '../../../src/types/marketPorts.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
-import type { MixedTradeLogRepository } from '../../../src/services/mixedTradeLogRepository/types.js';
+  MarketWarrantListRequest,
+} from '../../../src/types/marketPorts.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/types.js';
+import type { MixedTradeLogRepository } from '../../../src/types/tradeLog.js';
 import { createTradingConfig as createTradingConfigFactory } from '../../../mock/factories/configFactory.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
@@ -53,14 +55,6 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-
-function getEntry(_key: string): undefined {
-  return;
-}
-
-function getInFlight(_key: string): undefined {
-  return;
-}
 
 function createMinimalLastState(): LastState {
   return {
@@ -83,25 +77,11 @@ function createTradingConfig(
   return createTradingConfigFactory({ monitor });
 }
 
-function createWarrantListCacheConfig(): LoadTradingDayRuntimeSnapshotDeps['warrantListCacheConfig'] {
-  return {
-    cache: {
-      getEntry,
-      setEntry: () => {},
-      getInFlight,
-      setInFlight: () => {},
-      deleteInFlight: () => {},
-      clear: () => {},
-    },
-    ttlMs: 60_000,
-    nowMs: () => Date.now(),
-  };
-}
-
 function createBaseDeps(
   overrides: Partial<LoadTradingDayRuntimeSnapshotDeps> = {},
 ): LoadTradingDayRuntimeSnapshotDeps {
   const tradingConfig = overrides.tradingConfig ?? createTradingConfig();
+  const marketDataClient = overrides.marketDataClient ?? createMarketDataClientDouble();
   const trader = overrides.trader ?? createTraderDouble();
   const lastState = overrides.lastState ?? createMinimalLastState();
   const termination = createTerminationRuntime({
@@ -153,7 +133,7 @@ function createBaseDeps(
 
   return {
     snapshot,
-    marketDataClient: overrides.marketDataClient ?? createMarketDataClientDouble(),
+    marketDataClient,
     trader,
     lastState,
     tradingConfig,
@@ -165,7 +145,20 @@ function createBaseDeps(
     },
     mixedTradeLogRepository,
     protectionRecovery: overrides.protectionRecovery ?? postTrade,
-    warrantListCacheConfig: overrides.warrantListCacheConfig ?? createWarrantListCacheConfig(),
+    startupSeatSearch:
+      overrides.startupSeatSearch ??
+      createStartupSeatSearch({
+        monitorSymbol: tradingConfig.monitor.monitorSymbol,
+        symbolRegistry,
+        candidateSearch: createWarrantCandidateSearch({
+          monitorSymbol: tradingConfig.monitor.monitorSymbol,
+          autoSearchConfig: tradingConfig.monitor.autoSearchConfig,
+          marketDataClient,
+          logger: createLoggerDouble(),
+          getTradingMinutesSinceOpen,
+        }),
+        logger: createLoggerDouble(),
+      }),
     seatActivationDispatcher:
       overrides.seatActivationDispatcher ?? createSeatActivationDispatcherDouble(),
     reportFatalError,

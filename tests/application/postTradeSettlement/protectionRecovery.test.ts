@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import type {
   PostTradeSettlementBusinessDeps,
   SettlementProtectionCompletion,

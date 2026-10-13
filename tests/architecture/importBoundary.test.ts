@@ -1,10 +1,6 @@
 /**
- * import boundary 架构测试
- *
- * 覆盖：
- * - types 层不得依赖 services 层
- * - services 层不得依赖 core 层
- * - services 层允许依赖定义好的策略类型路径
+ * import boundary 架构测试。
+ * 验证低层依赖限制、策略四根私有边界及同策略的合法跨层装配，不求值业务模块。
  */
 import path from 'node:path';
 import { describe, expect, it } from 'bun:test';
@@ -16,7 +12,9 @@ async function lintText(relativeFilePath: string, code: string) {
     filePath: path.join(process.cwd(), relativeFilePath),
   });
 
-  return result?.messages ?? [];
+  const messages = result?.messages ?? [];
+  expect(messages.filter((message) => message.fatal === true)).toEqual([]);
+  return messages;
 }
 
 describe('architecture import boundaries', () => {
@@ -32,10 +30,10 @@ describe('architecture import boundaries', () => {
     ).toBe(true);
   });
 
-  it('rejects imports from src/services to src/core except allowed ports', async () => {
+  it('rejects services imports from the old core owner', async () => {
     const messages = await lintText(
-      'src/services/autoSymbolManager/utils.ts',
-      "import { createRiskChecker } from '../core/riskController/index.js';\nvoid createRiskChecker;\n",
+      'src/services/marketMonitor/utils.ts',
+      "import { createRiskChecker } from '../../core/riskController/index.js';\nvoid createRiskChecker;\n",
     );
 
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
@@ -44,20 +42,33 @@ describe('architecture import boundaries', () => {
     ).toBe(true);
   });
 
-  it('allows services imports from the defined strategy type path', async () => {
+  it('allows services imports from neutral strategy contracts', async () => {
     const messages = await lintText(
-      'src/services/autoSymbolManager/utils.ts',
-      "import type { TradingSignalStrategy } from '../core/strategy/types.js';\nexport type Probe = TradingSignalStrategy;\n",
+      'src/services/marketMonitor/utils.ts',
+      "import type { TradingSignalStrategy } from '../../types/strategy.js';\nexport type Probe = TradingSignalStrategy;\n",
     );
 
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(false);
   });
 
+  it('does not retain the old core strategy type exception', async () => {
+    const messages = await lintText(
+      'src/services/marketMonitor/utils.ts',
+      "import type { TradingSignalStrategy } from '../../core/strategy/types.js';\nexport type Probe = TradingSignalStrategy;\n",
+    );
+    expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
+  });
+
   it.each([
-    ['src/app/runApp.ts', '../core/strategy/intradayRegression/definition.js'],
-    ['src/types/state.ts', '../core/strategy/intradayRegression/types.js'],
-    ['src/utils/numeric/index.ts', '../../core/strategy/intradayRegression/runtime/index.js'],
-    ['src/core/strategy/intradayRegression/index.ts', '../otherStrategy/definition.js'],
+    ['src/app/runApp.ts', './startup/strategyDefinitions/intradayRegression/definition.js'],
+    ['src/types/state.ts', '../domain/strategy/intradayRegression/types.js'],
+    ['src/utils/numeric/index.ts', '../../runtime/strategy/intradayRegression/index.js'],
+    ['src/app/runApp.ts', '../config/strategy/intradayRegression/config.js'],
+    ['src/domain/strategy/intradayRegression/signalRules.ts', '../otherStrategy/types.js'],
+    [
+      'src/runtime/strategy/intradayRegression/index.ts',
+      '../../../domain/strategy/otherStrategy/types.js',
+    ],
   ])('rejects private strategy import from %s', async (file, source) => {
     const messages = await lintText(
       file,
@@ -72,7 +83,7 @@ describe('architecture import boundaries', () => {
     ['tools/dailyIndicatorAnalysis/indicatorCalculators.ts', 'ema', false],
     ['tools/dailyIndicatorAnalysis/types.ts', 'types', true],
   ])('allows tools direct private leaf/type imports from %s', async (file, leaf, typeOnly) => {
-    const source = '../../src/core/strategy/intradayRegression/runtime/' + leaf + '.js';
+    const source = '../../src/domain/strategy/intradayRegression/indicators/' + leaf + '.js';
     const code = typeOnly
       ? 'import type { KDJIndicator } from "' + source + '"; export type Probe = KDJIndicator;'
       : 'import { readEmaValue } from "' + source + '"; void readEmaValue;';
@@ -85,10 +96,18 @@ describe('architecture import boundaries', () => {
   });
 
   it.each([
-    ['src/app/runApp.ts', '../core/strategy/intradayRegression/runtime/ema.js', false],
-    ['src/app/runApp.ts', '../core/strategy/intradayRegression/runtime/types.js', true],
-    ['src/core/strategy/intradayRegression/index.ts', '../otherStrategy/runtime/ema.js', false],
-    ['src/core/strategy/intradayRegression/index.ts', '../otherStrategy/runtime/types.js', true],
+    ['src/app/runApp.ts', '../domain/strategy/intradayRegression/indicators/ema.js', false],
+    ['src/app/runApp.ts', '../domain/strategy/intradayRegression/indicators/types.js', true],
+    [
+      'src/domain/strategy/intradayRegression/signalRules.ts',
+      '../otherStrategy/indicators/ema.js',
+      false,
+    ],
+    [
+      'src/domain/strategy/intradayRegression/signalRules.ts',
+      '../otherStrategy/indicators/types.js',
+      true,
+    ],
   ])(
     'rejects production private leaf/type imports from %s (%s)',
     async (file, source, typeOnly) => {
@@ -102,13 +121,47 @@ describe('architecture import boundaries', () => {
     },
   );
 
-  it('allows private modules within their own strategy directory', async () => {
+  it.each([
+    ['src/domain/strategy/intradayRegression/signalRules.ts', './indicators/ema.js'],
+    [
+      'src/runtime/strategy/intradayRegression/index.ts',
+      '../../../domain/strategy/intradayRegression/types.js',
+    ],
+    [
+      'src/app/startup/strategyDefinitions/intradayRegression/definition.ts',
+      '../../../../runtime/strategy/intradayRegression/index.js',
+    ],
+    [
+      'src/app/startup/strategyDefinitions/intradayRegression/definition.ts',
+      '../../../../config/strategy/intradayRegression/config.js',
+    ],
+  ])('allows same-strategy private imports across the four roots from %s', async (file, source) => {
     const messages = await lintText(
-      'src/core/strategy/intradayRegression/index.ts',
-      "import { strategyDefinition } from './definition.js'; void strategyDefinition;",
+      file,
+      'import * as privateStrategy from ' + JSON.stringify(source) + '; void privateStrategy;',
     );
     expect(messages.some((message) => message.ruleId === 'local/strategy-private-boundary')).toBe(
       false,
+    );
+  });
+
+  it('allows only the directly injected selected-loader dynamic import', async () => {
+    const messages = await lintText(
+      'src/app/runAppDeps.ts',
+      "import { prepareStrategy } from './startup/prepareStrategy.js'; void prepareStrategy({ env: {} }, { importModule: (href: string) => import(href) });",
+    );
+    expect(messages.some((message) => message.ruleId === 'local/strategy-private-boundary')).toBe(
+      false,
+    );
+  });
+
+  it.each([
+    'export const load = (href: string) => import(href);',
+    "import { prepareStrategy } from './startup/prepareStrategy.js'; void prepareStrategy({ env: {} }, { importModule: (href: string) => import(String(href)) });",
+  ])('rejects dynamic loading outside the selected-loader shape: %s', async (code) => {
+    const messages = await lintText('src/app/runAppDeps.ts', code);
+    expect(messages.some((message) => message.ruleId === 'local/strategy-private-boundary')).toBe(
+      true,
     );
   });
 });

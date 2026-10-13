@@ -10,18 +10,18 @@ import { createEmptySnapshotFixture } from '../fixtures/accountPositionSnapshot.
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../../src/main/asyncProgram/tradeTaskQueue/index.js';
-import { createMonitorTaskQueue } from '../../../src/main/asyncProgram/monitorTaskQueue/index.js';
+} from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
   prepareFixture,
-  configObject,
   createHarness,
-  marketContext,
-} from '../../core/strategy/intradayRegression/fixtures.js';
+} from '../../runtime/strategy/intradayRegression/fixtures.js';
+import { configObject } from '../../config/strategy/intradayRegression/fixtures.js';
+import { marketContext } from '../../domain/strategy/intradayRegression/fixtures.js';
 import { waitUntil } from '../../main/asyncProgram/utils.js';
-import type { StrategyDecision, TradingSignalStrategy } from '../../../src/core/strategy/types.js';
+import type { StrategyDecision, TradingSignalStrategy } from '../../../src/types/strategy.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { Position } from '../../../src/types/account.js';
 import type { SignalRuntimeDomainDeps } from '../../../src/main/lifecycle/cacheDomains/types.js';

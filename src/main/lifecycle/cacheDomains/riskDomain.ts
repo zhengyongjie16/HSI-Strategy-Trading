@@ -2,7 +2,7 @@
  * 风控缓存域（CacheDomain: risk）
  *
  * 午夜清理：
- * - 重置风控检查冷却（signalProcessor.resetRiskCheckCooldown）
+ * - 重置风控检查冷却（ordinaryBuy.resetRiskCheckCooldown）
  * - 重置日内亏损追踪器（dailyLossTracker.resetAll）
  * - 清除跨日模式的清仓冷却键（保留分钟模式的冷却）
  * - 重置保护性清仓触发计数器
@@ -55,14 +55,14 @@ function collectMidnightEligibleCooldownDirections(
 function runMidnightRiskClear(deps: RiskDomainDeps, ctx: LifecycleContext): void {
   const {
     logger,
-    signalProcessor,
+    ordinaryBuy,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
     monitorContext,
     liquidationCooldownTracker,
   } = deps;
 
-  signalProcessor.resetRiskCheckCooldown();
+  ordinaryBuy.resetRiskCheckCooldown();
   dailyLossTracker.resetAll(ctx.now);
   protectiveLiquidationEpisodeTracker.resetAll();
   const directionsToClear = collectMidnightEligibleCooldownDirections(monitorContext);
@@ -76,7 +76,7 @@ function runMidnightRiskClear(deps: RiskDomainDeps, ctx: LifecycleContext): void
  * 创建风控缓存域。
  * 午夜清理时重置风控冷却、日内亏损追踪、清仓冷却键及唯一监控标的风险缓存；开盘重建由统一 rebuildTradingDayState 负责，本域为空操作。
  *
- * @param deps 依赖注入，包含 signalProcessor、dailyLossTracker、monitorContext、liquidationCooldownTracker
+ * @param deps 依赖注入，包含 ordinaryBuy、dailyLossTracker、monitorContext、liquidationCooldownTracker
  * @returns 实现 CacheDomain 的风控域实例
  */
 export function createRiskDomain(deps: RiskDomainDeps): CacheDomain {

@@ -8,53 +8,63 @@
  * - 保持 post-gate 对象所有权清单集中
  */
 import { createBrokerAccessFactory } from '../../infrastructure/longbridge/trade/brokerAccessAdapter.js';
+import { createOrderExecutor } from '../../application/orderExecution/index.js';
 import { orderEconomics } from '../../domain/order/orderEconomics.js';
 import { TIME } from '../../constants/index.js';
 import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../domain/risk/dailyLossTracker.js';
-import { createRiskChecker } from '../../core/riskController/index.js';
-import { createPositionLimitChecker } from '../../core/riskController/positionLimitChecker.js';
-import { createUnrealizedLossChecker } from '../../core/riskController/unrealizedLossChecker.js';
-import { createWarrantRiskChecker } from '../../core/riskController/warrantRiskChecker.js';
-import { createDoomsdayProtection } from '../../core/doomsdayProtection/index.js';
-import { createSignalProcessor } from '../../core/signalProcessor/index.js';
+import { createRiskChecker } from '../../domain/risk/index.js';
+import { createPositionLimitChecker } from '../../domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../domain/risk/unrealizedLossChecker.js';
+import { createWarrantRiskChecker } from '../../domain/risk/warrantRiskChecker.js';
+import { createWarrantRiskRefresh } from '../../application/riskRefresh/warrantRiskRefresh.js';
+import { createSeatActivationWorkflow } from '../../application/seatActivation/index.js';
+import { createDoomsdayClearanceWorkflow } from '../../application/doomsdayClearance/index.js';
+import { createOrdinaryBuyWorkflow } from '../../application/ordinaryBuy/index.js';
+import { createOrdinarySellWorkflow } from '../../application/ordinarySell/index.js';
+import { createWarrantCandidateSearch } from '../../application/autoSearch/candidateSearch.js';
+import { createStartupSeatSearch } from '../../application/autoSearch/startupSeatSearch.js';
+import { createAutoSearch } from '../../application/autoSearch/index.js';
+import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
 import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../core/trader/protectiveLiquidationEpisodeTracker/index.js';
-import { createMonitorTaskQueue } from '../../main/asyncProgram/monitorTaskQueue/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/index.js';
+import { createMonitorTaskQueue } from '../../runtime/asyncProgram/monitorTaskQueue/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../main/asyncProgram/tradeTaskQueue/index.js';
+} from '../../runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createLoadTradingDayRuntimeSnapshot } from '../../main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createTradingRiskEventRuntime } from '../../main/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
-import { createAutoSearchWakeupRuntime } from '../../main/autoSearchWakeupRuntime/index.js';
+import { createTradingRiskEventRuntime } from '../../runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
+import { createProtectiveLiquidationWorkflow } from '../../application/protectiveLiquidation/index.js';
+import { createStaticLiquidationExecutor } from '../../application/staticLiquidation/index.js';
+import { createAutoSearchWakeupRuntime } from '../../runtime/autoSearchWakeupRuntime/index.js';
 import { createQuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/index.js';
-import { createSeatActivationDispatcher } from '../../main/seatActivationDispatcher/index.js';
-import { createSeatRuntimeCleanupDispatcher } from '../../main/seatRuntimeCleanupDispatcher/index.js';
+import { createSeatActivationDispatcher } from '../../runtime/seatActivationDispatcher/index.js';
+import { createSeatRuntimeCleanupDispatcher } from '../../runtime/seatRuntimeCleanupDispatcher/index.js';
 import { createTradingGateEventRuntime } from '../../main/tradingGateEventRuntime/index.js';
-import { createPeriodicSwitchWakeupRuntime } from '../../main/periodicSwitchWakeupRuntime/index.js';
-import { createDefaultMonitorQuoteEventRuntime } from '../../main/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
-import { createSwitchWakeupRuntime } from '../../main/monitorQuoteEventRuntime/switchWakeupRuntime.js';
+import { createPeriodicSwitchWakeupRuntime } from '../../runtime/periodicSwitchWakeupRuntime/index.js';
+import { createDefaultMonitorQuoteEventRuntime } from '../../runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
+import { createSwitchWakeupRuntime } from '../../runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { createMonitorDisplayRuntime } from '../../main/monitorDisplayRuntime/index.js';
 import { createTradingQuoteDisplayRuntime } from '../../main/tradingQuoteDisplayRuntime/index.js';
 import { createMarketMonitor } from '../../services/marketMonitor/index.js';
 import { buildPriceDisplayInfo } from '../../services/marketMonitor/priceDisplayInfo.js';
-import { createLiquidationCooldownTracker } from '../../services/liquidationCooldown/index.js';
-import { createTradeLogHydrator } from '../../services/liquidationCooldown/tradeLogHydrator.js';
-import type { MixedTradeLogRepository } from '../../services/mixedTradeLogRepository/types.js';
+import { createLiquidationCooldownTracker } from '../../domain/liquidation/cooldown/index.js';
+import { createTradeLogHydrator } from '../../application/protectiveLiquidation/tradeLogHydrator.js';
 import { createAccountPositionSnapshot } from '../../application/accountPositionSnapshot/index.js';
-import { exactCompare } from '../../utils/numeric/exact.js';
+import { exactCompare, formatDecimal } from '../../utils/numeric/exact.js';
+import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
 import {
   calculateTradingDurationDueAtMs,
   getRequiredHKDateKey,
+  getTradingMinutesSinceOpen,
   toHongKongTimeIso,
 } from '../../utils/time/index.js';
 import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
 import type { LastState } from '../../types/state.js';
-import type { ProtectiveLiquidationExecutionProgressInput } from '../../types/risk.js';
 import type { OrderStateChangedEvent } from '../../types/services.js';
-import type { MonitorTaskDataMap } from '../../main/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskDataMap } from '../../runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { QuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/types.js';
 import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../types.js';
 import type { PersistableTradeRecord } from '../../types/trader.js';
@@ -201,14 +211,6 @@ function persistTradeRecordFromOrderStateChangedEvent(params: {
   params.appendTradeRecord(tradeRecord);
 }
 
-function persistProtectiveLiquidationExecutionProgress(params: {
-  readonly repository: MixedTradeLogRepository;
-  readonly input: ProtectiveLiquidationExecutionProgressInput;
-}): void {
-  const { repository, input } = params;
-  repository.appendExecutionProgressIdempotent(input);
-}
-
 /**
  * 创建 post-gate runtime 工厂。
  *
@@ -239,26 +241,36 @@ function createPostGateRuntimeFactory(
       resources,
       strategy,
     } = params;
-    const {
-      config,
-      tradingConfig,
-      symbolRegistry,
+    const { config, tradingConfig, symbolRegistry, marketDataClient, startupTradingDayInfo } =
+      preGateRuntime;
+    const warrantRiskChecker = createWarrantRiskChecker({
+      onInvalidCallPrice: (symbol, callPrice) => {
+        logger.warn(`[风险检查] ${symbol} 的回收价无效（${callPrice}），拒绝买入`);
+      },
+      onWarrantInfoSet: (symbol, callPrice, isLongSymbol, symbolName) => {
+        logger.info(
+          `[风险检查] ${isLongSymbol ? '做多' : '做空'}标的 ${formatSymbolDisplay(symbol, symbolName)}，回收价=${formatDecimal(callPrice, 3, 'unsigned')}`,
+        );
+      },
+    });
+    const warrantRiskRefresh = createWarrantRiskRefresh({
       marketDataClient,
-      startupTradingDayInfo,
-      warrantListCacheConfig,
-    } = preGateRuntime;
+      warrantRiskChecker,
+      logger,
+    });
     const riskChecker = createRiskChecker({
-      warrantRiskChecker: createWarrantRiskChecker(),
+      warrantRiskChecker,
       positionLimitChecker: createPositionLimitChecker({
         maxPositionNotional: tradingConfig.monitor.maxPositionNotional,
       }),
       unrealizedLossChecker: createUnrealizedLossChecker({
         maxUnrealizedLossPerSymbol: tradingConfig.monitor.maxUnrealizedLossPerSymbol,
+        onMissingData: (symbol) => {
+          logger.warn(`[浮亏监控] ${symbol} 浮亏数据未初始化，跳过检查`);
+        },
       }),
     });
-    const liquidationCooldownTracker = createLiquidationCooldownTracker({
-      nowMs: () => clock.now().getTime(),
-    });
+    const liquidationCooldownTracker = createLiquidationCooldownTracker();
     const dailyLossTracker = createDailyLossTracker({
       ...createDailyLossOrderAnalysisDeps(),
       toHongKongTimeIso,
@@ -380,6 +392,7 @@ function createPostGateRuntimeFactory(
     if (termination.isTerminated()) return null;
 
     const trader = await buildTrader({
+      createExecution: (bindings) => createOrderExecutor(bindings),
       brokerAccess: createBrokerAccessFactory(config, orderEconomics),
       tradingConfig,
       marketDataClient,
@@ -387,12 +400,8 @@ function createPostGateRuntimeFactory(
       symbolRegistry,
       dailyLossTracker,
       protectiveLiquidationEpisodeTracker,
-      persistProtectiveLiquidationExecutionProgress: (input) => {
-        persistProtectiveLiquidationExecutionProgress({
-          repository: mixedTradeLogRepository,
-          input,
-        });
-      },
+      persistProtectiveLiquidationExecutionProgress:
+        mixedTradeLogRepository.appendExecutionProgressIdempotent,
       postTradeConsistencyRuntime,
       isExecutionAllowed: () => !termination.isTerminated() && lastState.isTradingEnabled,
       isContinuousTradingAllowed: () =>
@@ -448,6 +457,19 @@ function createPostGateRuntimeFactory(
 
     if (termination.isTerminated()) return null;
 
+    const candidateSearch = createWarrantCandidateSearch({
+      monitorSymbol: tradingConfig.monitor.monitorSymbol,
+      autoSearchConfig: tradingConfig.monitor.autoSearchConfig,
+      marketDataClient,
+      logger,
+      getTradingMinutesSinceOpen,
+    });
+    const startupSeatSearch = createStartupSeatSearch({
+      monitorSymbol: tradingConfig.monitor.monitorSymbol,
+      symbolRegistry,
+      candidateSearch,
+      logger,
+    });
     const loadTradingDayRuntimeSnapshot = createLoadTradingDayRuntimeSnapshot({
       marketDataClient,
       trader,
@@ -460,12 +482,15 @@ function createPostGateRuntimeFactory(
       tradeLogHydrator,
       mixedTradeLogRepository,
       protectionRecovery: postTradeConsistencyRuntime,
-      warrantListCacheConfig,
+      startupSeatSearch,
       seatActivationDispatcher,
       reportFatalError: termination.reportFatalError,
     });
     const marketMonitor = createMarketMonitor();
-    const doomsdayProtection = createDoomsdayProtection({ now: clock.now });
+    const doomsdayClearanceWorkflow = createDoomsdayClearanceWorkflow({
+      now: clock.now,
+      logger,
+    });
     const doomsdayProtectionEnabled = tradingConfig.global.doomsdayProtection;
     const tradingGateEventRuntime = createTradingGateEventRuntime({ logger });
 
@@ -514,11 +539,38 @@ function createPostGateRuntimeFactory(
         trader,
         dailyLossTracker,
         riskChecker,
+        candidateSearch,
         lastState,
       },
       quotesMap: null,
       clock,
       strategy,
+    });
+    const seatActivation = createSeatActivationWorkflow({
+      clock,
+      config: monitorContext.config,
+      symbolRegistry,
+      orders: monitorContext.orderRecorder,
+      dailyLoss: dailyLossTracker,
+      risk: {
+        prepareUnrealizedLossData: (symbol, isLong, lossOffset) =>
+          riskChecker.prepareUnrealizedLossData(
+            monitorContext.orderRecorder,
+            symbol,
+            isLong,
+            lossOffset,
+          ),
+        publishUnrealizedLossData: riskChecker.publishUnrealizedLossData,
+        setWarrantInfoFromCallPrice: riskChecker.setWarrantInfoFromCallPrice,
+      },
+      snapshot,
+      subscriptions: quoteSubscriptionRuntime,
+      getQuotes: marketDataClient.getQuotes,
+      setDirectionSymbolName: (direction, name) => {
+        if (direction === 'LONG') monitorContext.longSymbolName = name;
+        else monitorContext.shortSymbolName = name;
+      },
+      logger,
     });
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext,
@@ -528,9 +580,8 @@ function createPostGateRuntimeFactory(
       mixedTradeLogRepository,
     });
 
-    const tradingRiskEventRuntime = createTradingRiskEventRuntime({
+    const protectiveLiquidationWorkflow = createProtectiveLiquidationWorkflow({
       logger,
-      marketDataClient,
       trader,
       symbolRegistry,
       monitorContext,
@@ -539,6 +590,14 @@ function createPostGateRuntimeFactory(
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
       now: clock.now,
+      termination,
+    });
+    const tradingRiskEventRuntime = createTradingRiskEventRuntime({
+      logger,
+      marketDataClient,
+      symbolRegistry,
+      postTradeConsistencyRuntime,
+      workflow: protectiveLiquidationWorkflow,
       termination,
     });
     resources.tradingRiskEventRuntime = tradingRiskEventRuntime;
@@ -576,11 +635,18 @@ function createPostGateRuntimeFactory(
 
     if (termination.isTerminated()) return null;
 
+    const executeStaticLiquidation = createStaticLiquidationExecutor({
+      trader,
+      marketDataClient,
+      snapshot,
+      postTradeConsistencyRuntime,
+      now: clock.now,
+    });
     const monitorQuoteEventRuntime = createDefaultMonitorQuoteEventRuntime({
       logger,
       marketDataClient,
       monitorContext,
-      trader,
+      executeStaticLiquidation,
       lastState,
       snapshot,
       postTradeConsistencyRuntime,
@@ -649,10 +715,52 @@ function createPostGateRuntimeFactory(
 
     if (termination.isTerminated()) return null;
 
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
+    const canProcessOrdinaryTradeTask = (): boolean =>
+      !termination.isTerminated() &&
+      ordinarySignalGuard({
+        lastState,
+        now: clock.now(),
+        doomsdayProtectionEnabled,
+      });
+    const ordinaryBuy = createOrdinaryBuyWorkflow({
+      logger,
+      config: monitorContext.config,
+      doomsdayProtection: doomsdayProtectionEnabled,
+      symbolRegistry,
+      orderRecorder: monitorContext.orderRecorder,
+      riskChecker,
+      trader,
+      marketDataClient,
       liquidationCooldownTracker,
-      reportFatalError: termination.reportFatalError,
+      snapshot,
+      getIsHalfDay: () => lastState.isHalfDay ?? false,
+      now: clock.now,
+      getCanProcessTask: canProcessOrdinaryTradeTask,
+      termination,
+    });
+    const ordinarySell = createOrdinarySellWorkflow({
+      logger,
+      config: monitorContext.config,
+      symbolRegistry,
+      orderRecorder: monitorContext.orderRecorder,
+      trader,
+      marketDataClient,
+      snapshot,
+      settlement: postTradeConsistencyRuntime,
+      getTradingCalendar: () => ({
+        isHalfDay: lastState.isHalfDay ?? false,
+        tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
+      }),
+      clock,
+      getCanProcessTask: canProcessOrdinaryTradeTask,
+      termination,
+    });
+    const autoSearch = createAutoSearch({
+      monitorSymbol: monitorContext.config.monitorSymbol,
+      autoSearchConfig: monitorContext.config.autoSearchConfig,
+      symbolRegistry,
+      candidateSearch,
+      logger,
     });
     const seatRuntimeCleanupDispatcher = createSeatRuntimeCleanupDispatcher({
       symbolRegistry,
@@ -675,7 +783,8 @@ function createPostGateRuntimeFactory(
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
       termination,
       symbolRegistry,
-      monitorContext,
+      autoSearch,
+      autoSearchConfig: monitorContext.config.autoSearchConfig,
       lastState,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled,
@@ -730,6 +839,8 @@ function createPostGateRuntimeFactory(
       tradingGateEventRuntime,
       quoteSubscriptionRuntime,
       seatActivationDispatcher,
+      seatActivation,
+      warrantRiskRefresh,
       seatRuntimeCleanupDispatcher,
       autoSearchWakeupRuntime,
       periodicSwitchWakeupRuntime,
@@ -743,8 +854,9 @@ function createPostGateRuntimeFactory(
       lastState,
       trader,
       loadTradingDayRuntimeSnapshot,
-      doomsdayProtection,
-      signalProcessor,
+      doomsdayClearanceWorkflow,
+      ordinaryBuy,
+      ordinarySell,
       buyTaskQueue,
       sellTaskQueue,
       monitorTaskQueue,

@@ -1,4 +1,12 @@
+import type {
+  OrderMutationRequest,
+  PendingSellOrderSnapshot,
+  ReplaceOrderPriceOutcome,
+  TrackOrderParams,
+} from '../../domain/order/types.js';
 import type { BrokerAccess } from '../../types/brokerAccessPorts.js';
+import type { Position } from '../../types/account.js';
+import type { OrderExecutor } from '../../types/orderExecutionPorts.js';
 import type { OrderDetailReadPort } from '../../types/orderDetailReadPorts.js';
 import type { OrderReadStatus, OrderReadType } from '../../types/orderReadMetadata.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
@@ -6,28 +14,18 @@ import type { TradeMutationPort } from '../../types/tradeMutationPorts.js';
 import type { OrderExecutionLedgerPort } from '../../types/orderExecutionLedger.js';
 import type { OrderPushPort } from '../../types/orderPushPorts.js';
 import type { SettlementRefreshNeedRecorder } from '../../types/settlement.js';
-import type { Decimal, OrderSide, OrderType, TimeInForceType } from 'longbridge';
-import type {
-  DoomsdayClearanceCommand,
-  ExecutableSignal,
-  SignalType,
-  OrderTypeConfig,
-} from '../../types/signal.js';
-import type { Position } from '../../types/account.js';
+import type { MarketDataClient, TradingDayInfo } from '../../types/marketPorts.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type {
   PendingOrder,
-  TradeCheckResult,
   RateLimiter,
   TradeMutationPermit,
   RawOrderFromAPI,
   OrderRecorder,
-  MarketDataClient,
   OrderStateChangedEvent,
   OrderHoldSymbolsChangedEvent,
   RiskChecker,
-  TradingDayInfo,
   Unsubscribe,
 } from '../../types/services.js';
 import type {
@@ -38,66 +36,8 @@ import type {
   CancelOrderOutcome,
   DoomsdayCancelOrderOutcome,
   DoomsdayCancelOrderRequest,
-  DoomsdayClearanceExecutionResult,
-  ExecuteSignalsResult,
-  SignalCallerAuthorization,
 } from '../../types/trader.js';
-import type { ProtectiveLiquidationEpisodeTracker } from './protectiveLiquidationEpisodeTracker/types.js';
-
-/**
- * 订单提交 API 可能返回的响应形状。
- * 类型用途：用于 extractOrderId 安全提取订单 ID。
- * 数据来源：由 Longbridge API 的 submitOrder 响应返回。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type OrderSubmitResponse = {
-  readonly orderId?: string;
-};
-
-/**
- * 订单提交载荷。
- * 类型用途：封装调用 ctx.submitOrder() 时的参数。
- * 数据来源：模块内部根据信号与配置构造。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type OrderPayload = {
-  readonly symbol: string;
-  readonly orderType: OrderType;
-  readonly side: OrderSide;
-  readonly timeInForce: TimeInForceType;
-  readonly submittedQuantity: Decimal;
-  readonly submittedPrice?: Decimal;
-  readonly remark?: string;
-};
-
-/**
- * 订单追踪入参。
- * 类型用途：传递给 OrderMonitor.trackOrder() 的参数，用于追踪订单状态变化。
- * 数据来源：提交订单后由 OrderExecutor 等构造。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type TrackOrderParams = {
-  readonly orderId: string;
-  readonly symbol: string;
-  readonly side: 'BUY' | 'SELL';
-
-  /** 来自实际中性submit command或SDK mapper，供新经济事实consumer使用。 */
-  readonly executionSide: 'BUY' | 'SELL';
-  readonly initialExecutionPhase?: 'OPEN' | 'TERMINAL';
-  readonly price: string | null;
-  readonly initialSubmittedPrice: string | null;
-  readonly quantity: number;
-
-  /** 可选：恢复阶段使用原始下单时间（毫秒），用于保持超时策略语义一致 */
-  readonly submittedAtMs?: number;
-
-  /** 可选：恢复阶段保留快照中的 pending 状态，避免错误触发改单流程 */
-  readonly initialStatus?: OrderReadStatus;
-  readonly isLongSymbol: boolean;
-  readonly monitorSymbol: string;
-  readonly isProtectiveLiquidation: boolean;
-  readonly orderType: OrderReadType;
-};
+import type { ProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/types.js';
 
 /**
  * 订单监控运行态。
@@ -129,30 +69,6 @@ export type RecoverySnapshotReconciliationParams = {
   readonly allOrders: ReadonlyArray<RawOrderFromAPI>;
   readonly closedMismatchedBuyOrderIds: ReadonlySet<string>;
   readonly replayedOrderIds: ReadonlySet<string>;
-};
-
-/**
- * 订单类型解析配置（信号级覆盖 / 保护性清仓 / 全局类型）。
- * 类型用途：封装订单类型解析所需的全局配置。
- * 数据来源：来自交易配置（tradingOrderType、liquidationOrderType）。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type OrderTypeResolutionConfig = {
-  readonly tradingOrderType: OrderTypeConfig;
-  readonly liquidationOrderType: OrderTypeConfig;
-};
-
-/**
- * 订单提交错误日志分类。
- * 类型用途：标识订单提交失败日志应使用的分类文本，不参与重试、跳过或交易决策。
- * 数据来源：由 orderExecutor/identifyErrorType 根据 API 错误消息解析得到。
- * 使用范围：仅 orderExecutor 的提交失败日志路径使用。
- */
-export type ErrorTypeIdentifier = {
-  readonly isShortSellingNotSupported: boolean;
-  readonly isInsufficientFunds: boolean;
-  readonly isNetworkError: boolean;
-  readonly isRateLimited: boolean;
 };
 
 // ==================== 服务接口定义 ====================
@@ -255,30 +171,6 @@ export interface OrderMonitor {
 
   /** 清空恢复运行态（tracked order lifecycle / closed set）与 BOOTSTRAPPING 事件缓存 */
   clearTrackedOrders: () => void;
-}
-
-/**
- * 订单执行器接口。
- * 由 Trader 依赖注入。
- * 类型用途：用于 OrderExecutor 的类型约束与语义表达。
- * 数据来源：由当前模块的入参、返回值或运行时派生数据提供（如适用）。
- * 使用范围：仅在当前模块及其直接依赖方使用。
- */
-export interface OrderExecutor {
-  canTradeNow: (signalAction: SignalType) => TradeCheckResult;
-  executeSignals: (
-    signals: ReadonlyArray<ExecutableSignal>,
-    callerAuthorization: SignalCallerAuthorization,
-  ) => Promise<ExecuteSignalsResult>;
-
-  /** 末日清仓专用入口；仅该入口可构造末日清仓执行目的。 */
-  executeDoomsdayClearanceSignals: (
-    commands: ReadonlyArray<DoomsdayClearanceCommand>,
-    callerAuthorization: SignalCallerAuthorization,
-  ) => Promise<DoomsdayClearanceExecutionResult>;
-
-  /** 清空 lastBuyTime（买入节流状态） */
-  resetBuyThrottle: () => void;
 }
 
 /**
@@ -388,66 +280,6 @@ export type TrackedOrder = {
 
   /** 临时禁改截止时间戳（毫秒） */
   replaceBlockedUntilAt: number | null;
-};
-
-/**
- * 未成交卖单快照（用于卖单合并决策）。
- * 类型用途：提供卖单合并决策所需的订单状态信息。
- * 数据来源：OrderMonitor.getPendingSellOrders 返回。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type PendingSellOrderSnapshot = {
-  readonly orderId: string;
-  readonly symbol: string;
-  readonly side: 'BUY' | 'SELL';
-  readonly status: OrderReadStatus;
-  readonly orderType: OrderReadType;
-  readonly submittedPrice: string | null;
-  readonly submittedQuantity: number;
-  readonly executedQuantity: number;
-  readonly submittedAt: number;
-};
-
-/**
- * 卖单合并决策动作。
- * 类型用途：表示卖单合并策略（SUBMIT/REPLACE/CANCEL_AND_SUBMIT/SKIP），供 OrderExecutor 执行对应操作。
- * 数据来源：由 decideSellMerge 根据 pendingOrders 与 newOrder 计算后返回的 action 字段。
- * 使用范围：仅在 trader 模块内部使用。
- */
-type SellMergeDecisionAction = 'SUBMIT' | 'REPLACE' | 'CANCEL_AND_SUBMIT' | 'SKIP';
-
-/**
- * 卖单合并决策输入
- * 由 OrderExecutor 在提交卖单前构造，传入 decideSellMerge 函数以决定合并策略
- * 仅在 trader 模块内部使用
- * 类型用途：用于 SellMergeDecisionInput 的类型约束与语义表达。
- * 数据来源：由当前模块的入参、返回值或运行时派生数据提供（如适用）。
- * 使用范围：仅在当前模块及其直接依赖方使用。
- */
-export type SellMergeDecisionInput = {
-  readonly symbol: string;
-  readonly pendingOrders: ReadonlyArray<PendingSellOrderSnapshot>;
-  readonly newOrderQuantity: number;
-  readonly newOrderType: OrderReadType;
-  readonly isProtectiveLiquidation: boolean;
-};
-
-/**
- * 卖单合并决策结果
- * 由 decideSellMerge 函数返回，OrderExecutor 根据 action 字段执行对应的下单/改单/撤单操作
- * 仅在 trader 模块内部使用
- * 类型用途：用于 SellMergeDecision 的类型约束与语义表达。
- * 数据来源：由当前模块的入参、返回值或运行时派生数据提供（如适用）。
- * 使用范围：仅在当前模块及其直接依赖方使用。
- */
-export type SellMergeDecision = {
-  readonly action: SellMergeDecisionAction;
-  readonly mergedQuantity: number;
-  readonly targetOrderId: string | null;
-  readonly pendingOrderIds: ReadonlyArray<string>;
-  readonly pendingRemainingQuantity: number;
-  readonly reason:
-    'no-additional-quantity' | 'no-pending-sell' | 'cancel-and-merge' | 'replace-and-merge';
 };
 
 /**
@@ -576,23 +408,6 @@ type IsExecutionAllowed = () => boolean;
 type ContinuousTradingOrderAuthorization = () => boolean;
 
 /**
- * 信号派生订单副作用授权阶段。
- * 类型用途：限制授权器只接受真实存在的执行与 mutation API 前阶段。
- * 数据来源：OrderExecutor 与 OrderMonitor 固定调用点。
- * 使用范围：OrderActionAuthorization 参数。
- */
-export type OrderActionAuthorizationStage =
-  'executeSignals' | 'submitOrder.beforeApi' | 'cancelOrder.beforeApi' | 'replaceOrder.beforeApi';
-
-/**
- * 信号派生订单副作用授权器。
- * 类型用途：在固定订单副作用阶段复核信号绑定是否仍然有效。
- * 数据来源：OrderExecutor 根据信号与当前运行态创建。
- * 使用范围：executeSignals 初始复核与 SIGNAL_AUTHORIZED 订单 mutation 请求。
- */
-export type OrderActionAuthorization = (stage: OrderActionAuthorizationStage) => boolean;
-
-/**
  * 最终下单授权读取的当日交易日事实。
  * 类型用途：把权威 TradingDayInfo 与其香港日期键绑定，防止跨日误用旧日历状态。
  * 数据来源：app runtime 的 LastState.cachedTradingDayInfo。
@@ -612,85 +427,40 @@ type CurrentTradingDayInfo = Readonly<{
 type CurrentTradingDayInfoReader = () => CurrentTradingDayInfo | null;
 
 /**
- * 订单 mutation 请求来源。
- * 类型用途：强制调用方区分公共订单事实、信号派生与连续交易派生的常规 mutation 授权来源。
- * 数据来源：订单 owner、OrderExecutor 信号链路或 OrderMonitor 连续交易链路创建。
- * 使用范围：OrderMonitor cancel/replace API。
- */
-export type OrderMutationRequest =
-  | { readonly kind: 'ORDER_FACT' }
-  | {
-      readonly kind: 'SIGNAL_AUTHORIZED';
-      readonly authorize: OrderActionAuthorization;
-    }
-  | {
-      readonly kind: 'CONTINUOUS_TRADING_AUTHORIZED';
-      readonly authorize: ContinuousTradingOrderAuthorization;
-    };
-
-/**
  * 撤单 mutation 请求来源。
  * 类型用途：在常规 mutation 授权外，允许末日保护将其专用 permit 内门禁显式带到撤单边界，禁止该授权用于改单。
- * 数据来源：订单 owner、OrderExecutor、OrderMonitor route 与 DoomsdayProtection。
+ * 数据来源：订单 owner、OrderExecutor、OrderMonitor route 与 DoomsdayClearanceWorkflow。
  * 使用范围：OrderMonitor.cancelOrder、OrderMonitor.cancelDoomsdayOrder 与 OrderOps.cancelOrder。
  */
 export type CancelOrderMutationRequest = OrderMutationRequest | DoomsdayCancelOrderRequest;
 
 /**
- * 改单执行结果。
- * 类型用途：明确区分 broker 已确认改单与未执行，防止未执行时更新本地 pending fact。
- * 数据来源：订单监控内部改单与 permit 改单入口返回。
- * 使用范围：OrderExecutor 卖单合并链路。
+ * 共享执行器的装配绑定。
+ * 数据来源：旧 Trader 已创建的唯一 recorder、tracking、cache、broker 与限流器。
+ * 使用范围：app 注入的同步 composition callback；只传现有能力，不在 core 创建 application owner。
  */
-export type ReplaceOrderPriceOutcome =
-  | { readonly kind: 'BROKER_CONFIRMED' }
-  | { readonly kind: 'NOT_EXECUTED' }
-  | {
-      /** 必须在最外 mutation FIFO callback 完全退出后执行，不能在持permit时query/throttle。 */
-      readonly kind: 'POST_FAILURE_CONFIRMATION_REQUIRED';
-      readonly confirmAfterPermitReleased: () => Promise<ReplaceOrderPriceOutcome>;
-    };
-
-/**
- * 订单执行器依赖。
- * 类型用途：用于创建 OrderExecutor 时的依赖注入。
- * 数据来源：如适用。
- * 使用范围：仅在 trader 模块内部使用。
- */
-export type OrderExecutorDeps = {
-  readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
-  readonly tradeMutationPort: TradeMutationPort;
-  readonly rateLimiter: RateLimiter;
-
-  /** 与 Trader 共用的行情客户端；仅最终订单 callback permit 内读取执行行情。 */
-  readonly marketDataClient: MarketDataClient;
-  readonly cacheManager: OrderCacheManager;
-  readonly orderMonitor: OrderMonitor;
-
-  /** 订单记录器（用于卖出订单防重追踪） */
-  readonly orderRecorder: OrderRecorder;
-
-  /** 与运行时共享的浮亏买入门禁；仅在最终 BUY 提交边界读取。 */
-  readonly unrealizedLossBuyGate: Pick<RiskChecker, 'checkUnrealizedLoss'>;
-
-  /** 全局交易配置 */
-  readonly tradingConfig: TradingConfig;
-
-  /** 标的注册表（用于解析动态标的归属） */
-  readonly symbolRegistry: SymbolRegistry;
-
-  /** 运行时执行门禁（单一状态源注入，执行层统一判定） */
-  readonly isExecutionAllowed: IsExecutionAllowed;
-
-  /** 连续交易授权；最终 SDK mutation 前必须再次读取。 */
-  readonly isContinuousTradingAllowed: ContinuousTradingOrderAuthorization;
-
-  /** 最终订单授权与买入节流共用的实时钟。 */
-  readonly now: () => Date;
-
-  /** 最终订单授权使用的权威当日交易日事实读取器。 */
-  readonly readCurrentTradingDayInfo: CurrentTradingDayInfoReader;
-};
+export type TraderExecutionBindings = Pick<
+  TraderDeps,
+  | 'marketDataClient'
+  | 'unrealizedLossBuyGate'
+  | 'tradingConfig'
+  | 'symbolRegistry'
+  | 'isExecutionAllowed'
+  | 'isContinuousTradingAllowed'
+  | 'now'
+  | 'readCurrentTradingDayInfo'
+> &
+  Readonly<{
+    readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
+    tradeMutationPort: TradeMutationPort;
+    rateLimiter: RateLimiter;
+    cacheManager: Pick<OrderCacheManager, 'clearCache'>;
+    orderMonitor: Pick<
+      OrderMonitor,
+      'trackOrder' | 'getPendingSellOrders' | 'cancelOrder' | 'replaceOrderPriceWithPermit'
+    >;
+    orderRecorder: OrderRecorder;
+  }>;
 
 /**
  * 交易器依赖。
@@ -699,6 +469,9 @@ export type OrderExecutorDeps = {
  * 使用范围：见调用方（启动层等）。
  */
 export type TraderDeps = {
+  /** app composition 消费唯一 tracking 绑定并创建执行器；必填，不提供 core 默认实现。 */
+  readonly createExecution: (bindings: TraderExecutionBindings) => OrderExecutor;
+
   /** 同步延迟创建唯一 broker 访问能力；错误仍由 createTrader 捕获为 rejected Promise。 */
   readonly brokerAccess: () => BrokerAccess;
   readonly tradingConfig: TradingConfig;

@@ -3,7 +3,8 @@ import type { TradingConfig } from '../../types/config.js';
 import type { LastState } from '../../types/state.js';
 import type { AccountPositionSnapshotReader, SnapshotToken } from '../../types/accountPosition.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { MarketDataClient, Trader } from '../../types/services.js';
+import type { Trader } from '../../types/services.js';
+import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { Logger } from '../../utils/logger/types.js';
 
 /**

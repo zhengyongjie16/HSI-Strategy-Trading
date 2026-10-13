@@ -9,7 +9,7 @@ import type {
   OrderExecutionPriceEvidence,
   OrderPushReadFact,
 } from '../../../types/orderPushPorts.js';
-import { ORDER_STATUS_LIFECYCLE_MAP } from '../../../constants/index.js';
+import { classifyBrokerOrderStatusLifecycle } from './orderValidation.js';
 import { isRecord } from '../../../utils/helpers/index.js';
 import {
   canonicalDecimal,
@@ -107,10 +107,7 @@ export function inspectBrokerOrderPush(event: PushOrderChanged): OrderPushReadFa
   if (event.side !== OrderSide.Buy && event.side !== OrderSide.Sell)
     throw new TypeError('[orderMapper] unknown SDK execution side');
 
-  const lifecycleMap: ReadonlyMap<number, RawOrderFromAPI['executionPhase']> =
-    ORDER_STATUS_LIFECYCLE_MAP;
-  const phase = lifecycleMap.get(event.status);
-  if (phase === undefined) throw new TypeError('[orderMapper] unknown SDK order lifecycle status');
+  const phase = classifyBrokerOrderStatusLifecycle(event.status);
 
   const quantity = safeQuantityNumber(event.submittedQuantity.toString());
   const executedQuantity = safeQuantityNumber(event.executedQuantity.toString());
@@ -152,11 +149,7 @@ export function mapBrokerOrder(
     throw new TypeError('[orderMapper] unknown SDK execution side');
   }
 
-  const lifecycleMap: ReadonlyMap<number, RawOrderFromAPI['executionPhase']> =
-    ORDER_STATUS_LIFECYCLE_MAP;
-  const executionPhase = lifecycleMap.get(order.status);
-  if (executionPhase === undefined)
-    throw new TypeError('[orderMapper] unknown SDK order lifecycle status');
+  const executionPhase = classifyBrokerOrderStatusLifecycle(order.status);
 
   const quantity = safeQuantityNumber(order.quantity.toString());
   const executedQuantity = safeQuantityNumber(order.executedQuantity.toString());

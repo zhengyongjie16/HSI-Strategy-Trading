@@ -9,11 +9,8 @@ import { createTerminationRuntime } from '../../../src/app/runtime/createTermina
  * 待开盘重建且交易日可交易 → 开盘重建按域逆序执行 → ACTIVE，交易门禁恢复
  */
 import { describe, it, expect } from 'bun:test';
-import type {
-  CacheDomain,
-  LifecycleMutableState,
-  LifecycleRuntimeFlags,
-} from '../../../src/main/lifecycle/types.js';
+import type { CacheDomain, LifecycleMutableState } from '../../../src/main/lifecycle/types.js';
+import type { LifecycleRuntimeFlags } from '../../../src/types/timeControlPlane.js';
 import { createDayLifecycleManager } from '../../../src/main/lifecycle/dayLifecycleManager.js';
 
 function createMutableState(overrides?: Partial<LifecycleMutableState>): LifecycleMutableState {

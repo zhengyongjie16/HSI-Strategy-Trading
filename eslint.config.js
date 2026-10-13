@@ -55,21 +55,66 @@ const strategyPrivateBoundaryRule = {
   meta: {
     type: 'problem',
     schema: [],
-    messages: { privateStrategy: '宿主/公共模块不得导入私有策略，策略之间也不得相互导入。' },
+    messages: {
+      privateStrategy: '宿主/公共模块不得导入私有策略，策略之间也不得相互导入。',
+      selectedLoaderOnly:
+        '非字面量动态 import 仅允许 runAppDeps 的 selected-strategy importModule 能力。',
+    },
   },
   create(context) {
     const filename = getNormalizedFilename(context);
     if (!isSrcFile(filename)) return {};
-    const strategyRoot = '/src/core/strategy/';
+    const strategyRoots = [
+      '/src/domain/strategy/',
+      '/src/runtime/strategy/',
+      '/src/config/strategy/',
+      '/src/app/startup/strategyDefinitions/',
+    ];
+
+    function strategyDirectory(file) {
+      for (const root of strategyRoots) {
+        const part = file.split(root)[1];
+        if (part?.includes('/')) return part.split('/')[0];
+      }
+
+      return undefined;
+    }
+
+    function isSelectedLoaderImport(node) {
+      if (!filename.endsWith('/src/app/runAppDeps.ts')) return false;
+      const callback = node.parent;
+      const property = callback?.parent;
+      const object = property?.parent;
+      const call = object?.parent;
+      return (
+        callback?.type === 'ArrowFunctionExpression' &&
+        callback.body === node &&
+        callback.params.length === 1 &&
+        callback.params[0].type === 'Identifier' &&
+        node.source.type === 'Identifier' &&
+        node.source.name === callback.params[0].name &&
+        property?.type === 'Property' &&
+        !property.computed &&
+        property.key.type === 'Identifier' &&
+        property.key.name === 'importModule' &&
+        property.value === callback &&
+        object?.type === 'ObjectExpression' &&
+        call?.type === 'CallExpression' &&
+        call.callee.type === 'Identifier' &&
+        call.callee.name === 'prepareStrategy' &&
+        call.arguments.length === 2 &&
+        call.arguments[1] === object
+      );
+    }
+
     function check(node, source) {
       if (typeof source?.value !== 'string' || !source.value.startsWith('.')) return;
       const target = path.posix.normalize(
         path.posix.join(path.posix.dirname(filename), source.value),
       );
-      const targetPart = target.split(strategyRoot)[1];
-      if (targetPart === undefined || !targetPart.includes('/')) return;
-      const ownerPart = filename.split(strategyRoot)[1];
-      if (ownerPart?.includes('/') && ownerPart.split('/')[0] === targetPart.split('/')[0]) return;
+      const targetDirectory = strategyDirectory(target);
+      if (targetDirectory === undefined) return;
+      if (strategyDirectory(filename) === targetDirectory) return;
       reportNode(context, node, 'privateStrategy');
     }
     return {
@@ -83,6 +128,14 @@ const strategyPrivateBoundaryRule = {
         check(node, node.source);
       },
       ImportExpression(node) {
+        if (typeof node.source.value !== 'string' && !isSelectedLoaderImport(node)) {
+          reportNode(context, node, 'selectedLoaderOnly');
+          return;
+        }
+
+        check(node, node.source);
+      },
+      TSImportType(node) {
         check(node, node.source);
       },
     };
@@ -551,7 +604,7 @@ export default defineConfig(
               message: 'services 层不得依赖 main 层',
             },
             {
-              regex: String.raw`^(?:\.\./)+core/(?!strategy/types\.js$).+`,
+              regex: String.raw`^(?:\.\./)+core/.+`,
               message: 'services 层不得依赖 core 层',
             },
           ],

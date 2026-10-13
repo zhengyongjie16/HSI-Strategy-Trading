@@ -1,4 +1,5 @@
 import type { OrderReadStatus } from './orderReadMetadata.js';
+import type { ExecutableSignal } from './signal.js';
 
 /**
  * PUBLIC caller 保存的原工作授权：闭包捕获真实入队 epoch、readiness、席位及持仓基线。
@@ -21,23 +22,35 @@ export type TraderCancelOrderRequest =
     };
 
 /**
+ * 最终执行报价失败事实。
+ * 数据来源：共享执行器逐个命令记录，并按准确输入索引映射回原始 ExecutableSignal 对象。
+ * 使用范围：普通 SELL 用例的有限缺失报价重试；INVALID 不重试，不能按 symbol 重建身份。
+ */
+export type ExecutionQuoteFailure = {
+  readonly signal: ExecutableSignal;
+  readonly kind: 'QUOTE_MISSING' | 'QUOTE_INVALID';
+};
+
+/**
  * 批量信号执行结果。
- * 类型用途：以唯一订单 ID 列表表达真正发生的提交或 broker 已确认改单，避免数量与 ID 双真相分叉。
- * 数据来源：OrderExecutor 对每个信号的 SUBMITTED/REPLACED 动作结果汇总。
- * 使用范围：Trader.executeSignals 及清仓、换标等消费者。
+ * 类型用途：唯一订单 ID 表达真实 accepted 动作，报价失败事实单独保留原输入身份。
+ * 数据来源：共享执行器对每个信号的动作与最终行情准入结果汇总；无报价失败时显式返回空数组。
+ * 使用范围：Trader.executeSignals 及清仓、换标等消费者；其他空 ID 结果不赋予重试语义。
  */
 export type ExecuteSignalsResult = {
   readonly executedOrderIds: ReadonlyArray<string>;
+  readonly quoteFailures: ReadonlyArray<ExecutionQuoteFailure>;
 };
 
 /**
  * 末日清仓执行结果。
- * 类型用途：在通用订单执行结果之外显式暴露仍等待权威订单终态的标的，
+ * 类型用途：末日专用结果独立保留 accepted ID、权威订单终态等待与缺价标的事实，
  * 让末日保护安排系统级一次性重评估而不是将其压缩为普通跳过。
  * 数据来源：OrderExecutor 的末日清仓专用入口。
- * 使用范围：DoomsdayProtection、Trader 与系统级时间唤醒链路。
+ * 使用范围：DoomsdayClearanceWorkflow、Trader 与系统级时间唤醒链路。
  */
-export type DoomsdayClearanceExecutionResult = ExecuteSignalsResult & {
+export type DoomsdayClearanceExecutionResult = {
+  readonly executedOrderIds: ReadonlyArray<string>;
   readonly awaitingAuthoritativeTerminalSymbols: ReadonlyArray<string>;
 
   /** 最终 mutation permit 内行情缺失的标的，由末日窗口 owner 使用既有重评估机制处理。 */
@@ -134,7 +147,7 @@ export type CancelOrderOutcome =
 /**
  * 末日保护撤单的 permit 内授权请求。
  * 类型用途：要求末日保护在真正调用 broker 前重新确认其清仓窗口与生命周期门禁仍有效。
- * 数据来源：DoomsdayProtection.cancelPendingBuyOrders 的实时 isLive 门禁。
+ * 数据来源：DoomsdayClearanceWorkflow.cancelPendingBuyOrders 的实时 isLive 门禁。
  * 使用范围：仅 Trader.cancelDoomsdayOrder 的末日保护调用。
  */
 export type DoomsdayCancelOrderRequest = {
@@ -156,7 +169,7 @@ export type CancelOrderNotStartedOutcome = {
  * 末日保护撤单结果。
  * 类型用途：除常规撤单结果外，保留 permit 内门禁关闭且未调用 broker 的事实。
  * 数据来源：Trader.cancelDoomsdayOrder 的 DOOMSDAY_WINDOW 请求。
- * 使用范围：DoomsdayProtection.cancelPendingBuyOrders。
+ * 使用范围：DoomsdayClearanceWorkflow.cancelPendingBuyOrders。
  */
 export type DoomsdayCancelOrderOutcome = CancelOrderOutcome | CancelOrderNotStartedOutcome;
 

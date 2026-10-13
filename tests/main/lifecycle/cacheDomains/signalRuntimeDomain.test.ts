@@ -12,15 +12,15 @@ import type { SignalRuntimeDomainDeps } from '../../../../src/main/lifecycle/cac
 import type {
   MonitorTaskDataMap,
   MonitorTaskProcessor,
-} from '../../../../src/main/asyncProgram/monitorTaskProcessor/types.js';
-import type { MonitorTaskQueue } from '../../../../src/main/asyncProgram/monitorTaskQueue/types.js';
-import type { Processor } from '../../../../src/main/asyncProgram/types.js';
+} from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/types.js';
+import type { Processor } from '../../../../src/runtime/asyncProgram/types.js';
 import type {
   BuyTaskType,
   SellTaskType,
   Task,
   TaskQueue,
-} from '../../../../src/main/asyncProgram/tradeTaskQueue/types.js';
+} from '../../../../src/runtime/asyncProgram/tradeTaskQueue/types.js';
 import type { Signal } from '../../../../src/types/signal.js';
 import type { OrderedMethod } from '../types.js';
 import { createLoggerDouble, createMonitorContextDouble } from '../../../helpers/testDoubles.js';

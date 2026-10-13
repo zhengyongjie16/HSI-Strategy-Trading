@@ -8,11 +8,12 @@
 import { describe, expect, it } from 'bun:test';
 import type { CreateMonitorContextParams, PreGateRuntime } from '../../../src/app/types.js';
 import { createMonitorContext as createMonitorContextImpl } from '../../../src/app/context/createMonitorContext.js';
-import { createWarrantListCache } from '../../../src/services/autoSymbolFinder/utils.js';
+import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import type { MonitorConfig, TradingConfig } from '../../../src/types/config.js';
 import type { Quote } from '../../../src/types/quote.js';
 import {
   createDailyLossTrackerDouble,
+  createWarrantCandidateSearchDouble,
   createMonitorContextDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
@@ -80,11 +81,7 @@ function createRuntime(
     config: createSdkConfigDouble(),
     tradingConfig: createTradingConfig(monitor),
     symbolRegistry,
-    warrantListCacheConfig: {
-      cache: createWarrantListCache(),
-      ttlMs: 60_000,
-      nowMs: () => Date.now(),
-    },
+    warrantListCache: createWarrantListCache(),
     marketDataClient,
     startupTradingDayInfo: {
       dateKey: '2026-03-09',
@@ -97,6 +94,7 @@ function createRuntime(
 
   const postGateRuntime: CreateMonitorContextParams['postGateRuntime'] = {
     dailyLossTracker: createDailyLossTrackerDouble(),
+    candidateSearch: createWarrantCandidateSearchDouble(),
     lastState: {
       canTrade: true,
       isHalfDay: false,

@@ -8,6 +8,35 @@
 import type { Position } from './account.js';
 
 /**
+ * 席位换标的中性行为契约。
+ * 数据来源：application 的唯一周期/距离换标 owner；所有异步推进保留原 caller 授权。
+ * 使用范围：MonitorContext、换标 runtime 与 app 装配，不暴露策略、timer 或订单状态。
+ */
+export interface SeatSwitchWorkflow {
+  readonly evaluatePeriodicSwitchDue: (params: {
+    readonly direction: 'LONG' | 'SHORT';
+    readonly currentTime: Date;
+    readonly canContinue: () => boolean;
+  }) => Promise<SwitchDriveResult>;
+  readonly startSwitchOnDistance: (params: {
+    readonly direction: 'LONG' | 'SHORT';
+    readonly monitorPrice: string | null;
+    readonly positions: ReadonlyArray<Position>;
+    readonly canContinue: () => boolean;
+  }) => Promise<StartSwitchOnDistanceResult>;
+  readonly advancePendingSwitch: (params: {
+    readonly direction: 'LONG' | 'SHORT';
+    readonly positions: ReadonlyArray<Position>;
+    readonly canContinue: () => boolean;
+  }) => Promise<AdvancePendingSwitchResult>;
+  readonly hasPendingSwitch: (direction: 'LONG' | 'SHORT') => boolean;
+  readonly getPeriodicSwitchPendingState: (
+    direction: 'LONG' | 'SHORT',
+  ) => Readonly<{ pending: boolean }>;
+  readonly resetAllState: () => void;
+}
+
+/**
  * 距离换标等待唤醒描述。
  * 类型用途：显式表达 pending switch 下一次需要等待的事件源。
  * 数据来源：由 autoSymbolManager 状态机单步推进结果生成。
@@ -120,54 +149,3 @@ export type AdvancePendingSwitchResult =
  */
 export type PeriodicSeatBlockingReason =
   'ORDER_RECORDER' | 'LOCAL_PENDING_ORDER' | 'BROKER_PENDING_ORDER';
-
-/**
- * 周期换标等待状态。
- * 类型用途：记录周期到期后是否仍在等待空仓。
- * 数据来源：由 autoSymbolManager 周期换标状态机维护。
- * 使用范围：MonitorContext 行为端口、autoSymbolManager 与监控任务处理器。
- */
-type PeriodicSwitchPendingState = Readonly<{
-  pending: boolean;
-}>;
-
-/**
- * 自动换标管理器行为契约。
- * 类型用途：约束 MonitorContext.autoSymbolManager 的可调用方法。
- * 数据来源：由 autoSymbolManager 模块实现并注入。
- * 使用范围：types、app、main、services 与相关测试使用。
- */
-export interface AutoSymbolManagerPort {
-  maybeSearchOnEvent: (params: {
-    readonly direction: 'LONG' | 'SHORT';
-    readonly currentTime: Date;
-
-    /** 必须在每个异步边界后重新读取的普通交易授权。 */
-    readonly canContinue: () => boolean;
-  }) => Promise<void>;
-  evaluatePeriodicSwitchDue: (params: {
-    readonly direction: 'LONG' | 'SHORT';
-    readonly currentTime: Date;
-
-    /** 必须在每个异步边界后重新读取的普通交易授权。 */
-    readonly canContinue: () => boolean;
-  }) => Promise<SwitchDriveResult>;
-  startSwitchOnDistance: (params: {
-    readonly direction: 'LONG' | 'SHORT';
-    readonly monitorPrice: string | null;
-    readonly positions: ReadonlyArray<Position>;
-
-    /** 必须在每个异步边界后重新读取的普通交易授权。 */
-    readonly canContinue: () => boolean;
-  }) => Promise<StartSwitchOnDistanceResult>;
-  advancePendingSwitch: (params: {
-    readonly direction: 'LONG' | 'SHORT';
-    readonly positions: ReadonlyArray<Position>;
-
-    /** 必须在每个异步边界后重新读取的普通交易授权。 */
-    readonly canContinue: () => boolean;
-  }) => Promise<AdvancePendingSwitchResult>;
-  hasPendingSwitch: (direction: 'LONG' | 'SHORT') => boolean;
-  getPeriodicSwitchPendingState: (direction: 'LONG' | 'SHORT') => PeriodicSwitchPendingState;
-  resetAllState: () => void;
-}

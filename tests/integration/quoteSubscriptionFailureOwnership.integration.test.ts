@@ -9,7 +9,7 @@ import { createAccountPositionSnapshot } from '../../src/application/accountPosi
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import type { Position } from '../../src/types/account.js';
 import type { OrderHoldSymbolsChangedEvent } from '../../src/types/services.js';

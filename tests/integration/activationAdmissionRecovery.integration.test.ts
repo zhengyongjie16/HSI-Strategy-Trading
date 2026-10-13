@@ -7,12 +7,12 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
-import { createMonitorTaskQueue } from '../../src/main/asyncProgram/monitorTaskQueue/index.js';
-import { createMonitorTaskProcessor } from '../../src/main/asyncProgram/monitorTaskProcessor/index.js';
+import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
 import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import { createSeatActivationDispatcher } from '../../src/main/seatActivationDispatcher/index.js';
+import { createSeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/index.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import { createSymbolRegistry } from '../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { isSeatActive } from '../../src/utils/seat/guards.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
@@ -30,10 +30,11 @@ import {
 import { waitUntil } from '../main/asyncProgram/utils.js';
 import type { Position } from '../../src/types/account.js';
 import type { Quote } from '../../src/types/quote.js';
-import type { MarketDataClient, OrderHoldSymbolsChangedEvent } from '../../src/types/services.js';
+import type { MarketDataClient } from '../../src/types/marketPorts.js';
+import type { OrderHoldSymbolsChangedEvent } from '../../src/types/services.js';
 import type { LastState } from '../../src/types/state.js';
 import type { SymbolRegistry } from '../../src/types/seat.js';
-import type { MonitorTaskDataMap } from '../../src/main/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 
 const MONITOR_SYMBOL = 'HSI.HK';
 const BEAR_SYMBOL = 'BEAR.HK';

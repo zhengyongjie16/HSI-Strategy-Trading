@@ -11,7 +11,7 @@ import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createP
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
-import { createSignalProcessor } from '../../src/core/signalProcessor/index.js';
+import { processSellSignals } from '../../src/application/ordinarySell/quantityResolver.js';
 import { createOrderStorage } from '../../src/core/orderRecorder/orderStorage.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
@@ -31,7 +31,7 @@ import {
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
-import type { ProcessedSellSignal } from '../../src/core/signalProcessor/types.js';
+import type { ProcessedSellSignal } from '../../src/application/ordinarySell/types.js';
 import type {
   ExecutableSellSignal,
   ProtectiveLiquidationSellSignal,
@@ -40,7 +40,8 @@ import type { OrderRecord, OrderRecorder, RateLimiter } from '../../src/types/se
 import type { OrderStorage } from '../../src/core/orderRecorder/types.js';
 import type { DailyLossTracker } from '../../src/types/risk.js';
 import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
-import type { OrderExecutorDeps, OrderMonitor } from '../../src/core/trader/types.js';
+import type { OrderMonitor } from '../../src/core/trader/types.js';
+import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
 import { waitUntil } from '../main/asyncProgram/utils.js';
 import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
 
@@ -354,11 +355,6 @@ function createRecordedBuyOrder(
 
 describe('sell-flow integration', () => {
   it('preserves protective semantics on success and clears them when quantity processing returns HOLD', () => {
-    const signalProcessor = createSignalProcessor({
-      tradingConfig: createTradingConfig(),
-      liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
-      reportFatalError: () => {},
-    });
     const protectiveSignal: ProtectiveLiquidationSellSignal = {
       symbol: 'BULL.HK',
       symbolName: 'BULL.HK',
@@ -369,7 +365,7 @@ describe('sell-flow integration', () => {
       isProtectiveLiquidation: true,
     };
     const process = (longPosition: ReturnType<typeof createPositionDouble> | null) =>
-      signalProcessor.processSellSignals({
+      processSellSignals({
         signals: [protectiveSignal],
         longPosition,
         shortPosition: null,
@@ -428,7 +424,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -484,18 +479,6 @@ describe('sell-flow integration', () => {
   it('末日买入截止窗口不影响接管前的 smart-close 卖单提交', async () => {
     const tradingConfig = createTradingConfig();
     const currentTimeMs = Date.parse('2026-07-12T07:45:01.000Z');
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
-      liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
-        getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
-      },
-      reportFatalError: () => {},
-    });
 
     const storage = createOrderStorage();
     await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now() - 1000);
@@ -519,7 +502,7 @@ describe('sell-flow integration', () => {
       reason: 'integration-sell',
     });
 
-    const processed = signalProcessor.processSellSignals({
+    const processed = processSellSignals({
       signals: [signal],
       longPosition: createPositionDouble({
         symbol: 'BULL.HK',
@@ -561,7 +544,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -623,18 +605,7 @@ describe('sell-flow integration', () => {
 
   it('smart-close 最终可卖量不能把整单关联裁剪为不可表示数量', async () => {
     const tradingConfig = createTradingConfig();
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
-      liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
-        getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
-      },
-      reportFatalError: () => {},
-    });
+
     const storage = createOrderStorage();
     await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now() - 1_000);
     await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now());
@@ -654,7 +625,7 @@ describe('sell-flow integration', () => {
         submittedSellLinks.push({ orderId, quantity, relatedBuyOrderIds });
       },
     });
-    const processedSignals = signalProcessor.processSellSignals({
+    const processedSignals = processSellSignals({
       signals: [
         createSignal({
           symbol: 'BULL.HK',
@@ -694,7 +665,7 @@ describe('sell-flow integration', () => {
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
-      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      cacheManager: { clearCache: () => {} },
       orderMonitor: {
         initialize: async () => {},
         trackOrder: ({ orderId, quantity }) => {
@@ -743,7 +714,7 @@ describe('sell-flow integration', () => {
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
-      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      cacheManager: { clearCache: () => {} },
       orderMonitor: {
         initialize: async () => {},
         trackOrder: () => {},
@@ -789,18 +760,6 @@ describe('sell-flow integration', () => {
 
   it('runs stage2+stage3 with pending occupancy and submits remaining timeout quantity', async () => {
     const tradingConfig = createTradingConfig();
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
-      liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
-        getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
-      },
-      reportFatalError: () => {},
-    });
 
     const storage = createOrderStorage();
     const occupiedOrderExecutedTimeMs = Date.parse('2026-02-24T01:32:00.000Z');
@@ -858,7 +817,7 @@ describe('sell-flow integration', () => {
       reason: 'integration-sell-stage3',
     });
 
-    const processed = signalProcessor.processSellSignals({
+    const processed = processSellSignals({
       signals: [signal],
       longPosition: createPositionDouble({
         symbol: 'BULL.HK',
@@ -904,7 +863,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -959,18 +917,6 @@ describe('sell-flow integration', () => {
 
   it('supports SELLPUT symmetry with smart-close stage2+stage3 and submits short sell order', async () => {
     const tradingConfig = createTradingConfig();
-    const signalProcessor = createSignalProcessor({
-      tradingConfig,
-      liquidationCooldownTracker: {
-        recordLiquidationTrigger: () => {},
-        recordCooldown: () => {},
-        restoreTriggerCount: () => {},
-        getRemainingMs: () => 0,
-        clearMidnightEligible: () => {},
-        resetAllTriggerCounts: () => {},
-      },
-      reportFatalError: () => {},
-    });
 
     const storage = createOrderStorage();
     await seedStorageFromNative(
@@ -1009,7 +955,7 @@ describe('sell-flow integration', () => {
       reason: 'integration-sellput-stage3',
     });
 
-    const processed = signalProcessor.processSellSignals({
+    const processed = processSellSignals({
       signals: [signal],
       longPosition: null,
       shortPosition: createPositionDouble({
@@ -1054,7 +1000,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1137,7 +1082,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1164,6 +1108,7 @@ describe('sell-flow integration', () => {
             orderType: eloFact.orderType,
             submittedPrice: '1',
             submittedQuantity: 100,
+            isProtectiveLiquidation: false,
             executedQuantity: 0,
             submittedAt,
           },
@@ -1217,6 +1162,7 @@ describe('sell-flow integration', () => {
 
     expect(result).toEqual({
       executedOrderIds: ['SELL-EXISTING'],
+      quoteFailures: [],
     });
 
     expect(replaceCalls).toEqual([
@@ -1386,7 +1332,6 @@ describe('sell-flow integration', () => {
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor,
       orderRecorder,
@@ -1513,7 +1458,7 @@ describe('sell-flow integration', () => {
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
-      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      cacheManager: { clearCache: () => {} },
       orderMonitor: {
         initialize: async () => {},
         trackOrder: () => {},
@@ -1534,6 +1479,7 @@ describe('sell-flow integration', () => {
             orderType: eloFact.orderType,
             submittedPrice: '1',
             submittedQuantity: 100,
+            isProtectiveLiquidation: false,
             executedQuantity: 0,
             submittedAt,
           },
@@ -1618,7 +1564,7 @@ describe('sell-flow integration', () => {
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
-      cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
+      cacheManager: { clearCache: () => {} },
       orderMonitor: {
         initialize: async () => {},
         trackOrder: ({ orderId, quantity }) => {
@@ -1646,6 +1592,7 @@ describe('sell-flow integration', () => {
             orderType: marketFact.orderType,
             submittedPrice: null,
             submittedQuantity: 100,
+            isProtectiveLiquidation: false,
             executedQuantity: 0,
             submittedAt,
           },
@@ -1709,7 +1656,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1742,6 +1688,7 @@ describe('sell-flow integration', () => {
             orderType: eloFact.orderType,
             submittedPrice: '1',
             submittedQuantity: 100,
+            isProtectiveLiquidation: false,
             executedQuantity: 0,
             submittedAt,
           },
@@ -1816,7 +1763,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1841,6 +1787,7 @@ describe('sell-flow integration', () => {
             orderType: marketFact.orderType,
             submittedPrice: '1',
             submittedQuantity: 100,
+            isProtectiveLiquidation: false,
             executedQuantity: 0,
             submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
           },
@@ -1868,6 +1815,7 @@ describe('sell-flow integration', () => {
 
     expect(result).toEqual({
       executedOrderIds: [],
+      quoteFailures: [],
     });
     expect(cancelCalls).toEqual(['SELL-MARKET-EXISTING']);
     expect(tradeCtx.nativeSubmitObservations()).toHaveLength(0);
@@ -1887,6 +1835,7 @@ describe('sell-flow integration', () => {
     );
 
     const cancelCalls: string[] = [];
+    let cancelConfirmed = false;
     const trackedOrders: Array<{ orderId: string; quantity: number }> = [];
     const submittedSellLinks: Array<{
       orderId: string;
@@ -1900,7 +1849,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor: {
         initialize: async () => {},
@@ -1909,6 +1857,7 @@ describe('sell-flow integration', () => {
         },
         cancelOrder: async (orderId) => {
           cancelCalls.push(orderId);
+          cancelConfirmed = true;
           return {
             kind: 'ALREADY_CLOSED',
             closedReason: 'CANCELED',
@@ -1922,20 +1871,24 @@ describe('sell-flow integration', () => {
         startRuntime: () => {},
         stopRuntimeAndDrain: async () => {},
         recoverOrderTrackingFromSnapshot: async () => {},
-        getPendingSellOrders: () => [
-          {
-            orderId: 'SELL-MARKET-EXISTING',
-            symbol: 'BULL.HK',
-            side: eloFact.executionSide,
-            executionSide: eloFact.executionSide,
-            status: eloFact.status,
-            orderType: marketFact.orderType,
-            submittedPrice: '1',
-            submittedQuantity: 100,
-            executedQuantity: 0,
-            submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
-          },
-        ],
+        getPendingSellOrders: () =>
+          cancelConfirmed
+            ? []
+            : [
+                {
+                  orderId: 'SELL-MARKET-EXISTING',
+                  symbol: 'BULL.HK',
+                  side: eloFact.executionSide,
+                  executionSide: eloFact.executionSide,
+                  status: eloFact.status,
+                  orderType: marketFact.orderType,
+                  submittedPrice: '1',
+                  submittedQuantity: 100,
+                  isProtectiveLiquidation: false,
+                  executedQuantity: 0,
+                  submittedAt: Date.parse('2026-02-25T03:00:00.000Z'),
+                },
+              ],
         clearTrackedOrders: () => {},
         onOrderStateChanged: () => () => {},
         hasPendingProtectiveLiquidationOrders: () => false,
@@ -2113,7 +2066,6 @@ describe('sell-flow integration', () => {
       marketDataClient: createExecutableQuoteClient(),
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor,
       orderRecorder,
@@ -2254,7 +2206,6 @@ describe('sell-flow integration', () => {
       rateLimiter,
       cacheManager: {
         clearCache: () => {},
-        getPendingOrders: async () => [],
       },
       orderMonitor,
       orderRecorder,

@@ -5,10 +5,11 @@
  * - 创建监控任务处理器、买入处理器与卖出处理器
  * - 消费已完成顶层装配的共享依赖，不再承担其他 runtime 的绑定副作用
  */
-import { createBuyProcessor } from '../../main/asyncProgram/buyProcessor/index.js';
-import { createMonitorTaskProcessor } from '../../main/asyncProgram/monitorTaskProcessor/index.js';
-import { createSellProcessor } from '../../main/asyncProgram/sellProcessor/index.js';
-import { ordinarySignalGuard } from '../../main/ordinarySignalGuard/index.js';
+import { createBuyProcessor } from '../../runtime/asyncProgram/buyProcessor/index.js';
+import { createMonitorTaskProcessor } from '../../runtime/asyncProgram/monitorTaskProcessor/index.js';
+import { createSellProcessor } from '../../runtime/asyncProgram/sellProcessor/index.js';
+import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
+import { createPeriodicSwitchTaskHandler } from '../../application/seatSwitch/periodicSwitchTask.js';
 import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
 
 /**
@@ -19,23 +20,29 @@ import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
  */
 
 export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntime | null {
-  const { preGateRuntime, postGateRuntime, clock, scheduler, termination, resources, cleanup } =
-    params;
-  const { tradingConfig, marketDataClient } = preGateRuntime;
+  const {
+    logger,
+    preGateRuntime,
+    postGateRuntime,
+    clock,
+    scheduler,
+    termination,
+    resources,
+    cleanup,
+  } = params;
+  const { tradingConfig } = preGateRuntime;
   const {
     monitorContext,
-    trader,
     snapshot,
     lastState,
-    postTradeConsistencyRuntime,
-    signalProcessor,
-    doomsdayProtection,
+    ordinaryBuy,
+    ordinarySell,
     buyTaskQueue,
     sellTaskQueue,
     monitorTaskQueue,
+    seatActivation,
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,
-    quoteSubscriptionRuntime,
   } = postGateRuntime;
   const canProcessOrdinaryTradeTask = (): boolean =>
     !termination.isTerminated() &&
@@ -45,19 +52,23 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
       doomsdayProtectionEnabled: tradingConfig.global.doomsdayProtection,
     });
 
-  const monitorTaskProcessor = createMonitorTaskProcessor({
-    clock,
-    scheduler,
-    monitorTaskQueue,
+  const periodicSwitchTaskHandler = createPeriodicSwitchTaskHandler({
     monitorContext,
-    trader,
-    marketDataClient,
     switchWakeupRuntime,
     periodicSwitchWakeupRuntime,
-    quoteSubscriptionRuntime,
     snapshot,
-    getCanProcessTask: () => !termination.isTerminated() && lastState.isTradingEnabled,
     getCanTradeNow: canProcessOrdinaryTradeTask,
+    logger,
+    now: clock.now,
+  });
+  const monitorTaskProcessor = createMonitorTaskProcessor({
+    scheduler,
+    monitorTaskQueue,
+    seatActivation,
+    logger,
+    handlePeriodicSwitchTask: periodicSwitchTaskHandler.handlePeriodicSwitchTask,
+    onPeriodicSwitchTaskResult: periodicSwitchTaskHandler.onPeriodicSwitchTaskResult,
+    getCanProcessTask: () => !termination.isTerminated() && lastState.isTradingEnabled,
     termination,
   });
 
@@ -71,15 +82,8 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   if (termination.isTerminated()) return null;
 
   const buyProcessor = createBuyProcessor({
-    snapshot,
     taskQueue: buyTaskQueue,
-    monitorContext,
-    signalProcessor,
-    trader,
-    marketDataClient,
-    doomsdayProtection,
-    getIsHalfDay: () => lastState.isHalfDay ?? false,
-    now: clock.now,
+    workflow: ordinaryBuy,
     getCanProcessTask: canProcessOrdinaryTradeTask,
     termination,
   });
@@ -94,16 +98,9 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   if (termination.isTerminated()) return null;
 
   const sellProcessor = createSellProcessor({
-    clock,
     scheduler,
     taskQueue: sellTaskQueue,
-    monitorContext,
-    signalProcessor,
-    trader,
-    marketDataClient,
-    getLastState: () => lastState,
-    snapshot,
-    postTradeConsistencyRuntime,
+    workflow: ordinarySell,
     getCanProcessTask: canProcessOrdinaryTradeTask,
     termination,
   });

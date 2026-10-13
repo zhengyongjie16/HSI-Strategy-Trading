@@ -23,16 +23,12 @@ import type { MonitorContext } from '../../../src/types/state.js';
 import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
 import type { Quote } from '../../../src/types/quote.js';
 import { getHKDateKey, getRequiredHKDateKey } from '../../../src/utils/time/index.js';
-import type {
-  MarketDataClient,
-  OrderRecord,
-  RawOrderFromAPI,
-  Trader,
-  TradingDaysResult,
-} from '../../../src/types/services.js';
+import type { OrderRecord, RawOrderFromAPI, Trader } from '../../../src/types/services.js';
+import type { MarketDataClient, TradingDaysResult } from '../../../src/types/marketPorts.js';
 import {
   createAccountSnapshotDouble,
   createSymbolRegistryDouble,
+  createWarrantRiskRefreshDouble,
 } from '../../helpers/testDoubles.js';
 import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 
@@ -61,6 +57,7 @@ function createMinimalLastState(): RebuildTradingDayStateDeps['lastState'] {
   return {
     tradingCalendarSnapshot: new Map(),
     cachedTradingDayInfo: null,
+    isTradingEnabled: false,
   } as unknown as RebuildTradingDayStateDeps['lastState'];
 }
 
@@ -122,7 +119,6 @@ function createMonitorContext(params: {
     },
     riskChecker: {
       setWarrantInfoFromCallPrice: () => ({ status: 'ok' as const }),
-      refreshWarrantInfoForSymbol: async () => ({ status: 'ok' as const }),
       prepareUnrealizedLossData: ((recorder, symbol, _isLongSymbol, dailyLossOffset) => {
         expect(recorder.getBuyOrdersForSymbol(symbol, _isLongSymbol)).toEqual(buyOrders);
         expect(dailyLossOffset).toBe('0');
@@ -165,6 +161,7 @@ async function createRebuildDeps(
       onSecondaryError: () => {},
     }),
     marketDataClient: createDefaultMarketDataClient(tradingDayCalls),
+    warrantRiskRefresh: createWarrantRiskRefreshDouble(),
     trader,
     lastState: createMinimalLastState(),
     snapshot: await createSnapshotFixture({
@@ -183,6 +180,86 @@ async function createRebuildDeps(
   };
 }
 describe('createRebuildTradingDayState', () => {
+  it.each(['seat', 'snapshot', 'stop'] as const)(
+    'maps late warrant INVALIDATED from original %s authorization without retry, risk publish or ACTIVE',
+    async (invalidatedBy) => {
+      const registry = createSymbolRegistryDouble({
+        longSeat: { ...emptySeatState, symbol: 'BULL.HK', status: 'ACTIVATING' },
+        shortSeat: emptySeatState,
+      });
+      const context = createMonitorContext({ symbolRegistry: registry });
+      const queryIssued = Promise.withResolvers<undefined>();
+      const readCompleted = Promise.withResolvers<undefined>();
+      let refreshCalls = 0;
+      let riskPrepares = 0;
+      let trackingCalls = 0;
+      let displayCalls = 0;
+      const termination = createTerminationRuntime({
+        closeTradingGate: () => {},
+        closeProducerAdmission: () => {},
+        stopProducers: [],
+        onSecondaryError: () => {},
+      });
+      const prepareRisk = context.riskChecker.prepareUnrealizedLossData;
+      context.riskChecker.prepareUnrealizedLossData = (...args) => {
+        riskPrepares += 1;
+        return prepareRisk(...args);
+      };
+      const deps = await createRebuildDeps({
+        termination,
+        symbolRegistry: registry,
+        monitorContext: context,
+        warrantRiskRefresh: createWarrantRiskRefreshDouble({
+          refreshWarrantInfoForSymbol: async (_symbol, _isLong, isCurrent) => {
+            refreshCalls += 1;
+            expect(isCurrent()).toBeTrue();
+            queryIssued.resolve();
+            await readCompleted.promise;
+            expect(isCurrent()).toBeFalse();
+            return { status: 'INVALIDATED' };
+          },
+        }),
+        trader: {
+          recoverOrderTrackingFromSnapshot: async () => {
+            trackingCalls += 1;
+          },
+        } as unknown as Trader,
+        displayAccountAndPositions: () => {
+          displayCalls += 1;
+        },
+      });
+      const pending = createRebuildTradingDayState(deps)({
+        snapshotToken: deps.snapshot.getView().token,
+        allOrders: emptyOrders,
+        quotesMap: emptyQuotesMap,
+        now: REBUILD_TEST_NOW,
+      });
+      await queryIssued.promise;
+      if (invalidatedBy === 'seat') {
+        registry.updateSeatStateWithVersionBump('LONG', {
+          ...emptySeatState,
+          status: 'ACTIVATING',
+          symbol: 'NEW_BULL.HK',
+        });
+      } else if (invalidatedBy === 'snapshot') {
+        deps.snapshot.invalidate();
+      } else {
+        termination.requestShutdown();
+      }
+
+      readCompleted.resolve();
+      expect(await pending).toEqual({
+        status: invalidatedBy === 'stop' ? 'ABORTED' : 'SUPERSEDED',
+      });
+      expect(refreshCalls).toBe(1);
+      expect(riskPrepares).toBe(0);
+      expect(trackingCalls).toBe(0);
+      expect(displayCalls).toBe(0);
+      expect(registry.getSeatState('LONG').status).toBe('ACTIVATING');
+      expect(termination.getFatalState().hasFatalError).toBeFalse();
+    },
+  );
+
   it('commits both captured directions once in REBUILD mode, then prepares both before publishing without changing the snapshot', async () => {
     const registry = createSymbolRegistryDouble({
       longSeat: { ...emptySeatState, symbol: 'BULL.HK', status: 'ACTIVATING' },

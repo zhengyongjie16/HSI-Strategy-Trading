@@ -6,7 +6,7 @@
 import { expect, it } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
-import { createUnrealizedLossChecker } from '../../../src/core/riskController/unrealizedLossChecker.js';
+import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
 import type { AccountSnapshot, Position } from '../../../src/types/account.js';
 import type { BrokerOrderExecutionFact } from '../../../src/types/orderRecorder.js';
 import type { RawOrderFromAPI } from '../../../src/types/services.js';
@@ -19,7 +19,10 @@ it('does not double a projected BUY during a real account wait and preserves tot
     getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
   });
-  const risk = createUnrealizedLossChecker({ maxUnrealizedLossPerSymbol: null });
+  const risk = createUnrealizedLossChecker({
+    maxUnrealizedLossPerSymbol: null,
+    onMissingData: () => {},
+  });
   const buy: BrokerOrderExecutionFact = {
     brokerOrderId: 'ACCOUNT-AWAIT-BUY',
     symbol: 'WAIT.HK',

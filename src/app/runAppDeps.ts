@@ -7,7 +7,7 @@ import { lstat, readdir, realpath } from 'node:fs/promises';
  * 不得 mock 这些协作者各自的共享模块。
  */
 import { validateRuntimeSymbolsFromQuotesMap } from '../config/validator/index.js';
-import { createBusinessEventProgram } from '../main/businessEventProgram/index.js';
+import { createBusinessEventProgram } from '../runtime/businessEventProgram/index.js';
 import { createRebuildTradingDayState } from '../main/lifecycle/rebuildTradingDayState.js';
 import { createTimeWakeupRuntime } from '../main/timeWakeupRuntime/index.js';
 import { displayAccountAndPositions } from '../services/accountDisplay/index.js';

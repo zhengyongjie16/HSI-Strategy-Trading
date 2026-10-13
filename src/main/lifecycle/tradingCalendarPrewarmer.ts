@@ -13,7 +13,8 @@
 import { LIFECYCLE, TIME } from '../../constants/index.js';
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
 import type { MonitorContext } from '../../types/state.js';
-import type { MarketDataClient, OrderRecord, TradingDayInfo } from '../../types/services.js';
+import type { OrderRecord } from '../../types/services.js';
+import type { MarketDataClient, TradingDayInfo } from '../../types/marketPorts.js';
 import { listHKDateKeysBetween } from './utils.js';
 import { getHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
 import type {

@@ -26,13 +26,15 @@ import type {
   CacheDomain,
   CacheDomainOpenRebuildResult,
   OpenRebuildContext,
-  DayLifecycleManager,
   DayLifecycleManagerDeps,
-  DayLifecycleTickResult,
   LifecycleContext,
   LifecycleMutableState,
-  LifecycleRuntimeFlags,
 } from './types.js';
+import type {
+  DayLifecycleManager,
+  DayLifecycleTickResult,
+  LifecycleRuntimeFlags,
+} from '../../types/timeControlPlane.js';
 
 /** 判断是否需要触发午夜清理：dayKey 存在且与当前记录的日期不同 */
 function shouldRunMidnightClear(

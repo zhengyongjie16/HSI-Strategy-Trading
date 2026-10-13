@@ -14,15 +14,15 @@ import { createRouteProcessor } from '../../../../src/core/trader/orderMonitor/r
 import { createOrderStatusQuery } from '../../../../src/core/trader/orderMonitor/orderStatusQuery.js';
 import type { AccountServiceDeps } from '../../../../src/types/accountReadPorts.js';
 import { createAccountService } from '../../../../src/application/accountQuery/index.js';
-import { createOrderExecutor } from '../../../../src/core/trader/orderExecutor/index.js';
+import { createOrderExecutor } from '../../../../src/application/orderExecution/index.js';
 import type {
   TraderDeps,
   OrderCacheManagerDeps,
-  OrderExecutorDeps,
-  OrderExecutor,
   OrderMonitor,
   OrderMonitorDeps,
 } from '../../../../src/core/trader/types.js';
+import type { OrderExecutorDeps } from '../../../../src/application/orderExecution/types.js';
+import type { OrderExecutor } from '../../../../src/types/orderExecutionPorts.js';
 import type { OrderPushPort } from '../../../../src/types/orderPushPorts.js';
 import { createTrader } from '../../../../src/core/trader/index.js';
 import { createOrderCacheManager } from '../../../../src/core/trader/orderCacheManager.js';
@@ -47,7 +47,9 @@ export async function createBrokerIngressFixture(
       createApiManager: (
         deps: Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
       ) => ReturnType<typeof createOrderAPIManager>;
-      createTrader: (deps: Omit<TraderDeps, 'brokerAccess'>) => ReturnType<typeof createTrader>;
+      createTrader: (
+        deps: Omit<TraderDeps, 'brokerAccess' | 'createExecution'>,
+      ) => ReturnType<typeof createTrader>;
       createAccountService: (
         deps: Omit<AccountServiceDeps, 'accountReadPort'>,
       ) => ReturnType<typeof createAccountService>;
@@ -89,7 +91,12 @@ export async function createBrokerIngressFixture(
           executionLedgerPort: facts.executionLedgerPort,
         }),
       }),
-    createTrader: (deps) => createTrader({ ...deps, brokerAccess: facts.brokerAccess }),
+    createTrader: (deps) =>
+      createTrader({
+        ...deps,
+        brokerAccess: facts.brokerAccess,
+        createExecution: createOrderExecutor,
+      }),
     createAccountService: (deps) =>
       createAccountService({ ...deps, accountReadPort: ports.createAccountReadPort() }),
     createStateQuery: (deps) =>

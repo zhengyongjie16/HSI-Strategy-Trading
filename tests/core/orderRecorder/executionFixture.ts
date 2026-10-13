@@ -9,7 +9,7 @@ import {
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
 import { createSettlementFlow } from '../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/core/trader/protectiveLiquidationEpisodeTracker/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import type {
   OrderCumulativeExecutionParams,
   OrderMonitorRuntimeStore,

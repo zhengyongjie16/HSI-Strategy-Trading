@@ -7,7 +7,7 @@ import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 import { describe, expect, it } from 'bun:test';
 import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
 import { createDayLifecycleManager } from '../../../src/main/lifecycle/dayLifecycleManager.js';
-import { createSymbolRegistry } from '../../../src/services/autoSymbolManager/utils.js';
+import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { createExternalApiAggregateRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createLoggerDouble, createMonitorConfigDouble } from '../../helpers/testDoubles.js';

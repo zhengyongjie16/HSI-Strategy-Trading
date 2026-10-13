@@ -6,12 +6,11 @@
  * - 发布自动寻标的完整授权变化，避免消费方重复判断 lifecycle 与末日接管
  */
 import { formatError } from '../../utils/error/index.js';
+import type { TradingGateEventRuntime, TradingGateEventRuntimeDeps } from './types.js';
 import type {
   AutoSearchAuthorizationChangedEvent,
-  TradingGateEventRuntime,
-  TradingGateEventRuntimeDeps,
   TradingGateStateChangedEvent,
-} from './types.js';
+} from '../../types/timeControlPlane.js';
 
 /**
  * 创建交易门禁事件端口。

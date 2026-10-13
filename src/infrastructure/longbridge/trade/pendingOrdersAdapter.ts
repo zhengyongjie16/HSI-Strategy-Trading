@@ -5,38 +5,18 @@
 import type { TradeContext } from 'longbridge';
 import { mapBrokerOrderSide, mapBrokerOrderStatus, mapBrokerOrderType } from './orderMapper.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import type {
-  PendingOrder,
-  ValidatedOrderSide,
-  ValidatedOrderStatus,
-  ValidatedOrderType,
-} from '../../../types/services.js';
+import type { PendingOrder } from '../../../types/services.js';
 import type { PendingOrdersAdapter } from './types.js';
 import {
-  VALID_ORDER_SIDE_VALUES,
-  VALID_ORDER_STATUS_VALUES,
-  VALID_ORDER_TYPE_VALUES,
-} from '../../../constants/index.js';
+  isValidatedOrderSide,
+  isValidatedOrderStatus,
+  isValidatedOrderType,
+} from './orderValidation.js';
 import {
   canonicalDecimal,
   exactCompare,
   safeQuantityNumber,
 } from '../../../utils/numeric/exact.js';
-
-/** 验证实际SDK方向并将其收窄为已批准的primitive成员，拒绝Unknown。 */
-function isValidatedSide(value: unknown): value is ValidatedOrderSide {
-  return typeof value === 'number' && VALID_ORDER_SIDE_VALUES.has(value);
-}
-
-/** 验证实际SDK状态，不以类型强制转换放行未知成员。 */
-function isValidatedStatus(value: unknown): value is ValidatedOrderStatus {
-  return typeof value === 'number' && VALID_ORDER_STATUS_VALUES.has(value);
-}
-
-/** 验证实际SDK订单类型，mapper不增加默认type。 */
-function isValidatedType(value: unknown): value is ValidatedOrderType {
-  return typeof value === 'number' && VALID_ORDER_TYPE_VALUES.has(value);
-}
 
 /**
  * 同ctx装配todayOrders读取，将SDK数据转换为cache实际消费的中性文本/整数事实。
@@ -54,9 +34,9 @@ export function createPendingOrdersAdapter(context: unknown): PendingOrdersAdapt
       const orders = await ctx.todayOrders();
       return orders.map((order) => {
         if (
-          !isValidatedSide(order.side) ||
-          !isValidatedStatus(order.status) ||
-          !isValidatedType(order.orderType)
+          !isValidatedOrderSide(order.side) ||
+          !isValidatedOrderStatus(order.status) ||
+          !isValidatedOrderType(order.orderType)
         ) {
           throw new TypeError('[PendingOrdersAdapter] unknown SDK order side/status/type');
         }

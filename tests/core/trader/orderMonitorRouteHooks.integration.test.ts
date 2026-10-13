@@ -17,22 +17,16 @@ import {
   createQuoteDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
-import type {
-  OrderMonitor,
-  OrderMonitorDeps,
-  TrackOrderParams,
-} from '../../../src/core/trader/types.js';
+import type { OrderMonitor, OrderMonitorDeps } from '../../../src/core/trader/types.js';
+import type { TrackOrderParams } from '../../../src/domain/order/types.js';
 import type {
   OrderMonitorWakeupKind,
   RouteRuntime,
   RouteRuntimeDeps,
   RouteRuntimeProcessParams,
 } from '../../../src/core/trader/orderMonitor/types.js';
-import type {
-  QuoteUpdatedEvent,
-  RawOrderFromAPI,
-  TradeMutationPermit,
-} from '../../../src/types/services.js';
+import type { QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
+import type { RawOrderFromAPI, TradeMutationPermit } from '../../../src/types/services.js';
 
 function flushMicrotasks(): Promise<void> {
   return Promise.resolve()

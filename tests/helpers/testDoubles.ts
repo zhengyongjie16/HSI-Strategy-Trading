@@ -17,8 +17,6 @@ import type { Signal, SignalType } from '../../src/types/signal.js';
 import type { MonitorContext } from '../../src/types/state.js';
 import type {
   OrderRecorder,
-  MarketDataClient,
-  MarketQuoteContext,
   PendingOrder,
   RateLimiter,
   RiskChecker,
@@ -28,20 +26,27 @@ import type {
   WarrantDistanceInfo,
   WarrantDistanceLiquidationResult,
   WarrantRefreshResult,
-  CandlestickCacheSnapshot,
 } from '../../src/types/services.js';
+import type {
+  CandlestickCacheSnapshot,
+  CandlestickPeriod,
+  MarketDataClient,
+  MarketQuoteContext,
+} from '../../src/types/marketPorts.js';
 import type { SymbolRegistry, SeatState, SeatStateChangedEvent } from '../../src/types/seat.js';
-import type { Candlestick, Config, Period, TradeContext } from 'longbridge';
+import type { Config, TradeContext } from 'longbridge';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
 import type { RuntimeTermination } from '../../src/types/runtime.js';
-import type { TradingSignalStrategy } from '../../src/core/strategy/types.js';
+import type { TradingSignalStrategy } from '../../src/types/strategy.js';
+import type { WarrantRiskRefresh } from '../../src/application/riskRefresh/types.js';
+import type { SeatActivationWorkflow } from '../../src/application/seatActivation/types.js';
 import type {
-  DoomsdayProtection,
+  DoomsdayClearanceWorkflow,
   DoomsdayClearanceContext,
   DoomsdayClearanceResult,
   CancelPendingBuyOrdersContext,
   CancelPendingBuyOrdersResult,
-} from '../../src/core/doomsdayProtection/types.js';
+} from '../../src/application/doomsdayClearance/types.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
@@ -53,17 +58,23 @@ import type {
   ClearMidnightEligibleParams,
   RecordLiquidationTriggerParams,
   RestoreTriggerCountParams,
-} from '../../src/services/liquidationCooldown/types.js';
-import type { AutoSymbolManagerPort } from '../../src/types/monitorContextPorts.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../../src/core/trader/protectiveLiquidationEpisodeTracker/types.js';
+} from '../../src/domain/liquidation/cooldown/types.js';
+import type { SeatSwitchWorkflow } from '../../src/types/monitorContextPorts.js';
+import type {
+  AutoSearchWorkflow,
+  WarrantCandidateSearch,
+} from '../../src/application/autoSearch/types.js';
+import type { OrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/types.js';
+import type { OrdinarySellWorkflow } from '../../src/application/ordinarySell/types.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/types.js';
 import type { OrderMonitor } from '../../src/core/trader/types.js';
 import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
 import type { TradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/types.js';
 import type { Logger } from '../../src/utils/logger/types.js';
-import type { AutoSearchWakeupRuntime } from '../../src/main/autoSearchWakeupRuntime/types.js';
-import type { PeriodicSwitchWakeupRuntime } from '../../src/main/periodicSwitchWakeupRuntime/types.js';
-import type { SeatActivationDispatcher } from '../../src/main/seatActivationDispatcher/types.js';
-import type { SeatRuntimeCleanupDispatcher } from '../../src/main/seatRuntimeCleanupDispatcher/types.js';
+import type { AutoSearchWakeupRuntime } from '../../src/runtime/autoSearchWakeupRuntime/types.js';
+import type { PeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/types.js';
+import type { SeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/types.js';
+import type { SeatRuntimeCleanupDispatcher } from '../../src/runtime/seatRuntimeCleanupDispatcher/types.js';
 import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
 import { TIME } from '../../src/constants/index.js';
 import {
@@ -88,7 +99,7 @@ type TestSeatTruthChangedEvent = Parameters<Parameters<SymbolRegistry['onSeatTru
  */
 function createCandlestickCacheSnapshot(
   symbol: string,
-  period: Period,
+  period: CandlestickPeriod,
   candles: ReadonlyArray<NormalizedCandle>,
   version: number,
 ): CandlestickCacheSnapshot | null {
@@ -149,13 +160,13 @@ function listHKDateKeysInRange(startDate: Date, endDate: Date): ReadonlyArray<st
 }
 
 /**
- * 将测试中的 Candlestick / CandleData 收敛为本地缓存使用的 primitive-only K 线。
+ * 将测试中的 CandleData 收敛为本地缓存使用的 primitive-only K 线。
  *
- * @param candles 来自 SDK seed 或测试 fixture 的 K 线数组
+ * @param candles 中性 seed 或测试 fixture 的 K 线数组
  * @returns 可供本地快照与指标计算消费的 K 线数组；每根 K 线独立冻结，数组保持可变
  */
 function normalizeCandlestickData(
-  candles: ReadonlyArray<Candlestick | CandleData>,
+  candles: ReadonlyArray<CandleData>,
 ): ReadonlyArray<NormalizedCandle> {
   return candles.map((candle) => {
     const timestamp = normalizeTimestamp(candle.timestamp);
@@ -354,7 +365,7 @@ export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
     fetchAllOrdersFromAPI: async () => [],
     resetRuntimeState: () => {},
     recoverOrderTrackingFromSnapshot: async () => {},
-    executeSignals: async () => ({ executedOrderIds: [] }),
+    executeSignals: async () => ({ executedOrderIds: [], quoteFailures: [] }),
     executeDoomsdayClearanceSignals: async () => ({
       executedOrderIds: [],
       awaitingAuthoritativeTerminalSymbols: [],
@@ -490,10 +501,6 @@ export function createRiskCheckerDouble(overrides: Partial<RiskChecker> = {}): R
   const allowedResult: RiskCheckResult = { allowed: true };
   const base: RiskChecker = {
     setWarrantInfoFromCallPrice: (): WarrantRefreshResult => ({ status: 'ok', isWarrant: true }),
-    refreshWarrantInfoForSymbol: async (): Promise<WarrantRefreshResult> => ({
-      status: 'notWarrant',
-      isWarrant: false,
-    }),
     checkBeforeOrder: () => allowedResult,
     checkWarrantRisk: () => allowedResult,
     checkWarrantDistanceLiquidation: (): WarrantDistanceLiquidationResult => ({
@@ -511,6 +518,28 @@ export function createRiskCheckerDouble(overrides: Partial<RiskChecker> = {}): R
 
   return {
     ...base,
+    ...overrides,
+  };
+}
+
+/** 独立异步 warrant 刷新端口替身；不向同步 RiskChecker 添加旧查询能力。 */
+export function createWarrantRiskRefreshDouble(
+  overrides: Partial<WarrantRiskRefresh> = {},
+): WarrantRiskRefresh {
+  return {
+    refreshWarrantInfoForSymbol: async (_symbol, _isLongSymbol, isCurrent) =>
+      isCurrent() ? { status: 'notWarrant', isWarrant: false } : { status: 'INVALIDATED' },
+    ...overrides,
+  };
+}
+
+/** 席位激活端口替身；只供不执行激活业务的 app/lifecycle 装配测试补齐接口。 */
+export function createSeatActivationWorkflowDouble(
+  overrides: Partial<SeatActivationWorkflow> = {},
+): SeatActivationWorkflow {
+  return {
+    activate: async () => ({ status: 'processed' }),
+    isCurrent: () => true,
     ...overrides,
   };
 }
@@ -578,16 +607,47 @@ export function createUnrealizedLossMonitorDouble(
   };
 }
 
+/** 创建窄候选查询替身；不拥有运行期失败计数、席位或缓存。 */
+export function createWarrantCandidateSearchDouble(
+  overrides: Partial<WarrantCandidateSearch> = {},
+): WarrantCandidateSearch {
+  return {
+    resolveDistanceRange: () => null,
+    findCandidate: async () => null,
+    ...overrides,
+  };
+}
+
+/** 创建运行期空席位用例替身，不混入换标状态或生命周期。 */
+export function createAutoSearchWorkflowDouble(
+  overrides: Partial<AutoSearchWorkflow> = {},
+): AutoSearchWorkflow {
+  return { maybeSearchOnEvent: async () => {}, cancelSearch: () => {}, ...overrides };
+}
+
+/** 创建普通 BUY 用例替身，仅暴露执行和日切冷却清理。 */
+export function createOrdinaryBuyWorkflowDouble(
+  overrides: Partial<OrdinaryBuyWorkflow> = {},
+): OrdinaryBuyWorkflow {
+  return { execute: async () => {}, resetRiskCheckCooldown: () => {}, ...overrides };
+}
+
+/** 创建普通 SELL 用例替身，重试事实只由测试场景显式签发。 */
+export function createOrdinarySellWorkflowDouble(
+  overrides: Partial<OrdinarySellWorkflow> = {},
+): OrdinarySellWorkflow {
+  return { execute: async () => ({ status: 'COMPLETED' }), ...overrides };
+}
+
 /**
- * 创建自动换标管理器测试替身。
+ * 创建席位换标用例测试替身。
  *
- * 默认不触发寻标和换标，用于上下文与主流程测试。
+ * 默认不触发周期/距离换标，不包含空席位寻标能力。
  */
-export function createAutoSymbolManagerDouble(
-  overrides: Partial<AutoSymbolManagerPort> = {},
-): AutoSymbolManagerPort {
-  const base: AutoSymbolManagerPort = {
-    maybeSearchOnEvent: async () => {},
+export function createSeatSwitchWorkflowDouble(
+  overrides: Partial<SeatSwitchWorkflow> = {},
+): SeatSwitchWorkflow {
+  const base: SeatSwitchWorkflow = {
     evaluatePeriodicSwitchDue: async () => ({
       kind: 'NOOP',
     }),
@@ -793,13 +853,13 @@ export function createMarketDataClientDouble(
 
   const baseOnCandlestickUpdated: MarketDataClient['onCandlestickUpdated'] = () => () => {};
 
-  function makeCandlestickKey(symbol: string, period: Period): string {
+  function makeCandlestickKey(symbol: string, period: CandlestickPeriod): string {
     return `${symbol}:${period}`;
   }
 
   function getCandlestickCacheSnapshot(
     symbol: string,
-    period: Period,
+    period: CandlestickPeriod,
   ): CandlestickCacheSnapshot | null {
     const key = makeCandlestickKey(symbol, period);
     const candles = candlestickCache.get(key);
@@ -817,9 +877,9 @@ export function createMarketDataClientDouble(
 
   async function seedCandlestickCacheFromOverride(
     symbol: string,
-    period: Period,
+    period: CandlestickPeriod,
     tradeSessions?: Parameters<MarketDataClient['subscribeCandlesticks']>[2],
-  ): Promise<ReadonlyArray<Candlestick>> {
+  ): Promise<ReadonlyArray<NormalizedCandle>> {
     const seedCandles = overrides.subscribeCandlesticks
       ? await overrides.subscribeCandlesticks(symbol, period, tradeSessions)
       : [];
@@ -880,15 +940,15 @@ export function createWarrantDistanceInfoDouble(params: WarrantDistanceInfo): Wa
 }
 
 /**
- * 创建 DoomsdayProtection 测试替身。
+ * 创建 DoomsdayClearanceWorkflow 测试替身。
  *
  * 默认不触发清算，便于按场景精确注入极端保护行为。
  */
-export function createDoomsdayProtectionDouble(
-  overrides: Partial<DoomsdayProtection> = {},
-): DoomsdayProtection {
-  const base: DoomsdayProtection = {
-    isBuyCutoffWindowActive: () => false,
+export function createDoomsdayClearanceWorkflowDouble(
+  overrides: Partial<DoomsdayClearanceWorkflow> = {},
+): DoomsdayClearanceWorkflow {
+  const base: DoomsdayClearanceWorkflow = {
+    evaluate: async () => ({ executed: false, nextRetryAtMs: null }),
     executeClearance: async (
       _context: DoomsdayClearanceContext,
     ): Promise<DoomsdayClearanceResult> => ({
@@ -1332,7 +1392,7 @@ export function createMonitorContextDouble(
   return {
     config,
     symbolRegistry,
-    autoSymbolManager: overrides.autoSymbolManager ?? createAutoSymbolManagerDouble(),
+    seatSwitch: overrides.seatSwitch ?? createSeatSwitchWorkflowDouble(),
     strategy: overrides.strategy ?? createStrategyDouble(),
     orderRecorder: overrides.orderRecorder ?? createOrderRecorderDouble(),
     dailyLossTracker: overrides.dailyLossTracker ?? createDailyLossTrackerDouble(),
