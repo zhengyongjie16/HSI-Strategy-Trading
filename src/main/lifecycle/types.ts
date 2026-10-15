@@ -9,7 +9,8 @@ import type { LastState, MonitorContext } from '../../types/state.js';
 import type { LifecycleState, SymbolRegistry } from '../../types/seat.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
-import type { RawOrderFromAPI, Trader } from '../../types/services.js';
+import type { Trader } from '../../types/services.js';
+import type { OrderFact } from '../../types/trade.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { WarrantRiskRefresh } from '../../application/riskRefresh/types.js';
 import type { StartupSeatSearch } from '../../application/autoSearch/types.js';
@@ -122,7 +123,7 @@ export type RebuildTradingDayStateDeps = Readonly<{
  */
 export type RebuildTradingDayStateParams = Readonly<{
   snapshotToken: SnapshotToken;
-  allOrders: ReadonlyArray<RawOrderFromAPI>;
+  allOrders: ReadonlyArray<OrderFact>;
   quotesMap: ReadonlyMap<string, Quote | null>;
   now: Date;
 }>;
@@ -168,7 +169,7 @@ export type LoadTradingDayRuntimeSnapshotResult =
   | {
       readonly status: 'COMMITTED';
       readonly snapshotToken: SnapshotToken;
-      readonly allOrders: ReadonlyArray<RawOrderFromAPI>;
+      readonly allOrders: ReadonlyArray<OrderFact>;
       readonly quotesMap: ReadonlyMap<string, Quote | null>;
     }
   | TradingDayRuntimeInvalidationResult;

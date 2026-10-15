@@ -2,32 +2,30 @@
  * 单策略执行集成：补齐真实保护清仓、订单终态、PostTrade freshness 与延迟卖出之间的交接。
  * 仅使用离线 SDK、行情源和外围风险替身，不启动账户或应用入口。
  */
+
 import { describe, expect, it } from 'bun:test';
 import { rejects } from 'node:assert/strict';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { captureSwitchSeatAuthorization } from '../helpers/seatTestUtils.js';
-import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
-import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import { createUnrealizedLossMonitor } from '../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
-import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createOrderHoldRegistry } from '../../src/application/orderTracking/orderHoldRegistry.js';
 import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
-import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
-import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
+import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
 import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
-import type { Trader } from '../../src/types/services.js';
+import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
+import { createUnrealizedLossMonitor } from '../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
 import { createSellProcessor } from '../../src/runtime/asyncProgram/sellProcessor/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
+import type { Trader } from '../../src/types/services.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
-import { prepareFixture, createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
 import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
-import { createLastState, waitUntil } from '../main/asyncProgram/utils.js';
+import { captureSwitchSeatAuthorization } from '../helpers/seatTestUtils.js';
 import {
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -42,6 +40,9 @@ import {
   createTerminationDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+import { createLastState, waitUntil } from '../main/asyncProgram/utils.js';
+import { createHarness, prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 /** 装配真实下单、订单终态和刷新流程；唯一可控阻塞位于账户服务的上游请求。 */
 async function createExecutionFixture(smartCloseEnabled = false) {

@@ -1,22 +1,3 @@
-import type { TradeMutationPort, TradeSubmitCommand } from '../../types/tradeMutationPorts.js';
-import type { Position } from '../../types/account.js';
-import type {
-  CancelOrderOutcome,
-  DoomsdayClearanceExecutionResult,
-  ExecuteSignalsResult,
-  SignalCallerAuthorization,
-} from '../../types/trader.js';
-import type { MonitorConfig, GlobalConfig, TradingConfig } from '../../types/config.js';
-import type {
-  BuySignal,
-  DoomsdayClearanceCommand,
-  ExecutableSignal,
-  ExecutableSellSignal,
-  SellSignal,
-  Signal,
-  SignalType,
-  OrderTypeConfig,
-} from '../../types/signal.js';
 import type {
   OrderActionAuthorization,
   OrderMutationRequest,
@@ -24,8 +5,11 @@ import type {
   ReplaceOrderPriceOutcome,
   TrackOrderParams,
 } from '../../domain/order/types.js';
-import type { SymbolRegistry } from '../../types/seat.js';
+import type { Position } from '../../types/account.js';
+import type { GlobalConfig, MonitorConfig, TradingConfig } from '../../types/config.js';
 import type { MarketDataClient, TradingDayInfo } from '../../types/marketPorts.js';
+import type { RuntimeClock } from '../../types/runtime.js';
+import type { SymbolRegistry } from '../../types/seat.js';
 import type {
   OrderRecorder,
   RateLimiter,
@@ -33,7 +17,23 @@ import type {
   TradeCheckResult,
   TradeMutationPermit,
 } from '../../types/services.js';
-import type { RuntimeClock } from '../../types/runtime.js';
+import type {
+  BuySignal,
+  DoomsdayClearanceCommand,
+  ExecutableSellSignal,
+  ExecutableSignal,
+  OrderTypeConfig,
+  SellSignal,
+  Signal,
+  SignalType,
+} from '../../types/signal.js';
+import type { OrderCommandPurpose, TradeMutationPort } from '../../types/tradeMutationPorts.js';
+import type {
+  CancelOrderOutcome,
+  DoomsdayClearanceExecutionResult,
+  ExecuteSignalsResult,
+  SignalCallerAuthorization,
+} from '../../types/trader.js';
 
 /**
  * 提交目标订单函数签名。
@@ -59,6 +59,7 @@ type OrdinaryOrderCommand =
       readonly direction: 'LONG';
       readonly side: 'BUY';
       readonly executionPurpose: 'ORDINARY';
+      readonly purpose: Exclude<OrderCommandPurpose, 'DOOMSDAY_CLEARANCE'>;
     }
   | {
       readonly kind: 'BUY';
@@ -66,6 +67,7 @@ type OrdinaryOrderCommand =
       readonly direction: 'SHORT';
       readonly side: 'BUY';
       readonly executionPurpose: 'ORDINARY';
+      readonly purpose: Exclude<OrderCommandPurpose, 'DOOMSDAY_CLEARANCE'>;
     }
   | {
       readonly kind: 'SELL';
@@ -73,6 +75,7 @@ type OrdinaryOrderCommand =
       readonly direction: 'LONG';
       readonly side: 'SELL';
       readonly executionPurpose: 'ORDINARY';
+      readonly purpose: Exclude<OrderCommandPurpose, 'DOOMSDAY_CLEARANCE'>;
     }
   | {
       readonly kind: 'SELL';
@@ -80,6 +83,7 @@ type OrdinaryOrderCommand =
       readonly direction: 'SHORT';
       readonly side: 'SELL';
       readonly executionPurpose: 'ORDINARY';
+      readonly purpose: Exclude<OrderCommandPurpose, 'DOOMSDAY_CLEARANCE'>;
     };
 
 /**
@@ -95,6 +99,7 @@ export type DoomsdayClearanceOrderCommand =
       readonly direction: 'LONG';
       readonly side: 'SELL';
       readonly executionPurpose: 'DOOMSDAY_CLEARANCE';
+      readonly purpose: 'DOOMSDAY_CLEARANCE';
     }
   | {
       readonly kind: 'SELL';
@@ -102,6 +107,7 @@ export type DoomsdayClearanceOrderCommand =
       readonly direction: 'SHORT';
       readonly side: 'SELL';
       readonly executionPurpose: 'DOOMSDAY_CLEARANCE';
+      readonly purpose: 'DOOMSDAY_CLEARANCE';
     };
 
 /**
@@ -134,45 +140,6 @@ export type OrderCommandBatchResult = {
     readonly commandIndex: number;
     readonly kind: 'QUOTE_MISSING' | 'QUOTE_INVALID';
   }>;
-};
-
-/**
- * broker 下单阶段。
- * 类型用途：将下单前、已尝试 SDK 提交和已确认 broker 接受三个事实边界显式化。
- * 数据来源：submitFlow 在最终 mutation permit 内推进。
- * 使用范围：仅 submitFlow 的错误分类与本地同步收口。
- */
-export type BrokerSubmissionStage =
-  | { readonly kind: 'PRE_SUBMIT' }
-  | { readonly kind: 'BROKER_SUBMISSION_ATTEMPTED'; readonly orderPayload: TradeSubmitCommand }
-  | {
-      readonly kind: 'BROKER_ACCEPTED';
-      readonly orderId: string;
-      readonly orderPayload: TradeSubmitCommand;
-    };
-
-/**
- * 下单失败阶段分类。
- * 类型用途：仅让有结构化业务码的 broker 拒绝返回跳过；其余分类必须被上层错误通道观察。
- * 数据来源：submitFlow 对 SDK、配置、行情和本地同步异常的阶段判定。
- * 使用范围：仅 submitFlow 的 catch 分支。
- */
-export type SubmitFailureClassification =
-  | { readonly kind: 'PRE_SUBMIT_FAILURE' }
-  | { readonly kind: 'EXPLICIT_BROKER_REJECTION'; readonly orderPayload: TradeSubmitCommand }
-  | { readonly kind: 'UNCONFIRMED_EXTERNAL_SUBMISSION' }
-  | { readonly kind: 'UNCONFIRMED_SUBMISSION' }
-  | { readonly kind: 'POST_ACCEPTANCE_LOCAL_SYNC_FAILURE' };
-
-/**
- * broker 已接受订单后的本地同步失败。
- * 类型用途：携带已确认订单 ID 和原始 cause，避免靠错误文案判断下单状态。
- * 数据来源：submitFlow 的缓存失效、追踪登记和卖单记录步骤。
- * 使用范围：运行期错误通道与 submitFlow 业务测试。
- */
-export type AcceptedOrderLocalSyncError = Error & {
-  readonly name: 'AcceptedOrderLocalSyncError';
-  readonly orderId: string;
 };
 
 /**
@@ -346,10 +313,23 @@ export type OrderExecutorDeps = {
   }> | null;
 };
 
-/** 原提交错误日志分类，不参与外部失败重试或是否允许提交的业务决策。 */
-export type ErrorTypeIdentifier = {
-  readonly isShortSellingNotSupported: boolean;
-  readonly isInsufficientFunds: boolean;
-  readonly isNetworkError: boolean;
-  readonly isRateLimited: boolean;
+/**
+ * 频率限制器配置。
+ * 类型用途：控制 API 调用频率（窗口内最大调用次数与窗口时长）。
+ * 数据来源：由 Trader 从 tradingConfig 或默认值构造，传入 createRateLimiter。
+ * 使用范围：仅在 trader 模块内部使用。
+ */
+export type RateLimiterConfig = {
+  readonly maxCalls: number;
+  readonly windowMs: number;
+};
+
+/**
+ * 频率限制器依赖。
+ * 类型用途：创建 RateLimiter 实例时的依赖注入参数。
+ * 数据来源：由 Trader 工厂在创建 rateLimiter 时传入。
+ * 使用范围：仅在 trader 模块内部使用。
+ */
+export type RateLimiterDeps = {
+  readonly config?: RateLimiterConfig;
 };

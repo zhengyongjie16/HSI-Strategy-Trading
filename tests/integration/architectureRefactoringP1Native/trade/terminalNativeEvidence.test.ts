@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
+import { mergeMonotonicOrderFact } from '../../../../src/domain/order/orderFactMerge.js';
+import type { OrderFact } from '../../../../src/types/trade.js';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import type { RawOrderFromAPI } from '../../../../src/types/services.js';
-import { mergeMonotonicOrderFact } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
 
 const frame = {
   orderId: 'TERMINAL',
@@ -34,7 +34,7 @@ test('actual registered SDK terminal callbacks reach samectx complete dual ledge
     phase: original.executionPhase,
     executedPrice: original.executedPrice,
   };
-  const results: RawOrderFromAPI[] = [];
+  const results: OrderFact[] = [];
   let issued: Promise<void> = Promise.resolve();
   let callbacks = 0;
   f.createPushPort().setOnOrderChanged((_error, decoder) => {

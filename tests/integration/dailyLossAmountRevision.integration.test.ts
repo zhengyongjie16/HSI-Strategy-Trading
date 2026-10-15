@@ -4,32 +4,33 @@
  * 覆盖保护性卖单在数量不变、权威 revision 提高成交金额时，
  * WS → DailyLoss → progress 持久化 → 风险刷新以及 crash-gap baseline 的一致性。
  */
+
 import { describe, expect, it } from 'bun:test';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createEventFlow as createProductionEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
-import { createSettlementFlow } from '../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createEventFlow as createProductionEventFlow } from '../../src/application/orderTracking/orderMonitor/eventFlow.js';
+import { createSettlementFlow } from '../../src/application/orderTracking/orderMonitor/settlementFlow.js';
 import type {
-  OrderMonitorRuntimeStore,
-  OrderMonitorTrackedOrder,
   EventFlowDeps,
-} from '../../src/core/trader/orderMonitor/types.js';
-import type { OrderHoldRegistry } from '../../src/core/trader/types.js';
-import type { RawOrderFromAPI } from '../../src/types/services.js';
+  OrderMonitorRuntimeStore,
+} from '../../src/application/orderTracking/orderMonitor/types.js';
+import type { OrderHoldRegistry } from '../../src/application/orderTracking/types.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import type { OrderMonitorTrackedOrder } from '../../src/domain/order/types.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import type { OrderFact } from '../../src/types/trade.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
-  createTerminationDouble,
-  createRateLimiterDouble,
   createLiquidationCooldownTrackerDouble,
   createMonitorContextDouble,
+  createRateLimiterDouble,
   createRiskCheckerDouble,
+  createTerminationDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig'> &
   Partial<Pick<EventFlowDeps, 'now'>>;
@@ -73,7 +74,7 @@ function createOrderHoldRegistry(): OrderHoldRegistry {
 
 function createProtectiveTrackedOrder(
   revisionMs: number,
-  native: RawOrderFromAPI,
+  native: OrderFact,
 ): OrderMonitorTrackedOrder {
   return {
     orderId: 'PROTECTIVE-AMOUNT-REVISION',
@@ -308,7 +309,7 @@ describe('DailyLoss protective amount revision integration', () => {
     const revision = Date.parse('2026-07-11T02:05:00.000Z');
     const daily = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
     });
@@ -413,7 +414,7 @@ describe('DailyLoss protective amount revision integration', () => {
     const runtime = createRuntime();
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
     });
@@ -541,7 +542,7 @@ describe('DailyLoss protective amount revision integration', () => {
 
     const restartedTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: () => ({ monitorSymbol: 'HSI.HK', direction: 'LONG' }),
       toHongKongTimeIso,
     });
@@ -602,7 +603,7 @@ describe('DailyLoss protective amount revision integration', () => {
     const secondRevisionMs = firstRevisionMs + 1_000;
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
     });

@@ -4,17 +4,62 @@
  * 功能：
  * - 提供测试替身与工厂方法，供其他测试模块使用
  */
-import type { Position, AccountSnapshot } from '../../src/types/account.js';
-import type { AccountPositionSnapshotReader } from '../../src/types/accountPosition.js';
+
+import { createMonitorConfig } from '../../mock/factories/configFactory.js';
+import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import type {
+  AutoSearchWorkflow,
+  WarrantCandidateSearch,
+} from '../../src/application/autoSearch/types.js';
+import type {
+  CancelPendingBuyOrdersContext,
+  CancelPendingBuyOrdersResult,
+  DoomsdayClearanceContext,
+  DoomsdayClearanceResult,
+  DoomsdayClearanceWorkflow,
+} from '../../src/application/doomsdayClearance/types.js';
+import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
+import type { OrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/types.js';
+import type { OrdinarySellWorkflow } from '../../src/application/ordinarySell/types.js';
 import type {
   PostTradeSettlementBusinessDeps,
   SettlementCompletionPersistence,
 } from '../../src/application/postTradeSettlement/types.js';
+import type { WarrantRiskRefresh } from '../../src/application/riskRefresh/types.js';
+import type { SeatActivationWorkflow } from '../../src/application/seatActivation/types.js';
+import { TIME } from '../../src/constants/index.js';
+import type {
+  ClearMidnightEligibleParams,
+  GetRemainingMsParams,
+  LiquidationCooldownTracker,
+  RecordCooldownParams,
+  RecordLiquidationTriggerParams,
+  RestoreTriggerCountParams,
+} from '../../src/domain/liquidation/cooldown/types.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/types.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
+import type { TradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/types.js';
+import type { AutoSearchWakeupRuntime } from '../../src/runtime/autoSearchWakeupRuntime/types.js';
+import type { PeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/types.js';
+import type { SeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/types.js';
+import type { SeatRuntimeCleanupDispatcher } from '../../src/runtime/seatRuntimeCleanupDispatcher/types.js';
+import type { AccountSnapshot, Position } from '../../src/types/account.js';
+import type { AccountPositionSnapshotReader } from '../../src/types/accountPosition.js';
 import type { MonitorConfig } from '../../src/types/config.js';
 import type { CandleData, NormalizedCandle } from '../../src/types/data.js';
+import type {
+  CandlestickCacheSnapshot,
+  CandlestickPeriod,
+  MarketDataClient,
+  MarketQuoteContext,
+} from '../../src/types/marketPorts.js';
+import type { SeatSwitchWorkflow } from '../../src/types/monitorContextPorts.js';
 import type { Quote } from '../../src/types/quote.js';
-import type { Signal, SignalType } from '../../src/types/signal.js';
-import type { MonitorContext } from '../../src/types/state.js';
+import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
+import type { RuntimeTermination } from '../../src/types/runtime.js';
+import type { SeatState, SeatStateChangedEvent, SymbolRegistry } from '../../src/types/seat.js';
 import type {
   OrderRecorder,
   PendingOrder,
@@ -27,56 +72,11 @@ import type {
   WarrantDistanceLiquidationResult,
   WarrantRefreshResult,
 } from '../../src/types/services.js';
-import type {
-  CandlestickCacheSnapshot,
-  CandlestickPeriod,
-  MarketDataClient,
-  MarketQuoteContext,
-} from '../../src/types/marketPorts.js';
-import type { SymbolRegistry, SeatState, SeatStateChangedEvent } from '../../src/types/seat.js';
-import type { Config, TradeContext } from 'longbridge';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import type { RuntimeTermination } from '../../src/types/runtime.js';
+import type { Signal, SignalType } from '../../src/types/signal.js';
+import type { MonitorContext } from '../../src/types/state.js';
 import type { TradingSignalStrategy } from '../../src/types/strategy.js';
-import type { WarrantRiskRefresh } from '../../src/application/riskRefresh/types.js';
-import type { SeatActivationWorkflow } from '../../src/application/seatActivation/types.js';
-import type {
-  DoomsdayClearanceWorkflow,
-  DoomsdayClearanceContext,
-  DoomsdayClearanceResult,
-  CancelPendingBuyOrdersContext,
-  CancelPendingBuyOrdersResult,
-} from '../../src/application/doomsdayClearance/types.js';
-import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createMonitorConfig } from '../../mock/factories/configFactory.js';
-import type {
-  GetRemainingMsParams,
-  LiquidationCooldownTracker,
-  RecordCooldownParams,
-  ClearMidnightEligibleParams,
-  RecordLiquidationTriggerParams,
-  RestoreTriggerCountParams,
-} from '../../src/domain/liquidation/cooldown/types.js';
-import type { SeatSwitchWorkflow } from '../../src/types/monitorContextPorts.js';
-import type {
-  AutoSearchWorkflow,
-  WarrantCandidateSearch,
-} from '../../src/application/autoSearch/types.js';
-import type { OrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/types.js';
-import type { OrdinarySellWorkflow } from '../../src/application/ordinarySell/types.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/types.js';
-import type { OrderMonitor } from '../../src/core/trader/types.js';
-import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
-import type { TradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/types.js';
+import type { TradeMutationPort } from '../../src/types/tradeMutationPorts.js';
 import type { Logger } from '../../src/utils/logger/types.js';
-import type { AutoSearchWakeupRuntime } from '../../src/runtime/autoSearchWakeupRuntime/types.js';
-import type { PeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/types.js';
-import type { SeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/types.js';
-import type { SeatRuntimeCleanupDispatcher } from '../../src/runtime/seatRuntimeCleanupDispatcher/types.js';
-import { createTradeContextMock } from '../../mock/longbridge/tradeContextMock.js';
-import { TIME } from '../../src/constants/index.js';
 import {
   getHKDateKey,
   resolveHKDayStartUtcMs,
@@ -246,15 +246,6 @@ export function createLoggerDouble(): Logger {
     warn: () => {},
     error: () => {},
   };
-}
-
-/**
- * 创建 SDK Config 测试替身。
- *
- * Longbridge Config 为原生绑定对象，单测只需满足依赖注入边界，不需要真实认证能力。
- */
-export function createSdkConfigDouble(): Config {
-  return { refreshAccessToken: () => Promise.resolve('') };
 }
 
 /**
@@ -556,7 +547,7 @@ export function createDailyLossTrackerDouble(
 ): DailyLossTracker {
   const base = createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
   });
 
@@ -821,18 +812,43 @@ export function createQuoteContextDouble(
 }
 
 /**
- * 将 TradeContext mock 收口为测试可用的 TradeContext。
- *
- * Longbridge SDK 的 TradeContext 类型同样比测试 mock 暴露的能力更宽；
- * 这里集中收口断言，避免在测试中散落无说明的断言。
- *
- * @param tradeContextMock 交易上下文 mock；未传时自动创建
- * @returns 可供依赖注入边界消费的 TradeContext
+ * 创建中性交易 mutation 测试替身，不构造 SDK context，也不依据 cause 猜测分类。
+ * @param overrides 测试场景显式提供的单次 mutation 行为
+ * @returns 默认返回 ACK/ACCEPTED 且执行原 caller issued callback 的中性 port
  */
-export function createTradeContextDouble(
-  tradeContextMock: ReturnType<typeof createTradeContextMock> = createTradeContextMock(),
-): TradeContext {
-  return tradeContextMock as unknown as TradeContext;
+export function createTradeMutationPortDouble(
+  overrides: Partial<TradeMutationPort> = {},
+): TradeMutationPort {
+  return {
+    cancelOrder:
+      overrides.cancelOrder ??
+      (async () => ({
+        kind: 'ACKNOWLEDGED',
+        operation: 'TradeContext.cancelOrder',
+        requestAttempted: true,
+      })),
+    replaceOrder:
+      overrides.replaceOrder ??
+      (async (_command, onRemoteIssued) => {
+        onRemoteIssued();
+        return {
+          kind: 'ACKNOWLEDGED',
+          operation: 'TradeContext.replaceOrder',
+          requestAttempted: true,
+        };
+      }),
+    submitOrder:
+      overrides.submitOrder ??
+      (async (_command, onRemoteIssued) => {
+        onRemoteIssued();
+        return {
+          kind: 'ACCEPTED',
+          operation: 'TradeContext.submitOrder',
+          requestAttempted: true,
+          orderId: 'TEST-ACCEPTED-ORDER',
+        };
+      }),
+  };
 }
 
 /**

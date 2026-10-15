@@ -7,53 +7,56 @@
  * - 固定 lastState、trader、快照加载器与异步基础设施的唯一创建点
  * - 保持 post-gate 对象所有权清单集中
  */
-import { createBrokerAccessFactory } from '../../infrastructure/longbridge/trade/brokerAccessAdapter.js';
-import { createOrderExecutor } from '../../application/orderExecution/index.js';
-import { orderEconomics } from '../../domain/order/orderEconomics.js';
+
+import { createAccountPositionSnapshot } from '../../application/accountPositionSnapshot/index.js';
+import { createWarrantCandidateSearch } from '../../application/autoSearch/candidateSearch.js';
+import { createAutoSearch } from '../../application/autoSearch/index.js';
+import { createStartupSeatSearch } from '../../application/autoSearch/startupSeatSearch.js';
+import { createDoomsdayClearanceWorkflow } from '../../application/doomsdayClearance/index.js';
+import { createOrdinaryBuyWorkflow } from '../../application/ordinaryBuy/index.js';
+import { createOrdinarySellWorkflow } from '../../application/ordinarySell/index.js';
+import { createProtectiveLiquidationWorkflow } from '../../application/protectiveLiquidation/index.js';
+import { createTradeLogHydrator } from '../../application/protectiveLiquidation/tradeLogHydrator.js';
+import { createWarrantRiskRefresh } from '../../application/riskRefresh/warrantRiskRefresh.js';
+import { createSeatActivationWorkflow } from '../../application/seatActivation/index.js';
+import { createStaticLiquidationExecutor } from '../../application/staticLiquidation/index.js';
 import { TIME } from '../../constants/index.js';
-import { createDailyLossOrderAnalysisDeps } from '../../core/orderRecorder/index.js';
+import { createLiquidationCooldownTracker } from '../../domain/liquidation/cooldown/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../domain/order/orderAnalysis.js';
+import { orderEconomics } from '../../domain/order/orderEconomics.js';
 import { createDailyLossTracker } from '../../domain/risk/dailyLossTracker.js';
 import { createRiskChecker } from '../../domain/risk/index.js';
 import { createPositionLimitChecker } from '../../domain/risk/positionLimitChecker.js';
 import { createUnrealizedLossChecker } from '../../domain/risk/unrealizedLossChecker.js';
 import { createWarrantRiskChecker } from '../../domain/risk/warrantRiskChecker.js';
-import { createWarrantRiskRefresh } from '../../application/riskRefresh/warrantRiskRefresh.js';
-import { createSeatActivationWorkflow } from '../../application/seatActivation/index.js';
-import { createDoomsdayClearanceWorkflow } from '../../application/doomsdayClearance/index.js';
-import { createOrdinaryBuyWorkflow } from '../../application/ordinaryBuy/index.js';
-import { createOrdinarySellWorkflow } from '../../application/ordinarySell/index.js';
-import { createWarrantCandidateSearch } from '../../application/autoSearch/candidateSearch.js';
-import { createStartupSeatSearch } from '../../application/autoSearch/startupSeatSearch.js';
-import { createAutoSearch } from '../../application/autoSearch/index.js';
 import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
-import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/index.js';
+import { createMarketMonitor } from '../../infrastructure/display/marketMonitor/index.js';
+import { buildPriceDisplayInfo } from '../../infrastructure/display/marketMonitor/priceDisplayInfo.js';
+import { createLoadTradingDayRuntimeSnapshot } from '../../main/lifecycle/loadTradingDayRuntimeSnapshot.js';
+import { createMonitorDisplayRuntime } from '../../main/monitorDisplayRuntime/index.js';
+import { createQuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/index.js';
+import type { QuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/types.js';
+import { createTradingGateEventRuntime } from '../../main/tradingGateEventRuntime/index.js';
+import { createTradingQuoteDisplayRuntime } from '../../main/tradingQuoteDisplayRuntime/index.js';
+import type { MonitorTaskDataMap } from '../../runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../runtime/asyncProgram/monitorTaskQueue/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createLoadTradingDayRuntimeSnapshot } from '../../main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createTradingRiskEventRuntime } from '../../runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
-import { createProtectiveLiquidationWorkflow } from '../../application/protectiveLiquidation/index.js';
-import { createStaticLiquidationExecutor } from '../../application/staticLiquidation/index.js';
 import { createAutoSearchWakeupRuntime } from '../../runtime/autoSearchWakeupRuntime/index.js';
-import { createQuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/index.js';
-import { createSeatActivationDispatcher } from '../../runtime/seatActivationDispatcher/index.js';
-import { createSeatRuntimeCleanupDispatcher } from '../../runtime/seatRuntimeCleanupDispatcher/index.js';
-import { createTradingGateEventRuntime } from '../../main/tradingGateEventRuntime/index.js';
-import { createPeriodicSwitchWakeupRuntime } from '../../runtime/periodicSwitchWakeupRuntime/index.js';
 import { createDefaultMonitorQuoteEventRuntime } from '../../runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
 import { createSwitchWakeupRuntime } from '../../runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
-import { createMonitorDisplayRuntime } from '../../main/monitorDisplayRuntime/index.js';
-import { createTradingQuoteDisplayRuntime } from '../../main/tradingQuoteDisplayRuntime/index.js';
-import { createMarketMonitor } from '../../services/marketMonitor/index.js';
-import { buildPriceDisplayInfo } from '../../services/marketMonitor/priceDisplayInfo.js';
-import { createLiquidationCooldownTracker } from '../../domain/liquidation/cooldown/index.js';
-import { createTradeLogHydrator } from '../../application/protectiveLiquidation/tradeLogHydrator.js';
-import { createAccountPositionSnapshot } from '../../application/accountPositionSnapshot/index.js';
-import { exactCompare, formatDecimal } from '../../utils/numeric/exact.js';
+import { createPeriodicSwitchWakeupRuntime } from '../../runtime/periodicSwitchWakeupRuntime/index.js';
+import { createSeatActivationDispatcher } from '../../runtime/seatActivationDispatcher/index.js';
+import { createSeatRuntimeCleanupDispatcher } from '../../runtime/seatRuntimeCleanupDispatcher/index.js';
+import { createTradingRiskEventRuntime } from '../../runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
+import type { OrderStateChangedEvent } from '../../types/services.js';
+import type { LastState } from '../../types/state.js';
+import type { PersistableTradeRecord } from '../../types/trader.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
+import { exactCompare, formatDecimal } from '../../utils/numeric/exact.js';
 import { resolveLogRootDir } from '../../utils/runtime/index.js';
 import {
   calculateTradingDurationDueAtMs,
@@ -61,13 +64,9 @@ import {
   getTradingMinutesSinceOpen,
   toHongKongTimeIso,
 } from '../../utils/time/index.js';
-import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
-import type { LastState } from '../../types/state.js';
-import type { OrderStateChangedEvent } from '../../types/services.js';
-import type { MonitorTaskDataMap } from '../../runtime/asyncProgram/monitorTaskProcessor/types.js';
-import type { QuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/types.js';
 import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../types.js';
-import type { PersistableTradeRecord } from '../../types/trader.js';
+import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
+import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
 
 /**
  * 创建一次性运行时绑定，显式解决互相依赖对象的构造环。
@@ -241,8 +240,13 @@ function createPostGateRuntimeFactory(
       resources,
       strategy,
     } = params;
-    const { config, tradingConfig, symbolRegistry, marketDataClient, startupTradingDayInfo } =
-      preGateRuntime;
+    const {
+      brokerClientFactory,
+      tradingConfig,
+      symbolRegistry,
+      marketDataClient,
+      startupTradingDayInfo,
+    } = preGateRuntime;
     const warrantRiskChecker = createWarrantRiskChecker({
       onInvalidCallPrice: (symbol, callPrice) => {
         logger.warn(`[风险检查] ${symbol} 的回收价无效（${callPrice}），拒绝买入`);
@@ -272,7 +276,7 @@ function createPostGateRuntimeFactory(
     });
     const liquidationCooldownTracker = createLiquidationCooldownTracker();
     const dailyLossTracker = createDailyLossTracker({
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       toHongKongTimeIso,
       onOwnershipWarning: logger.warn,
     });
@@ -392,8 +396,7 @@ function createPostGateRuntimeFactory(
     if (termination.isTerminated()) return null;
 
     const trader = await buildTrader({
-      createExecution: (bindings) => createOrderExecutor(bindings),
-      brokerAccess: createBrokerAccessFactory(config, orderEconomics),
+      brokerAccess: () => brokerClientFactory.createBrokerAccess(orderEconomics),
       tradingConfig,
       marketDataClient,
       unrealizedLossBuyGate: riskChecker,

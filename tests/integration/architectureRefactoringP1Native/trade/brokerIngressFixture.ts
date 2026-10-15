@@ -1,39 +1,37 @@
 /** 高层自然 Actor 组装：依赖 core/application 与 infra producer 的中性 ports，SDK DTO 不越界。 */
-import { createBrokerIngressFixture as createSdkFixture } from '../../../infrastructure/longbridge/trade/brokerIngressFixture.js';
-import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
-import { createOrderRecorder } from '../../../../src/core/orderRecorder/index.js';
-import type { OrderRecorderFactoryDeps } from '../../../../src/core/orderRecorder/types.js';
-import type {
-  OrderRecorder,
-  RawOrderFromAPI,
-  RateLimiter,
-} from '../../../../src/types/services.js';
-import { createOrderMonitor } from '../../../../src/core/trader/orderMonitor/index.js';
-import { createOrderOps } from '../../../../src/core/trader/orderMonitor/orderOps.js';
-import { createRouteProcessor } from '../../../../src/core/trader/orderMonitor/routeProcessor.js';
-import { createOrderStatusQuery } from '../../../../src/core/trader/orderMonitor/orderStatusQuery.js';
-import type { AccountServiceDeps } from '../../../../src/types/accountReadPorts.js';
+
+import { createTrader } from '../../../../src/app/runtime/createTrader.js';
+import type { TraderDeps } from '../../../../src/app/runtime/types.js';
 import { createAccountService } from '../../../../src/application/accountQuery/index.js';
 import { createOrderExecutor } from '../../../../src/application/orderExecution/index.js';
-import type {
-  TraderDeps,
-  OrderCacheManagerDeps,
-  OrderMonitor,
-  OrderMonitorDeps,
-} from '../../../../src/core/trader/types.js';
 import type { OrderExecutorDeps } from '../../../../src/application/orderExecution/types.js';
-import type { OrderExecutor } from '../../../../src/types/orderExecutionPorts.js';
-import type { OrderPushPort } from '../../../../src/types/orderPushPorts.js';
-import { createTrader } from '../../../../src/core/trader/index.js';
-import { createOrderCacheManager } from '../../../../src/core/trader/orderCacheManager.js';
-import { createOrderAPIManager } from '../../../../src/core/orderRecorder/orderApiManager.js';
+import { createOrderCacheManager } from '../../../../src/application/orderTracking/orderCacheManager.js';
+import { createOrderMonitor } from '../../../../src/application/orderTracking/orderMonitor/index.js';
+import { createOrderOps } from '../../../../src/application/orderTracking/orderMonitor/orderOps.js';
+import { createOrderStatusQuery } from '../../../../src/application/orderTracking/orderMonitor/orderStatusQuery.js';
+import { createRouteProcessor } from '../../../../src/application/orderTracking/orderMonitor/routeProcessor.js';
 import type {
   OrderOps,
   OrderOpsDeps,
   OrderStatusQueryDeps,
   RouteProcessor,
   RouteProcessorDeps,
-} from '../../../../src/core/trader/orderMonitor/types.js';
+} from '../../../../src/application/orderTracking/orderMonitor/types.js';
+import { createOrderRecorder } from '../../../../src/application/orderTracking/recorder/index.js';
+import { createOrderAPIManager } from '../../../../src/application/orderTracking/recorder/orderApiManager.js';
+import type { OrderRecorderFactoryDeps } from '../../../../src/application/orderTracking/recorder/types.js';
+import type {
+  OrderCacheManagerDeps,
+  OrderMonitor,
+  OrderMonitorDeps,
+} from '../../../../src/application/orderTracking/types.js';
+import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
+import type { AccountServiceDeps } from '../../../../src/types/accountReadPorts.js';
+import type { OrderExecutor } from '../../../../src/types/orderExecutionPorts.js';
+import type { OrderPushPort } from '../../../../src/types/orderPushPorts.js';
+import type { OrderRecorder, RateLimiter } from '../../../../src/types/services.js';
+import type { OrderFact } from '../../../../src/types/trade.js';
+import { createBrokerIngressFixture as createSdkFixture } from '../../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 
 /** 使用同一离线 broker 的中性能力装配原生产 Actor，不向业务消费者发布 DTO/context。 */
 export async function createBrokerIngressFixture(
@@ -47,9 +45,7 @@ export async function createBrokerIngressFixture(
       createApiManager: (
         deps: Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
       ) => ReturnType<typeof createOrderAPIManager>;
-      createTrader: (
-        deps: Omit<TraderDeps, 'brokerAccess' | 'createExecution'>,
-      ) => ReturnType<typeof createTrader>;
+      createTrader: (deps: Omit<TraderDeps, 'brokerAccess'>) => ReturnType<typeof createTrader>;
       createAccountService: (
         deps: Omit<AccountServiceDeps, 'accountReadPort'>,
       ) => ReturnType<typeof createAccountService>;
@@ -60,7 +56,7 @@ export async function createBrokerIngressFixture(
         deps: Omit<OrderExecutorDeps, 'tradeMutationPort' | 'readSellPositions'>,
       ) => OrderExecutor;
       createPushPort: () => OrderPushPort;
-      createQueryOrdersReader: (orderId?: string) => () => Promise<ReadonlyArray<RawOrderFromAPI>>;
+      createQueryOrdersReader: (orderId?: string) => () => Promise<ReadonlyArray<OrderFact>>;
       createRecorder: (
         deps: Omit<OrderRecorderFactoryDeps, 'orderSnapshotReadPort'> &
           Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
@@ -95,7 +91,6 @@ export async function createBrokerIngressFixture(
       createTrader({
         ...deps,
         brokerAccess: facts.brokerAccess,
-        createExecution: createOrderExecutor,
       }),
     createAccountService: (deps) =>
       createAccountService({ ...deps, accountReadPort: ports.createAccountReadPort() }),

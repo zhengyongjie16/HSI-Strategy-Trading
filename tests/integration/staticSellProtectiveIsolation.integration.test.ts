@@ -1,47 +1,42 @@
 /** §13.4.1 真实 static→共享执行→订单事实→Daily/episode→settlement；每场景经正式 loader/rebuild/hydration，离线边界仅 IO。 */
+
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createStaticLiquidationExecutor } from '../../src/application/staticLiquidation/index.js';
-import { createOrderExecutor } from '../../src/application/orderExecution/index.js';
-import { createAccountService } from '../../src/application/accountQuery/index.js';
+import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createAccountService } from '../../src/application/accountQuery/index.js';
+import { createWarrantCandidateSearch } from '../../src/application/autoSearch/candidateSearch.js';
+import { createStartupSeatSearch } from '../../src/application/autoSearch/startupSeatSearch.js';
+import { createOrderExecutor } from '../../src/application/orderExecution/index.js';
+import { createRateLimiter } from '../../src/application/orderExecution/rateLimiter.js';
+import { createOrderHoldRegistry } from '../../src/application/orderTracking/orderHoldRegistry.js';
+import { createOrderMonitor } from '../../src/application/orderTracking/orderMonitor/index.js';
+import { createOrderRecorder } from '../../src/application/orderTracking/recorder/index.js';
 import { createPostTradeSettlementWorkflow } from '../../src/application/postTradeSettlement/index.js';
+import type { SettlementProtectionCompletion } from '../../src/application/postTradeSettlement/types.js';
 import { createTradeLogHydrator } from '../../src/application/protectiveLiquidation/tradeLogHydrator.js';
 import { createWarrantRiskRefresh } from '../../src/application/riskRefresh/warrantRiskRefresh.js';
+import { createStaticLiquidationExecutor } from '../../src/application/staticLiquidation/index.js';
+import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { orderEconomics } from '../../src/domain/order/orderEconomics.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import { createRiskChecker } from '../../src/domain/risk/index.js';
+import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
+import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { createLoadTradingDayRuntimeSnapshot } from '../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
 import { createRebuildTradingDayState } from '../../src/main/lifecycle/rebuildTradingDayState.js';
-import { createWarrantCandidateSearch } from '../../src/application/autoSearch/candidateSearch.js';
-import { createStartupSeatSearch } from '../../src/application/autoSearch/startupSeatSearch.js';
-import {
-  createDailyLossOrderAnalysisDeps,
-  createOrderRecorder,
-} from '../../src/core/orderRecorder/index.js';
-import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
-import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import { createRateLimiter } from '../../src/core/trader/rateLimiter.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
-import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
-import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { createRiskChecker } from '../../src/domain/risk/index.js';
-import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
-import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
-import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
-import { orderEconomics } from '../../src/domain/order/orderEconomics.js';
+import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
+import type { LastState } from '../../src/types/state.js';
 import { exactMultiply } from '../../src/utils/numeric/exact.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import type { LastState } from '../../src/types/state.js';
-import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
-import type { SettlementProtectionCompletion } from '../../src/application/postTradeSettlement/types.js';
-import { createTradingConfig, createMonitorConfig } from '../../mock/factories/configFactory.js';
-import {
-  createBrokerIngressFixture,
-  type BrokerIngressInput,
-} from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -49,6 +44,10 @@ import {
   createQuoteDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+import {
+  createBrokerIngressFixture,
+  type BrokerIngressInput,
+} from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00Z');
 const DAY = '2026-10-07';
@@ -227,7 +226,7 @@ async function createHarness(
   const tradingConfig = createTradingConfig({ monitor: config });
   const seats = createSymbolRegistry(config);
   const daily = createDailyLossTracker({
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
     onOwnershipWarning: () => {},
   });

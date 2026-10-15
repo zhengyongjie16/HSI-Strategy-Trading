@@ -4,15 +4,16 @@
  * 本文件不宣称 SDK push → tracking/settlement 自然接线；资源用真实 owner 公共方法独立验证。
  * oracle 为人工整单账本，不调用 numeric、均价或 delta-slice 实现生成期望。
  */
+
 import { describe, expect, it } from 'bun:test';
-import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
-import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
+import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import { withTrustedOrderExecutionTimes } from '../../../src/domain/order/executionFact.js';
+import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
 import type {
   BrokerOrderExecutionFact,
   OrderExecutionTimeEvidence,
 } from '../../../src/types/orderRecorder.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import { createOfflineBrokerPort } from './offlinePorts.js';
 
 const targets = [{ symbol: 'COVERED.HK', isLongSymbol: true }];
@@ -37,7 +38,7 @@ function fact(
 }
 
 /** 原内部显式FILLED查询fixture的中性元数据；只供rebuild/helper，不冒充SDK callback。 */
-function apiOrder(input: BrokerOrderExecutionFact): RawOrderFromAPI {
+function apiOrder(input: BrokerOrderExecutionFact): OrderFact {
   return {
     orderId: input.brokerOrderId,
     symbol: input.symbol,
@@ -94,7 +95,7 @@ describe('same-instance economic coverage across neutral API and online facts', 
       },
     ];
     const terminal = { ...fact('PHASE-BUY', 'BUY', 5, '45', 1000), updatedAtMs: 1030 };
-    const untrustedTime: RawOrderFromAPI = { ...apiOrder(terminal), executionTimeMs: null };
+    const untrustedTime: OrderFact = { ...apiOrder(terminal), executionTimeMs: null };
     const observations = withTrustedOrderExecutionTimes([untrustedTime], evidence);
     expect(observations[0]?.executionTimeMs).toBe(1000);
     expect(observations[0]?.updatedAtMs).toBe(1030);

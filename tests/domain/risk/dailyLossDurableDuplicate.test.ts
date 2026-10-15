@@ -1,14 +1,15 @@
 /** Daily 经济重复不证明 durable 完成：未封存重复回调、revision-only 水位与 completed boundary 回归。 */
+
 import { expect, test } from 'bun:test';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
-import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import type { DailyLossAuthoritativeFactSnapshot } from '../../../src/types/risk.js';
+import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
 test('unsealed duplicate verifies durable with adjudicated snapshot; failure commits nothing; sealed duplicate is suppressed', () => {
   let filters = 0;
-  const analysis = createDailyLossOrderAnalysisDeps();
+  const analysis = orderAnalysis;
   const daily = createDailyLossTracker({
     onOwnershipWarning: () => {},
     ...analysis,

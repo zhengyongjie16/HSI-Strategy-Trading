@@ -1,22 +1,23 @@
 /** 实际executor REPLACE→OrderOps→同context query与同一FIFO；保602013退避/WAIT_WS_ONLY及ACK事实。 */
+
 import { describe, expect, it } from 'bun:test';
-import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createOrderExecutor } from '../../../src/application/orderExecution/index.js';
-import { createRateLimiter } from '../../../src/core/trader/rateLimiter.js';
-import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
-import type { OrderMonitorRuntimeStore } from '../../../src/core/trader/orderMonitor/types.js';
-import type { RateLimiter } from '../../../src/types/services.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../mock/factories/signalFactory.js';
+import { createOrderExecutor } from '../../../src/application/orderExecution/index.js';
+import { createRateLimiter } from '../../../src/application/orderExecution/rateLimiter.js';
+import { createOrderHoldRegistry } from '../../../src/application/orderTracking/orderHoldRegistry.js';
+import type { OrderMonitorRuntimeStore } from '../../../src/application/orderTracking/orderMonitor/types.js';
+import type { RateLimiter } from '../../../src/types/services.js';
 import {
+  createMarketDataClientDouble,
   createOrderMonitorDouble,
   createOrderRecorderDouble,
-  createMarketDataClientDouble,
-  createQuoteDouble,
   createPositionDouble,
+  createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 async function createFixture() {
   const originTime = Date.parse('2026-07-10T02:00:00Z');

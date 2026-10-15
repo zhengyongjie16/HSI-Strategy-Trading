@@ -1,12 +1,13 @@
 /** closed tracking 不关闭 O/Daily revision 水位：真实 SDK push→EventFlow→结算及经济/刷新幂等回归。 */
+
 import { expect, test } from 'bun:test';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import {
   createMarketDataClientDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
 function frame(revision: number, price = '1') {

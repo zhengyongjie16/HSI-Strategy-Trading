@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { TRADING } from '../../../src/constants/index.js';
 import { createMonitorDisplayRuntime } from '../../../src/main/monitorDisplayRuntime/index.js';
 import type { MonitorDisplayRuntimeDeps } from '../../../src/main/monitorDisplayRuntime/types.js';
-import type { RenderMonitorIndicatorsParams } from '../../../src/services/marketMonitor/types.js';
+import type { RenderMonitorIndicatorsParams } from '../../../src/types/display.js';
 import type { Quote } from '../../../src/types/quote.js';
 import { logger } from '../../../src/utils/logger/index.js';
 

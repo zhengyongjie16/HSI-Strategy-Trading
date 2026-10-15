@@ -1,15 +1,16 @@
 /** 保护性清仓：真实 native push/ledger 经同 O/Daily/S owner 收口，原一次性进度与终态经济断言不变。 */
+
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
 import type { DailyLossCumulativeExecutionInput } from '../../src/types/risk.js';
-import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import {
   createMarketDataClientDouble,
   createRateLimiterDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
+import { waitUntil } from '../main/asyncProgram/utils.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const EXECUTION_MS = Date.parse('2026-03-13T02:00:01.000Z');
 

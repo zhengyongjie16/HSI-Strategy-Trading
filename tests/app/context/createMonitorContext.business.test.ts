@@ -11,6 +11,7 @@ import { createMonitorContext as createMonitorContextImpl } from '../../../src/a
 import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import type { MonitorConfig, TradingConfig } from '../../../src/types/config.js';
 import type { Quote } from '../../../src/types/quote.js';
+import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
 import {
   createDailyLossTrackerDouble,
   createWarrantCandidateSearchDouble,
@@ -19,7 +20,6 @@ import {
   createMonitorConfigDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
-  createSdkConfigDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
@@ -78,7 +78,7 @@ function createRuntime(
   const marketDataClient = createMarketDataClientDouble();
 
   const preGateRuntime: PreGateRuntime = {
-    config: createSdkConfigDouble(),
+    brokerClientFactory: createBrokerClientFactoryDouble(),
     tradingConfig: createTradingConfig(monitor),
     symbolRegistry,
     warrantListCache: createWarrantListCache(),

@@ -4,8 +4,9 @@
  * 普通撤单和末日窗口撤单具有不同的授权与结果语义：
  * 普通路径不能构造未开始结果，末日路径必须显式携带 permit 内门禁。
  */
+
 import { describe, expect, it } from 'bun:test';
-import type { OrderMonitor } from '../../src/core/trader/types.js';
+import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
 import type { Trader } from '../../src/types/services.js';
 import type {
   CancelOrderOutcome,

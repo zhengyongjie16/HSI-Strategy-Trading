@@ -10,7 +10,7 @@ import { validateRuntimeSymbolsFromQuotesMap } from '../config/validator/index.j
 import { createBusinessEventProgram } from '../runtime/businessEventProgram/index.js';
 import { createRebuildTradingDayState } from '../main/lifecycle/rebuildTradingDayState.js';
 import { createTimeWakeupRuntime } from '../main/timeWakeupRuntime/index.js';
-import { displayAccountAndPositions } from '../services/accountDisplay/index.js';
+import { displayAccountAndPositions } from '../infrastructure/display/accountDisplay/index.js';
 import { logger } from '../utils/logger/index.js';
 import { formatError } from '../utils/error/index.js';
 import { createLifecycleRuntime } from './lifecycle/createLifecycleRuntime.js';

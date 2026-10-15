@@ -3,16 +3,17 @@
  *
  * 覆盖同一订单更新时间内累计成交继续增长时，事件合并、亏损投影、保护 episode 与刷新副作用必须共同推进。
  */
+
 import { describe, expect, it } from 'bun:test';
-import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createEventFlow as createProductionEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
+import { createEventFlow as createProductionEventFlow } from '../../src/application/orderTracking/orderMonitor/eventFlow.js';
+import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import {
-  createMonitorConfigDouble,
   createMarketDataClientDouble,
+  createMonitorConfigDouble,
   createSymbolRegistryDouble,
 } from '../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 async function flushIngress() {
   for (let index = 0; index < 100; index++) await Promise.resolve();

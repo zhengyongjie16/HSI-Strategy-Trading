@@ -27,6 +27,7 @@ import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monit
 import type { PeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/types.js';
 import type { LastState, MonitorContext } from '../../../src/types/state.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
+import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
 import {
   createDailyLossTrackerDouble,
   createAccountSnapshotDouble,
@@ -145,7 +146,7 @@ async function createDeps(
       },
     },
     preGateRuntime: {
-      config: { refreshAccessToken: () => Promise.resolve('') },
+      brokerClientFactory: createBrokerClientFactoryDouble(),
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
       warrantListCache: warrantListCache,

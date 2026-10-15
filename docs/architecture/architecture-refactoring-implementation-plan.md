@@ -1483,6 +1483,8 @@ DOOMSDAY_CLEARANCE
 
 #### P4.3 迁移 order query/push/recovery
 
+**当前落点（对应来源已移除）：**唯一事实/经济投影 owner 位于 `application/orderTracking/recorder`，串行 query/push/recovery 与订单 route 位于 `application/orderTracking/orderMonitor`，OPEN 行情 retain 索引与查询缓存同属 tracking。纯累计事实、经济覆盖候选、快照择新及盯单规则位于 `domain/order`；共享 FIFO 限流位于 `application/orderExecution/rateLimiter.ts`。原 `createTrader` 的实际组装直接进入 `app/runtime/createTrader.ts`，不保留 core wrapper 或第二 recovery/账本；protective 最终 completion 仍只由 `PostTradeSettlementWorkflow` 提交。镜像验收使用 `tests/application/orderTracking/`、`tests/domain/order/` 与 `tests/app/runtime/createTrader.business.test.ts`。
+
 现存来源 `src/core/trader/orderMonitor/{orderStatusQuery,recoveryFlow,types}.ts`、`src/core/orderRecorder/{orderApiManager,types}.ts` 闭合迁入 `src/application/orderTracking/` + `src/domain/order/`，所有 SDK query/push/status mapper 迁 `src/infrastructure/longbridge/trade/`。Recovery 仍先订阅/BOOTSTRAPPING 缓冲并由一个串行入口推进；只有存在独立恢复入口和失败策略时才使用 `application/orderRecovery/`，不为物理拆分产生第二 tracking owner。
 
 保持：
@@ -1837,7 +1839,7 @@ bun build
 
 测试按职责镜像：独立算术/格式化在 `tests/utils/numeric/`，金融配置在 `tests/config/`，公式在对应 `tests/domain/{order,position,risk,seat}/`，指标在 `tests/domain/strategy/`，用例/恢复在 `tests/application/{accountPositionSnapshot,postTradeSettlement,orderExecution,orderTracking,seatSwitch,protectiveLiquidation,tradingDayRebuild}/`；SDK 基线/映射只在 `tests/infrastructure/longbridge/{trade,market}/`，显示输出在 `tests/infrastructure/display/`，日志 IO 在 `tests/infrastructure/persistence/mixedTradeLogRepository/`。只有真实跨 owner 场景放 `tests/integration/`，SDK fixture 不带入 domain/application。
 
-复用旧基线 `tests/core/riskController/{warrantRiskChecker.business,dailyLossTracker.segment.business}.test.ts`、`tests/services/mixedTradeLogRepository/business.test.ts`、`tests/main/lifecycle/loadTradingDayRuntimeSnapshot.test.ts` 及相关金额 revision/指标/显示检查；随 owner 闭合迁往镜像职责。只更新已登记浮点误差的旧期望，不放宽无关断言，不保留 forwarding test。
+复用并迁移原基线：当前路径为 `tests/domain/risk/{warrantRiskChecker.business,dailyLossTracker.segment.business}.test.ts`、`tests/infrastructure/persistence/mixedTradeLogRepository/business.test.ts`、`tests/main/lifecycle/loadTradingDayRuntimeSnapshot.test.ts`，以及相关金额 revision/指标/显示检查。只更新已登记浮点误差的旧期望，不放宽无关断言，不保留 forwarding test。
 
 ### 13.5 Seat/lifecycle
 
@@ -2149,3 +2151,47 @@ src/config/constants/types/utils
 金融精度升级纳入上述阶段，按文首已确认解释口径及 §4.4 的补充边界实施：金额配置最多 10 位整数/3 位小数，SDK 与历史金融事实保真；金融结果至少准确到小数点后三位，基础加减乘及比较精确，中间状态不统一量化到三位。整手买量直接求精确整数商，均价保留金额/数量依据，比率使用精确等价比较；显示按既定位数一次 half-even，V1 历史文本/schema 保真不改写。P0 验证实际库版本、精确接口及支持范围/计算容量，不以固定 80 位承诺无限范围的精度，不另定业务量化/舍入政策。安全整数与技术指标保留 number。离线完成须通过静态/动态全链路及 mock/脱敏 fixtures 恢复演练，不发布/不开门/不连接实盘。真实历史 V1+权威订单逐条对账及精度迁移后候选/回退版本完整恢复是未来生产发布阻断项，当前未验证，fixtures 不替代；V1 schema/ID规则保持不等于新数值字节等价或旧版本自动可恢复。
 
 `backtest-kit@4c5f3c668798a594dcfe4e004466bdc55680f104` 只借鉴架构原则，不复制全局容器/registry。此计划不授权全量数字Decimal化、技术指标算法升级、多进程一致性、统一 reservation/交易流程、UNKNOWN自动重试/恢复、统一 EventBus、动态生命周期 registry 或 backtest-kit 迁移。超出本计划的业务政策或持久化schema变更须另行明确批准。
+
+---
+
+## 20. P4 实现记录（P4.5 最终离线验证通过）
+
+- 本轮完成 P4.1–P4.4 的中性 facts/ports、单次 mutation adapter、订单 tracking/recorder/recovery 与既有 snapshot-read seam 收口，连同 auth、金融显示及受影响测试完成 SDK 边界迁移。独立 review 已确认架构门禁两项 major 关闭，P4 全链路 review 无阻断；review 结论不替代最终执行验证。
+- P4.5 经用户授权推进：`tests/architecture/refactoring/baseline.json` 仅顶层 `stage` 从 P3F 改为 P4.5，freeze 当前阶段断言同步。历史 allowance、rows/count/cutoff/sourcePhysical*、`unresolved.json` 及历史基线章节不修改、不重采。最终 Longbridge 门禁同时检查静态/类型/动态 SDK 边和 NONLITERAL，保留合法 selected-strategy loader 识别；mutation 失败 `cause: unknown` 仅作为结构化原始错误证据，仍拒绝 SDK 能力、类型擦除及重赋值来源。
+- **本轮用户确认的 timeout follow-up 口径：**超时后创建的 **非 protective 新 command** 使用 `ORDINARY_SELL`。这是新命令目的，不把原单或其他 command 的目的机械继承为新命令目的，也不覆盖旧订单既有 protective 身份；protective 订单身份、隔离及既有完成条件保持原协议。
+- **验证状态：P4/P4.5 最终离线验证通过。**全部 owner 停写后，由唯一验证执行者使用 Bun 1.4.2 串行执行下表。首轮完整 test 的唯一失败为验证 launcher 显式设置的隔离 `APP_LOG_ROOT_DIR` 与 `runtime.business.test.ts` 要求的默认 `tests/logs` 不符；经授权仅从验证子进程环境移除该变量，保留既有 preload 默认行为后完整复跑通过。没有修改源码、测试断言或 baseline 来绕过失败；已通过的四个门禁未重复启动。
+
+| 顺序 | 实际命令 | 退出码 | 耗时 | 结果 |
+| --- | --- | --- | --- | --- |
+| 1 | `bun --no-env-file run format` | 0 | 73.350s | 完成；仅保留两处 P4 相关排版，无关文档的本轮增量按运行前副本精确撤回 |
+| 2 | `bun --no-env-file run lint` | 0 | 58.084s | 通过 |
+| 3 | `bun --no-env-file run type-check` | 0 | 5.933s | 通过 |
+| 4 | `bun --no-env-file run build` | 0 | 2.585s | 通过；未启动构建产物 |
+| 5 | `bun --no-env-file run test` | 1 | 255.642s | 2880 pass / 1 fail，2881 tests / 285 files，17464 expect() calls；上述默认日志根冲突 |
+| 6 | `bun --no-env-file run test` | 0 | 253.533s | 2881 pass / 0 fail，285 files，17464 expect() calls；完整复跑，不是定向替代 |
+
+- 环境复用 `tests/setup/childEnv.ts` 的系统变量白名单及独立 HOME/TEMP，不向验证子进程传入业务凭据；所有入口显式 `--no-env-file`，同时保留 `BUN_OPTIONS=--no-env-file`，临时 `.env` canary 已验证嵌套 Bun 不自动加载环境文件。正式测试由 `tests/setup/testRuntime.ts` 预载既有 SDK guard，拒绝 `TradeContext.new`、`QuoteContext.new`、`OAuth.build`，保留离线原生 Decimal/枚举/Config 契约测试。guard 不是 OS 防火墙或通用网络隔离；本轮未启动 app、start/dev 或真实 SDK 会话，未使用真实凭据、生产交易日志，未修改业务 `.env`。
+- 真实源码扫描复核：P4.5 的 `imports / uses / origins / legacy / owners / snapshot / snapshotExposures / violations / helperCalls` 九类债务均为 **0**。完整测试内的最终 Longbridge 门禁通过，生产 SDK import/use/origin 仅位于 `infrastructure/longbridge/{trade,market}`；snapshot 唯一 canonical owner、第二 writer/factory 拒绝及 execution-ledger/settlement owner 集成回归均通过。未引入第二 snapshot、ledger 或 settlement owner。
+- 物理与冻结证据：原冻结记录中 47 个 P4 到期源文件、旧 owner roots、镜像文件及旧入口 AST import/export/type-import/dynamic-import/require 引用均零残留（清除的文件系统残留仅为旧 `quoteClient` 源码及镜像测试空目录，无文件变更）。`baseline.json` 与 HEAD 的逐字节比较确认除 `stage: P3F → P4.5` 外完全相同；`unresolved.json` 无差异，历史 allowance、rows/count/cutoff/sourcePhysical* 未重采。
+
+### 20.1 §13.4.2 全矩阵离线证据
+
+以下现有测试均包含在本次通过的完整 test 中；路径按迁移后的职责列出，不用静态保护网替代金融行为断言。
+
+| 矩阵范围 | 本轮通过的现有证据 |
+| --- | --- |
+| 金融输入/契约 | `tests/config/financialConfig.business.test.ts`；`tests/infrastructure/longbridge/trade/{decimal.contract,orderFactMapper}.test.ts`；高有效位 query/push、金额配置边界及 `tests/utils/numeric/exact.test.ts` 的精确算术 |
+| 整数与数量 | `tests/utils/numeric/exact.test.ts`；`tests/infrastructure/longbridge/trade/orderValidation.test.ts`；`tests/architecture/refactoring/numericBoundary.test.ts` 的安全整数/结构 number 与金融字段边界 |
+| 普通 BUY/SELL 与换标回补 | `tests/utils/numeric/exact.test.ts` 的精确整数商目标；`tests/application/ordinarySell/{quantityResolver,quantitySelection}.test.ts`；`tests/application/orderExecution/`、`tests/application/seatSwitch/` 及 mutation adapter 全链路回归 |
+| 金融比率、阈值与筛选 | `tests/domain/risk/{warrantRiskChecker.business,buyPricePolicy,positionLimitChecker}.test.ts`；`tests/domain/seat/{switchPolicy.business,warrantSelection/business}.test.ts` |
+| 成本、累计金额与日损益 | `tests/domain/risk/dailyLossTracker.segment.business.test.ts`；`tests/application/postTradeSettlement/postTradeSettlement.financial.test.ts`；`tests/integration/dailyLossAmountRevision.integration.test.ts` |
+| progress/baseline 比较与择新 | `tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts`；`tests/domain/risk/{dailyLossExecutionBoundary,dailyLossRebuildPreparation}.test.ts`；金额 revision 与恢复后财务状态回归 |
+| V1 durable 规则 | `tests/infrastructure/persistence/mixedTradeLogRepository/business.test.ts`；`tests/domain/risk/dailyLossDurableDuplicate.test.ts`；恢复 fixtures 的原字节保留、重复/冲突拒绝 |
+| 离线 fixtures 恢复 | `tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts` 的完整 loader/rebuild、BUY/SELL baseline、crash-gap、损益分段/冷却与重启；`tests/main/lifecycle/loadTradingDayRuntimeSnapshot.test.ts`；低位冲突无独立持久证据时 fail-fast，不伪造 correction |
+| 技术指标与非金融路径 | `tests/domain/strategy/intradayRegression/indicators/`、信号/延迟验证与 `numericBoundary.test.ts`；保持指标 number 算法及合法结构数值边界 |
+| 金融显示 | `tests/infrastructure/display/{accountDisplay,marketMonitor}/business.test.ts`；`tests/utils/numeric/exact.test.ts` 的一次 half-even、尾零/高位及 `1.0051` 防二次舍入 |
+
+- 原有效行为保持、受控浮点误差修正和历史冲突阻断分别由上述行为与恢复测试验证；**离线 fixtures 不等于真实历史逐条对账，也不等于候选/指定回退版本真实恢复演练**。真实原始 V1＋权威订单逐条对账，以及精度迁移后候选版与指定回退版完整恢复，仍是未来生产发布前独立阻断门禁（§17.5）。
+- 文档补证后执行 `bun --no-env-file node_modules/prettier/bin/prettier.cjs --check docs/architecture/architecture-refactoring-implementation-plan.md tests/architecture/refactoring/README.md` 与 `git diff --check`，均 exit 0；对应 `09-doc-format-check.log`、`10-diff-check.log`。相对本轮验证前内容，仅两份本节相关文档和 `src/application/seatActivation/types.ts`、`tests/infrastructure/longbridge/trade/orderFactMapper.test.ts` 的纯排版有变化，无关文件保持原副本内容。
+- 本机临时证据目录：`C:/WINDOWS/TEMP/p4-final-verification-3IJh3L/`。`01-format` 至 `05-test` 的 `.log/.result.json` 保留首轮结果，`06-test-default-log-root.log/.result.json` 为完整复跑，`07-debts.log` 为九类债务汇总；临时日志不是仓库长期审计归档。
+- 本轮仅为 P4 离线实现与门禁推进，**不发布、不开门、不连接实盘**；**P5/P6 未执行且不在本轮范围**，不提前关闭其 lifecycle/rebuild、最终目录或宽契约清理事项。

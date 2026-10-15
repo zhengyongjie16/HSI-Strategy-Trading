@@ -41,7 +41,7 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { QuoteContext } from 'longbridge';
-import { createSdkConfigFromAuth } from '../src/config/auth/index.js';
+import { createSdkConfigFromAuth } from '../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js';
 
 // ==================== 常量 ====================
 

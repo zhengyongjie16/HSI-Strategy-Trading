@@ -1,9 +1,9 @@
-import { Language, PushCandlestickMode, type ExtraConfigParams } from 'longbridge';
 import { getStringConfig } from '../utils.js';
 import type {
   ApiKeyAuthConfig,
   AuthMode,
   LongbridgeConfigValidationIssue,
+  LongbridgeExtraConfig,
   OAuthAuthConfig,
 } from './types.js';
 
@@ -11,17 +11,6 @@ const VALID_AUTH_MODE_VALUES = new Set(['oauth', 'apikey']);
 const VALID_LONGBRIDGE_LANGUAGE_VALUES = new Set(['zh-CN', 'zh-HK', 'en']);
 const VALID_LONGBRIDGE_PUSH_CANDLESTICK_MODE_VALUES = new Set(['realtime', 'confirmed']);
 const VALID_BOOLEAN_CONFIG_VALUES = new Set(['true', 'false']);
-
-const LANGUAGE_CONFIG_MAP: Readonly<Record<string, Language>> = {
-  'zh-CN': Language.ZH_CN,
-  'zh-HK': Language.ZH_HK,
-  en: Language.EN,
-};
-
-const PUSH_CANDLESTICK_MODE_CONFIG_MAP: Readonly<Record<string, PushCandlestickMode>> = {
-  realtime: PushCandlestickMode.Realtime,
-  confirmed: PushCandlestickMode.Confirmed,
-};
 
 /**
  * 解析布尔环境变量文本。
@@ -79,30 +68,26 @@ function isAuthMode(value: string): value is AuthMode {
  * 读取可选语言配置。
  *
  * @param env 进程环境变量
- * @returns Longbridge SDK 语言枚举；未配置时返回 undefined
+ * @returns 中性语言文本；未配置或非法时返回 undefined
  */
-function readOptionalLanguage(env: NodeJS.ProcessEnv): Language | undefined {
+function readOptionalLanguage(env: NodeJS.ProcessEnv): LongbridgeExtraConfig['language'] {
   const languageValue = getStringConfig(env, 'LONGBRIDGE_LANGUAGE');
-  if (languageValue === null) {
-    return undefined;
-  }
-
-  return LANGUAGE_CONFIG_MAP[languageValue];
+  return languageValue === 'zh-CN' || languageValue === 'zh-HK' || languageValue === 'en'
+    ? languageValue
+    : undefined;
 }
 
 /**
  * 读取可选 K 线推送模式配置。
  *
  * @param env 进程环境变量
- * @returns Longbridge SDK 推送模式枚举；未配置时返回 undefined
+ * @returns 中性推送模式文本；未配置或非法时返回 undefined
  */
-function readOptionalPushCandlestickMode(env: NodeJS.ProcessEnv): PushCandlestickMode | undefined {
-  const pushCandlestickModeValue = getStringConfig(env, 'LONGBRIDGE_PUSH_CANDLESTICK_MODE');
-  if (pushCandlestickModeValue === null) {
-    return undefined;
-  }
-
-  return PUSH_CANDLESTICK_MODE_CONFIG_MAP[pushCandlestickModeValue];
+function readOptionalPushCandlestickMode(
+  env: NodeJS.ProcessEnv,
+): LongbridgeExtraConfig['pushCandlestickMode'] {
+  const mode = getStringConfig(env, 'LONGBRIDGE_PUSH_CANDLESTICK_MODE');
+  return mode === 'realtime' || mode === 'confirmed' ? mode : undefined;
 }
 
 /**
@@ -153,14 +138,13 @@ export function readApiKeyAuthConfig(env: NodeJS.ProcessEnv): ApiKeyAuthConfig {
 }
 
 /**
- * 读取官方支持的 Longbridge SDK 扩展配置。
- * 默认行为：仅映射当前 Node SDK 已确认支持的 extra 字段，不处理任何认证字段。
+ * 读取 Longbridge 中性扩展配置。
+ * 默认行为：只解析已支持的环境字段，SDK extra 对象与 enum 由 infrastructure 映射。
  *
  * @param env 进程环境变量
- * @returns 可直接传给 Config.fromOAuth / Config.fromApikey 的 extra 配置对象
+ * @returns 不含 SDK 类型且未配置字段保持缺失的扩展配置
  */
-export function readSdkExtraConfig(env: NodeJS.ProcessEnv): ExtraConfigParams {
-  const extraConfig: ExtraConfigParams = {};
+export function readLongbridgeExtraConfig(env: NodeJS.ProcessEnv): LongbridgeExtraConfig {
   const enableOvernight = parseBooleanEnvValue(getStringConfig(env, 'LONGBRIDGE_ENABLE_OVERNIGHT'));
   const enablePrintQuotePackages = parseBooleanEnvValue(
     getStringConfig(env, 'LONGBRIDGE_PRINT_QUOTE_PACKAGES'),
@@ -172,39 +156,16 @@ export function readSdkExtraConfig(env: NodeJS.ProcessEnv): ExtraConfigParams {
   const pushCandlestickMode = readOptionalPushCandlestickMode(env);
   const logPath = getStringConfig(env, 'LONGBRIDGE_LOG_PATH');
 
-  if (httpUrl !== null) {
-    extraConfig.httpUrl = httpUrl;
-  }
-
-  if (quoteWsUrl !== null) {
-    extraConfig.quoteWsUrl = quoteWsUrl;
-  }
-
-  if (tradeWsUrl !== null) {
-    extraConfig.tradeWsUrl = tradeWsUrl;
-  }
-
-  if (language !== undefined) {
-    extraConfig.language = language;
-  }
-
-  if (enableOvernight !== undefined) {
-    extraConfig.enableOvernight = enableOvernight;
-  }
-
-  if (pushCandlestickMode !== undefined) {
-    extraConfig.pushCandlestickMode = pushCandlestickMode;
-  }
-
-  if (enablePrintQuotePackages !== undefined) {
-    extraConfig.enablePrintQuotePackages = enablePrintQuotePackages;
-  }
-
-  if (logPath !== null) {
-    extraConfig.logPath = logPath;
-  }
-
-  return extraConfig;
+  return {
+    ...(httpUrl === null ? {} : { httpUrl }),
+    ...(quoteWsUrl === null ? {} : { quoteWsUrl }),
+    ...(tradeWsUrl === null ? {} : { tradeWsUrl }),
+    ...(language === undefined ? {} : { language }),
+    ...(enableOvernight === undefined ? {} : { enableOvernight }),
+    ...(pushCandlestickMode === undefined ? {} : { pushCandlestickMode }),
+    ...(enablePrintQuotePackages === undefined ? {} : { enablePrintQuotePackages }),
+    ...(logPath === null ? {} : { logPath }),
+  };
 }
 
 /**

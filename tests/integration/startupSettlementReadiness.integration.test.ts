@@ -1,18 +1,19 @@
 /** M1 bootstrap 实际 runApp → 同 H/S 的 ready 顺序：quote await 与 dirty 业务不能并行绕过启动放行。 */
+
 import { describe, expect, it, spyOn } from 'bun:test';
-import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
-import { createStartupRecoveryHarness } from './strategyRecoveryStartup/appHarness.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { executeTradingDayOpenRebuild } from '../../src/app/lifecycle/rebuild.js';
+import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
+import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import {
   createAccountSnapshotDouble,
-  createTraderDouble,
   createLoggerDouble,
   createMarketDataClientDouble,
+  createTraderDouble,
 } from '../helpers/testDoubles.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
-import { executeTradingDayOpenRebuild } from '../../src/app/lifecycle/rebuild.js';
+import { createStartupRecoveryHarness } from './strategyRecoveryStartup/appHarness.js';
 
 async function flush(): Promise<void> {
   for (let count = 0; count < 100; count++) await Promise.resolve();

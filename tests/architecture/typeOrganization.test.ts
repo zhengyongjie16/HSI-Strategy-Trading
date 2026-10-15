@@ -9,10 +9,11 @@
  * - 迁移后的风险、清仓和订单执行 owner 保持实际导出边界
  * - 内部实现符号不穿透公共 surface
  */
-import path from 'node:path';
+
+import { describe, expect, it } from 'bun:test';
 import { constants as fsConstants } from 'node:fs';
 import { access, readFile, readdir } from 'node:fs/promises';
-import { describe, expect, it } from 'bun:test';
+import path from 'node:path';
 import ts from 'typescript';
 
 const projectRoot = process.cwd();
@@ -335,7 +336,7 @@ describe('type organization regressions', () => {
   });
 
   it('keeps routingIndex internal state helpers non-exported', async () => {
-    const relativePath = 'src/core/trader/orderMonitor/routingIndex.ts';
+    const relativePath = 'src/application/orderTracking/orderMonitor/routingIndex.ts';
     const routingIndexSource = await readProjectFile(relativePath);
 
     expectNoNamedExport(relativePath, routingIndexSource, 'ensureRouteState');
@@ -368,7 +369,7 @@ describe('type organization regressions', () => {
         privateSymbols: ['QuoteRetryRequirement'],
       },
       {
-        relativePath: 'src/core/trader/types.ts',
+        relativePath: 'src/app/runtime/types.ts',
         privateSymbols: ['IsExecutionAllowed'],
       },
       {
@@ -384,7 +385,7 @@ describe('type organization regressions', () => {
         privateSymbols: ['SignalRuntimePostTradeConsistencyRuntime'],
       },
       {
-        relativePath: 'src/core/trader/orderMonitor/types.ts',
+        relativePath: 'src/application/orderTracking/orderMonitor/types.ts',
         privateSymbols: ['OrderMonitorTimerRegistration', 'PendingSellDisposition'],
       },
     ];
@@ -400,14 +401,13 @@ describe('type organization regressions', () => {
   it('keeps orderRecorder internal implementation files behind the public boundary', async () => {
     const productionFiles = await collectTypeScriptFiles('src');
     const privateOrderRecorderFiles = new Set([
-      'src/core/orderRecorder/orderApiManager.ts',
-      'src/core/orderRecorder/orderStorage.ts',
-      'src/core/orderRecorder/utils.ts',
+      'src/application/orderTracking/recorder/orderApiManager.ts',
+      'src/application/orderTracking/recorder/orderStorage.ts',
     ]);
     const violations: string[] = [];
 
     for (const relativePath of productionFiles) {
-      if (relativePath.startsWith('src/core/orderRecorder/')) {
+      if (relativePath.startsWith('src/application/orderTracking/recorder/')) {
         continue;
       }
 

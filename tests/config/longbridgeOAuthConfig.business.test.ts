@@ -4,76 +4,12 @@
  * 功能：
  * - 验证双认证模式下的启动配置校验行为
  */
-import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
-import { createSdkModuleMock } from '../infrastructure/longbridge/trade/sdkModuleMock.js';
+import { describe, expect, it } from 'bun:test';
 import { validateAllConfig } from '../../src/config/validator/index.js';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 
-const sdkModuleMock = createSdkModuleMock();
-
-const oauthBuildCalls: Array<{ clientId: string; callbackPort?: number }> = [];
-const fromOAuthCalls: Array<{ oauth: unknown; extra: unknown }> = [];
-const fromApikeyCalls: Array<{
-  appKey: string;
-  appSecret: string;
-  accessToken: string;
-  extra: unknown;
-}> = [];
-const oauthHandle = { kind: 'oauth-handle' };
-
-const Language = {
-  ZH_CN: 'ZH_CN',
-  ZH_HK: 'ZH_HK',
-  EN: 'EN',
-} as const;
-
-const PushCandlestickMode = {
-  Realtime: 'Realtime',
-  Confirmed: 'Confirmed',
-} as const;
-
-class Config {
-  public static fromOAuth(oauth: unknown, extra?: unknown): unknown {
-    fromOAuthCalls.push({ oauth, extra: extra ?? null });
-    return { kind: 'oauth-config', oauth, extra: extra ?? null };
-  }
-
-  public static fromApikey(
-    appKey: string,
-    appSecret: string,
-    accessToken: string,
-    extra?: unknown,
-  ): unknown {
-    fromApikeyCalls.push({
-      appKey,
-      appSecret,
-      accessToken,
-      extra: extra ?? null,
-    });
-    return { kind: 'apikey-config', appKey, appSecret, accessToken, extra: extra ?? null };
-  }
-}
-
-const OAuth = {
-  build: async (
-    clientId: string,
-    onOpenUrl: (error: Error | null, url: string) => void,
-    callbackPort?: number,
-  ): Promise<unknown> => {
-    oauthBuildCalls.push(callbackPort === undefined ? { clientId } : { clientId, callbackPort });
-    onOpenUrl(null, 'https://example.test/oauth');
-    return oauthHandle;
-  },
-};
-
-sdkModuleMock.install({
-  Config,
-  OAuth,
-  Language,
-  PushCandlestickMode,
-});
-
-import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
+import { readLongbridgeAuthConfig } from '../../src/config/auth/index.js';
+import { readLongbridgeExtraConfig } from '../../src/config/auth/utils.js';
 
 function createTradingConfigForValidation() {
   return createTradingConfig({
@@ -94,25 +30,6 @@ async function validateEnv(env: NodeJS.ProcessEnv): Promise<unknown> {
     return error;
   }
 }
-
-afterAll(async () => {
-  const beforeCalls = [oauthBuildCalls.length, fromOAuthCalls.length, fromApikeyCalls.length];
-  sdkModuleMock.restore();
-  await sdkModuleMock.assertRestored();
-  expect([oauthBuildCalls.length, fromOAuthCalls.length, fromApikeyCalls.length]).toEqual(
-    beforeCalls,
-  );
-
-  expect(oauthBuildCalls).toHaveLength(0);
-  expect(fromOAuthCalls).toHaveLength(0);
-  expect(fromApikeyCalls).toHaveLength(0);
-});
-
-beforeEach(() => {
-  oauthBuildCalls.length = 0;
-  fromOAuthCalls.length = 0;
-  fromApikeyCalls.length = 0;
-});
 
 describe('longbridge auth config validation', () => {
   it('rejects missing auth mode before auth fields are evaluated', async () => {
@@ -197,32 +114,26 @@ describe('longbridge auth config validation', () => {
     expect(error).not.toBeNull();
   });
 
-  it('createSdkConfigFromAuth rejects invalid callback port before OAuth.build', async () => {
+  it('reads neutral auth and extra values without SDK enums or defaulted fields', () => {
     expect(
-      createSdkConfigFromAuth({
-        env: {
-          LONGBRIDGE_AUTH_MODE: 'oauth',
-          LONGBRIDGE_CLIENT_ID: 'client-id',
-          LONGBRIDGE_CALLBACK_PORT: '70000',
-        },
+      readLongbridgeAuthConfig({
+        LONGBRIDGE_AUTH_MODE: 'oauth',
+        LONGBRIDGE_CLIENT_ID: 'client-id',
       }),
-    ).rejects.toThrow('LONGBRIDGE_CALLBACK_PORT');
-    expect(oauthBuildCalls).toHaveLength(0);
-    expect(fromOAuthCalls).toHaveLength(0);
-  });
-
-  it('createSdkConfigFromAuth rejects invalid sdk extra config before building config', async () => {
+    ).toEqual({ mode: 'oauth', clientId: 'client-id', callbackPort: null });
+    expect(readLongbridgeExtraConfig({})).toEqual({});
     expect(
-      createSdkConfigFromAuth({
-        env: {
-          LONGBRIDGE_AUTH_MODE: 'apikey',
-          LONGBRIDGE_APP_KEY: 'app-key',
-          LONGBRIDGE_APP_SECRET: 'app-secret',
-          LONGBRIDGE_ACCESS_TOKEN: 'access-token',
-          LONGBRIDGE_LANGUAGE: 'fr',
-        },
+      readLongbridgeExtraConfig({
+        LONGBRIDGE_LANGUAGE: 'zh-HK',
+        LONGBRIDGE_PUSH_CANDLESTICK_MODE: 'confirmed',
+        LONGBRIDGE_ENABLE_OVERNIGHT: 'false',
+        LONGBRIDGE_PRINT_QUOTE_PACKAGES: 'false',
       }),
-    ).rejects.toThrow('LONGBRIDGE_LANGUAGE');
-    expect(fromApikeyCalls).toHaveLength(0);
+    ).toEqual({
+      language: 'zh-HK',
+      pushCandlestickMode: 'confirmed',
+      enableOvernight: false,
+      enablePrintQuotePackages: false,
+    });
   });
 });

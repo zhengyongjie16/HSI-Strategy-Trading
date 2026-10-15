@@ -1,5 +1,5 @@
 /** 中性push解码能力：原SDK DTO只留adapter闭包，domain不注册/读取SDK类字段。 */
-import type { RawOrderFromAPI } from './services.js';
+import type { OrderFact } from './trade.js';
 import type { OrderExecutionLedgerFact } from './orderExecutionLedger.js';
 import type { BrokerOrderExecutionFact } from './orderRecorder.js';
 
@@ -22,7 +22,7 @@ export interface OrderPushDecoder {
   readonly decode: (
     executions: ReadonlyArray<OrderExecutionLedgerFact>,
     confirmed?: OrderExecutionPriceEvidence,
-  ) => RawOrderFromAPI;
+  ) => OrderFact;
 }
 
 /** 原 context 的 callback 与 Private 订退订；时序、限流及经济发布仍归原 Monitor。 */

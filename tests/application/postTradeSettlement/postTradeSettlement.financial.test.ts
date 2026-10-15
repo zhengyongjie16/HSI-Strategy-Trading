@@ -1,19 +1,18 @@
 /** 精确 settlement 金融链测试：同实例订单成本/日损益、高 revision 同量修正、completion baseline 与 R1/N1。 */
+
 import { expect, test } from 'bun:test';
-import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import {
-  createOrderRecorder,
-  createDailyLossOrderAnalysisDeps,
-} from '../../../src/core/orderRecorder/index.js';
+import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
+import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
+import type { SettlementProtectionCompletion } from '../../../src/application/postTradeSettlement/types.js';
+import { API } from '../../../src/constants/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
-import type { SettlementProtectionCompletion } from '../../../src/application/postTradeSettlement/types.js';
+import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { exactMultiply } from '../../../src/utils/numeric/exact.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import { API } from '../../../src/constants/index.js';
-import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import {
   createAccountSnapshotDouble,
   createLoggerDouble,
@@ -54,7 +53,7 @@ test('high-revision same-quantity authoritative corrections preserve exact cost/
   });
   const daily = createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
   });
   daily.resetAll(new Date(now));

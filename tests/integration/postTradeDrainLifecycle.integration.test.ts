@@ -2,32 +2,29 @@
  * T25：挂起真实 PostTrade 持仓请求，验证午夜/正常退出/fatal 排空均先完成 Quote 回调。
  * 测试只连接离线交易和行情端口，不启动真实应用或 Broker。
  */
+
 import { describe, expect, it } from 'bun:test';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createOrderRecorder } from '../../src/application/orderTracking/recorder/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
-import type { LastState } from '../../src/types/state.js';
-import type { Position } from '../../src/types/account.js';
 import type { Processor } from '../../src/runtime/asyncProgram/types.js';
-import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
-import {
-  createDailyLossOrderAnalysisDeps,
-  createOrderRecorder,
-} from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import type { Position } from '../../src/types/account.js';
+import type { LastState } from '../../src/types/state.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import { createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
 import {
   createAccountSnapshotDouble,
   createAutoSearchWakeupRuntimeDouble,
@@ -41,6 +38,8 @@ import {
   createSeatRuntimeCleanupDispatcherDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+import { waitUntil } from '../main/asyncProgram/utils.js';
+import { createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
 
 /** 不承担待测在途工作的处理器，提供生命周期必需的完整启停端口。 */
 function createIdleProcessor(): Processor {
@@ -57,7 +56,7 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       const trace: string[] = [];
       const daily = createDailyLossTracker({
         onOwnershipWarning: () => {},
-        ...createDailyLossOrderAnalysisDeps(),
+        ...orderAnalysis,
         toHongKongTimeIso,
       });
       daily.resetAll(new Date('2026-02-16T01:31:00.000Z'));

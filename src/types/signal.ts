@@ -51,6 +51,9 @@ type SignalFields = {
   /** 信号触发原因 */
   readonly reason?: string | null;
 
+  /** 独立用例明确交付的新命令来源；普通策略动作与 protective 标记由执行器直接映射，不从 reason 推断。 */
+  readonly executionOrigin?: 'SWITCH_MOVE' | 'SWITCH_REBUY' | 'STATIC_DISTANCE_LIQUIDATION';
+
   /** 订单类型覆盖（优先级高于全局配置） */
   readonly orderTypeOverride?: OrderTypeConfig | null;
 

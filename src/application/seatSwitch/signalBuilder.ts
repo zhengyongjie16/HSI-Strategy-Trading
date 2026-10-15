@@ -33,13 +33,23 @@ export function createSignalBuilder(clock: RuntimeClock): {
   buildOrderSignal: OrderSignalBuilder;
 } {
   const buildOrderSignal: OrderSignalBuilder = (params: BuildOrderSignalParams): OrderSignal => {
-    const { action, symbol, quote, reason, orderTypeOverride, quantity, seatVersion } = params;
+    const {
+      action,
+      symbol,
+      quote,
+      reason,
+      executionOrigin,
+      orderTypeOverride,
+      quantity,
+      seatVersion,
+    } = params;
 
     return {
       symbol,
       symbolName: quote?.name ?? symbol,
       action,
       reason,
+      ...(executionOrigin === undefined ? {} : { executionOrigin }),
       orderTypeOverride: orderTypeOverride ?? null,
       quantity: quantity ?? null,
       triggerTime: clock.now(),

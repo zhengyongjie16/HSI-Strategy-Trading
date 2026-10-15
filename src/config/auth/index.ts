@@ -1,21 +1,14 @@
 /**
- * Longbridge 认证配置装配模块
- *
- * 功能/职责：
- * - 基于环境变量解析 OAuth 或 API Key 认证参数
- * - 先执行统一配置校验，再按认证模式构造 Longbridge SDK Config
- * - 在 OAuth 模式下透传授权 URL 打开回调
+ * Longbridge 中性认证配置读取模块。
+ * 统一校验环境变量并收窄 OAuth/API Key 必填字段；不创建或持有 SDK Config、OAuth 或 enum。
  */
-import { Config, OAuth } from 'longbridge';
 import {
   readApiKeyAuthConfig,
   readAuthMode,
   readOAuthAuthConfig,
-  readSdkExtraConfig,
   validateLongbridgeConfig,
 } from './utils.js';
 import type {
-  CreateSdkConfigFromAuthParams,
   ResolvedApiKeyAuthConfig,
   ResolvedAuthConfig,
   ResolvedOAuthAuthConfig,
@@ -52,61 +45,17 @@ function resolveApiKeyAuthConfig(env: NodeJS.ProcessEnv): ResolvedApiKeyAuthConf
   };
 }
 
-function resolveAuthConfig(env: NodeJS.ProcessEnv): ResolvedAuthConfig {
-  const authMode = readAuthMode(env);
-  if (authMode === null) {
-    throw new Error('LONGBRIDGE_AUTH_MODE 未配置或无效，无法创建 Longbridge SDK Config');
-  }
-
-  if (authMode === 'oauth') {
-    return resolveOAuthAuthConfig(env);
-  }
-
-  return resolveApiKeyAuthConfig(env);
-}
-
-async function buildOAuth(authConfig: ResolvedOAuthAuthConfig, onOpenUrl?: (url: string) => void) {
-  return await OAuth.build(
-    authConfig.clientId,
-    (error: Error | null, url: string) => {
-      if (error !== null) {
-        throw error;
-      }
-
-      onOpenUrl?.(url);
-    },
-    authConfig.callbackPort ?? undefined,
-  );
-}
-
-/**
- * 使用统一认证配置与官方扩展配置创建 SDK Config。
- *
- * @param params.env 进程环境变量
- * @param params.onOpenUrl OAuth 模式下首次授权时输出授权 URL 的回调
- * @returns 统一的 Longbridge SDK Config
- */
-export async function createSdkConfigFromAuth(
-  params: CreateSdkConfigFromAuthParams,
-): Promise<Config> {
-  const { env, onOpenUrl } = params;
+/** 校验全部认证/扩展配置后返回已收窄的中性认证字段，错误仍使用首个校验问题。 */
+export function readLongbridgeAuthConfig(env: NodeJS.ProcessEnv): ResolvedAuthConfig {
   const validationIssues = validateLongbridgeConfig(env);
   if (validationIssues.length > 0) {
     throw new Error(validationIssues[0]?.message ?? 'Longbridge 配置无效');
   }
 
-  const authConfig = resolveAuthConfig(env);
-  const extraConfig = readSdkExtraConfig(env);
-
-  if (authConfig.mode === 'oauth') {
-    const oauth = await buildOAuth(authConfig, onOpenUrl);
-    return Config.fromOAuth(oauth, extraConfig);
+  const authMode = readAuthMode(env);
+  if (authMode === null) {
+    throw new Error('LONGBRIDGE_AUTH_MODE 未配置或无效，无法创建 Longbridge SDK Config');
   }
 
-  return Config.fromApikey(
-    authConfig.appKey,
-    authConfig.appSecret,
-    authConfig.accessToken,
-    extraConfig,
-  );
+  return authMode === 'oauth' ? resolveOAuthAuthConfig(env) : resolveApiKeyAuthConfig(env);
 }

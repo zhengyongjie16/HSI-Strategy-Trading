@@ -1,5 +1,5 @@
 /**
- * P3F 多重集合收缩：P1/P2/P3A–P3F 到期 occurrence 必须删除，后续精确旧例外不可增殖或搬进新层。
+ * P4.5 多重集合收缩：截至 P4.5 到期 occurrence 必须删除，P5/P6 精确旧例外不可增殖或提前闭合。
  * 临时 fixtures 只用于静态编译器检查，不写入生产树、不连接 SDK。
  */
 import path from 'node:path';
@@ -71,7 +71,7 @@ const files = [
 const program = createAuditProgram(root, files);
 const actual = scanProgram(root, program, files);
 
-describe('P3F frozen occurrence architecture', () => {
+describe('P4.5 frozen occurrence architecture', () => {
   it.each([
     "import { readFileSync } from 'node:fs'; void readFileSync;",
     "import type { Stats } from 'node:fs'; export type Stat = Stats;",
@@ -369,6 +369,168 @@ describe('P3F frozen occurrence architecture', () => {
     expect(scan.violations).toEqual([]);
   });
 
+  it.each([
+    'return failure;',
+    'return Object.freeze(failure);',
+    'return Promise.resolve(failure);',
+    'return Object.assign({}, failure);',
+    'return { submit: (cause: unknown = new Error("offline")) => ({ operation: "TradeContext.submitOrder", requestAttempted: true, kind: "UNKNOWN", code: null, cause } as const) };',
+    'return { submit: (cause: unknown) => ({ operation: "TradeContext.submitOrder", requestAttempted: true, kind: "REJECTED", code: "601013", cause } as const) };',
+    'function code(depth: number): string | null { if (depth > 2) return null; return code(depth + 1); } return { submit: (cause: unknown) => Object.freeze({ operation: "TradeContext.submitOrder" as const, requestAttempted: true as const, kind: "UNKNOWN" as const, code: code(0), cause }) };',
+    'return { submit: (cause: unknown) => { const observation = { operation: "TradeContext.submitOrder", requestAttempted: true, code: null, cause } as const; return Object.freeze({ ...observation, kind: "UNKNOWN" as const }); } };',
+    'return { port: { submit: async () => failure }, create: () => ({ read: () => failure }) };',
+    'return { submit: (cause: unknown) => ({ operation: "TradeContext.submitOrder", requestAttempted: true, kind: "UNKNOWN", code: null, cause } as const) };',
+    'return { submit: () => { try { throw new Error("offline"); } catch (cause) { return { operation: "TradeContext.submitOrder", requestAttempted: true, kind: "UNKNOWN", code: null, cause } as const; } } };',
+  ])('allows only structured mutation failure evidence, including nested factories: %s', (body) => {
+    const scan = fixture({
+      'tests/infrastructure/longbridge/trade/fixture.ts': `
+        import { Decimal } from 'longbridge';
+        type Failure = { readonly operation: 'TradeContext.submitOrder'; readonly requestAttempted: true; readonly kind: 'UNKNOWN'; readonly code: string | null; readonly cause: unknown };
+        export function build(failure: Failure) { const raw = new Decimal('1'); void raw; ${body} }
+      `,
+      'tests/application/flow.test.ts':
+        "import { build } from '../infrastructure/longbridge/trade/fixture.js'; build(undefined!);",
+    });
+    expect(scan.helperCalls.length).toBeGreaterThan(0);
+    expect(unclosedHelperCalls(scan)).toEqual([]);
+    expect(scan.violations).toEqual([]);
+  });
+
+  it.each([
+    ["'TradeContext.submitOrder'", "'REJECTED' | 'UNKNOWN'", ''],
+    [
+      "'TradeContext.replaceOrder'",
+      "'ORDER_ALREADY_CLOSED' | 'RETRYABLE_EXTERNAL_ERROR' | 'UNKNOWN'",
+      '',
+    ],
+    [
+      "'TradeContext.replaceOrder'",
+      "'REJECTED'",
+      "; readonly reason: 'UNSUPPORTED_BY_TYPE' | 'TEMP_BLOCKED_BY_STATUS'",
+    ],
+    [
+      "'TradeContext.cancelOrder'",
+      "'STATE_CONFIRMATION_REQUIRED' | 'RETRYABLE_EXTERNAL_ERROR' | 'UNKNOWN'",
+      '',
+    ],
+  ])(
+    'recognizes the exact mutation failure branch across operation unions: %s %s',
+    (operation, kind, reason) => {
+      const scan = fixture({
+        'tests/infrastructure/longbridge/trade/fixture.ts': `
+        import { Decimal } from 'longbridge';
+        type Evidence = { readonly code: string | null; readonly cause: unknown };
+        type Failure = { readonly operation: ${operation}; readonly requestAttempted: true } & ({ readonly kind: ${kind} ${reason} } & Evidence);
+        export function build(failure: Failure) { const raw = new Decimal('1'); void raw; return { port: { mutate: async () => failure } }; }
+      `,
+        'tests/application/flow.test.ts':
+          "import { build } from '../infrastructure/longbridge/trade/fixture.js'; build(undefined!);",
+      });
+      expect(unclosedHelperCalls(scan)).toEqual([]);
+      expect(scan.violations).toEqual([]);
+    },
+  );
+
+  it.each([
+    'return { cause: evidence };',
+    'return evidence;',
+    'return undefined as any;',
+    'return { ...failure, raw };',
+    'return { ...failure, cause: raw };',
+    'return { ...failure, cause: raw as unknown };',
+    'return { ...failure, cause: (() => raw) as unknown };',
+    'return { ...failure, context: raw } as Failure;',
+    'return { ...failure, code: raw as unknown as string };',
+    'return raw as unknown as Failure;',
+    'return Object.freeze<Failure>({ ...failure, context: raw } as Failure);',
+    'return Object.freeze<Failure>({ ...failure, cause: raw as unknown });',
+    'return Object.freeze<Failure>(raw as unknown as Failure);',
+    'return Promise.resolve({ ...failure, cause: raw as unknown });',
+    'return new Promise<Failure>((resolve) => resolve({ ...failure, cause: raw as unknown }));',
+    'return Promise.resolve(raw).then((cause: unknown) => ({ ...failure, cause }));',
+    'return Object.assign({}, failure, { cause: raw as unknown });',
+    'const wrap = Promise.resolve.bind(Promise); return wrap({ ...failure, cause: raw as unknown });',
+    'return Promise.resolve<Failure>({ ...failure, context: raw } as Failure);',
+    'return { submit: (cause: unknown = raw) => ({ operation: "TradeContext.submitOrder", requestAttempted: true, kind: "UNKNOWN", code: null, cause } as const) };',
+    'return { submit: (cause: unknown = raw as unknown) => ({ operation: "TradeContext.submitOrder", requestAttempted: true, kind: "UNKNOWN", code: null, cause } as const) };',
+    'function code(depth: number): string | null { if (depth > 2) return raw as unknown as string; return code(depth + 1); } return { ...failure, code: code(0) };',
+    'return { ...failure, requestAttempted: false };',
+    'return { ...failure, operation: "unrelated" };',
+    'return { ...failure, kind: "ACCEPTED" };',
+    'return { ...failure, callback: (value: Decimal) => value.toString() };',
+    'return { invoke: (callback: (value: unknown) => void) => { callback(raw); return failure; } };',
+    'const hidden: unknown = raw; return { ...failure, cause: hidden };',
+    'const make = (cause: unknown): Failure => ({ operation: "TradeContext.submitOrder", requestAttempted: true, kind: "UNKNOWN", code: null, cause }); return make(raw);',
+  ])('rejects capabilities or erased raw values beside mutation evidence: %s', (body) => {
+    const scan = fixture({
+      'tests/infrastructure/longbridge/trade/fixture.ts': `
+        import { Decimal } from 'longbridge';
+        type Failure = { readonly operation: 'TradeContext.submitOrder'; readonly requestAttempted: true; readonly kind: 'UNKNOWN'; readonly code: string | null; readonly cause: unknown };
+        export function build(failure: Failure, evidence: unknown) { const raw = new Decimal('1'); ${body} }
+      `,
+      'tests/application/flow.test.ts':
+        "import { build } from '../infrastructure/longbridge/trade/fixture.js'; build(undefined!, undefined!);",
+    });
+    expect(scan.violations.some((key) => key.includes('SDK_FIXTURE_BOUNDARY'))).toBe(true);
+    expect(unclosedHelperCalls(scan).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    'submit: (cause: unknown) => { cause = raw; return { ...failure, cause }; }',
+    'submit: (input: unknown) => { let cause: unknown = input; cause = raw; return { ...failure, cause }; }',
+    'submit: () => { try { throw new Error("offline"); } catch (cause) { cause = raw; return { ...failure, cause }; } }',
+    'submit: (cause: unknown) => { ({ value: cause } = { value: raw }); return { ...failure, cause }; }',
+    'submit: (cause: unknown) => { [cause] = [raw]; return { ...failure, cause }; }',
+    'submit: (cause: unknown) => { for (cause of [raw]) { void cause; } return { ...failure, cause }; }',
+    'submit: (cause: unknown) => { const replace = () => { cause = raw; }; replace(); return { ...failure, cause }; }',
+    'submit: (cause: unknown) => { cause ??= raw; return { ...failure, cause }; }',
+  ])(
+    'rejects reassigned mutation evidence bindings without control-flow inference: %s',
+    (submit) => {
+      const diagnostics: number[] = [];
+      const scan = fixture(
+        {
+          'tests/infrastructure/longbridge/trade/fixture.ts': `
+        import { Decimal } from 'longbridge';
+        type Failure = { readonly operation: 'TradeContext.submitOrder'; readonly requestAttempted: true; readonly kind: 'UNKNOWN'; readonly code: string | null; readonly cause: unknown };
+        export function build(failure: Failure) { const raw = new Decimal('1'); return { ${submit} }; }
+      `,
+          'tests/application/flow.test.ts':
+            "import { build } from '../infrastructure/longbridge/trade/fixture.js'; build(undefined!);",
+        },
+        diagnostics,
+      );
+      expect(diagnostics).toEqual([]);
+      expect(scan.violations.some((key) => key.includes('SDK_FIXTURE_BOUNDARY'))).toBe(true);
+      expect(unclosedHelperCalls(scan).length).toBeGreaterThan(0);
+    },
+  );
+
+  it.each([
+    'submit: (cause: unknown) => ({ ...failure, cause })',
+    'submit: (input: unknown) => { const cause = input; return { ...failure, cause }; }',
+    'submit: (input: unknown) => { let cause: unknown = input; return { ...failure, cause }; }',
+    'submit: () => { try { throw new Error("offline"); } catch (cause) { return { ...failure, cause }; } }',
+    'submit: (cause: unknown) => { const unrelated = (cause: unknown) => { cause = raw; void cause; }; void unrelated; return { ...failure, cause }; }',
+  ])('retains stable mutation evidence bindings and ignores shadowed symbols: %s', (submit) => {
+    const diagnostics: number[] = [];
+    const scan = fixture(
+      {
+        'tests/infrastructure/longbridge/trade/fixture.ts': `
+        import { Decimal } from 'longbridge';
+        type Failure = { readonly operation: 'TradeContext.submitOrder'; readonly requestAttempted: true; readonly kind: 'UNKNOWN'; readonly code: string | null; readonly cause: unknown };
+        export function build(failure: Failure) { const raw = new Decimal('1'); void raw; return { ${submit} }; }
+      `,
+        'tests/application/flow.test.ts':
+          "import { build } from '../infrastructure/longbridge/trade/fixture.js'; build(undefined!);",
+      },
+      diagnostics,
+    );
+    expect(diagnostics).toEqual([]);
+    expect(scan.violations).toEqual([]);
+    expect(unclosedHelperCalls(scan)).toEqual([]);
+  });
+
   it('keeps SDK-free nested business facts legal without opening an old business owner', () => {
     const scan = fixture({
       'src/core/types.ts':
@@ -389,8 +551,8 @@ describe('P3F frozen occurrence architecture', () => {
     expect(scan.imports).toHaveLength(1);
   });
 
-  it('requires the P3F stage without granting later or final-directory exceptions', () => {
-    expect(baseline.stage).toBe('P3F');
+  it('requires the P4.5 stage without granting P5/P6 or final-directory exceptions', () => {
+    expect(baseline.stage).toBe('P4.5');
     const later = baseline.imports.find((row) => row.cutoff === 'P4.5');
     expect(later).toBeDefined();
     if (later !== undefined) {

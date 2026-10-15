@@ -2,20 +2,21 @@
  * SEAT_REFRESH 分阶段追赶：真实 snapshot、订单与日损 owner 共享一次合法基线。
  * 在持仓订阅 await 中插入成对提交/新成交，仅后置准备追赶；不运行 SDK 或自然 WS 链。
  */
+
 import { describe, expect, it, spyOn } from 'bun:test';
-import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
+import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
-import { createSeatActivationFixture } from './fixtures.js';
 import type { SnapshotToken } from '../../../src/types/accountPosition.js';
 import type { BrokerOrderExecutionFact } from '../../../src/types/orderRecorder.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
   createQuoteSubscriptionRuntimeDouble,
 } from '../../helpers/testDoubles.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
 import { createMonitorContext } from '../../main/asyncProgram/utils.js';
+import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createSeatActivationFixture } from './fixtures.js';
 
 async function createCatchUpFixture() {
   const now = new Date('2026-03-13T03:00:00.000Z');
@@ -31,7 +32,7 @@ async function createCatchUpFixture() {
     account: createAccountSnapshotDouble('100000'),
     positions: [],
   });
-  const baseline: RawOrderFromAPI = {
+  const baseline: OrderFact = {
     orderId: 'BASELINE-BUY',
     symbol: 'BULL.HK',
     stockName: `${initialContext.config.orderOwnershipMapping[0]} RC`,

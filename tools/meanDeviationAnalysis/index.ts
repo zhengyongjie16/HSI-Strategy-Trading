@@ -6,7 +6,7 @@
 import dotenv from 'dotenv';
 import { AdjustType, Period, QuoteContext, TradeSessions } from 'longbridge';
 
-import { createSdkConfigFromAuth } from '../../src/config/auth/index.js';
+import { createSdkConfigFromAuth } from '../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js';
 import type { DailyDeviationMetrics, MeanDeviationQuoteContext } from './types.js';
 import {
   computeDailyDeviationMetrics,

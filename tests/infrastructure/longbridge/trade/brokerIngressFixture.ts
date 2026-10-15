@@ -36,7 +36,7 @@ import {
   isValidatedOrderStatus,
   isValidatedOrderType,
 } from '../../../../src/infrastructure/longbridge/trade/orderValidation.js';
-import type { RawOrderFromAPI } from '../../../../src/types/services.js';
+import type { OrderFact } from '../../../../src/types/trade.js';
 import { isRecord } from '../../../../src/utils/helpers/index.js';
 import { canonicalDecimal, safeQuantityNumber } from '../../../../src/utils/numeric/exact.js';
 
@@ -124,8 +124,8 @@ export async function createBrokerIngressFixture(
   orderEconomics: OrderEconomics,
 ): Promise<
   Readonly<{
-    queryObservation: RawOrderFromAPI;
-    pushObservation: RawOrderFromAPI;
+    queryObservation: OrderFact;
+    pushObservation: OrderFact;
     setOrderDetailReplies: (frames: ReadonlyArray<BrokerIngressInput>) => void;
     setOrderSnapshotReplies: (
       history: ReadonlyArray<BrokerIngressInput>,

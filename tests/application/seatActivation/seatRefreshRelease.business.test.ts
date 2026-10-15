@@ -5,18 +5,16 @@
  * - releaseRetain 始终完整 await，主体与清理的错误归属（内部错误保留 fatal 身份，双外部聚合后仍外部）
  * - SEAT_REFRESH 外部 API 失败后的取消与重试耗尽区分：取消不 finalize，只有真正耗尽才回落 EMPTY
  */
+
 import { describe, expect, it, spyOn } from 'bun:test';
-import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
-import { createSeatActivationFixture } from './fixtures.js';
-import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
-import { logger } from '../../../src/utils/logger/index.js';
+import { classifyOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
-import type { ExternalApiRequestError } from '../../../src/utils/apiFailure/types.js';
 import type { Quote } from '../../../src/types/quote.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
-import { classifyOrdersForRebuild } from '../../../src/core/orderRecorder/utils.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import type { OrderFact } from '../../../src/types/trade.js';
+import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
+import type { ExternalApiRequestError } from '../../../src/utils/apiFailure/types.js';
+import { logger } from '../../../src/utils/logger/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createAccountSnapshotDouble,
@@ -25,6 +23,9 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import { createMonitorContext, waitUntil } from '../../main/asyncProgram/utils.js';
+import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
+import { createSeatActivationFixture } from './fixtures.js';
 
 type SeatRefreshTask = Parameters<ReturnType<typeof createSeatActivationFixture>['activate']>[0];
 
@@ -80,7 +81,7 @@ async function createActivationProtocolFixture() {
   const stages: string[] = [];
   const prepared: Array<ReturnType<typeof context.riskChecker.prepareUnrealizedLossData>> = [];
   const published: Array<ReturnType<typeof context.riskChecker.prepareUnrealizedLossData>> = [];
-  const allOrders: ReadonlyArray<RawOrderFromAPI> = [];
+  const allOrders: ReadonlyArray<OrderFact> = [];
   context.orderRecorder.fetchAllOrdersFromAPI = async () => {
     stages.push('orders');
     return allOrders;

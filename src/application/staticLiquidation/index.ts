@@ -114,6 +114,7 @@ function createStaticLiquidationCandidate(params: {
       : monitorContext.shortSymbolName || seatState.symbol,
     action: isLongDirection ? 'SELLCALL' : 'SELLPUT',
     reason: liquidationResult.reason ?? '牛熊证距回收价触发清仓',
+    executionOrigin: 'STATIC_DISTANCE_LIQUIDATION',
     quantity: availableQuantity,
     triggerTime: executionTime,
     orderTypeOverride: WARRANT_LIQUIDATION_ORDER_TYPE,

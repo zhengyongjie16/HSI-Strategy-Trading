@@ -1,7 +1,7 @@
 import type { TradingConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { RawOrderFromAPI } from '../../types/services.js';
+import type { OrderFact } from '../../types/trade.js';
 import type { StartupSeatSearch } from '../../application/autoSearch/types.js';
 
 /**
@@ -14,7 +14,7 @@ export type PrepareSeatsForRuntimeDeps = {
   readonly tradingConfig: TradingConfig;
   readonly symbolRegistry: SymbolRegistry;
   readonly positions: ReadonlyArray<Position>;
-  readonly orders: ReadonlyArray<RawOrderFromAPI>;
+  readonly orders: ReadonlyArray<OrderFact>;
   readonly startupSeatSearch: StartupSeatSearch;
   readonly canContinue: () => boolean;
   readonly now: () => Date;

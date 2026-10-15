@@ -657,7 +657,7 @@ rg -n "\.(push|scheduleLatest)\(|onTaskAdded|scheduleTimer" src/main src/app
 ```powershell
 bun test tests/core/strategy tests/main/businessEventProgram tests/main/monitorDisplayRuntime tests/services/marketMonitor
 bun test tests/app tests/main/lifecycle tests/main/seatRuntimeCleanupDispatcher tests/main/timeWakeupEvaluationProgram
-bun test tests/main/asyncProgram tests/core/signalProcessor tests/main/recovery tests/core/trader/orderMonitor
+bun test tests/main/asyncProgram tests/core/signalProcessor tests/main/recovery tests/application/orderTracking/orderMonitor
 bun format
 bun lint
 bun type-check

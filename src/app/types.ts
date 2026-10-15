@@ -6,7 +6,7 @@ import type {
   SettlementProtectionRecovery,
   SettlementRefreshNeedRecorder,
 } from '../types/settlement.js';
-import type { Config } from 'longbridge';
+import type { BrokerClientFactory } from '../types/brokerClientFactory.js';
 import type {
   RuntimeSymbolValidationInput,
   RuntimeSymbolValidationResult,
@@ -22,13 +22,8 @@ import type {
   TradingDayInfo,
   WarrantListCacheClearer,
 } from '../types/marketPorts.js';
-import type {
-  OrderRecorder,
-  RawOrderFromAPI,
-  RiskChecker,
-  Trader,
-  Unsubscribe,
-} from '../types/services.js';
+import type { OrderRecorder, RiskChecker, Trader, Unsubscribe } from '../types/services.js';
+import type { OrderFact } from '../types/trade.js';
 import type { DailyLossTracker, UnrealizedLossMonitor } from '../types/risk.js';
 import type { TradingSignalStrategy } from '../types/strategy.js';
 import type { SeatSwitchWorkflow } from '../types/monitorContextPorts.js';
@@ -80,7 +75,7 @@ import type {
 } from '../main/lifecycle/types.js';
 import type { DayLifecycleManager } from '../types/timeControlPlane.js';
 import type { Logger } from '../utils/logger/types.js';
-import type { DisplayAccountAndPositionsParams } from '../services/accountDisplay/types.js';
+import type { DisplayAccountAndPositionsParams } from '../types/display.js';
 import type { TimeWakeupRuntime, TimeWakeupRuntimeDeps } from '../main/timeWakeupRuntime/types.js';
 import type {
   GlobalStateDomainDeps,
@@ -384,7 +379,7 @@ export type StartupSnapshotResult =
   | Readonly<{
       kind: 'READY';
       snapshotToken: SnapshotToken;
-      allOrders: ReadonlyArray<RawOrderFromAPI>;
+      allOrders: ReadonlyArray<OrderFact>;
       quotesMap: ReadonlyMap<string, Quote | null>;
       now: Date;
     }>
@@ -437,7 +432,7 @@ export type CreateMonitorContextParams = Readonly<{
  * 使用范围：仅 app 顶层装配与后续 runtime 工厂使用。
  */
 export type PreGateRuntime = Readonly<{
-  config: Config;
+  brokerClientFactory: Pick<BrokerClientFactory, 'createBrokerAccess'>;
   tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;
   warrantListCache: WarrantListCacheClearer;

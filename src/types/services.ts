@@ -1,4 +1,5 @@
 import type { OrderReadStatus, OrderReadType } from './orderReadMetadata.js';
+import type { OrderFact } from './trade.js';
 import type {
   BuySignal,
   DoomsdayClearanceCommand,
@@ -49,48 +50,9 @@ export type PendingOrder = {
 };
 
 /**
- * API 返回的原始订单类型。
- * 类型用途：从 Longbridge 订单 API 接收订单数据时的类型安全结构，作为 fetchAllOrdersFromAPI、refreshOrdersFromAllOrdersForLong/Short 等入参或元素类型。
- * 数据来源：Longbridge 订单 API 返回。
- * 使用范围：OrderRecorder、Trader、orderApiManager 等；全项目可引用。
- */
-export type RawOrderFromAPI = {
-  readonly orderId: string;
-  readonly symbol: string;
-  readonly stockName: string;
-
-  /** 由adapter一次映射的中性方向，新的P1事实/归属消费不反向比较SDK枚举。 */
-  readonly executionSide: 'BUY' | 'SELL';
-
-  /** 由SDK adapter权威映射的执行状态；P1金融/归属reader不再自行比较SDK枚举。 */
-  readonly executionStatus: 'NONE' | 'PARTIAL' | 'FILLED';
-
-  /** SDK adapter穷尽验证的生命周期；业务累计事实不再解析SDK status。 */
-  readonly executionPhase: 'OPEN' | 'TERMINAL';
-  readonly status: OrderReadStatus;
-  readonly orderType: OrderReadType;
-  readonly remark?: string | null;
-  readonly price: string | null;
-  readonly quantity: number;
-  readonly executedPrice: string | null;
-  readonly executedQuantity: number;
-
-  /** SDK 累计成交均价原文 × 累计安全整数数量，非显示均价回乘。 */
-  readonly executedAmount: string;
-
-  /** 真实 execution 流水或匹配 durable 证据；未知时必须显式 null。 */
-  readonly executionTimeMs: number | null;
-
-  /** broker 修订版本，绝不作为 executionTimeMs 的替代值。 */
-  readonly updatedAtMs: number;
-  readonly submittedAt: Date;
-  readonly updatedAt: Date | null;
-};
-
-/**
  * 已成交订单记录。
  * 类型用途：表示单笔已成交订单，用于订单记录器内部存储、成本均价计算、可卖订单列表等。
- * 数据来源：本地记录或由 RawOrderFromAPI 转换/同步得到。
+ * 数据来源：本地记录或由 OrderFact 转换/同步得到。
  * 使用范围：OrderRecorder、RiskChecker、卖出计算、智能平仓等；全项目可引用。
  */
 export type OrderRecord = {
@@ -296,7 +258,7 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
   /** 全 API batch 的归属/累计事实/token 预检与列表/实际覆盖同步提交。 */
   commitRebuildSnapshot: (
     targets: ReadonlyArray<OrderProjectionTarget>,
-    allOrders: ReadonlyArray<RawOrderFromAPI>,
+    allOrders: ReadonlyArray<OrderFact>,
     isCurrent: () => boolean,
     mode: 'ACTIVATION' | 'REBUILD',
   ) => OrderFactBatchCommitResult;
@@ -312,13 +274,13 @@ export interface OrderRecorder extends OrderRecorderPendingSellAndSellable {
   getSellRecordByOrderId: (orderId: string) => OrderRecord | null;
 
   /** 从 API 获取全量订单 */
-  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
+  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<OrderFact>>;
 
   /**
    * 预检同一次全量订单快照中指定标的的重建事实。
    * 不写入本地订单记录；与实际刷新共享同一筛选和分类口径。
    */
-  validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => void;
+  validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<OrderFact>) => void;
 
   /** 获取指定标的的买入订单 */
   getBuyOrdersForSymbol: (symbol: string, isLongSymbol: boolean) => ReadonlyArray<OrderRecord>;
@@ -412,7 +374,7 @@ export interface Trader {
   ) => Promise<ReadonlyArray<PendingOrder>>;
 
   /** 启动阶段种子化订单订阅保留集 */
-  seedOrderHoldSymbols: (orders: ReadonlyArray<RawOrderFromAPI>) => void;
+  seedOrderHoldSymbols: (orders: ReadonlyArray<OrderFact>) => void;
 
   /** 获取订单订阅保留标的集合 */
   getOrderHoldSymbols: () => ReadonlySet<string>;
@@ -457,13 +419,13 @@ export interface Trader {
   canTradeNow: (signalAction: SignalType) => TradeCheckResult;
 
   /** 从 API 获取全量订单 */
-  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
+  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<OrderFact>>;
 
   /** 生命周期午夜清理：重置订单运行态缓存 */
   resetRuntimeState: () => void;
 
   /** 生命周期开盘重建：基于快照恢复订单追踪 */
-  recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<RawOrderFromAPI>) => Promise<void>;
+  recoverOrderTrackingFromSnapshot: (allOrders: ReadonlyArray<OrderFact>) => Promise<void>;
 
   /** 执行交易信号；返回唯一 accepted ID 与准确保留原输入对象的最终报价失败事实 */
   executeSignals: (

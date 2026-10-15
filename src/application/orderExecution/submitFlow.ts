@@ -7,12 +7,7 @@
  * - 在提交成功后注册 orderMonitor 追踪与卖单防重占用
  */
 import { logger } from '../../utils/logger/index.js';
-import {
-  isProgramError,
-  isExternalApiRequestError,
-  isUnconfirmedOrderSubmissionError,
-} from '../../utils/apiFailure/index.js';
-import { isRecord } from '../../utils/helpers/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import {
   compareRatios,
   exactAdd,
@@ -32,12 +27,9 @@ import {
   isTerminalNonFilledCloseConfirmed,
 } from '../../utils/trading/orderStatus.js';
 import type {
-  AcceptedOrderLocalSyncError,
-  BrokerSubmissionStage,
   DoomsdayClearanceOrderCommand,
   OrderActionResult,
   RelatedBuyOrderQuantityValidationParams,
-  SubmitFailureClassification,
   SubmitOrderParams,
   SubmitTargetOrder,
   SubmitTargetOrderDeps,
@@ -47,103 +39,12 @@ import {
   getOrderTypeFromConfig,
   isLiquidationSignal,
 } from '../../domain/order/executionPolicy.js';
+import {
+  createTradeMutationUnknownError,
+  createAcceptedOrderLocalSyncError,
+} from '../../utils/trading/tradeMutation.js';
 import { handleSubmitError } from './submitFailureLogging.js';
 import { createQuantityResolver } from './quantityResolver.js';
-
-/**
- * 判断错误是否携带券商明确返回的业务拒绝码。
- *
- * 只读取 SDK/包装器的结构化字段及其 cause/error 链，不把自由文本当作
- * 可安全跳过订单的事实；六位码与 apiFailure 边界的业务错误码口径一致。
- *
- * @param error 待分类错误
- * @param depth 当前 cause/error 链深度
- * @returns 存在明确的六位业务拒绝码时返回 true
- */
-function hasStructuredBrokerBusinessRejectionCode(error: unknown, depth: number = 0): boolean {
-  if (depth > 2 || !isRecord(error)) {
-    return false;
-  }
-
-  for (const key of ['code', 'errorCode', 'errno'] as const) {
-    const value = error[key];
-    if (typeof value === 'string' && /^\d{6}$/.test(value.trim())) {
-      return true;
-    }
-
-    if (
-      typeof value === 'number' &&
-      Number.isInteger(value) &&
-      value >= 100_000 &&
-      value <= 999_999
-    ) {
-      return true;
-    }
-  }
-
-  for (const key of ['cause', 'error'] as const) {
-    if (hasStructuredBrokerBusinessRejectionCode(error[key], depth + 1)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * 将 broker 已接受后的本地同步异常包装为带订单身份的结构化错误。
- *
- * @param orderId 已由 broker 返回并校验通过的订单 ID
- * @param cause 缓存、追踪或订单记录器的原始失败
- * @returns 可供运行期错误通道识别的本地同步失败
- */
-function createAcceptedOrderLocalSyncError(
-  orderId: string,
-  cause: unknown,
-): AcceptedOrderLocalSyncError {
-  return Object.assign(
-    new Error(`[订单提交] broker 已接受订单但本地同步失败: ${orderId}`, { cause }),
-    {
-      name: 'AcceptedOrderLocalSyncError' as const,
-      orderId,
-    },
-  );
-}
-
-/**
- * 按真实下单阶段分类错误，只有已尝试 SDK submit 且携带结构化业务码的
- * 拒绝可以降级为跳过；其余场景都必须交给上层错误通道处理。
- *
- * @param error 当前失败
- * @param stage broker 下单阶段
- * @returns 不可混淆的错误阶段分类
- */
-function classifySubmitFailure(
-  error: unknown,
-  stage: BrokerSubmissionStage,
-): SubmitFailureClassification {
-  if (isProgramError(error)) {
-    return { kind: 'PRE_SUBMIT_FAILURE' };
-  }
-
-  if (stage.kind === 'BROKER_ACCEPTED') {
-    return { kind: 'POST_ACCEPTANCE_LOCAL_SYNC_FAILURE' };
-  }
-
-  if (stage.kind !== 'BROKER_SUBMISSION_ATTEMPTED') {
-    return { kind: 'PRE_SUBMIT_FAILURE' };
-  }
-
-  if (hasStructuredBrokerBusinessRejectionCode(error)) {
-    return { kind: 'EXPLICIT_BROKER_REJECTION', orderPayload: stage.orderPayload };
-  }
-
-  if (isUnconfirmedOrderSubmissionError(error)) {
-    return { kind: 'UNCONFIRMED_EXTERNAL_SUBMISSION' };
-  }
-
-  return { kind: 'UNCONFIRMED_SUBMISSION' };
-}
 
 /** 已发出的撤单/查询全部落定后才返回或抛错；内部错误优先，保留原错误身份。 */
 async function settleCancelFanout(
@@ -419,7 +320,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     }
 
     const symbolDisplayForLog = formatSymbolDisplay(symbol, signal.symbolName ?? null);
-    let brokerSubmissionStage: BrokerSubmissionStage = { kind: 'PRE_SUBMIT' };
     const finalAuthorizationAborted = new Error('原 caller 最终提交授权失效');
 
     try {
@@ -532,6 +432,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         const orderPayload: TradeSubmitCommand = {
           symbol,
           side: command.kind,
+          purpose: command.purpose,
           timeInForce: 'DAY',
           submittedQuantity: finalSubmittedQuantity,
           ...(neutralType === 'MO'
@@ -565,8 +466,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
           // adapter 已完成序列化/容量证明，才登记真实提交尝试；PRE_SUBMIT 拒绝不占买入频率。
           if (command.kind === 'BUY') recordBuyAttempt(signal.action);
-
-          brokerSubmissionStage = { kind: 'BROKER_SUBMISSION_ATTEMPTED', orderPayload };
         };
         const response = await permit.invoke(async () => {
           if (!authorizeOrderAction('submitOrder.beforeApi') || !isSellSubmissionCurrent())
@@ -576,15 +475,16 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         });
         if (response === null) return { kind: 'SKIPPED' };
 
+        if (response.kind === 'REJECTED') {
+          handleSubmitError(response, signal, orderPayload);
+          return { kind: 'SKIPPED' };
+        }
+
+        if (response.kind === 'UNKNOWN') throw createTradeMutationUnknownError(response);
+
         const { orderId } = response;
         if (typeof orderId !== 'string' || orderId.length === 0)
           throw new TypeError('broker 返回无效 orderId');
-
-        brokerSubmissionStage = {
-          kind: 'BROKER_ACCEPTED',
-          orderId,
-          orderPayload,
-        };
 
         const isLongSymbol = command.direction === 'LONG';
         const isProtectiveLiquidation = isLiquidationSignal(signal);
@@ -630,12 +530,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     } catch (err) {
       // 只接收本轮私有取消身份；任何内部/SDK 错误即使原授权过期仍原样暴露。
       if (err === finalAuthorizationAborted) return { kind: 'SKIPPED' };
-
-      const failure = classifySubmitFailure(err, brokerSubmissionStage);
-      if (failure.kind === 'EXPLICIT_BROKER_REJECTION') {
-        handleSubmitError(err, signal, failure.orderPayload);
-        return { kind: 'SKIPPED' };
-      }
 
       throw err;
     }

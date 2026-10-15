@@ -3,13 +3,14 @@
  * 使用实际归属、金额、边界与双方向过滤路径，证明 prepare 无写、失败不污染已有基线，
  * 并拒绝伪造、跨实例、已变更状态和重复发布的候选；不替代 activation 的真实 O 原子性 oracle。
  */
+
 import { describe, expect, it } from 'bun:test';
-import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { DailyLossTracker, DailyLossTrackerDeps } from '../../../src/types/risk.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
+import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 
 const now = new Date('2026-10-07T04:00:00.000Z');
 const executionTimeMs = now.getTime() - 120_000;
@@ -19,7 +20,7 @@ const monitor: Pick<MonitorConfig, 'monitorSymbol' | 'orderOwnershipMapping'> = 
   orderOwnershipMapping: ['HSI'],
 };
 const relatedTradingSymbols = new Set(['BULL.HK', 'BEAR.HK']);
-const analysis = createDailyLossOrderAnalysisDeps();
+const analysis = orderAnalysis;
 
 function order(params: {
   readonly orderId: string;
@@ -29,7 +30,7 @@ function order(params: {
   readonly executedAmount: string;
   readonly quantity?: number;
   readonly executedAtMs?: number;
-}): RawOrderFromAPI {
+}): OrderFact {
   const quantity = params.quantity ?? 100;
   const executedAtMs = params.executedAtMs ?? executionTimeMs;
   return {
@@ -162,7 +163,7 @@ const nextOrders = [
   }),
 ];
 
-function candidateOrders(): ReadonlyArray<RawOrderFromAPI> {
+function candidateOrders(): ReadonlyArray<OrderFact> {
   return [...seedOrders, ...nextOrders];
 }
 

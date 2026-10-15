@@ -5,7 +5,7 @@ import {
   interceptNativeDecimalSerialization,
 } from '../../../infrastructure/longbridge/trade/mutationStageFixture.js';
 import { createOrderExecutor } from '../../../../src/application/orderExecution/index.js';
-import { createRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
+import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 import {
   createTradingConfig,
   createMonitorConfig,
@@ -146,10 +146,18 @@ describe('executor actual native submission stages', () => {
     }
   });
 
-  it('issued network uncertainty preserves original error with exactly one native action and no invented ACK', async () => {
+  it('issued network uncertainty is fatal with original cause, exactly one native action and no invented ACK', async () => {
     const fault = new Error('network connection reset after native entry');
     const f = fixture({ remoteFault: fault });
-    expect(await rejection(() => f.execute())).toBe(fault);
+    const error = await rejection(() => f.execute());
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      name: 'TradeMutationUnknownError',
+      operation: 'TradeContext.submitOrder',
+      requestAttempted: true,
+      code: null,
+    });
+    expect(error instanceof Error ? error.cause : null).toBe(fault);
     expect(f.nativeCalls).toHaveLength(1);
     expect(f.trackedIds).toHaveLength(0);
   });

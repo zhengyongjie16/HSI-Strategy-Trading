@@ -1,13 +1,14 @@
 /** O/Daily 共用原 SELL 时间区间，并经真实 RiskChecker 闭合 R1/N1：同毫秒排列、clear 与关联扣减回归。 */
+
 import { expect, test } from 'bun:test';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
 import { createRiskChecker } from '../../src/domain/risk/index.js';
+import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
 import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
 import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
-import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
+import type { OrderFact } from '../../src/types/trade.js';
+import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
-import type { RawOrderFromAPI } from '../../src/types/services.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
 const monitor = createMonitorConfigDouble({
@@ -44,7 +45,7 @@ async function observation(
 
 function commit(
   f: ReturnType<typeof createExecutionFixture>,
-  o: RawOrderFromAPI,
+  o: OrderFact,
   related: ReadonlyArray<string> = [],
 ) {
   if (related.length === 0)
@@ -94,10 +95,7 @@ function commit(
   );
 }
 
-function baseline(
-  f: ReturnType<typeof createExecutionFixture>,
-  orders: ReadonlyArray<RawOrderFromAPI>,
-) {
+function baseline(f: ReturnType<typeof createExecutionFixture>, orders: ReadonlyArray<OrderFact>) {
   const prepared = f.daily.prepareRecalculationFromAllOrders(orders, monitor, new Date(T));
   expect(
     f.recorder.commitRebuildSnapshot(

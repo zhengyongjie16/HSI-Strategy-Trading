@@ -4,67 +4,95 @@
  * 功能：
  * - 验证完整业务仿真端到端场景与业务期望。
  */
+
 import { afterEach, describe, expect, it } from 'bun:test';
-import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
-import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
-import { createStaticLiquidationExecutor } from '../../src/application/staticLiquidation/index.js';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
-import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import type { Position } from '../../src/types/account.js';
-import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
-import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createSignal } from '../../mock/factories/signalFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import type { OrderExecutor } from '../../src/application/orderExecution/types.js';
-import type { SymbolRegistry } from '../../src/types/seat.js';
 import type {
   PostTradeConsistencyRuntime,
   PostTradeConsistencyRuntimeDeps,
 } from '../../src/app/types.js';
-import { timeWakeupEvaluationProgram } from '../../src/runtime/timeWakeupEvaluationProgram/index.js';
-import { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
+import { createAutoSearch } from '../../src/application/autoSearch/index.js';
+import type { OrderExecutor } from '../../src/application/orderExecution/types.js';
+import { createOrderHoldRegistry } from '../../src/application/orderTracking/orderHoldRegistry.js';
+import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
+import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
+import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
+import { createStaticLiquidationExecutor } from '../../src/application/staticLiquidation/index.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
+import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
+import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
 import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
-import { createSellProcessor } from '../../src/runtime/asyncProgram/sellProcessor/index.js';
+import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
-import { createMonitorTaskRuntimeFixture } from '../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
+import { createSellProcessor } from '../../src/runtime/asyncProgram/sellProcessor/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
-import { createAutoSearch } from '../../src/application/autoSearch/index.js';
-import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
-import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
-import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
+import { createAutoSearchWakeupRuntime } from '../../src/runtime/autoSearchWakeupRuntime/index.js';
+import { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
 import { createDefaultMonitorQuoteEventRuntime } from '../../src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
 import { createSwitchWakeupRuntime } from '../../src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { createPeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/index.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import { createAutoSearchWakeupRuntime } from '../../src/runtime/autoSearchWakeupRuntime/index.js';
 import { createSeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/index.js';
-import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
-import { createSignal } from '../../mock/factories/signalFactory.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import type { NormalizedCandle } from '../../src/types/data.js';
-import type { LastState, MonitorContext } from '../../src/types/state.js';
+import { timeWakeupEvaluationProgram } from '../../src/runtime/timeWakeupEvaluationProgram/index.js';
+import type { Position } from '../../src/types/account.js';
+import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
 import type { MonitorConfig, TradingConfig } from '../../src/types/config.js';
-import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
+import type { NormalizedCandle } from '../../src/types/data.js';
 import type {
-  CandlestickUpdatedEvent,
   CandlestickCacheSnapshot,
-  QuoteUpdatedEvent,
+  CandlestickUpdatedEvent,
   MarketDataClient,
+  QuoteUpdatedEvent,
 } from '../../src/types/marketPorts.js';
+import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
+import type { SymbolRegistry } from '../../src/types/seat.js';
 import type {
-  OrderStateChangedEvent,
-  Trader,
   OrderRecorder,
+  OrderStateChangedEvent,
   RiskChecker,
-  RawOrderFromAPI,
+  Trader,
 } from '../../src/types/services.js';
+import type { LastState, MonitorContext } from '../../src/types/state.js';
+import type { OrderFact } from '../../src/types/trade.js';
+import { toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { createWarrantCandidateWithOverrides } from '../helpers/seatTestUtils.js';
+import {
+  createAutoSearchWakeupRuntimeDouble,
+  createDoomsdayClearanceWorkflowDouble,
+  createLiquidationCooldownTrackerDouble,
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createMonitorContextDouble,
+  createPeriodicSwitchWakeupRuntimeDouble,
+  createPositionDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createQuoteDouble,
+  createQuoteSubscriptionRuntimeDouble,
+  createRateLimiterDouble,
+  createRiskCheckerDouble,
+  createSeatActivationDispatcherDouble,
+  createSeatRuntimeCleanupDispatcherDouble,
+  createStrategyDouble,
+  createSymbolRegistryDouble,
+  createTerminationDouble,
+  createTraderDouble,
+  createTradingGateEventRuntimeDouble,
+  createWarrantDistanceInfoDouble,
+} from '../helpers/testDoubles.js';
+import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
+import { waitUntil } from '../main/asyncProgram/utils.js';
+import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { createMonitorTaskRuntimeFixture } from '../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 function rethrowFatalError(error: unknown): never {
   throw error;
@@ -79,34 +107,6 @@ const ASYNC_PROCESSOR_RUNTIME = {
     },
   },
 };
-
-import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
-import {
-  createStrategyDouble,
-  createTerminationDouble,
-  createDoomsdayClearanceWorkflowDouble,
-  createMarketDataClientDouble,
-  createMonitorConfigDouble,
-  createLoggerDouble,
-  createPositionDouble,
-  createAutoSearchWakeupRuntimeDouble,
-  createPeriodicSwitchWakeupRuntimeDouble,
-  createQuoteSubscriptionRuntimeDouble,
-  createQuoteDouble,
-  createRateLimiterDouble,
-  createLiquidationCooldownTrackerDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createRiskCheckerDouble,
-  createSeatActivationDispatcherDouble,
-  createSeatRuntimeCleanupDispatcherDouble,
-  createSymbolRegistryDouble,
-  createTradingGateEventRuntimeDouble,
-  createTraderDouble,
-  createWarrantDistanceInfoDouble,
-  createMonitorContextDouble,
-} from '../helpers/testDoubles.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
-import { createWarrantCandidateWithOverrides } from '../helpers/seatTestUtils.js';
 
 function createTradingGateEventRuntime() {
   return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
@@ -183,7 +183,7 @@ async function createSimulationOrderRecorder(
           ],
     ),
   );
-  const orders: RawOrderFromAPI[] = [];
+  const orders: OrderFact[] = [];
   for (const frame of frames) {
     const [order] = await ingress.createQueryOrdersReader(frame.orderId)();
     if (order === undefined) throw new Error('Simulation native observation missing');
@@ -256,7 +256,7 @@ function simulationExecutionFrame(
 function createSimulationDailyLossTracker(): DailyLossTracker {
   return createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
   });
 }

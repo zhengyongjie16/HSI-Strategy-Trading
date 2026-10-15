@@ -613,6 +613,30 @@ export default defineConfig(
     },
   },
   {
+    files: ['src/infrastructure/display/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: String.raw`^(?:\.\./)+app/.+`,
+              message: 'display adapter 不得反向依赖 app 层',
+            },
+            {
+              regex: String.raw`^(?:\.\./)+main/.+`,
+              message: 'display adapter 不得依赖 main 层',
+            },
+            {
+              regex: String.raw`^(?:\.\./)+core/.+`,
+              message: 'display adapter 不得依赖 core 层',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['src/core/**/*.ts', 'src/config/**/*.ts', 'src/utils/**/*.ts'],
     rules: {
       'no-restricted-imports': [

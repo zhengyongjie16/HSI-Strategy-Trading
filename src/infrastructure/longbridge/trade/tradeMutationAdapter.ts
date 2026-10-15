@@ -17,9 +17,16 @@ import type {
   TradeReplaceCommand,
   TradeSubmitCommand,
   TradeSubmitResult,
+  TradeReplaceResult,
+  TradeCancelResult,
 } from '../../../types/tradeMutationPorts.js';
 import { canonicalDecimal, exactCompare } from '../../../utils/numeric/exact.js';
 import { isRecord } from '../../../utils/helpers/index.js';
+import {
+  classifyCancelRequestError,
+  classifyReplaceRequestError,
+  classifySubmitRequestError,
+} from './mutationErrorClassification.js';
 
 /** 验证原动作所需的正价格文本；内部格式错误不转换成 broker 业务拒绝。 */
 function positivePriceText(text: string): string {
@@ -116,9 +123,9 @@ function requireIdentity(value: string): void {
 
 /**
  * 装配原 submit/replace/cancel IO 的最窄中性能力。
- * 原 caller 仍负责 PRE_SUBMIT 校验、最终授权、callback permit、限流及 broker failure 分类。
+ * 原 caller 仍负责 PRE_SUBMIT 校验、最终授权、callback permit、限流及 retry/权威状态确认。
  * @param context 同一真实 TradeContext 的 mutation 方法，不构造或复制 SDK context
- * @returns 仅返回中性订单身份/void 的 IO port
+ * @returns 返回单次请求中性结果的 IO port，不把 ACK 当成 terminal
  */
 export function createTradeMutationAdapter(context: unknown): TradeMutationPort {
   if (
@@ -161,19 +168,28 @@ export function createTradeMutationAdapter(context: unknown): TradeMutationPort 
       ...(command.remark === undefined ? {} : { remark: command.remark }),
     };
     onRemoteIssued();
-    const response = await ctx.submitOrder(nativeCommand);
-    const orderId = response.orderId;
-    if (typeof orderId !== 'string' || orderId.length === 0) {
-      throw new Error('submitOrder response missing valid orderId');
-    }
+    try {
+      const response: unknown = await ctx.submitOrder(nativeCommand);
+      const orderId = isRecord(response) ? response['orderId'] : undefined;
+      if (typeof orderId !== 'string' || orderId.trim().length === 0) {
+        return classifySubmitRequestError(new Error('submitOrder response missing valid orderId'));
+      }
 
-    return Object.freeze({ orderId });
+      return Object.freeze({
+        kind: 'ACCEPTED',
+        operation: 'TradeContext.submitOrder',
+        requestAttempted: true,
+        orderId,
+      });
+    } catch (cause) {
+      return classifySubmitRequestError(cause);
+    }
   }
 
   async function replaceOrder(
     command: TradeReplaceCommand,
     onRemoteIssued: () => void,
-  ): Promise<void> {
+  ): Promise<TradeReplaceResult> {
     requireIdentity(command.orderId);
     const quantity = quantityText(command.quantity);
     const price = positivePriceText(command.price);
@@ -183,8 +199,34 @@ export function createTradeMutationAdapter(context: unknown): TradeMutationPort 
       price: serializeBrokerDecimal(price),
     };
     onRemoteIssued();
-    await ctx.replaceOrder(nativeCommand);
+    try {
+      await ctx.replaceOrder(nativeCommand);
+      return Object.freeze({
+        kind: 'ACKNOWLEDGED',
+        operation: 'TradeContext.replaceOrder',
+        requestAttempted: true,
+      });
+    } catch (cause) {
+      return classifyReplaceRequestError(cause);
+    }
   }
 
-  return { submitOrder, replaceOrder, cancelOrder: (orderId) => ctx.cancelOrder(orderId) };
+  async function cancelOrder(orderId: string): Promise<TradeCancelResult> {
+    requireIdentity(orderId);
+    if (typeof ctx.cancelOrder !== 'function')
+      throw new TypeError('[TradeMutationAdapter] missing injected SDK cancel capability');
+
+    try {
+      await ctx.cancelOrder(orderId);
+      return Object.freeze({
+        kind: 'ACKNOWLEDGED',
+        operation: 'TradeContext.cancelOrder',
+        requestAttempted: true,
+      });
+    } catch (cause) {
+      return classifyCancelRequestError(cause);
+    }
+  }
+
+  return { submitOrder, replaceOrder, cancelOrder };
 }

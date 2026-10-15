@@ -3,13 +3,14 @@
  * 真实 snapshot/recorder/risk 共享事实；这里只调用已稳定的事实入口，
  * 不冒充尚未接通的 activation 或 SDK push/settlement 自然事件链。
  */
+
 import { expect, it } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
+import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
 import type { AccountSnapshot, Position } from '../../../src/types/account.js';
 import type { BrokerOrderExecutionFact } from '../../../src/types/orderRecorder.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import { createOfflineBrokerPort } from './offlinePorts.js';
 
 it('does not double a projected BUY during a real account wait and preserves total-positive available-zero truth', async () => {
@@ -33,7 +34,7 @@ it('does not double a projected BUY during a real account wait and preserves tot
     updatedAtMs: 1030,
     phase: 'TERMINAL',
   };
-  const query: RawOrderFromAPI = {
+  const query: OrderFact = {
     orderId: buy.brokerOrderId,
     symbol: buy.symbol,
     stockName: 'await',

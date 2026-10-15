@@ -24,12 +24,12 @@ import {
   createLoggerDouble,
   createMarketDataClientDouble,
   createPositionDouble,
-  createSdkConfigDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../../../src/app/types.js';
-import type { TraderDeps } from '../../../src/core/trader/types.js';
+import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
+import type { TraderDeps } from '../../../src/app/runtime/types.js';
 import type { OrderStateChangedEvent } from '../../../src/types/services.js';
 
 const TEST_TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'post-gate-runtime-'));
@@ -110,7 +110,7 @@ function createRuntimeParams(
     },
     cleanup: createCleanup(),
     preGateRuntime: {
-      config: createSdkConfigDouble(),
+      brokerClientFactory: createBrokerClientFactoryDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry: createSymbolRegistryDouble(),
       warrantListCache: warrantListCache,

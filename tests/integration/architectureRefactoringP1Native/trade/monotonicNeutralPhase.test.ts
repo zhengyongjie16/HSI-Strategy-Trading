@@ -1,11 +1,8 @@
 import { expect, test } from 'bun:test';
+import { mergeMonotonicOrderFact } from '../../../../src/domain/order/orderFactMerge.js';
+import type { KnownOrderFact, OrderObservedFact } from '../../../../src/domain/order/types.js';
+import type { OrderFact } from '../../../../src/types/trade.js';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { mergeMonotonicOrderFact } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
-import type {
-  KnownOrderFact,
-  OrderObservedFact,
-} from '../../../../src/core/trader/orderMonitor/types.js';
-import type { RawOrderFromAPI } from '../../../../src/types/services.js';
 
 const input = {
   orderId: 'PHASE',
@@ -23,7 +20,7 @@ const input = {
   executionTimeMs: 1700000000100,
   updatedAtMs: 1700000000200,
 };
-function known(order: RawOrderFromAPI): KnownOrderFact {
+function known(order: OrderFact): KnownOrderFact {
   return {
     orderId: order.orderId,
     symbol: order.symbol,
@@ -40,7 +37,7 @@ function known(order: RawOrderFromAPI): KnownOrderFact {
   };
 }
 
-function observed(order: RawOrderFromAPI): OrderObservedFact {
+function observed(order: OrderFact): OrderObservedFact {
   return {
     status: order.status,
     executionPhase: order.executionPhase,

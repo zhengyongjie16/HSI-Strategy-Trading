@@ -33,9 +33,9 @@ export type ApiKeyAuthConfig = {
 
 /**
  * 已完成必填字段解析的 OAuth 认证配置。
- * 类型用途：供统一 SDK Config 工厂安全创建 OAuth Config。
+ * 类型用途：向 infrastructure 认证工厂提供已校验的中性 OAuth 参数。
  * 数据来源：由 config/auth/index 在确认必填字段完整后构造。
- * 使用范围：仅 config/auth 模块使用。
+ * 使用范围：config/auth 与 infrastructure 认证工厂。
  */
 export type ResolvedOAuthAuthConfig = {
   readonly mode: 'oauth';
@@ -45,9 +45,9 @@ export type ResolvedOAuthAuthConfig = {
 
 /**
  * 已完成必填字段解析的 API Key 认证配置。
- * 类型用途：供统一 SDK Config 工厂安全创建 API Key Config。
+ * 类型用途：向 infrastructure 认证工厂提供已校验的中性 API Key 参数。
  * 数据来源：由 config/auth/index 在确认必填字段完整后构造。
- * 使用范围：仅 config/auth 模块使用。
+ * 使用范围：config/auth 与 infrastructure 认证工厂。
  */
 export type ResolvedApiKeyAuthConfig = {
   readonly mode: 'apikey';
@@ -58,21 +58,26 @@ export type ResolvedApiKeyAuthConfig = {
 
 /**
  * 已解析完成的统一认证配置联合类型。
- * 类型用途：表达可直接用于创建 SDK Config 的认证配置。
+ * 类型用途：表达已校验的认证模式及其原始文本参数，不携带 SDK 认证句柄。
  * 数据来源：由 config/auth/index 在校验通过后构造。
- * 使用范围：仅 config/auth 模块使用。
+ * 使用范围：config/auth 与 infrastructure 认证工厂。
  */
 export type ResolvedAuthConfig = ResolvedOAuthAuthConfig | ResolvedApiKeyAuthConfig;
 
 /**
- * 统一 SDK Config 创建参数。
- * 类型用途：封装 createSdkConfigFromAuth 所需环境变量与 OAuth 授权 URL 回调。
- * 数据来源：由启动入口传入。
- * 使用范围：仅 config/auth 模块使用。
+ * Longbridge 中性扩展配置。
+ * 数据来源：由 config/auth/utils 读取环境变量文本、布尔值与内部模式标签。
+ * 使用范围：配置读取与 infrastructure extra 参数映射，不携带 SDK enum。
  */
-export type CreateSdkConfigFromAuthParams = {
-  readonly env: NodeJS.ProcessEnv;
-  readonly onOpenUrl?: (url: string) => void;
+export type LongbridgeExtraConfig = {
+  readonly httpUrl?: string;
+  readonly quoteWsUrl?: string;
+  readonly tradeWsUrl?: string;
+  readonly language?: 'zh-CN' | 'zh-HK' | 'en';
+  readonly enableOvernight?: boolean;
+  readonly pushCandlestickMode?: 'realtime' | 'confirmed';
+  readonly enablePrintQuotePackages?: boolean;
+  readonly logPath?: string;
 };
 
 /**

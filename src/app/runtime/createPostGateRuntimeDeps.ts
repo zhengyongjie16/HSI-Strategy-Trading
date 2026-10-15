@@ -1,5 +1,5 @@
 /** 生产 post-gate 默认依赖；测试只替换本私有装配模块。 */
-import { createTrader } from '../../core/trader/index.js';
+import { createTrader } from './createTrader.js';
 import { createMonitorContext } from '../context/createMonitorContext.js';
 import { createMixedTradeLogRepository } from '../../infrastructure/persistence/mixedTradeLogRepository/index.js';
 

@@ -11,7 +11,7 @@ import { Period } from 'longbridge';
 import { createPushCandlestickEvent } from '../../../../mock/factories/quoteFactory.js';
 import { createQuoteContextMock } from '../../../../mock/longbridge/quoteContextMock.js';
 import { createMarketDataClient } from '../../../../src/infrastructure/longbridge/market/quoteClient.js';
-import { createSdkConfigDouble } from '../../../helpers/testDoubles.js';
+import { createSdkConfigDouble } from '../trade/sdkConfigDouble.js';
 
 class TestDecimal {
   private readonly value: number;

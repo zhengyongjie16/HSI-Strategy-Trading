@@ -2,7 +2,7 @@ import type { StrategyDisplayItem } from '../../types/strategy.js';
 import type { MonitorConfig } from '../../types/config.js';
 import type { LastState } from '../../types/state.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
-import type { MarketMonitor } from '../../services/marketMonitor/types.js';
+import type { MarketMonitor } from '../../types/display.js';
 
 /**
  * monitor 显示 route 状态。

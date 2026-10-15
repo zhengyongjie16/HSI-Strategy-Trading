@@ -593,12 +593,83 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
       );
   };
 
+  /** 仅单次 mutation 失败结果的原始证据可为 unknown；不能借 cause 字段输出任意能力。 */
+  function mutationFailureEvidence(type: ts.Type, location: ts.Node): boolean {
+    if (type.isUnion()) return false;
+
+    const properties = type.getProperties();
+    const propertyType = (name: string): ts.Type | undefined => {
+      const property = type.getProperty(name);
+      return property === undefined || (property.flags & ts.SymbolFlags.Optional) !== 0
+        ? undefined
+        : checker.getTypeOfSymbolAtLocation(property, location);
+    };
+    const literals = (value: ts.Type | undefined, allowed: ReadonlyArray<string>): boolean =>
+      value !== undefined &&
+      (value.isUnion() ? value.types : [value]).every(
+        (part) => part.isStringLiteral() && allowed.includes(part.value),
+      );
+    const operation = propertyType('operation');
+    if (!operation?.isStringLiteral()) return false;
+
+    const kinds: Readonly<Record<string, ReadonlyArray<string>>> = {
+      'TradeContext.submitOrder': ['REJECTED', 'UNKNOWN'],
+      'TradeContext.replaceOrder': [
+        'REJECTED',
+        'ORDER_ALREADY_CLOSED',
+        'RETRYABLE_EXTERNAL_ERROR',
+        'UNKNOWN',
+      ],
+      'TradeContext.cancelOrder': [
+        'STATE_CONFIRMATION_REQUIRED',
+        'RETRYABLE_EXTERNAL_ERROR',
+        'UNKNOWN',
+      ],
+    };
+    const allowedKinds = kinds[operation.value];
+    const kind = propertyType('kind');
+    const attempted = propertyType('requestAttempted');
+    const code = propertyType('code');
+    const cause = propertyType('cause');
+    if (
+      allowedKinds === undefined ||
+      !literals(kind, allowedKinds) ||
+      attempted === undefined ||
+      (attempted.flags & ts.TypeFlags.BooleanLiteral) === 0 ||
+      checker.typeToString(attempted) !== 'true' ||
+      code === undefined ||
+      !(code.isUnion() ? code.types : [code]).every(
+        (part) => (part.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.Null)) !== 0,
+      ) ||
+      cause?.flags !== ts.TypeFlags.Unknown ||
+      type.getCallSignatures().length > 0 ||
+      type.getConstructSignatures().length > 0 ||
+      checker.getIndexInfosOfType(type).length > 0
+    )
+      return false;
+
+    const rejectedReplace =
+      operation.value === 'TradeContext.replaceOrder' &&
+      kind?.isStringLiteral() === true &&
+      kind.value === 'REJECTED';
+    const fields = ['operation', 'requestAttempted', 'kind', 'code', 'cause'];
+    if (rejectedReplace) fields.push('reason');
+
+    return (
+      properties.length === fields.length &&
+      properties.every((property) => fields.includes(property.name)) &&
+      (!rejectedReplace ||
+        literals(propertyType('reason'), ['UNSUPPORTED_BY_TYPE', 'TEMP_BLOCKED_BY_STATUS']))
+    );
+  }
+
   /** 边界类型只回答 SDK 是否泄漏；不证明金融计算、不可变性或场景真实性。 */
   function neutralType(
     type: ts.Type,
     location: ts.Node,
     seen = new Set<ts.Type>(),
     input = false,
+    evidenceAllowed = true,
   ): boolean {
     if (seen.has(type)) return true;
 
@@ -609,8 +680,11 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
 
     if (containsSdkType(type, location, new Set())) return false;
 
+    // 先核整个交叉分支，不能把独立 { cause: unknown } 片段也当作错误协议。
+    if (mutationFailureEvidence(type, location)) return evidenceAllowed;
+
     if (type.isUnionOrIntersection())
-      return type.types.every((part) => neutralType(part, location, seen, input));
+      return type.types.every((part) => neutralType(part, location, seen, input, evidenceAllowed));
 
     if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
 
@@ -620,7 +694,7 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
       (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference &&
       !checker
         .getTypeArguments(type as ts.TypeReference)
-        .every((part) => neutralType(part, location, seen, input))
+        .every((part) => neutralType(part, location, seen, input, evidenceAllowed))
     )
       return false;
 
@@ -630,25 +704,32 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
         .getProperties()
         .filter((property) => property.declarations?.some(local))
         .every((property) =>
-          neutralType(checker.getTypeOfSymbolAtLocation(property, location), location, seen, input),
+          neutralType(
+            checker.getTypeOfSymbolAtLocation(property, location),
+            location,
+            seen,
+            input,
+            evidenceAllowed,
+          ),
         ) &&
       [...type.getCallSignatures(), ...type.getConstructSignatures()]
         .filter((signature) => signature.declaration !== undefined && local(signature.declaration))
         .every(
           (signature) =>
-            neutralType(signature.getReturnType(), location, seen) &&
+            neutralType(signature.getReturnType(), location, seen, false, evidenceAllowed) &&
             signature.parameters.every((parameter) =>
               neutralType(
                 checker.getTypeOfSymbolAtLocation(parameter, location),
                 location,
                 new Set(seen),
                 true,
+                evidenceAllowed,
               ),
             ),
         ) &&
       checker
         .getIndexInfosOfType(type)
-        .every((index) => neutralType(index.type, location, seen, input))
+        .every((index) => neutralType(index.type, location, seen, input, evidenceAllowed))
     );
   }
 
@@ -813,6 +894,60 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
     );
   }
 
+  const reassignedBindings = new WeakMap<ts.SourceFile, ReadonlySet<ts.Symbol>>();
+
+  /** 证据来源只信任未重赋值的绑定；按 symbol 扫描整个声明文件，不推演分支或调用时序。 */
+  function stableEvidenceBinding(symbol: ts.Symbol | undefined): boolean {
+    const declaration = symbol?.valueDeclaration;
+    if (symbol === undefined || declaration === undefined) return false;
+
+    const source = declaration.getSourceFile();
+    let assigned = reassignedBindings.get(source);
+    if (assigned === undefined) {
+      const writes = new Set<ts.Symbol>();
+      const target = (node: ts.Node): void => {
+        if (ts.isIdentifier(node)) {
+          const binding = actualSymbol(node);
+          if (binding !== undefined) writes.add(binding);
+        } else if (
+          ts.isParenthesizedExpression(node) ||
+          ts.isAsExpression(node) ||
+          ts.isTypeAssertionExpression(node) ||
+          ts.isNonNullExpression(node) ||
+          ts.isSpreadElement(node) ||
+          ts.isSpreadAssignment(node)
+        )
+          target(node.expression);
+        else if (ts.isArrayLiteralExpression(node)) {
+          for (const element of node.elements) target(element);
+        } else if (ts.isObjectLiteralExpression(node)) {
+          for (const property of node.properties) target(property);
+        } else if (ts.isPropertyAssignment(node)) target(node.initializer);
+        else if (ts.isShorthandPropertyAssignment(node)) target(node.name);
+        else if (ts.isBinaryExpression(node)) target(node.left);
+      };
+      visit(source, (node) => {
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+        )
+          target(node.left);
+        else if (
+          (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+          (node.operator === ts.SyntaxKind.PlusPlusToken ||
+            node.operator === ts.SyntaxKind.MinusMinusToken)
+        )
+          target(node.operand);
+        else if (ts.isForOfStatement(node) || ts.isForInStatement(node)) target(node.initializer);
+      });
+      assigned = writes;
+      reassignedBindings.set(source, assigned);
+    }
+
+    return !assigned.has(symbol);
+  }
+
   /** 检查实际出口，展开直接局部别名/对象/返回函数，防注解或 cast 隐藏额外 raw 字段。
    * 不解释控制流、循环、内建函数或 mapper 的业务算法。
    */
@@ -820,6 +955,8 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
     expression: ts.Expression,
     seen: Set<ts.Node>,
     inputs: ReadonlyMap<ts.Symbol, ts.Expression> = new Map(),
+    mutationCause = false,
+    mutationFragment = false,
   ): boolean {
     if (seen.has(expression)) return true;
 
@@ -831,9 +968,61 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
       ts.isSatisfiesExpression(expression) ||
       ts.isAwaitExpression(expression)
     )
-      return neutralReturn(expression.expression, next, inputs);
+      return neutralReturn(expression.expression, next, inputs, mutationCause, mutationFragment);
 
-    if (!neutralType(checker.getTypeAtLocation(expression), expression)) return false;
+    const expressionType = checker.getTypeAtLocation(expression);
+    if (
+      ts.isIdentifier(expression) &&
+      (mutationCause ||
+        mutationFragment ||
+        !neutralType(expressionType, expression, new Set(), false, false)) &&
+      !stableEvidenceBinding(actualSymbol(expression))
+    )
+      return false;
+
+    if (
+      mutationCause &&
+      expressionType.flags === ts.TypeFlags.Unknown &&
+      ts.isIdentifier(expression)
+    ) {
+      const symbol = actualSymbol(expression);
+      const declaration = symbol?.valueDeclaration;
+      const supplied = symbol === undefined ? undefined : inputs.get(symbol);
+      if (
+        declaration !== undefined &&
+        ts.isParameter(declaration) &&
+        declaration.initializer !== undefined &&
+        !neutralReturn(declaration.initializer, next, inputs, true)
+      )
+        return false;
+
+      if (supplied !== undefined) return neutralReturn(supplied, next, inputs, true);
+
+      if (declaration !== undefined && ts.isVariableDeclaration(declaration)) {
+        if (declaration.initializer !== undefined)
+          return neutralReturn(declaration.initializer, next, inputs, true);
+
+        return ts.isCatchClause(declaration.parent);
+      }
+
+      return declaration !== undefined && ts.isParameter(declaration);
+    }
+
+    // 完整失败结构内的 spread 仍逐字段核验；片段离开该结构就没有 unknown 出口资格。
+    const evidenceFields =
+      mutationFragment &&
+      expressionType.getCallSignatures().length === 0 &&
+      expressionType.getConstructSignatures().length === 0 &&
+      checker.getIndexInfosOfType(expressionType).length === 0 &&
+      expressionType.getProperties().length > 0 &&
+      expressionType.getProperties().every((property) => {
+        const value = checker.getTypeOfSymbolAtLocation(property, expression);
+        return property.name === 'cause'
+          ? value.flags === ts.TypeFlags.Unknown
+          : ['operation', 'requestAttempted', 'kind', 'code', 'reason'].includes(property.name) &&
+              neutralType(value, expression);
+      });
+    if (!evidenceFields && !neutralType(expressionType, expression)) return false;
 
     if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
       const value = localValue(expression, inputs);
@@ -878,8 +1067,16 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
         )
           return true;
 
-        return neutralReturn(declaration.initializer, next, inputs);
+        return neutralReturn(declaration.initializer, next, inputs, false, evidenceFields);
       }
+
+      if (
+        declaration !== undefined &&
+        ts.isParameter(declaration) &&
+        declaration.initializer !== undefined &&
+        !neutralReturn(declaration.initializer, next, inputs)
+      )
+        return false;
 
       const fn = implementation(expression);
       if (fn !== undefined) return neutralFunction(fn, false, next, inputs);
@@ -898,14 +1095,25 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
 
     if (ts.isObjectLiteralExpression(expression))
       return expression.properties.every((property) => {
+        const evidence =
+          (evidenceFields || mutationFailureEvidence(expressionType, expression)) &&
+          property.name !== undefined &&
+          (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
+          property.name.text === 'cause';
         if (ts.isPropertyAssignment(property))
-          return neutralReturn(property.initializer, next, inputs);
+          return neutralReturn(property.initializer, next, inputs, evidence);
 
         if (ts.isShorthandPropertyAssignment(property))
-          return neutralReturn(property.name, next, inputs);
+          return neutralReturn(property.name, next, inputs, evidence);
 
         if (ts.isSpreadAssignment(property))
-          return neutralReturn(property.expression, next, inputs);
+          return neutralReturn(
+            property.expression,
+            next,
+            inputs,
+            false,
+            evidenceFields || mutationFailureEvidence(expressionType, expression),
+          );
 
         return (
           (ts.isMethodDeclaration(property) || ts.isGetAccessorDeclaration(property)) &&
@@ -917,8 +1125,10 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
       return neutralFunction(expression, false, seen, inputs);
 
     if (ts.isNewExpression(expression))
-      return (expression.arguments ?? []).every((argument) =>
-        neutralReturn(argument, next, inputs),
+      return (
+        // 构造器的回调输入不是已证明的失败结果来源；不推演 executor 的控制流。
+        neutralType(expressionType, expression, new Set(), false, false) &&
+        (expression.arguments ?? []).every((argument) => neutralReturn(argument, next, inputs))
       );
 
     if (ts.isCallExpression(expression)) {
@@ -930,9 +1140,29 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
           return false;
       }
 
-      // 外部声明调用只检查已经核过的返回类型；不猜测注入 native handle 的运行时成员。
       const signature = checker.getResolvedSignature(expression)?.declaration;
-      if (signature?.getSourceFile().isDeclarationFile) return true;
+      // 依赖 cause 例外的外部调用须有可展开的中性证据来源，且所有实参均安全。
+      // 不按 built-in 名称放行，也不猜测声明文件函数的实现或合并/转换语义。
+      if (signature?.getSourceFile().isDeclarationFile) {
+        if (neutralType(expressionType, expression, new Set(), false, false)) return true;
+
+        return (
+          expression.arguments.some((argument) => {
+            const source = checker.getTypeAtLocation(argument);
+            return (
+              source.getCallSignatures().length === 0 &&
+              source.getConstructSignatures().length === 0 &&
+              !neutralType(source, argument, new Set(), false, false)
+            );
+          }) &&
+          expression.arguments.every((argument) => neutralReturn(argument, next, inputs)) &&
+          (!(
+            ts.isPropertyAccessExpression(expression.expression) ||
+            ts.isElementAccessExpression(expression.expression)
+          ) ||
+            neutralReturn(expression.expression.expression, next, inputs))
+        );
+      }
 
       const reference = localValue(expression.expression, inputs);
       if (reference === undefined) return false;
@@ -960,10 +1190,28 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
     seen = new Set<ts.Node>(),
     inputs: ReadonlyMap<ts.Symbol, ts.Expression> = new Map(),
   ): boolean {
-    if (seen.has(fn)) return false;
+    const signature = checker.getSignatureFromDeclaration(fn);
+    if (seen.has(fn)) {
+      // 已检查的递归标量解析器没有对象/回调出口；不能把递归本身误当 SDK 能力。
+      const result = signature?.getReturnType();
+      return (
+        result !== undefined &&
+        (result.isUnion() ? result.types : [result]).every(
+          (part) =>
+            (part.flags &
+              (ts.TypeFlags.StringLike |
+                ts.TypeFlags.NumberLike |
+                ts.TypeFlags.BooleanLike |
+                ts.TypeFlags.Null |
+                ts.TypeFlags.Undefined |
+                ts.TypeFlags.Void |
+                ts.TypeFlags.Never)) !==
+            0,
+        )
+      );
+    }
 
     const next = new Set(seen).add(fn);
-    const signature = checker.getSignatureFromDeclaration(fn);
     if (signature === undefined || !neutralType(signature.getReturnType(), fn)) return false;
 
     if (

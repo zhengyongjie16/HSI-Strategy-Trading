@@ -4,10 +4,10 @@
  * 功能：
  * - 验证保护性清仓边界推进后的分段过滤、幂等重置与启动恢复边界语义。
  */
+
 import { describe, expect, it } from 'bun:test';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
-import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { OrderOwnership } from '../../../src/types/orderRecorder.js';
 import type {
@@ -15,23 +15,24 @@ import type {
   DailyLossOrderSnapshot,
   DailyLossTracker,
 } from '../../../src/types/risk.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
+import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 
 /** 直接提供场景中性事实；金额、生命周期及真实执行时间由调用方明确给出，不经过 SDK 映射。 */
 function createExecutedOrder(params: {
   readonly orderId: string;
   readonly symbol: string;
-  readonly executionSide: RawOrderFromAPI['executionSide'];
-  readonly executionStatus: RawOrderFromAPI['executionStatus'];
-  readonly executionPhase: RawOrderFromAPI['executionPhase'];
-  readonly status: RawOrderFromAPI['status'];
+  readonly executionSide: OrderFact['executionSide'];
+  readonly executionStatus: OrderFact['executionStatus'];
+  readonly executionPhase: OrderFact['executionPhase'];
+  readonly status: OrderFact['status'];
   readonly stockName?: string;
   readonly executedPrice: string;
   readonly executedAmount: string;
   readonly executedQuantity: number;
   readonly updatedAtMs: number;
   readonly executionTimeMs: number;
-}): RawOrderFromAPI {
+}): OrderFact {
   return {
     orderId: params.orderId,
     symbol: params.symbol,
@@ -76,7 +77,7 @@ function resolveOrderOwnership(order: DailyLossOrderSnapshot): OrderOwnership | 
 function createSegmentTracker(): DailyLossTracker {
   return createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     resolveOrderOwnership: (order) => resolveOrderOwnership(order),
     toHongKongTimeIso,
   });
@@ -2519,7 +2520,7 @@ describe('dailyLossTracker segment flow', () => {
   it('recalculateFromAllOrders fails fast when a relevant in-day executed order cannot be owned', () => {
     const tracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
     });
@@ -2602,7 +2603,7 @@ describe('dailyLossTracker segment flow', () => {
       expect(tracker.getLossOffset('LONG')).toBe('-10');
 
       const validOrder = testCase.side === 'BUY' ? validBuy : validSell;
-      const invalidOrder: RawOrderFromAPI = {
+      const invalidOrder: OrderFact = {
         ...validOrder,
         orderId: `ordinary-${testCase.side}-missing-updated-at`,
         updatedAt: testCase.updatedAt,
@@ -2619,7 +2620,7 @@ describe('dailyLossTracker segment flow', () => {
   it('rejects a related executed order before a historical timestamp can hide missing ownership', () => {
     const tracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
     });
@@ -2654,7 +2655,7 @@ describe('dailyLossTracker segment flow', () => {
     const tracker = createSegmentTracker();
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
-    const externalUnfilledOrder: RawOrderFromAPI = {
+    const externalUnfilledOrder: OrderFact = {
       ...createExecutedOrder({
         status: 'FILLED',
         executionStatus: 'FILLED',

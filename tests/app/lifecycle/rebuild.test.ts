@@ -15,7 +15,7 @@ import type {
   RebuildTradingDayStateParams,
 } from '../../../src/main/lifecycle/types.js';
 import type { Quote } from '../../../src/types/quote.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
@@ -198,7 +198,7 @@ describe('app rebuild helpers', () => {
   it('executes open rebuild with fixed snapshot flags and shared now', async () => {
     const now = new Date('2026-03-09T09:30:00.000Z');
     const calls: LoadTradingDayRuntimeSnapshotParams[] = [];
-    const allOrders: ReadonlyArray<RawOrderFromAPI> = [
+    const allOrders: ReadonlyArray<OrderFact> = [
       {
         orderId: '1',
         symbol: 'HSI-BULL.HK',

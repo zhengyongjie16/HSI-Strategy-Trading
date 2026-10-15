@@ -2,18 +2,19 @@
  * 激活订单读取栅栏集成。
  * 同一真实 recorder/Daily owner 中 LONG 旧订单读取与 SHORT 新 SELL 交错；旧输入不得覆盖新事实，追赶不消耗外部重试。
  */
+
 import { describe, expect, it, spyOn } from 'bun:test';
-import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
+import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
-import { createSeatActivationFixture } from './fixtures.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createMonitorContext } from '../../main/asyncProgram/utils.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
   createQuoteSubscriptionRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+import { createMonitorContext } from '../../main/asyncProgram/utils.js';
+import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createSeatActivationFixture } from './fixtures.js';
 
 function createExecutedOrder(params: {
   readonly orderId: string;
@@ -23,7 +24,7 @@ function createExecutedOrder(params: {
   readonly amount: string;
   readonly timeMs: number;
   readonly stockName: string;
-}): RawOrderFromAPI {
+}): OrderFact {
   return {
     orderId: params.orderId,
     symbol: params.symbol,
@@ -110,7 +111,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
       'REBUILD',
     );
     const entered = Promise.withResolvers<undefined>();
-    const oldRead = Promise.withResolvers<ReadonlyArray<RawOrderFromAPI>>();
+    const oldRead = Promise.withResolvers<ReadonlyArray<OrderFact>>();
     let reads = 0;
     recorder.fetchAllOrdersFromAPI = async () => {
       reads++;

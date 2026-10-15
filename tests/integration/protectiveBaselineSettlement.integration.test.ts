@@ -1,16 +1,16 @@
 /** API 覆盖不替代保护性 durable/episode/S：真实 mapper、O/Daily、repository 与 completion/cooldown 连接回归。 */
+
+import { expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, test } from 'bun:test';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
-import { createEventFlow } from '../../src/core/trader/orderMonitor/eventFlow.js';
-import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import type { RawOrderFromAPI } from '../../src/types/services.js';
+import { createEventFlow } from '../../src/application/orderTracking/orderMonitor/eventFlow.js';
+import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
+import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
+import type { OrderFact } from '../../src/types/trade.js';
+import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
@@ -19,6 +19,7 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
 const day = '2026-10-07';
@@ -154,7 +155,7 @@ async function harness(
   };
 }
 
-function terminal(order: RawOrderFromAPI) {
+function terminal(order: OrderFact) {
   return {
     orderId: order.orderId,
     closedReason: 'FILLED' as const,

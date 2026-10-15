@@ -30,22 +30,22 @@ describe('architecture import boundaries', () => {
     ).toBe(true);
   });
 
-  it('rejects services imports from the old core owner', async () => {
+  it('rejects display adapter imports from the old core owner', async () => {
     const messages = await lintText(
-      'src/services/marketMonitor/utils.ts',
-      "import { createRiskChecker } from '../../core/riskController/index.js';\nvoid createRiskChecker;\n",
+      'src/infrastructure/display/marketMonitor/utils.ts',
+      "import { createRiskChecker } from '../../../core/riskController/index.js';\nvoid createRiskChecker;\n",
     );
 
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
     expect(
-      messages.some((message) => message.message.includes('services 层不得依赖 core 层')),
+      messages.some((message) => message.message.includes('display adapter 不得依赖 core 层')),
     ).toBe(true);
   });
 
-  it('allows services imports from neutral strategy contracts', async () => {
+  it('allows display adapter imports from neutral strategy contracts', async () => {
     const messages = await lintText(
-      'src/services/marketMonitor/utils.ts',
-      "import type { TradingSignalStrategy } from '../../types/strategy.js';\nexport type Probe = TradingSignalStrategy;\n",
+      'src/infrastructure/display/marketMonitor/utils.ts',
+      "import type { TradingSignalStrategy } from '../../../types/strategy.js';\nexport type Probe = TradingSignalStrategy;\n",
     );
 
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(false);
@@ -53,8 +53,8 @@ describe('architecture import boundaries', () => {
 
   it('does not retain the old core strategy type exception', async () => {
     const messages = await lintText(
-      'src/services/marketMonitor/utils.ts',
-      "import type { TradingSignalStrategy } from '../../core/strategy/types.js';\nexport type Probe = TradingSignalStrategy;\n",
+      'src/infrastructure/display/marketMonitor/utils.ts',
+      "import type { TradingSignalStrategy } from '../../../core/strategy/types.js';\nexport type Probe = TradingSignalStrategy;\n",
     );
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
   });

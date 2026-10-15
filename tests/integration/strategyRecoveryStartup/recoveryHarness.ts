@@ -1,14 +1,15 @@
 /** T28 real same-context recovery admission, authority query, O/Daily/H/S and resource close. */
+
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import { createRecoveryFlow } from '../../../src/core/trader/orderMonitor/recoveryFlow.js';
-import { createSettlementFlow } from '../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createRateLimiter } from '../../../src/core/trader/rateLimiter.js';
-import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createExecutionFixture } from '../../core/orderRecorder/executionFixture.js';
-import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
-import type { RecoveryScenario, RecoveryHarness } from './types.js';
-import type { OrderStateChangedEvent } from '../../../src/types/services.js';
 import type { PostGateRuntime } from '../../../src/app/types.js';
+import { createRateLimiter } from '../../../src/application/orderExecution/rateLimiter.js';
+import { createRecoveryFlow } from '../../../src/application/orderTracking/orderMonitor/recoveryFlow.js';
+import { createSettlementFlow } from '../../../src/application/orderTracking/orderMonitor/settlementFlow.js';
+import type { OrderStateChangedEvent } from '../../../src/types/services.js';
+import { createExecutionFixture } from '../../application/orderTracking/recorder/executionFixture.js';
+import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { RecoveryHarness, RecoveryScenario } from './types.js';
 
 /** Issued cancellation completion and canonical terminal confirmation remain independent. */
 export async function createRecoveryHarness(

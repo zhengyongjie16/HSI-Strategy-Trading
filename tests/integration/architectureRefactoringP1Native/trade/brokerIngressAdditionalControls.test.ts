@@ -1,24 +1,25 @@
 /** 新增 broker controller 控制的实际 native entry 证明；不替代 Main/Business 完整 actor body。 */
-import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'bun:test';
-import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import type { RawOrderFromAPI } from '../../../../src/types/services.js';
-import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
-import { createSettlementReadinessGate } from '../../../../src/application/postTradeSettlement/readinessGate.js';
-import { isExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
+import { readFileSync } from 'node:fs';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import type { OrderMonitorRuntimeStore } from '../../../../src/core/trader/orderMonitor/types.js';
-import { createOrderHoldRegistry } from '../../../../src/core/trader/orderHoldRegistry.js';
+import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
+import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
+import type { OrderMonitorRuntimeStore } from '../../../../src/application/orderTracking/orderMonitor/types.js';
+import { createSettlementReadinessGate } from '../../../../src/application/postTradeSettlement/readinessGate.js';
+import type { OrderFact } from '../../../../src/types/trade.js';
+import { isExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
 import {
-  createOrderRecorderDouble,
-  createMarketDataClientDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
   createDailyLossTrackerDouble,
+  createMarketDataClientDouble,
+  createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createRateLimiterDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
   createTerminationDouble,
 } from '../../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 function originalFrame() {
   return {
@@ -675,7 +676,7 @@ describe('additional private broker controls', () => {
     expect(moRows[0]?.orderType).toBe(mo.queryObservation.orderType);
     const eloRows = await fixture.createQueryOrdersReader(frame.orderId)();
     expect(eloRows[0]?.orderType).toBe(elo.queryObservation.orderType);
-    const pushTypes: Array<RawOrderFromAPI['orderType']> = [];
+    const pushTypes: Array<OrderFact['orderType']> = [];
     fixture.createPushPort().setOnOrderChanged((error, decoder) => {
       expect(error).toBeNull();
       pushTypes.push(decoder.decode([]).orderType);

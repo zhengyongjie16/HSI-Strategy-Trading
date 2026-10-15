@@ -1,15 +1,16 @@
 /** 注册 broker callback→真实 Monitor/eventFlow/settlement：保护性缺价拒绝与普通同量复用分别守护。 */
+
 import { describe, expect, it } from 'bun:test';
-import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { createExecutionFixture } from '../../../core/orderRecorder/executionFixture.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
+import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import type { OrderMonitorDeps } from '../../../../src/application/orderTracking/types.js';
+import type { OrderStateChangedEvent, RateLimiter } from '../../../../src/types/services.js';
+import { createExecutionFixture } from '../../../application/orderTracking/recorder/executionFixture.js';
 import {
   createMarketDataClientDouble,
   createSymbolRegistryDouble,
 } from '../../../helpers/testDoubles.js';
-import type { OrderMonitorDeps } from '../../../../src/core/trader/types.js';
-import type { OrderStateChangedEvent, RateLimiter } from '../../../../src/types/services.js';
+import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 /** 仅排空已发 callback 的微任务，不靠 stop 使尚未处理的 ingress 失效。 */
 async function waitForIngress(done: () => boolean): Promise<void> {

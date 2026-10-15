@@ -1,7 +1,8 @@
 /** P1 真实执行时间边界：同量高 revision 不越过 completed boundary，不落 durable/修改 baseline。 */
+
 import { expect, test } from 'bun:test';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 
 const now = new Date('2026-10-07T02:00:00Z');
@@ -9,7 +10,7 @@ const t = now.getTime();
 function tracker() {
   const owner = createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
   });
   owner.resetAll(now);

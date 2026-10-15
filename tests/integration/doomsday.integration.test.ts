@@ -4,7 +4,7 @@
  * 功能：
  * - 验证末日保护端到端场景与业务期望。
  */
-import { createTrader } from '../../src/core/trader/index.js';
+import { createTrader } from '../../src/app/runtime/createTrader.js';
 import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
 
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
@@ -164,7 +164,6 @@ async function createRealDoomsdayTrader(params: {
 }): Promise<Trader> {
   return createTrader({
     brokerAccess: params.brokerAccess,
-    createExecution: createOrderExecutorCore,
     scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (handle) => {
       clearTimeout(handle);

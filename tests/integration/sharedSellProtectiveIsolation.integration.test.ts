@@ -1,38 +1,37 @@
 /** 真实共享执行 → tracking/O/Daily/episode → settlement 隔离检查；仅 broker、行情、时钟及持久化 IO 为离线边界。 */
+
 import { describe, expect, it } from 'bun:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import {
-  createBrokerIngressFixture,
-  type BrokerIngressInput,
-} from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
-import { orderEconomics } from '../../src/domain/order/orderEconomics.js';
-import { createOrderExecutor } from '../../src/application/orderExecution/index.js';
-import { createOrderMonitor } from '../../src/core/trader/orderMonitor/index.js';
-import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import { createRateLimiter } from '../../src/core/trader/rateLimiter.js';
-import {
-  createOrderRecorder,
-  createDailyLossOrderAnalysisDeps,
-} from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
-import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
-import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
-import { createAccountService } from '../../src/application/accountQuery/index.js';
-import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
-import { createPostTradeSettlementWorkflow } from '../../src/application/postTradeSettlement/index.js';
-import type { SettlementProtectionCompletion } from '../../src/application/postTradeSettlement/types.js';
-import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
-import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import { exactMultiply } from '../../src/utils/numeric/exact.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createAccountService } from '../../src/application/accountQuery/index.js';
+import { createOrderExecutor } from '../../src/application/orderExecution/index.js';
+import { createRateLimiter } from '../../src/application/orderExecution/rateLimiter.js';
+import { createOrderHoldRegistry } from '../../src/application/orderTracking/orderHoldRegistry.js';
+import { createOrderMonitor } from '../../src/application/orderTracking/orderMonitor/index.js';
+import { createOrderRecorder } from '../../src/application/orderTracking/recorder/index.js';
+import { createPostTradeSettlementWorkflow } from '../../src/application/postTradeSettlement/index.js';
+import type { SettlementProtectionCompletion } from '../../src/application/postTradeSettlement/types.js';
+import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { orderEconomics } from '../../src/domain/order/orderEconomics.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
+import { exactMultiply } from '../../src/utils/numeric/exact.js';
+import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
   createQuoteDouble,
 } from '../helpers/testDoubles.js';
+import {
+  createBrokerIngressFixture,
+  type BrokerIngressInput,
+} from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00Z');
 const oldFrame: BrokerIngressInput = {
@@ -114,7 +113,7 @@ async function createHarness(
   });
   const episodes = createProtectiveLiquidationEpisodeTracker();
   const daily = createDailyLossTracker({
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
     onOwnershipWarning: () => {},
   });

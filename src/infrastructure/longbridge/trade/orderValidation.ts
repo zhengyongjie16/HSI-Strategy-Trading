@@ -62,7 +62,7 @@ export function isValidatedOrderType(value: unknown): value is ValidatedOrderTyp
 export function classifyBrokerOrderStatusLifecycle(status: OrderStatus): 'OPEN' | 'TERMINAL' {
   const lifecycle = orderStatusLifecycles.get(status);
   if (lifecycle === undefined) {
-    throw new Error(`[订单生命周期] 未知订单状态: ${String(status)}`);
+    throw new TypeError(`[订单生命周期] 未知订单状态: ${String(status)}`);
   }
 
   return lifecycle;

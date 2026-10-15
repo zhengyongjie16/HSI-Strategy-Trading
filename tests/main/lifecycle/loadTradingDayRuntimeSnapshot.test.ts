@@ -1,52 +1,51 @@
-import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-
 /**
  * 交易日运行时快照加载单元测试
  *
  * 覆盖：requireTradingDay 且非交易日时抛错、账户信息缺失时抛错、
  * 订单拉取失败时抛错、正常返回 allOrders 与 quotesMap
  */
+
+import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, it, expect } from 'bun:test';
-import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
-import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
+import { createTradingConfig as createTradingConfigFactory } from '../../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createEmptySnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
-import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
-
-import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
+import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
+import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
 import { TRADING } from '../../../src/constants/index.js';
-import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/types.js';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
-import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
+import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
 } from '../../../src/main/lifecycle/types.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
-import type { LastState } from '../../../src/types/state.js';
-import type { RawOrderFromAPI, BullBearWarrantType } from '../../../src/types/services.js';
+import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
 import type {
   MarketQuoteContext,
   MarketWarrantListRequest,
 } from '../../../src/types/marketPorts.js';
-import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/types.js';
+import type { BullBearWarrantType } from '../../../src/types/services.js';
+import type { LastState } from '../../../src/types/state.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import type { MixedTradeLogRepository } from '../../../src/types/tradeLog.js';
-import { createTradingConfig as createTradingConfigFactory } from '../../../mock/factories/configFactory.js';
+import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../../src/utils/time/index.js';
+import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
-  createLoggerDouble,
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
-  createMarketDataClientDouble,
   createLiquidationCooldownTrackerDouble,
+  createLoggerDouble,
+  createMarketDataClientDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
@@ -54,7 +53,8 @@ import {
   createSeatActivationDispatcherDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
-import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
+import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createEmptySnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 
 function createMinimalLastState(): LastState {
   return {
@@ -294,7 +294,7 @@ function createWarrantQuoteContextHarness() {
 /** 原生 query mapper 生成 phase/累计事实；空流水保留未知 T，由 recovery 匹配真实持久化证据。 */
 async function createProtectiveOrder(
   params: Pick<
-    RawOrderFromAPI,
+    OrderFact,
     | 'orderId'
     | 'executionStatus'
     | 'price'
@@ -306,7 +306,7 @@ async function createProtectiveOrder(
     | 'updatedAtMs'
   > &
     Readonly<{ status: 'New' | 'Filled' | 'PartialFilled' | 'Canceled'; side?: 'BUY' | 'SELL' }>,
-): Promise<RawOrderFromAPI> {
+): Promise<OrderFact> {
   if (params.price === null || params.executedPrice === null)
     throw new Error('Scene must supply exact native price texts');
 
@@ -345,7 +345,7 @@ function createBoundaryCaptureDailyLossTracker(
 ): LoadTradingDayRuntimeSnapshotDeps['dailyLossTracker'] {
   const tracker = createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     resolveOrderOwnership: (order) => {
       if (order.symbol === 'BULL.HK') return { monitorSymbol: 'HSI.HK', direction: 'LONG' };
 
@@ -1004,7 +1004,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
   it('hydrateCooldownFromTradeLog=true 时先重建并补齐 completion 再 hydrate cooldown', async () => {
     const now = new Date('2026-02-25T03:00:00.000Z');
     const callOrder: string[] = [];
-    const allOrders: ReadonlyArray<RawOrderFromAPI> = [];
+    const allOrders: ReadonlyArray<OrderFact> = [];
 
     const deps = createBaseDeps({
       trader: createReadyTrader({
@@ -1041,7 +1041,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const completionBoundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
     const protectiveRevisionMs = Date.parse('2026-03-13T02:30:00.000Z');
     const monitor = createProtectiveMonitor();
-    const ordinaryOrder: RawOrderFromAPI = {
+    const ordinaryOrder: OrderFact = {
       ...(await createProtectiveOrder({
         orderId: 'ordinary-in-day-missing-updated-at',
         side: 'BUY',
@@ -1075,7 +1075,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
     const actualDailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
       toHongKongTimeIso,
@@ -1413,7 +1413,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const boundaryMs = Date.parse('2026-03-13T02:20:00.000Z');
     const finalExecutionMs = boundaryMs + 60_000;
     const monitor = createProtectiveMonitor();
-    const ordinaryBuy: RawOrderFromAPI = {
+    const ordinaryBuy: OrderFact = {
       ...(await createProtectiveOrder({
         orderId: 'ordinary-buy-crossing-persisted-boundary',
         side: 'BUY',
@@ -1446,7 +1446,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
       toHongKongTimeIso,
@@ -1492,7 +1492,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const preBoundaryExecutionMs = boundaryMs - 60_000;
     const finalExecutionMs = boundaryMs + 60_000;
     const monitor = createProtectiveMonitor();
-    const ordinaryBuy: RawOrderFromAPI = {
+    const ordinaryBuy: OrderFact = {
       ...(await createProtectiveOrder({
         orderId: 'ordinary-buy-crossing-restored-boundary',
         side: 'BUY',
@@ -1525,7 +1525,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
       toHongKongTimeIso,
@@ -1718,7 +1718,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const appendedRecords: Array<
       Parameters<MixedTradeLogRepository['appendCompletionIdempotent']>[0]
     > = [];
-    const ordinarySellOrder: RawOrderFromAPI = {
+    const ordinarySellOrder: OrderFact = {
       ...(await createProtectiveOrder({
         orderId: 'ordinary-sell-forged-progress',
         status: 'Canceled',
@@ -1788,7 +1788,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const executedAtMs = Date.parse('2026-03-13T02:30:00.000Z');
     const monitor = createProtectiveMonitor();
     let hydrateCalls = 0;
-    const unmatchedProtectiveOrder: RawOrderFromAPI = {
+    const unmatchedProtectiveOrder: OrderFact = {
       ...(await createProtectiveOrder({
         orderId: 'protective-unmatched-1',
         status: 'Canceled',
@@ -2064,7 +2064,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.orderId === protectiveOrder.orderId
           ? { monitorSymbol: 'HSI.HK', direction: 'LONG' }
@@ -2141,7 +2141,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     const createDailyLossTrackerForRecovery = () =>
       createDailyLossTracker({
         onOwnershipWarning: () => {},
-        ...createDailyLossOrderAnalysisDeps(),
+        ...orderAnalysis,
         resolveOrderOwnership: (order) =>
           order.orderId === protectiveOrder.orderId
             ? { monitorSymbol: 'HSI.HK', direction: 'LONG' }
@@ -2234,7 +2234,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.orderId === protectiveOrder.orderId
           ? { monitorSymbol: 'HSI.HK', direction: 'LONG' }
@@ -2303,7 +2303,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
     const restartedDailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.orderId === protectiveOrder.orderId
           ? { monitorSymbol: 'HSI.HK', direction: 'LONG' }

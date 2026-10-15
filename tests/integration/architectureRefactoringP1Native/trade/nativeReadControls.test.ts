@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { createRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
+import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 
 const frame = {
   orderId: 'A',

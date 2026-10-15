@@ -1,6 +1,3 @@
-import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-
 /**
  * 交易日状态重建单元测试
  *
@@ -9,39 +6,43 @@ import { createTerminationRuntime } from '../../../src/app/runtime/createTermina
  * - 交易日历预热按“仍持仓买单”确定起点，并按自然月分块查询
  * - 预热失败时重建 fail-fast
  */
-import { describe, it, expect } from 'bun:test';
+
+import { describe, expect, it } from 'bun:test';
+import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { TIME } from '../../../src/constants/index.js';
+import { classifyOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
+import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
 import {
   captureSeatActivationCarryover,
   clearSeatActivationCarryover,
 } from '../../../src/main/lifecycle/seatActivationCarryover.js';
-import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
-import { listHKDateKeysBetween } from '../../../src/main/lifecycle/utils.js';
-import { classifyOrdersForRebuild } from '../../../src/core/orderRecorder/utils.js';
 import type { RebuildTradingDayStateDeps } from '../../../src/main/lifecycle/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
-import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
-import type { Quote } from '../../../src/types/quote.js';
-import { getHKDateKey, getRequiredHKDateKey } from '../../../src/utils/time/index.js';
-import type { OrderRecord, RawOrderFromAPI, Trader } from '../../../src/types/services.js';
+import { listHKDateKeysBetween } from '../../../src/main/lifecycle/utils.js';
 import type { MarketDataClient, TradingDaysResult } from '../../../src/types/marketPorts.js';
+import type { Quote } from '../../../src/types/quote.js';
+import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
+import type { OrderRecord, Trader } from '../../../src/types/services.js';
+import type { MonitorContext } from '../../../src/types/state.js';
+import type { OrderFact } from '../../../src/types/trade.js';
+import { getHKDateKey, getRequiredHKDateKey } from '../../../src/utils/time/index.js';
 import {
   createAccountSnapshotDouble,
   createSymbolRegistryDouble,
   createWarrantRiskRefreshDouble,
 } from '../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createSnapshotFixture } from '../fixtures/accountPositionSnapshot.js';
 
 /** 使用实际 native query mapper 生成订单观察；不由 domain 解析 SDK phase。 */
 async function readNativeOrder(
   input: Parameters<typeof createBrokerIngressFixture>[0],
-): Promise<RawOrderFromAPI> {
+): Promise<OrderFact> {
   const ingress = await createBrokerIngressFixture(input);
   return ingress.queryObservation;
 }
 
 const emptyQuotesMap = new Map<string, Quote | null>();
-const emptyOrders: ReadonlyArray<RawOrderFromAPI> = [];
+const emptyOrders: ReadonlyArray<OrderFact> = [];
 const REBUILD_TEST_NOW = new Date('2026-03-13T02:00:00.000Z');
 const emptySeatState: SeatState = {
   symbol: null,
@@ -97,7 +98,7 @@ function createMonitorContext(params: {
     config: { monitorSymbol },
     symbolRegistry,
     orderRecorder: {
-      validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => {
+      validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<OrderFact>) => {
         classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
       },
       commitRebuildSnapshot: ((targets, allOrders, isCurrent, mode) => {
@@ -589,7 +590,7 @@ describe('createRebuildTradingDayState', () => {
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
     });
-    const malformedPositiveExecution: RawOrderFromAPI = {
+    const malformedPositiveExecution: OrderFact = {
       ...(await readNativeOrder({
         orderId: 'INVALID-OPEN-REBUILD-EXECUTION',
         tradeId: 'INVALID-OPEN-REBUILD-EXECUTION' + '-trade',
@@ -716,7 +717,7 @@ describe('createRebuildTradingDayState', () => {
 
       let caughtError: unknown = null;
       try {
-        let allOrders: ReadonlyArray<RawOrderFromAPI>;
+        let allOrders: ReadonlyArray<OrderFact>;
         try {
           allOrders = await query();
         } catch (error) {

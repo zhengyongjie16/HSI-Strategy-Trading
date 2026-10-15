@@ -206,6 +206,8 @@ async function createExecutorHarness(
     executeSignals: async (signals, callerAuthorization) => {
       expect(callerAuthorization()).toBe(true);
       for (const signal of signals) {
+        expect(signal.executionOrigin).toBe('STATIC_DISTANCE_LIQUIDATION');
+        expect(signal.isProtectiveLiquidation).toBe(false);
         submittedActions.push(signal.action);
         if (signal.triggerTime instanceof Date) {
           submittedTriggerTimes.push(signal.triggerTime.getTime());

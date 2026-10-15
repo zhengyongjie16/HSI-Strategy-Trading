@@ -11,8 +11,8 @@ import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLos
 import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
 import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { buildPriceDisplayInfo } from '../../src/services/marketMonitor/priceDisplayInfo.js';
-import { formatWarrantDistanceDisplay } from '../../src/services/marketMonitor/utils.js';
+import { buildPriceDisplayInfo } from '../../src/infrastructure/display/marketMonitor/priceDisplayInfo.js';
+import { formatWarrantDistanceDisplay } from '../../src/infrastructure/display/marketMonitor/utils.js';
 import {
   createMarketDataClientDouble,
   createMonitorConfigDouble,

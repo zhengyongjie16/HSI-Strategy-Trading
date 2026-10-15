@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test';
-import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { assertProtectiveSellRawObservationFactsReady } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
 import { withTrustedOrderExecutionTimes } from '../../../../src/domain/order/executionFact.js';
+import { assertProtectiveSellRawObservationFactsReady } from '../../../../src/domain/order/orderFactMerge.js';
 import type { OrderExecutionTimeObservation } from '../../../../src/types/orderRecorder.js';
+import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 const input = {
   orderId: 'STATUS',

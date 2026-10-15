@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
-import { createExecutionFixture } from '../../core/orderRecorder/executionFixture.js';
+import { createExecutionFixture } from '../orderTracking/recorder/executionFixture.js';
 import type { OrderExecutionTrackingPort } from '../../../src/application/orderExecution/types.js';
 import type { TrackOrderParams } from '../../../src/domain/order/types.js';
 import { createMonitorConfig, createTradingConfig } from '../../../mock/factories/configFactory.js';

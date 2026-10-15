@@ -4,22 +4,24 @@
  * 功能：
  * - 验证买入流程风险管道与下单执行的端到端场景与业务期望。
  */
-import { logger } from '../../src/utils/logger/index.js';
+
 import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../main/fixtures/settlementRuntime.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import type { SignalCallerAuthorization } from '../../src/types/trader.js';
-import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
-import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
-import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
-import { createBuyTaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { runProcessorFlow } from '../main/asyncProgram/utils.js';
-import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../src/constants/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
+import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
+import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
+import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
+import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
+import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
+import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../src/constants/index.js';
+import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
+import { createBuyTaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import type { ExecutableSignal } from '../../src/types/signal.js';
+import type { SignalCallerAuthorization } from '../../src/types/trader.js';
+import { logger } from '../../src/utils/logger/index.js';
 import {
+  createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
   createMonitorContextDouble,
   createOrderMonitorDouble,
@@ -29,12 +31,11 @@ import {
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
-  createLiquidationCooldownTrackerDouble,
 } from '../helpers/testDoubles.js';
-import type { ExecutableSignal } from '../../src/types/signal.js';
-import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
-import type { OrderMonitor } from '../../src/core/trader/types.js';
-import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
+import { runProcessorFlow } from '../main/asyncProgram/utils.js';
+import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../main/fixtures/settlementRuntime.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const createMutationRateLimiter = createRateLimiterDouble;
 
@@ -1382,7 +1383,13 @@ describe('buy-flow integration', () => {
       }
 
       expect(submitError).toBeInstanceOf(Error);
-      expect(submitError).toBe(submitFailure);
+      expect(submitError).toMatchObject({
+        name: 'TradeMutationUnknownError',
+        operation: 'TradeContext.submitOrder',
+        requestAttempted: true,
+        code: null,
+      });
+      expect(submitError).toHaveProperty('cause', submitFailure);
       expect(tradeCtx.nativeMutations()).toHaveLength(1);
       expect(submitFailure.message).toBe('service unavailable');
     });
@@ -1576,7 +1583,13 @@ describe('buy-flow integration', () => {
       }
 
       expect(submitError).toBeInstanceOf(Error);
-      expect(submitError).toBe(failedSubmitFailure);
+      expect(submitError).toMatchObject({
+        name: 'TradeMutationUnknownError',
+        operation: 'TradeContext.submitOrder',
+        requestAttempted: true,
+        code: null,
+      });
+      expect(submitError).toHaveProperty('cause', failedSubmitFailure);
       expect(failedTradeCtx.nativeMutations()).toHaveLength(1);
       expect(failedSubmitFailure.message).toBe('service unavailable');
     });

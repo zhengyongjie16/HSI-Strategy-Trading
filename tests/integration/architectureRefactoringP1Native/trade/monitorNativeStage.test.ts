@@ -1,13 +1,14 @@
 /** 实际Route/OrderOps→生产FIFO→同一adapter/native entry；静态SDKDTO，不构造联网context。 */
+
 import { describe, expect, it } from 'bun:test';
+import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
+import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
+import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
+import type { OrderMonitorRuntimeStore } from '../../../../src/application/orderTracking/orderMonitor/types.js';
+import { buildOrderMonitorConfig } from '../../../../src/domain/order/orderTrackingPolicy.js';
+import { createOrderRecorderDouble } from '../../../helpers/testDoubles.js';
 import { interceptNativeDecimalSerialization } from '../../../infrastructure/longbridge/trade/mutationStageFixture.js';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { createRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
-import { createOrderHoldRegistry } from '../../../../src/core/trader/orderHoldRegistry.js';
-import { buildOrderMonitorConfig } from '../../../../src/core/trader/orderMonitor/utils.js';
-import type { OrderMonitorRuntimeStore } from '../../../../src/core/trader/orderMonitor/types.js';
-import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createOrderRecorderDouble } from '../../../helpers/testDoubles.js';
 
 async function fixture() {
   const native = await createBrokerIngressFixture({

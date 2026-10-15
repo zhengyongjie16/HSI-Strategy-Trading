@@ -1,38 +1,39 @@
 /** 延迟 SELL 回流：原策略验证与 caller route 保留；真实同 ctx H/O/Daily/S 及 native executor 读取最新可卖事实。 */
+
 import { describe, expect, it } from 'bun:test';
-import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createOrderHoldRegistry } from '../../src/application/orderTracking/orderHoldRegistry.js';
+import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createSellProcessor } from '../../src/runtime/asyncProgram/sellProcessor/index.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
-import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
-import { createOrderHoldRegistry } from '../../src/core/trader/orderHoldRegistry.js';
-import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import type { LastState } from '../../src/types/state.js';
+import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
 import type { Signal } from '../../src/types/signal.js';
-import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
-import { prepareFixture, createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
+import type { LastState } from '../../src/types/state.js';
+import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import {
   createLiquidationCooldownTrackerDouble,
   createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
-  createRateLimiterDouble,
   createQuoteDouble,
+  createRateLimiterDouble,
   createTerminationDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+import { waitUntil } from '../main/asyncProgram/utils.js';
+import { createHarness, prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 describe('delayed strategy sell integration', () => {
   it.each(['active', 'gate-closed', 'route-changed'])(
@@ -79,7 +80,7 @@ describe('delayed strategy sell integration', () => {
       native.setStockPositions([]);
       const daily = createDailyLossTracker({
         onOwnershipWarning: () => {},
-        ...createDailyLossOrderAnalysisDeps(),
+        ...orderAnalysis,
         toHongKongTimeIso,
       });
       daily.resetAll(new Date(now));

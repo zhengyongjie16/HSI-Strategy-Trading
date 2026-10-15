@@ -42,7 +42,7 @@ import type {
   TradingDayRuntimeInvalidationResult,
 } from './types.js';
 import type { ProtectiveLiquidationDirection } from '../../domain/liquidation/episode/types.js';
-import type { RawOrderFromAPI } from '../../types/services.js';
+import type { OrderFact } from '../../types/trade.js';
 import type {
   ProtectiveLiquidationCompletionRecordV1,
   ProtectiveLiquidationExecutionProgressRecordV1,
@@ -101,9 +101,9 @@ function assertCompletionRecordsMatchExpectedMonitor(
 
 /** 按 orderId 建立原始保护性 SELL 事实索引，供 progress 恢复前做来源校验。 */
 function collectRawProtectiveSellOrdersById(
-  allOrders: ReadonlyArray<RawOrderFromAPI>,
-): ReadonlyMap<string, RawOrderFromAPI> {
-  const rawProtectiveSellOrdersById = new Map<string, RawOrderFromAPI>();
+  allOrders: ReadonlyArray<OrderFact>,
+): ReadonlyMap<string, OrderFact> {
+  const rawProtectiveSellOrdersById = new Map<string, OrderFact>();
   for (const order of allOrders) {
     if (order.executionSide !== 'SELL' || !hasProtectiveLiquidationRemark(order.remark)) {
       continue;
@@ -120,7 +120,7 @@ function collectRawProtectiveSellOrdersById(
  */
 function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
   progressRecords: ReadonlyArray<ProtectiveLiquidationExecutionProgressRecordV1>,
-  rawProtectiveSellOrdersById: ReadonlyMap<string, RawOrderFromAPI>,
+  rawProtectiveSellOrdersById: ReadonlyMap<string, OrderFact>,
   monitor: LoadTradingDayRuntimeSnapshotDeps['tradingConfig']['monitor'],
   expectedMonitorSymbol: string,
 ): void {
@@ -171,7 +171,7 @@ function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
  */
 function assertSameRevisionTerminalAmountHasDurableEvidence(
   progressRecords: ReadonlyArray<ProtectiveLiquidationExecutionProgressRecordV1>,
-  rawProtectiveSellOrdersById: ReadonlyMap<string, RawOrderFromAPI>,
+  rawProtectiveSellOrdersById: ReadonlyMap<string, OrderFact>,
 ): void {
   for (const progress of progressRecords) {
     const order = rawProtectiveSellOrdersById.get(progress.orderId);

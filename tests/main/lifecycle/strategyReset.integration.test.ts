@@ -20,7 +20,7 @@ import {
 } from '../../runtime/strategy/intradayRegression/fixtures.js';
 import { configObject } from '../../config/strategy/intradayRegression/fixtures.js';
 import { marketContext } from '../../domain/strategy/intradayRegression/fixtures.js';
-import { waitUntil } from '../../main/asyncProgram/utils.js';
+import { waitUntil } from '../asyncProgram/utils.js';
 import type { StrategyDecision, TradingSignalStrategy } from '../../../src/types/strategy.js';
 import type { LastState } from '../../../src/types/state.js';
 import type { Position } from '../../../src/types/account.js';

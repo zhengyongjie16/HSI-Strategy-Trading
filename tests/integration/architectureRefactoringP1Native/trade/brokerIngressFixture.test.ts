@@ -1,16 +1,17 @@
 /** 无网络typed SDK DTO→实际adapter→query/push完整中性事实，不把mapper作为经济expected oracle。 */
+
 import { describe, expect, it } from 'bun:test';
-import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { createRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
-import { createOrderHoldRegistry } from '../../../../src/core/trader/orderHoldRegistry.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
+import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
+import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
 import {
+  createDailyLossTrackerDouble,
   createMarketDataClientDouble,
   createOrderRecorderDouble,
-  createDailyLossTrackerDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createSymbolRegistryDouble,
 } from '../../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 describe('broker ingress fixture production mapping', () => {
   it('proves full query/push native DTO fields, exact cost and independent execution/revision', async () => {

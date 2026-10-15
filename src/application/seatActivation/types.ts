@@ -7,11 +7,8 @@ import type { Quote } from '../../types/quote.js';
 import type { DailyLossMonitorScope, DailyLossTracker } from '../../types/risk.js';
 import type { RuntimeClock } from '../../types/runtime.js';
 import type { SeatState, SymbolRegistry } from '../../types/seat.js';
-import type {
-  PreparedUnrealizedLossData,
-  RawOrderFromAPI,
-  WarrantRefreshResult,
-} from '../../types/services.js';
+import type { PreparedUnrealizedLossData, WarrantRefreshResult } from '../../types/services.js';
+import type { OrderFact } from '../../types/trade.js';
 import type { Logger } from '../../utils/logger/types.js';
 
 /** 入队时固定的激活身份；重试保留 epoch、方向、版本与真实 previousSymbol，不改用当前身份。 */
@@ -55,14 +52,11 @@ export interface SeatActivationSubscriptions {
 
 /** 同一真实订单 owner 的窄读取/预检/消费覆盖提交能力，activation 不维护第二账本。 */
 export interface SeatActivationOrders {
-  readonly fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<RawOrderFromAPI>>;
-  readonly validateRebuildSnapshot: (
-    symbol: string,
-    orders: ReadonlyArray<RawOrderFromAPI>,
-  ) => void;
+  readonly fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<OrderFact>>;
+  readonly validateRebuildSnapshot: (symbol: string, orders: ReadonlyArray<OrderFact>) => void;
   readonly commitRebuildSnapshot: (
     targets: ReadonlyArray<OrderProjectionTarget>,
-    orders: ReadonlyArray<RawOrderFromAPI>,
+    orders: ReadonlyArray<OrderFact>,
     isCurrent: () => boolean,
     mode: 'ACTIVATION',
   ) => OrderFactBatchCommitResult;

@@ -1,20 +1,19 @@
 /** 真normalize→settlement→O pending/tracking/hold资源链：不造经济revision/T或假admission。 */
+
 import { describe, expect, it } from 'bun:test';
-import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { normalizeTerminalStateSnapshot } from '../../../../src/core/trader/orderMonitor/orderFactMerge.js';
-import { createSettlementFlow } from '../../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
-import { createRateLimiter } from '../../../../src/core/trader/rateLimiter.js';
-import { createOrderHoldRegistry } from '../../../../src/core/trader/orderHoldRegistry.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createProtectiveLiquidationEpisodeTrackerDouble } from '../../../helpers/testDoubles.js';
-import type {
-  OrderMonitorRuntimeStore,
-  TerminalStateSnapshot,
-} from '../../../../src/core/trader/orderMonitor/types.js';
+import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
+import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
+import { createSettlementFlow } from '../../../../src/application/orderTracking/orderMonitor/settlementFlow.js';
+import type { OrderMonitorRuntimeStore } from '../../../../src/application/orderTracking/orderMonitor/types.js';
+import { orderAnalysis } from '../../../../src/domain/order/orderAnalysis.js';
+import { normalizeTerminalStateSnapshot } from '../../../../src/domain/order/orderFactMerge.js';
+import type { TerminalStateSnapshot } from '../../../../src/domain/order/types.js';
+import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import { logger } from '../../../../src/utils/logger/index.js';
 import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
+import { createProtectiveLiquidationEpisodeTrackerDouble } from '../../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 async function fixture() {
   const native = await createBrokerIngressFixture({
@@ -63,7 +62,7 @@ async function fixture() {
   });
   const daily = createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
   });
   const hold = createOrderHoldRegistry();

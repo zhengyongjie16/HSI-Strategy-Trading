@@ -3,30 +3,29 @@
  * 保留原 V1 字节与 9.2/T/revision+1 输入；真实 recorder、Daily、repository、snapshot、S 和 hold 各自验真。
  * 这是共享结算规则线，不启动 WS ingress/settlement 消费，不以手动 release 或假 readiness 代替自然接线。
  */
+
+import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, it } from 'bun:test';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import {
-  createDailyLossOrderAnalysisDeps,
-  createOrderRecorder,
-} from '../../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
-import { createSettlementFlow } from '../../../src/core/trader/orderMonitor/settlementFlow.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
-import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
+import { createOrderHoldRegistry } from '../../../src/application/orderTracking/orderHoldRegistry.js';
+import { createSettlementFlow } from '../../../src/application/orderTracking/orderMonitor/settlementFlow.js';
 import type {
   FinalizeOrderSettlementParams,
   OrderCumulativeExecutionParams,
   OrderMonitorRuntimeStore,
-} from '../../../src/core/trader/orderMonitor/types.js';
+} from '../../../src/application/orderTracking/orderMonitor/types.js';
+import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import type { OrderStateChangedEvent } from '../../../src/types/services.js';
+import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
+import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import { createOfflineBrokerPort } from './offlinePorts.js';
 
 it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real O/Daily/S while terminal resources close independently', () => {
@@ -87,7 +86,7 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
     });
     const daily = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       toHongKongTimeIso,
     });
     daily.resetAll(new Date(executionT));

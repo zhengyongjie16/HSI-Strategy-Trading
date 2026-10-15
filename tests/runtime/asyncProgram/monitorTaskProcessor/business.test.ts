@@ -1,55 +1,3 @@
-import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { afterEach, describe, expect, it } from 'bun:test';
-import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessorImpl } from './fixtures.js';
-import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
-import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
-import { classifyOrdersForRebuild } from '../../../../src/core/orderRecorder/utils.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../../src/core/orderRecorder/index.js';
-import { createPositionLimitChecker } from '../../../../src/domain/risk/positionLimitChecker.js';
-import { createRiskChecker } from '../../../../src/domain/risk/index.js';
-import { createUnrealizedLossChecker } from '../../../../src/domain/risk/unrealizedLossChecker.js';
-import { createWarrantRiskChecker } from '../../../../src/domain/risk/warrantRiskChecker.js';
-import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
-import type { MonitorTaskDataMap } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
-import type { PeriodicSwitchTaskStatus } from '../../../../src/application/seatSwitch/types.js';
-import { createMonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
-import { mergeBrokerOrderExecutionFact } from '../../../../src/domain/order/executionFact.js';
-import { createSnapshotFixture } from '../../../main/fixtures/accountPositionSnapshot.js';
-import { createIssuedPeriodicTasksFixture } from '../../../main/fixtures/issuedPeriodicTasks.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
-import type { RuntimeTermination } from '../../../../src/types/runtime.js';
-import type { PeriodicSwitchTaskData } from '../../../../src/types/periodicSwitch.js';
-import { createSeatSwitchWorkflow } from '../../../../src/application/seatSwitch/index.js';
-import {
-  getDefaultAutoSearchConfig,
-  createWarrantCandidate,
-} from '../../../helpers/seatTestUtils.js';
-import type { AccountPositionSnapshot } from '../../../../src/types/accountPosition.js';
-import type { RawOrderFromAPI } from '../../../../src/types/services.js';
-import type {
-  DailyLossOrderSnapshot,
-  PreparedDailyLossRecalculation,
-} from '../../../../src/types/risk.js';
-import {
-  createAccountSnapshotDouble,
-  createMonitorConfigDouble,
-  createDailyLossTrackerDouble,
-  createLoggerDouble,
-  createMarketDataClientDouble,
-  createOrderRecorderDouble,
-  createPositionDouble,
-  createQuoteSubscriptionRuntimeDouble,
-  createRiskCheckerDouble,
-  createTraderDouble,
-} from '../../../helpers/testDoubles.js';
-import {
-  createMonitorContext,
-  rethrowFatalError,
-  runProcessorFlow,
-  waitUntil,
-} from '../../../main/asyncProgram/utils.js';
-import type { CreateBusinessProcessorParams, MonitorTaskRuntimeFixtureDeps } from './types.js';
-
 /**
  * monitorTaskProcessor 业务测试
  *
@@ -57,11 +5,63 @@ import type { CreateBusinessProcessorParams, MonitorTaskRuntimeFixtureDeps } fro
  * - 验证监控任务处理器相关场景意图、边界条件与业务期望。
  */
 
+import { afterEach, describe, expect, it } from 'bun:test';
+import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import { createSeatSwitchWorkflow } from '../../../../src/application/seatSwitch/index.js';
+import type { PeriodicSwitchTaskStatus } from '../../../../src/application/seatSwitch/types.js';
+import { mergeBrokerOrderExecutionFact } from '../../../../src/domain/order/executionFact.js';
+import { orderAnalysis } from '../../../../src/domain/order/orderAnalysis.js';
+import { classifyOrdersForRebuild } from '../../../../src/domain/order/orderRecordPolicy.js';
+import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
+import { createRiskChecker } from '../../../../src/domain/risk/index.js';
+import { createPositionLimitChecker } from '../../../../src/domain/risk/positionLimitChecker.js';
+import { createUnrealizedLossChecker } from '../../../../src/domain/risk/unrealizedLossChecker.js';
+import { createWarrantRiskChecker } from '../../../../src/domain/risk/warrantRiskChecker.js';
+import type { MonitorTaskDataMap } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
+import { createMonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import type { AccountPositionSnapshot } from '../../../../src/types/accountPosition.js';
+import type { PeriodicSwitchTaskData } from '../../../../src/types/periodicSwitch.js';
+import type {
+  DailyLossOrderSnapshot,
+  PreparedDailyLossRecalculation,
+} from '../../../../src/types/risk.js';
+import type { RuntimeTermination } from '../../../../src/types/runtime.js';
+import type { OrderFact } from '../../../../src/types/trade.js';
+import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
+import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
+import {
+  createWarrantCandidate,
+  getDefaultAutoSearchConfig,
+} from '../../../helpers/seatTestUtils.js';
+import {
+  createAccountSnapshotDouble,
+  createDailyLossTrackerDouble,
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createOrderRecorderDouble,
+  createPositionDouble,
+  createQuoteSubscriptionRuntimeDouble,
+  createRiskCheckerDouble,
+  createTraderDouble,
+} from '../../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import {
+  createMonitorContext,
+  rethrowFatalError,
+  runProcessorFlow,
+  waitUntil,
+} from '../../../main/asyncProgram/utils.js';
+import { createSnapshotFixture } from '../../../main/fixtures/accountPositionSnapshot.js';
+import { createIssuedPeriodicTasksFixture } from '../../../main/fixtures/issuedPeriodicTasks.js';
+import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessorImpl } from './fixtures.js';
+import type { CreateBusinessProcessorParams, MonitorTaskRuntimeFixtureDeps } from './types.js';
+
 /** Persisted BUY/SELL loss facts originate in two independent native producer observations. */
 async function createDailyLossSeedOrders(
   now: Date,
   prefix: string,
-): Promise<ReadonlyArray<RawOrderFromAPI>> {
+): Promise<ReadonlyArray<OrderFact>> {
   const buy = await createBrokerIngressFixture({
     stockName: 'HSI RC',
     remark: 'AUTO',
@@ -1373,7 +1373,7 @@ describe('monitorTaskProcessor business flow', () => {
 
   it('processes SEAT_REFRESH and rebuilds long-side runtime caches', async () => {
     const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
-    const allOrders: ReadonlyArray<RawOrderFromAPI> = [];
+    const allOrders: ReadonlyArray<OrderFact> = [];
     const expectedRelatedTradingSymbols: ReadonlyArray<string> = [
       'BULL.HK',
       'OLD_BULL.HK',
@@ -1417,7 +1417,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
       {
-        validateRebuildSnapshot: (symbol: string, snapshot: ReadonlyArray<RawOrderFromAPI>) => {
+        validateRebuildSnapshot: (symbol: string, snapshot: ReadonlyArray<OrderFact>) => {
           preflightCalls += 1;
           preflightSymbols.push(symbol);
           rebuildSteps.push(`preflight:${symbol}`);
@@ -1569,7 +1569,7 @@ describe('monitorTaskProcessor business flow', () => {
     let queryFailure: unknown = null;
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
       toHongKongTimeIso,
@@ -1718,7 +1718,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
       }),
       {
-        validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => {
+        validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<OrderFact>) => {
           preflightCalls += 1;
           preflightSymbols.push(symbol);
           classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
@@ -1727,7 +1727,7 @@ describe('monitorTaskProcessor business flow', () => {
     );
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       resolveOrderOwnership: () => null,
       toHongKongTimeIso,
     });
@@ -1839,7 +1839,7 @@ describe('monitorTaskProcessor business flow', () => {
       executionTimeMs: MONITOR_TASK_NOW_MS,
       updatedAtMs: Date.parse('2026-03-13T02:01:00.000Z'),
     });
-    const malformedPositiveExecution: RawOrderFromAPI = {
+    const malformedPositiveExecution: OrderFact = {
       ...ingress.queryObservation,
       executedPrice: '0',
       executedAmount: '0',
@@ -1984,7 +1984,7 @@ describe('monitorTaskProcessor business flow', () => {
       let queryFailure: unknown = null;
       const dailyLossTracker = createDailyLossTracker({
         onOwnershipWarning: () => {},
-        ...createDailyLossOrderAnalysisDeps(),
+        ...orderAnalysis,
         resolveOrderOwnership: (order) =>
           order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
         toHongKongTimeIso,
@@ -2009,7 +2009,7 @@ describe('monitorTaskProcessor business flow', () => {
           },
         }),
         {
-          validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<RawOrderFromAPI>) => {
+          validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<OrderFact>) => {
             preflightCalls += 1;
             classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
           },
@@ -2172,7 +2172,7 @@ describe('monitorTaskProcessor business flow', () => {
       let queryFailure: unknown = null;
       const dailyLossTracker = createDailyLossTracker({
         onOwnershipWarning: () => {},
-        ...createDailyLossOrderAnalysisDeps(),
+        ...orderAnalysis,
         resolveOrderOwnership: (order) =>
           order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
         toHongKongTimeIso,

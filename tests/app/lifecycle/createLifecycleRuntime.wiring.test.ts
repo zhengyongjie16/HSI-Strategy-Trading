@@ -37,7 +37,6 @@ import {
   createMonitorContextDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createQuoteSubscriptionRuntimeDouble,
-  createSdkConfigDouble,
   createSeatActivationDispatcherDouble,
   createSeatActivationWorkflowDouble,
   createWarrantRiskRefreshDouble,
@@ -47,6 +46,7 @@ import {
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
 import type { CreateDayLifecycleManagerCall, ExecuteOpenRebuildCall } from './types.js';
+import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
 
 let activeSnapshot: AccountPositionSnapshot;
 const fixtureCleanups: Array<() => Promise<void>> = [];
@@ -192,7 +192,7 @@ async function createLifecycleDeps(): Promise<LifecycleRuntimeFactoryDeps> {
     termination,
     logger: createLoggerDouble(),
     preGateRuntime: {
-      config: createSdkConfigDouble(),
+      brokerClientFactory: createBrokerClientFactoryDouble(),
       tradingConfig,
       symbolRegistry: createSymbolRegistryDouble(),
       warrantListCache: warrantListCache,

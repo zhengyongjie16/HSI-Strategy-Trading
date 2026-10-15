@@ -5,45 +5,44 @@
  * 仅 broker、quote、clock、显示与隔离文件 IO 为离线边界，不启动 app/交易路由。
  * oracle 为固定手工账：5×10 买入、5×9 卖出亏 5；新分段买 60 卖 40 亏 20。
  */
+
+import { afterAll, describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'bun:test';
-import { createHash } from 'node:crypto';
+import { createMonitorConfig, createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
-import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { createDailyLossOrderAnalysisDeps } from '../../../src/core/orderRecorder/index.js';
-import { resolveOrderOwnership } from '../../../src/domain/order/orderOwnership.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
-import { createLiquidationCooldownTracker } from '../../../src/domain/liquidation/cooldown/index.js';
-import { createTradeLogHydrator } from '../../../src/application/protectiveLiquidation/tradeLogHydrator.js';
-import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { withTrustedOrderExecutionTimes } from '../../../src/domain/order/executionFact.js';
-import { createOrderHoldRegistry } from '../../../src/core/trader/orderHoldRegistry.js';
-import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
 import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
-import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
-import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
-import { createRiskChecker } from '../../../src/domain/risk/index.js';
+import { createOrderHoldRegistry } from '../../../src/application/orderTracking/orderHoldRegistry.js';
+import { createTradeLogHydrator } from '../../../src/application/protectiveLiquidation/tradeLogHydrator.js';
 import { createWarrantRiskRefresh } from '../../../src/application/riskRefresh/warrantRiskRefresh.js';
-import { createWarrantRiskChecker } from '../../../src/domain/risk/warrantRiskChecker.js';
+import { createLiquidationCooldownTracker } from '../../../src/domain/liquidation/cooldown/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import { withTrustedOrderExecutionTimes } from '../../../src/domain/order/executionFact.js';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
+import { resolveOrderOwnership } from '../../../src/domain/order/orderOwnership.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
+import { createRiskChecker } from '../../../src/domain/risk/index.js';
 import { createPositionLimitChecker } from '../../../src/domain/risk/positionLimitChecker.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
-import { createTradingConfig, createMonitorConfig } from '../../../mock/factories/configFactory.js';
-import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
-import { logger } from '../../../src/utils/logger/index.js';
-import { isRecord } from '../../../src/utils/helpers/index.js';
-import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
-import type { LastState } from '../../../src/types/state.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import { createWarrantRiskChecker } from '../../../src/domain/risk/warrantRiskChecker.js';
+import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
+import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
+import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
+import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
-import type { OfflineRecoveryFixture } from './types.js';
+import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
+import type { LastState } from '../../../src/types/state.js';
+import type { OrderFact } from '../../../src/types/trade.js';
+import { isRecord } from '../../../src/utils/helpers/index.js';
+import { logger } from '../../../src/utils/logger/index.js';
+import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../../src/utils/time/index.js';
+import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -53,6 +52,8 @@ import {
   createTerminationDouble,
   createTraderDouble,
 } from '../../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { OfflineRecoveryFixture } from './types.js';
 
 const fixture: Pick<
   OfflineRecoveryFixture,
@@ -140,7 +141,7 @@ const originalRecorder = originalNative.createRecorder({
 const rawOrders = await originalRecorder.fetchAllOrdersFromAPI();
 
 /** protective OPEN 变体从原 mapped SELL 的独立非 SDK 字段复制，经真实 New native frame 再映射。 */
-async function createOpenProtectiveObservation(): Promise<RawOrderFromAPI> {
+async function createOpenProtectiveObservation(): Promise<OrderFact> {
   const sell = rawOrders.find((order) => order.orderId === 'OFFLINE-SELL');
   if (sell?.price === undefined || sell.price === null)
     throw new Error('Frozen SELL observation lacks submitted price');
@@ -174,7 +175,7 @@ async function createOpenProtectiveObservation(): Promise<RawOrderFromAPI> {
 /** 每次重启重建所有真实业务状态；文件只复制到专有临时目录，绝不读取真实日志。 */
 async function createOfflineRecovery(
   root: string,
-  orders: ReadonlyArray<RawOrderFromAPI> | null = null,
+  orders: ReadonlyArray<OrderFact> | null = null,
   appendFailure?: Error,
   frozenInput: unknown = frozenOrders,
   beforeProtectionRecovery?: () => void,
@@ -204,7 +205,7 @@ async function createOfflineRecovery(
         };
   const daily = createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     resolveOrderOwnership,
     toHongKongTimeIso,
   });

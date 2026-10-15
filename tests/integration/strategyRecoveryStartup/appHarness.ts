@@ -26,7 +26,6 @@ import {
   createMonitorContextDouble,
   createPeriodicSwitchWakeupRuntimeDouble,
   createQuoteSubscriptionRuntimeDouble,
-  createSdkConfigDouble,
   createSeatActivationDispatcherDouble,
   createSeatActivationWorkflowDouble,
   createWarrantRiskRefreshDouble,
@@ -36,6 +35,7 @@ import {
   createTradingGateEventRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
+import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
 
 import { applyStartupSnapshotFailureState } from '../../../src/main/lifecycle/startupFailureState.js';
 import {
@@ -112,7 +112,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
   const warrantListCache = createWarrantListCache();
 
   return {
-    config: createSdkConfigDouble(),
+    brokerClientFactory: createBrokerClientFactoryDouble(),
     tradingConfig: createTradingConfig({
       global: {
         doomsdayProtection: true,

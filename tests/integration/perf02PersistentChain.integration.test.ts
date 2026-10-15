@@ -1,46 +1,46 @@
 /** PERF-02 持久化全链路回归：真实 quoteClient → D-event 宿主 → intraday-regression → 生命周期清理/重建。 */
+
 import { describe, expect, it } from 'bun:test';
-import { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
-import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
 import { createMarketDataDomain } from '../../src/main/lifecycle/cacheDomains/marketDataDomain.js';
 import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
+import type { LifecycleMutableState } from '../../src/main/lifecycle/types.js';
+import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
 import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import type { Processor } from '../../src/runtime/asyncProgram/types.js';
+import { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
+import type { BusinessEventProgram } from '../../src/runtime/businessEventProgram/types.js';
+import type { CandlestickUpdatedEvent, MarketDataClient } from '../../src/types/marketPorts.js';
+import type { Trader } from '../../src/types/services.js';
+import type { LastState } from '../../src/types/state.js';
+import type { TradingSignalStrategy } from '../../src/types/strategy.js';
+import { toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
+import {
+  createLiquidationCooldownTrackerDouble,
+  createLoggerDouble,
+  createMonitorContextDouble,
+  createRateLimiterDouble,
+  createRiskCheckerDouble,
+} from '../helpers/testDoubles.js';
 import { createMarketFixture } from '../infrastructure/longbridge/market/marketFixture.js';
 import type {
   MarketCandleInput,
   MarketFixtureController,
 } from '../infrastructure/longbridge/market/types.js';
-import type { TradingSignalStrategy } from '../../src/types/strategy.js';
-import type { BusinessEventProgram } from '../../src/runtime/businessEventProgram/types.js';
-import type { Processor } from '../../src/runtime/asyncProgram/types.js';
-import type { LifecycleMutableState } from '../../src/main/lifecycle/types.js';
-import type { CandlestickUpdatedEvent, MarketDataClient } from '../../src/types/marketPorts.js';
-import type { Trader } from '../../src/types/services.js';
-import { prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
-import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
 import { createEventHarness, monitorConfig } from '../runtime/businessEventProgram/fixtures.js';
 import type { EventHarness } from '../runtime/businessEventProgram/types.js';
-import {
-  createLoggerDouble,
-  createMonitorContextDouble,
-  createRateLimiterDouble,
-  createLiquidationCooldownTrackerDouble,
-  createRiskCheckerDouble,
-} from '../helpers/testDoubles.js';
-
+import { prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
-import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
-import type { LastState } from '../../src/types/state.js';
 
 const SYMBOL = 'HSI.HK';
 const PERIOD = 'MIN_1';
@@ -351,7 +351,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   native.setExecutionReplies([]);
   const daily = createDailyLossTracker({
     onOwnershipWarning: () => {},
-    ...createDailyLossOrderAnalysisDeps(),
+    ...orderAnalysis,
     toHongKongTimeIso,
   });
   daily.resetAll(new Date(INITIAL_NOW_MS));

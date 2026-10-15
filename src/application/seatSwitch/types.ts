@@ -137,6 +137,7 @@ export type BuildOrderSignalParams = {
   readonly symbol: string;
   readonly quote: Quote | null;
   readonly reason: string;
+  readonly executionOrigin?: 'SWITCH_MOVE' | 'SWITCH_REBUY';
   readonly orderTypeOverride: Signal['orderTypeOverride'];
   readonly quantity: number | null;
   readonly seatVersion: number;

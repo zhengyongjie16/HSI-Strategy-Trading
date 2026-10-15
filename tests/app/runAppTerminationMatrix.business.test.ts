@@ -11,6 +11,7 @@ import { createMonitorContext } from '../../src/app/context/createMonitorContext
 import { createTimeWakeupRuntime } from '../../src/main/timeWakeupRuntime/index.js';
 
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createBrokerClientFactoryDouble } from '../helpers/brokerClientFactoryDouble.js';
 import { createWarrantListCache } from '../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import { prepareFixture, createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
 import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
@@ -21,14 +22,13 @@ import type {
   AppEnvironmentParams,
 } from '../../src/app/types.js';
 import type { RuntimeTermination } from '../../src/types/runtime.js';
-import type { TraderDeps } from '../../src/core/trader/types.js';
+import type { TraderDeps } from '../../src/app/runtime/types.js';
 import type { StrategyDeps, TradingSignalStrategy } from '../../src/types/strategy.js';
 import type { Processor } from '../../src/runtime/asyncProgram/types.js';
 import {
   createLoggerDouble,
   createSignalDouble,
   createMarketDataClientDouble,
-  createSdkConfigDouble,
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
@@ -132,7 +132,7 @@ async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownE
     createPreGateRuntime: async ({ termination: owner }) => {
       termination.current = owner;
       return {
-        config: createSdkConfigDouble(),
+        brokerClientFactory: createBrokerClientFactoryDouble(),
         tradingConfig: createTradingConfig(),
         symbolRegistry: createSymbolRegistryDouble(),
         startupTradingDayInfo: null,

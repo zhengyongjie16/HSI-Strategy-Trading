@@ -8,35 +8,79 @@ import { createTerminationRuntime } from '../../../src/app/runtime/createTermina
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
+import type { CreatePreGateRuntimeParams } from '../../../src/app/types.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import { createMarketDataClientDouble, createSdkConfigDouble } from '../../helpers/testDoubles.js';
+import { createMarketDataClientDouble } from '../../helpers/testDoubles.js';
+import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
 
 let isTradingDayCalls = 0;
 let tradingDayResolveError: Error | null = null;
+let marketCreateCalls = 0;
+let marketResetCalls = 0;
+let onAuthCompleted = (): void => {};
+
+let onMarketCreated = (): void => {};
 
 mock.module('../../../src/app/runtime/createPreGateRuntimeDeps.js', () => ({
   DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS: {
-    createSdkConfigFromAuth: async () => createSdkConfigDouble(),
-    createMarketDataClient: async () =>
-      createMarketDataClientDouble({
-        isTradingDay: async () => {
-          isTradingDayCalls += 1;
-          if (tradingDayResolveError !== null) {
-            throw tradingDayResolveError;
-          }
+    createLongbridgeClientFactory: async () => {
+      onAuthCompleted();
+      return createBrokerClientFactoryDouble({
+        createMarketDataClient: async () => {
+          marketCreateCalls += 1;
+          onMarketCreated();
+          return createMarketDataClientDouble({
+            isTradingDay: async () => {
+              isTradingDayCalls += 1;
+              if (tradingDayResolveError !== null) {
+                throw tradingDayResolveError;
+              }
 
-          return { isTradingDay: false, isHalfDay: false };
+              return { isTradingDay: false, isHalfDay: false };
+            },
+            resetRuntimeSubscriptionsAndCaches: async () => {
+              marketResetCalls += 1;
+            },
+          });
         },
-      }),
+      });
+    },
   },
 }));
 
 const { createPreGateRuntime } = await import('../../../src/app/runtime/createPreGateRuntime.js');
 
+function createRuntimeParams(): CreatePreGateRuntimeParams {
+  return {
+    cleanup: createCleanup(),
+    termination: createTerminationRuntime({
+      closeTradingGate: () => {},
+      closeProducerAdmission: () => {},
+      stopProducers: [],
+      onSecondaryError: () => {},
+    }),
+    env: {
+      MONITOR_SYMBOL: 'HSI.HK',
+      LONG_SYMBOL: 'BULL.HK',
+      SHORT_SYMBOL: 'BEAR.HK',
+      ORDER_OWNERSHIP_MAPPING: 'HSI',
+      LONGBRIDGE_AUTH_MODE: 'apikey',
+      LONGBRIDGE_APP_KEY: 'app-key',
+      LONGBRIDGE_APP_SECRET: 'app-secret',
+      LONGBRIDGE_ACCESS_TOKEN: 'access-token',
+    },
+  };
+}
+
 describe('app createPreGateRuntime minimal startup gate', () => {
   beforeEach(() => {
     isTradingDayCalls = 0;
     tradingDayResolveError = null;
+    marketCreateCalls = 0;
+    marketResetCalls = 0;
+    onAuthCompleted = () => {};
+
+    onMarketCreated = () => {};
   });
 
   it('returns pre-gate runtime even when current day is not a trading day', async () => {
@@ -132,5 +176,24 @@ describe('app createPreGateRuntime minimal startup gate', () => {
 
     expect(caught).toBe(internalError);
     expect(isTradingDayCalls).toBe(1);
+  });
+
+  it('does not create market resources when termination occurs during auth', async () => {
+    const params = createRuntimeParams();
+    onAuthCompleted = params.termination.requestShutdown;
+    expect(await createPreGateRuntime(params)).toBeNull();
+    expect(marketCreateCalls).toBe(0);
+    expect(isTradingDayCalls).toBe(0);
+  });
+
+  it('registers market cleanup before returning after a terminated acquisition', async () => {
+    const params = createRuntimeParams();
+    onMarketCreated = params.termination.requestShutdown;
+    expect(await createPreGateRuntime(params)).toBeNull();
+    expect(marketCreateCalls).toBe(1);
+    expect(isTradingDayCalls).toBe(0);
+    expect(marketResetCalls).toBe(0);
+    await params.cleanup.execute();
+    expect(marketResetCalls).toBe(1);
   });
 });

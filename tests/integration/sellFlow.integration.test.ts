@@ -4,24 +4,32 @@
  * 功能：
  * - 验证卖出流程端到端场景与业务期望。
  */
+
 import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
-import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createDailyLossOrderAnalysisDeps } from '../../src/core/orderRecorder/index.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
-import { processSellSignals } from '../../src/application/ordinarySell/quantityResolver.js';
-import { createOrderStorage } from '../../src/core/orderRecorder/orderStorage.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
+import { createOrderStorage } from '../../src/application/orderTracking/recorder/orderStorage.js';
+import type { OrderStorage } from '../../src/application/orderTracking/recorder/types.js';
+import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
+import { processSellSignals } from '../../src/application/ordinarySell/quantityResolver.js';
+import type { ProcessedSellSignal } from '../../src/application/ordinarySell/types.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import type { DailyLossTracker } from '../../src/types/risk.js';
+import type { OrderRecord, OrderRecorder, RateLimiter } from '../../src/types/services.js';
+import type {
+  ExecutableSellSignal,
+  ProtectiveLiquidationSellSignal,
+} from '../../src/types/signal.js';
+import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
-  createMonitorContextDouble,
-  createTraderDouble,
-  createTerminationDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
+  createMonitorContextDouble,
   createOrderMonitorDouble,
   createOrderRecorderDouble,
   createPositionDouble,
@@ -30,20 +38,13 @@ import {
   createRateLimiterDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
+  createTerminationDouble,
+  createTraderDouble,
 } from '../helpers/testDoubles.js';
-import type { ProcessedSellSignal } from '../../src/application/ordinarySell/types.js';
-import type {
-  ExecutableSellSignal,
-  ProtectiveLiquidationSellSignal,
-} from '../../src/types/signal.js';
-import type { OrderRecord, OrderRecorder, RateLimiter } from '../../src/types/services.js';
-import type { OrderStorage } from '../../src/core/orderRecorder/types.js';
-import type { DailyLossTracker } from '../../src/types/risk.js';
-import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
-import type { OrderMonitor } from '../../src/core/trader/types.js';
-import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
+import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { waitUntil } from '../main/asyncProgram/utils.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 type NativeSellIngress = Awaited<ReturnType<typeof createBrokerIngressFixture>>;
 const ownerCleanups: Array<() => Promise<void>> = [];
@@ -106,7 +107,7 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
     monitorDailyOwners.get(ingress) ??
     createDailyLossTracker({
       onOwnershipWarning: () => {},
-      ...createDailyLossOrderAnalysisDeps(),
+      ...orderAnalysis,
       toHongKongTimeIso,
     });
   if (!monitorDailyOwners.has(ingress))

@@ -23,7 +23,7 @@ import type { WarrantRiskRefresh } from '../../application/riskRefresh/types.js'
 import { hasSeatSymbol } from '../../utils/seat/guards.js';
 import type { MonitorContext } from '../../types/state.js';
 import type { Quote } from '../../types/quote.js';
-import type { RawOrderFromAPI } from '../../types/services.js';
+import type { OrderFact } from '../../types/trade.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
 import type {
@@ -67,7 +67,7 @@ function syncMonitorContextSymbolNames(
  */
 function rebuildOrderRecords(
   monitorContext: MonitorContext,
-  allOrders: ReadonlyArray<RawOrderFromAPI>,
+  allOrders: ReadonlyArray<OrderFact>,
   targets: Parameters<MonitorContext['orderRecorder']['commitRebuildSnapshot']>[0],
   isCurrent: () => boolean,
 ): boolean {

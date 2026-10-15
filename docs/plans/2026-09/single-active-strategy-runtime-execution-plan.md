@@ -741,7 +741,7 @@ rg -n "concurrently|dev:watch|build:watch|test:watch|--watch" package.json READM
 ```powershell
 bun test tests/core/strategy tests/main/businessEventProgram tests/main/monitorDisplayRuntime tests/services/marketMonitor
 bun test tests/app tests/main/lifecycle tests/main/seatRuntimeCleanupDispatcher tests/main/timeWakeupEvaluationProgram
-bun test tests/main/asyncProgram tests/core/signalProcessor tests/main/recovery tests/core/trader/orderMonitor
+bun test tests/main/asyncProgram tests/core/signalProcessor tests/main/recovery tests/application/orderTracking/orderMonitor
 ```
 
 新增 tools/architecture 测试以最终实际路径执行；完整 `bun test` 必须包含它们。

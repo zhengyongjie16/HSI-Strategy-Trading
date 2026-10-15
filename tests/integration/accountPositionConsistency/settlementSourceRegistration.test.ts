@@ -3,13 +3,14 @@
  * 真实 O/snapshot/settlement sink 检查基线不造 stale、在线事实同步登记；
  * 只验证登记和事务屏障，不启动消费，不宣称完整 readiness 或 push 自然链路。
  */
+
 import { expect, it } from 'bun:test';
-import { createOrderRecorder } from '../../../src/core/orderRecorder/index.js';
-import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
+import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import type { BrokerOrderExecutionFact } from '../../../src/types/orderRecorder.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import { createOfflineBrokerPort } from './offlinePorts.js';
 
 it('distinguishes initial controlled coverage from online changed facts at the real global stale sink', () => {
@@ -53,7 +54,7 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: settlement,
   });
-  const baseline: RawOrderFromAPI = {
+  const baseline: OrderFact = {
     orderId: 'BASELINE-BUY',
     symbol: 'SOURCE.HK',
     stockName: 'source',

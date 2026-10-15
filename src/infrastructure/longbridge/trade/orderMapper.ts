@@ -4,7 +4,7 @@ import type { OrderEconomics, OrderEconomicsObservation } from '../../../types/o
 import { OrderSide, OrderStatus, OrderType, type PushOrderChanged } from 'longbridge';
 import type { OrderExecutionLedgerFact } from '../../../types/orderExecutionLedger.js';
 import type { BrokerOrderSdkFields } from './types.js';
-import type { RawOrderFromAPI } from '../../../types/services.js';
+import type { OrderFact } from '../../../types/trade.js';
 import type {
   OrderExecutionPriceEvidence,
   OrderPushReadFact,
@@ -16,6 +16,22 @@ import {
   exactCompare,
   safeQuantityNumber,
 } from '../../../utils/numeric/exact.js';
+
+/** 查询与 push 共用原始身份/归属证据准入，不将坏 remark 变为普通订单或补造身份。 */
+function assertBrokerOrderMetadata(
+  order: Pick<BrokerOrderSdkFields, 'orderId' | 'symbol' | 'stockName' | 'remark'>,
+): void {
+  if (
+    typeof order.orderId !== 'string' ||
+    order.orderId.length === 0 ||
+    typeof order.symbol !== 'string' ||
+    order.symbol.length === 0 ||
+    typeof order.stockName !== 'string' ||
+    typeof order.remark !== 'string'
+  ) {
+    throw new TypeError('[orderMapper] invalid SDK order identity/provenance');
+  }
+}
 
 /**
  * 验证 broker 时间；不可用更新时间冒充成交时间。
@@ -96,13 +112,7 @@ export function mapBrokerExecutions(value: unknown): ReadonlyArray<OrderExecutio
 
 /** 发ledger前只验证原SDK身份、数量、生命周期、revision；绝不发布未完成的经济fact。 */
 export function inspectBrokerOrderPush(event: PushOrderChanged): OrderPushReadFact {
-  if (
-    typeof event.orderId !== 'string' ||
-    event.orderId.length === 0 ||
-    typeof event.symbol !== 'string' ||
-    event.symbol.length === 0
-  )
-    throw new TypeError('[orderMapper] invalid SDK push identity');
+  assertBrokerOrderMetadata(event);
 
   if (event.side !== OrderSide.Buy && event.side !== OrderSide.Sell)
     throw new TypeError('[orderMapper] unknown SDK execution side');
@@ -133,7 +143,7 @@ export function inspectBrokerOrderPush(event: PushOrderChanged): OrderPushReadFa
 
 /**
  * 将 SDK 累计金融字段转换为中性事实；成本依据为 SDK 均价原文×累计量，不经 number/显示舍入。
- * @param order 已经过 SDK 结构预检的订单
+ * @param order SDK 查询订单，身份/归属证据在此共享边界再次校验
  * @param executions 此次真实 execution 读取结果
  * @param economics app 注入的无 SDK 纯订单经济规则
  * @param confirmed 原唯一事实 owner 已确认的同 broker 价格证据
@@ -144,7 +154,8 @@ export function mapBrokerOrder(
   executions: ReadonlyArray<OrderExecutionLedgerFact>,
   economics: OrderEconomics,
   confirmed?: OrderExecutionPriceEvidence,
-): RawOrderFromAPI {
+): OrderFact {
+  assertBrokerOrderMetadata(order);
   if (order.side !== OrderSide.Buy && order.side !== OrderSide.Sell) {
     throw new TypeError('[orderMapper] unknown SDK execution side');
   }
@@ -182,7 +193,7 @@ export function mapBrokerOrder(
     throw new TypeError('[orderMapper] executed order lacks independent broker revision');
   }
 
-  let executionStatus: RawOrderFromAPI['executionStatus'] = 'NONE';
+  let executionStatus: OrderFact['executionStatus'] = 'NONE';
   if (order.status === OrderStatus.Filled) executionStatus = 'FILLED';
   else if (order.status === OrderStatus.PartialFilled || executedQuantity > 0)
     executionStatus = 'PARTIAL';
@@ -218,7 +229,7 @@ export function mapBrokerOrderPush(
   executions: ReadonlyArray<OrderExecutionLedgerFact>,
   economics: OrderEconomics,
   confirmed?: OrderExecutionPriceEvidence,
-): RawOrderFromAPI {
+): OrderFact {
   return mapBrokerOrder(
     {
       orderId: event.orderId,

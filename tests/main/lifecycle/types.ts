@@ -1,4 +1,4 @@
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 
 /**
  * 保护性清仓订单测试参数。
@@ -8,7 +8,7 @@ import type { RawOrderFromAPI } from '../../../src/types/services.js';
  */
 export type ProtectiveOrderParams = Readonly<{
   readonly orderId: string;
-  readonly status: RawOrderFromAPI['status'];
+  readonly status: OrderFact['status'];
   readonly price: number;
   readonly quantity: number;
   readonly executedPrice: number;

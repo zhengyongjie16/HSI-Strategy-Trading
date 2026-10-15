@@ -53,7 +53,7 @@ const externalApiRequestErrors = new WeakSet<Error>();
  * @param params 外部 API 请求失败错误构造参数
  * @returns 携带 operation 与 attempts 的 Error 对象
  */
-function createExternalApiRequestError(
+export function createExternalApiRequestError(
   params: Readonly<{
     operation: string;
     attempts: number;

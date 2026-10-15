@@ -11,7 +11,7 @@ import { createExternalApiRequestError } from '../../helpers/createExternalApiRe
 import { applyStartupSnapshotFailureState } from '../../../src/main/lifecycle/startupFailureState.js';
 import type { Quote } from '../../../src/types/quote.js';
 import type { LastState } from '../../../src/types/state.js';
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
 import { createAccountSnapshotDouble } from '../../helpers/testDoubles.js';
 import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
@@ -148,7 +148,7 @@ describe('app startup snapshot branch', () => {
   it('returns startup snapshot directly when loading succeeds', async () => {
     const now = new Date('2026-03-09T09:31:00.000Z');
     const lastState = createMinimalLastState();
-    const allOrders: ReadonlyArray<RawOrderFromAPI> = [
+    const allOrders: ReadonlyArray<OrderFact> = [
       {
         orderId: 'A',
         symbol: 'HSI-BULL.HK',

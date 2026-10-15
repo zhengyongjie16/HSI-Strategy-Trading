@@ -13,7 +13,7 @@ import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TradeContext, OrderStatus, OrderSide } from 'longbridge';
-import { createSdkConfigFromAuth } from '../src/config/auth/index.js';
+import { createSdkConfigFromAuth } from '../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

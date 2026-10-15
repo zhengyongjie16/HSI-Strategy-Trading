@@ -1614,6 +1614,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         expect(callerAuthorization()).toBe(true);
 
         const signal = signals[0];
+        expect(signal?.executionOrigin).toBe(
+          signal?.action === 'SELLCALL' ? 'SWITCH_MOVE' : 'SWITCH_REBUY',
+        );
+
         executedActions.push({
           action: signal?.action ?? null,
           symbol: signal?.symbol ?? null,

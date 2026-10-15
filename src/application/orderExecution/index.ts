@@ -27,6 +27,7 @@ import type {
   SignalCallerAuthorization,
 } from '../../types/trader.js';
 import type { OrderActionAuthorization } from '../../domain/order/types.js';
+import type { OrderCommandPurpose } from '../../types/tradeMutationPorts.js';
 import type {
   OrderExecutor,
   OrderExecutorDeps,
@@ -40,6 +41,47 @@ import {
   isLiquidationSignal,
   isStaleCrossDaySignal,
 } from '../../domain/order/executionPolicy.js';
+
+/** 仅根据动作、显式用例来源与 protective 真值绑定新命令目的；不读 reason 或覆盖旧单身份。 */
+function resolveSignalOrderPurpose(
+  signal: ExecutableSignal,
+): Exclude<OrderCommandPurpose, 'DOOMSDAY_CLEARANCE'> {
+  const isBuy = signal.action === 'BUYCALL' || signal.action === 'BUYPUT';
+  if (signal.isProtectiveLiquidation === true) {
+    if (signal.executionOrigin !== undefined)
+      throw new TypeError('[订单执行] protective 信号不能同时携带其他执行来源');
+
+    return 'PROTECTIVE_LIQUIDATION';
+  }
+
+  switch (signal.executionOrigin) {
+    case undefined: {
+      return isBuy ? 'ORDINARY_BUY' : 'ORDINARY_SELL';
+    }
+
+    case 'SWITCH_MOVE': {
+      if (isBuy) throw new TypeError('[订单执行] SWITCH_MOVE 只允许卖出动作');
+
+      return 'SWITCH_MOVE';
+    }
+
+    case 'SWITCH_REBUY': {
+      if (!isBuy) throw new TypeError('[订单执行] SWITCH_REBUY 只允许买入动作');
+
+      return 'SWITCH_REBUY';
+    }
+
+    case 'STATIC_DISTANCE_LIQUIDATION': {
+      if (isBuy) throw new TypeError('[订单执行] STATIC_DISTANCE_LIQUIDATION 只允许卖出动作');
+
+      return 'STATIC_DISTANCE_LIQUIDATION';
+    }
+
+    default: {
+      throw new TypeError('[订单执行] 不支持的执行来源');
+    }
+  }
+}
 
 /**
  * 校验信号携带的席位版本是否与执行时席位版本一致。
@@ -155,6 +197,7 @@ function resolveDoomsdayClearanceOrderCommand(signal: SellSignal): ExecutableOrd
         direction: 'LONG',
         side: 'SELL',
         executionPurpose: 'DOOMSDAY_CLEARANCE',
+        purpose: 'DOOMSDAY_CLEARANCE',
       };
     }
 
@@ -165,6 +208,7 @@ function resolveDoomsdayClearanceOrderCommand(signal: SellSignal): ExecutableOrd
         direction: 'SHORT',
         side: 'SELL',
         executionPurpose: 'DOOMSDAY_CLEARANCE',
+        purpose: 'DOOMSDAY_CLEARANCE',
       };
     }
 
@@ -196,6 +240,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         direction: 'LONG',
         side: 'BUY',
         executionPurpose: 'ORDINARY',
+        purpose: resolveSignalOrderPurpose(signal),
       };
     }
 
@@ -206,6 +251,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         direction: 'SHORT',
         side: 'BUY',
         executionPurpose: 'ORDINARY',
+        purpose: resolveSignalOrderPurpose(signal),
       };
     }
 
@@ -216,6 +262,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         direction: 'LONG',
         side: 'SELL',
         executionPurpose: 'ORDINARY',
+        purpose: resolveSignalOrderPurpose(signal),
       };
     }
 
@@ -226,6 +273,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
         direction: 'SHORT',
         side: 'SELL',
         executionPurpose: 'ORDINARY',
+        purpose: resolveSignalOrderPurpose(signal),
       };
     }
 

@@ -1,16 +1,17 @@
 /** infra 中性映射观察→真实 lifecycle classifier；纯 side/kind/unknown mapper oracle 位于 tests/infrastructure/longbridge/trade/orderReadMetadata.test.ts。 */
+
 import { expect, test } from 'bun:test';
-import { observeNativeOrderReadStatuses } from '../../../infrastructure/longbridge/trade/orderReadMetadataFixture.js';
-import {
-  isOpenOrderReadStatus,
-  isTerminalOrderReadStatus,
-  orderReadStatusPriority,
-} from '../../../../src/core/trader/orderMonitor/orderReadLifecycle.js';
 import {
   NON_REPLACEABLE_READ_STATUSES,
   NON_REPLACEABLE_READ_TYPES,
   classifyOrderReadLifecycle,
 } from '../../../../src/constants/orderReadMetadata.js';
+import {
+  isOpenOrderReadStatus,
+  isTerminalOrderReadStatus,
+  orderReadStatusPriority,
+} from '../../../../src/domain/order/orderReadLifecycle.js';
+import { observeNativeOrderReadStatuses } from '../../../infrastructure/longbridge/trade/orderReadMetadataFixture.js';
 
 test('native metadata maps once to actual neutral detailed states and preserves open/terminal/replace action distinctions', () => {
   const observations = observeNativeOrderReadStatuses();

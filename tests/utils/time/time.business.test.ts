@@ -5,13 +5,14 @@
  * - 验证严格交易时段累计毫秒计算（含跨午休/跨日/跨半日市/跨周末）
  * - 验证超时判定边界（严格大于阈值才触发）
  */
-import { describe, it, expect } from 'bun:test';
-import { isOrderTimedOut } from '../../../src/core/orderRecorder/utils.js';
+
+import { describe, expect, it } from 'bun:test';
+import { isOrderTimedOut } from '../../../src/domain/order/orderRecordPolicy.js';
+import type { TradingCalendarSnapshot } from '../../../src/types/tradingCalendar.js';
 import {
   calculateTradingDurationDueAtMs,
   calculateTradingDurationMsBetween,
 } from '../../../src/utils/time/index.js';
-import type { TradingCalendarSnapshot } from '../../../src/types/tradingCalendar.js';
 
 /**
  * 生成测试用交易日历快照，默认行为：按输入顺序构造 Map。

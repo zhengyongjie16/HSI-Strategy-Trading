@@ -1,8 +1,8 @@
-import type { RawOrderFromAPI } from '../../../src/types/services.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 
 /** 脱敏订单文本：日期使用固定 ISO 文本，SDK 无关金融字段保留原始字符串。 */
 export type OfflineOrder = Omit<
-  RawOrderFromAPI,
+  OrderFact,
   | 'submittedAt'
   | 'updatedAt'
   | 'updatedAtMs'

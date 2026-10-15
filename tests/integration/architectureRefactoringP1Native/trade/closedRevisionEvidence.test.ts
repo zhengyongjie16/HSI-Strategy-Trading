@@ -1,9 +1,10 @@
 /** closed 观察仍保存权威 revision 水位；经济投影、S stale 与资源收尾单独幂等。 */
+
 import { expect, test } from 'bun:test';
-import { createBrokerIngressFixture } from './brokerIngressFixture.js';
-import { createExecutionFixture } from '../../../core/orderRecorder/executionFixture.js';
-import { createEventFlow } from '../../../../src/core/trader/orderMonitor/eventFlow.js';
 import { createMonitorConfig } from '../../../../mock/factories/configFactory.js';
+import { createEventFlow } from '../../../../src/application/orderTracking/orderMonitor/eventFlow.js';
+import { createExecutionFixture } from '../../../application/orderTracking/recorder/executionFixture.js';
+import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 const now = Date.parse('2026-03-13T02:00:00.000Z');
 test('closed terminal pure revision stores O/Daily watermark without economic/S/resource effects; legal amount correction still admits', async () => {

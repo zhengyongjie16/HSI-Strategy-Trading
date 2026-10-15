@@ -2,21 +2,21 @@
  * 单实例成交后业务闭环：native tracking → O/Daily → H commit → 实际 Quote 订阅 ack → completion → R1/N1 → ready。
  * 复用既有离线 broker/execution fixture，只在真实订阅 mutation 返回前设屏障，不手工推进 readiness 或完成 episode。
  */
+
+import { expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, test } from 'bun:test';
-import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
-import { createExecutionFixture } from '../core/orderRecorder/executionFixture.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createRateLimiter } from '../../src/application/orderExecution/rateLimiter.js';
+import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
 import { createRiskChecker } from '../../src/domain/risk/index.js';
 import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
 import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
 import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
-import { createRateLimiter } from '../../src/core/trader/rateLimiter.js';
-import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
 import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -25,6 +25,7 @@ import {
   createSymbolRegistryDouble,
   createTraderDouble,
 } from '../helpers/testDoubles.js';
+import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
 const sellTime = T + 1_000;

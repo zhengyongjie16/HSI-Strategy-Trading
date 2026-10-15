@@ -12,13 +12,16 @@ import { createSdkModuleMock } from '../../infrastructure/longbridge/trade/sdkMo
 const originalDotenvExports = Object.freeze({ ...(await import('dotenv')) });
 const sdkModuleMock = createSdkModuleMock();
 const originalAuthExports = Object.freeze({
-  ...(await import('../../../src/config/auth/index.js')),
+  ...(await import('../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js')),
 });
 
 function reinstallOriginalModules(): void {
   void mock.module('dotenv', () => ({ ...originalDotenvExports }));
   sdkModuleMock.restore();
-  void mock.module('../../../src/config/auth/index.js', () => ({ ...originalAuthExports }));
+  void mock.module(
+    '../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js',
+    () => ({ ...originalAuthExports }),
+  );
 }
 
 const dotenvConfigCalls: unknown[] = [];
@@ -73,16 +76,19 @@ async function registerLongbridgeMock(): Promise<void> {
 }
 
 function registerAuthMock(): void {
-  void mock.module('../../../src/config/auth/index.js', () => ({
-    createSdkConfigFromAuth: async (params: {
-      readonly env: NodeJS.ProcessEnv;
-      readonly onOpenUrl?: (url: string) => void;
-    }) => {
-      authCalls.push(params);
-      params.onOpenUrl?.('https://example.test/oauth');
-      return { kind: 'sdk-config' };
-    },
-  }));
+  void mock.module(
+    '../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js',
+    () => ({
+      createSdkConfigFromAuth: async (params: {
+        readonly env: NodeJS.ProcessEnv;
+        readonly onOpenUrl?: (url: string) => void;
+      }) => {
+        authCalls.push(params);
+        params.onOpenUrl?.('https://example.test/oauth');
+        return { kind: 'sdk-config' };
+      },
+    }),
+  );
 }
 
 async function importToolModule(label: string): Promise<void> {
@@ -125,7 +131,8 @@ afterAll(async () => {
   reinstallOriginalModules();
   await sdkModuleMock.assertRestored();
   const restoredDotenv = await import('dotenv');
-  const restoredAuth = await import('../../../src/config/auth/index.js');
+  const restoredAuth =
+    await import('../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js');
   expect(restoredDotenv.default.config).toBe(originalDotenvExports.default.config);
   expect(restoredAuth.createSdkConfigFromAuth).toBe(originalAuthExports.createSdkConfigFromAuth);
   expect({

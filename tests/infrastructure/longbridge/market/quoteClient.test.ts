@@ -91,7 +91,7 @@ import {
   createWarrantQuote,
 } from '../../../../mock/factories/quoteFactory.js';
 import { createQuoteContextMock } from '../../../../mock/longbridge/quoteContextMock.js';
-import { createSdkConfigDouble } from '../../../helpers/testDoubles.js';
+import { createSdkConfigDouble } from '../trade/sdkConfigDouble.js';
 
 const { createMarketDataClient } = (await import(
   // @ts-expect-error Bun 查询后缀用于隔离模块；TypeScript 不解析该路径，返回类型取同一真实入口。

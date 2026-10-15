@@ -1,8 +1,9 @@
 /** 中性快照 port→真实 core 去重；SDK DTO/context 与 mapper 装配由专用 infra fixture 持有。 */
+
 import { expect, test } from 'bun:test';
-import { createOrderAPIManager } from '../../../../src/core/orderRecorder/orderApiManager.js';
-import { createNativeSnapshotReadFixture } from '../../../infrastructure/longbridge/trade/orderSnapshotReadFixture.js';
+import { createOrderAPIManager } from '../../../../src/application/orderTracking/recorder/orderApiManager.js';
 import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
+import { createNativeSnapshotReadFixture } from '../../../infrastructure/longbridge/trade/orderSnapshotReadFixture.js';
 
 test('real snapshot IO preserves limiter/four native reads and original today priority/same-source revision selection', async () => {
   const fixture = createNativeSnapshotReadFixture(orderEconomics);

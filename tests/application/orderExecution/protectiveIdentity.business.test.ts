@@ -100,7 +100,12 @@ function createHarness(params: {
         onRemoteIssued();
         calls.push('submit');
         submitted.push(command);
-        return { orderId: 'NON-PROTECTIVE-NEW' };
+        return {
+          kind: 'ACCEPTED' as const,
+          operation: 'TradeContext.submitOrder' as const,
+          requestAttempted: true as const,
+          orderId: 'NON-PROTECTIVE-NEW',
+        };
       },
     },
     rateLimiter: createRateLimiterDouble(),
